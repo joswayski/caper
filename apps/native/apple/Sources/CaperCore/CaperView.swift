@@ -1027,7 +1027,7 @@ private struct WorkspaceView: View {
             if parityFixture == "manage-space" || parityFixture == "modal" { sheet = .manageSpace }
             else if parityFixture == "manage-channel", let channel = model.detail?.channels.first(where: { $0.private }) { sheet = .manageChannel(channel) }
             else if parityFixture == "new-direct-message" { sheet = .newDirectMessage }
-            else if parityFixture == "voice-roster" { CaperRuntime.showVoiceRosterPreview(model) }
+            else if CaperRuntime.voiceRosterFixtures.contains(parityFixture ?? "") { CaperRuntime.showVoiceRosterPreview(model) }
             else if parityFixture == "whats-new" { CaperRuntime.showWhatsNewPreview(model) }
         }
         #if os(iOS)
@@ -1247,12 +1247,13 @@ private struct ChannelSidebar: View {
                 } else {
                 VStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Your call and the space's occupied rooms, above its channels.
+                    // Voice with no row here (a call in another space, a visit's
+                    // room), above the channels; live rows grow into cards in place.
                     LiveNowSection(model: model, narrow: narrow)
                     HStack {
                         Button { if !SwipeTapGuard.swiping { channelsExpanded.toggle(); CaperEffects.shared.toggle(channelsExpanded) } } label: {
                             HStack(spacing: 6) {
-                                // One chevron that turns, as for message requests and Live now's fold.
+                                // One chevron that turns, as for message requests.
                                 CaperIcon(name: "chevron-down")
                                     .rotationEffect(.degrees(channelsExpanded ? 0 : -90))
                                     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: channelsExpanded)
@@ -1263,6 +1264,7 @@ private struct ChannelSidebar: View {
                                 .frame(maxHeight: .infinity).contentShape(Rectangle())
                         }.buttonStyle(.plain).modifier(ControlHover())
                             .accessibilityValue(channelsExpanded ? "Expanded" : "Collapsed")
+                            .accessibilityIdentifier("channels-toggle")
                         Spacer()
                         if model.isOwner {
                             let createHelp = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
@@ -1284,10 +1286,15 @@ private struct ChannelSidebar: View {
                         }
                     }.frame(height: 44)
 
-                    if channelsExpanded {
+                    // Collapsed, Channels still lists its live rows (your call's
+                    // card and rooms with people in voice), so voice never hides.
+                    let rows = LiveNow.listed(model.detail?.channels.filter(\.joined) ?? [], expanded: channelsExpanded) {
+                        channelIsLive(model, $0)
+                    }
+                    if !rows.isEmpty {
                         VStack(spacing: 3) {
-                            ForEach(model.detail?.channels.filter(\.joined) ?? []) { channel in
-                                ChannelSidebarItem(model: model, sheet: $sheet, channel: channel)
+                            ForEach(rows) { channel in
+                                ChannelSidebarItem(model: model, sheet: $sheet, channel: channel, narrow: narrow)
                             }
                         }
                     }
@@ -1522,10 +1529,15 @@ private struct DirectMessageSidebarRow: View {
     #endif
 }
 
+/// A channel's row. A live one grows into a card in place: your call's (its
+/// faces and controls beneath the row) or another room with people in voice
+/// (who is in it and Join beneath).
 private struct ChannelSidebarItem: View {
     @Bindable var model: AppModel
     @Binding var sheet: WorkspaceSheet?
     let channel: Channel
+    /// Phones present your call's full list as a sheet.
+    let narrow: Bool
     @State private var confirmLeave = false
     /// The channel's line (name, voice count, quick join and options): its
     /// hover wash spans them, like web's `.channel-line`.
@@ -1560,10 +1572,44 @@ private struct ChannelSidebarItem: View {
         model.selectedChannelID == channel.id ? CaperTheme.terracotta.opacity(0.16) : lineHovered ? Color.white.opacity(0.06) : .clear
     }
 
+    /// Your call, while it is in this channel.
+    private var ownCall: VoiceContext? { model.voice.isActive(channelID: channel.id) ? model.voice.context : nil }
+
+    /// The row opens its chat, and so does a tap anywhere on its card but a control.
+    private func openChat() { Task { await model.select(channel: channel) } }
+
     var body: some View {
-        let inVoice = voiceOccupants(model, channelID: channel.id).count
+        let occupants = voiceOccupants(model, channelID: channel.id)
+        Group {
+            if let call = ownCall {
+                // Your call's row is the top line of its card, in place.
+                VoiceCallCard(model: model, context: call, narrow: narrow, row: true, openChat: openChat) { callLine }
+                    .padding(.vertical, 3)
+            } else if !occupants.isEmpty {
+                // Another live room: the row, with who is in it and Join beneath.
+                let room = LiveRoom(channel: channel, people: occupants, startedAt: model.voicePresence.sessionStartedAt(for: channel.id))
+                LiveRoomCard(model: model, room: room, row: true, openChat: openChat) {
+                    line(live: true) { RowVoiceCount(count: occupants.count).accessibilityIdentifier("voice-count-\(channel.id)") }
+                }
+                .padding(.vertical, 3)
+            } else {
+                line(live: false) { EmptyView() }
+            }
+        }
+        .task(id: channel.id) { await model.refreshVoiceAvailability(channel: channel) }
+        .sheet(isPresented: $confirmLeave) {
+            ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", pendingLabel: "Leaving…", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
+                .modifier(ConfirmationPresentation())
+        }
+    }
+
+    /// The channel's line: its icon and name (which open its chat), unread dot
+    /// and bell, then `mark` (who is in voice, or your call's status and time),
+    /// the quick join and the menu. Selection and hover span the line; in a
+    /// live card it is the card's first line.
+    private func line<Mark: View>(live: Bool, @ViewBuilder mark: () -> Mark) -> some View {
         HStack(spacing: 2) {
-            Button { if !SwipeTapGuard.swiping { Task { await model.select(channel: channel) } } } label: {
+            Button { if !SwipeTapGuard.swiping { openChat() } } label: {
                 HStack(spacing: 6) {
                     CaperIcon(name: channel.private ? "lock" : "hash", size: 18)
                         .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
@@ -1589,11 +1635,8 @@ private struct ChannelSidebarItem: View {
                 })
                 .accessibilityIdentifier("channel-\(channel.id)")
                 .accessibilityValue(rowState)
-            // A live row ends with who is in voice; its card in Live now has Join.
-            if inVoice > 0 {
-                RowVoiceCount(count: inVoice).accessibilityIdentifier("voice-count-\(channel.id)")
-            }
-            quickJoin(live: inVoice > 0)
+            mark()
+            quickJoin(live: live)
             if model.detail?.space.demo != true {
                 Menu {
                     optionsMenuItems
@@ -1617,18 +1660,35 @@ private struct ChannelSidebarItem: View {
         // Selection and hover span the line, trailing controls included.
         .background { RoundedRectangle(cornerRadius: 6).fill(lineFill).allowsHitTesting(false) }
         .onHover { lineHovered = $0 }
-        .task(id: channel.id) { await model.refreshVoiceAvailability(channel: channel) }
-        .sheet(isPresented: $confirmLeave) {
-            ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", pendingLabel: "Leaving…", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
-                .modifier(ConfirmationPresentation())
+    }
+
+    /// Your call's row ends with its status and time when they fit beside the
+    /// name; otherwise with the time, and the status drops beneath the name.
+    private var callLine: some View {
+        let count = model.voice.participants.count
+        return ViewThatFits(in: .horizontal) {
+            line(live: true) { callMark(count: count, status: true) }
+            VStack(alignment: .leading, spacing: 0) {
+                line(live: true) { callMark(count: count, status: false) }
+                // Under the name: the label's 9-point inset, the icon and its gap.
+                CallStatusText(voice: model.voice, count: count).padding(.leading, 33)
+            }
         }
+    }
+
+    private func callMark(count: Int, status: Bool) -> some View {
+        HStack(spacing: 6) {
+            if status { CallStatusText(voice: model.voice, count: count) }
+            if let startedAt = callStartedAt(model) { VoiceTimer(startedAt: startedAt).allowsHitTesting(false) }
+        }
+        .padding(.horizontal, 4)
     }
 
     /// Web's channel-quick-join: one click joins (or switches to) this
     /// channel's voice without opening its chat; your own call's channel has none.
     /// Pointers reveal it on hover or keyboard focus like the row menu, in a slot
     /// that is always kept, so nothing shifts. Touch shows it, dimmed, on quiet
-    /// rows; a live row's card in Live now has Join instead.
+    /// rows; a live row's card has Join instead.
     @ViewBuilder private func quickJoin(live: Bool) -> some View {
         let action = ChannelVoiceAction(model: model, channel: channel)
         #if os(macOS)
@@ -1666,7 +1726,7 @@ private struct ChannelSidebarItem: View {
 }
 
 /// A live channel row's ending: a green waveform and how many are in voice. It
-/// is not a control; the row's name opens the chat and Live now's card joins.
+/// is not a control; the row's name opens the chat and its card's Join joins.
 private struct RowVoiceCount: View {
     let count: Int
     var body: some View {
@@ -1764,8 +1824,14 @@ private struct SidebarIconButton: ButtonStyle {
     }
 }
 
+/// A live channel row: your call's, or one with people in voice. It grows into
+/// a card, and stays listed while Channels is collapsed.
+@MainActor private func channelIsLive(_ model: AppModel, _ channel: Channel) -> Bool {
+    model.voice.isActive(channelID: channel.id) || !voiceOccupants(model, channelID: channel.id).isEmpty
+}
+
 /// Web's voiceAction for one channel: join, switch, or a join under way. Rows
-/// show it as a headphones shortcut; Live now's room cards and the phone strip
+/// show it as a headphones shortcut; live rooms' cards and the phone strip
 /// label it.
 @MainActor private struct ChannelVoiceAction {
     let model: AppModel
@@ -1871,7 +1937,7 @@ private struct CallPerson: Identifiable {
     return voice.phase == .joining ? shared ?? voice.sessionStartedAt : voice.sessionStartedAt
 }
 
-/// Another occupied room in Live now.
+/// Another occupied room: a channel row's card, or a visited channel's.
 private struct LiveRoom: Identifiable {
     let channel: Channel
     let people: [VoiceSpectator]
@@ -1881,185 +1947,138 @@ private struct LiveRoom: Identifiable {
     var id: String { channel.id }
 }
 
-/// Design H's "Live now", at the top of the channel list: your call first (from
-/// any space), then the viewed space's other occupied rooms, busiest first and
-/// two at a time. Absent while you are in no call and nobody is in voice here.
+/// Voice with no row in the channel list, above the Channels heading and with
+/// no heading of its own: your call while its channel isn't a row here (another
+/// space's, or a feedback visit's), and a visited channel's live room. They
+/// stay while you browse DMs or a space without channels. Live rows of the
+/// listed space grow into their cards in place instead.
 private struct LiveNowSection: View {
     @Bindable var model: AppModel
     let narrow: Bool
-    @State private var showsAllRooms = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// The space's joined channels with people in voice, except your call's, and
-    /// a visited channel (a feedback visit) open beside them.
-    private var rooms: [LiveRoom] {
-        var rooms: [LiveRoom] = []
-        for channel in model.detail?.channels.filter(\.joined) ?? [] where !model.voice.isActive(channelID: channel.id) {
-            let people = model.voiceRoster(for: channel.id)
-            if !people.isEmpty {
-                rooms.append(LiveRoom(channel: channel, people: people, startedAt: model.voicePresence.sessionStartedAt(for: channel.id)))
-            }
-        }
-        if let channel = model.visitChannel, model.isVisitVoice(channel), !model.voice.isActive(channelID: channel.id) {
-            let people = model.voiceRoster(for: channel.id)
-            if !people.isEmpty {
-                rooms.append(LiveRoom(channel: channel, people: people,
-                                      startedAt: model.visitVoicePresence.sessionStartedAt(for: channel.id),
-                                      spaceName: model.visit?.spaceName))
-            }
-        }
-        return LiveNow.busiestFirst(rooms, count: { $0.people.count }, name: { $0.channel.name })
+    /// Your call, while its channel has no row in this list.
+    private var call: VoiceContext? {
+        guard inVoiceCall(model.voice), let context = model.voice.context else { return nil }
+        let rows = model.detail?.channels.filter(\.joined).map(\.id) ?? []
+        return LiveNow.hasRow(context.channelID, rows: rows) ? nil : context
+    }
+
+    /// A visited channel (a feedback visit) with people in voice, while you are not in its call.
+    private var visitRoom: LiveRoom? {
+        guard let channel = model.visitChannel, model.isVisitVoice(channel), !model.voice.isActive(channelID: channel.id) else { return nil }
+        let people = model.voiceRoster(for: channel.id)
+        guard !people.isEmpty else { return nil }
+        return LiveRoom(channel: channel, people: people,
+                        startedAt: model.visitVoicePresence.sessionStartedAt(for: channel.id),
+                        spaceName: model.visit?.spaceName)
     }
 
     var body: some View {
-        let rooms = self.rooms
-        let call: VoiceContext? = inVoiceCall(model.voice) ? model.voice.context : nil
-        if call != nil || !rooms.isEmpty {
-            let folds = rooms.count > LiveNow.shownRooms
-            let shown = folds && !showsAllRooms ? Array(rooms.prefix(LiveNow.shownRooms)) : rooms
+        let call = self.call
+        let room = visitRoom
+        if call != nil || room != nil {
             VStack(alignment: .leading, spacing: 8) {
-                heading(live: rooms.count + (call == nil ? 0 : 1))
                 if let call {
-                    VoiceCallCard(model: model, context: call, narrow: narrow).modifier(Entrance.anchored)
+                    // Its chat opens in its own space; the call stays put.
+                    VoiceCallCard(model: model, context: call, narrow: narrow, row: false,
+                                  openChat: { Task { await model.openVoiceContext() } }) {
+                        CallHeading(model: model, context: call)
+                    }
                 }
-                ForEach(shown) { room in
-                    LiveRoomCard(model: model, room: room).modifier(Entrance.anchored)
+                if let room {
+                    // A visited channel's chat is already open beside Browse.
+                    LiveRoomCard(model: model, room: room, row: false, openChat: { model.navigationOpen = false }) {
+                        visitHeading(room)
+                    }
+                    // Its Join needs the channel's availability.
+                    .task(id: room.id) { await model.refreshVoiceAvailability(channel: room.channel) }
                 }
-                if folds { fold(Array(rooms.dropFirst(LiveNow.shownRooms))) }
             }
             .padding(.top, 10).padding(.bottom, 2)
+            // Nothing visible names it; assistive technology keeps the landmark.
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Live now")
             .accessibilityIdentifier("live-now")
-            .onChange(of: model.detail?.space.id) { _, _ in showsAllRooms = false }
         }
     }
 
-    private func heading(live: Int) -> some View {
+    /// A visited room's heading: its name and space, then its session time.
+    private func visitHeading(_ room: LiveRoom) -> some View {
         HStack(spacing: 6) {
-            CaperIcon(name: "audio-lines", size: 14).foregroundStyle(CaperTheme.voiceSessionGreen)
-            Text("Live now").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.text)
-            Spacer(minLength: 8)
-            if live >= 2 {
-                Text("\(live) rooms").font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted)
-            }
-        }
-        .frame(minHeight: 20)
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
-        .accessibilityIdentifier("live-now-heading")
-    }
-
-    /// Rooms past the first two fold into one row; opened, it reads "Show less".
-    private func fold(_ hidden: [LiveRoom]) -> some View {
-        let names = hidden.map { "#\($0.channel.name)" }.joined(separator: ", ")
-        return Button { if !SwipeTapGuard.swiping { showsAllRooms.toggle() } } label: {
-            HStack(spacing: 6) {
-                CaperIcon(name: "chevron-right", size: 12)
-                    .rotationEffect(.degrees(showsAllRooms ? 90 : 0))
-                    .animation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.fast), value: showsAllRooms)
-                if showsAllRooms {
-                    Text("Show less").foregroundStyle(CaperTheme.text)
-                } else {
-                    Text("\(hidden.count) more live").foregroundStyle(CaperTheme.text).fixedSize()
-                    Text(names).lineLimit(1).truncationMode(.tail)
+            Button { if !SwipeTapGuard.swiping { model.navigationOpen = false } } label: {
+                HStack(spacing: 5) {
+                    CaperIcon(name: room.channel.private ? "lock" : "hash", size: 14).foregroundStyle(CaperTheme.muted)
+                    Text(room.channel.name).font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text).lineLimit(1)
+                    if let space = room.spaceName {
+                        Text(space).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                            .layoutPriority(-1)
+                    }
                 }
-                Spacer(minLength: 0)
+                #if os(iOS)
+                .frame(minHeight: 44)
+                #else
+                .frame(minHeight: 22)
+                #endif
+                .contentShape(Rectangle())
             }
-            .font(CaperTheme.font(12, weight: .medium)).foregroundStyle(CaperTheme.muted)
-            .padding(.horizontal, 6)
-            #if os(iOS)
-            .frame(minHeight: 44)
-            #else
-            .frame(minHeight: 28)
-            #endif
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain).modifier(ControlHover())
-        .accessibilityLabel(showsAllRooms ? "Show less" : "\(hidden.count) more live: \(names)")
-        .accessibilityValue(showsAllRooms ? "Expanded" : "Collapsed")
-        .accessibilityIdentifier("live-more")
-    }
-}
-
-/// One face or the "+N" tile in your call's card.
-private enum FaceTile: Identifiable {
-    case person(CallPerson)
-    case more([CallPerson])
-    var id: String {
-        switch self {
-        case .person(let person): return person.id
-        case .more: return "+more"
+            .buttonStyle(.plain).modifier(ControlHover())
+            .help("Open #\(room.channel.name)")
+            .accessibilityLabel("#\(room.channel.name)")
+            .accessibilityHint("Opens its chat")
+            .accessibilityIdentifier("live-room-channel-\(room.id)")
+            Spacer(minLength: 6)
+            if let startedAt = room.startedAt { VoiceTimer(startedAt: startedAt, size: 11).allowsHitTesting(false) }
         }
     }
 }
 
-/// Your call in Live now: where it is and for how long, everyone in it (two
-/// rows of faces at most), who is speaking, then Mute, Deafen and Leave. The
-/// faces open the full list, with another person's volume controls open.
-private struct VoiceCallCard: View {
+/// Connecting… or Reconnecting… while your call is not connected yet.
+@MainActor private func callPending(_ voice: VoiceClient) -> String? {
+    switch voice.phase {
+    case .joining: return "Connecting…"
+    case .reconnecting: return "Reconnecting…"
+    default: return nil
+    }
+}
+
+/// Your call's state: "You’re in · N" (counting you) in voice green, or
+/// Connecting… and Reconnecting… in amber. Not a control: a tap on it opens
+/// the chat like the rest of the card.
+private struct CallStatusText: View {
+    @Bindable var voice: VoiceClient
+    let count: Int
+    var body: some View {
+        let pending = callPending(voice)
+        Text(pending ?? "You’re in · \(count)").font(CaperTheme.font(12, weight: .bold))
+            .foregroundStyle(pending == nil ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
+            .lineLimit(1).fixedSize()
+            .allowsHitTesting(false)
+            .accessibilityIdentifier("voice-call-status")
+    }
+}
+
+/// The heading of a call with no row here: the waveform, its channel (which
+/// opens its chat, in its own space) and another space's name, the status and
+/// the time on one line when they fit; the status drops beneath the channel
+/// when they do not.
+private struct CallHeading: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
     let context: VoiceContext
-    let narrow: Bool
-    @State private var listShown = false
-    /// The person whose volume controls the list opens with.
-    @State private var expandedID: String?
-    /// How many faces fit across the card.
-    @State private var columns = 5
-    /// A 36-point face in a 44-point slot: room for its speaking ring, and a touch target.
-    private let faceSize: CGFloat = 36
-    private let facePitch: CGFloat = 44
 
-    init(model: AppModel, context: VoiceContext, narrow: Bool) {
-        self.model = model; voice = model.voice; self.context = context; self.narrow = narrow
+    init(model: AppModel, context: VoiceContext) {
+        self.model = model; voice = model.voice; self.context = context
     }
 
     /// The call is in another space than the one listed: its name follows, muted.
     private var otherSpace: Bool { context.spaceID != model.detail?.space.id }
 
-    var body: some View {
-        let people = callPeople(model)
-        let split = LiveNow.fold(people, slots: LiveNow.faceSlots(columns: columns))
-        VStack(alignment: .leading, spacing: 10) {
-            title(count: people.count)
-            faces(split.shown, folded: split.folded)
-            // Holds its line through pauses (blank then), so the channels below never jump.
-            if let speaker = people.first(where: \.speaking) {
-                (Text(speaker.name).font(CaperTheme.font(12, weight: .bold)) + Text(" is speaking"))
-                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                    .accessibilityIdentifier("voice-call-speaker")
-            } else if !people.isEmpty {
-                Text(" ").font(CaperTheme.font(12)).accessibilityHidden(true)
-            }
-            controls
-        }
-        .padding(12)
-        .background(LiveNowPalette.callFill, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(LiveNowPalette.callBorder))
-        .modifier(VoiceListPresentation(shown: $listShown, narrow: narrow) { sheet in
-            VoiceParticipantsList(model: model, channelName: context.channelName, expandedID: $expandedID, sheet: sheet) { listShown = false }
-        })
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Your call in #\(context.channelName)")
-        .accessibilityIdentifier("voice-call-card")
-    }
+    var body: some View { title }
 
-    private func callStatus(count: Int) -> (text: String, tone: Color) {
-        switch voice.phase {
-        case .joining: return ("Connecting…", LiveNowPalette.connecting)
-        case .reconnecting: return ("Reconnecting…", LiveNowPalette.connecting)
-        default: return ("You’re in · \(count)", CaperTheme.voiceSessionGreen)
-        }
-    }
-
-    /// The waveform, channel, status and time on one line when they fit; the
-    /// status drops beneath the channel when they do not.
-    private func title(count: Int) -> some View {
-        let status = callStatus(count: count)
-        let icon = CaperIcon(name: "audio-lines", size: 14).foregroundStyle(status.tone)
-        let state = Text(status.text).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(status.tone)
-            .lineLimit(1).fixedSize().accessibilityIdentifier("voice-call-status")
+    private var title: some View {
+        let icon = CaperIcon(name: "audio-lines", size: 14)
+            .foregroundStyle(callPending(voice) == nil ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
+        let state = CallStatusText(voice: voice, count: voice.participants.count)
         return ViewThatFits(in: .horizontal) {
             HStack(spacing: 6) { icon; channelButton; state; Spacer(minLength: 6); timer }
             VStack(alignment: .leading, spacing: 2) {
@@ -2070,10 +2089,9 @@ private struct VoiceCallCard: View {
     }
 
     @ViewBuilder private var timer: some View {
-        if let startedAt = callStartedAt(model) { VoiceTimer(startedAt: startedAt) }
+        if let startedAt = callStartedAt(model) { VoiceTimer(startedAt: startedAt).allowsHitTesting(false) }
     }
 
-    /// The call's channel opens its chat (in its own space); the call stays put.
     private var channelButton: some View {
         Button { if !SwipeTapGuard.swiping { Task { await model.openVoiceContext() } } } label: {
             HStack(spacing: 5) {
@@ -2095,6 +2113,115 @@ private struct VoiceCallCard: View {
         .accessibilityLabel(otherSpace ? "#\(context.channelName) in \(context.spaceName)" : "#\(context.channelName)")
         .accessibilityHint("Opens the call’s chat")
         .accessibilityIdentifier("voice-call-channel")
+    }
+}
+
+/// A live card's surface: its fill and border, where a tap or click on any
+/// part that is not a control opens the card's chat. Its text and faces let
+/// the tap through (or open the chat themselves); the row's button, its menu
+/// and quick join, Mute, Deafen, Leave and Join keep their own actions.
+private struct LiveCardSurface: ViewModifier {
+    let fill: Color
+    let border: Color
+    let open: () -> Void
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: 10).fill(fill)
+                    .onTapGesture { if !SwipeTapGuard.swiping { open() } }
+                    .modifier(ControlPointer())
+                    .accessibilityHidden(true)
+            }
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(border).allowsHitTesting(false))
+    }
+}
+
+/// A face (or the "+N" tile) in your call's card. A tap opens the call's chat,
+/// like the rest of the card. Holding it (touch), right-clicking it (macOS) or
+/// its accessibility action opens everyone in the call instead, and only that.
+private struct CallFaceActions: ViewModifier {
+    /// The accessibility action: Volume for another person, else Show everyone.
+    let action: String
+    let openChat: () -> Void
+    let openList: () -> Void
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            #if os(iOS)
+            // As on message rows: a hold opens the list, and its lift is no tap.
+            .onLongPressGesture(minimumDuration: 0.5) { if !SwipeTapGuard.swiping { openList() } }
+            #else
+            .onRightClick(enabled: true, perform: openList)
+            #endif
+            .gesture(TapGesture().onEnded { if !SwipeTapGuard.swiping { openChat() } })
+            .accessibilityAction(named: Text(action), openList)
+    }
+}
+
+/// One face or the "+N" tile in your call's card.
+private enum FaceTile: Identifiable {
+    case person(CallPerson)
+    case more([CallPerson])
+    var id: String {
+        switch self {
+        case .person(let person): return person.id
+        case .more: return "+more"
+        }
+    }
+}
+
+/// Your call's card: its heading (its channel's row in the list, or for a call
+/// with no row there its own heading), everyone in it (two rows of faces at
+/// most), then Mute, Deafen and Leave. A tap anywhere but a control opens the
+/// call's chat; holding or right-clicking a face opens the full list, with
+/// another person's volume controls open. Nothing in it changes with who speaks.
+private struct VoiceCallCard<Heading: View>: View {
+    @Bindable var model: AppModel
+    @Bindable var voice: VoiceClient
+    let context: VoiceContext
+    let narrow: Bool
+    /// The heading is the call's channel row, already listed: only the faces
+    /// and controls arrive beneath it.
+    let row: Bool
+    let openChat: () -> Void
+    let heading: Heading
+    @State private var listShown = false
+    /// The person whose volume controls the list opens with.
+    @State private var expandedID: String?
+    /// How many faces fit across the card.
+    @State private var columns = 5
+    /// A 36-point face in a 44-point slot: room for its speaking ring, and a touch target.
+    private let faceSize: CGFloat = 36
+    private let facePitch: CGFloat = 44
+
+    init(model: AppModel, context: VoiceContext, narrow: Bool, row: Bool, openChat: @escaping () -> Void,
+         @ViewBuilder heading: () -> Heading) {
+        self.model = model; voice = model.voice; self.context = context; self.narrow = narrow
+        self.row = row; self.openChat = openChat; self.heading = heading()
+    }
+
+    var body: some View {
+        let people = callPeople(model)
+        let split = LiveNow.fold(people, slots: LiveNow.faceSlots(columns: columns))
+        VStack(alignment: .leading, spacing: 0) {
+            // A row keeps its own inset and selection, just inside the border.
+            heading.padding([.horizontal, .top], row ? 3 : 12)
+            VStack(alignment: .leading, spacing: 10) {
+                faces(split.shown, folded: split.folded)
+                controls
+            }
+            .padding([.horizontal, .bottom], 12)
+            .padding(.top, row ? 6 : 10)
+            .modifier(Entrance.anchored(when: row))
+        }
+        .modifier(LiveCardSurface(fill: LiveNowPalette.callFill, border: LiveNowPalette.callBorder, open: openChat))
+        .modifier(Entrance.anchored(when: !row))
+        .modifier(VoiceListPresentation(shown: $listShown, narrow: narrow) { sheet in
+            VoiceParticipantsList(model: model, channelName: context.channelName, expandedID: $expandedID, sheet: sheet) { listShown = false }
+        })
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Your call in #\(context.channelName)")
+        .accessibilityIdentifier("voice-call-card")
     }
 
     /// Up to ten faces in at most two rows; more fold into a "+N" tile.
@@ -2122,35 +2249,33 @@ private struct VoiceCallCard: View {
     @ViewBuilder private func faceTile(_ tile: FaceTile) -> some View {
         switch tile {
         case .person(let person):
-            Button { if !SwipeTapGuard.swiping { openList(expanding: person.isSelf ? nil : person.id) } } label: {
-                VoiceFace(person: person, size: faceSize).frame(width: facePitch, height: facePitch).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).modifier(ControlHover())
-            .help(person.isSelf ? "\(person.name) (you)" : "\(person.name): volume")
-            .accessibilityLabel(person.name + (person.isSelf ? " (you)" : ""))
-            .accessibilityValue(VoiceFace.state(person))
-            .accessibilityHint(person.isSelf ? "Shows everyone in the call" : "Shows everyone in the call, with \(person.name)’s volume")
-            .accessibilityIdentifier("voice-face-\(person.id)")
-            #if os(macOS)
-            // As before, right-clicking someone opens their audio controls.
-            .onRightClick(enabled: !person.isSelf) { openList(expanding: person.id) }
-            #endif
+            VoiceFace(person: person, size: faceSize).frame(width: facePitch, height: facePitch)
+                #if os(macOS)
+                .help(person.isSelf ? "\(person.name) (you): right-click for everyone" : "\(person.name): right-click for volume")
+                #endif
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(person.name + (person.isSelf ? " (you)" : ""))
+                .accessibilityValue(VoiceFace.state(person))
+                .accessibilityIdentifier("voice-face-\(person.id)")
+                .modifier(CallFaceActions(action: person.isSelf ? "Show everyone" : "Volume", openChat: openChat) {
+                    openList(expanding: person.isSelf ? nil : person.id)
+                })
         case .more(let folded):
-            Button { if !SwipeTapGuard.swiping { openList(expanding: nil) } } label: {
-                Text("+\(folded.count)").font(CaperTheme.font(12, weight: .bold).monospacedDigit())
-                    .foregroundStyle(CaperTheme.text)
-                    .frame(width: faceSize, height: faceSize)
-                    .background(Circle().fill(CaperTheme.raised))
-                    .overlay(Circle().strokeBorder(CaperTheme.border))
-                    // Someone folded in here is speaking.
-                    .overlay { if folded.contains(where: \.speaking) { SpeakingRing(size: faceSize, rounded: false) } }
-                    .frame(width: facePitch, height: facePitch).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).modifier(ControlHover())
-            .help("Everyone in the call")
-            .accessibilityLabel("\(folded.count) more in the call")
-            .accessibilityHint("Shows everyone in the call")
-            .accessibilityIdentifier("voice-faces-more")
+            Text("+\(folded.count)").font(CaperTheme.font(12, weight: .bold).monospacedDigit())
+                .foregroundStyle(CaperTheme.text)
+                .frame(width: faceSize, height: faceSize)
+                .background(Circle().fill(CaperTheme.raised))
+                .overlay(Circle().strokeBorder(CaperTheme.border))
+                // Someone folded in here is speaking.
+                .overlay { if folded.contains(where: \.speaking) { SpeakingRing(size: faceSize, rounded: false) } }
+                .frame(width: facePitch, height: facePitch)
+                #if os(macOS)
+                .help("Right-click for everyone in the call")
+                #endif
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(folded.count) more in the call")
+                .accessibilityIdentifier("voice-faces-more")
+                .modifier(CallFaceActions(action: "Show everyone", openChat: openChat) { openList(expanding: nil) })
         }
     }
 
@@ -2485,55 +2610,40 @@ private struct VoiceParticipantsList: View {
     }
 }
 
-/// Another live room: its name (which opens its chat), session time, faces,
-/// names and one Join (or Switch) that never changes the chat being read. No
-/// speaking rings: there is no audio from rooms you are not in.
-private struct LiveRoomCard: View {
+/// Another live room's card: its heading (its channel's row in the list, or a
+/// visited channel's name and session time), then faces, names, (beneath a
+/// row) the session time, and one Join (or Switch) that never changes the chat
+/// being read. A tap anywhere but a control opens its chat. No speaking rings:
+/// there is no audio from rooms you are not in.
+private struct LiveRoomCard<Heading: View>: View {
     @Bindable var model: AppModel
     let room: LiveRoom
+    /// The heading is the room's channel row, already listed: only its body
+    /// arrives beneath it, with the session time the row has no room for.
+    let row: Bool
+    let openChat: () -> Void
+    let heading: Heading
+
+    init(model: AppModel, room: LiveRoom, row: Bool, openChat: @escaping () -> Void, @ViewBuilder heading: () -> Heading) {
+        self.model = model; self.room = room; self.row = row; self.openChat = openChat; self.heading = heading()
+    }
 
     var body: some View {
         let action = ChannelVoiceAction(model: model, channel: room.channel)
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Button(action: SwipeTapGuard.unlessSwiping(openChat)) {
-                    HStack(spacing: 5) {
-                        CaperIcon(name: room.channel.private ? "lock" : "hash", size: 14).foregroundStyle(CaperTheme.muted)
-                        Text(room.channel.name).font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text).lineLimit(1)
-                        if let space = room.spaceName {
-                            Text(space).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                                .layoutPriority(-1)
-                        }
-                    }
-                    #if os(iOS)
-                    .frame(minHeight: 44)
-                    #else
-                    .frame(minHeight: 22)
-                    #endif
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                // Like its channel row, the pointer prepares the chat it opens.
-                .modifier(NavigationPrefetchModifier {
-                    if !model.isVisitVoice(room.channel), let space = model.detail?.space {
-                        model.prefetch(space: space, channelID: room.channel.id)
-                    }
-                })
-                .help("Open #\(room.channel.name)")
-                .accessibilityLabel("#\(room.channel.name)")
-                .accessibilityHint("Opens its chat")
-                .accessibilityIdentifier("live-room-channel-\(room.id)")
-                Spacer(minLength: 6)
-                if let startedAt = room.startedAt { VoiceTimer(startedAt: startedAt, size: 11) }
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            // A row keeps its own inset and selection, just inside the border.
+            heading.padding([.horizontal, .top], row ? 3 : 10)
             HStack(spacing: 8) {
                 RoomFaces(people: room.people, limit: 3)
+                // The names truncate first; the time and Join keep their size.
                 Text(LiveNow.names(room.people.map(\.name)))
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     .lineLimit(1).truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .layoutPriority(-1)
+                    .allowsHitTesting(false)
                     .accessibilityIdentifier("live-room-names-\(room.id)")
+                if row, let startedAt = room.startedAt { VoiceTimer(startedAt: startedAt, size: 11).allowsHitTesting(false) }
                 Button(action.title, action: SwipeTapGuard.unlessSwiping(action.join))
                     .buttonStyle(LiveJoinButtonStyle(primary: !action.switches, busy: action.busy) { model.prepareVoiceJoin(channel: room.channel) })
                     .disabled(!action.enabled)
@@ -2542,25 +2652,20 @@ private struct LiveRoomCard: View {
                     .accessibilityIdentifier("live-join-\(room.id)")
                     .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: room.channel) })
             }
+            .padding([.horizontal, .bottom], 10)
+            .padding(.top, row ? 2 : 6)
+            .modifier(Entrance.anchored(when: row))
         }
-        .padding(10)
-        .background(LiveNowPalette.roomFill, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(LiveNowPalette.roomBorder))
+        .modifier(LiveCardSurface(fill: LiveNowPalette.roomFill, border: LiveNowPalette.roomBorder, open: openChat))
+        .modifier(Entrance.anchored(when: !row))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("#\(room.channel.name), \(room.people.count) in voice")
         .accessibilityIdentifier("live-room-\(room.id)")
-        // Its Join needs the channel's availability, also while the channel list is collapsed.
-        .task(id: room.id) { await model.refreshVoiceAvailability(channel: room.channel) }
-    }
-
-    /// Opens the room's chat. A visited channel's is already open beside Browse.
-    private func openChat() {
-        if model.isVisitVoice(room.channel) { model.navigationOpen = false }
-        else { Task { await model.select(channel: room.channel) } }
     }
 }
 
 /// Up to `limit` overlapping faces of a room you are not in, then a "+N" chip.
+/// Not a control: a tap on them goes to the card or strip beneath.
 private struct RoomFaces: View {
     let people: [VoiceSpectator]
     let limit: Int
@@ -2572,20 +2677,27 @@ private struct RoomFaces: View {
                     Avatar(name: person.name, size: size, avatarID: person.avatarId, picture: person.avatarPicture)
                 }
             }
-            if people.count > limit {
-                Text("+\(people.count - limit)").font(CaperTheme.font(10, weight: .bold).monospacedDigit())
-                    .foregroundStyle(CaperTheme.text)
-                    .padding(.horizontal, 6).frame(height: 20)
-                    .background(Capsule().fill(CaperTheme.raised))
-                    .overlay(Capsule().strokeBorder(CaperTheme.border))
-            }
+            if people.count > limit { MoreChip(count: people.count - limit) }
         }
         .fixedSize()
+        .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 }
 
-/// Live now's Join (eggshell fill, blackout label) and Switch (neutral surface).
+/// The "+N" chip after a short stack of faces.
+private struct MoreChip: View {
+    let count: Int
+    var body: some View {
+        Text("+\(count)").font(CaperTheme.font(10, weight: .bold).monospacedDigit())
+            .foregroundStyle(CaperTheme.text)
+            .padding(.horizontal, 6).frame(height: 20)
+            .background(Capsule().fill(CaperTheme.raised))
+            .overlay(Capsule().strokeBorder(CaperTheme.border))
+    }
+}
+
+/// A live room's Join (eggshell fill, blackout label) and Switch (neutral surface).
 /// Joining…/Leaving… keep their fill while disabled; an unavailable one steps
 /// back to neutral chrome, with its tooltip. Touch prepares the join on press.
 private struct LiveJoinButtonStyle: ButtonStyle {
@@ -2632,9 +2744,12 @@ private struct LiveJoinLabel: View {
 }
 
 /// Phones (narrow layouts): a slim strip directly under the chat header. In a
-/// call it shows the call's channel, two faces, who is speaking, the time and
-/// Mute; the rest opens Browse, where the call's card is. Otherwise a channel
-/// with people in voice offers Join, which never changes the chat being read.
+/// call it shows the call's channel, the card's people in the card's order (up
+/// to five faces, else four and "+N"), Connecting… or Reconnecting… until
+/// connected, the time and Mute; the rest opens Browse, where the call's card
+/// is. No name comes and goes with who speaks: their face's ring shows it.
+/// Otherwise a channel with people in voice offers Join, which never changes
+/// the chat being read.
 private struct PhoneVoiceStrip: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
@@ -2667,21 +2782,26 @@ private struct PhoneVoiceStrip: View {
 
     private func callStrip(_ context: VoiceContext) -> some View {
         let people = callPeople(model)
-        let speaker = people.first(where: \.speaking)
+        let faces = LiveNow.stripFold(people)
+        let pending = callPending(voice)
         let startedAt = callStartedAt(model)
         return HStack(spacing: 6) {
             Button(action: SwipeTapGuard.unlessSwiping(browse)) {
                 HStack(spacing: 8) {
                     CaperIcon(name: "audio-lines", size: 16)
-                        .foregroundStyle(voice.phase == .connected ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
+                        .foregroundStyle(pending == nil ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
                     Text("#\(context.channelName)").font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text)
                         .lineLimit(1)
-                    HStack(spacing: 8) {
-                        ForEach(people.prefix(2)) { VoiceFace(person: $0, size: 24, badges: false) }
+                    HStack(spacing: 4) {
+                        HStack(spacing: -6) {
+                            ForEach(faces.shown) { VoiceFace(person: $0, size: 24, badges: false) }
+                        }
+                        if !faces.folded.isEmpty { MoreChip(count: faces.folded.count) }
                     }
-                    if let speaker {
-                        Text(speaker.name).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                            .layoutPriority(-1)
+                    .fixedSize()
+                    if let pending {
+                        Text(pending).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(LiveNowPalette.connecting)
+                            .lineLimit(1).fixedSize()
                     }
                     Spacer(minLength: 4)
                     if let startedAt { VoiceTimer(startedAt: startedAt) }
@@ -2691,7 +2811,7 @@ private struct PhoneVoiceStrip: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Voice in #\(context.channelName)")
-            .accessibilityValue(speaker.map { "\($0.name) is speaking" } ?? LiveNow.people(people.count))
+            .accessibilityValue([pending, LiveNow.people(people.count)].compactMap { $0 }.joined(separator: ", "))
             .accessibilityHint("Opens Browse, where your call is")
             .accessibilityIdentifier("voice-strip-open")
             CallMuteButton(voice: voice, identifier: "voice-strip-mute")
@@ -3002,7 +3122,7 @@ private struct AccountBar: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            // Your call lives in Live now, above the channels; its errors stay here.
+            // Your call lives in its channel's card in the list; its errors stay here.
             if let error = voice.error {
                 HStack(alignment: .top, spacing: 8) {
                     // At least the dismiss button's height, so one line sits centred on its X.
@@ -3642,8 +3762,8 @@ private struct ChatView: View {
                         .lineLimit(1).fixedSize()
                         .accessibilityIdentifier("chat-connection-status")
                 }
-                // Voice is not in the header: Live now holds your call and the
-                // rooms to join, and phones add a strip beneath the header.
+                // Voice is not in the header: the channel list's live cards hold
+                // your call and the rooms to join, and phones add a strip beneath it.
                 if !narrow {
                     Button { showingPins = true } label: { CaperIcon(name: "pin", size: 20) }
                         .buttonStyle(SidebarIconButton()).help("Pins").accessibilityLabel("Pins")

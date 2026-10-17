@@ -1261,22 +1261,28 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(directHeading.frame.minY - lastChannel.frame.maxY, 28,
                                     "The DM divider needs breathing room below the last channel's highlight")
         XCTAssertFalse(app.descendants(matching: .any)["voice-count-chan00000001"].exists, "Empty channels show no voice count")
-        // A live row ends with a green waveform and its count, on its own line, with no roster beneath it.
+        // A live row keeps its line, ending with a green waveform and its count,
+        // and grows into a card in place, with who is in it and Join beneath.
         let designCount = app.descendants(matching: .any)["voice-count-chan00000002"]
         XCTAssertTrue(designCount.waitForExistence(timeout: 10), "The fixture's design-channel occupants are counted on its row")
         XCTAssertEqual(designCount.label, "2 in voice")
         XCTAssertEqual(designCount.frame.midY, design.frame.midY, accuracy: 2, "The count sits on the channel's own line")
         XCTAssertFalse(app.buttons["voice-stack-chan00000002"].exists, "Rows no longer expand a voice roster")
-        XCTAssertLessThanOrEqual(design.frame.minY - general.frame.maxY, 4, "An empty channel is a single line, with no voice action beneath it")
-        XCTAssertEqual(design.frame.height, general.frame.height, accuracy: 0.5, "A live channel is a single line too")
+        let designCard = app.descendants(matching: .any)["live-room-chan00000002"]
+        XCTAssertTrue(designCard.exists, "The live row grows into its room card")
+        XCTAssertTrue(designCard.frame.contains(design.frame), "The row is its card's first line")
+        XCTAssertLessThanOrEqual(design.frame.minY - general.frame.maxY, 10,
+                                 "An empty channel is a single line, with no voice action beneath it; the card's row sits just inside its border")
+        XCTAssertEqual(design.frame.height, general.frame.height, accuracy: 0.5, "A live channel's line keeps the row's height")
+        XCTAssertGreaterThan(lastChannel.frame.minY, designCard.frame.maxY, "The card keeps its row's place in the list")
         #if os(iOS)
-        // Touch shows the one-click join on quiet rows; a live row's card in Live now has Join.
+        // Touch shows the one-click join on quiet rows; a live row's card has Join.
         XCTAssertTrue(generalVoice.exists, "Touch shows a quiet row's join without hover")
         XCTAssertEqual(generalVoice.label, "Join voice in #general")
         XCTAssertGreaterThanOrEqual(generalVoice.frame.width, 44)
         XCTAssertGreaterThanOrEqual(generalVoice.frame.height, 44)
         XCTAssertEqual(generalVoice.frame.midY, general.frame.midY, accuracy: 1, "The join sits on the channel's own line")
-        XCTAssertFalse(designVoice.exists, "Touch hides a live row's join: its Live now card has Join")
+        XCTAssertFalse(designVoice.exists, "Touch hides a live row's join: its card has Join")
         XCTAssertGreaterThanOrEqual(general.frame.height, 44)
         XCTAssertGreaterThanOrEqual(design.frame.height, 44)
         #else
@@ -1305,10 +1311,9 @@ final class CaperParityUITests: XCTestCase {
         let voiceFrame = generalVoice.frame
         #endif
         let optionsFrame = app.descendants(matching: .any)["channel-options-chan00000001"].frame
-        // The occupied room's card sits in Live now, above the channels.
-        XCTAssertTrue(app.descendants(matching: .any)["live-now"].exists, "Occupied rooms appear in Live now")
-        XCTAssertLessThan(app.descendants(matching: .any)["live-room-chan00000002"].frame.maxY, general.frame.minY,
-                          "Live now sits above the Channels list")
+        // The occupied room is in its own row's card: nothing sits above the channels.
+        XCTAssertFalse(app.descendants(matching: .any)["live-now"].exists, "Every live room here has a row: no cards above the channels")
+        XCTAssertGreaterThan(designCard.frame.minY, general.frame.maxY, "The room's card follows #general, in list order")
         #if os(macOS)
         design.hover()
         general.hover()
@@ -1450,18 +1455,33 @@ final class CaperParityUITests: XCTestCase {
         #endif
     }
 
-    func testLiveNowRoomCardAndVoiceTargetDoesNotChangeChat() async throws {
+    /// Waits for the open conversation, by the header's channel name. Phones
+    /// show it once Browse has closed.
+    private func assertOpenChannel(_ name: String, in app: XCUIApplication, _ message: String,
+                                   file: StaticString = #filePath, line: UInt = #line) {
+        let header = app.descendants(matching: .any)["selected-channel-name"]
+        let open = NSPredicate(format: "label == %@ OR value == %@", "# \(name)", "# \(name)")
+        let opened = XCTNSPredicateExpectation(predicate: open, object: header)
+        XCTAssertEqual(XCTWaiter.wait(for: [opened], timeout: 5), .completed, message, file: file, line: line)
+    }
+
+    func testLiveRoomCardGrowsInItsRowAndVoiceTargetDoesNotChangeChat() async throws {
         let app = launch()
         assertStaticText("TEST FIXTURE — local sample data, not a live conversation.", in: app)
         #if os(iOS)
         app.buttons["Back to Browse"].tap()
         #endif
-        // Live now lists the occupied room above the channels, without joining.
+        // The occupied room's own row grows into its card, in place, without joining.
         let room = app.descendants(matching: .any)["live-room-chan00000002"]
         XCTAssertTrue(room.waitForExistence(timeout: 10), "The fixture's design-channel occupants must be visible without joining")
-        assertElement("live-now-heading", label: "Live now", in: app)
+        XCTAssertTrue(room.frame.contains(app.buttons["channel-chan00000002"].frame), "#design's row is its card's first line")
+        XCTAssertGreaterThan(room.frame.minY, app.buttons["channel-chan00000001"].frame.maxY, "The card keeps list order, after #general")
+        // No heading, room count or fold: nothing above the channels says Live now.
+        XCTAssertFalse(app.descendants(matching: .any)["live-now"].exists, "A live room with a row has no card above the channels")
+        XCTAssertFalse(app.descendants(matching: .any)["live-now-heading"].exists, "No Live now heading")
+        XCTAssertEqual(staticTexts("Live now", in: app).count, 0, "Nothing visible says Live now")
         XCTAssertFalse(app.descendants(matching: .any)["voice-call-card"].exists, "Not in a call: no call card")
-        XCTAssertFalse(app.descendants(matching: .any)["live-more"].exists, "One room needs no fold")
+        XCTAssertFalse(app.descendants(matching: .any)["live-more"].exists, "No fold")
         // One line of names, which truncates rather than wraps.
         assertElement("live-room-names-chan00000002", label: "TEST FIXTURE Maya and TEST FIXTURE Alex", in: app)
         let join = app.buttons["live-join-chan00000002"]
@@ -1485,14 +1505,14 @@ final class CaperParityUITests: XCTestCase {
         // The shortcut is transparent (absent from accessibility) until SwiftUI applies the hover.
         XCTAssertTrue(app.buttons["join-voice-chan00000002"].waitForExistence(timeout: 3), "Hover reveals the occupied channel's join shortcut")
         #else
-        XCTAssertFalse(app.buttons["join-voice-chan00000002"].exists, "Touch hides a live row's join: its Live now card has Join")
+        XCTAssertFalse(app.buttons["join-voice-chan00000002"].exists, "Touch hides a live row's join: its card has Join")
         #endif
         #if os(iOS)
         XCTAssertEqual(selected.value as? String, "Selected", "Showing who is in voice must not navigate text chat")
         #else
         XCTAssertEqual(selected.value as? String, "# general", "Showing who is in voice must not navigate text chat")
         #endif
-        capture("live-now-room", app: app)
+        capture("live-room-card", app: app)
 
         var control = URLRequest(url: URL(string: "http://127.0.0.1:3001/__fixture/control")!)
         control.httpMethod = "POST"
@@ -1504,7 +1524,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed,
                        "Revoked private-channel occupancy must disappear without altering selected chat")
         XCTAssertFalse(count.exists, "The row's count leaves with the occupancy")
-        XCTAssertFalse(app.descendants(matching: .any)["live-now"].exists, "Nobody live and no call: Live now is absent")
+        XCTAssertTrue(app.buttons["channel-chan00000002"].exists, "The quiet row stays, without its card")
+        XCTAssertFalse(app.descendants(matching: .any)["live-now"].exists, "Nobody live and no call: nothing above the channels")
         #if os(macOS)
         app.buttons["channel-chan00000002"].hover()
         let deniedAction = app.buttons["join-voice-chan00000002"]
@@ -1523,7 +1544,34 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual((restored as? HTTPURLResponse)?.statusCode, 200)
     }
 
-    func testLiveNowCallCardParticipantListAndPhoneStripFixture() {
+    /// A tap anywhere on a live room's card but its controls opens the room's
+    /// chat, like its row; its faces and names are not separate targets.
+    func testLiveRoomCardTapOpensItsChat() throws {
+        let app = launch()
+        assertOpenChannel("general", in: app, "The fixture opens #general")
+        #if os(iOS)
+        app.buttons["Back to Browse"].tap()
+        #endif
+        let names = try require(app.descendants(matching: .any)["live-room-names-chan00000002"], timeout: 10, "#design's card lists who is in it")
+        // The names let taps through to the card, so tap where they are drawn.
+        #if os(iOS)
+        names.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        #else
+        names.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        #endif
+        assertOpenChannel("design", in: app, "A tap on the card's names opens #design, without joining")
+        XCTAssertFalse(app.descendants(matching: .any)["voice-call-card"].exists, "Opening the chat does not join its voice")
+    }
+
+    #if os(iOS)
+    /// Touch holds a face to open the full list.
+    private func openList(from face: XCUIElement) { face.press(forDuration: 0.8) }
+    #else
+    /// A pointer right-clicks a face to open the full list.
+    private func openList(from face: XCUIElement) { face.rightClick() }
+    #endif
+
+    func testCallCardGrowsInItsRowWithListAndPhoneStripFixture() {
         let app = launch(fixture: "voice-roster")
         assertElement("selected-channel-name", label: "# general", in: app)
         // Voice is not in the conversation header on any layout.
@@ -1542,6 +1590,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(staticTexts("Leave", in: app).count, 0, "The strip has no Leave; the call's card does")
         let open = app.buttons["voice-strip-open"]
         XCTAssertEqual(open.label, "Voice in #general")
+        XCTAssertEqual(open.value as? String, "2 people", "The strip counts the call and names no speaker")
         let stripMute = app.buttons["voice-strip-mute"]
         XCTAssertTrue(stripMute.exists)
         XCTAssertGreaterThanOrEqual(stripMute.frame.width, 44)
@@ -1558,29 +1607,34 @@ final class CaperParityUITests: XCTestCase {
         open.tap()
         XCTAssertTrue(app.buttons["Close navigation"].waitForExistence(timeout: 5), "The strip opens Browse")
         #endif
+        // Your call's own row grows into its card, in place: nothing above the channels.
         let card = app.descendants(matching: .any)["voice-call-card"]
-        XCTAssertTrue(card.waitForExistence(timeout: 10), "Your call leads Live now")
-        let heading = app.descendants(matching: .any)["live-now-heading"]
-        let headingText = heading.label + " " + (heading.value as? String ?? "")
-        XCTAssertTrue(headingText.contains("Live now") && headingText.contains("2 rooms"), "Your call and #design: \(headingText)")
-        XCTAssertLessThan(card.frame.maxY, app.descendants(matching: .any)["live-room-chan00000002"].frame.minY, "Your call comes first")
-        XCTAssertLessThan(app.descendants(matching: .any)["live-room-chan00000002"].frame.maxY, app.buttons["channel-chan00000001"].frame.minY,
-                          "Live now sits above the channels")
-        // Row 1: the call's channel (which opens its chat) and "You’re in · N", counting you.
-        assertElement("voice-call-channel", label: "#general", in: app)
+        XCTAssertTrue(card.waitForExistence(timeout: 10), "Your call's row grows into its card")
+        let general = app.buttons["channel-chan00000001"]
+        let design = app.buttons["channel-chan00000002"]
+        XCTAssertTrue(card.frame.contains(general.frame), "#general's own row is the card's first line")
+        XCTAssertEqual(general.value as? String, "Selected", "The row keeps its selected style for the open chat")
+        let room = app.descendants(matching: .any)["live-room-chan00000002"]
+        XCTAssertLessThan(card.frame.maxY, room.frame.minY, "Live channels keep list order: #general, then #design")
+        XCTAssertGreaterThan(card.frame.minY, app.buttons["channels-toggle"].frame.maxY, "Your call sits among the channels")
+        XCTAssertFalse(app.descendants(matching: .any)["live-now"].exists, "Both live channels have rows: nothing above the channels")
+        XCTAssertEqual(staticTexts("Live now", in: app).count, 0, "Nothing visible says Live now")
+        XCTAssertFalse(app.descendants(matching: .any)["voice-call-channel"].exists, "The row, not a second heading, names the call")
+        // The row ends with "You’re in · N", counting you, instead of a count.
+        XCTAssertFalse(app.descendants(matching: .any)["voice-count-chan00000001"].exists, "Your call's row shows its status, not a count")
         assertElement("voice-call-status", label: "You’re in · 2", in: app)
-        // Row 2: you first, then join order; each face opens the full list.
-        let me = app.buttons["voice-face-fixture-self"]
-        let maya = app.buttons["voice-face-fixture-remote"]
+        // Faces: you first, then join order.
+        let me = app.descendants(matching: .any)["voice-face-fixture-self"]
+        let maya = app.descendants(matching: .any)["voice-face-fixture-remote"]
         XCTAssertTrue(me.exists)
         XCTAssertTrue(maya.exists)
         XCTAssertEqual(me.label, "Fixture Owner (you)", "Your face carries your saved display name (#527)")
         XCTAssertEqual(maya.label, "TEST FIXTURE Maya")
         XCTAssertEqual(maya.value as? String, "Muted", "A muted face says so")
         XCTAssertLessThan(me.frame.minX, maya.frame.minX, "You come first")
-        XCTAssertFalse(app.buttons["voice-faces-more"].exists, "Two people need no +N tile")
-        XCTAssertFalse(app.descendants(matching: .any)["voice-call-speaker"].exists, "Nobody is speaking in the fixture")
-        // Row 4: Mute, Deafen and Leave. The dock is gone, and the card and account bar share state.
+        XCTAssertFalse(app.descendants(matching: .any)["voice-faces-more"].exists, "Two people need no +N tile")
+        XCTAssertFalse(app.descendants(matching: .any)["voice-call-speaker"].exists, "No line says who is speaking")
+        // Mute, Deafen and Leave. The dock is gone, and the card and account bar share state.
         let leave = app.buttons["voice-call-leave"]
         XCTAssertEqual(leave.label, "Leave voice")
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Leave voice")).count, 1, "Leave lives only in the call card")
@@ -1596,12 +1650,26 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(cardMute.value as? String, "On")
         XCTAssertFalse(app.buttons["join-voice-chan00000001"].exists, "The connected channel's row has no join shortcut")
         let switchHere = app.buttons["live-join-chan00000002"]
-        XCTAssertTrue(switchHere.exists, "Other live rooms follow your call")
+        XCTAssertTrue(switchHere.exists, "Other live rooms keep their cards")
         XCTAssertEqual(switchHere.label, "Switch voice to #design", "In a call elsewhere, a room's action switches")
-        capture("live-now-call-card-test-fixture", app: app)
+        capture("call-card-in-row-test-fixture", app: app)
 
-        // Another person's face opens the full list with their volume controls open.
-        maya.tap()
+        // Read #design, then use the card: its controls keep their own actions.
+        design.tap()
+        assertOpenChannel("design", in: app, "#design's row opens its chat")
+        #if os(iOS)
+        app.buttons["Back to Browse"].tap()
+        #endif
+        XCTAssertTrue(cardMute.waitForExistence(timeout: 5))
+        cardMute.tap()
+        XCTAssertEqual(cardMute.value as? String, "Muted")
+        cardMute.tap()
+        XCTAssertEqual(cardMute.value as? String, "On")
+        XCTAssertEqual(design.value as? String, "Selected", "Mute does not open the call's chat")
+
+        // Holding (touch) or right-clicking another person's face opens the full
+        // list with their volume controls open, and does not open the chat.
+        openList(from: maya)
         let list = app.descendants(matching: .any)["voice-participants"]
         XCTAssertTrue(list.waitForExistence(timeout: 5))
         assertElement("voice-list-title", label: "In #general · 2 people", in: app)
@@ -1617,7 +1685,7 @@ final class CaperParityUITests: XCTestCase {
         let mute = app.switches["Mute for me"].switches.firstMatch
         #endif
         XCTAssertTrue(mute.exists)
-        capture("live-now-participant-list-test-fixture", app: app)
+        capture("call-participant-list-test-fixture", app: app)
         mute.tap()
         #if os(iOS)
         XCTAssertEqual(mute.value as? String, "1")
@@ -1626,8 +1694,9 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(localMute.waitForExistence(timeout: 3))
         assertStaticText("You muted TEST FIXTURE Maya", in: app)
         closeVoiceList(in: app)
+        XCTAssertEqual(design.value as? String, "Selected", "Opening the list does not open the call's chat")
         // Your own face opens the list with nobody's controls open; Audio opens them.
-        me.tap()
+        openList(from: me)
         XCTAssertTrue(list.waitForExistence(timeout: 5))
         XCTAssertFalse(app.sliders["TEST FIXTURE Maya volume"].exists, "Your own face opens no one's controls")
         let audio = app.buttons["participant-audio-fixture-remote"]
@@ -1640,6 +1709,87 @@ final class CaperParityUITests: XCTestCase {
         #endif
         XCTAssertFalse(localMute.waitForExistence(timeout: 1), "Local mute status disappears when remote playback is restored")
         closeVoiceList(in: app)
+        XCTAssertEqual(design.value as? String, "Selected")
+
+        // A tap on a face, like anywhere on the card but its controls, opens the call's chat.
+        maya.tap()
+        assertOpenChannel("general", in: app, "A tap on the card opens the call's chat")
+        XCTAssertFalse(list.exists, "A tap opens the chat, not the list")
+    }
+
+    /// Seven in the call with Alex speaking: the card shows everyone in join
+    /// order (the phone strip the same first four and "+3", by `LiveNow.stripFold`),
+    /// and speaking is a ring on a face, never a line of text.
+    func testCrowdedCallShowsEveryoneInOrderWithoutSpeakerText() throws {
+        let app = launch(fixture: "voice-crowd")
+        assertElement("selected-channel-name", label: "# general", in: app)
+        #if os(iOS)
+        let open = try require(app.buttons["voice-strip-open"], timeout: 10, "Phones show the call in a strip")
+        XCTAssertEqual(open.value as? String, "7 people", "The strip counts the call and names nobody while Alex speaks")
+        capture("voice-strip-crowd-test-fixture", app: app)
+        open.tap()
+        #endif
+        try require(app.descendants(matching: .any)["voice-call-card"], timeout: 10, "Your call's row grows into its card")
+        assertElement("voice-call-status", label: "You’re in · 7", in: app)
+        let order = ["fixture-self", "fixture-remote", "fixture-crowd-alex", "fixture-crowd-sam", "fixture-crowd-jo", "fixture-crowd-ri", "fixture-crowd-kai"]
+        let faces = order.map { app.descendants(matching: .any)["voice-face-\($0)"] }
+        for (id, face) in zip(order, faces) { XCTAssertTrue(face.exists, "Up to ten: the card shows everyone (\(id))") }
+        XCTAssertFalse(app.descendants(matching: .any)["voice-faces-more"].exists, "Seven need no +N tile")
+        for (earlier, later) in zip(faces, faces.dropFirst()) {
+            let sameRow = abs(earlier.frame.midY - later.frame.midY) < 2
+            XCTAssertTrue(sameRow ? earlier.frame.minX < later.frame.minX : earlier.frame.midY < later.frame.midY,
+                          "You first, then join order, across at most two rows")
+        }
+        XCTAssertEqual(faces[2].value as? String, "Speaking", "Alex's face carries the speaking ring")
+        XCTAssertEqual(faces[3].value as? String, "Deafened")
+        let speakerText = NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "is speaking", "is speaking")
+        XCTAssertEqual(app.staticTexts.matching(speakerText).count, 0, "No text says who is speaking")
+        XCTAssertFalse(app.descendants(matching: .any)["voice-call-speaker"].exists)
+        capture("call-card-crowd-test-fixture", app: app)
+    }
+
+    /// A call whose channel has no row in the listed space (here another
+    /// space's) keeps its card above the Channels heading, with no heading of
+    /// its own. Collapsing Channels hides only quiet rows.
+    func testCallWithoutARowSitsAboveTheChannelsAndCollapsingKeepsVoice() throws {
+        let app = launch(fixture: "voice-elsewhere")
+        assertElement("selected-channel-name", label: "# general", in: app)
+        #if os(iOS)
+        let open = try require(app.buttons["voice-strip-open"], timeout: 10, "Phones show the call in a strip")
+        XCTAssertEqual(open.label, "Voice in #lobby")
+        open.tap()
+        #endif
+        let card = try require(app.descendants(matching: .any)["voice-call-card"], timeout: 10, "The call keeps a card")
+        let channels = app.buttons["channels-toggle"]
+        XCTAssertTrue(app.descendants(matching: .any)["live-now"].exists, "Voice without a row sits above the channels")
+        XCTAssertEqual(staticTexts("Live now", in: app).count, 0, "Nothing visible says Live now")
+        XCTAssertLessThan(card.frame.maxY, channels.frame.minY, "Above the Channels heading")
+        assertElement("voice-call-channel", label: "#lobby in TEST FIXTURE Elsewhere", in: app)
+        assertElement("voice-call-status", label: "You’re in · 2", in: app)
+        XCTAssertTrue(app.descendants(matching: .any)["voice-face-fixture-remote"].exists, "The card keeps its faces")
+        XCTAssertTrue(app.buttons["voice-call-leave"].exists, "and its controls")
+        let general = app.buttons["channel-chan00000001"]
+        XCTAssertTrue(general.exists)
+        XCTAssertFalse(card.frame.intersects(general.frame), "#general, which is not the call's channel, stays a quiet row")
+        XCTAssertFalse(app.descendants(matching: .any)["voice-count-chan00000001"].exists)
+        let room = app.descendants(matching: .any)["live-room-chan00000002"]
+        XCTAssertTrue(room.exists, "#design's room keeps its card in its row")
+        XCTAssertEqual(app.buttons["live-join-chan00000002"].label, "Switch voice to #design")
+        capture("call-elsewhere-test-fixture", app: app)
+
+        // Collapsed, Channels hides its quiet rows only: voice stays listed.
+        channels.tap()
+        XCTAssertEqual(channels.value as? String, "Collapsed")
+        let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: general)
+        XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 3), .completed, "A quiet row hides")
+        XCTAssertFalse(app.buttons["channel-chan00000003"].exists, "Every quiet row hides")
+        XCTAssertTrue(app.buttons["channel-chan00000002"].exists, "A live room's row stays")
+        XCTAssertTrue(room.exists, "with its card")
+        XCTAssertTrue(card.exists, "Your call's card stays above the channels")
+        XCTAssertGreaterThan(room.frame.minY, channels.frame.maxY, "The live room stays under the Channels heading")
+        capture("channels-collapsed-live-test-fixture", app: app)
+        channels.tap()
+        XCTAssertTrue(general.waitForExistence(timeout: 3), "Expanding shows the quiet rows again")
     }
 
     #if os(macOS)
@@ -1806,7 +1956,7 @@ final class CaperParityUITests: XCTestCase {
         let toggle = app.buttons["Hide member list"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
         assertStaticText("Members", in: app)
-        // Wide headers: the name, then Pins and Members. Voice lives in the sidebar's Live now.
+        // Wide headers: the name, then Pins and Members. Voice lives in the sidebar's live cards.
         let name = app.descendants(matching: .any)["selected-channel-name"]
         let pins = app.buttons["channel-pins"]
         XCTAssertTrue(pins.waitForExistence(timeout: 5))
@@ -2722,12 +2872,12 @@ final class CaperParityUITests: XCTestCase {
     }
 
     /// Phones: an occupied channel you are not in offers Join in a strip under
-    /// its header, and Browse's Live now offers the same room.
+    /// its header, and the room's card in Browse offers the same room.
     func testPhoneStripOffersJoinInAnOccupiedChannel() throws {
         let app = launch()
         try require(app.buttons["Back to Browse"], timeout: 10, "Phones open a conversation first").tap()
-        // Live now in Browse: touch sizes, with the room's Join.
-        let roomJoin = try require(app.buttons["live-join-chan00000002"], timeout: 10, "The occupied room is in Live now")
+        // The room's card in Browse, in its row: touch sizes, with the room's Join.
+        let roomJoin = try require(app.buttons["live-join-chan00000002"], timeout: 10, "The occupied room's row has its card")
         XCTAssertGreaterThanOrEqual(roomJoin.frame.height, 44)
         XCTAssertEqual(roomJoin.label, "Join voice in #design")
         app.buttons["channel-chan00000002"].tap()
@@ -2760,7 +2910,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(title.label, "#general options")
         XCTAssertGreaterThan(title.frame.minX, navigation.frame.maxX - 1, "Back arrow leads the title menu")
         XCTAssertGreaterThanOrEqual(title.frame.height, 44)
-        // The phone header carries no voice: Browse's Live now and the strip beneath the header do.
+        // The phone header carries no voice: Browse's live cards and the strip beneath the header do.
         XCTAssertFalse(app.buttons["join-voice-button"].exists, "Phones do not join voice from the conversation header")
         XCTAssertFalse(app.buttons["header-mute"].exists, "The header has no microphone toggle")
         XCTAssertFalse(app.buttons["header-deafen"].exists, "The header has no deafen toggle")

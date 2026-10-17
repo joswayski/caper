@@ -1,7 +1,7 @@
 import XCTest
 @testable import CaperCore
 
-/// Design H's "Live now" rules, which the call card, room cards and phone strip share.
+/// Design H's voice rules, which the call card, room cards and phone strip share.
 final class LiveNowTests: XCTestCase {
     func testRoomNamesReadAsOneLine() {
         XCTAssertEqual(LiveNow.names([]), "")
@@ -48,11 +48,36 @@ final class LiveNowTests: XCTestCase {
         XCTAssertEqual(LiveNow.selfFirst(["maya", "alex"]) { $0 == "me" }, ["maya", "alex"], "Not yet in the roster: join order")
     }
 
-    func testOtherRoomsBusiestFirstThenByName() {
-        let rooms = [("random", 2), ("planning", 2), ("design", 5), ("Lobby", 1), ("art", 2)]
-        let ordered = LiveNow.busiestFirst(rooms, count: { $0.1 }, name: { $0.0 }).map(\.0)
-        XCTAssertEqual(ordered, ["design", "art", "planning", "random", "Lobby"])
-        let ties = [("general", 1, "a"), ("general", 1, "b")]
-        XCTAssertEqual(LiveNow.busiestFirst(ties, count: { $0.1 }, name: { $0.0 }).map(\.2), ["a", "b"], "Equal rooms keep their order")
+    func testStripShowsTheCardsFacesUpToFiveThenFourAndAChip() {
+        let card = LiveNow.faceSlots(columns: 5)
+        for count in 1...5 {
+            let people = LiveNow.selfFirst(Array(1...count)) { $0 == count }
+            XCTAssertEqual(LiveNow.stripFold(people).shown, LiveNow.fold(people, slots: card).shown,
+                           "Up to five: the strip shows exactly the card's faces, in its order (\(count))")
+            XCTAssertEqual(LiveNow.stripFold(people).folded, [], "Up to five: no chip (\(count))")
+        }
+        for count in 6...14 {
+            let people = LiveNow.selfFirst(Array(1...count)) { $0 == count }
+            let strip = LiveNow.stripFold(people)
+            XCTAssertEqual(strip.shown, Array(people.prefix(4)), "More than five: the card's first four (\(count))")
+            XCTAssertEqual(strip.folded.count, count - 4, "The chip holds the rest (total − 4)")
+            XCTAssertEqual(strip.shown, Array(LiveNow.fold(people, slots: card).shown.prefix(4)), "Same people and order as the card")
+        }
+        XCTAssertEqual(LiveNow.stripFold(LiveNow.selfFirst([1, 2, 7]) { $0 == 7 }).shown, [7, 1, 2], "You lead the strip, as on the card")
+    }
+
+    func testCollapsedChannelsKeepTheirLiveRows() {
+        let rows = [("general", false), ("design", true), ("planning", false), ("random", true)]
+        XCTAssertEqual(LiveNow.listed(rows, expanded: true) { $0.1 }.map(\.0), ["general", "design", "planning", "random"])
+        XCTAssertEqual(LiveNow.listed(rows, expanded: false) { $0.1 }.map(\.0), ["design", "random"],
+                       "Collapsed: only quiet rows hide; live ones stay in list order")
+        XCTAssertEqual(LiveNow.listed(rows.filter { !$0.1 }, expanded: false) { $0.1 }.count, 0)
+    }
+
+    func testACallWithoutARowSitsAboveTheChannels() {
+        let rows = ["general", "design"]
+        XCTAssertTrue(LiveNow.hasRow("design", rows: rows), "A call in a listed channel grows in its row")
+        XCTAssertFalse(LiveNow.hasRow("lobby", rows: rows), "Another space's (or a visit's) call keeps its card above the channels")
+        XCTAssertFalse(LiveNow.hasRow("general", rows: []), "A space without joined channels lists no rows")
     }
 }
