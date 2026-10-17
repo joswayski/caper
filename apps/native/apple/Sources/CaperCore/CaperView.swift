@@ -5458,12 +5458,13 @@ private struct MentionCardView: View {
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             }
             if !draft.files.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
+                StagedFileLayout() {
                     ForEach(draft.files) { file in
                         StagedFileChip(id: file.id, name: file.local.name,
                                        kind: AttachmentKind.local(contentType: file.local.contentType),
                                        localURL: file.local.url,
                                        status: AttachmentPolicy.formatBytes(file.local.size),
+                                       busyLabel: draft.sending ? "Sending…" : nil,
                                        removable: draft.editable,
                                        preview: { draft.presentingDialog = true; previewFile = file.local.url },
                                        remove: { draft.remove(id: file.id) })

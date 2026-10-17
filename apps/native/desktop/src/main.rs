@@ -16788,7 +16788,7 @@ impl CaperApp {
         response.clicked()
     }
 
-    /// File chips above the composer: name, size saving, progress, remove.
+    /// Compact square previews wrap at the composer's available edge.
     fn draft_chips(&mut self, ui: &mut egui::Ui, root: Option<&str>) {
         let mut remove = None;
         let mut preview = None;
@@ -16796,6 +16796,7 @@ impl CaperApp {
         let channel = self.selected_channel.clone();
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            let width = draft_tile_width(ui.available_width());
             for draft in self.draft_files.iter_mut().filter(|file| {
                 Some(&file.channel) == channel.as_ref() && file.thread_root_id.as_deref() == root
             }) {
@@ -16806,13 +16807,10 @@ impl CaperApp {
                 );
                 let from = motion::mark(ui);
                 let (rect, chip) =
-                    ui.allocate_exact_size(egui::vec2(236.0, 48.0), egui::Sense::hover());
+                    ui.allocate_exact_size(egui::vec2(width, width), egui::Sense::hover());
                 let painter = ui.painter_at(rect);
                 painter.rect_filled(rect, 8.0, SURFACE);
-                let thumb = egui::Rect::from_min_size(
-                    rect.min + egui::vec2(8.0, 8.0),
-                    egui::vec2(32.0, 32.0),
-                );
+                let thumb = egui::Rect::from_min_size(rect.min, rect.size());
                 if draft.thumbnail.is_none()
                     && let Some(image) = draft.thumbnail_image.clone()
                 {
@@ -16835,55 +16833,64 @@ impl CaperApp {
                         .corner_radius(6)
                         .paint_at(ui, thumb);
                 } else {
-                    paint_icon(&painter, thumb.shrink(7.0), NavIcon::FileText, MUTED);
+                    paint_file_fallback(&painter, thumb, &draft.name);
                 }
                 let uploading = draft.attachment.is_none() && draft.error.is_none();
                 let status = if let Some(error) = &draft.error {
                     error.clone()
                 } else if draft.attachment.is_some() {
-                    uploads::size_label(draft.source_size, draft.stored_size)
+                    String::new()
                 } else if let Some(fraction) =
                     draft.compressing.filter(|_| draft.stored_size.is_none())
                 {
-                    format!("Compressing… {}%", (fraction * 100.0).round() as u32)
+                    format!("Packing {}%", (fraction * 100.0).round() as u32)
                 } else if draft.stored_size.is_none() {
                     "Preparing…".into()
                 } else if draft.progress >= 1.0 {
                     "Confirming…".into()
                 } else {
-                    format!("Uploading… {}%", (draft.progress * 100.0).round() as u32)
+                    format!("Sending {}%", (draft.progress * 100.0).round() as u32)
                 };
-                // Names and errors truncate in the chip; the tooltip has them in full.
-                chip.on_hover_text(format!(
-                    "{}
-{status}",
-                    draft.name
-                ));
-                let text_left = thumb.right() + 8.0;
-                let text_width = rect.right() - 34.0 - text_left;
+                // Keep filenames and full failures available without visual clutter.
+                let accessible = format!(
+                    "{}\n{}\n{status}",
+                    draft.name,
+                    uploads::size_label(draft.source_size, draft.stored_size)
+                );
+                chip.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Label, true, accessible.clone())
+                });
+                chip.on_hover_text(accessible.clone());
+                let text_left = rect.left() + 5.0;
+                let text_width = rect.width() - 10.0;
                 let line = |text: String, font: egui::FontId, color: Color32| {
                     let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
                     job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
                     ui.fonts_mut(|fonts| fonts.layout_job(job))
                 };
-                painter.galley(
-                    egui::pos2(text_left, rect.top() + 8.0),
-                    line(
-                        draft.name.clone(),
-                        egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
-                        TEXT,
-                    ),
-                    TEXT,
-                );
-                painter.galley(
-                    egui::pos2(text_left, rect.top() + 26.0),
-                    line(
-                        status,
-                        egui::FontId::proportional(11.0),
-                        if draft.error.is_some() { ERROR } else { MUTED },
-                    ),
-                    MUTED,
-                );
+                if !status.is_empty() {
+                    painter.rect_filled(
+                        egui::Rect::from_min_max(
+                            egui::pos2(rect.left(), rect.bottom() - 25.0),
+                            rect.max,
+                        ),
+                        0.0,
+                        SURFACE,
+                    );
+                    painter.galley(
+                        egui::pos2(text_left, rect.bottom() - 21.0),
+                        line(
+                            if draft.error.is_some() {
+                                "Failed".into()
+                            } else {
+                                status
+                            },
+                            egui::FontId::proportional(11.0),
+                            if draft.error.is_some() { ERROR } else { MUTED },
+                        ),
+                        MUTED,
+                    );
+                }
                 if uploading {
                     // Progress glides between updates instead of jumping.
                     let shown = motion::glide(
@@ -16894,7 +16901,7 @@ impl CaperApp {
                     );
                     let track = egui::Rect::from_min_max(
                         egui::pos2(text_left, rect.bottom() - 5.0),
-                        egui::pos2(rect.right() - 34.0, rect.bottom() - 3.0),
+                        egui::pos2(rect.right() - 5.0, rect.bottom() - 3.0),
                     );
                     painter.rect_filled(track, 1.0, BORDER);
                     painter.rect_filled(
@@ -16913,7 +16920,7 @@ impl CaperApp {
                     egui::StrokeKind::Inside,
                 );
                 let close = egui::Rect::from_center_size(
-                    egui::pos2(rect.right() - 17.0, rect.center().y),
+                    egui::pos2(rect.right() - 15.0, rect.top() + 15.0),
                     egui::vec2(22.0, 22.0),
                 );
                 let url = draft
@@ -16929,14 +16936,11 @@ impl CaperApp {
                     });
                 if let Some(url) = url {
                     let response = ui.interact(
-                        egui::Rect::from_min_max(
-                            rect.min,
-                            egui::pos2(close.left() - 4.0, rect.bottom()),
-                        ),
+                        rect,
                         egui::Id::new(("draft-preview", draft.key)),
                         egui::Sense::click(),
                     );
-                    let label = format!("Preview {}", draft.name);
+                    let label = format!("Preview {accessible}");
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
                     });
@@ -16953,9 +16957,7 @@ impl CaperApp {
                     egui::Id::new(("draft-remove", draft.key)),
                     egui::Sense::click(),
                 );
-                if response.hovered() {
-                    painter.rect_filled(close, 6.0, SURFACE_HOVER);
-                }
+                painter.rect_filled(close, 6.0, SURFACE);
                 paint_icon(
                     &painter,
                     close.shrink(4.0),
@@ -16969,13 +16971,22 @@ impl CaperApp {
                 if response.on_hover_text(label).clicked() {
                     remove = Some(draft.key);
                 }
-                if draft.error.is_some()
-                    && ui
-                        .button("Retry")
-                        .on_hover_text(format!("Retry uploading {}", draft.name))
-                        .clicked()
-                {
-                    retry = Some(draft.key);
+                if let Some(error) = &draft.error {
+                    let retry_rect = egui::Rect::from_min_max(
+                        egui::pos2(rect.left(), rect.bottom() - 25.0),
+                        rect.max,
+                    );
+                    let response = ui.place(
+                        retry_rect,
+                        egui::Button::new("Failed · Retry").small().truncate(),
+                    );
+                    let label = format!("Retry uploading {}: {error}", draft.name);
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+                    });
+                    if response.on_hover_text(label).clicked() {
+                        retry = Some(draft.key);
+                    }
                 }
                 // Each file pops into the composer, as on web.
                 motion::settle(
@@ -18687,24 +18698,26 @@ impl CaperApp {
         if !draft.files.is_empty() {
             let mut remove = None;
             let mut preview = None;
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 8.0;
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                let width = draft_tile_width(ui.available_width());
                 let context = ui.ctx().clone();
                 for (index, file) in draft.files.iter_mut().enumerate() {
                     let name = file.name();
                     let url = url::Url::from_file_path(&file.path).ok().map(String::from);
                     let status = if file.attachment.is_some() || !draft.sending {
-                        uploads::size_label(file.size, None)
+                        String::new()
                     } else {
-                        "Waiting to send…".into()
+                        "Sending…".into()
                     };
                     let (open, removed) = file_chip(
                         ui,
-                        286.0,
+                        width,
                         FileChip {
                             id: egui::Id::new(("profile-file", person, index)),
                             name: &name,
                             status,
+                            detail: uploads::size_label(file.size, None),
                             error: false,
                             thumbnail: file.thumbnail(&context),
                             progress: None,
@@ -21229,12 +21242,38 @@ fn login_error_frame(ui: &mut egui::Ui, error: &str) {
         });
 }
 
-/// A staged file in a composer: thumbnail or file icon, name, status, an
-/// optional upload bar and Remove, as on web's draft chips.
+/// Keep tiles compact even when there is only one file. Narrow composers
+/// reduce their column count rather than introducing horizontal scrolling.
+fn draft_tile_width(available: f32) -> f32 {
+    available.clamp(1.0, 104.0)
+}
+
+fn paint_file_fallback(painter: &egui::Painter, rect: egui::Rect, name: &str) {
+    let icon =
+        egui::Rect::from_center_size(rect.center() - egui::vec2(0.0, 8.0), egui::vec2(24.0, 24.0));
+    paint_icon(painter, icon, NavIcon::FileText, MUTED);
+    let kind = std::path::Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .filter(|ext| {
+            !ext.is_empty() && ext.len() <= 5 && ext.chars().all(|ch| ch.is_ascii_alphanumeric())
+        })
+        .map_or_else(|| "File".to_owned(), str::to_ascii_uppercase);
+    painter.text(
+        rect.center() + egui::vec2(0.0, 12.0),
+        egui::Align2::CENTER_CENTER,
+        kind,
+        egui::FontId::proportional(11.0),
+        MUTED,
+    );
+}
+
+/// A staged square preview with an optional short status and Remove.
 struct FileChip<'a> {
     id: egui::Id,
     name: &'a str,
     status: String,
+    detail: String,
     error: bool,
     thumbnail: Option<&'a egui::TextureHandle>,
     /// Upload progress while a file is being sent.
@@ -21246,10 +21285,10 @@ struct FileChip<'a> {
 
 /// Returns the preview URL to open, if clicked, and whether Remove was clicked.
 fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, bool) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 48.0), egui::Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, width), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 8.0, SURFACE);
-    let thumb = egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(32.0, 32.0));
+    let thumb = rect;
     if let Some(texture) = chip.thumbnail {
         // Centre-crop the local preview into the square.
         let [width, height] = texture.size().map(|value| value.max(1) as f32);
@@ -21263,40 +21302,38 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
             .corner_radius(6)
             .paint_at(ui, thumb);
     } else {
-        paint_icon(&painter, thumb.shrink(7.0), NavIcon::FileText, MUTED);
+        paint_file_fallback(&painter, thumb, chip.name);
     }
-    // Names and errors truncate in the chip; the tooltip has them in full.
-    response.on_hover_text(format!("{}\n{}", chip.name, chip.status));
-    let text_left = thumb.right() + 8.0;
-    let end = if chip.removable {
-        rect.right() - 34.0
-    } else {
-        rect.right() - 8.0
-    };
+    // The name remains available to assistive technology and on hover.
+    let accessible = format!("{}\n{}\n{}", chip.name, chip.detail, chip.status);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, accessible.clone())
+    });
+    response.on_hover_text(accessible.clone());
+    let text_left = rect.left() + 5.0;
+    let end = rect.right() - 5.0;
     let text_width = end - text_left;
     let line = |text: String, font: egui::FontId, color: Color32| {
         let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
         job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
         ui.fonts_mut(|fonts| fonts.layout_job(job))
     };
-    painter.galley(
-        egui::pos2(text_left, rect.top() + 8.0),
-        line(
-            chip.name.to_owned(),
-            egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
-            TEXT,
-        ),
-        TEXT,
-    );
-    painter.galley(
-        egui::pos2(text_left, rect.top() + 26.0),
-        line(
-            chip.status,
-            egui::FontId::proportional(11.0),
-            if chip.error { ERROR } else { MUTED },
-        ),
-        MUTED,
-    );
+    if !chip.status.is_empty() {
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 25.0), rect.max),
+            0.0,
+            SURFACE,
+        );
+        painter.galley(
+            egui::pos2(text_left, rect.bottom() - 21.0),
+            line(
+                chip.status,
+                egui::FontId::proportional(11.0),
+                if chip.error { ERROR } else { MUTED },
+            ),
+            MUTED,
+        );
+    }
     if let Some(progress) = chip.progress {
         let track = egui::Rect::from_min_max(
             egui::pos2(text_left, rect.bottom() - 5.0),
@@ -21319,17 +21356,13 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
         egui::StrokeKind::Inside,
     );
     let close = egui::Rect::from_center_size(
-        egui::pos2(rect.right() - 17.0, rect.center().y),
+        egui::pos2(rect.right() - 15.0, rect.top() + 15.0),
         egui::vec2(22.0, 22.0),
     );
     let mut preview = None;
     if let Some(url) = chip.url {
-        let response = ui.interact(
-            egui::Rect::from_min_max(rect.min, egui::pos2(close.left() - 4.0, rect.bottom())),
-            chip.id.with("preview"),
-            egui::Sense::click(),
-        );
-        let label = format!("Preview {}", chip.name);
+        let response = ui.interact(rect, chip.id.with("preview"), egui::Sense::click());
+        let label = format!("Preview {accessible}");
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
         });
@@ -21344,9 +21377,7 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
     let mut removed = false;
     if chip.removable {
         let response = ui.interact(close, chip.id.with("remove"), egui::Sense::click());
-        if response.hovered() {
-            painter.rect_filled(close, 6.0, SURFACE_HOVER);
-        }
+        painter.rect_filled(close, 6.0, SURFACE);
         paint_icon(
             &painter,
             close.shrink(4.0),
@@ -35870,7 +35901,11 @@ mod tests {
         );
         let output = render(&mut app, &context, vec![]);
         assert_eq!(app.profile_drafts["fixture-alex"].text, retained);
-        assert!(shows(&output, "receipt.txt"));
+        assert!(shows(&output, "TXT"));
+        assert!(
+            !shows(&output, "receipt.txt"),
+            "staged files show their type, not filename"
+        );
         assert!(
             !shows(&output, "Block"),
             "Block is not a primary profile action"
@@ -38688,6 +38723,7 @@ mod tests {
     #[test]
     fn attachments_render_by_status_and_open_in_the_viewer_or_browser() {
         let context = egui::Context::default();
+        context.enable_accesskit();
         let mut app = CaperApp::new(
             &context,
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
@@ -38706,11 +38742,8 @@ mod tests {
             "Processing… 45%",
             "Processing…",
             "GIF",
-            "TEST FIXTURE photo.jpg",
-            "1.6 MB → 143 KB",
-            "Uploading… 45%",
-            "Failed to upload.",
-            "Retry",
+            "Sending 45%",
+            "Failed · Retry",
         ] {
             text_position(&output, label);
         }
@@ -38742,7 +38775,59 @@ mod tests {
             assert_eq!(click_opening(&mut app, &context, position), None, "{label}");
         }
         // An unfinished draft previews its local original without removing it.
-        let draft = text_position(&output, "TEST FIXTURE diagram.png");
+        assert!(
+            !output.shapes.iter().any(|shape| matches!(
+                &shape.shape, egui::Shape::Text(text)
+                    if text.galley.job.text == "TEST FIXTURE diagram.png"
+                        || text.galley.job.text == "1.6 MB → 143 KB"
+                        || text.galley.job.text == "Failed to upload."
+            )),
+            "draft names, bytes and full errors belong in accessible hover text only"
+        );
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        let tiles: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == super::SURFACE
+                        && (rect.rect.width() - rect.rect.height()).abs() < 0.1
+                        && (80.0..=104.0).contains(&rect.rect.width()) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(tiles.len() >= 3, "each draft has a compact square surface");
+        let retry = node_bounds(
+            &output,
+            "Retry uploading TEST FIXTURE large.mov: Failed to upload.",
+        )
+        .expect("accessible retry control");
+        assert!(
+            tiles.iter().any(|tile| tile.contains_rect(retry)),
+            "Retry must fit inside its square tile, even with the app's larger default button height"
+        );
+        let preview = nodes
+            .iter()
+            .find(|(_, node)| {
+                node.label()
+                    .is_some_and(|label| label.starts_with("Preview TEST FIXTURE diagram.png\n"))
+            })
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        let draft = egui::pos2(
+            (preview.x1 - 5.0) as f32,
+            ((preview.y0 + preview.y1) / 2.0) as f32,
+        );
         let url = click_opening(&mut app, &context, draft).expect("draft preview opens");
         assert!(url.starts_with("file:///"));
         assert!(url.ends_with("/selected%20diagram%20%231.png"));
@@ -38780,6 +38865,96 @@ mod tests {
                 "{draft:?}: Attach and Emoji hover targets need space inside the message box"
             );
         }
+        context.enable_accesskit();
+        let output = render(&mut app, &context, vec![]);
+        let bounds = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Remove TEST FIXTURE diagram.png"))
+            .unwrap()
+            .1
+            .bounds()
+            .unwrap();
+        let remove = egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        assert_eq!(
+            click_opening(&mut app, &context, remove),
+            None,
+            "Remove must not open the preview below it"
+        );
+        assert_eq!(app.draft_files.len(), 2);
+
+        // More than four uploads use the full desktop composer, not a fixed tray.
+        while app.draft_files.len() < 10 {
+            let (_, more) = fixture("parity-attachments");
+            app.draft_files.extend(more.draft_files);
+        }
+        app.draft_files.truncate(10);
+        for (index, draft) in app.draft_files.iter_mut().enumerate() {
+            draft.key = index as u64;
+            draft.name = format!("TEST FIXTURE wrap {index}.png");
+            draft.local_path = Some(std::env::temp_dir().join(&draft.name));
+        }
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        let previews: Vec<_> = (0..10)
+            .map(|index| {
+                nodes
+                    .iter()
+                    .find(|(_, node)| {
+                        node.label().is_some_and(|label| {
+                            label.starts_with(&format!("Preview TEST FIXTURE wrap {index}.png\n"))
+                        })
+                    })
+                    .unwrap()
+                    .1
+                    .bounds()
+                    .unwrap()
+            })
+            .collect();
+        let columns = previews
+            .iter()
+            .take_while(|tile| (tile.y0 - previews[0].y0).abs() < 1.0)
+            .count();
+        assert!(
+            columns > 4 && columns < 10,
+            "desktop fills the row, then wraps: {previews:?}"
+        );
+        assert!(previews[columns].y0 > previews[0].y0);
+        let attach = node_bounds(&output, "Attach files").unwrap();
+        let composer = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == super::COMPOSER && rect.rect.contains_rect(attach) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            previews
+                .iter()
+                .all(|tile| (tile.x1 - tile.x0 - 104.0).abs() < 1.0
+                    && (tile.y1 - tile.y0 - 104.0).abs() < 1.0
+                    && tile.x0 >= composer.left() as f64
+                    && tile.x1 <= composer.right() as f64),
+            "every square stays within the composer's horizontal edges"
+        );
     }
 
     #[test]

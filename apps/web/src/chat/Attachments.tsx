@@ -360,43 +360,34 @@ export function DraftAttachments({
     <>
       <ul className="chat-drafts" aria-label="Files to send">
         {drafts.map((draft) => {
+          const url = draft.localUrl ?? draft.attachment?.url;
+          const kind = draft.localKind ?? draft.attachment?.kind;
+          const thumbnail = kind === "image" ? (draft.localUrl ?? draft.attachment?.previewUrl ?? url) : undefined;
+          const busy = !draft.attachment && !draft.error && !draft.staged;
+          const status = draft.error
+            ? "Failed"
+            : !busy
+              ? undefined
+              : draft.storedSize === undefined
+                ? draft.compressing !== undefined
+                  ? `Prep ${Math.round(draft.compressing * 100)}%`
+                  : "Preparing…"
+                : `${Math.round(draft.progress * 100)}%`;
           const content = (
             <>
-              {draft.localUrl && draft.localKind === "image" ? (
-                <img src={draft.localUrl} alt="" />
+              {thumbnail ? (
+                <img src={thumbnail} alt="" />
               ) : (
-                <FileText aria-hidden="true" size={18} />
+                <span className="chat-draft-kind" aria-hidden="true">
+                  {kind === "video" || kind === "audio" ? <Play size={24} /> : <FileText size={24} />}
+                  {kind === "image" ? "Image" : kind === "video" ? "Video" : kind === "audio" ? "Audio" : "File"}
+                </span>
               )}
-              <span>
-                <strong title={draft.name}>{draft.name}</strong>
-                <small>
-                  {draft.error ??
-                    (draft.staged ? (
-                      formatBytes(draft.sourceSize)
-                    ) : draft.attachment ? (
-                      <>
-                        {draft.storedSize !== undefined && draft.storedSize < draft.sourceSize && (
-                          <span className="chat-draft-source-size">{formatBytes(draft.sourceSize)} → </span>
-                        )}
-                        {formatBytes(draft.storedSize ?? draft.sourceSize)}
-                      </>
-                    ) : draft.storedSize === undefined ? (
-                      draft.compressing !== undefined ? (
-                        `Compressing… ${Math.round(draft.compressing * 100)}%`
-                      ) : (
-                        "Preparing…"
-                      )
-                    ) : (
-                      `Uploading… ${Math.round(draft.progress * 100)}%`
-                    ))}
-                </small>
-              </span>
             </>
           );
-          const url = draft.localUrl ?? draft.attachment?.url;
           const viewable = media.some((attachment) => attachment.id === draft.key);
           return (
-            <li key={draft.key} data-error={draft.error ? true : undefined}>
+            <li key={draft.key} data-error={draft.error ? true : undefined} title={draft.error ?? draft.name}>
               {viewable ? (
                 <button
                   type="button"
@@ -418,19 +409,25 @@ export function DraftAttachments({
                   {content}
                 </a>
               ) : (
-                <div className="chat-draft-preview">{content}</div>
+                <div className="chat-draft-preview" aria-label={draft.name}>
+                  {content}
+                </div>
               )}
-              {!draft.attachment && !draft.error && !draft.staged && (
-                <progress max={1} value={draft.progress} aria-label={`Uploading ${draft.name}`} />
+              {status && !(draft.error && onRetry) && (
+                <small className="chat-draft-status" aria-label={draft.error ?? status}>
+                  {status}
+                </small>
               )}
+              {busy && <progress max={1} value={draft.progress} aria-label={`Uploading ${draft.name}`} />}
               {draft.error && onRetry && (
                 <button
                   type="button"
                   className="chat-draft-retry"
                   aria-label={`Retry uploading ${draft.name}`}
+                  title={draft.error}
                   onClick={() => onRetry(draft.key)}
                 >
-                  Retry
+                  Failed · Retry
                 </button>
               )}
               {onRemove && (
