@@ -199,7 +199,7 @@ export default function Chat({
   initialHistoryError,
   showTitle = false,
   headerLeading,
-  headerVoice,
+  headerBelow,
   headerActions,
   headerMenu,
   headerSubtitle,
@@ -239,8 +239,8 @@ export default function Chat({
   initialHistoryError?: string;
   showTitle?: boolean;
   headerLeading?: ReactNode;
-  /** The open channel's voice, right after its name. */
-  headerVoice?: ReactNode;
+  /** Phones: a strip under the header carrying voice (your call, or this channel's live room). */
+  headerBelow?: ReactNode;
   headerActions?: ReactNode;
   /** Phones fold Pins and these items into the menu their channel name opens. */
   headerMenu?: ReactNode;
@@ -1854,7 +1854,6 @@ export default function Chat({
               </div>
             </details>
           )}
-          {headerVoice}
           {pinsToggle}
           {headerActions}
 
@@ -1889,6 +1888,7 @@ export default function Chat({
             </div>
           )}
         </header>
+        {headerBelow}
 
         <div className="chat-messages" aria-busy={state.phase === "loading"}>
           {pinsOpen && (

@@ -19,6 +19,10 @@
   overflow: hidden;
   background: var(--surface-conversation);
 }
+/* A voice strip under the header (phones) takes its own row above the messages. */
+.chat-panel:has(> .voice-strip) {
+  grid-template-rows: auto auto minmax(140px, 1fr) auto auto;
+}
 /* Files dragged over the conversation. The overlay never takes pointer events,
    so the drag keeps reporting the elements underneath. */
 .chat-drop {
@@ -1538,7 +1542,7 @@
   /* The rows carry their own margins; .chat-message's 10px row gap doubled them. */
   gap: 0 10px;
   padding: 12px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 8px;
   background: var(--pin-wash);
   cursor: pointer;
@@ -1619,31 +1623,41 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 8px;
 }
 .chat-pinned-navigation > button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   min-height: 32px;
-  padding: 4px 0;
-  border: 0;
-  background: none;
-  color: var(--text-muted);
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
   font: inherit;
-  font-size: 0.68rem;
+  font-size: 0.72rem;
   cursor: pointer;
 }
 @media (hover: hover) {
   .chat-pinned-navigation > button:hover:not(:disabled) {
-    color: var(--text);
-    text-decoration: underline;
+    background: var(--surface-raised);
   }
+}
+.chat-pinned-navigation > button:disabled {
+  color: var(--text-muted);
+  cursor: wait;
 }
 .chat-pinned-navigation > button:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-pinned-navigation > button {
+    min-height: 44px;
+  }
 }
 .chat-message-pending p {
   color: var(--text-muted);
@@ -2337,6 +2351,7 @@
 @media (hover: hover) {
   .chat-attach:hover:not(:disabled) {
     color: var(--text);
+    background: var(--surface-hover);
   }
 }
 .chat-attach:focus-visible {
@@ -3382,6 +3397,22 @@ a.chat-draft-preview:focus-visible strong {
   width: 40px;
   height: 40px;
   margin: 1px 4px 1px 0;
+}
+/* Match the main composer's inset hover targets without shrinking touch controls. */
+@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  .chat-attach {
+    width: 32px;
+    height: 32px;
+    margin: 5px 0 5px 5px;
+  }
+  .chat-attach:focus-visible {
+    outline-offset: -2px;
+  }
+  .chat-thread-send-row > .chat-composer-tool {
+    width: 32px;
+    height: 32px;
+    margin: 5px 5px 5px 0;
+  }
 }
 .chat-thread-send-row button[type="submit"] {
   grid-column: 2;

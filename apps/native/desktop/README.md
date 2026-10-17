@@ -187,8 +187,8 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   with Restore ("Restore to the inbox"); "Back to feedback" returns. A report, or a `feedback` notification click,
   opens the conversation by channel id at the message and in its thread.
   Without membership (`visitor: true`) the team takes part like a member
-  (replies, files, reactions, typing, pins, forwarding, and a visited space
-  channel's voice from its header, as for any channel), but there is no member list,
+  (replies, files, reactions, typing, pins, forwarding, and joining a visited
+  space channel's live call from Live now or the narrow strip), but there is no member list,
   read marker, join/leave, settings or notification menu. Back returns to
   the inbox (or the conversation a notification interrupted). Conversations
   the team member already belongs to open normally.
@@ -225,7 +225,8 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   local mute and 0–200% software playback gain, and aggregate connection
   statistics. Participant mute survives microphone-track replacement and takes
   effect locally even while signaling is waiting for HTTP.
-- Speaking rings in your own call's roster and voice stack, from the web
+- Speaking rings on your own call's faces (Live now card, full list and narrow
+  strip), from the web
   client's rule (32 ms RMS ≥ 0.004, 180 ms release, never while muted) applied
   to your published microphone PCM and each subscription's decoded PCM.
 - Persisted 0–200% input gain and voice-contour strength, with on-device DPDFNet-8
@@ -417,11 +418,17 @@ For deterministic visual inspection without live accounts, launch
 `caper-desktop --fixture login` or `--fixture parity-channel`. These are
 explicitly labeled static previews; the chat fixture at loopback port 3001
 does not provide live SFU media. Use normal `--api-url` for networked chat tests.
-`parity-voice-joining` and `parity-voice-connected` preview Cancel/Leave and the
-audio bar without starting a media transport; `parity-voice-speaking` adds fixed
-speaking rings for you and Maya.
-`parity-voice-error` and `parity-audio-error` preview capture failure guidance in
-the voice dock and Audio test dialog without starting capture or a transport.
+`parity-voice-joining` and `parity-voice-connected` preview Live now's call card
+(Cancel/Leave) and the audio bar without starting a media transport;
+`parity-voice-speaking` adds fixed speaking rings for you and Maya.
+`parity-voice-crowded` (and `-narrow`) previews a twelve-person call folding into
+`+3` and four other live rooms behind `2 more live`; `parity-voice-list` (and
+`-narrow`) opens the full list at Maya's audio controls; `parity-voice-strip-narrow`
+and `parity-voice-join-narrow` preview the strip under a narrow chat header in and
+outside a call.
+`parity-voice-error` and `parity-audio-error` preview capture failure guidance
+above the account bar and in the Audio test dialog without starting capture or a
+transport.
 `parity-direct` and `parity-direct-new` preview a two-person DM and its
 exact-username dialog without a live account or notification provider.
 `parity-mentions` previews mention pills, an unresolved `@name`, and rows that

@@ -1881,8 +1881,8 @@ struct AttachmentPickerButton: View {
                 showFiles = selectionTarget != nil
             } label: { Label("Files", systemImage: "doc") }
         } label: {
-            // The shared Lucide paperclip (CaperIcons.xcassets), as on web and in the profile composer.
-            Image("caper-paperclip").renderingMode(.template).resizable().frame(width: 17, height: 17)
+            // The shared Lucide plus (CaperIcons.xcassets), as on web and in the profile composer.
+            Image("caper-plus").renderingMode(.template).resizable().frame(width: 18, height: 18)
                 .foregroundStyle(CaperTheme.muted)
                 .frame(width: 42, height: 42)
                 .contentShape(Rectangle())
