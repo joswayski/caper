@@ -1537,6 +1537,102 @@ Android's Gradle attempt stops at the missing SDK; Apple has no Swift/Apple
 toolchain in this orb. Native OS clipboard/device acceptance remains unverified.
 No Docker daemon is available; the web production build was checked directly.
 
+### Editing attachments before sending
+
+A pencil on a draft's tile (top corner, opposite Remove) opens a full-window
+editor for still images and videos before they are sent, on web (desktop and
+mobile layouts), Android, iPhone/iPad/Mac and Rust desktop:
+
+- **Crop** with corner and edge handles (drag inside to move; with a keyboard,
+  arrow keys nudge the frame on web and Android) and **Rotate left** in quarter
+  turns.
+- **Draw** freehand with round lines, and add **Text** (Satoshi Bold, one line,
+  up to 200 characters): click or tap to place it, click it to change it, drag
+  to move it. Both take one of six colours (red, yellow, green, blue, white,
+  black) or any colour from the platform's colour picker, and a size slider
+  (2–40 pt lines, 14–96 pt text, as seen on screen).
+- **Undo**, **Redo** (Ctrl/⌘+Z, Ctrl/⌘+Shift+Z, Ctrl+Y) and **Reset** to the
+  original; Escape closes a text field, then cancels. Done with no change just
+  closes.
+
+**When it happens.** Uploads still start the moment a file is added, so
+unedited files send as quickly as before. The pencil is available straight
+away (editing uses the local original, not the upload). Saving an edit cancels
+that file's preparation and upload (`POST /api/assets/{id}/cancel`, the same as
+Remove; the unattached upload is purged by the existing cleanup) and prepares
+the **original** again with the edit applied, then uploads the result in the
+same tile. The draft keeps the original and a description of the edit, so
+reopening shows the earlier crop, drawings and text still editable, and edits
+never stack generation loss. The profile card composer, which uploads at Send,
+applies the edit when it prepares the file. The pencil is hidden while a send
+that carries the files is pending.
+
+**Never the unedited file.** People crop to hide things, so an edit that cannot
+be applied (the image cannot be decoded, the platform cannot encode H.264, the
+transcode fails) fails the tile with "Couldn’t apply your edits." and its
+Retry, rather than uploading the original. Send retries it once, like any
+failed upload, and never sends the message without it.
+
+**The model** (`apps/web/src/chat/edit.ts`, mirrored by each client): quarter
+turns of the upright original (EXIF applied), a crop as fractions of the
+turned picture, then marks painted in order: strokes (points as fractions,
+width as a fraction of the longer edge) and text centred on a point (size as a
+fraction of the longer edge, always upright). Every client's tests run
+`shared/messages/edit-cases.json` (turns, crop rounding including even video
+crops, and when a file counts as edited).
+
+**What gets uploaded.**
+
+- Images are painted at the original's own resolution, then encoded by the
+  source's class under the rules above: photos (JPEG, HEIC, lossy WebP, AVIF)
+  become AVIF/WebP at the server quality and `ASSET_IMAGE_MAX_EDGE`, and
+  screenshots/graphics (PNG, BMP, TIFF, lossless WebP) stay lossless. The
+  smallest encoding is always kept (the original is not an option), with PNG
+  as the last resort. Output is upright and carries no EXIF.
+- Videos are always transcoded to H.264, even when the original would have
+  uploaded unchanged. The turn and crop are baked into the frames, the crop
+  starts and measures on even pixels, its short edge is
+  capped by `ASSET_VIDEO_MAX_HEIGHT` (0 keeps the crop's size) and the bitrate
+  target is for the output size. Drawings and text are one still overlay over
+  the whole video (the editor says so and shows a still frame from just after
+  the start). HDR is
+  tone mapped as usual; where the platform cannot tone map it, editing fails
+  rather than uploading an unedited or washed-out copy. Audio is kept.
+- Editable: still JPEG, PNG, WebP, AVIF, HEIC/HEIF, BMP and TIFF the platform
+  decodes, and videos it can transcode. GIFs, animated WebP/PNG, audio and other
+  files show no pencil.
+
+No API, gateway, database, infrastructure or secret change is needed: the
+server sees an ordinary upload, and cancelled reservations already exist.
+
+| Client | Editor | Images | Video |
+| --- | --- | --- | --- |
+| Web | `AttachmentEditor.tsx` (loaded on demand), full-window dialog; Back closes it on phones | Canvas at full resolution, then the existing encoders | Mediabunny/WebCodecs: rotate, crop and resize, then the overlay in `process`; HDR through `hdr-video.ts` with the tone-mapped frame drawn turned and cropped. Shown only where the browser encodes H.264 (open-source Chromium has no encoder) |
+| Android | `AttachmentEditor.kt`, a full-screen Compose dialog; Compose has no colour picker, so the custom swatch opens a small hue and saturation/value picker | `EditPainter` (android.graphics) on the decoded crop region at native size, then the existing encoders | Media3: `ScaleAndRotateTransformation`, `Crop`, `Presentation`, then a `BitmapOverlay` of the marks; HDR needs Android 10+ to tone map. Like the existing transcode, portrait output may carry rotation metadata. AVIF is editable from Android 12 and HEIC from 9; TIFF is not (no platform decoder) |
+| Apple | `AttachmentEditor.swift`: a full-screen cover on iPhone/iPad, a window overlay on Mac (inside the profile popover there); the system `ColorPicker` | `AttachmentEditRenderer` (CoreGraphics/CoreText) at native size, then the existing encoders | The existing BT.709 composition (the HDR tone map) read as BGRA, each frame turned, cropped, scaled and overlaid with Core Image, written through a pixel-buffer adaptor |
+| Rust desktop | `attachment_editor.rs`, a full-window egui modal with egui's colour picker | `attachment_edit.rs` on the decoded original at native size: tiny-skia strokes, Satoshi Bold through ab_glyph, then the existing encoders. HEIC and AVIF are not editable (the desktop pipeline does not decode them) | FFmpeg filter graph: `transpose`/flips, `crop`, then scale or the HDR tone map. Marks need `overlay` with a PNG input (`-f png_pipe`), which the bundled trimmed FFmpeg 9.0.2 lacks, so Draw and Text are disabled for videos (with an explanation) until joswayski/ffmpeg-desktop enables the `overlay` filter, `png` decoder and `png_pipe` demuxer; the app checks the binary and uses them once present. Videos show a frame from 1 s in, the desktop poster rule |
+
+Validation (October 17, 2026): `npm run check` passes and `npm test`
+passes apart from three tests outside this change (`noise-assets` fails the
+same way on the base commit here; the two GIF-shrink tests pass alone and time
+out only under load). Browser runs against the loopback fixture at 1280px and
+390px (Chromium) covered drawing, text placement, dragging and re-editing,
+crop handles, rotation, undo/redo shortcuts, Reset, Escape, the pencil only on
+still images, and that the earlier upload is cancelled and the uploaded bytes
+have the expected size, crop, turn and colours. That Chromium has no H.264
+encoder, so web video edits were checked with Mediabunny and VP9 (turn, crop,
+size and overlay position); H.264 and HDR video edits in a browser remain
+unverified. Android: `testDebugUnitTest` (445 tests, including the shared
+cases), `lintDebug` and Kotlin compilation pass with a local SDK; the editor,
+Media3 effects and encoders have not run on an emulator or device. Apple: the
+macOS `xcodebuild test` in Native development builds passed, including
+CoreGraphics rendering and an H.264 clip turned, cropped and drawn on; the iOS
+simulator and physical devices are unverified. Rust desktop: fmt, Clippy and
+568 tests pass; ignored real-FFmpeg tests turn, crop, tone map and draw on
+video with a full FFmpeg and refuse marks with the bundled one; Xvfb captures
+of the editor were inspected. Windows (Media Foundation) and real storage
+uploads from native clients are unverified.
+
 ### Inline GIF playback
 
 GIF uploads remain ordinary `image/gif` originals; the current upload path does

@@ -22,6 +22,16 @@ images, GIFs, video and audio without recompression; media it cannot clean is
 refused. Documents and archives keep their contents. Desktop opens
 video and audio in the system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
 
+Before sending, a pencil on an attached photo or video opens an editor on every
+client: crop, rotate, draw and add text, with preset or custom colours and a
+size slider, plus undo, redo and reset. Saving replaces that file's upload with
+the original re-prepared with the edits, which stay editable until it is sent;
+an edit that cannot be applied fails instead of sending the unedited file.
+Drawings and text on a video stay for its whole length; Windows/Linux desktop
+can crop and rotate videos but not draw on them until its bundled FFmpeg gains
+an overlay filter. See
+[editing attachments](docs/media.md#editing-attachments-before-sending).
+
 Space owners can share invite links like `caper.chat/invite/AbCdE12345`, Discord
 style: each link expires after a time you choose (1 minute to 365 days; 7 days by
 default) or never, can cap its uses (1 to 10,000; no limit by default), and opens in
