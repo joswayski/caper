@@ -25832,6 +25832,11 @@ mod tests {
                     egui::Shape::Text(text) if text.galley.job.text == "Update available"
                         && shape.clip_rect.contains_rect(egui::Rect::from_min_size(text.pos, text.galley.size()))
                 )), "update label clipped at {time}s");
+                let button_center = ((current.x0 + current.x1) / 2.0) as f32;
+                assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.job.text == "Update available"
+                        && (text.pos.x + text.galley.size().x / 2.0 - button_center).abs() <= 1.0
+                )), "update label is not centered at sidebar width {sidebar_width}, {time}s");
                 for label in [
                     "Edit profile for Fixture Owner",
                     "Mute microphone",
