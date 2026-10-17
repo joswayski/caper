@@ -3173,7 +3173,7 @@ a.chat-draft-preview:focus-visible strong {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: var(--terracotta-bright);
+  color: var(--pin-gold);
 }
 .chat-thread-unread::before {
   content: "";

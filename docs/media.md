@@ -2634,11 +2634,12 @@ them. Reconnect refetches the active thread and fences obsolete responses.
 
 ### Unread thread replies (October 17, 2026)
 
-Web, Android, Apple and Rust desktop show a terracotta dot and **Unread** beside
-the reply count when another account replies in a thread the viewer started or
-replied to. Participation comes from message authorship, not the five displayed
-avatars. Own replies and blocked/deleted authors do not create unread state;
-sending a reply does not implicitly acknowledge earlier replies by others.
+Web, Android, Apple and Rust desktop show a gold (`#E4C76A`) dot and **Unread**
+beside the terracotta reply count when another account replies in a thread the
+viewer started or replied to. Participation comes from message authorship, not
+the five displayed avatars. Own replies and blocked/deleted authors do not create
+unread state; sending a reply does not implicitly acknowledge earlier replies by
+others.
 
 `GET /api/chat/channels/{channel}/threads/unread` returns
 `{threads:[{rootId,seq}]}`, using the latest qualifying unread reply sequence.

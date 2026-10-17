@@ -2475,7 +2475,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                     append("${summary.replyCount} ${if (summary.replyCount == 1) "reply" else "replies"}")
                                 }
                                 if (state.unreadThreads.containsKey(message.id)) {
-                                    withStyle(SpanStyle(color = TerracottaBright)) { append("  ● Unread") }
+                                    withStyle(SpanStyle(color = PinGold)) { append("  ● Unread") }
                                 }
                                 withStyle(SpanStyle(color = TextMuted)) { append("  View thread") }
                             }) else Text("Replied to a thread · View thread")

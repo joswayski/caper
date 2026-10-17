@@ -4292,8 +4292,8 @@ private struct MessageRow: View {
                                     .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright)
                                     .padding(.leading, 3)
                                 if chat.threadUnread(message.id) {
-                                    Circle().fill(CaperTheme.terracotta).frame(width: 5, height: 5)
-                                    Text("Unread").foregroundStyle(CaperTheme.terracottaBright)
+                                    Circle().fill(CaperTheme.pinGold).frame(width: 5, height: 5)
+                                    Text("Unread").foregroundStyle(CaperTheme.pinGold)
                                 }
                                 Text("View thread").foregroundStyle(CaperTheme.muted).padding(.leading, 3)
                             } else {

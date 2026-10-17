@@ -22929,7 +22929,7 @@ fn thread_summary_link(ui: &mut egui::Ui, replies: u64, unread: bool) -> egui::R
         job.append(
             "● Unread",
             8.0,
-            egui::TextFormat::simple(egui::FontId::proportional(12.0), TERRACOTTA_BRIGHT),
+            egui::TextFormat::simple(egui::FontId::proportional(12.0), PIN_GOLD),
         );
     }
     job.append(
