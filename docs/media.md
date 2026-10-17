@@ -1623,15 +1623,19 @@ have the expected size, crop, turn and colours. That Chromium has no H.264
 encoder, so web video edits were checked with Mediabunny and VP9 (turn, crop,
 size and overlay position); H.264 and HDR video edits in a browser remain
 unverified. Android: `testDebugUnitTest` (445 tests, including the shared
-cases), `lintDebug` and Kotlin compilation pass with a local SDK; the editor,
-Media3 effects and encoders have not run on an emulator or device. Apple: the
-macOS `xcodebuild test` in Native development builds passed, including
-CoreGraphics rendering and an H.264 clip turned, cropped and drawn on; the iOS
-simulator and physical devices are unverified. Rust desktop: fmt, Clippy and
-568 tests pass; ignored real-FFmpeg tests turn, crop, tone map and draw on
-video with a full FFmpeg and refuse marks with the bundled one; Xvfb captures
-of the editor were inspected. Windows (Media Foundation) and real storage
-uploads from native clients are unverified.
+cases), `lintDebug` and Kotlin compilation pass with a local SDK. Rust desktop:
+fmt, Clippy and 570 tests pass; ignored real-FFmpeg tests turn, crop, tone map
+and draw on video with a full FFmpeg and refuse marks with the bundled one;
+Xvfb captures of the editor were inspected. Native development builds on the
+branch: Android test, lint, build and emulator smoke pass (the smoke does not
+open the editor); Linux and Windows desktop builds pass; the macOS
+`xcodebuild test` passes, including CoreGraphics rendering and an H.264 clip
+turned, cropped and drawn on; the iOS simulator build and its parity UI tests
+pass. The macOS parity UI step fails the same nine tests as `main` does without
+this change (Live now, thread and composer layout checks), so it says nothing
+about the editor. Not yet run: the editors on an emulator or physical device,
+Media3 effects and encoders, Windows (Media Foundation) and real storage
+uploads from native clients.
 
 ### Inline GIF playback
 
