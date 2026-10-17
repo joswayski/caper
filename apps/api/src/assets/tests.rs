@@ -591,12 +591,17 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     );
 
     // Attachments link once, keep order, and gain signed URLs on the way out.
-    let (_, Json(doc)) = create_as(&owner, input("notes.txt", "text/plain", 5, None))
-        .await
-        .unwrap();
-    put(&doc, "upload", b"hello").await;
+    let notes = b"BM notes, not a bitmap.";
+    let (_, Json(doc)) = create_as(
+        &owner,
+        input("notes.txt", "text/plain", notes.len() as i64, None),
+    )
+    .await
+    .unwrap();
+    put(&doc, "upload", notes).await;
     let doc_id = doc["id"].as_str().unwrap().to_owned();
     let _ = complete_as(&owner, &doc_id).await.unwrap();
+    assert_eq!(store.lock().unwrap()[&original_key(&doc_id)], notes);
     let client_message_id = Uuid::new_v4();
     let message = crate::chat::send_message(
         &pool,
@@ -798,7 +803,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         .await
         .unwrap()
         .0;
-    assert_eq!(before["used"], 100 + 100 + 6 + 5);
+    assert_eq!(before["used"], 100 + 100 + 6 + notes.len());
     let (_, Json(stale)) = create_as(&owner, input("stale.png", "image/png", 100, None))
         .await
         .unwrap();
@@ -838,7 +843,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         .await
         .unwrap()
         .0;
-    assert_eq!(after["used"], 100 + 100 + 5);
+    assert_eq!(after["used"], 100 + 100 + notes.len());
 
     // Deleting a sent file hides it at once and purges after the delay; rows stay.
     sqlx::query("UPDATE public.assets SET deleted_at = now() WHERE external_id=$1")
@@ -1614,6 +1619,7 @@ async fn exercise_media_privacy(
         );
         assert!(store.lock().unwrap().contains_key(&original_key(id)));
     }
+    let bitmap = image_fixture("bmp", 32, 24);
     for (mime, source) in [
         ("video/mp4", b"\0\0\0\x10ftypisom\0\0\0\0".as_slice()),
         (
@@ -1624,6 +1630,7 @@ async fn exercise_media_privacy(
             "application/octet-stream",
             b"II\x2a\0private TIFF metadata".as_slice(),
         ),
+        ("application/octet-stream", bitmap.as_slice()),
     ] {
         let input = serde_json::from_value(json!({"channelId":channel,"filename":"bad.bin","contentType":mime,"byteSize":source.len()})).unwrap();
         let (_, Json(reserved)) =

@@ -97,7 +97,13 @@ fn format(head: &[u8], content_type: &str) -> Result<Option<Format>, ApiError> {
         || content_type.starts_with("audio/")
         || at(0, b"II\x2a\0")
         || at(0, b"MM\0\x2a")
-        || at(0, b"BM")
+        || (at(0, b"BM")
+            && head.get(14..18).is_some_and(|size| {
+                matches!(
+                    u32::from_le_bytes(size.try_into().unwrap()),
+                    12 | 16 | 40 | 52 | 56 | 64 | 108 | 124
+                )
+            }))
     {
         return Err(rejected());
     }
