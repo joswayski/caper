@@ -92,7 +92,12 @@ try {
   wait("!document.querySelector('.chat-composer [aria-label=\"Attach files\"]').disabled");
   browser("upload", '.chat-composer input[type="file"]', file);
   wait('document.querySelector(".chat-drafts li small")?.textContent === "36 B"');
+  const avatar = '.chat-avatar.chat-author-profile[aria-label="Open profile for Maya"]';
+  browser("hover", avatar);
+  evaluate("return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
+  assert.equal(evaluate(`return getComputedStyle(document.querySelector('${avatar}')).outlineStyle`), "none");
   open("Maya");
+  assert.equal(evaluate(`return getComputedStyle(document.querySelector('${avatar}')).outlineStyle`), "none");
   assert.equal(evaluate("return document.activeElement.id"), "profile-message");
   assert.equal(evaluate('return document.querySelector(".chat-mention-card").textContent.includes("Block")'), false);
   assert.equal(evaluate('return !!document.querySelector(".chat-profile-composer .lucide-paperclip")'), true);

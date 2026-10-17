@@ -22054,9 +22054,6 @@ fn message_row<R>(
                 let shown =
                     paint_avatar(ui, rect, &author.name, author.avatar_id, author.picture());
                 if profile {
-                    if response.hovered() {
-                        avatar_ring(ui, rect, shown, 2.0, Stroke::new(2.0, BORDER));
-                    }
                     // Focus follows a picture's rounded square.
                     let corner = if shown {
                         picture_corner(rect.width() + 4.0)

@@ -1460,10 +1460,6 @@
   .chat-author-name:hover {
     text-decoration: underline;
   }
-  .chat-avatar.chat-author-profile:hover {
-    outline: 2px solid var(--border);
-    outline-offset: 2px;
-  }
 }
 .chat-author-profile:focus-visible {
   outline: 2px solid var(--terracotta);
