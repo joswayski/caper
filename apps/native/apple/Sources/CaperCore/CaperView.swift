@@ -2024,10 +2024,13 @@ private struct VoiceCallCard: View {
         VStack(alignment: .leading, spacing: 10) {
             title(count: people.count)
             faces(split.shown, folded: split.folded)
+            // Holds its line through pauses (blank then), so the channels below never jump.
             if let speaker = people.first(where: \.speaking) {
                 (Text(speaker.name).font(CaperTheme.font(12, weight: .bold)) + Text(" is speaking"))
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
                     .accessibilityIdentifier("voice-call-speaker")
+            } else if !people.isEmpty {
+                Text(" ").font(CaperTheme.font(12)).accessibilityHidden(true)
             }
             controls
         }

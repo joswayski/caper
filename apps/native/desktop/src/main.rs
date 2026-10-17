@@ -11594,8 +11594,11 @@ impl CaperApp {
                     } else {
                         self.call_faces(ui, &people, &speaking, touch)
                     };
+                    // Holds its line through pauses (blank then), so the channels below never jump.
                     if let Some(index) = speaking.iter().position(|speaking| *speaking) {
                         speaker_line(ui, &people[index].name);
+                    } else if !people.is_empty() {
+                        speaker_line_space(ui);
                     }
                     self.call_card_controls(ui, joining, touch);
                     picked
@@ -22330,6 +22333,30 @@ fn speaker_line(ui: &mut egui::Ui, name: &str) {
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(ui.available_width().max(1.0));
     ui.add(egui::Label::new(job).selectable(false));
+}
+
+/// The speaker line's height with nobody speaking, so the card keeps its size:
+/// the same fonts as `speaker_line`, laid out with nothing visible.
+fn speaker_line_space(ui: &mut egui::Ui) {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        " ",
+        0.0,
+        egui::TextFormat::simple(
+            egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
+            egui::Color32::TRANSPARENT,
+        ),
+    );
+    job.append(
+        " ",
+        0.0,
+        egui::TextFormat::simple(egui::FontId::proportional(12.0), egui::Color32::TRANSPARENT),
+    );
+    let height = ui.painter().layout_job(job).size().y;
+    ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
 }
 
 /// The call card's and strip's square Mute and Deafen: a quiet outline at
@@ -38283,6 +38310,25 @@ mod tests {
                 "full-width lines must not be clipped to the padded content: {dividers:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_pause_keeps_the_speaker_lines_height() {
+        // The call card holds the line while nobody speaks, so channels below stay put.
+        let (context, _app) = fixture("parity-voice-connected");
+        let mut heights = (0.0, 0.0);
+        let _ = context.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let top = ui.cursor().top();
+                super::speaker_line(ui, "Alex");
+                let middle = ui.cursor().top();
+                super::speaker_line_space(ui);
+                heights = (middle - top, ui.cursor().top() - middle);
+            });
+        });
+        assert!(heights.0 > 0.0, "{heights:?}");
+        assert_eq!(heights.0, heights.1);
     }
 
     #[test]

@@ -1253,8 +1253,12 @@ try {
       wait(`!document.querySelector('.live-everyone')`);
       browser("mouse", "move", "5", "5");
       screenshot(`voice-avatars-idle-${width}`);
+      // Pauses must not resize the card and move the channels below it.
+      const cardHeight = () => evaluate(`return document.querySelector('.live-call').getBoundingClientRect().height;`);
+      const quietHeight = cardHeight();
       click("Unmute microphone");
       wait(`document.querySelector('.live-call .live-avatar[data-speaking]')`);
+      assert.equal(cardHeight(), quietHeight, "Someone starting to speak keeps the call card's height");
       assert.match(
         evaluate(
           `return getComputedStyle(document.querySelector('.live-call .live-avatar[data-speaking]')).boxShadow;`,
@@ -1285,6 +1289,7 @@ try {
       screenshot(`voice-avatars-speaking-${width}`);
       click("Mute microphone");
       wait(`!document.querySelector('.live-call .live-avatar[data-speaking]')`);
+      assert.equal(cardHeight(), quietHeight, "Falling quiet keeps the call card's height");
     }
     evaluate(`await voiceFixture.cleanup();`);
     console.log(

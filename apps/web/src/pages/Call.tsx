@@ -1661,9 +1661,14 @@ export default function Call({
             )}
           </ul>
         )}
-        {speaker && (
-          <p className="live-speaker">
-            <strong>{personName(speaker)}</strong> is speaking
+        {/* Holds its line through pauses, so the channels below never jump. */}
+        {people.length > 0 && (
+          <p className="live-speaker" aria-hidden={speaker ? undefined : true}>
+            {speaker && (
+              <>
+                <strong>{personName(speaker)}</strong> is speaking
+              </>
+            )}
           </p>
         )}
         <div className="live-controls">

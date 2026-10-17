@@ -198,8 +198,8 @@ voice.
   Reconnecting… in amber, and the shared session timer. Faces follow, you first
   and then in join order (speaking never reorders them), with a green speaking
   ring and mute/deafen badges, in at most two rows: up to ten faces, or nine and
-  a "+N" tile. Then "Name is speaking", and Mute, Deafen and Leave (Cancel while
-  joining). Faces and "+N" open the full list ("In #channel · N people") with
+  a "+N" tile. Then "Name is speaking" (the line stays, blank, through pauses, so
+  the rows below never move), and Mute, Deafen and Leave (Cancel while joining). Faces and "+N" open the full list ("In #channel · N people") with
   per-person volume and Mute for me, beside the sidebar on wide layouts and as a
   bottom sheet on phones. Escape, an outside press and Close dismiss it; on web,
   focus moves into it.

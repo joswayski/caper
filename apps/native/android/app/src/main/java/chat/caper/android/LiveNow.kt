@@ -462,11 +462,15 @@ private class VoiceListRequest(val openId: String?)
                 Text(status, color = tone, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, style = TabularNumbers)
                 if (!connecting) sessionStartedAt?.let { VoiceSessionTimer(it, Modifier.padding(start = 6.dp)) }
             }
-            if (people.isNotEmpty()) CallFaces(people, voice, account) { list = VoiceListRequest(it) }
-            people.firstOrNull { it.id in voice.speakingParticipants }?.let { speaker ->
+            if (people.isNotEmpty()) {
+                CallFaces(people, voice, account) { list = VoiceListRequest(it) }
+                // Holds its line through pauses (empty then), so the channels below never jump.
+                val speaker = people.firstOrNull { it.id in voice.speakingParticipants }
                 Text(buildAnnotatedString {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Text)) { append(callName(speaker, voice, account)) }
-                    append(" is speaking")
+                    if (speaker != null) {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Text)) { append(callName(speaker, voice, account)) }
+                        append(" is speaking")
+                    }
                 }, color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {

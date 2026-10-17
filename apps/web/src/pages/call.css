@@ -2171,6 +2171,7 @@ button.live-face {
 }
 .live-speaker {
   min-width: 0;
+  min-height: 1lh;
   margin: -2px 0 0;
   overflow: hidden;
   color: var(--text-muted);
