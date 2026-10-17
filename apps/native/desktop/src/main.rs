@@ -8610,6 +8610,7 @@ impl CaperApp {
                                 egui::TextEdit::singleline(&mut self.form_name)
                                     .vertical_align(egui::Align::Center)
                                     .char_limit(64)
+                                    .hint_text("Gaming nights")
                                     .min_size(egui::vec2(0.0, 52.0))
                                     .desired_width(f32::INFINITY),
                             );
@@ -19408,7 +19409,7 @@ impl CaperApp {
             );
             ui.add_space(14.0);
         }
-        let name = name_field(ui, "Space name", &mut self.form_name, "Studio", None);
+        let name = name_field(ui, "Space name", &mut self.form_name, "Gaming nights", None);
         if !manage && self.focus_dialog_field {
             name.request_focus();
         }
@@ -19839,25 +19840,48 @@ impl CaperApp {
             }
             return;
         }
-        let label = ui.label(bold("Invite link").size(11.5).color(MUTED));
         ui.label(
             RichText::new("Paste it below to join!")
                 .size(12.0)
                 .color(MUTED),
         );
         ui.add_space(8.0);
-        let field = ui
-            .add_sized(
-                [ui.available_width(), 42.0],
-                egui::TextEdit::singleline(&mut self.invite_join.input)
-                    .vertical_align(egui::Align::Center)
-                    .margin(egui::Margin::symmetric(8, 4))
-                    .hint_text(
-                        RichText::new("it looks like --> caper.chat/invite/AbCdE12345")
-                            .color(MUTED.gamma_multiply(0.65)),
-                    ),
-            )
-            .labelled_by(label.id);
+        let field = ui.add_sized(
+            [ui.available_width(), 42.0],
+            egui::TextEdit::singleline(&mut self.invite_join.input)
+                .vertical_align(egui::Align::Center)
+                .margin(egui::Margin::symmetric(8, 4)),
+        );
+        field.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, field.enabled(), "Invite link")
+        });
+        if self.invite_join.input.is_empty() {
+            let color = MUTED.gamma_multiply(0.65);
+            let font = egui::FontId::proportional(14.0);
+            let rect = field.rect.shrink2(egui::vec2(8.0, 4.0));
+            let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(rect));
+            let prefix = painter.text(
+                rect.left_center(),
+                egui::Align2::LEFT_CENTER,
+                "it looks like",
+                font.clone(),
+                color,
+            );
+            let arrow = egui::Rect::from_center_size(
+                egui::pos2(prefix.right() + 11.0, rect.center().y),
+                egui::vec2(14.0, 14.0),
+            );
+            egui::Image::new(egui::include_image!("../resources/icons/arrow-right.svg"))
+                .tint(color)
+                .paint_at(ui, arrow);
+            painter.text(
+                egui::pos2(arrow.right() + 4.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                "caper.chat/invite/AbCdE12345",
+                font,
+                color,
+            );
+        }
         focus_frame(ui, &field);
         if self.focus_dialog_field {
             field.request_focus();

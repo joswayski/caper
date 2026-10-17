@@ -163,7 +163,7 @@ private struct FirstSpaceView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Choose something you will recognize easily. You can always change it later!")
                     .font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
-                CaperField(title: "Space name", text: $name).onSubmit(create)
+                CaperField(title: "Space name", text: $name, placeholder: "Gaming nights").onSubmit(create)
                 Button(pending ? "Creating…" : "Create space", action: create)
                     .buttonStyle(CaperPrimaryButton())
                     .disabled(pending || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.canCreateSpace)
@@ -7604,12 +7604,23 @@ private struct JoinInviteSheet: View {
 
     private var linkField: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text("Invite link").font(CaperTheme.font(12, weight: .bold))
             Text("Paste it below to join!").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             TextField("Invite link", text: Binding(get: { link }, set: { if !pending { link = $0; error = nil } }),
-                      prompt: Text(verbatim: "it looks like --> caper.chat/invite/AbCdE12345").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted.opacity(0.65)))
+                      prompt: Text(verbatim: ""))
                 .textFieldStyle(CaperTextFieldStyle())
                 .foregroundStyle(CaperTheme.text)
+                .overlay(alignment: .leading) {
+                    if link.isEmpty {
+                        HStack(spacing: 4) {
+                            Text("it looks like")
+                            CaperIcon(name: "arrow-right", size: 12)
+                            Text(verbatim: "caper.chat/invite/AbCdE12345")
+                        }
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted.opacity(0.65))
+                        .lineLimit(1).padding(.horizontal, 11)
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                }
                 .autocorrectionDisabled()
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
@@ -7954,7 +7965,7 @@ private struct SpaceEditor: View {
             SheetHeader(title: managing ? "Manage space" : "Create a space", detail: managing ? "Only the owner can change this space and its membership." : nil, closeDisabled: creating, close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    CaperField(title: "Space name", text: $name, focus: $nameFocused)
+                    CaperField(title: "Space name", text: $name, placeholder: "Gaming nights", focus: $nameFocused)
                         .onChange(of: name) { _, _ in error = nil }
                     Button(pending ? (managing ? "Saving…" : "Creating…") : managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton())
                         .disabled(pending || (!managing && model.limits != nil && !model.canCreateSpace))

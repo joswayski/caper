@@ -1985,15 +1985,32 @@
   color: var(--text-muted);
   font-size: 0.76rem;
 }
-.join-invite-link input::placeholder {
+.invite-link-input {
+  position: relative;
+  min-width: 0;
+}
+.invite-link-placeholder {
+  position: absolute;
+  inset: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
   color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 500;
+  white-space: nowrap;
   opacity: 0.65;
+  pointer-events: none;
+}
+.invite-link-placeholder > svg {
+  flex-shrink: 0;
 }
 @media (max-width: 480px) {
   .join-invite-link .member-add {
     grid-template-columns: minmax(0, 1fr);
   }
-  .join-invite-link input::placeholder {
+  .invite-link-placeholder {
     font-size: 0.75rem;
   }
   .join-invite-link .member-add > button {
