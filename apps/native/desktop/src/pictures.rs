@@ -25,8 +25,6 @@ use std::time::{Duration, Instant};
 
 /// Every other picture is re-encoded to at most this size.
 pub const MAX_STILL_BYTES: usize = 1024 * 1024;
-/// The API's largest picture edge.
-pub const MAX_DIMENSION: u32 = 1024;
 /// Re-encoded pictures are squares of at most this edge.
 pub const UPLOAD_EDGE: u32 = 512;
 /// Lossy WebP qualities tried in turn until the picture fits.
@@ -203,8 +201,7 @@ fn heif_family(bytes: &[u8]) -> bool {
 }
 
 /// Prepare picked bytes for upload (contract "Client preparation"). GIFs keep
-/// animating: unchanged at any size within 1024 × 1024, else shrunk to a
-/// 512 px square ([`shrink_gif`]); everything else is decoded upright,
+/// animating: byte for byte, whatever their size or shape; everything else is decoded upright,
 /// cropped to a centred square, scaled to at most 512 px and re-encoded as
 /// lossy WebP (JPEG only if WebP fails), which drops location metadata.
 pub fn prepare(bytes: Vec<u8>) -> Result<Prepared, String> {
@@ -212,9 +209,6 @@ pub fn prepare(bytes: Vec<u8>) -> Result<Prepared, String> {
         let (width, height) = gif_dimensions(&bytes)
             .filter(|(width, height)| *width > 0 && *height > 0)
             .ok_or(INVALID)?;
-        if width > MAX_DIMENSION || height > MAX_DIMENSION {
-            return shrink_gif(&bytes);
-        }
         return Ok(Prepared {
             bytes,
             content_type: "image/gif",
@@ -315,53 +309,6 @@ impl Failure {
     }
 }
 
-/// Shrink a GIF wider or taller than 1024 px, as the web's `gif-shrink.ts`
-/// does: every composited frame cropped to a centred square of at most
-/// 512 px, keeping its timing.
-pub fn shrink_gif(bytes: &[u8]) -> Result<Prepared, String> {
-    let (width, height) = gif_dimensions(bytes)
-        .filter(|(width, height)| *width > 0 && *height > 0)
-        .ok_or(INVALID)?;
-    let edge = UPLOAD_EDGE.min(width).min(height);
-    Ok(Prepared {
-        bytes: encode_shrunk(bytes, edge)?,
-        content_type: "image/gif",
-        width: edge,
-        height: edge,
-    })
-}
-
-/// An `edge`-pixel square GIF of every composited frame.
-fn encode_shrunk(bytes: &[u8], edge: u32) -> Result<Vec<u8>, String> {
-    use image::AnimationDecoder;
-    use image::codecs::gif::{GifDecoder, GifEncoder, Repeat};
-    let mut decoder = GifDecoder::new(std::io::Cursor::new(bytes)).map_err(|_| UNREADABLE)?;
-    decoder.set_limits(limits()).map_err(|_| UNREADABLE)?;
-    let mut output = Vec::new();
-    {
-        let mut encoder = GifEncoder::new_with_speed(&mut output, 10);
-        encoder.set_repeat(Repeat::Infinite).map_err(|_| INVALID)?;
-        let mut frames = 0;
-        for frame in decoder.into_frames() {
-            let frame = frame.map_err(|_| UNREADABLE)?;
-            let delay = frame.delay();
-            let buffer = frame.into_buffer();
-            let (x, y, side) = square_crop(buffer.width(), buffer.height());
-            let square = image::imageops::crop_imm(&buffer, x, y, side, side).to_image();
-            let scaled =
-                image::imageops::resize(&square, edge, edge, image::imageops::FilterType::Triangle);
-            encoder
-                .encode_frame(image::Frame::from_parts(scaled, 0, 0, delay))
-                .map_err(|_| INVALID)?;
-            frames += 1;
-        }
-        if frames == 0 {
-            return Err(UNREADABLE.into());
-        }
-    }
-    Ok(output)
-}
-
 /// The API's picture errors as sentences (contract "Uploading a picture").
 pub fn failure(status: Option<u16>, code: Option<&str>, message: &str, target: &Target) -> Failure {
     let text = match (code, status) {
@@ -373,7 +320,7 @@ pub fn failure(status: Option<u16>, code: Option<&str>, message: &str, target: &
             "You’ve changed pictures too often today. Try again later."
         }
         (Some("picture_invalid"), _) | (_, Some(422)) => INVALID,
-        (_, Some(400)) => "Pictures can be up to 1024 × 1024.",
+        (_, Some(400)) => INVALID,
         (_, Some(404)) => match target {
             Target::Avatar => "That’s no longer available.",
             Target::SpaceIcon(_) => "Only the space owner can change its icon.",
@@ -1078,33 +1025,15 @@ mod tests {
     }
 
     #[test]
-    fn oversized_gifs_shrink_to_a_512_px_square_keeping_frames_and_timing() {
-        use image::AnimationDecoder;
-        // Over 1024 px wide: a 512 px square, centre-cropped, every frame and delay.
+    fn wide_gifs_upload_byte_for_byte_never_cropped() {
         let wide = gif(
-            &[
-                ([255, 0, 0, 255], 80),
-                ([0, 0, 255, 255], 120),
-                ([0, 255, 0, 255], 40),
-            ],
+            &[([255, 0, 0, 255], 80), ([0, 0, 255, 255], 120)],
             1100,
             700,
         );
-        let prepared = prepare(wide).unwrap();
-        assert_eq!((prepared.width, prepared.height), (512, 512));
-        assert_eq!(gif_dimensions(&prepared.bytes), Some((512, 512)));
-        let decoder =
-            image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&prepared.bytes)).unwrap();
-        let frames: Vec<_> = decoder.into_frames().map(Result::unwrap).collect();
-        let delays: Vec<u32> = frames
-            .iter()
-            .map(|frame| frame.delay().numer_denom_ms().0)
-            .collect();
-        assert_eq!(delays, [80, 120, 40]);
-        assert_eq!(frames[1].buffer().get_pixel(256, 256).0, [0, 0, 255, 255]);
-        // Under 512 px, the short edge stays.
-        let small = shrink_gif(&gif(&[([9, 9, 9, 255], 50)], 400, 300)).unwrap();
-        assert_eq!((small.width, small.height), (300, 300));
+        let prepared = prepare(wide.clone()).unwrap();
+        assert_eq!(prepared.bytes, wide);
+        assert_eq!((prepared.width, prepared.height), (1100, 700));
     }
 
     #[test]

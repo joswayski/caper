@@ -11,10 +11,8 @@ import {
 } from "../chat/uploads.ts";
 import type { Space } from "../spaces/client.ts";
 import { rememberSavedAccount, type Account } from "./client.ts";
-import { GifShrinkError, shrinkGif } from "./gif-shrink.ts";
 import {
   gifSize,
-  gifUploadsUnchanged,
   MAX_PICTURE_BYTES,
   pictureEdge,
   pictureErrorMessage,
@@ -92,51 +90,17 @@ async function fallback(canvas: Surface) {
   return (await encode(flat, "image/jpeg", PICTURE_QUALITY)) ?? png;
 }
 
-/** Shrinks an oversized GIF in a worker (inline where workers are unavailable, as in tests). */
-function shrinkGifOffPage(bytes: Uint8Array): Promise<{ bytes: Uint8Array; edge: number } | undefined> {
-  const inline = () => {
-    try {
-      return shrinkGif(bytes);
-    } catch (error) {
-      if (error instanceof GifShrinkError) return undefined;
-      throw error;
-    }
-  };
-  if (typeof Worker === "undefined") return Promise.resolve(inline());
-  return new Promise((resolve) => {
-    let worker: Worker;
-    try {
-      worker = new Worker(new URL("./gif-shrink-worker.ts", import.meta.url), { type: "module", name: "caper-gif" });
-    } catch {
-      resolve(inline());
-      return;
-    }
-    const done = (value?: { bytes: Uint8Array; edge: number }) => {
-      worker.terminate();
-      resolve(value);
-    };
-    worker.onmessage = (event: MessageEvent<{ bytes?: Uint8Array; edge?: number }>) =>
-      done(event.data.bytes && event.data.edge ? { bytes: event.data.bytes, edge: event.data.edge } : undefined);
-    worker.onerror = () => done();
-    worker.postMessage({ bytes }, [bytes.buffer]);
-  });
-}
-
 /**
- * GIFs (by their magic bytes) keep animating: within 1024 × 1024 they upload
- * unchanged at any byte size, and a wider or taller one is shrunk to a 512 px
- * square, every frame kept. Anything else the browser decodes is center-cropped square,
- * scaled to at most 512 px and re-encoded as WebP, which also drops metadata
- * such as location.
+ * GIFs (by their magic bytes) upload byte for byte, whatever their size or
+ * shape, so they keep animating. Anything else the browser decodes is
+ * center-cropped square, scaled to at most 512 px and re-encoded as WebP,
+ * which also drops metadata such as location.
  */
 export async function preparePicture(file: Blob): Promise<PreparedPicture> {
   const gif = gifSize(new Uint8Array(await file.slice(0, 10).arrayBuffer()));
   if (gif) {
-    if (gifUploadsUnchanged(gif)) return { blob: file, contentType: "image/gif", ...gif };
-    const shrunk = await shrinkGifOffPage(new Uint8Array(await file.arrayBuffer()));
-    if (!shrunk) throw new PictureError(pictureMessages.gifUnreadable);
-    const blob = new Blob([shrunk.bytes as BlobPart], { type: "image/gif" });
-    return { blob, contentType: "image/gif", width: shrunk.edge, height: shrunk.edge };
+    if (!gif.width || !gif.height) throw new PictureError(pictureMessages.invalid);
+    return { blob: file, contentType: "image/gif", ...gif };
   }
   const image = await decode(file);
   try {

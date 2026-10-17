@@ -86,11 +86,11 @@ fn unreadable_or_mislabelled_pictures_have_no_dimensions() {
 }
 
 #[test]
-fn stored_pictures_must_fit_1024_pixels() {
-    assert!(fits("image/gif", &gif(1024, 1024)));
-    assert!(!fits("image/gif", &gif(1025, 10)));
-    assert!(!fits("image/gif", &gif(0, 10)));
-    assert!(!fits("image/png", &png(10, 4000)));
+fn stored_pictures_need_a_size_but_no_maximum() {
+    assert!(readable("image/gif", &gif(1024, 1024)));
+    assert!(readable("image/gif", &gif(4000, 10)));
+    assert!(readable("image/png", &png(10, 4000)));
+    assert!(!readable("image/gif", &gif(0, 10)));
 }
 
 #[test]
@@ -106,7 +106,8 @@ fn reservations_check_type_and_dimensions_but_not_bytes() {
         code(check_reservation("image/svg+xml", Some(1), Some(1))),
         Some("picture_type")
     );
-    for (width, height) in [(None, Some(1)), (Some(1025), Some(1)), (Some(0), Some(1))] {
+    assert!(check_reservation("image/gif", Some(4000), Some(3000)).is_ok());
+    for (width, height) in [(None, Some(1)), (Some(0), Some(1))] {
         assert_eq!(
             check_reservation("image/png", width, height)
                 .unwrap_err()

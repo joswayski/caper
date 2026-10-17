@@ -18,9 +18,6 @@ use axum::{
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
-/// Pictures have no byte limit: clients send stills at most 512 px and GIFs
-/// either unchanged or shrunk to a square, so the edge bounds every picture.
-pub(crate) const MAX_DIMENSION: u32 = 1024;
 /// Picture uploads (profile and space icons together) per person per day.
 pub(crate) const PER_DAY: i64 = 50;
 /// Enough of a file to reach a JPEG frame header behind EXIF and ICC segments.
@@ -76,8 +73,8 @@ pub(crate) fn allowed_type(content_type: &str) -> bool {
     )
 }
 
-/// Validates a picture reservation before anything is stored: its type and
-/// pixel size, never its byte size.
+/// Validates a picture reservation before anything is stored: an image type
+/// every client can show, with a size. Pictures have no byte or pixel limit.
 pub(crate) fn check_reservation(
     content_type: &str,
     width: Option<i32>,
@@ -90,11 +87,9 @@ pub(crate) fn check_reservation(
         )
         .with_code("picture_type"));
     }
-    let fits = |side: Option<i32>| {
-        side.and_then(|side| u32::try_from(side).ok())
-            .is_some_and(|side| (1..=MAX_DIMENSION).contains(&side))
-    };
-    if !fits(width) || !fits(height) {
+    // No byte or pixel limit: only a real, non-empty size.
+    let sized = |side: Option<i32>| side.is_some_and(|side| side >= 1);
+    if !sized(width) || !sized(height) {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "invalid media dimensions",
@@ -176,11 +171,10 @@ pub(crate) fn dimensions(content_type: &str, bytes: &[u8]) -> Option<(u32, u32)>
     }
 }
 
-/// Whether stored picture bytes have an acceptable real size.
-pub(crate) fn fits(content_type: &str, head: &[u8]) -> bool {
-    dimensions(content_type, head).is_some_and(|(width, height)| {
-        (1..=MAX_DIMENSION).contains(&width) && (1..=MAX_DIMENSION).contains(&height)
-    })
+/// Whether the stored bytes start like a real picture of that type, with a
+/// non-empty pixel size (no maximum).
+pub(crate) fn readable(content_type: &str, head: &[u8]) -> bool {
+    dimensions(content_type, head).is_some_and(|(width, height)| width > 0 && height > 0)
 }
 
 /// What completing a picture did.

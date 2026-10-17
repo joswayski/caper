@@ -182,11 +182,6 @@ final class ProfilePictureTests: XCTestCase {
         let square = header("GIF89a", width: 1024, height: 1024)
         XCTAssertEqual(ProfilePicturePolicy.gifSize(square)?.width, 1024, "little-endian bytes 6-7")
         XCTAssertEqual(ProfilePicturePolicy.gifSize(header("GIF89a", width: 480, height: 270))?.height, 270)
-        XCTAssertTrue(ProfilePicturePolicy.gifUploadsUnchanged(square))
-        XCTAssertFalse(ProfilePicturePolicy.gifUploadsUnchanged(header("GIF89a", width: 1025, height: 10)))
-        XCTAssertFalse(ProfilePicturePolicy.gifUploadsUnchanged(header("GIF89a", width: 10, height: 1025)))
-        XCTAssertFalse(ProfilePicturePolicy.gifUploadsUnchanged(header("GIF89a", width: 0, height: 10)))
-        XCTAssertTrue(ProfilePicturePolicy.gifUploadsUnchanged(square + Data(count: 8 * 1_024 * 1_024)), "any byte size")
         XCTAssertEqual(ProfilePicturePolicy.stillMaxBytes, 1_048_576)
         // A slice that does not start at index 0 reads the same.
         let sliced = (Data([1, 2]) + square).dropFirst(2)
@@ -241,7 +236,7 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertEqual(message(APIError(status: 413, message: "x", code: "picture_too_large")),
                        "That picture is too large. Try another one.")
         XCTAssertEqual(message(APIError(status: 400, message: "x", code: "picture_type")), "Use a PNG, JPEG, WebP or GIF picture.")
-        XCTAssertEqual(message(APIError(status: 400, message: "invalid dimensions")), "Pictures can be up to 1024 × 1024.")
+        XCTAssertEqual(message(APIError(status: 400, message: "invalid media dimensions")), "That picture couldn’t be used. Try another one.")
         XCTAssertEqual(message(APIError(status: 429, message: "x", code: "picture_rate_limited")),
                        "You’ve changed pictures too many times today. Try again tomorrow.")
         XCTAssertEqual(message(APIError(status: 404, message: "x"), .spaceIcon), "Only the space owner can change its icon.")
@@ -255,7 +250,7 @@ final class ProfilePictureTests: XCTestCase {
 
     // MARK: Preparation (real ImageIO and libwebp)
 
-    func testGIFsUploadUnchangedAtAnySizeAndShrinkWhenWide() throws {
+    func testGIFsUploadUnchangedAtAnySizeOrShape() throws {
         let gif = try animatedGIF(width: 40, height: 20, frames: 2)
         let prepared = try ProfilePicturePreparer.prepare(gif)
         XCTAssertEqual(prepared.data, gif, "the animation is never re-encoded")
@@ -265,14 +260,12 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertEqual(prepared.filename(for: .avatar), "avatar.gif")
         XCTAssertEqual(prepared.filename(for: .spaceIcon), "space-icon.gif")
 
-        // Over 1024 px: shrunk to a 512 px square, every frame and its timing kept.
+        // Wide and over 1024 px: byte for byte too, never cropped.
         let wide = try animatedGIF(width: 1100, height: 700, frames: 3)
-        let shrunk = try ProfilePicturePreparer.prepare(wide)
-        XCTAssertEqual([shrunk.contentType, "\(shrunk.width)x\(shrunk.height)"], ["image/gif", "512x512"])
-        let source = try XCTUnwrap(CGImageSourceCreateWithData(shrunk.data as CFData, nil))
-        XCTAssertEqual(CGImageSourceGetCount(source), 3)
-        XCTAssertEqual(GIFShrink.frameDelay(source, at: 1), 0.1, accuracy: 0.001)
-        // Over 5 MiB but within 1024 px: uploaded byte for byte.
+        let unchanged = try ProfilePicturePreparer.prepare(wide)
+        XCTAssertEqual(unchanged.data, wide)
+        XCTAssertEqual([unchanged.width, unchanged.height], [1100, 700])
+        // Over 5 MiB: byte for byte.
         let heavy = gif + Data(count: 6 * 1_024 * 1_024)
         XCTAssertEqual(try ProfilePicturePreparer.prepare(heavy).data, heavy)
         XCTAssertThrowsError(try ProfilePicturePreparer.prepare(Data("not a picture".utf8))) { XCTAssertEqual($0 as? PictureError, .unreadable) }

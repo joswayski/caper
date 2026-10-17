@@ -997,7 +997,7 @@ async fn complete(
         if purpose.is_picture() {
             // Pictures also prove their real pixel size from the stored bytes.
             let head = assets.r2.head_bytes(key, pictures::HEAD_BYTES).await?;
-            if !sniff(content_type, &head) || !pictures::fits(content_type, &head) {
+            if !sniff(content_type, &head) || !pictures::readable(content_type, &head) {
                 return reject(assets, &asset, purpose).await;
             }
         } else if opens_in_browser(content_type)

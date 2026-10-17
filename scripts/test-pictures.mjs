@@ -114,7 +114,7 @@ const stillAvatar = png(96, 96, (x, y) => (((x >> 4) + (y >> 4)) % 2 ? palette.e
 const stillIcon = png(64, 64, (x, y) => (Math.hypot(x - 32, y - 32) < 20 ? palette.eggshell : palette.blackout));
 // A landscape photo-like PNG: the client must crop it square and re-encode it.
 const landscape = png(800, 600, (x, y) => [Math.round((x / 800) * 255), Math.round((y / 600) * 255), 120]);
-// 1200 px wide (and about 6 MB, as this writer barely compresses): shrunk to a 512 px square.
+// 1200 × 800 and about 6 MB (this writer barely compresses): uploaded byte for byte.
 const oversizedGif = gif(
   1200,
   800,
@@ -567,12 +567,12 @@ try {
   await page.waitForFunction(() => window.pictureFixture.completes === 3, undefined, { timeout: 60_000 });
   const shrunk = await page.evaluate(() => window.pictureFixture.reservations.at(-1));
   assert.deepEqual(
-    [shrunk.contentType, shrunk.filename, shrunk.width, shrunk.height],
-    ["image/gif", "avatar.gif", 512, 512],
+    [shrunk.contentType, shrunk.filename, shrunk.width, shrunk.height, shrunk.byteSize],
+    ["image/gif", "avatar.gif", 1200, 800, oversizedGif.length],
   );
-  // Chrome's own decoder plays the shrunk upload: every frame, square.
+  // The stored file is the picked one, and Chrome plays every frame.
   const shrunkBody = stored.get("upload000003").body;
-  assert.equal(shrunkBody.length, shrunk.byteSize);
+  assert.ok(shrunkBody.equals(oversizedGif));
   const playback = await page.evaluate(async (base64) => {
     const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
     const decoder = new ImageDecoder({ data: bytes, type: "image/gif" });
@@ -580,7 +580,7 @@ try {
     const { image } = await decoder.decode({ frameIndex: 0 });
     return { frames: decoder.tracks.selectedTrack.frameCount, width: image.displayWidth, height: image.displayHeight };
   }, shrunkBody.toString("base64"));
-  assert.deepEqual(playback, { frames: 12, width: 512, height: 512 });
+  assert.deepEqual(playback, { frames: 12, width: 1200, height: 800 });
   await page.waitForFunction(loaded('.account-avatar [data-avatar-asset="upload000003"]'));
   await dialog.locator('.picture-settings input[type="file"]').setInputFiles({
     name: "photo.heic",

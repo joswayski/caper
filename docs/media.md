@@ -8252,8 +8252,8 @@ user's pictures from storage on account deletion belongs with that future flow.
 
 | Call | Behavior |
 | --- | --- |
-| `POST /api/assets` `{"purpose":"avatar"\|"spaceIcon", "spaceId"?, filename, contentType, byteSize, width, height}` | Reserves a picture (no `channelId`/`preview`). `spaceIcon` requires owning the space (`404` otherwise). PNG, JPEG, WebP or GIF only (`400 picture_type`); no byte limit (earlier servers answered `413 picture_too_large` over 5 MiB for GIFs or 1 MiB otherwise); 1–1024 px each side. 50 picture uploads per person per day (`429 picture_rate_limited`), plus the usual 30/minute and 20 pending. Returns `{id, kind, upload}`; picture IDs are 20 characters. |
-| `POST /api/assets/{id}/complete` | Checks size and magic bytes as for attachments, then the real pixel size read from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), ≤ 1024 px (`422 picture_invalid`). The first successful completion **applies** the picture and returns `account` (avatar) or `space` (icon); a retry returns the current state without re-applying, so a late retry never undoes a newer picture. Pictures are ordered by reservation: one that completes after a later-reserved picture already completed is kept but not applied, and the response shows the newer one. |
+| `POST /api/assets` `{"purpose":"avatar"\|"spaceIcon", "spaceId"?, filename, contentType, byteSize, width, height}` | Reserves a picture (no `channelId`/`preview`). `spaceIcon` requires owning the space (`404` otherwise). PNG, JPEG, WebP or GIF only (`400 picture_type`); no byte or pixel limit, only a positive width and height (earlier servers answered `413 picture_too_large` over 5 MiB for GIFs or 1 MiB otherwise, and refused over 1024 px). 50 picture uploads per person per day (`429 picture_rate_limited`), plus the usual 30/minute and 20 pending. Returns `{id, kind, upload}`; picture IDs are 20 characters. |
+| `POST /api/assets/{id}/complete` | Checks size and magic bytes as for attachments, then the real pixel size read from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), which must be present and non-zero (`422 picture_invalid`); there is no maximum. The first successful completion **applies** the picture and returns `account` (avatar) or `space` (icon); a retry returns the current state without re-applying, so a late retry never undoes a newer picture. Pictures are ordered by reservation: one that completes after a later-reserved picture already completed is kept but not applied, and the response shows the newer one. |
 | `POST /api/assets/{id}/cancel` | Cancels a picture before completion; `409` afterwards. |
 | `DELETE /api/account/avatar` | Back to the saved mascot; returns the account. |
 | `DELETE /api/spaces/{space}/icon` | Owner only; back to the initial; returns the space. |
@@ -8269,17 +8269,12 @@ image downloads on each platform; follow-up).
 
 ### Clients
 
-Every client applies the same preparation: a GIF (detected by its bytes) keeps
-its animation. Within 1024 × 1024 it uploads unchanged at any byte size; a
-wider or taller one is shrunk on the device: every composited frame
-center-cropped to a square of at most 512 px, with its timing. Web
-(`account/gif-shrink.ts`, in a worker) and Android (`GifShrink.kt`) share one
-pure decoder/encoder that gives each frame a palette of only the pixels that
-changed and leaves unchanged pixels showing; Apple uses ImageIO and the Rust
-desktop the `image` crate's GIF codec. Pictures have no byte limit anywhere:
-not on upload, not when picked, not when downloaded for display (clients before
-October 17, 2026 refuse pictures over 5 MB on upload, and Apple builds before
-then refuse to download one over 6 MB). Anything else the platform decodes is turned upright, center-cropped to a
+Every client applies the same preparation: a GIF (detected by its bytes)
+uploads byte for byte, whatever its size or shape, so it keeps its animation;
+viewers aspect-fill it into the avatar's square. Pictures have no byte or pixel
+limit anywhere: not on upload, not when picked, not when downloaded for display
+(clients before October 17, 2026 refuse GIFs over 5 MB or 1024 px on upload,
+and Apple builds before then refuse to download a picture over 6 MB). Anything else the platform decodes is turned upright, center-cropped to a
 square, scaled to at most 512 px and re-encoded as WebP (PNG or JPEG where WebP
 encoding is unavailable), which also drops location metadata. Pictures show
 aspect-filled in a rounded square (corner radius 30% of the side, the
@@ -8323,11 +8318,14 @@ standalone Kotlin 2.2.20 compiler on the JVM, with the same output quality; the
 Android app itself was not built (no SDK). Rust desktop `pictures::` tests and
 application Clippy pass. Apple's ImageIO path was not compiled (no Xcode).
 
-No picture byte limits (October 17, 2026): API workspace tests and Clippy pass
-(the database picture test, which loses only its 413 case, was not run here);
-web Vitest and `scripts/test-pictures.mjs` pass, including a 9 MB 1000 px GIF
-prepared byte for byte; `GifShrink.kt` JUnit passes on the JVM; Rust desktop
-`pictures::` tests and application Clippy pass. Apple not compiled here.
+No picture limits (October 17, 2026): GIFs always upload byte for byte (the
+on-device shrinking above was removed the same day), and the API checks only
+type and a real, non-empty size. API workspace tests, Clippy and the database
+asset/picture tests (local disposable Postgres 16) pass, including a 4000 px
+wide picture applying; web Vitest and `scripts/test-pictures.mjs` pass,
+including a 6 MB 1200 × 800 GIF stored byte for byte and played by Chrome as
+all 12 frames; Rust desktop `pictures::` tests and application Clippy pass.
+Android and Apple not compiled here.
 
 Run the browser check against `vite dev` with Playwright installed somewhere
 (the repository has no Playwright dependency):

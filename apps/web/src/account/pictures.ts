@@ -4,8 +4,6 @@
 
 /** A re-encoded still above this falls back from PNG to JPEG (no browser makes WebP that large). */
 export const MAX_PICTURE_BYTES = 1024 * 1024;
-/** The server's largest accepted width or height, in pixels. */
-export const MAX_PICTURE_EDGE = 1024;
 /** Re-encoded pictures are square, at most this many pixels on a side. */
 export const PICTURE_EDGE = 512;
 
@@ -26,10 +24,8 @@ export interface SpaceIcon {
 }
 
 export const pictureMessages = {
-  gifUnreadable: "That GIF couldn’t be opened. Try another one.",
   undecodable: "This browser can’t open that picture. Try a PNG, JPEG, WebP or GIF.",
   type: "Use a PNG, JPEG, WebP or GIF picture.",
-  dimensions: "Pictures can be up to 1024 × 1024.",
   serverTooLarge: "That picture is too large. Try another one.",
   rateLimited: "You’ve changed pictures too many times today. Try again tomorrow.",
   invalid: "That picture couldn’t be used. Try another one.",
@@ -45,11 +41,6 @@ export function gifSize(bytes: Uint8Array): { width: number; height: number } | 
   const signature = String.fromCharCode(...bytes.subarray(0, 6));
   if (signature !== "GIF87a" && signature !== "GIF89a") return;
   return { width: bytes[6] | (bytes[7] << 8), height: bytes[8] | (bytes[9] << 8) };
-}
-
-/** Whether a GIF uploads byte for byte, whatever its size; a wider or taller one is shrunk first. */
-export function gifUploadsUnchanged(size: { width: number; height: number }) {
-  return size.width >= 1 && size.height >= 1 && size.width <= MAX_PICTURE_EDGE && size.height <= MAX_PICTURE_EDGE;
 }
 
 /** The centered square of a `width` × `height` image, in source pixels. */
@@ -86,10 +77,7 @@ export function pictureErrorMessage(
   if (status === 503) return pictureMessages.unavailable;
   if (status === 401) return pictureMessages.signedOut;
   if (status === 404) return purpose === "spaceIcon" ? pictureMessages.notOwner : pictureMessages.unavailable;
-  if (status === 400)
-    return typeof body?.error === "string" && /width|height|dimension|pixel/i.test(body.error)
-      ? pictureMessages.dimensions
-      : pictureMessages.invalid;
+  if (status === 400) return pictureMessages.invalid;
   return pictureMessages.failed;
 }
 
