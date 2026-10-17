@@ -60,14 +60,16 @@
   animation: live-fade 0.5s ease-out backwards;
 }
 .live-stage[data-ready] .live-scene {
-  animation: live-arrive 1.1s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation: live-scene-arrive 1.1s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 @keyframes live-fade {
   from {
     opacity: 0;
   }
 }
-@keyframes live-arrive {
+/* Named apart from the app's live-arrive: keyframe names are global, and the
+   homepage's stylesheet stays loaded after navigating into the app. */
+@keyframes live-scene-arrive {
   from {
     translate: 0 40px -80px;
   }
