@@ -161,15 +161,26 @@ try {
       const card = document.querySelector('.chat-pinned-message');
       const media = card.querySelector('.chat-media').getBoundingClientRect();
       const text = card.querySelector('p').getBoundingClientRect();
-      const go = card.querySelector('.chat-pinned-navigation').getBoundingClientRect();
+      const button = card.querySelector('.chat-pinned-navigation button');
+      const go = button.getBoundingClientRect();
       return { width: media.width, height: media.height, left: media.left, textLeft: text.left,
-        bottom: media.bottom, goTop: go.top, right: media.right, cardRight: card.getBoundingClientRect().right };
+        bottom: media.bottom, goTop: go.top, goRight: go.right, goHeight: go.height,
+        goBorder: getComputedStyle(button).borderTopWidth, cardBorder: getComputedStyle(card).borderTopWidth,
+        right: media.right, cardRight: card.getBoundingClientRect().right };
     })()`);
     console.log(`GIF at ${width}px viewport:`, bounds);
     assert.ok(bounds.width > 200, "GIF is not squeezed into the avatar column");
     assert.ok(Math.abs(bounds.width / bounds.height - 16 / 9) < 0.02, "GIF keeps its aspect ratio");
     assert.ok(Math.abs(bounds.left - bounds.textLeft) < 1, "media aligns with message text");
     assert.ok(bounds.goTop >= bounds.bottom && bounds.right < bounds.cardRight, "navigation stays below fitted media");
+    const cardInset = width <= 760 ? 14 : 12;
+    assert.ok(
+      Math.abs(bounds.goRight - (bounds.cardRight - cardInset)) < 1,
+      "navigation sits at the card's bottom right",
+    );
+    assert.ok(bounds.goHeight >= (width <= 760 ? 44 : 32), "navigation has a usable button target");
+    assert.equal(bounds.goBorder, "1px", "navigation is an outlined button");
+    assert.equal(bounds.cardBorder, "0px", "the continuous tinted card has no extra border");
     browser("click", ".chat-pinned-message .chat-pin-author");
     wait('document.querySelector(".chat-mention-card strong")?.textContent === "Fixture Owner"');
     action("Close profile");
