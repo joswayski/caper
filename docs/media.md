@@ -2632,6 +2632,42 @@ merge summaries monotonically, preserve one broadcast identity, and keep roots
 loaded through thread GET out of channel pagination until channel history loads
 them. Reconnect refetches the active thread and fences obsolete responses.
 
+### Unread thread replies (October 17, 2026)
+
+Web, Android, Apple and Rust desktop show a terracotta dot and **Unread** beside
+the reply count when another account replies in a thread the viewer started or
+replied to. Participation comes from message authorship, not the five displayed
+avatars. Own replies and blocked/deleted authors do not create unread state;
+sending a reply does not implicitly acknowledge earlier replies by others.
+
+`GET /api/chat/channels/{channel}/threads/unread` returns
+`{threads:[{rootId,seq}]}`, using the latest qualifying unread reply sequence.
+`PUT /api/chat/channels/{channel}/messages/{root}/thread/read` accepts `{seq}`
+and returns 204. Both use account authentication and existing conversation read
+permissions. The additive `thread_reads` table stores a per-account/root cursor,
+advanced monotonically and clamped to that thread's latest committed reply.
+Personalized state never enters the shared message payload or gateway replay.
+
+Clients acknowledge rendered replies only in an active, visible thread's latest
+window; channel visits, hover prefetch and older windows do not clear the badge.
+Failed acknowledgements retain it for retry, and delayed responses cannot erase
+newer unread replies. Live events refresh the list; the existing 15-second
+foreground refresh reconciles reads made on another device. This does not change
+push notifications or channel unread indicators. Earlier thread visits were not
+recorded, so existing participated threads can initially show **Unread** until
+opened; no migration guesses or backfills past reads.
+
+Validation: `npm run check`, 651 web/shared tests, Rust workspace tests and
+Clippy passed. A disposable Postgres HTTP test covers participation beyond five
+avatars, account-only access, private-channel/DM denial, own/blocked/deleted
+authors, prefetch/channel-read independence and monotonic/thread-clamped cursors.
+Chromium at 1280px and 390px exercised the real local API: hover left read storage
+unchanged, opening a thread persisted its visible sequence and cleared only that
+thread's badge. Narrow Chromium is not a phone/device test. Android SDK and
+Swift/Xcode are unavailable in this orb, so their new contract tests and native
+rendering remain unverified. Docker has no running daemon; image build stages
+are checked directly rather than claiming a container build.
+
 ### Thread validation boundary
 
 | Platform | Evidence and remaining gap |

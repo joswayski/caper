@@ -1,5 +1,14 @@
 import Foundation
 
+public struct UnreadThread: Codable, Equatable, Sendable {
+    public let rootId: String
+    public let seq: String
+}
+
+public struct UnreadThreadsResponse: Codable, Sendable {
+    public let threads: [UnreadThread]
+}
+
 public enum CaperAvatar {
     public static func index(for avatarID: Int?) -> Int? { avatarID.flatMap { (0...799).contains($0) ? $0 : nil } }
 }

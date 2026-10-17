@@ -379,6 +379,52 @@ impl Api {
         self.request(Method::GET, "api/spaces/unread", Some(token), None, None)
     }
 
+    pub fn unread_threads(
+        &self,
+        token: &str,
+        channel: &str,
+    ) -> Result<BTreeMap<String, String>, ApiError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Thread {
+            root_id: String,
+            seq: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct Threads {
+            threads: Vec<Thread>,
+        }
+        let response: Threads = self.request(
+            Method::GET,
+            &format!("api/chat/channels/{channel}/threads/unread"),
+            Some(token),
+            None,
+            None,
+        )?;
+        Ok(response
+            .threads
+            .into_iter()
+            .map(|thread| (thread.root_id, thread.seq))
+            .collect())
+    }
+
+    pub fn read_thread(
+        &self,
+        token: &str,
+        channel: &str,
+        root: &str,
+        seq: &str,
+    ) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::PUT,
+            &format!("api/chat/channels/{channel}/messages/{root}/thread/read"),
+            Some(token),
+            None,
+            Some(json!({"seq":seq})),
+        )?)
+        .map(|_| ())
+    }
+
     pub fn read_channel(
         &self,
         token: &str,

@@ -2153,6 +2153,99 @@ test("old thread parents and broadcast replies do not move channel paging or sur
   );
 });
 
+test("thread unread survives prefetch, older windows and failed reads, without erasing newer replies", async (t) => {
+  const sockets = installBrowser(t);
+  const root = committed({ clientMessageId: "root", text: "Thread" }, "9007199254740992");
+  const reply = (seq: string) => ({
+    ...committed({ clientMessageId: `reply-${seq}`, text: "Reply" }, seq),
+    threadRootId: root.id,
+  });
+  let replies = [reply("9007199254740993")];
+  let unread = replies[0].seq;
+  let hasNewer = false;
+  let holdGet = false;
+  let resolveGet!: (response: Response) => void;
+  const reads: { seq: string; resolve: (response: Response) => void }[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (url === "/api/chat/session")
+      return Response.json({ token: "opaque", author: { ...root.author, isGuest: false } });
+    if (url.endsWith("/threads/unread")) {
+      if (holdGet)
+        return new Promise<Response>((resolve) => {
+          resolveGet = resolve;
+        });
+      return Response.json({ threads: unread ? [{ rootId: root.id, seq: unread }] : [] });
+    }
+    if (url.endsWith("/thread/read")) {
+      assert.equal(init?.method, "PUT");
+      return new Promise<Response>((resolve) => reads.push({ seq: JSON.parse(String(init?.body)).seq, resolve }));
+    }
+    assert.equal(url, `/api/chat/channels/general/messages/${root.id}/thread`);
+    return Response.json({ root, messages: replies, cursor: replies.at(-1)!.seq, hasMore: false, hasNewer });
+  });
+  let state = initialChatView();
+  const client = new ChatClient((next) => {
+    state = next;
+  }, "general");
+  t.onTestFinished(() => client.stop());
+  client.start({
+    space: { id: "space", name: "Space" },
+    channel: { id: "general", name: "general" },
+    messages: [root],
+    cursor: replies[0].seq,
+    hasMore: false,
+  });
+  client.identify(root.author.name, true, root.author.id);
+  await tick();
+  sockets[0].frame({ type: "ready", cursor: replies[0].seq });
+  await client.refreshUnreadThreads();
+  assert.equal(state.unreadThreads?.[root.id], unread);
+  await client.prefetchThread(root.id);
+  await client.markThreadRead(root.id, unread);
+  assert.equal(reads.length, 0, "prefetched but closed threads cannot acknowledge");
+  await client.openThread(root.id);
+  assert.equal(reads.length, 0, "opening alone does not prove the reply is visible");
+  hasNewer = true;
+  await client.retryThread();
+  await client.markThreadRead(root.id, unread);
+  assert.equal(reads.length, 0, "an older window cannot acknowledge the latest replies");
+  hasNewer = false;
+  await client.retryThread();
+  const failed = client.markThreadRead(root.id, unread);
+  reads[0].resolve(new Response(null, { status: 503 }));
+  await failed;
+  assert.equal(state.unreadThreads?.[root.id], unread, "failed read retains its badge");
+
+  const reading = client.markThreadRead(root.id, unread);
+  assert.equal(reads[1].seq, "9007199254740993", "sequence must not round to the previous reply");
+  unread = "9007199254740994";
+  replies = [...replies, reply(unread)];
+  sockets[0].message(replies[1]);
+  await client.refreshUnreadThreads();
+  reads[1].resolve(new Response(null, { status: 204 }));
+  await reading;
+  assert.equal(state.unreadThreads?.[root.id], unread, "a delayed ack cannot erase a later unread reply");
+  await client.markThreadRead(root.id, replies[0].seq);
+  assert.equal(reads.length, 2, "the old visible cursor must not clear the newer reply");
+
+  // The server can exclude a later own/blocked reply: seeing the last unread
+  // reply is sufficient, even when it is not the thread's final message.
+  sockets[0].message(reply("9007199254740995"));
+  holdGet = true;
+  const staleSnapshot = client.refreshUnreadThreads();
+  const latest = client.markThreadRead(root.id, unread);
+  reads[2].resolve(new Response(null, { status: 204 }));
+  await latest;
+  resolveGet(Response.json({ threads: [{ rootId: root.id, seq: unread }] }));
+  await staleSnapshot;
+  assert.deepEqual(state.unreadThreads, {}, "an old GET cannot resurrect acknowledged unread state");
+  holdGet = false;
+  unread = "";
+  await client.refreshUnreadThreads();
+  assert.deepEqual(state.unreadThreads, {});
+});
+
 test("late thread responses cannot reopen a closed or different thread", async (t) => {
   const f = await paginationFixture(t);
   const first = f.client.openThread(f.message(4).id);

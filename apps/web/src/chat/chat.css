@@ -3169,6 +3169,19 @@ a.chat-draft-preview:focus-visible strong {
 .chat-thread-summary strong {
   color: var(--terracotta-bright);
 }
+.chat-thread-unread {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--terracotta-bright);
+}
+.chat-thread-unread::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
 @media (hover: hover) {
   .chat-thread-summary:hover strong {
     text-decoration: underline;

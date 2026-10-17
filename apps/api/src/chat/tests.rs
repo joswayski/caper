@@ -3276,3 +3276,279 @@ async fn writes_in_one_channel_do_not_block_other_channels_of_the_space(pool: Pg
     );
     in_flight.rollback().await.unwrap();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn thread_unread_http_contract(pool: PgPool) {
+    let mut users = Vec::new();
+    for n in 0..9 {
+        let name = format!("reader{n}");
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,$1,$1) RETURNING id")
+            .bind(&name).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(name.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+            .bind(&name).bind(hash).bind(user).execute(&pool).await.unwrap();
+        users.push(user);
+    }
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('unread-space','Unread',$1) RETURNING id")
+        .bind(users[0]).fetch_one(&pool).await.unwrap();
+    let channel: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name) VALUES('unread-channel',$1,'Unread') RETURNING id")
+        .bind(space).fetch_one(&pool).await.unwrap();
+    for user in &users[..8] {
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(space)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) VALUES($1,$2)")
+            .bind(channel)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let root = persist(&pool, "unread-channel", "reader0", Uuid::new_v4(), "root")
+        .await
+        .unwrap();
+    let root = root["id"].as_str().unwrap();
+    let mut latest = String::new();
+    for n in 1..7 {
+        let reply = persist_message(
+            &pool,
+            "unread-channel",
+            &format!("reader{n}"),
+            Uuid::new_v4(),
+            "reply",
+            Some(root),
+            false,
+        )
+        .await
+        .unwrap();
+        latest = reply["seq"].as_str().unwrap().to_owned();
+    }
+    // Readers need an account session, not a chat session or channel join.
+    sqlx::query("UPDATE public.chat_sessions SET expires_at=now() WHERE user_id=$1")
+        .bind(users[7])
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE public.channel_joins SET deleted_at=now() WHERE user_id=$1")
+        .bind(users[7])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut config = crate::Config::test(false);
+    config.auth_fixture = false;
+    let mut state = AppState::with_database(
+        config,
+        Arc::new(crate::Cloudflare::new()),
+        Some(pool.clone()),
+    );
+    state.chat = Some(Chat::new(
+        pool.clone(),
+        redis::Client::open("redis://127.0.0.1:1").unwrap(),
+    ));
+    let app = crate::app(state);
+    let request = |account: &'static str, method: &'static str, path: String, body: Value| {
+        let app = app.clone();
+        async move {
+            let mut request = axum::http::Request::builder()
+                .method(method)
+                .uri(path)
+                .header("content-type", "application/json");
+            if !account.is_empty() {
+                request = request.header("authorization", format!("Bearer {account}"));
+            }
+            let response = app
+                .oneshot(
+                    request
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let list = "/api/chat/channels/unread-channel/threads/unread".to_owned();
+    let read = format!("/api/chat/channels/unread-channel/messages/{root}/thread/read");
+    let expected = json!({"threads":[{"rootId":root,"seq":latest}]});
+    // Channel acknowledgements and prefetches must not acknowledge threads.
+    sqlx::query("INSERT INTO public.channel_reads(channel_id,user_id,seq) VALUES($1,$2,99999)")
+        .bind(channel)
+        .bind(users[0])
+        .execute(&pool)
+        .await
+        .unwrap();
+    conversation_page(&pool, "unread-channel", None, Some(users[0]), Some(root))
+        .await
+        .unwrap();
+    assert_eq!(
+        request("reader0", "GET", list.clone(), Value::Null).await,
+        (StatusCode::OK, expected.clone())
+    );
+    // Sixth replier is eligible even though absent from the capped summary.
+    let sixth = request("reader6", "GET", list.clone(), Value::Null).await;
+    assert_eq!(sixth.0, StatusCode::OK);
+    assert_eq!(sixth.1["threads"][0]["seq"], "6");
+    assert_eq!(
+        request("reader7", "GET", list.clone(), Value::Null).await.1,
+        json!({"threads":[]})
+    );
+    assert_eq!(
+        request("reader7", "PUT", read.clone(), json!({"seq":"99999"}))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request("reader7", "GET", list.clone(), Value::Null).await.1,
+        json!({"threads":[]})
+    );
+    assert_eq!(
+        request("", "GET", list.clone(), Value::Null).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    for method in ["GET", "PUT"] {
+        assert_eq!(
+            request(
+                "reader8",
+                method,
+                if method == "GET" {
+                    list.clone()
+                } else {
+                    read.clone()
+                },
+                json!({"seq":"1"})
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    // An own reply does not acknowledge any earlier replies by others.
+    persist_message(
+        &pool,
+        "unread-channel",
+        "reader0",
+        Uuid::new_v4(),
+        "own reply",
+        Some(root),
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        request("reader0", "GET", list.clone(), Value::Null).await.1,
+        expected
+    );
+    // The clamp is the thread's last reply (8), not the channel head (9).
+    persist(
+        &pool,
+        "unread-channel",
+        "reader0",
+        Uuid::new_v4(),
+        "unrelated",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        request("reader0", "PUT", read.clone(), json!({"seq":"99999"}))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request("reader0", "PUT", read.clone(), json!({"seq":"1"}))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let saved: i64 = sqlx::query_scalar("SELECT seq FROM public.thread_reads WHERE user_id=$1")
+        .bind(users[0])
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(saved, 8);
+    assert_eq!(
+        request("reader0", "GET", list.clone(), Value::Null).await.1,
+        json!({"threads":[]})
+    );
+    persist_message(
+        &pool,
+        "unread-channel",
+        "reader1",
+        Uuid::new_v4(),
+        "blocked",
+        Some(root),
+        false,
+    )
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO public.user_blocks(blocker_id,blocked_id) VALUES($1,$2)")
+        .bind(users[0])
+        .bind(users[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request("reader0", "GET", list.clone(), Value::Null).await.1,
+        json!({"threads":[]})
+    );
+    persist_message(
+        &pool,
+        "unread-channel",
+        "reader2",
+        Uuid::new_v4(),
+        "deleted author",
+        Some(root),
+        false,
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE public.users SET deleted_at=now() WHERE id=$1")
+        .bind(users[2])
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request("reader0", "GET", list.clone(), Value::Null).await.1,
+        json!({"threads":[]})
+    );
+    sqlx::query("UPDATE public.channels SET private=true WHERE id=$1")
+        .bind(channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        request("reader6", "GET", list, Value::Null).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request("reader6", "PUT", read, json!({"seq":"99"})).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let dm: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,name,private) VALUES('unread-dm','DM',true) RETURNING id")
+        .fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.direct_conversations(channel_id,low_user_id,high_user_id) VALUES($1,$2,$3)")
+        .bind(dm).bind(users[0]).bind(users[6]).execute(&pool).await.unwrap();
+    let dm_list = "/api/chat/channels/unread-dm/threads/unread".to_owned();
+    assert_eq!(
+        request("reader0", "GET", dm_list.clone(), Value::Null).await,
+        (StatusCode::OK, json!({"threads":[]}))
+    );
+    assert_eq!(
+        request("reader7", "GET", dm_list, Value::Null).await.0,
+        StatusCode::NOT_FOUND
+    );
+}
