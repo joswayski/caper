@@ -186,59 +186,71 @@ Run both Apple parity scripts above and inspect the pending-send captures and
 iPhone send transition before release. No API/configuration/migration change is
 needed; only updated Apple binaries receive this fix.
 
-Voice joins from the conversation header (October 11, 2026, on web, Android,
-iOS/macOS and Rust desktop). After the channel name, the open channel shows up
-to three faces of who is in its voice with a count, then Join voice, Switch here
-(connected elsewhere), Joining…/Leaving…, or Leave when you are connected there;
-a thin divider separates it from Pins and Members. Phones show only the
-conversation below a Slack-style header: the channel name (with "N members · M
-in voice" beneath it) opens the channel's menu of Pins and Members, and one
-bordered group holds icon-only voice buttons (headphones to join or switch;
-mute, deafen and a red disconnect while in voice, also in a DM). While others
-are in a channel's voice and you are not, its Join glows softly (static with
-reduced motion); Leave is a red icon and label, with no fill or border, in every header. Phones show no faces in the
-header: the subtitle already says how many are in voice, and Browse lists them.
-Voice errors appear above the composer, and channels, rosters, the account bar
-and the voice dock stay in Browse.
-Channel rows no longer carry a Join action: empty channels are a single line,
-and only occupied channels add the `N in voice` line with its collapsible
-roster. Fine pointers (desktop web, macOS, Rust desktop) keep a one-click
-headphones shortcut on each channel row, revealed on hover or keyboard focus in
-space reserved beside the `⋯` menu and absent for the connected channel; touch
-joins from the header. The roster opens automatically on connection. Mic,
-deafen and device settings stay in the account footer, including before
-joining. The channel/space status and Leave stay in a dock
-above that footer whenever you are in voice; when navigation hides the active
-channel, its roster pins there too; participant audio menus open upward. Browsing
-other chats, spaces or DMs does not leave voice. That includes a space with no
-joined channel, whose empty state replaces only the conversation, and a pending
+Voice lives in the sidebar's Live now (design H; October 17, 2026, on web,
+Android, iOS/macOS and Rust desktop). Channels stay text and voice together:
+opening a channel never joins or switches voice, and joining never changes the
+conversation you are reading. Live now sits above a space's Channels whenever
+you are in voice (in any space) or one of its joined channels has people in
+voice.
+
+- Your call card comes first: the call's channel (it opens that chat and names
+  the space when the call is elsewhere), "You're in · N", Connecting… or
+  Reconnecting… in amber, and the shared session timer. Faces follow, you first
+  and then in join order (speaking never reorders them), with a green speaking
+  ring and mute/deafen badges, in at most two rows: up to ten faces, or nine and
+  a "+N" tile. Then "Name is speaking", and Mute, Deafen and Leave (Cancel while
+  joining). Faces and "+N" open the full list ("In #channel · N people") with
+  per-person volume and Mute for me, beside the sidebar on wide layouts and as a
+  bottom sheet on phones. Escape, an outside press and Close dismiss it; on web,
+  focus moves into it.
+- Other live rooms follow, busiest first and then by name: up to three faces, a
+  one-line summary of names, and Join (eggshell) or Switch (neutral) when you
+  are in a call elsewhere. Two show; the rest fold into "N more live". A channel
+  opened from the feedback inbox has no row, so while it is live it appears here
+  too. Starting voice in an empty visited channel is no longer offered.
+
+Channel rows are one line, with no roster, count expander or row timer; a live
+row ends with a green waveform and count ("N in voice"). Every row except your
+call's keeps a one-click headphones join ("Join voice in #x", or "Switch voice
+to #x"). Fine pointers reveal it on hover or keyboard focus in space reserved
+beside the `⋯` menu. Touch (Android, iPhone, iPad, touch web) and Rust desktop at
+760px or narrower show it dimmed with a 44px target on quiet rows and hide it on
+live rows, whose cards carry Join. The conversation header carries no voice;
+"N members · M in voice" stays beneath channel names where shown. While reading
+any conversation, phones add a 56px strip under its header: your call (channel,
+two faces, who is speaking, timer and a 44px Mute; the rest opens Browse), or,
+out of a call, the open channel's live room with Join. The bottom dock and its
+pinned roster are gone; voice errors keep their place. Mic, deafen and device
+settings stay in the account bar, including before joining, and mirror the
+card's Mute and Deafen. Speaking rings appear only for your own call, since
+other rooms carry no audio. Browsing other chats, spaces or DMs does not leave
+voice. That includes a space with no joined channel, whose empty state replaces
+only the conversation (Live now and your call card remain), and a pending
 invitation opened from the rail, which opens over the room. Voice still ends
-when its own channel is left, deleted or revoked.
-The row shortcut is neutral until hover/focus, and empty channels have no voice
-status text. Only occupied channels show a voice count. Hover and connection
-updates do not shift channel rows; expanding a roster moves later channels down. The Channels count stays beside its label
-in both owned and shared spaces. Selecting a channel
-opens text without switching voice. Other participant lists start collapsed and
-expand from the voice count. Joined-channel menus offer Leave channel to members;
+when its own channel is left, deleted or revoked. Joined-channel menus offer Leave channel to members;
 owners also have the existing privacy/member settings. Leave channel requires
 confirmation and no longer appears in the chat header on web, Apple or Rust
 desktop; Android already uses its channel menu.
-At the minimum sidebar width, counts take priority over avatars; narrow web
-layouts retain 44px action targets, and phones show one header face without
-the count.
-Run `VOICE_TEST_CHANNEL_ROWS=1 node scripts/test-voice-controls.mjs http://localhost:5174`
-against Vite for mocked desktop/narrow/minimum-width geometry, roster disclosure,
-owner permissions, settings focus return, voice switching and pending/error/cancel
-states. This is browser UI coverage, not live SFU or physical-device validation.
-Run `VOICE_TEST_REDESIGN=1 node scripts/test-voice-controls.mjs` for pre-join
-audio settings, inline/pinned Leave, automatic rosters and chat/space call
-persistence. `VOICE_TEST_PREVIEW=1 node scripts/test-voice-controls.mjs` serves
-the explicitly simulated, interactive UI on port 5180 beside local Vite; it
-does not capture a real microphone or contact the SFU. No production mock route
-is added. The channel-centric redesign is web-only at the owner's request.
-Android, Apple and Rust desktop retain their independent rows and bottom
-disconnect control; no native release or shared protocol/configuration change
-is required. Web can deploy independently; merging does not deploy it.
+Web tooltips follow their control while open, because the call card arriving or
+leaving shifts the rows below it.
+
+`VOICE_TEST_CHROME="$PWD/scripts/fine-pointer-chromium.sh" node
+scripts/test-voice-controls.mjs http://localhost:5174` runs the mocked web flow.
+Each `VOICE_TEST_*=1` mode adds a focus:
+
+- `REDESIGN`: Live now itself, covering cards, folding, crowded calls, list
+  placement, the phone strip's join and focus, and row join/switch.
+- `CHANNEL_ROWS`: row geometry, permissions and pending/error/cancel states; run
+  it with stock Chromium too, for the touch rows.
+- `SIDEBAR`: DMs, empty spaces and rail invitations during a call.
+- `DOCK`: the account bar while connected, and the card's links.
+- `TIMERS` and `AVATARS`.
+
+This is browser UI coverage, not live SFU or physical-device validation.
+`VOICE_TEST_PREVIEW=1 node scripts/test-voice-controls.mjs` serves the
+explicitly simulated, interactive UI on port 5180 beside local Vite; it does not
+capture a real microphone or contact the SFU. No production mock route is added,
+and there is no API, protocol, configuration or migration change.
 Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
 errors, pending states and member loading do not resize or recenter them. Channel
 settings reserve the hidden save bar, and profile forms reserve error space so
@@ -5352,6 +5364,31 @@ Keep the existing Mac/Linux quarantines. Remove the Windows quarantine only in
 a follow-up PR after physical recovery and a complete native build on the
 intended main revision; toggling the repository variable alone does not remove
 it. Roll back a failed recovery to GitHub-hosted routing, not to an unverified PC.
+
+**Live now, October 17, 2026:** the October 11 header voice below is
+superseded on every client by the sidebar's Live now (see the voice section
+above). Validation:
+
+- Web: `npm run check` passes, and `npm test` passes 655 of 656 tests. The one
+  failure is `noise-assets.test.ts`, which needs Node 24's WebAssembly; this orb
+  has Node 22, and the test fails the same way on unmodified main.
+  `test-voice-controls.mjs` passes in every mode at 1280px and 390px in
+  fine-pointer Chromium, and `CHANNEL_ROWS` also passes in stock (touch-style)
+  Chromium. All of this uses a mocked API and WebRTC.
+- Android: Kotlin and androidTest compile, the 430 JVM unit tests pass, and lint
+  is clean. The ten instrumented voice UI tests passed only under a temporary,
+  uncommitted Robolectric setup, which checks behaviour but not screenshots.
+  `connectedDebugAndroidTest`, `smoke.py` and devices were not run.
+- Apple: the Swift sources parse and the six new `LiveNow` unit tests pass on a
+  Linux Swift 6.1.2 toolchain. The views were type-checked only against a
+  SwiftUI stand-in. Run the parity UI tests (rewritten for Live now) and both
+  parity screenshot scripts with Xcode before release.
+- Rust desktop: fmt, `cargo clippy -p caper-desktop --all-targets --no-deps -D
+  warnings` and 550 tests pass, and its new `parity-voice-*` fixtures were
+  inspected under Xvfb.
+
+No live SFU, physical-device, screen-reader or touch-hardware validation was
+done.
 
 **Header voice, October 11, 2026:** the October 3 voice rows below are
 superseded. Join, Switch here and Leave for the open channel live in the
