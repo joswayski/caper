@@ -98,8 +98,8 @@ try {
   browser("set", "viewport", "1440", "900", "2");
   browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
   browser("open", `${web}/spaces`);
-  // The initial voice roster adds a Live now card above the channel list. Let it settle before clicking.
-  wait('!!document.querySelector(".channel-select") && !!document.querySelector(".live-now .live-room")');
+  // The initial voice roster grows a channel's row into a live card. Let it settle before clicking.
+  wait('!!document.querySelector(".channel-select") && !!document.querySelector(".live-room")');
   browser("find", "role", "button", "click", "--name", "planning", "--exact");
   const sourceRow = `[data-message-key="${source.clientMessageId}"]`;
   wait(

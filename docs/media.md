@@ -186,60 +186,72 @@ Run both Apple parity scripts above and inspect the pending-send captures and
 iPhone send transition before release. No API/configuration/migration change is
 needed; only updated Apple binaries receive this fix.
 
-Voice lives in the sidebar's Live now (design H; October 17, 2026, on web,
-Android, iOS/macOS and Rust desktop). Channels stay text and voice together:
+Voice lives in the sidebar's channel list (design H, revised October 17, 2026, on
+web, Android, iOS/macOS and Rust desktop). Channels stay text and voice together:
 opening a channel never joins or switches voice, and joining never changes the
-conversation you are reading. Live now sits above a space's Channels whenever
-you are in voice (in any space) or one of its joined channels has people in
-voice.
+conversation you are reading. A live channel's own row grows into a card, in its
+place in the list, so no channel appears twice and nothing says "Live now".
+Pressing a card anywhere except its controls and `⋯` menu opens that channel's
+chat, like its row.
 
-- Your call card comes first: the call's channel (it opens that chat and names
-  the space when the call is elsewhere), "You're in · N", Connecting… or
-  Reconnecting… in amber, and the shared session timer. Faces follow, you first
-  and then in join order (speaking never reorders them), with a green speaking
-  ring and mute/deafen badges, in at most two rows: up to ten faces, or nine and
-  a "+N" tile. Then "Name is speaking" (the line stays, blank, through pauses, so
-  the rows below never move), and Mute, Deafen and Leave (Cancel while joining). Faces and "+N" open the full list ("In #channel · N people") with
-  per-person volume and Mute for me, beside the sidebar on wide layouts and as a
-  bottom sheet on phones. Escape, an outside press and Close dismiss it; on web,
-  focus moves into it.
-- Other live rooms follow, busiest first and then by name: up to three faces, a
-  one-line summary of names, and Join (eggshell) or Switch (neutral) when you
-  are in a call elsewhere. Two show; the rest fold into "N more live". A channel
-  opened from the feedback inbox has no row, so while it is live it appears here
-  too. Starting voice in an empty visited channel is no longer offered.
+- Your call's card is green: the channel's row line (name, unread, muted, `⋯`
+  and the selected tint) ends with "You're in · N" (Connecting… or Reconnecting…
+  in amber) and the shared session timer instead of a join. Faces follow, you
+  first and then in join order (speaking never reorders them), with a green
+  speaking ring and mute/deafen badges, in at most two rows: up to ten faces, or
+  nine and a "+N" tile. Then Mute, Deafen and Leave (Cancel while joining).
+  There is no "is speaking" line: the ring shows who talks, so the card never
+  changes size with speech. Faces and "+N" are not separate tap targets. A
+  right-click (pointer), long press (touch) or the accessibility action on them
+  opens the full list ("In #channel · N people") with per-person volume and Mute
+  for me, beside the sidebar on wide layouts and as a bottom sheet on phones; a
+  face opens with that person's controls expanded. On web the context-menu key
+  on the card's row opens it too. Escape, an outside press and Close dismiss it;
+  on web, focus moves into it.
+- Another live room keeps its row (waveform and count) and gains a body beneath
+  it: up to three faces, a one-line summary of names, the shared session timer,
+  and Join (eggshell) or Switch (neutral) when you are in a call elsewhere.
+  Rooms stay in list order; nothing folds away.
+- Voice without a row in the listed space sits above the Channels heading, with
+  no heading of its own: your call when it is in another space (its card names
+  the space and opens that chat there) or in a channel opened from the feedback
+  inbox, and such a visited channel's live room. Starting voice in an empty
+  visited channel is no longer offered.
+- Collapsing Channels hides quiet rows only; live cards stay listed.
 
-Channel rows are one line, with no roster, count expander or row timer; a live
-row ends with a green waveform and count ("N in voice"). Every row except your
-call's keeps a one-click headphones join ("Join voice in #x", or "Switch voice
-to #x"). Fine pointers reveal it on hover or keyboard focus in space reserved
-beside the `⋯` menu. Touch (Android, iPhone, iPad, touch web) and Rust desktop at
-760px or narrower show it dimmed with a 44px target on quiet rows and hide it on
-live rows, whose cards carry Join. The conversation header carries no voice;
-"N members · M in voice" stays beneath channel names where shown. While reading
-any conversation, phones add a 56px strip under its header: your call (channel,
-two faces, who is speaking, timer and a 44px Mute; the rest opens Browse), or,
-out of a call, the open channel's live room with Join. The bottom dock and its
-pinned roster are gone; voice errors keep their place. Mic, deafen and device
-settings stay in the account bar, including before joining, and mirror the
-card's Mute and Deafen. Speaking rings appear only for your own call, since
-other rooms carry no audio. Browsing other chats, spaces or DMs does not leave
-voice. That includes a space with no joined channel, whose empty state replaces
-only the conversation (Live now and your call card remain), and a pending
-invitation opened from the rail, which opens over the room. Voice still ends
-when its own channel is left, deleted or revoked. Joined-channel menus offer Leave channel to members;
+Quiet channel rows are one line, with no roster or count expander. Every row
+except your call's keeps a one-click headphones join ("Join voice in #x", or
+"Switch voice to #x"). Fine pointers reveal it on hover or keyboard focus in
+space reserved beside the `⋯` menu. Touch (Android, iPhone, iPad, touch web) and
+Rust desktop at 760px or narrower show it dimmed with a 44px target on quiet rows
+and hide it on live rows, whose cards carry Join. The conversation header
+carries no voice; "N members · M in voice" stays beneath channel names where
+shown. While reading any conversation, phones add a 56px strip under its header:
+your call (channel, the card's faces in the card's order, up to five or four and
+"+N", Connecting…/Reconnecting… while not connected, timer and a 44px Mute; the
+rest opens Browse), or, out of a call, the open channel's live room with Join.
+The strip names no speaker. The bottom dock and its pinned roster are gone;
+voice errors keep their place. Mic, deafen and device settings stay in the
+account bar, including before joining, and mirror the card's Mute and Deafen.
+Speaking rings appear only for your own call, since other rooms carry no audio.
+Browsing other chats, spaces or DMs does not leave voice. That includes a space
+with no joined channel, whose empty state replaces only the conversation (your
+call card remains above it), and a pending invitation opened from the rail,
+which opens over the room. Voice still ends when its own channel is left,
+deleted or revoked. Joined-channel menus offer Leave channel to members;
 owners also have the existing privacy/member settings. Leave channel requires
 confirmation and no longer appears in the chat header on web, Apple or Rust
 desktop; Android already uses its channel menu.
-Web tooltips follow their control while open, because the call card arriving or
+Web tooltips follow their control while open, because a card arriving or
 leaving shifts the rows below it.
 
 `VOICE_TEST_CHROME="$PWD/scripts/fine-pointer-chromium.sh" node
 scripts/test-voice-controls.mjs http://localhost:5174` runs the mocked web flow.
 Each `VOICE_TEST_*=1` mode adds a focus:
 
-- `REDESIGN`: Live now itself, covering cards, folding, crowded calls, list
-  placement, the phone strip's join and focus, and row join/switch.
+- `REDESIGN`: live cards in their rows (no heading, fold or duplicate row),
+  pressing a card, right-click and long press for the full list, crowded calls,
+  collapsed lists, the phone strip's faces, join and focus, and row join/switch.
 - `CHANNEL_ROWS`: row geometry, permissions and pending/error/cancel states; run
   it with stock Chromium too, for the touch rows.
 - `SIDEBAR`: DMs, empty spaces and rail invitations during a call.

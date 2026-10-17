@@ -1,8 +1,8 @@
-// Live now (the sidebar's voice section): shared by the call and the homepage simulation.
+// Live channels (voice cards in the channel list): shared by the call and the homepage simulation.
 /** Faces your call card shows before folding the rest into "+N": two rows of five. */
 export const CALL_CARD_FACES = 10;
-/** Live rooms shown as cards besides your call; more fold into "N more live". */
-export const LIVE_ROOM_CARDS = 2;
+/** Faces the phone strip shows, in the card's order, before folding the rest into "+N". */
+export const STRIP_FACES = 5;
 
 /** "Maya", "Maya and Alex", "Maya, Alex and Sam", "Maya, Alex and 6 more". */
 export function liveNames(names: string[]) {

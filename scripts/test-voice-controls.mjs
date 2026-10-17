@@ -7,7 +7,7 @@
 // Focus only on avatar borders with VOICE_TEST_AVATARS=1.
 // Focus on the connected account bar and call card links with VOICE_TEST_DOCK=1.
 // Focus on click-time/shared timers with VOICE_TEST_TIMERS=1.
-// Check Live now (call card, live rooms, row joins, phone strip) with VOICE_TEST_REDESIGN=1.
+// Check live channels (call card and room cards in the list, row joins, phone strip) with VOICE_TEST_REDESIGN=1.
 // Serve an interactive, explicitly simulated preview with VOICE_TEST_PREVIEW=1.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -63,9 +63,35 @@ const openBrowse = () => {
   if (evaluate(`return !document.querySelector('.navigation-open');`)) click("Back to Browse");
   browser("wait", "600");
 };
-// Whether your call card names this channel and its row marks the call as yours.
+// Whether this channel's row in the list is your call's card.
 const connectedRow = (name) =>
-  `document.querySelector('.live-call .live-channel > span')?.textContent === ${JSON.stringify(name)} && [...document.querySelectorAll('#space-channel-list > li')].some(li => li.querySelector('.channel-select > span')?.textContent === ${JSON.stringify(name)} && li.querySelector('.channel-live[data-active]'))`;
+  `[...document.querySelectorAll('#space-channel-list > li')].some(li => li.querySelector('.live-call .channel-select > span')?.textContent === ${JSON.stringify(name)})`;
+// Opens a channel from its row's button, whose name also carries a live row's "N in voice".
+const chooseChannel = (name) => {
+  evaluate(`document.querySelector('[data-test-row]')?.removeAttribute('data-test-row');
+    [...document.querySelectorAll('.channel-select')].find(button => button.querySelector('span').textContent === ${JSON.stringify(name)}).setAttribute('data-test-row', '');`);
+  browser("click", "[data-test-row]");
+};
+// A right-click at an element's center: what opens everyone's volume from a call card's faces.
+const rightClick = (selector) => {
+  const [x, y] = evaluate(
+    `const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return [Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2)];`,
+  );
+  browser("mouse", "move", String(x), String(y));
+  browser("mouse", "down", "right");
+  browser("mouse", "up", "right");
+};
+// A touch long press, then the click it ends with (synthetic: headless Chromium has no touchscreen).
+const longPress = (selector) =>
+  evaluate(`const target = document.querySelector(${JSON.stringify(selector)}), r = target.getBoundingClientRect();
+    const at = { bubbles: true, pointerType: 'touch', pointerId: 7, isPrimary: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 };
+    target.dispatchEvent(new PointerEvent('pointerdown', at));
+    await new Promise(resolve => setTimeout(resolve, 650));
+    target.dispatchEvent(new PointerEvent('pointerup', at));
+    target.dispatchEvent(new MouseEvent('click', at));`);
+// Faces by avatar artwork (or initials), to compare the call card's with the phone strip's.
+const faceIds = (selector) =>
+  `[...document.querySelectorAll(${JSON.stringify(selector)})].map(face => face.querySelector('[data-avatar-id]')?.dataset.avatarId ?? face.textContent)`;
 const centeredDialog = () => {
   // Measure after the dialog's entrance animation (a short translate) settles.
   wait(`!document.querySelector('dialog[open]').getAnimations().some(a => a.playState === 'running')`);
@@ -630,7 +656,7 @@ try {
         click("Close navigation");
         click("Back to Browse");
       }
-      browser("find", "role", "button", "click", "--name", "alpha", "--exact");
+      chooseChannel("alpha");
       wait(`document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha'`);
       if (width === 390) click("Back to Browse");
       const leaves = evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`);
@@ -745,9 +771,9 @@ try {
       "PASS DM row geometry, voice retention/join from DMs, calls kept across empty spaces and rail invitations, cold DM/no-space routes, hover/open/keyboard menus, ringless click/keyboard focus and 6px channel gaps at 1280px/390px (mock signaling/WebRTC)",
     );
   } else if (process.env.VOICE_TEST_REDESIGN === "1") {
-    // Live now: your call card and other live rooms above the channels, one-click
-    // joins from rooms and rows, no voice in the conversation header, and a strip
-    // under it on phones.
+    // Live channels: a live row grows into its card in the list (your call, or a room
+    // with Join), one-click joins from rooms and rows, no voice in the conversation
+    // header, and a strip under it on phones with the card's faces.
     evaluate(`voiceFixture.timerEnabled = true; voiceFixture.showSpaces();`);
     wait(`document.querySelector('[aria-label="Join voice in #alpha"]')?.getAttribute('aria-disabled') === 'false'`);
     const footerControls = () => {
@@ -785,11 +811,17 @@ try {
       footerControls();
       assert.deepEqual(
         evaluate(`const room = document.querySelector('.live-room'), join = room.querySelector('.live-join');
-          return [document.querySelector('.live-now-heading').textContent, room.querySelector('.live-channel').textContent,
+          return [!!room.closest('#space-channel-list > li'), room.querySelector('.channel-select > span').textContent,
             room.querySelector('.live-names').textContent, room.querySelectorAll('.live-stack .live-avatar').length,
-            !!room.querySelector('[role="timer"]'), join.textContent, getComputedStyle(join).backgroundColor];`),
-        ["Live now", "alpha", "Maya and Alex", 2, true, "Join", "rgb(241, 237, 228)"],
-        "A live room shows its people, timer and an eggshell Join",
+            !!room.querySelector('.live-room-body [role="timer"]'), join.textContent, getComputedStyle(join).backgroundColor];`),
+        [true, "alpha", "Maya and Alex", 2, true, "Join", "rgb(241, 237, 228)"],
+        "A live room's own row grows into its card: its people, timer and an eggshell Join",
+      );
+      assert.equal(
+        evaluate(`return document.querySelectorAll('.live-now, .live-now-heading, .live-more-rooms').length
+          + [...document.querySelectorAll('.people-panel *')].filter(node => !node.children.length && node.textContent.trim() === 'Live now').length;`),
+        0,
+        "No Live now heading, fold or separate section: rooms stay in the list",
       );
       assert.equal(
         evaluate(
@@ -877,9 +909,14 @@ try {
           evaluate(`const strip = document.querySelector('.voice-strip');
             return [strip.querySelector('strong').textContent, !!strip.querySelector('[role="timer"]'),
               strip.querySelector('.live-toggle').getAttribute('aria-label'), strip.querySelectorAll('.live-avatar').length,
-              !!document.querySelector('.navigation-open')];`),
-          ["#alpha", true, "Unmute microphone", 2, false],
-          "Joining keeps the conversation, under your call's strip",
+              strip.querySelector('.voice-strip-detail').textContent, !!document.querySelector('.navigation-open')];`),
+          ["#alpha", true, "Unmute microphone", 3, "", false],
+          "Joining keeps the conversation, under your call's strip: everyone's faces, no speaker's name",
+        );
+        assert.deepEqual(
+          evaluate(`return ${faceIds(".voice-strip .live-avatar")};`),
+          evaluate(`return ${faceIds(".live-call .live-face .live-avatar")};`),
+          "The strip shows the same people as the call card, in its order",
         );
         screenshot(`voice-live-strip-connected-${width}`);
         // Tapping the strip opens Browse, where your call card is.
@@ -889,11 +926,14 @@ try {
       }
       assert.deepEqual(
         evaluate(`const card = document.querySelector('.live-call');
-          return [card.querySelector('.live-channel').textContent, card.querySelector('.live-status').textContent,
-            !!card.querySelector('[role="timer"]'), [...card.querySelectorAll('.live-face')].map(face => face.getAttribute('aria-label')),
-            document.querySelectorAll('.live-room').length, document.querySelectorAll('[aria-label="Leave voice"]').length];`),
-        ["alpha", "You’re in · 3", true, ["UI fixture (you), deafened", "Maya", "Alex, muted"], 0, 1],
-        "Your call card: channel, count, timer, you first with badges, and one Leave",
+          return [!!card.closest('#space-channel-list > li'), card.querySelector('.channel-select > span').textContent,
+            card.querySelector('.live-status').textContent, !!card.querySelector('[role="timer"]'),
+            [...card.querySelectorAll('.live-face')].map(face => face.getAttribute('aria-label')),
+            document.querySelectorAll('.live-room').length, document.querySelectorAll('[aria-label="Leave voice"]').length,
+            [...document.querySelectorAll('.people-panel .channel-select > span')].filter(name => name.textContent === 'alpha').length,
+            card.querySelectorAll('button.live-face, button.live-more, .live-speaker').length];`),
+        [true, "alpha", "You’re in · 3", true, ["UI fixture (you), deafened", "Maya", "Alex, muted"], 0, 1, 1, 0],
+        "Your call's row is its card: channel, count, timer, you first with badges, one Leave, no duplicate row or speaker line",
       );
       assert.equal(evaluate(`return voiceFixture.devices.at(-1);`), "headset");
       assert.deepEqual(
@@ -904,9 +944,20 @@ try {
       evaluate(`document.activeElement.blur();`);
       browser("mouse", "move", "5", "5");
       screenshot(`voice-live-connected-${width}`);
-      // A face opens the full list with that person's audio controls.
-      browser("click", '.live-call .live-face[aria-label="Alex, muted"]');
+      // A right-click (touch: a long press) on a face opens the full list with that person's
+      // audio controls; the press does not also open the chat.
+      const readingBefore = evaluate(
+        `return document.querySelector('.channel-select[aria-current="page"] > span').textContent;`,
+      );
+      if (phone) longPress('.live-call .live-face[aria-label="Alex, muted"]');
+      else rightClick('.live-call .live-face[aria-label="Alex, muted"]');
       wait(`document.activeElement === document.querySelector('.live-everyone [aria-label="Alex volume"]')`);
+      assert.ok(
+        evaluate(`return ${current(readingBefore)};`),
+        "Opening everyone's volume keeps the chat you are reading",
+      );
+      // Measure once the list's short entrance has settled.
+      wait(`!document.querySelector('.live-everyone').getAnimations().some(a => a.playState === 'running')`);
       assert.ok(
         evaluate(`const list = document.querySelector('.live-everyone').getBoundingClientRect(), menu = document.querySelector('.participant-volume'), r = menu.getBoundingClientRect();
           return list.top >= 0 && list.bottom <= innerHeight + 1 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth
@@ -933,9 +984,16 @@ try {
           ),
           "Collapsing channels must keep the active call reachable",
         );
+        assert.deepEqual(
+          evaluate(
+            `return [...document.querySelectorAll('#space-channel-list > li')].filter(li => li.checkVisibility()).map(li => li.querySelector('.channel-select > span').textContent);`,
+          ),
+          ["alpha"],
+          "Collapsed channels keep only the live ones",
+        );
         browser("click", '[aria-controls="space-channel-list"]');
       }
-      browser("find", "role", "button", "click", "--name", "beta", "--exact");
+      chooseChannel("beta");
       wait(current("beta"));
       assert.equal(evaluate(`return voiceFixture.joinedTrack.readyState;`), "live");
       if (phone) {
@@ -953,6 +1011,20 @@ try {
         );
       }
       screenshot(`voice-live-browsing-${width}`);
+      // Pressing the card anywhere, here on a face, opens the call's chat.
+      if (phone) openBrowse();
+      browser("click", '.live-call .live-face[aria-label="Maya"]');
+      wait(current("alpha"));
+      assert.equal(
+        evaluate(`return voiceFixture.client.phase;`),
+        "connected",
+        "Opening the call's chat keeps the call",
+      );
+      assert.equal(
+        evaluate(`return !!document.querySelector('.live-everyone');`),
+        false,
+        "A plain press opens no list",
+      );
       if (phone) openBrowse();
       click("Other test space");
       wait(current("lobby"));
@@ -961,9 +1033,9 @@ try {
         openBrowse();
       }
       assert.equal(
-        evaluate(`return document.querySelector('.live-call .live-channel')?.textContent;`),
+        evaluate(`return document.querySelector('.live-now > .live-call .live-channel')?.textContent;`),
         "alphaTest space",
-        "Your call card names its space while you are elsewhere",
+        "Elsewhere, your call card sits above the channels and names its space",
       );
       assert.equal(
         evaluate(`return voiceFixture.joinedTrack.readyState;`),
@@ -990,36 +1062,29 @@ try {
       wait(`voiceFixture.client.phase === 'connected' && ${connectedRow("alpha")}`);
       browser("click", '.channel-line [aria-label="Switch voice to #beta"]');
       // (Timed fixtures report people only in #alpha, so #beta's row has no live mark.)
-      wait(
-        `voiceFixture.client.phase === 'connected' && document.querySelector('.live-call .live-channel > span')?.textContent === 'beta'`,
-      );
+      wait(`voiceFixture.client.phase === 'connected' && ${connectedRow("beta")}`);
       assert.equal(lastJoin(), "beta00000000");
       assert.ok(evaluate(`return ${current(reading)};`), "Joining from a row keeps the conversation you are reading");
       click("Leave voice");
       wait(`voiceFixture.client.phase === 'idle'`);
     }
-    // Busy spaces: two room cards, the rest folded into one row.
+    // Busy spaces: every live room grows from its own row, in list order; nothing folds away.
     browser("set", "viewport", "1280", "900", "2");
     evaluate(`voiceFixture.timerEnabled = false; voiceFixture.publishPresence([
       {id:'peer',name:'Maya',avatarId:31,muted:false,deafened:false,tracks:[]},
       {id:'other',name:'Alex',avatarId:799,muted:true,deafened:false,tracks:[]}
     ]);`);
-    wait(`document.querySelectorAll('.live-room').length === 2`);
+    wait(`document.querySelectorAll('.live-room').length === 3`);
     assert.deepEqual(
       evaluate(
-        `return [document.querySelector('.live-now-heading span')?.textContent, [...document.querySelectorAll('.live-room .live-channel')].map(node => node.textContent), document.querySelector('.live-more-rooms')?.textContent];`,
+        `return [[...document.querySelectorAll('#space-channel-list > li > .live-room .channel-select > span:first-of-type')].map(node => node.textContent), document.querySelectorAll('.live-now, .live-more-rooms').length];`,
       ),
-      ["3 rooms", ["alpha", "beta"], "1 more live#planning-for-the-next-release"],
-      "Rooms beyond two fold into one row",
+      [["alpha", "beta", "planning-for-the-next-release"], 0],
+      "Live rooms stay in the list's order",
     );
-    browser("click", ".live-more-rooms");
-    wait(`document.querySelectorAll('.live-room').length === 3`);
-    assert.equal(evaluate(`return document.querySelector('.live-more-rooms').textContent;`), "Show less");
     screenshot("voice-live-rooms-1280");
-    browser("click", ".live-more-rooms");
-    wait(`document.querySelectorAll('.live-room').length === 2`);
-    // Crowded calls: nine faces and a +N tile that opens everyone.
-    browser("click", '.live-room [aria-label="Join voice in #alpha"]');
+    // Crowded calls: nine faces and a +N tile whose right-click opens everyone.
+    browser("click", '.live-room .live-join[aria-label="Join voice in #alpha"]');
     wait(`voiceFixture.client.phase === 'connected' && document.querySelector('.live-call')`);
     evaluate(`const client = voiceFixture.client;
       client.participants = [client.participants.find(person => person.id === 'self'), ...Array.from({ length: 12 }, (_, i) =>
@@ -1029,10 +1094,10 @@ try {
     assert.deepEqual(
       evaluate(`const more = document.querySelector('.live-call .live-more'), tops = new Set([...document.querySelectorAll('.live-call .live-faces > li')].map(li => Math.round(li.getBoundingClientRect().top)));
         return [more.textContent, more.getAttribute('aria-label'), tops.size, document.querySelector('.live-call .live-status').textContent];`),
-      ["+4", "4 more: Crowd 9, Crowd 10 and 2 more. Show everyone.", 2, "You’re in · 13"],
+      ["+4", "4 more: Crowd 9, Crowd 10 and 2 more", 2, "You’re in · 13"],
       "Thirteen people fit two rows: nine faces and +4",
     );
-    browser("click", ".live-call .live-more");
+    rightClick(".live-call .live-more");
     wait(`document.querySelectorAll('.live-everyone .participant').length === 13`);
     assert.ok(
       evaluate(
@@ -1042,11 +1107,22 @@ try {
     );
     screenshot("voice-live-crowd-1280");
     browser("press", "Escape");
+    wait(`!document.querySelector('.live-everyone')`);
+    // The phone strip: the card's first four faces, in its order, then +N for the rest.
+    browser("set", "viewport", "390", "900", "2");
+    wait(`document.querySelector('.voice-strip .live-chip')`);
+    assert.deepEqual(
+      evaluate(`const strip = ${faceIds(".voice-strip .live-avatar")}, card = ${faceIds(".live-call .live-face .live-avatar")};
+        return [strip.length, strip.join() === card.slice(0, 4).join(), document.querySelector('.voice-strip .live-chip').textContent];`),
+      [4, true, "+9"],
+      "A crowded call's strip folds after four faces, keeping the card's order",
+    );
+    browser("set", "viewport", "1280", "900", "2");
     click("Leave voice");
     wait(`voiceFixture.client.phase === 'idle'`);
     evaluate(`await voiceFixture.cleanup();`);
     console.log(
-      "PASS Live now at 1280px/390px: room cards and row marks, voice-free header, phone strip join/focus/Browse, pre-join device/volume/mute/deafen, call card faces/badges/order, full list placement, collapsed navigation, chat/space persistence, row join/switch, folded rooms and crowded calls (mock API/WebRTC).",
+      "PASS live channels at 1280px/390px: rooms and your call as cards in their rows (no Live now heading, fold or duplicate row), voice-free header, phone strip join/focus/Browse with the card's faces, pre-join device/volume/mute/deafen, call card faces/badges/order, card press opens chat, right-click/long press opens the full list, collapsed navigation keeps live rows, chat/space persistence, row join/switch and crowded calls (mock API/WebRTC).",
     );
   } else if (process.env.VOICE_TEST_DOCK === "1") {
     evaluate(`voiceFixture.showSpaces();`);
@@ -1116,7 +1192,7 @@ try {
       `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha' && document.querySelector('.channel-join[aria-disabled="false"]')`,
     );
     // Your call card's timer while you join or talk; #alpha's room card's while you watch.
-    const timer = '.live-now [role="timer"]';
+    const timer = '.live-card [role="timer"]';
     for (const width of [1280, 390]) {
       browser("set", "viewport", String(width), "900", "2");
       if (width === 390) openBrowse();
@@ -1240,7 +1316,7 @@ try {
         ["0", null],
         "Exercise both image artwork and the initials fallback",
       );
-      browser("click", ".live-call .live-face");
+      rightClick(".live-call .live-face");
       wait(`document.querySelectorAll('.live-everyone .avatar.quiet').length === 2`);
       assert.deepEqual(
         evaluate(
@@ -1267,8 +1343,9 @@ try {
         "Speaking shows the voice-green ring",
       );
       assert.equal(
-        evaluate(`return document.querySelector('.live-call .live-speaker')?.textContent;`),
-        "UI fixture is speaking",
+        evaluate(`return document.querySelector('.live-call').textContent.includes('speaking');`),
+        false,
+        "Speaking only rings the face: there is no speaker line",
       );
       if (width === 390) {
         // The phone strip over the conversation rings its speaking face too.
@@ -1293,7 +1370,7 @@ try {
     }
     evaluate(`await voiceFixture.cleanup();`);
     console.log(
-      "PASS ringless idle image/initial faces and list avatars, green speaking ring and speaker line at 1280px and 390px (mock signaling/WebRTC)",
+      "PASS ringless idle image/initial faces and list avatars, green speaking ring without a speaker line or card resize at 1280px and 390px (mock signaling/WebRTC)",
     );
   } else if (process.env.VOICE_TEST_CHANNEL_ROWS === "1") {
     evaluate(`voiceFixture.showSpaces();`);
@@ -1303,7 +1380,7 @@ try {
     evaluate(`await document.fonts.ready;`);
     const geometry = () =>
       evaluate(
-        // Within each row (Live now above the channels may move whole rows), plus the row's own size.
+        // Within each row (a live card above may move whole rows), plus the row's own size.
         `return [...document.querySelectorAll('.channel-line')].map(line => { const top = line.getBoundingClientRect().top; return [...line.querySelectorAll('.channel-select, .channel-manage, .channel-quick-join'), line].map(node => { const r = node.getBoundingClientRect(); return [r.x, r.y - top, r.width, r.height]; }); });`,
       );
     const countPosition = () =>
@@ -1391,9 +1468,9 @@ try {
         "Compact desktop rows; mobile/no-hover keeps 44px targets",
       );
       assert.equal(
-        evaluate(`return document.querySelectorAll('.channel-live, .live-now').length;`),
+        evaluate(`return document.querySelectorAll('.channel-live, .live-card').length;`),
         0,
-        "Empty channels show no zero-occupancy count and no Live now section",
+        "Empty channels show no zero-occupancy count and no live card",
       );
       assert.equal(
         evaluate(`return !!document.querySelector('.chat-heading :is(.channel-join, .voice-hangup, .header-voice)');`),
@@ -1442,13 +1519,12 @@ try {
       );
       wait(`document.querySelector('.channel-live')?.getAttribute('aria-label') === '2 in voice'`);
       const occupied = geometry();
-      if (fine) assert.deepEqual(occupied, before, "Live marks keep every row, menu and shortcut where it was");
-      else
-        assert.deepEqual(
-          names(),
-          before.map((row) => [row[0][0], row[0][1], row[0][3]]),
-          "Live rows stay one line",
-        );
+      // Every row is live here: each grows into its card, its name keeping its line.
+      assert.deepEqual(
+        names().map(([, top, height]) => [top, height]),
+        before.map((row) => [row[0][1], row[0][3]]),
+        "Live rows stay one line",
+      );
       assert.ok(
         evaluate(`const mark = document.querySelector('.channel-live'), row = mark.closest('.channel-select').getBoundingClientRect(), r = mark.getBoundingClientRect();
           return mark.textContent === '2' && r.right <= row.right && r.top >= row.top && r.bottom <= row.bottom && getComputedStyle(mark).color === 'rgb(74, 168, 107)';`),
@@ -1471,7 +1547,7 @@ try {
           `const menu = document.querySelector('.channel-menu[open]'), actions = menu.querySelector('.space-actions').getBoundingClientRect(), row = menu.closest('.channel-line').getBoundingClientRect();
           return menu.dataset.placement === 'above' ? actions.bottom <= row.top : actions.top >= row.bottom;`,
         ),
-        // Live now above the channels can leave the last row too little room below.
+        // A live card above can leave the last row too little room below.
         "Channel actions open below their own row, or above it when there is no room",
       );
       screenshot(`channel-${width}-menu`);
@@ -1510,15 +1586,19 @@ try {
       );
       screenshot(`channel-${width}-before-join`);
       // The live room's card joins in one press.
-      browser("focus", '.live-room [aria-label="Join voice in #alpha"]');
+      browser("focus", '.live-room .live-join[aria-label="Join voice in #alpha"]');
       browser("press", "Enter");
       wait(
         `voiceFixture.client?.phase === 'connected' && document.querySelector('.live-call [aria-label="Leave voice"]')`,
       );
       browser("wait", "650");
-      if (fine)
-        assert.deepEqual(geometry()[0], occupied[0], "Connecting preserves the channel's name, menu and shortcut slot");
-      else assert.deepEqual(names()[0], [occupied[0][0][0], occupied[0][0][1], occupied[0][0][3]]);
+      // The room's card becomes your call's: name, menu and line stay put (the status takes the shortcut's slot).
+      const kept = (row) => [row[0][0], row[0][1], row[0][3], row.at(-2), row.at(-1)];
+      assert.deepEqual(
+        kept(geometry()[0]),
+        kept(occupied[0]),
+        "Connecting preserves the channel's name, menu and line",
+      );
       assert.ok(
         evaluate(
           `return document.activeElement === document.querySelector('.live-call .voice-hangup') && !!document.querySelector('.live-call .lucide-phone-off') && document.querySelectorAll('[aria-label="Leave voice"]').length === 1;`,
@@ -1552,7 +1632,7 @@ try {
       evaluate(
         `voiceFixture.joinedTrack = voiceFixture.captures.at(-1); voiceFixture.leaveCount = voiceFixture.commands.filter(c => c.method === 'media.leave').length;`,
       );
-      browser("find", "role", "button", "click", "--name", "beta", "--exact");
+      chooseChannel("beta");
       wait(`document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'beta'`);
       assert.equal(
         evaluate(`return voiceFixture.joinedTrack.readyState;`),
@@ -1565,10 +1645,8 @@ try {
       );
       if (width === 390) openBrowse();
       // Touch hides a live row's shortcut; #beta's room card switches instead.
-      browser("click", `${fine ? ".channel-line" : ".live-room"} [aria-label="Switch voice to #beta"]`);
-      wait(
-        `voiceFixture.client?.phase === 'connected' && document.querySelector('.live-call .live-channel > span')?.textContent === 'beta'`,
-      );
+      browser("click", `${fine ? ".channel-line " : ".live-room .live-join"}[aria-label="Switch voice to #beta"]`);
+      wait(`voiceFixture.client?.phase === 'connected' && ${connectedRow("beta")}`);
       assert.equal(
         evaluate(`return voiceFixture.joinedTrack.readyState;`),
         "ended",
@@ -1585,7 +1663,7 @@ try {
       );
       click("Leave voice");
       wait(`voiceFixture.client.phase === 'idle'`);
-      browser("find", "role", "button", "click", "--name", "alpha", "--exact");
+      chooseChannel("alpha");
       wait(`document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha'`);
       if (width === 390) openBrowse();
       evaluate(
@@ -1705,7 +1783,7 @@ try {
     // (The fixture keeps your last call's roster; nobody is talking for this comparison.)
     evaluate(`voiceFixture.publishPresence([]); voiceFixture.showSpaces(false);`);
     wait(
-      `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha' && document.querySelector('.channel-manage') && !document.querySelector('.live-now')`,
+      `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha' && document.querySelector('.channel-manage') && !document.querySelector('.live-card')`,
     );
     browser("click", '[aria-label="Manage alpha"]');
     assert.equal(
@@ -1934,10 +2012,10 @@ try {
     wait(`voiceFixture.outputGain`);
     const gain = () => evaluate(`return voiceFixture.outputGain.gain.value;`);
     assert.ok(Math.abs(gain() - 0.9) < 0.00001, `Master volume must reach the audio graph (gain ${gain()})`);
-    // Faces on your call card open the full list, where per-person audio lives.
+    // A right-click on your call card's faces opens the full list, where per-person audio lives.
     const openEveryone = () => {
       if (!evaluate(`return !!document.querySelector('.live-everyone:popover-open');`))
-        browser("click", ".live-call .live-face");
+        rightClick(".live-call .live-face");
       wait(`document.querySelector('.live-everyone:popover-open')`);
     };
     openEveryone();
@@ -2273,7 +2351,7 @@ try {
     evaluate(
       `voiceFixture.joinedClient = voiceFixture.client; voiceFixture.callTrack = voiceFixture.captures.at(-1); voiceFixture.leaveCount = voiceFixture.commands.filter(c => c.method === 'media.leave').length; voiceFixture.settingsNode = document.querySelector('[aria-label="User Settings"]');`,
     );
-    browser("find", "role", "button", "click", "--name", "beta", "--exact");
+    chooseChannel("beta");
     wait(
       `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'beta' && document.querySelector('.channel-join[aria-disabled="false"]')`,
     );

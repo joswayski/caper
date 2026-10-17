@@ -42,7 +42,7 @@ async function fixture() {
   window.roster = () => faces().map((label) => label.split(", ")[0].replace(/ \(you\)$/, ""));
   window.row = (name) => faces().find((label) => label.split(", ")[0].replace(/ \(you\)$/, "") === name);
   // Everyone in voice in #general, in a call or not: its row's "N in voice" mark. This
-  // single-channel Call has no Live now room cards, which only list a space's channels.
+  // single-channel Call's only row is #general, whose mark stays on its line as a room card.
   window.inVoice = () =>
     Number(/^(\d+) in voice$/.exec(mount.querySelector(".channel-live")?.getAttribute("aria-label") ?? "")?.[1] ?? 0);
   const f = (window.fixture = {

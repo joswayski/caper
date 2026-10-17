@@ -622,7 +622,9 @@
   padding: 0;
   list-style: none;
 }
-.spaces-room .channel-navigation ul[data-collapsed] {
+/* Collapsed, the list keeps its live channels (your call, rooms to join): collapsing never hides voice. */
+.spaces-room .channel-navigation ul[data-collapsed]:not(:has(> li[data-live])),
+.spaces-room .channel-navigation ul[data-collapsed] > li:not([data-live]) {
   display: none;
 }
 .spaces-room .channel-navigation[data-demo] > ul {
