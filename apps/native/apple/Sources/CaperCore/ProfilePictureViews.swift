@@ -266,11 +266,14 @@ struct PictureEditor<Preview: View>: View {
     }
 }
 
-/// Reading a picked picture's bytes, unchanged (a GIF keeps every frame),
-/// whatever its size.
+/// Reading a picked picture's bytes, unchanged (a GIF keeps every frame).
 enum PictureFile {
+    /// Files over this are refused before they are read.
+    static let maxBytes = 64 * 1_024 * 1_024
+
     static func data(from item: PhotosPickerItem) async throws -> Data {
         guard let data = try await item.loadTransferable(type: Data.self) else { throw PictureError.unreadable }
+        guard data.count <= maxBytes else { throw PictureError.tooLarge }
         return data
     }
 
@@ -278,6 +281,7 @@ enum PictureFile {
     static func read(_ url: URL) throws -> Data {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > maxBytes { throw PictureError.tooLarge }
         return try Data(contentsOf: url)
     }
 }

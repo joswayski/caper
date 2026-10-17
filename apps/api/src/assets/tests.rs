@@ -1194,7 +1194,7 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
     };
     let code = |error: ApiError| (error.status, error.code);
 
-    // Reservations: type, dimensions and targets are checked first (never bytes).
+    // Reservations: type, size, dimensions and targets are checked first.
     assert_eq!(
         code(
             create_as(&owner, picture("avatar", "image/avif", 10, 10))
@@ -1202,6 +1202,14 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
                 .unwrap_err()
         ),
         (StatusCode::BAD_REQUEST, Some("picture_type"))
+    );
+    assert_eq!(
+        code(
+            create_as(&owner, picture("avatar", "image/png", 1024 * 1024 + 1, 10))
+                .await
+                .unwrap_err()
+        ),
+        (StatusCode::PAYLOAD_TOO_LARGE, Some("picture_too_large"))
     );
     assert_eq!(
         create_as(&owner, picture("avatar", "image/gif", 100, 1025))

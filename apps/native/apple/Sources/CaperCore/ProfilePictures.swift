@@ -58,12 +58,14 @@ public struct PreparedPicture: Equatable, Sendable {
 public enum PictureError: Error, Equatable, Sendable {
     /// Not a picture this device can decode.
     case unreadable
-    /// A still WebP, PNG or JPEG that couldn't be encoded within 1 MiB.
+    /// Still over its limit after re-encoding (1 MiB, or 5 MiB for a shrunk GIF).
     case tooLarge
 }
 
 /// Pure picture decisions, kept separate from ImageIO and views for unit tests.
 public enum ProfilePicturePolicy {
+    /// GIFs upload unchanged up to this size (5 MiB); bigger ones are shrunk to fit it.
+    public static let gifMaxBytes = 5 * 1_024 * 1_024
     /// Every other picture after re-encoding (1 MiB).
     public static let stillMaxBytes = 1_024 * 1_024
     /// The server's largest accepted width or height.
@@ -85,6 +87,8 @@ public enum ProfilePicturePolicy {
     /// Downloaded files kept so an evicted or resized picture (an animation's
     /// frames are the large part) decodes again without downloading.
     static let fileCacheBytes = 24 * 1_024 * 1_024
+    /// A downloaded picture is never larger than the biggest allowed GIF.
+    static let maxDownloadBytes = 6 * 1_024 * 1_024
     /// A failed picture is retried with a fresh URL at once, else after this.
     static let retryAfter: TimeInterval = 120
 
@@ -106,11 +110,10 @@ public enum ProfilePicturePolicy {
         return (Int(header[6]) | Int(header[7]) << 8, Int(header[8]) | Int(header[9]) << 8)
     }
 
-    /// Whether a GIF uploads byte for byte, whatever its size; a wider or
-    /// taller one is shrunk first.
+    /// Whether a GIF uploads byte for byte; any other GIF is shrunk first.
     public static func gifUploadsUnchanged(_ data: Data) -> Bool {
         guard let size = gifSize(data) else { return false }
-        return (1...maxDimension).contains(size.width) && (1...maxDimension).contains(size.height)
+        return data.count <= gifMaxBytes && (1...maxDimension).contains(size.width) && (1...maxDimension).contains(size.height)
     }
 
     // MARK: Stills
@@ -216,8 +219,8 @@ public enum ProfilePicturePolicy {
 /// Turns picked bytes into an uploadable picture (contract "Client
 /// preparation"). Synchronous ImageIO work: call it off the main actor.
 public enum ProfilePicturePreparer {
-    /// GIFs (by magic bytes) keep animating: unchanged at any size within
-    /// 1024 × 1024, else shrunk by `GIFShrink` to a 512 px square.
+    /// GIFs (by magic bytes) keep animating: unchanged within 5 MiB and
+    /// 1024 × 1024, else shrunk by `GIFShrink` to a square that fits.
     /// Anything else ImageIO decodes (PNG, JPEG, HEIC, WebP, AVIF, BMP…) becomes an oriented, centre-cropped square of at
     /// most 512 px, as lossy WebP (PNG/JPEG if WebP fails), at most 1 MiB.
     /// Re-encoding drops EXIF/GPS metadata; HEIC and AVIF are never uploaded.
@@ -228,7 +231,7 @@ public enum ProfilePicturePreparer {
 
     static func prepareGIF(_ data: Data) throws -> PreparedPicture {
         if !ProfilePicturePolicy.gifUploadsUnchanged(data) {
-            return try GIFShrink.shrink(data)
+            return try GIFShrink.shrink(data, budget: ProfilePicturePolicy.gifMaxBytes)
         }
         guard let size = ProfilePicturePolicy.gifSize(data),
               let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
@@ -360,6 +363,7 @@ enum ProfilePictureDecoder {
         if url.isFileURL { return try Data(contentsOf: url) }
         let (data, response) = try await session.data(from: url)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { throw AttachmentLoadError.status(http.statusCode) }
+        guard data.count <= ProfilePicturePolicy.maxDownloadBytes else { throw AttachmentLoadError.undecodable }
         return data
     }
 
@@ -445,22 +449,39 @@ final class ProfilePictureLoader {
     }
 }
 
-/// Shrinking a GIF wider or taller than 1024 px, as the web's `gif-shrink.ts`
-/// and Android's `GifShrink.kt` do, with ImageIO decoding, compositing and
-/// choosing each frame's palette: every frame centre-cropped to a square of at
-/// most 512 px, with its timing.
+/// Shrinking a GIF too large to upload unchanged, as the web's
+/// `gif-shrink.ts` and Android's `GifShrink.kt` do, with ImageIO decoding,
+/// compositing and choosing each frame's palette: every frame centre-cropped
+/// square and scaled down with its timing. 512 px first, then smaller edges,
+/// then fewer frames (each lasting as long as the ones it replaces).
 enum GIFShrink {
-    static let edge = 512
+    static let edges = [512, 384, 256, 192, 128]
 
-    static func shrink(_ data: Data) throws -> PreparedPicture {
+    static func shrink(_ data: Data, budget: Int) throws -> PreparedPicture {
         guard let size = ProfilePicturePolicy.gifSize(data), size.width > 0, size.height > 0,
               let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               CGImageSourceGetCount(source) > 0 else { throw PictureError.unreadable }
         let count = CGImageSourceGetCount(source)
         let delays = (0..<count).map { frameDelay(source, at: $0) }
-        let side = min(edge, size.width, size.height)
-        guard let output = encode(source, count: count, delays: delays, edge: side) else { throw PictureError.unreadable }
-        return PreparedPicture(data: output, contentType: "image/gif", width: side, height: side)
+        let short = min(size.width, size.height)
+        let fitting = edges.filter { $0 <= short }
+        let candidates = fitting.isEmpty ? [short] : fitting
+        var edge = candidates[0]
+        var step = 1
+        while true {
+            guard let output = encode(source, count: count, delays: delays, edge: edge, step: step) else { throw PictureError.unreadable }
+            if output.count <= budget { return PreparedPicture(data: output, contentType: "image/gif", width: edge, height: edge) }
+            // Jump straight to the edge the size suggests, else halve the frames.
+            let target = Double(edge) * (Double(budget) / Double(output.count)).squareRoot()
+            let below = candidates.filter { $0 < edge }
+            if let smaller = below.first(where: { Double($0) <= target }) ?? below.last {
+                edge = smaller
+            } else if step * 2 < count {
+                step *= 2
+            } else {
+                throw PictureError.tooLarge
+            }
+        }
     }
 
     /// A frame's delay in seconds, unclamped where ImageIO has it.
@@ -470,16 +491,18 @@ enum GIFShrink {
         return (gif[kCGImagePropertyGIFUnclampedDelayTime] as? Double) ?? (gif[kCGImagePropertyGIFDelayTime] as? Double) ?? 0.1
     }
 
-    /// An `edge`-pixel square GIF of every composited frame.
-    static func encode(_ source: CGImageSource, count: Int, delays: [Double], edge: Int) -> Data? {
+    /// An `edge`-pixel square GIF of every `step`th composited frame.
+    static func encode(_ source: CGImageSource, count: Int, delays: [Double], edge: Int, step: Int) -> Data? {
+        let kept = (count + step - 1) / step
         let output = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(output as CFMutableData, UTType.gif.identifier as CFString, count, nil) else { return nil }
+        guard let destination = CGImageDestinationCreateWithData(output as CFMutableData, UTType.gif.identifier as CFString, kept, nil) else { return nil }
         CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
-        for index in 0..<count {
-            guard let frame = CGImageSourceCreateImageAtIndex(source, index, [kCGImageSourceShouldCache: false] as CFDictionary),
+        for first in stride(from: 0, to: count, by: step) {
+            guard let frame = CGImageSourceCreateImageAtIndex(source, first, [kCGImageSourceShouldCache: false] as CFDictionary),
                   let square = frame.cropping(to: ProfilePicturePolicy.squareCrop(width: frame.width, height: frame.height)),
                   let image = ProfilePicturePreparer.render(square, edge: edge) else { return nil }
-            let gif: [CFString: Any] = [kCGImagePropertyGIFDelayTime: delays[index], kCGImagePropertyGIFUnclampedDelayTime: delays[index]]
+            let delay = delays[first..<min(first + step, count)].reduce(0, +)
+            let gif: [CFString: Any] = [kCGImagePropertyGIFDelayTime: delay, kCGImagePropertyGIFUnclampedDelayTime: delay]
             CGImageDestinationAddImage(destination, image, [kCGImagePropertyGIFDictionary: gif] as CFDictionary)
         }
         guard CGImageDestinationFinalize(destination) else { return nil }

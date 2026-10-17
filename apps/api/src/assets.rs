@@ -833,7 +833,7 @@ async fn create(
             {
                 return Err(invalid("invalid upload target"));
             }
-            pictures::check_reservation(&content_type, width, height)?;
+            pictures::check_reservation(&content_type, input.byte_size, width, height)?;
             let space = match &input.space_id {
                 None => None,
                 Some(space) => Some(

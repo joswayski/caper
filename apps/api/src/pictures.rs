@@ -18,8 +18,10 @@ use axum::{
 use serde_json::{Value, json};
 use sqlx::PgPool;
 
-/// Pictures have no byte limit: clients send stills at most 512 px and GIFs
-/// either unchanged or shrunk to a square, so the edge bounds every picture.
+/// Still pictures arrive cropped and resized to at most 512 px by the client.
+pub(crate) const STILL_MAX_BYTES: i64 = 1024 * 1024;
+/// GIFs upload unchanged so they keep their animation.
+pub(crate) const GIF_MAX_BYTES: i64 = 5 * 1024 * 1024;
 pub(crate) const MAX_DIMENSION: u32 = 1024;
 /// Picture uploads (profile and space icons together) per person per day.
 pub(crate) const PER_DAY: i64 = 50;
@@ -76,10 +78,18 @@ pub(crate) fn allowed_type(content_type: &str) -> bool {
     )
 }
 
-/// Validates a picture reservation before anything is stored: its type and
-/// pixel size, never its byte size.
+pub(crate) fn max_bytes(content_type: &str) -> i64 {
+    if content_type == "image/gif" {
+        GIF_MAX_BYTES
+    } else {
+        STILL_MAX_BYTES
+    }
+}
+
+/// Validates a picture reservation before anything is stored.
 pub(crate) fn check_reservation(
     content_type: &str,
+    byte_size: i64,
     width: Option<i32>,
     height: Option<i32>,
 ) -> Result<(), ApiError> {
@@ -99,6 +109,12 @@ pub(crate) fn check_reservation(
             StatusCode::BAD_REQUEST,
             "invalid media dimensions",
         ));
+    }
+    if byte_size > max_bytes(content_type) {
+        return Err(
+            ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "picture is too large")
+                .with_code("picture_too_large"),
+        );
     }
     Ok(())
 }

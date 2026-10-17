@@ -2,7 +2,9 @@
 // Browser preparation and upload live in `picture-upload.ts`; rendering in
 // `components/Picture.tsx`.
 
-/** A re-encoded still above this falls back from PNG to JPEG (no browser makes WebP that large). */
+/** GIFs up to this size (and edge) upload unchanged; bigger ones are shrunk to fit it (gif-shrink.ts). */
+export const MAX_GIF_BYTES = 5 * 1024 * 1024;
+/** Every other picture is re-encoded and must end at or under 1 MiB. */
 export const MAX_PICTURE_BYTES = 1024 * 1024;
 /** The server's largest accepted width or height, in pixels. */
 export const MAX_PICTURE_EDGE = 1024;
@@ -28,6 +30,7 @@ export interface SpaceIcon {
 export const pictureMessages = {
   gifUnreadable: "That GIF couldn’t be opened. Try another one.",
   undecodable: "This browser can’t open that picture. Try a PNG, JPEG, WebP or GIF.",
+  tooLarge: "That picture is too large. Try a smaller one.",
   type: "Use a PNG, JPEG, WebP or GIF picture.",
   dimensions: "Pictures can be up to 1024 × 1024.",
   serverTooLarge: "That picture is too large. Try another one.",
@@ -47,9 +50,15 @@ export function gifSize(bytes: Uint8Array): { width: number; height: number } | 
   return { width: bytes[6] | (bytes[7] << 8), height: bytes[8] | (bytes[9] << 8) };
 }
 
-/** Whether a GIF uploads byte for byte, whatever its size; a wider or taller one is shrunk first. */
-export function gifUploadsUnchanged(size: { width: number; height: number }) {
-  return size.width >= 1 && size.height >= 1 && size.width <= MAX_PICTURE_EDGE && size.height <= MAX_PICTURE_EDGE;
+/** Whether a GIF can upload byte for byte; any other GIF is shrunk first. */
+export function gifUploadsUnchanged(byteSize: number, size: { width: number; height: number }) {
+  return (
+    byteSize <= MAX_GIF_BYTES &&
+    size.width >= 1 &&
+    size.height >= 1 &&
+    size.width <= MAX_PICTURE_EDGE &&
+    size.height <= MAX_PICTURE_EDGE
+  );
 }
 
 /** The centered square of a `width` × `height` image, in source pixels. */
