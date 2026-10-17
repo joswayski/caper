@@ -1505,6 +1505,7 @@ final class AttachmentTests: XCTestCase {
         }
         XCTAssertFalse(AttachmentURLProtocol.requests.contains { $0.url.path.hasSuffix("/complete") })
         XCTAssertEqual(AttachmentPolicy.uploadErrorMessage(APIError(status: 429, message: "x")), "Uploading too quickly. Try again shortly.")
+        XCTAssertEqual(AttachmentPolicy.uploadErrorMessage(APIError(status: 422, message: "Cannot clean this media safely.", code: "media_metadata")), "Cannot clean this media safely.")
     }
 
     private func composerHandler(uniqueAssets: Bool = false) -> (URLRequest, Data?) throws -> (Int, Data) {

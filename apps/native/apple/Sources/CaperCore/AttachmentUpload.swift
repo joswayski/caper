@@ -124,9 +124,8 @@ public enum AttachmentStaging {
 /// Reserve, PUT the preview and then the compressed file straight to storage
 /// (presigned headers only, no app credentials), then confirm.
 public enum AttachmentUploader {
-    /// Waits between `complete` attempts while storage has not yet reported
-    /// the object (`409`).
-    public static let completeRetryDelays: [Duration] = [.milliseconds(500), .seconds(1), .seconds(2)]
+    /// Allow ten queued files to finish metadata processing (`409` while queued).
+    public static let completeRetryDelays: [Duration] = Array(repeating: .seconds(5), count: 240)
 
     public static func upload(_ file: PreparedAttachment, channelID: String, api: APIClient,
                               completeRetryDelays: [Duration] = AttachmentUploader.completeRetryDelays,

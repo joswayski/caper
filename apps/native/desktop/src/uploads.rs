@@ -6,7 +6,8 @@
 //! as web and phones. A video that needs no compression, or a build without
 //! FFmpeg, uploads the original with dimensions and duration read from
 //! MP4/QuickTime headers and their metadata boxes blanked (`metadata`), so
-//! location never leaves the device.
+//! common location tags are removed locally. The server independently cleans
+//! the uploaded media before sharing.
 
 use crate::api::Api;
 use crate::compress::{self, Compression};
@@ -22,14 +23,8 @@ use std::time::Duration;
 pub const MAX_ATTACHMENTS: usize = 10;
 /// Stills larger than this upload unchanged instead of being read for decoding.
 const MAX_IMAGE_READ_BYTES: u64 = 200 * 1024 * 1024;
-/// Waits before re-asking `complete` after a 409 (the upload has not
-/// arrived in storage yet).
-const COMPLETE_RETRY_DELAYS: [Duration; 4] = [
-    Duration::from_millis(500),
-    Duration::from_secs(1),
-    Duration::from_secs(2),
-    Duration::from_secs(4),
-];
+/// Allow ten queued files to finish metadata processing (409 while queued).
+const COMPLETE_RETRY_DELAYS: [Duration; 240] = [Duration::from_secs(5); 240];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadError {

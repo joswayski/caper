@@ -161,6 +161,7 @@ class AttachmentsTest {
 
     @Test fun `upload errors use the web copy`() {
         assertEquals("You’ve used all of your file storage.", AttachmentPolicy.uploadErrorMessage(ApiException(413, "storage limit reached", "storage_full")))
+        assertEquals("Cannot clean this media safely.", AttachmentPolicy.uploadErrorMessage(ApiException(422, "Cannot clean this media safely.", "media_metadata")))
         assertEquals("This file is too large to upload.", AttachmentPolicy.uploadErrorMessage(ApiException(413, "too large")))
         assertEquals("Uploading too quickly. Try again shortly.", AttachmentPolicy.uploadErrorMessage(ApiException(429, "slow down")))
         assertEquals("invalid file name", AttachmentPolicy.uploadErrorMessage(ApiException(400, "invalid file name")))

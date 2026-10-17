@@ -26,13 +26,13 @@ data class PreparedAttachment(
 
 /**
  * Reserve, upload the preview then the file straight to storage, confirm (web `uploadPrepared`).
- * Bytes never pass through the API and storage receives only the presigned headers. Returns the
- * attachment description whose ID is sent with a message.
+ * Storage receives only the presigned headers; the API cleans metadata before sharing. Returns
+ * the attachment description whose ID is sent with a message.
  */
 class AttachmentUploader(
     private val api: CaperApi,
-    /** Waits between `/complete` attempts while storage reports the upload has not arrived (409). */
-    private val completeRetryDelaysMs: List<Long> = listOf(500, 1_000, 2_000, 4_000),
+    /** Allow ten queued files to finish metadata processing (409 while queued). */
+    private val completeRetryDelaysMs: List<Long> = List(240) { 5_000L },
 ) {
     suspend fun upload(token: String, channelId: String, file: PreparedAttachment, progress: (Float) -> Unit = {}): ChatAttachment {
         val size = file.file.length()

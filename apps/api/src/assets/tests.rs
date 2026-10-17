@@ -310,18 +310,29 @@ fn names_and_types_are_normalized() {
 
 type Store = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 type DeleteFailures = Arc<Mutex<std::collections::HashSet<String>>>;
+type ReadDelays = Arc<Mutex<HashMap<String, Duration>>>;
 
 /// Minimal path-style S3 stand-in. It records objects but does not verify
 /// signatures; live R2 validation is a separate deployment check.
-async fn fake_r2() -> (String, Store, DeleteFailures) {
+async fn fake_r2() -> (String, Store, DeleteFailures, ReadDelays) {
     let store: Store = Arc::default();
     let failures: DeleteFailures = Arc::default();
+    let delays: ReadDelays = Arc::default();
     let shared = store.clone();
     let app = Router::new().route(
         "/{bucket}/{*key}",
         get({
             let store = shared.clone();
-            move |AxumPath((_, key)): AxumPath<(String, String)>, headers: HeaderMap| async move {
+            let delays = delays.clone();
+            move |AxumPath((_, key)): AxumPath<(String, String)>,
+                  method: axum::http::Method,
+                  headers: HeaderMap| async move {
+                if method == axum::http::Method::GET && !headers.contains_key("range") {
+                    let delay = delays.lock().unwrap().remove(&key);
+                    if let Some(delay) = delay {
+                        tokio::time::sleep(delay).await;
+                    }
+                }
                 let Some(body) = store.lock().unwrap().get(&key).cloned() else {
                     return StatusCode::NOT_FOUND.into_response();
                 };
@@ -360,7 +371,7 @@ async fn fake_r2() -> (String, Store, DeleteFailures) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("http://{address}"), store, failures)
+    (format!("http://{address}"), store, failures, delays)
 }
 
 fn principal(id: i64, external_id: &str) -> Principal {
@@ -396,8 +407,29 @@ async fn put(created: &Value, field: &str, body: &[u8]) {
 }
 
 fn png(size: usize) -> Vec<u8> {
+    assert!(size >= 67);
+    fn chunk(kind: &[u8], payload: &[u8]) -> Vec<u8> {
+        let mut out = (payload.len() as u32).to_be_bytes().to_vec();
+        out.extend(kind);
+        out.extend(payload);
+        let mut crc = !0_u32;
+        for byte in &out[4..] {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb88320 & 0_u32.wrapping_sub(crc & 1));
+            }
+        }
+        out.extend((!crc).to_be_bytes());
+        out
+    }
     let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
-    bytes.resize(size, 0);
+    bytes.extend(chunk(b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 0, 0, 0, 0]));
+    // A real zlib stream for a black pixel, with padding inside IDAT so the
+    // existing accounting cases can still request an exact fixture size.
+    let mut data = vec![0x78, 0x9c, 0x63, 0x60, 0, 0, 0, 2, 0, 1];
+    data.resize(size - 57, 0);
+    bytes.extend(chunk(b"IDAT", &data));
+    bytes.extend(chunk(b"IEND", &[]));
     bytes
 }
 
@@ -463,7 +495,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,name,account_session_hash) VALUES($1,$2,$3,'Owner',$4)")
         .bind(random_id(12)).bind(Sha256::digest(b"owner-chat").as_slice()).bind(owner.user.id).bind(&account_hash).execute(&pool).await.unwrap();
 
-    let (endpoint, store, failures) = fake_r2().await;
+    let (endpoint, store, failures, delays) = fake_r2().await;
     let assets = Assets::new(
         pool.clone(),
         R2::new(endpoint, "test".into(), "key".into(), "secret".into()),
@@ -486,7 +518,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         serde_json::from_value::<CreateInput>(json!({
             "channelId": channel, "filename": name, "contentType": content_type,
             "byteSize": size, "sourceByteSize": size * 3, "width": 40, "height": 30,
-            "preview": preview.map(|size| json!({"contentType":"image/webp","byteSize":size})),
+            "preview": preview.map(|size| json!({"contentType":"image/png","byteSize":size})),
         }))
         .unwrap()
     };
@@ -511,12 +543,12 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         (StatusCode::PAYLOAD_TOO_LARGE, Some("storage_full"))
     );
 
-    let (status, Json(shot)) = create_as(&owner, input("shot.png", "image/png", 100, Some(20)))
+    let (status, Json(shot)) = create_as(&owner, input("shot.png", "image/png", 100, Some(100)))
         .await
         .unwrap();
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(shot["kind"], "image");
-    assert_eq!(shot["storage"], json!({"used":120,"limit":1000}));
+    assert_eq!(shot["storage"], json!({"used":200,"limit":1000}));
     assert_eq!(shot["upload"]["headers"]["content-type"], "image/png");
     assert!(
         shot["upload"]["headers"]["content-disposition"]
@@ -537,7 +569,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         StatusCode::CONFLICT
     );
     put(&shot, "upload", &png(100)).await;
-    put(&shot, "previewUpload", b"RIFF\0\0\0\0WEBPVP8 \0\0\0\0").await;
+    put(&shot, "previewUpload", &png(100)).await;
     assert_eq!(
         complete_as(&outsider, &shot_id).await.unwrap_err().status,
         StatusCode::NOT_FOUND
@@ -766,11 +798,11 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         .await
         .unwrap()
         .0;
-    assert_eq!(before["used"], 100 + 20 + 6 + 5);
-    let (_, Json(stale)) = create_as(&owner, input("stale.png", "image/png", 8, None))
+    assert_eq!(before["used"], 100 + 100 + 6 + 5);
+    let (_, Json(stale)) = create_as(&owner, input("stale.png", "image/png", 100, None))
         .await
         .unwrap();
-    put(&stale, "upload", &png(8)).await;
+    put(&stale, "upload", &png(100)).await;
     let _ = complete_as(&owner, stale["id"].as_str().unwrap())
         .await
         .unwrap();
@@ -806,7 +838,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         .await
         .unwrap()
         .0;
-    assert_eq!(after["used"], 100 + 20 + 5);
+    assert_eq!(after["used"], 100 + 100 + 5);
 
     // Deleting a sent file hides it at once and purges after the delay; rows stay.
     sqlx::query("UPDATE public.assets SET deleted_at = now() WHERE external_id=$1")
@@ -859,12 +891,13 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     // Both completed and incomplete removals release quota at the next purge,
     // not a day later. Cancellation is idempotent and prevents completion/Send.
     for completed in [false, true] {
-        let (_, Json(removed)) = create_as(&owner, input("remove.png", "image/png", 8, Some(20)))
-            .await
-            .unwrap();
+        let (_, Json(removed)) =
+            create_as(&owner, input("remove.png", "image/png", 100, Some(100)))
+                .await
+                .unwrap();
         let id = removed["id"].as_str().unwrap();
-        put(&removed, "upload", &png(8)).await;
-        put(&removed, "previewUpload", b"RIFF\0\0\0\0WEBPVP8 \0\0\0\0").await;
+        put(&removed, "upload", &png(100)).await;
+        put(&removed, "previewUpload", &png(100)).await;
         if completed {
             let _ = complete_as(&owner, id).await.unwrap();
         }
@@ -898,12 +931,12 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
                 .await
                 .unwrap()
                 .0["used"],
-            148
+            400
         );
         let failed_key = if completed {
             preview_key(id)
         } else {
-            original_key(id)
+            privacy::staged(&original_key(id))
         };
         failures.lock().unwrap().insert(failed_key.clone());
         assert_eq!(purge(&assets).await.unwrap(), 0);
@@ -913,7 +946,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
                 .await
                 .unwrap()
                 .0["used"],
-            148,
+            400,
             "both objects must be deleted before quota is released"
         );
         assert_eq!(purge(&assets).await.unwrap(), 1);
@@ -924,7 +957,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
                 .await
                 .unwrap()
                 .0["used"],
-            120
+            200
         );
         // Even a very late PUT must not recreate a permanently forgotten orphan.
         sqlx::query("UPDATE public.assets SET deleted_at=now()-interval '30 days', purged_at=now()-interval '29 days' WHERE external_id=$1")
@@ -935,9 +968,21 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        put(&removed, "upload", &png(8)).await;
-        put(&removed, "previewUpload", b"RIFF\0\0\0\0WEBPVP8 \0\0\0\0").await;
+        put(&removed, "upload", &png(100)).await;
+        put(&removed, "previewUpload", &png(100)).await;
         PurgeSweep::default().run(&assets).await.unwrap();
+        assert!(
+            !store
+                .lock()
+                .unwrap()
+                .contains_key(&privacy::staged(&original_key(id)))
+        );
+        assert!(
+            !store
+                .lock()
+                .unwrap()
+                .contains_key(&privacy::staged(&preview_key(id)))
+        );
         assert!(!store.lock().unwrap().contains_key(&original_key(id)));
         assert!(!store.lock().unwrap().contains_key(&preview_key(id)));
         assert_eq!(
@@ -1054,6 +1099,8 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
             .contains_key(&original_key("sweep-new"))
     );
 
+    exercise_media_privacy(state.clone(), &owner, &channel, &store, &delays).await;
+
     // Scripted floods hit the pending and per-minute reservation limits.
     sqlx::query("UPDATE public.assets SET created_at = now() - interval '2 minutes'")
         .execute(&pool)
@@ -1081,11 +1128,544 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         .unwrap();
 }
 
+fn media_tool(program: &str, args: &[&str]) -> Vec<u8> {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{program}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+fn image_fixture(extension: &str, width: u16, height: u16) -> Vec<u8> {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join(format!("image.{extension}"));
+    media_tool(
+        "ffmpeg",
+        &[
+            "-nostdin",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("testsrc2=size={width}x{height}:rate=5"),
+            "-frames:v",
+            "1",
+            "-threads",
+            "1",
+            output.to_str().unwrap(),
+        ],
+    );
+    std::fs::read(output).unwrap()
+}
+
+/// Exercise the same reservation/PUT/completion contract every client uses,
+/// with actual codecs and tag writers, not mocked sanitizer results.
+async fn exercise_media_privacy(
+    mut state: AppState,
+    owner: &Principal,
+    channel: &str,
+    store: &Store,
+    delays: &ReadDelays,
+) {
+    state.assets.as_mut().unwrap().quota_bytes = 64 * 1024 * 1024;
+    let assets = state.assets.as_ref().unwrap();
+    sqlx::query("UPDATE public.assets SET created_at=now()-interval '2 minutes'")
+        .execute(&assets.pool)
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let private = "PRIVATE_CAPER_LOCATION_40N";
+    let mut fixtures = Vec::new();
+    for (extension, mime) in [
+        ("jpg", "image/jpeg"),
+        ("png", "image/png"),
+        ("webp", "image/webp"),
+        ("avif", "image/avif"),
+    ] {
+        let path = dir.path().join(format!("source.{extension}"));
+        std::fs::write(&path, image_fixture(extension, 32, 24)).unwrap();
+        media_tool(
+            "exiftool",
+            &[
+                "-overwrite_original",
+                &format!("-XMP:Description={private}"),
+                path.to_str().unwrap(),
+            ],
+        );
+        if extension == "jpg" {
+            media_tool(
+                "exiftool",
+                &[
+                    "-overwrite_original",
+                    "-GPSLatitude=40.6892",
+                    "-GPSLongitude=74.0445",
+                    "-Orientation#=6",
+                    path.to_str().unwrap(),
+                ],
+            );
+        }
+        fixtures.push((mime, path));
+    }
+    let gif = dir.path().join("animated.gif");
+    media_tool(
+        "ffmpeg",
+        &[
+            "-nostdin",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=32x24:rate=5",
+            "-t",
+            "0.6",
+            "-threads",
+            "1",
+            "-loop",
+            "3",
+            gif.to_str().unwrap(),
+        ],
+    );
+    media_tool(
+        "exiftool",
+        &[
+            "-overwrite_original",
+            &format!("-Comment={private}"),
+            gif.to_str().unwrap(),
+        ],
+    );
+    fixtures.push(("image/gif", gif));
+    for (extension, mime, video, audio) in [
+        ("mp4", "video/mp4", "libx264", "aac"),
+        ("mov", "video/quicktime", "libx264", "aac"),
+        ("webm", "video/webm", "libvpx-vp9", "libopus"),
+    ] {
+        let path = dir.path().join(format!("video.{extension}"));
+        media_tool(
+            "ffmpeg",
+            &[
+                "-nostdin",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=32x24:rate=5",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=730:sample_rate=48000",
+                "-t",
+                "0.6",
+                "-threads",
+                "1",
+                "-c:v",
+                video,
+                "-c:a",
+                audio,
+                "-metadata",
+                &format!("title={private}"),
+                "-metadata",
+                "creation_time=2021-04-03T01:02:03Z",
+                "-metadata:s:v:0",
+                &format!("title={private}"),
+                path.to_str().unwrap(),
+            ],
+        );
+        if extension == "mov" {
+            // iPhone-like location, rotated video, a timed GPS/data track and
+            // top-level UUID payload: global-tag deletion alone misses these.
+            let gps = dir.path().join("gps.bin");
+            std::fs::write(&gps, private).unwrap();
+            let tagged = dir.path().join("timed.mov");
+            media_tool(
+                "ffmpeg",
+                &[
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-i",
+                    path.to_str().unwrap(),
+                    "-f",
+                    "data",
+                    "-i",
+                    gps.to_str().unwrap(),
+                    "-map",
+                    "0",
+                    "-map",
+                    "1",
+                    "-c",
+                    "copy",
+                    "-tag:d",
+                    "gpmd",
+                    "-metadata:s:v:0",
+                    "rotate=90",
+                    "-metadata",
+                    "location=+40.6892-074.0445/",
+                    tagged.to_str().unwrap(),
+                ],
+            );
+            let mut bytes = std::fs::read(&tagged).unwrap();
+            bytes.extend(((8 + 16 + private.len()) as u32).to_be_bytes());
+            bytes.extend(b"uuid");
+            bytes.extend([9; 16]);
+            bytes.extend(private.as_bytes());
+            std::fs::write(&path, bytes).unwrap();
+        }
+        fixtures.push((mime, path));
+    }
+    for (extension, mime, codec) in [
+        ("mp3", "audio/mpeg", "libmp3lame"),
+        ("m4a", "audio/mp4", "aac"),
+        ("aac", "audio/aac", "aac"),
+        ("ogg", "audio/ogg", "libvorbis"),
+        ("wav", "audio/wav", "pcm_s16le"),
+        ("flac", "audio/flac", "flac"),
+        ("aiff", "audio/aiff", "pcm_s16be"),
+    ] {
+        let path = dir.path().join(format!("audio.{extension}"));
+        let title = format!("title={private}");
+        let mut args = vec![
+            "-nostdin",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=730:sample_rate=48000",
+            "-t",
+            "0.6",
+            "-threads",
+            "1",
+            "-c:a",
+            codec,
+            "-metadata",
+            &title,
+        ];
+        if extension == "aac" {
+            args.extend(["-write_id3v2", "1"]);
+        }
+        args.push(path.to_str().unwrap());
+        media_tool("ffmpeg", &args);
+        fixtures.push((mime, path));
+    }
+    fixtures.push(("application/octet-stream", fixtures[0].1.clone()));
+    let before = usage(State(state.clone()), Extension(owner.clone()))
+        .await
+        .unwrap()
+        .0["used"]
+        .as_i64()
+        .unwrap();
+    let mut stored = 0;
+    let mut ids = Vec::new();
+    for (mime, path) in fixtures {
+        let source = std::fs::read(&path).unwrap();
+        assert!(
+            String::from_utf8_lossy(&source).contains(private),
+            "{mime}: fixture must contain private metadata"
+        );
+        let preview =
+            (mime == "video/mp4").then(|| std::fs::read(dir.path().join("source.jpg")).unwrap());
+        let input = serde_json::from_value(json!({"channelId":channel,"filename":"upload.bin","contentType":mime,"byteSize":source.len(),
+            "preview":preview.as_ref().map(|p|json!({"contentType":"image/jpeg","byteSize":p.len()}))})).unwrap();
+        let (_, Json(reserved)) =
+            create(State(state.clone()), Extension(owner.clone()), Json(input))
+                .await
+                .unwrap();
+        let id = reserved["id"].as_str().unwrap();
+        ids.push(id.to_owned());
+        put(&reserved, "upload", &source).await;
+        if let Some(p) = &preview {
+            put(&reserved, "previewUpload", p).await;
+        }
+        assert!(
+            !store.lock().unwrap().contains_key(&original_key(id)),
+            "no downloadable source before completion"
+        );
+        if mime == "video/mp4" {
+            delays
+                .lock()
+                .unwrap()
+                .insert(privacy::staged(&original_key(id)), Duration::from_secs(12));
+        }
+        let first = complete(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path(id.to_owned()),
+        )
+        .await;
+        let completed = if mime == "video/mp4" {
+            assert_eq!(first.unwrap_err().status, StatusCode::CONFLICT);
+            // The HTTP response must not cancel the worker. Let it publish
+            // without another complete request restarting the work.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !store.lock().unwrap().contains_key(&original_key(id)) {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("background cleaning must survive its HTTP response");
+            complete(
+                State(state.clone()),
+                Extension(owner.clone()),
+                Path(id.to_owned()),
+            )
+            .await
+        } else {
+            first
+        };
+        let Json(done) = completed.unwrap_or_else(|error| panic!("{mime}: {error:?}"));
+        let cleaned = store.lock().unwrap()[&original_key(id)].clone();
+        assert_eq!(done["size"], cleaned.len());
+        stored += cleaned.len() as i64;
+        assert!(
+            !String::from_utf8_lossy(&cleaned).contains(private),
+            "{mime}: raw private bytes removed"
+        );
+        assert!(
+            !store
+                .lock()
+                .unwrap()
+                .contains_key(&privacy::staged(&original_key(id)))
+        );
+        let output = dir.path().join(format!(
+            "clean-{}",
+            path.file_name().unwrap().to_str().unwrap()
+        ));
+        std::fs::write(&output, &cleaned).unwrap();
+        // ExifTool does not recognise raw ADTS AAC after its ID3 is removed.
+        // That case is checked by the raw marker and packet hashes below.
+        if mime != "audio/aac" {
+            let tags = media_tool(
+                "exiftool",
+                &[
+                    "-j",
+                    "-a",
+                    "-GPS:all",
+                    "-XMP:all",
+                    "-Comment",
+                    "-Title",
+                    "-CreationDate",
+                    "-CreateDate",
+                    output.to_str().unwrap(),
+                ],
+            );
+            let tags = String::from_utf8(tags).unwrap();
+            assert!(
+                !tags.contains(private)
+                    && !tags.contains("GPSLatitude")
+                    && !tags.contains("2021:04:03"),
+                "{mime}: {tags}"
+            );
+        }
+        if mime.starts_with("image/") || mime == "application/octet-stream" {
+            let frames = |p: &std::path::Path| {
+                let data = media_tool(
+                    "ffmpeg",
+                    &[
+                        "-nostdin",
+                        "-v",
+                        "error",
+                        "-threads",
+                        "1",
+                        "-i",
+                        p.to_str().unwrap(),
+                        "-threads",
+                        "1",
+                        "-f",
+                        "framemd5",
+                        "-",
+                    ],
+                );
+                String::from_utf8(data)
+                    .unwrap()
+                    .lines()
+                    .filter(|l| !l.starts_with('#'))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                frames(&path),
+                frames(&output),
+                "{mime}: pixels, frames and timing unchanged"
+            );
+            if mime == "image/gif" {
+                let loops = |p: &std::path::Path| {
+                    media_tool(
+                        "exiftool",
+                        &["-s3", "-AnimationIterations", p.to_str().unwrap()],
+                    )
+                };
+                assert_eq!(loops(&path), loops(&output));
+            }
+        } else {
+            let probe = |p: &std::path::Path| -> Value {
+                serde_json::from_slice(&media_tool(
+                    "ffprobe",
+                    &[
+                        "-v",
+                        "error",
+                        "-show_streams",
+                        "-show_packets",
+                        "-show_data_hash",
+                        "sha256",
+                        "-of",
+                        "json",
+                        p.to_str().unwrap(),
+                    ],
+                ))
+                .unwrap()
+            };
+            let original = probe(&path);
+            let result = probe(&output);
+            for stream in original["streams"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|s| s["codec_type"] == "video" || s["codec_type"] == "audio")
+            {
+                let index = stream["index"].as_u64().unwrap();
+                let hashes = |p: &Value| {
+                    p["packets"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|packet| packet["stream_index"] == index)
+                        .map(|packet| packet["data_hash"].clone())
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    hashes(&original),
+                    hashes(&result),
+                    "{mime}: compressed samples unchanged"
+                );
+                assert_eq!(
+                    stream.get("side_data_list"),
+                    result["streams"][index as usize].get("side_data_list"),
+                    "{mime}: rotation/colour preserved"
+                );
+            }
+            assert!(
+                result["streams"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|s| s["codec_type"] == "video" || s["codec_type"] == "audio")
+            );
+        }
+        if preview.is_some() {
+            let bytes = store.lock().unwrap()[&preview_key(id)].clone();
+            assert!(
+                !String::from_utf8_lossy(&bytes).contains(private),
+                "preview is cleaned too"
+            );
+            stored += bytes.len() as i64;
+        }
+        // An upload URL still lives for 15 minutes. Replaying it must not
+        // replace the published object, even if completion is retried.
+        put(&reserved, "upload", &source).await;
+        let _ = complete(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path(id.to_owned()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(store.lock().unwrap()[&original_key(id)], cleaned);
+        eprintln!(
+            "privacy {mime}: {} -> {} bytes; media preserved, private tags removed",
+            source.len(),
+            cleaned.len()
+        );
+    }
+    assert_eq!(
+        usage(State(state.clone()), Extension(owner.clone()))
+            .await
+            .unwrap()
+            .0["used"],
+        before + stored
+    );
+    sqlx::query(
+        "UPDATE public.assets SET created_at=now()-interval '20 minutes' WHERE external_id=ANY($1)",
+    )
+    .bind(&ids)
+    .execute(&assets.pool)
+    .await
+    .unwrap();
+    let mut sweep = PurgeSweep::default();
+    loop {
+        sweep.run(assets).await.unwrap();
+        if sweep.ceiling.is_none() {
+            break;
+        }
+    }
+    for id in &ids {
+        assert!(
+            !store
+                .lock()
+                .unwrap()
+                .contains_key(&privacy::staged(&original_key(id)))
+        );
+        assert!(store.lock().unwrap().contains_key(&original_key(id)));
+    }
+    for (mime, source) in [
+        ("video/mp4", b"\0\0\0\x10ftypisom\0\0\0\0".as_slice()),
+        (
+            "image/svg+xml",
+            b"<svg><metadata>private</metadata></svg>".as_slice(),
+        ),
+        (
+            "application/octet-stream",
+            b"II\x2a\0private TIFF metadata".as_slice(),
+        ),
+    ] {
+        let input = serde_json::from_value(json!({"channelId":channel,"filename":"bad.bin","contentType":mime,"byteSize":source.len()})).unwrap();
+        let (_, Json(reserved)) =
+            create(State(state.clone()), Extension(owner.clone()), Json(input))
+                .await
+                .unwrap();
+        let id = reserved["id"].as_str().unwrap();
+        ids.push(id.to_owned());
+        put(&reserved, "upload", source).await;
+        assert_eq!(
+            complete(
+                State(state.clone()),
+                Extension(owner.clone()),
+                Path(id.to_owned())
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert!(
+            !store.lock().unwrap().contains_key(&original_key(id)),
+            "never fall back to an unsafe source"
+        );
+    }
+    sqlx::query("UPDATE public.assets SET deleted_at=now() WHERE external_id=ANY($1)")
+        .bind(&ids)
+        .execute(&assets.pool)
+        .await
+        .unwrap();
+    while purge(assets).await.unwrap() > 0 {}
+}
+
 fn gif(width: u16, height: u16, size: usize) -> Vec<u8> {
-    let mut bytes = b"GIF89a".to_vec();
-    bytes.extend(width.to_le_bytes());
-    bytes.extend(height.to_le_bytes());
-    bytes.resize(size, 0);
+    let mut bytes = image_fixture("gif", width, height);
+    assert_eq!(bytes.pop(), Some(0x3b));
+    bytes.extend([0x21, 0xfe]); // comment extension
+    for block in vec![b'x'; size].chunks(255) {
+        bytes.push(block.len() as u8);
+        bytes.extend(block);
+    }
+    bytes.extend([0, 0x3b]);
     bytes
 }
 
@@ -1097,14 +1677,12 @@ fn sized_png(width: u32, height: u32, size: usize) -> Vec<u8> {
     bytes
 }
 
-/// A camera JPEG: its frame header sits behind a large EXIF segment.
+/// A real camera-like JPEG: its frame header sits behind a large APP1 segment.
 fn camera_jpeg(width: u16, height: u16) -> Vec<u8> {
+    let original = image_fixture("jpg", width, height);
     let mut bytes = vec![0xff, 0xd8, 0xff, 0xe1, 0x4e, 0x22];
-    bytes.resize(bytes.len() + 0x4e20, 0);
-    bytes.extend([0xff, 0xc0, 0x00, 0x11, 8]);
-    bytes.extend(height.to_be_bytes());
-    bytes.extend(width.to_be_bytes());
-    bytes.resize(bytes.len() + 400, 0);
+    bytes.resize(bytes.len() + 0x4e20, b'x');
+    bytes.extend(&original[2..]);
     bytes
 }
 
@@ -1153,7 +1731,7 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         .await
         .unwrap();
 
-    let (endpoint, store, _) = fake_r2().await;
+    let (endpoint, store, _, _) = fake_r2().await;
     // A tiny file quota: pictures must not count against it.
     let assets = Assets::new(
         pool.clone(),
@@ -1234,16 +1812,18 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         StatusCode::BAD_REQUEST
     );
 
-    // A GIF far larger than the file quota uploads unchanged and applies on completion.
-    let (status, Json(first)) = create_as(&owner, picture("avatar", "image/gif", 4000, 480))
-        .await
-        .unwrap();
+    // A GIF far larger than the file quota keeps its frames and applies on completion.
+    let first_gif = gif(480, 480, 4000);
+    let (status, Json(first)) =
+        create_as(&owner, picture("avatar", "image/gif", first_gif.len(), 480))
+            .await
+            .unwrap();
     assert_eq!(status, StatusCode::CREATED);
     assert!(first.get("storage").is_none());
     let first_id = first["id"].as_str().unwrap().to_owned();
     assert_eq!(first_id.len(), crate::pictures::ID_LENGTH);
     assert_eq!(first["upload"]["headers"]["content-type"], "image/gif");
-    put(&first, "upload", &gif(480, 480, 4000)).await;
+    put(&first, "upload", &first_gif).await;
     let done = complete_as(&owner, &first_id).await.unwrap().0;
     assert_eq!(done["account"]["avatarAsset"], first_id.as_str());
     assert_eq!(done["account"]["avatarId"], mascot);
@@ -1359,18 +1939,25 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
     assert_eq!(current.as_deref(), Some(second_id.as_str()));
 
     // Space icons apply to spaces the uploader still owns.
-    let (_, Json(icon)) = create_as(&owner, picture("spaceIcon", "image/png", 64, 256))
-        .await
-        .unwrap();
-    put(&icon, "upload", &sized_png(256, 256, 64)).await;
+    let icon_bytes = image_fixture("png", 256, 256);
+    let (_, Json(icon)) = create_as(
+        &owner,
+        picture("spaceIcon", "image/png", icon_bytes.len(), 256),
+    )
+    .await
+    .unwrap();
+    put(&icon, "upload", &icon_bytes).await;
     let icon_id = icon["id"].as_str().unwrap().to_owned();
     let applied = complete_as(&owner, &icon_id).await.unwrap().0;
     assert_eq!(applied["space"]["iconAsset"], icon_id.as_str());
     assert_eq!(applied["space"]["id"], space_external.as_str());
-    let (_, Json(late)) = create_as(&owner, picture("spaceIcon", "image/png", 64, 256))
-        .await
-        .unwrap();
-    put(&late, "upload", &sized_png(256, 256, 64)).await;
+    let (_, Json(late)) = create_as(
+        &owner,
+        picture("spaceIcon", "image/png", icon_bytes.len(), 256),
+    )
+    .await
+    .unwrap();
+    put(&late, "upload", &icon_bytes).await;
     sqlx::query("UPDATE public.spaces SET owner_id=$2 WHERE id=$1")
         .bind(space_id)
         .bind(outsider.user.id)

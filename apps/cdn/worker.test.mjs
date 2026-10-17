@@ -44,6 +44,10 @@ const env = {
       body: new TextEncoder().encode("preview"),
       headers: { "content-type": "image/png" },
     },
+    "staging/original/abc": {
+      body: new TextEncoder().encode("private camera metadata"),
+      headers: { "content-type": "video/mp4" },
+    },
     "original/doc": {
       body: new TextEncoder().encode("<html>"),
       headers: { "content-type": "text/html", "content-disposition": 'attachment; filename="page.html"' },
@@ -122,6 +126,8 @@ test("tampered, expired, overlong, foreign-key and unknown requests are refused"
     tampered,
     otherKey,
     await signed("assets/abc"),
+    await signed("staging/original/abc"),
+    await signed("staging/preview/abc"),
     await signed("original/abc", now - 1),
     await signed("original/abc", now + 4 * 24 * 3600),
     "https://cdn.test/assets/abc",

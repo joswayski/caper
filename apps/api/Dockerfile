@@ -23,7 +23,7 @@ RUN cargo build --locked --release --package caper-api
 FROM debian:bookworm-slim AS api
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates \
+    && apt-get install --yes --no-install-recommends ca-certificates ffmpeg libimage-exiftool-perl util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 caper \
     && useradd --uid 10001 --gid caper --no-create-home --shell /usr/sbin/nologin caper

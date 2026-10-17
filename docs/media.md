@@ -1214,10 +1214,11 @@ pre-spaces image after migration; complete the forward rollout instead.
 
 ## Uploads and attachments
 
-Signed-in members attach up to 10 files to a message. Bytes never pass through
-AWS: the API reserves quota and presigns one exact upload, the client `PUT`s
-straight to the private R2 bucket, and the `apps/cdn` Worker serves downloads
-from its own domain after checking a signature the API issued.
+Signed-in members attach up to 10 files to a message. The API reserves quota
+and presigns an exact upload to private R2 staging. On completion it streams
+those bytes through temporary disk, removes media metadata without recompression,
+and publishes separate server-written objects. The `apps/cdn` Worker serves
+only published objects after checking a signature the API issued.
 
 ### Data model
 
@@ -1230,6 +1231,7 @@ preview is a fixed derived object beside the original, not another row:
 | --- | --- |
 | Original | `original/{asset id}` |
 | Preview (≤ 640 px, ≤ 512 KiB, WebP/JPEG/PNG) | `preview/{asset id}` |
+| Private upload sources (never a CDN route) | `staging/original/{asset id}`, `staging/preview/{asset id}` |
 
 `message_id`/`position` link a sent file to one message. Message content keeps
 its version 1 `type:"text"` shape and gains an optional `attachments` array
@@ -1245,11 +1247,18 @@ its R2 objects were removed.
    channel access, locks the user row, enforces quota, 30 reservations/minute
    and 20 pending uploads, inserts a pending row, and returns presigned `PUT`
    URLs (15 minutes). The signature covers `content-type`, `content-length`
-   and the download name in `content-disposition`, so R2 rejects other bytes.
+   and the download name in `content-disposition`, so R2 rejects other sizes
+   and headers (the signature does not authenticate the body).
 2. The client uploads the preview, then the original, directly to R2.
 3. `POST /api/assets/{id}/complete`: the API `HEAD`s each object, requires the
    exact reserved size, and for inline types checks magic bytes from a 64-byte
-   ranged `GET`. A mismatch soft-deletes the reservation (`422`).
+   ranged `GET`. It then streams the full source, checks its length and signature
+   again, strips metadata from original and preview, and PUTs the results to
+   distinct CDN keys. A mismatch or unsafe media soft-deletes the reservation
+   (`422`); there is no fallback to the source. Quota and returned sizes use the
+   actual cleaned bytes. A row lock serializes completion and cancellation.
+   Slow jobs continue after a `409`; clients poll completion rather than hold
+   one HTTP request through a proxy timeout.
 4. `POST /api/chat/channels/{id}/messages` accepts `attachmentIds`. Inside the
    send transaction the API locks the sender's ready, unattached uploads for
    that channel, embeds their descriptions and links them. Text may be empty
@@ -1265,7 +1274,7 @@ for tabs open longer than a URL's lifetime.
 - Per person, across every space: `ASSET_QUOTA_BYTES` (default 10 GiB) of stored
   bytes, original plus preview. No separate per-file limit; one file may use
   the whole allowance. Space owners are not charged for members' uploads.
-- Quota counts what is **stored** (after browser compression), and reservations
+- Quota counts what is **stored** (after client compression and metadata removal), and reservations
   count immediately so parallel uploads cannot overshoot.
 - Bytes stay counted until the purge loop successfully deletes the original and
   preview. Late storage writes may briefly recreate uncharged bytes until the
@@ -1382,7 +1391,8 @@ Rules shared by every client:
 - **HDR video** (iPhone/Android HLG, HDR10) is tone mapped to SDR BT.709 (Hable,
   1000-nit peak) where the platform can do it; otherwise the original uploads
   unchanged rather than a washed-out SDR copy.
-- **GIF, SVG, AVIF, audio, documents and other files** upload unchanged.
+- **GIF, AVIF, audio, documents and other files** are not re-encoded locally;
+  the server metadata policy below still applies.
 
 AVIF quality parity. `avifQuality` is libavif's quality scale as of
 libavif 1.0 (`avifenc -q`). On five 9–14 MP photos, quality 85 scored
@@ -1398,9 +1408,51 @@ decoders also store an H.264 rendition, which would defeat the storage saving,
 and browsers cannot use a bundled decoder for `<video>` (Safari plays AV1 only
 on devices with AV1 hardware).
 
-The server never transcodes: it verifies the stored bytes (exact size, and
-magic bytes for inline types) and charges quota for exactly what was stored,
-so a client that skips compression only spends its own allowance faster.
+The server never transcodes, but it independently removes embedded media
+metadata before publication, including when an older client skips stripping.
+Client compression remains optional; server metadata removal does not.
+
+### Metadata privacy on completion
+
+- JPEG, PNG, GIF, WebP, AVIF and HEIC/HEIF use ExifTool to remove EXIF/GPS,
+  XMP, comments and other writable descriptive metadata. Only image orientation
+  and colour-rendering metadata are copied back. GIF/WebP frames, loop settings
+  and delays are not re-encoded.
+- MP4/MOV, WebM, AVI and the supported audio containers (MP3, MP4/M4A, AAC,
+  Ogg, WAV, FLAC, AIFF) are remuxed by FFmpeg with stream copy. Global tags,
+  per-stream tags, capture dates, chapters, cover art and non-audio/video tracks
+  (including GPS/timecode/data/subtitle tracks) are omitted. Audio/video samples,
+  rotation, colour information and playback timing remain.
+- Detection uses bytes, not just filenames or MIME types; labelling a known
+  media file `application/octet-stream` does not bypass cleaning. Unsupported
+  declared media (including SVG, BMP and TIFF originals) is refused rather than
+  shared unchanged. Clients normally convert BMP/TIFF to a supported still format.
+- This is **container metadata removal, not complete anonymisation**: it does
+  not redact visible/audible locations, proprietary information embedded inside
+  copied codec samples, ICC profile contents, or documents/archives and their
+  embedded files. Non-media downloads retain their contents. Already-published
+  uploads are not rewritten by this change.
+- Upload URLs target only staging, so a repeated PUT after completion cannot
+  replace a cleaned file. Sources are erased after success; the bounded purge
+  sweep repeats cleanup after the 15-minute PUT lifetime, including late writes.
+  Rejected/cancelled sources follow the existing purge/reconciliation loop.
+- The Linux API image includes FFmpeg, ExifTool and `prlimit`. One job per pod
+  streams to a private temporary directory, removed on success/error/cancellation.
+  Processes have address-space/heap, CPU, output-size and wall-clock limits,
+  closed stdin, no shell/config-file interpolation and no network protocols.
+  Neither command output nor embedded metadata is logged. The production API
+  needs a disk-backed writable `/tmp` (12 GiB for a 5 GiB R2 PUT plus its result)
+  and 512 MiB memory; infrastructure provisions these before the API release.
+  Storage/process failures fail closed. Cleaning may take up to two minutes
+  per object. `/complete` responds within ten seconds with the result or a
+  retriable `409`, leaving slow work running. Clients allow a queued batch of
+  ten files to finish; a process restart safely restarts from private staging.
+
+Apple's “Location Included” picker/drag badge describes the **selected source**,
+before Caper processes it; it is not an inspection of the shared object. Verify
+privacy by inspecting the downloaded result. Reservations created by the previous
+API during a rolling update may need to be selected/uploaded again (their signed
+PUT used the old final key, not staging).
 
 Web specifics: WebCodecs via Mediabunny (loaded on demand). Google Chrome on
 Linux encodes H.264 but not AAC, so those uploads carry Opus audio in MP4;
@@ -1434,8 +1486,9 @@ Follow-ups:
 
 - Desktop cannot decode HEIC (uploads it unchanged) or AVIF (opens originals
   in the browser; the inline image is the preview).
-- Location written as a timed metadata track or a top-level XMP `uuid` box in
-  MP4 is not removed; WebP originals keep EXIF/XMP chunks.
+- Server metadata stripping regression checks use real FFmpeg/ExifTool on
+  synthetic geotagged fixtures plus a disposable Postgres and fake R2. Live R2,
+  Apple picker/share workflows and physical native-device checks remain separate.
 - HEVC/AV1 delivery once every client can play it; chunked parallel encoding
   if server processing returns.
 - JPEG XL: Chrome 155 (October 2026) decodes it by default, Safari since 17
