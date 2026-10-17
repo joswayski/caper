@@ -1368,8 +1368,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (state.pendingMessage != null && pending == null || pending?.rejected == true || pending != null && pending.error == null) return
         if (pending != null) viewModel.send(pending.text, threadRootId = thread.rootId, broadcast = pending.broadcast)
         // "Also send to channel" applies to one reply, so it resets with the draft.
-        else if ((draft.text.isNotBlank() || files.isNotEmpty()) && viewModel.send(draft.text, threadRootId = thread.rootId, broadcast = broadcast)) {
-            draft = TextFieldValue(""); broadcast = false
+        else if (draft.text.isNotBlank() || files.isNotEmpty()) {
+            val sent = draft.text
+            val sentBroadcast = broadcast
+            val clear = { draft = TextFieldValue(""); broadcast = false }
+            if (viewModel.send(sent, threadRootId = thread.rootId, broadcast = sentBroadcast,
+                unchanged = { draft.text == sent && broadcast == sentBroadcast }, accepted = clear)) clear()
         }
     }
     Box(modifier.attachmentDrop(canAttach, target, viewModel, dropping)) {
@@ -1683,7 +1687,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     if (hasContent && state.pendingMessage == null) {
                         val sent = draft.text
                         viewModel.setTyping(false)
-                        if (viewModel.send(sent)) updateDraft(TextFieldValue(""))
+                        val clear = { updateDraft(TextFieldValue("")) }
+                        if (viewModel.send(sent, unchanged = { draft.text == sent }, accepted = clear)) clear()
                     }
                 }
                 fun submit() {

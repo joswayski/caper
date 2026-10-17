@@ -5492,13 +5492,22 @@ private struct MentionCardView: View {
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             }
             if !draft.files.isEmpty {
+                let failed = draft.files.filter { $0.uploadError != nil }.count
+                if failed > 0 {
+                    Text(failed == 1 ? "1 file failed to upload. Send will retry it, or you can remove it." : "\(failed) files failed to upload. Send will retry them, or you can remove them.")
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(CaperTheme.terracotta.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                }
                 StagedFileLayout() {
                     ForEach(draft.files) { file in
                         StagedFileChip(id: file.id, name: file.local.name,
                                        kind: AttachmentKind.local(contentType: file.local.contentType),
                                        localURL: file.local.url,
-                                       status: AttachmentPolicy.formatBytes(file.local.size),
-                                       busyLabel: draft.sending ? "Sending…" : nil,
+                                       status: file.uploadError ?? AttachmentPolicy.formatBytes(file.local.size),
+                                       failed: file.uploadError != nil,
+                                       busyLabel: file.progress != nil ? "Uploading…" : nil,
+                                       progress: file.progress,
                                        removable: draft.editable,
                                        preview: { draft.presentingDialog = true; previewFile = file.local.url },
                                        remove: { draft.remove(id: file.id) })

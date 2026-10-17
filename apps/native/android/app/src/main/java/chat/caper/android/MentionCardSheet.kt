@@ -223,7 +223,7 @@ import kotlinx.coroutines.launch
         if (field.text != draft.text) field = TextFieldValue(draft.text, TextRange(draft.text.length))
     }
     val editable = writable && draft.editable
-    DraftAttachmentStrip(draft.files, remove, enabled = editable, uploadOnSend = !draft.sending)
+    DraftAttachmentStrip(draft.files, remove, enabled = editable, uploadOnSend = true, sending = draft.sending)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
         EmojiTextField(
             field, { value ->
