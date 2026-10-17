@@ -1653,6 +1653,8 @@ struct StagedFileChip: View {
                     Group {
                         if let thumbnail {
                             Image(decorative: thumbnail, scale: 1).resizable().scaledToFill()
+                        } else if kind == .video {
+                            Color.clear
                         } else {
                             VStack(spacing: 6) {
                                 if kind == .file {
@@ -1682,17 +1684,18 @@ struct StagedFileChip: View {
                 }
             }
             VStack(alignment: .leading, spacing: 0) {
-                Spacer(minLength: 0)
-                if kind == .video {
-                    Image(systemName: "video.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white)
-                        .padding(4)
-                        .background(.black.opacity(0.8), in: RoundedRectangle(cornerRadius: 4))
-                        .padding(4)
-                        .accessibilityLabel("Video")
-                        .allowsHitTesting(false)
+                ZStack {
+                    if kind == .video {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.72))
+                            .frame(width: 32, height: 32)
+                            .background(.black.opacity(0.32), in: Circle())
+                            .accessibilityLabel("Video")
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
                 if failed || busyLabel != nil {
                     VStack(spacing: 3) {
                         if failed, let retry {

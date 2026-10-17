@@ -386,15 +386,17 @@ internal fun durationLabel(durationMs: Long?): String? {
                             if (thumbnail != null) AsyncImage(
                                 model = remember(thumbnail) { AttachmentImages.request(context, thumbnail, "draft:${draft.key}") },
                                 contentDescription = null, imageLoader = AttachmentImages.loader(context), modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
-                            ) else Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Icon(painterResource(if (draft.kind == "video" || draft.kind == "audio") R.drawable.lucide_play else R.drawable.lucide_file_text), null, Modifier.size(18.dp), tint = TextMuted)
-                                Text(when (draft.kind) { "image" -> "Image"; "video" -> "Video"; "audio" -> "Audio"; else -> "File" }, color = TextMuted, fontSize = 11.sp)
+                            ) else if (draft.kind != "video") Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Icon(painterResource(if (draft.kind == "audio") R.drawable.lucide_play else R.drawable.lucide_file_text), null, Modifier.size(18.dp), tint = TextMuted)
+                                Text(when (draft.kind) { "image" -> "Image"; "audio" -> "Audio"; else -> "File" }, color = TextMuted, fontSize = 11.sp)
                             }
                         }
-                        Column(Modifier.align(Alignment.BottomStart).fillMaxWidth()) {
-                            if (draft.kind == "video") {
-                                Box(Modifier.padding(4.dp).background(Blackout.copy(alpha = 0.9f), MaterialTheme.shapes.extraSmall).padding(4.dp)) {
-                                    Icon(painterResource(R.drawable.lucide_play), "Video", Modifier.size(12.dp), tint = Text)
+                        Column(Modifier.fillMaxSize()) {
+                            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                if (draft.kind == "video") {
+                                    Box(Modifier.size(32.dp).background(Blackout.copy(alpha = 0.32f), CircleShape), contentAlignment = Alignment.Center) {
+                                        Icon(painterResource(R.drawable.lucide_play), "Video", Modifier.size(16.dp), tint = Text.copy(alpha = 0.72f))
+                                    }
                                 }
                             }
                             if (status != null) Column(Modifier.fillMaxWidth().background(Blackout.copy(alpha = 0.9f)).padding(horizontal = 4.dp, vertical = if (draft.error != null && retry != null) 0.dp else 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {

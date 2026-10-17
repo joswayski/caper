@@ -11,7 +11,7 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import { FileText, FileWarning, Maximize2, Play, Video, X } from "lucide-react";
+import { FileText, FileWarning, Maximize2, Play, X } from "lucide-react";
 import GifImage from "./GifImage.tsx";
 import MediaViewer from "./MediaViewer.tsx";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
@@ -383,14 +383,7 @@ function DraftVideoThumbnail({ url, poster }: { url?: string; poster?: string })
     return release;
   }, [url, poster]);
   const thumbnail = poster ?? (frame?.url === url ? frame?.image : undefined);
-  return thumbnail ? (
-    <img src={thumbnail} alt="" draggable={false} />
-  ) : (
-    <span className="chat-draft-kind" aria-hidden="true">
-      <Video size={24} />
-      Video
-    </span>
-  );
+  return thumbnail ? <img src={thumbnail} alt="" draggable={false} /> : null;
 }
 
 /** Keep the long-press lifetime tied to its tile. Scrolling cancels the press;
@@ -605,13 +598,13 @@ export function DraftAttachments({
               )}
               {kind === "video" && (
                 <span
-                  className="chat-draft-video-badge"
+                  className="chat-draft-video-play"
                   role="img"
                   aria-label="Video"
                   data-status={!!status || undefined}
                   data-retry={!!(draft.error && onRetry) || undefined}
                 >
-                  <Video size={12} aria-hidden="true" />
+                  <Play size={16} fill="currentColor" aria-hidden="true" />
                 </span>
               )}
               {status && !(draft.error && onRetry) && (

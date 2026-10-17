@@ -16832,7 +16832,7 @@ impl CaperApp {
                         .uv(uv)
                         .corner_radius(6)
                         .paint_at(ui, thumb);
-                } else {
+                } else if draft.kind != model::AttachmentKind::Video {
                     paint_file_fallback(&painter, thumb, &draft.name);
                 }
                 let uploading = draft.attachment.is_none() && draft.error.is_none();
@@ -16920,7 +16920,7 @@ impl CaperApp {
                     egui::StrokeKind::Inside,
                 );
                 if draft.kind == model::AttachmentKind::Video {
-                    paint_draft_video_badge(&painter, rect, uploading || draft.error.is_some());
+                    paint_draft_video_play(&painter, rect, uploading || draft.error.is_some());
                 }
                 let close = egui::Rect::from_center_size(
                     egui::pos2(rect.right() - 12.0, rect.top() + 12.0),
@@ -21276,15 +21276,16 @@ fn paint_file_fallback(painter: &egui::Painter, rect: egui::Rect, name: &str) {
     );
 }
 
-/// Reserve the footer for status/retry/progress instead of covering it.
-fn paint_draft_video_badge(painter: &egui::Painter, rect: egui::Rect, has_footer: bool) {
-    let bottom = rect.bottom() - if has_footer { 29.0 } else { 4.0 };
-    let badge = egui::Rect::from_min_size(
-        egui::pos2(rect.left() + 4.0, bottom - 20.0),
-        egui::vec2(24.0, 20.0),
+/// Centre the translucent play indicator in the preview, clear of its footer.
+fn paint_draft_video_play(painter: &egui::Painter, rect: egui::Rect, has_footer: bool) {
+    let center = rect.center() - egui::vec2(0.0, if has_footer { 12.5 } else { 0.0 });
+    painter.circle_filled(center, 16.0, Color32::from_black_alpha(82));
+    paint_icon(
+        painter,
+        egui::Rect::from_center_size(center + egui::vec2(1.0, 0.0), egui::vec2(16.0, 16.0)),
+        NavIcon::Play,
+        TEXT.gamma_multiply(0.72),
     );
-    painter.rect_filled(badge, 4.0, Color32::from_black_alpha(190));
-    paint_icon(painter, badge.shrink(4.0), NavIcon::Play, TEXT);
 }
 
 fn attachment_remove_menu(response: &egui::Response, enabled: bool) -> bool {
@@ -21332,6 +21333,7 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, width), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 8.0, SURFACE);
+    let video = compress::type_from_name(chip.name).starts_with("video/");
     let thumb = rect;
     if let Some(texture) = chip.thumbnail {
         // Centre-crop the local preview into the square.
@@ -21345,7 +21347,7 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
             .uv(uv)
             .corner_radius(6)
             .paint_at(ui, thumb);
-    } else {
+    } else if !video {
         paint_file_fallback(&painter, thumb, chip.name);
     }
     // The name remains available to assistive technology and on hover.
@@ -21400,8 +21402,8 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
         Stroke::new(1.0, if chip.error { ERROR } else { BORDER }),
         egui::StrokeKind::Inside,
     );
-    if compress::type_from_name(chip.name).starts_with("video/") {
-        paint_draft_video_badge(&painter, rect, has_footer);
+    if video {
+        paint_draft_video_play(&painter, rect, has_footer);
     }
     let close = egui::Rect::from_center_size(
         egui::pos2(rect.right() - 12.0, rect.top() + 12.0),

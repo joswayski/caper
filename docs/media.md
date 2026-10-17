@@ -1841,11 +1841,13 @@ to a system preview app; Rust desktop opens the selected file in the system
 browser. Native format support depends on the installed system handlers.
 Remove remains a separate control and never opens a preview.
 
-Draft tiles show video posters with a bottom-left video badge, above any
-progress or retry footer. Web and Apple decode a bounded early frame locally;
-Android reuses its prepared poster; Rust desktop uses FFmpeg, including for
-profile-card files that have not uploaded. Undecodable videos retain a labelled
-fallback. The visible X sits near the top-right corner without shrinking the
+Draft tiles show video posters with a small translucent play indicator centred
+in the preview area, clear of any progress or retry footer. The whole tile still
+opens the preview; the indicator adds no separate hit target. Web and Apple
+decode a bounded early frame locally; Android reuses its prepared poster;
+Rust desktop uses FFmpeg, including for profile-card files not yet uploaded.
+Undecodable videos retain the play
+indicator. The visible X sits near the top-right corner without shrinking the
 44-point Apple/web touch target or Android's 48dp target. Long press (or desktop
 context click) offers **Remove attachment**, affecting only the unsent draft,
 not the original library file or a sent message. Sending profile-card files
