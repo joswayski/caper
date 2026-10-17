@@ -29,16 +29,19 @@ class VoiceNavigationUiTest {
             CaperTheme {
                 Column(Modifier.width(280.dp)) {
                     LiveCallCard(voice, null, otherSpaceName = "Fixture Studio", sessionStartedAt = null, narrow = false,
-                        openCall = { opened++ }, leave = { left++ })
+                        open = { opened++ }, leave = { left++ })
                 }
             }
         }
 
-        compose.onNodeWithText("Fixture Studio").assertExists()
-        compose.onNodeWithText("Planning").performClick()
-        compose.runOnIdle { assertEquals(1, opened); assertEquals(0, left) }
+        compose.onNodeWithText("Fixture Studio", useUnmergedTree = true).assertExists()
+        // The whole card opens the call's chat: its channel, its space's name, its status.
+        compose.onNodeWithText("Planning", useUnmergedTree = true).performClick()
+        compose.onNodeWithText("Fixture Studio", useUnmergedTree = true).performClick()
+        compose.onNodeWithText("You’re in · 0", useUnmergedTree = true).performClick()
+        compose.runOnIdle { assertEquals(3, opened); assertEquals(0, left) }
 
         compose.onNodeWithContentDescription("Leave voice").performClick()
-        compose.runOnIdle { assertEquals(1, opened); assertEquals(1, left) }
+        compose.runOnIdle { assertEquals(3, opened); assertEquals(1, left) }
     }
 }

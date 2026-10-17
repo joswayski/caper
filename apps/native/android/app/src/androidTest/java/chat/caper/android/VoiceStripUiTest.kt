@@ -5,10 +5,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertWidthIsAtLeast
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -23,7 +29,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Phones' strip under the chat header, and the channel rows' voice ends (the header itself carries no voice). */
+/** Phones' strip under the chat header (your call card's faces, no speaker), and the channel rows' voice ends (the header itself carries no voice). */
 @RunWith(AndroidJUnit4::class)
 class VoiceStripUiTest {
     @get:Rule val compose = createComposeRule()
@@ -31,6 +37,7 @@ class VoiceStripUiTest {
     private fun person(id: String, name: String) = Participant(id, name, muted = false, deafened = false, tracks = emptyList())
 
     @Test fun callStripMutesInPlaceAndOtherwiseOpensBrowse() {
+        // Maya is speaking: only her face's ring shows it.
         val voice = mutableStateOf(VoiceState(
             phase = VoiceState.Phase.CONNECTED, channelId = "design", channelName = "design", selfId = "self",
             participants = listOf(person("remote", "Maya"), person("self", "Fixture Owner")), speakingParticipants = setOf("remote"),
@@ -48,8 +55,10 @@ class VoiceStripUiTest {
             }
         }
 
-        // The channel, faces and speaker read as one summary of the strip.
-        compose.onNodeWithContentDescription("In voice in #design. Maya is speaking", substring = true).assertExists()
+        // The channel and how many are there read as one summary of the strip; nothing names who is speaking.
+        compose.onNodeWithContentDescription("In voice in #design, 2 people").assertExists()
+        compose.onNodeWithContentDescription("speaking", substring = true, ignoreCase = true).assertDoesNotExist()
+        compose.onNodeWithText("Maya", substring = true).assertDoesNotExist()
         // Mute is its own 44dp control: it toggles without opening Browse.
         compose.onNodeWithContentDescription("Mute microphone").assertIsEnabled().assertWidthIsAtLeast(44.dp).assertHeightIsAtLeast(44.dp).performClick()
         compose.runOnIdle { assertEquals(1, toggled); assertEquals(0, opened) }
@@ -65,9 +74,44 @@ class VoiceStripUiTest {
         compose.runOnIdle { voice.value = voice.value.copy(monitoring = true) }
         compose.onNodeWithContentDescription("Unmute microphone").assertIsNotEnabled()
 
-        compose.runOnIdle { voice.value = voice.value.copy(phase = VoiceState.Phase.CONNECTING, speakingParticipants = emptySet()) }
-        compose.onNodeWithContentDescription("In voice in #design. Connecting…", substring = true).assertExists()
-        compose.onNodeWithContentDescription("is speaking", substring = true).assertDoesNotExist()
+        // Until connected the strip says how far the connection is, in place of nothing.
+        compose.runOnIdle { voice.value = voice.value.copy(phase = VoiceState.Phase.CONNECTING) }
+        compose.onNodeWithContentDescription("In voice in #design, 2 people. Connecting…").assertExists()
+        compose.onNodeWithContentDescription("speaking", substring = true, ignoreCase = true).assertDoesNotExist()
+    }
+
+    @Test fun stripFacesAreTheCardsFacesUpToFiveThenFourAndPlusN() {
+        val people = mutableStateOf((1..5).map { person("p$it", "Person $it") })
+        compose.setContent {
+            CaperTheme {
+                // Speaking never reorders: Person 3 is speaking, you are still first.
+                val voice = VoiceState(phase = VoiceState.Phase.CONNECTED, channelId = "design", channelName = "design", selfId = "p2",
+                    participants = people.value, speakingParticipants = setOf("p3"))
+                Column {
+                    Row(Modifier.testTag("strip")) { VoiceStripFaces(voice, null) }
+                    Column(Modifier.width(280.dp).testTag("card")) {
+                        LiveCallCard(voice, null, otherSpaceName = null, sessionStartedAt = null, narrow = false, open = {}, leave = {})
+                    }
+                }
+            }
+        }
+        fun faces(tag: String, names: List<String>) = names.map { name ->
+            compose.onNode(hasContentDescription(name) and hasAnyAncestor(hasTestTag(tag))).assertExists().getUnclippedBoundsInRoot().left
+        }
+        val order = listOf("Person 2 (you)", "Person 1", "Person 3", "Person 4", "Person 5")
+        // Up to five: the same people in the same order, you first, then join order.
+        for (tag in listOf("strip", "card")) {
+            val lefts = faces(tag, order)
+            assertEquals(lefts.sorted(), lefts)
+        }
+
+        compose.runOnIdle { people.value = (1..7).map { person("p$it", "Person $it") } }
+        // Beyond five the strip shows the card's first four and "+3"; the card still shows all seven.
+        val strip = faces("strip", order.take(4))
+        assertEquals(strip.sorted(), strip)
+        compose.onNode(hasContentDescription("Person 5") and hasAnyAncestor(hasTestTag("strip"))).assertDoesNotExist()
+        compose.onNode(hasText("+3") and hasAnyAncestor(hasTestTag("strip"))).assertExists()
+        faces("card", order + listOf("Person 6", "Person 7"))
     }
 
     @Test fun joinStripCountsWhoIsTalkingAndJoinsThisChannel() {
