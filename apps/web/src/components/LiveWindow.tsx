@@ -17,6 +17,7 @@ import {
   Users,
 } from "lucide-react";
 import { avatarUrl } from "../account/avatar";
+import { liveNames } from "../media/live-now";
 import { sessionDuration } from "../media/session-duration";
 import PresenceDot from "./PresenceDot";
 import { attachLiveMotion } from "./liveMotion";
@@ -333,7 +334,13 @@ export default function LiveWindow({ preloadSpace = false }: { preloadSpace?: bo
     };
   });
   const onlinePeople = present.filter((person) => person.online);
+  // People in voice in their (approximate) join order: you, Maya, first, as on your call card.
   const voicePeople = present.filter((person) => person.voice);
+  const inCall = present[0].voice;
+  const speaker = voicePeople.find((person) => person.speaking);
+  const voiceTimer = (
+    <span className="voice-session-timer">{sessionDuration(0, (cycle * cycleLength + phase) * 1_000)}</span>
+  );
   const visibleMessages = [...history, ...timedMessages.filter((message) => message.at <= phase)];
   const typingPeople = [
     ...new Set(
@@ -394,6 +401,88 @@ export default function LiveWindow({ preloadSpace = false }: { preloadSpace?: bo
                       <ChevronDown aria-hidden="true" />
                     </div>
                   </header>
+                  {/* Live now, as in the app: your call card while Maya is in voice, the room's card with Join while she steps out. */}
+                  <section className="live-now" aria-label="Simulated Live now">
+                    <h2 className="live-now-heading">
+                      <AudioLines aria-hidden="true" />
+                      Live now
+                    </h2>
+                    {inCall ? (
+                      <section
+                        className="live-card live-call"
+                        data-phase="connected"
+                        role="img"
+                        aria-label={`Simulated call in general with ${liveNames(voicePeople.slice(1).map((person) => person.name))}${speaker ? `; ${speaker.name} is speaking` : ""}; mute, deafen and Leave`}
+                      >
+                        <div className="live-card-heading">
+                          <AudioLines className="live-wave" aria-hidden="true" />
+                          <span className="live-channel">
+                            <span>general</span>
+                          </span>
+                          <span className="live-status">You’re in · {voicePeople.length}</span>
+                          {voiceTimer}
+                        </div>
+                        <ul className="live-faces">
+                          {voicePeople.map((person) => (
+                            <li key={person.name}>
+                              <span className="live-face">
+                                <span className="live-avatar" data-speaking={person.speaking ? "" : undefined}>
+                                  <Avatar person={person} />
+                                </span>
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                        <p className="live-speaker">
+                          {speaker && (
+                            <>
+                              <strong>{speaker.name}</strong> is speaking
+                            </>
+                          )}
+                        </p>
+                        <div className="live-controls">
+                          <span className="voice-icon-button live-toggle">
+                            <Mic aria-hidden="true" />
+                          </span>
+                          <span className="voice-icon-button live-toggle">
+                            <Headphones aria-hidden="true" />
+                          </span>
+                          <span className="voice-hangup voice-leave">
+                            <PhoneOff aria-hidden="true" />
+                            <span>Leave</span>
+                          </span>
+                        </div>
+                      </section>
+                    ) : (
+                      <section
+                        className="live-card live-room"
+                        role="img"
+                        aria-label={`Simulated voice in general: ${voicePeople.length} in voice, with Join`}
+                      >
+                        <div className="live-card-heading">
+                          <Hash aria-hidden="true" />
+                          <span className="live-channel">
+                            <span>general</span>
+                          </span>
+                          {voiceTimer}
+                        </div>
+                        <div className="live-room-body">
+                          <span className="live-stack">
+                            {voicePeople.slice(0, 3).map((person) => (
+                              <span className="live-avatar" key={person.name}>
+                                <Avatar person={person} />
+                              </span>
+                            ))}
+                            {voicePeople.length > 3 && <span className="live-chip">+{voicePeople.length - 3}</span>}
+                          </span>
+                          <span className="live-names">{liveNames(voicePeople.map((person) => person.name))}</span>
+                          <span className="channel-join live-join">
+                            <span className="channel-join-label">Join</span>
+                          </span>
+                        </div>
+                      </section>
+                    )}
+                  </section>
                   <div className="channel-section-heading sim-section-title">
                     <span className="sim-section-toggle">
                       <ChevronDown aria-hidden="true" />
@@ -405,57 +494,24 @@ export default function LiveWindow({ preloadSpace = false }: { preloadSpace?: bo
                     </span>
                   </div>
                   <ul className="sim-channel-list">
-                    <li data-voice="">
+                    <li>
                       <div className="channel-line">
                         <div className="channel-select sim-channel" aria-current="page">
                           <Hash aria-hidden="true" />
                           <span>general</span>
-                          <span className="voice-session-timer" aria-label="Simulated voice session duration">
-                            {sessionDuration(0, (cycle * cycleLength + phase) * 1_000)}
+                          <span
+                            className="channel-live"
+                            data-active={inCall ? "" : undefined}
+                            role="img"
+                            aria-label={`${voicePeople.length} in voice`}
+                          >
+                            <AudioLines aria-hidden="true" />
+                            <span aria-hidden="true">{voicePeople.length}</span>
                           </span>
                         </div>
                         <span className="channel-manage" aria-hidden="true">
                           <MoreHorizontal />
                         </span>
-                        <span className="channel-voice">
-                          <span className="voice-stack" aria-label={`${voicePeople.length} in demo voice`}>
-                            <ChevronDown aria-hidden="true" />
-                            <span className="voice-stack-faces" aria-hidden="true">
-                              {voicePeople.map((person) => (
-                                <span
-                                  className={`voice-stack-avatar${person.speaking ? " speaking" : ""}`}
-                                  key={person.name}
-                                >
-                                  <Avatar person={person} />
-                                </span>
-                              ))}
-                            </span>
-                            <span className="voice-stack-count">{voicePeople.length} in voice</span>
-                          </span>
-                        </span>
-                      </div>
-                      <div className="voice-occupants" data-open="">
-                        <div className="voice-occupants-inner">
-                          <ul className="sim-people" aria-label="People in demo voice in general">
-                            {voicePeople.map((person) => (
-                              <li
-                                className="sim-person participant"
-                                data-speaking={person.speaking ? "" : undefined}
-                                key={person.name}
-                                aria-label={`${person.name}${person.speaking ? ", speaking" : ""}`}
-                              >
-                                <span className="participant-avatar">
-                                  <span className={`avatar sim-voice-avatar ${person.speaking ? "speaking" : "quiet"}`}>
-                                    <Avatar person={person} />
-                                  </span>
-                                </span>
-                                <span className="participant-name">
-                                  <strong>{person.name}</strong>
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
                       </div>
                     </li>
                     <li>
@@ -511,22 +567,6 @@ export default function LiveWindow({ preloadSpace = false }: { preloadSpace?: bo
                 </nav>
               </div>
               <div className="voice-panel sim-voice-panel">
-                {present[0].voice && (
-                  <div className="voice-dock" role="img" aria-label="Simulated voice connection to general in Caper">
-                    <div className="connected-channel" data-phase="connected">
-                      <span className="voice-dock-channel">
-                        <AudioLines aria-hidden="true" />
-                        <span>
-                          <strong>Voice connected</strong>
-                          <small>general / Caper</small>
-                        </span>
-                      </span>
-                      <span className="voice-hangup" aria-hidden="true">
-                        <PhoneOff />
-                      </span>
-                    </div>
-                  </div>
-                )}
                 <div
                   className="call-account sim-account"
                   role="img"
@@ -571,33 +611,6 @@ export default function LiveWindow({ preloadSpace = false }: { preloadSpace?: bo
                   <h2 className="chat-channel-title"># general</h2>
                   <ChevronDown aria-hidden="true" />
                 </div>
-                <span
-                  className="header-voice"
-                  role="img"
-                  aria-label={`Simulated voice: ${voicePeople.length} in voice in general${present[0].voice ? ", with Leave" : ", with Join voice"}`}
-                >
-                  <span className="header-voice-people">
-                    <span className="voice-stack-faces">
-                      {voicePeople.slice(0, 3).map((person) => (
-                        <span className={`voice-stack-avatar${person.speaking ? " speaking" : ""}`} key={person.name}>
-                          <Avatar person={person} />
-                        </span>
-                      ))}
-                    </span>
-                    <span className="header-voice-count">{voicePeople.length}</span>
-                  </span>
-                  {present[0].voice ? (
-                    <span className="voice-hangup voice-leave">
-                      <PhoneOff />
-                      <span>Leave</span>
-                    </span>
-                  ) : (
-                    <span className="channel-join voice-button header-voice-join">
-                      <Headphones />
-                      <span>Join voice</span>
-                    </span>
-                  )}
-                </span>
                 <span
                   className="member-list-toggle"
                   role="img"

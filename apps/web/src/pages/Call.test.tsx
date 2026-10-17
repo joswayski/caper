@@ -2,7 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 import type { GeneralChatHistory } from "../chat/types";
 import { Route as SpacesRoute } from "../routes/spaces";
-import Call, { callCardFaces, liveNames } from "./Call";
+import Call from "./Call";
+import { callCardFaces, liveNames } from "../media/live-now";
 
 test("a direct spaces visit renders a visible server fallback before account data or hydration", () => {
   const Pending = SpacesRoute.options.pendingComponent!;
