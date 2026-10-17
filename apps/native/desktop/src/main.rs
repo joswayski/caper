@@ -1180,8 +1180,6 @@ struct CaperApp {
     call_order: Vec<String>,
     /// The call's full list (design H's 1b), open beside the call card.
     call_list: Option<CallList>,
-    /// "N more live" unfolded the rest of Live now's rooms.
-    live_rooms_expanded: bool,
     sidebar_width: f32,
     /// A dialog opened from the User Settings menu is showing.
     settings_menu_dialog: bool,
@@ -1469,7 +1467,6 @@ impl CaperApp {
             prepared_voice: BTreeMap::new(),
             call_order: Vec::new(),
             call_list: None,
-            live_rooms_expanded: false,
             sidebar_width: 280.0,
             settings_menu_dialog: false,
             focus_user_settings: false,
@@ -2342,16 +2339,27 @@ impl CaperApp {
                     "parity-voice-joining"
                         | "parity-voice-connected"
                         | "parity-voice-speaking"
+                        | "parity-voice-elsewhere"
                         | "parity-connection"
                         | "parity-update-in-call"
                 ) {
                     // Explicit visual fixtures only: no media transport is started.
-                    let call = CallContext {
-                        channel_id: "chan00000001".into(),
-                        channel_name: "general".into(),
-                        space_name: "Fixture Studio".into(),
+                    let call = if name == "parity-voice-elsewhere" {
+                        // A call in another (fixture) space has no row here.
+                        app.voice.active_space = Some("fixture-space-elsewhere".into());
+                        CallContext {
+                            channel_id: "fixture-channel-elsewhere".into(),
+                            channel_name: "lounge".into(),
+                            space_name: "TEST FIXTURE Night Shift".into(),
+                        }
+                    } else {
+                        app.voice.active_space = Some("space0000001".into());
+                        CallContext {
+                            channel_id: "chan00000001".into(),
+                            channel_name: "general".into(),
+                            space_name: "Fixture Studio".into(),
+                        }
                     };
-                    app.voice.active_space = Some("space0000001".into());
                     if name == "parity-voice-joining" {
                         app.voice.session_started_at = Some(
                             (chrono::Utc::now().timestamp_millis().max(0) as u64)
@@ -2453,10 +2461,11 @@ impl CaperApp {
         app
     }
 
-    /// TEST FIXTURE voice for Live now: you and eleven others in #general
-    /// (Alex speaking, and Rosa past the faces that fit), and four more live
-    /// rooms, two of them in channels added here. Outside a call (`in_call`
-    /// false) #general has three people in voice instead. No media starts.
+    /// TEST FIXTURE voice in the channel list: you and eleven others in
+    /// #general (Alex speaking, and Rosa past the faces that fit), and four
+    /// more live rooms, two of them in channels added here. Outside a call
+    /// (`in_call` false) #general has three people in voice instead. No
+    /// media starts.
     fn install_crowded_voice_fixture(&mut self, in_call: bool) {
         let now = chrono::Utc::now().timestamp_millis().max(0) as u64;
         let names = [
@@ -10297,9 +10306,10 @@ impl CaperApp {
                             ui.add_space(6.0);
                             self.notification_error(ui, scope);
                         }
-                        // Design H: your call and the space's live rooms sit
-                        // above the channels.
-                        self.live_now(ui);
+                        // Voice without a row below (your call in another
+                        // space, a visited channel's room) sits above the
+                        // channels.
+                        self.unlisted_voice(ui);
                         ui.add_space(12.0);
                         ui.allocate_ui_with_layout(
                             egui::vec2(ui.available_width(), 32.0),
@@ -10504,97 +10514,31 @@ impl CaperApp {
                                     })
                                     .collect()
                             });
+                        // Live rows grow into their cards in place: your
+                        // call's, then any other room with people in voice.
+                        // Collapsing hides the quiet rows only.
+                        let listed_call = self.listed_call();
                         for (id, name, private) in channels {
-                            if !self.channels_expanded {
-                                break;
+                            let row = ChannelRow { id, name, private };
+                            let call = listed_call.as_deref() == Some(row.id.as_str());
+                            let people = if call {
+                                Vec::new()
+                            } else {
+                                self.voice_people(&row.id).0
+                            };
+                            if call {
+                                ui.add_space(3.0);
+                                self.call_card(ui, Some(&row));
+                                ui.add_space(3.0);
+                            } else if !people.is_empty() {
+                                ui.add_space(3.0);
+                                self.room_card(ui, &LiveRoom { row, people }, true);
+                                ui.add_space(3.0);
+                            } else if self.channels_expanded {
+                                self.channel_row(ui, &row, None);
+                            } else {
+                                continue;
                             }
-                            ui.scope(|ui| {
-                                ui.spacing_mut().item_spacing.y = 0.0;
-                                ui.spacing_mut().interact_size.y = 28.0;
-                                let active = !self.feedback_selected() && self.selected_channel.as_deref() == Some(&id);
-                                // Live rows end with a quiet "N in voice"; the
-                                // card in Live now carries the rest.
-                                let in_voice = self.voice_people(&id).0.len();
-                                let touch = self.narrow_layout;
-                                let space = self
-                                    .detail
-                                    .as_ref()
-                                    .filter(|detail| !detail.space.demo)
-                                    .map(|detail| detail.space.id.clone());
-                                let scope = space.clone().map(|space| Scope::Channel {
-                                    space,
-                                    channel: id.clone(),
-                                });
-                                let muted =
-                                    scope.as_ref().and_then(|scope| self.muted_label(scope));
-                                let unread = self.unread_spaces.iter().any(|space| space.channels.iter().any(|channel| channel.id == id));
-                                // Rows keep a one-click shortcut, hidden where you
-                                // are in voice. Narrow layouts show it on quiet
-                                // rows only: a live row's card offers Join.
-                                let voice = match self.voice_action(&id) {
-                                    VoiceAction::Join { switching, enabled }
-                                        if !touch || in_voice == 0 =>
-                                    {
-                                        Some((
-                                            if switching {
-                                                format!("Switch voice to #{name}")
-                                            } else {
-                                                format!("Join voice in #{name}")
-                                            },
-                                            enabled,
-                                        ))
-                                    }
-                                    VoiceAction::Join { .. }
-                                    | VoiceAction::Leave
-                                    | VoiceAction::Joining => None,
-                                };
-                                // Demo channels have no options.
-                                let mut menu = None;
-                                if let Some(space) = &space {
-                                    menu = Some(RowMenu {
-                                        label: format!("Channel options for {name}"),
-                                        on_hover: true,
-                                        content: Box::new(|ui: &mut egui::Ui| {
-                                            self.channel_menu(ui, space, &id, &name, private)
-                                        }),
-                                    });
-                                }
-                                let (response, opened, join) = channel_button(
-                                    ui,
-                                    egui::vec2(ui.available_width(), 32.0),
-                                    &name,
-                                    Some(if private { NavIcon::Lock } else { NavIcon::Hash }),
-                                    active,
-                                    RowExtras {
-                                        muted,
-                                        unread,
-                                        live: (in_voice > 0).then_some(in_voice),
-                                        voice: voice.as_ref().map(|(_, enabled)| *enabled),
-                                        touch,
-                                        menu,
-                                        ..RowExtras::default()
-                                    },
-                                );
-                                // An unavailable shortcut lets clicks through to the
-                                // row; they should do nothing, as on web.
-                                let on_join = join.as_ref().is_some_and(egui::Response::contains_pointer);
-                                if let (Some(join), Some((label, _))) = (join, &voice) {
-                                    self.voice_join_response(ui, join, &id, label, label);
-                                }
-                                if opened {
-                                    self.load_notifications();
-                                } else if response.clicked() && !on_join {
-                                    self.select_channel(id.clone(), false);
-                                } else if response.hovered() || response.has_focus() {
-                                    self.prefetch(NavigationTarget {
-                                        space: self.selected_space.clone(),
-                                        channel: Some(id.clone()),
-                                    });
-                                }
-                                if let Some(scope) = &scope {
-                                    self.notification_error(ui, scope);
-                                }
-                            });
                             ui.add_space(3.0);
                         }
                         // Web always lists pending private channel invitations.
@@ -10629,6 +10573,113 @@ impl CaperApp {
                         self.direct_navigation(ui);
                     });
             });
+    }
+
+    /// A joined channel's row: its name and state, the voice shortcut and
+    /// the options menu, opening the channel on a click. A live row ends
+    /// with a quiet "N in voice"; `call` (your call's row, inside its card)
+    /// puts the call's status and timer there instead.
+    fn channel_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: &ChannelRow,
+        call: Option<CallMark>,
+    ) -> egui::Response {
+        let ChannelRow { id, name, private } = row;
+        let private = *private;
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.spacing_mut().interact_size.y = 28.0;
+            let active =
+                !self.feedback_selected() && self.selected_channel.as_deref() == Some(id.as_str());
+            let in_voice = if call.is_some() {
+                0
+            } else {
+                self.voice_people(id).0.len()
+            };
+            let touch = self.narrow_layout;
+            let space = self
+                .detail
+                .as_ref()
+                .filter(|detail| !detail.space.demo)
+                .map(|detail| detail.space.id.clone());
+            let scope = space.clone().map(|space| Scope::Channel {
+                space,
+                channel: id.clone(),
+            });
+            let muted = scope.as_ref().and_then(|scope| self.muted_label(scope));
+            let unread = self
+                .unread_spaces
+                .iter()
+                .any(|space| space.channels.iter().any(|channel| &channel.id == id));
+            // Rows keep a one-click shortcut, hidden where you are in
+            // voice. Narrow layouts show it on quiet rows only: a live
+            // row's card offers Join.
+            let voice = match self.voice_action(id) {
+                VoiceAction::Join { switching, enabled } if !touch || in_voice == 0 => Some((
+                    if switching {
+                        format!("Switch voice to #{name}")
+                    } else {
+                        format!("Join voice in #{name}")
+                    },
+                    enabled,
+                )),
+                VoiceAction::Join { .. } | VoiceAction::Leave | VoiceAction::Joining => None,
+            };
+            // Demo channels have no options.
+            let mut menu = None;
+            if let Some(space) = &space {
+                menu = Some(RowMenu {
+                    label: format!("Channel options for {name}"),
+                    on_hover: true,
+                    content: Box::new(|ui: &mut egui::Ui| {
+                        self.channel_menu(ui, space, id, name, private)
+                    }),
+                });
+            }
+            let (response, opened, join) = channel_button(
+                ui,
+                egui::vec2(ui.available_width(), 32.0),
+                name,
+                Some(if private {
+                    NavIcon::Lock
+                } else {
+                    NavIcon::Hash
+                }),
+                active,
+                RowExtras {
+                    muted,
+                    unread,
+                    live: (in_voice > 0).then_some(in_voice),
+                    call,
+                    voice: voice.as_ref().map(|(_, enabled)| *enabled),
+                    touch,
+                    menu,
+                    ..RowExtras::default()
+                },
+            );
+            // An unavailable shortcut lets clicks through to the row; they
+            // should do nothing, as on web.
+            let on_join = join.as_ref().is_some_and(egui::Response::contains_pointer);
+            if let (Some(join), Some((label, _))) = (join, &voice) {
+                self.voice_join_response(ui, join, id, label, label);
+            }
+            if opened {
+                self.load_notifications();
+            } else if response.clicked() && !on_join {
+                self.select_channel(id.clone(), false);
+            } else if response.hovered() || response.has_focus() {
+                self.prefetch(NavigationTarget {
+                    space: self.selected_space.clone(),
+                    channel: Some(id.clone()),
+                });
+            }
+            if let Some(scope) = &scope {
+                self.notification_error(ui, scope);
+            }
+            response
+        })
+        .inner
     }
 
     fn direct_navigation(&mut self, ui: &mut egui::Ui) {
@@ -10811,6 +10862,7 @@ impl CaperApp {
                             direct: true,
                             suffix,
                             live: None,
+                            call: None,
                             voice: None,
                             touch: false,
                             menu: Some(RowMenu {
@@ -11272,7 +11324,7 @@ impl CaperApp {
         }
     }
 
-    /// Whether a call is under way anywhere: Live now shows its card and
+    /// Whether a call is under way anywhere: the sidebar shows its card and
     /// narrow conversations its strip.
     fn in_voice(&self) -> bool {
         !matches!(self.voice.state.phase, Phase::Idle | Phase::Failed(_))
@@ -11589,81 +11641,95 @@ impl CaperApp {
             .collect()
     }
 
-    /// The viewed space's live rooms other than your call's (and a live
-    /// visited channel), busiest first, then by name.
-    fn live_rooms(&self) -> Vec<LiveRoom> {
+    /// Your call's channel when it is a joined row of the listed space,
+    /// where that row grows into the call's card. A call in another space,
+    /// or in a channel without a row here, has its card above the channels.
+    fn listed_call(&self) -> Option<String> {
+        let channel = self
+            .in_voice()
+            .then(|| self.voice.state.active_channel())
+            .flatten()?;
+        let detail = self.detail.as_ref()?;
+        let space = (!detail.space.demo).then_some(detail.space.id.as_str());
+        (self.voice.active_space.as_deref() == space
+            && detail
+                .channels
+                .iter()
+                .any(|item| item.joined && item.id == channel))
+        .then(|| channel.to_owned())
+    }
+
+    /// A visited channel's live room, which has no row here, unless it is
+    /// your call.
+    fn visited_room(&self) -> Option<LiveRoom> {
         let call = self
             .in_voice()
             .then(|| self.voice.state.active_channel())
             .flatten();
-        let people = |id: &str| {
-            self.channel_rosters
-                .get(id)
-                .filter(|people| !people.is_empty())
-                .cloned()
-        };
-        let mut rooms: Vec<LiveRoom> = self.detail.as_ref().map_or_else(Vec::new, |detail| {
-            detail
-                .channels
-                .iter()
-                .filter(|channel| channel.joined && Some(channel.id.as_str()) != call)
-                .filter_map(|channel| {
-                    Some(LiveRoom {
-                        id: channel.id.clone(),
-                        name: channel.name.clone(),
-                        private: channel.private,
-                        people: people(&channel.id)?,
-                    })
-                })
-                .collect()
-        });
-        if let Some(visit) = self.visiting().filter(|visit| {
+        let visit = self.visiting().filter(|visit| {
             !visit.direct
                 && Some(visit.channel.as_str()) != call
-                && !rooms.iter().any(|room| room.id == visit.channel)
-        }) && let Some(people) = people(&visit.channel)
-        {
-            rooms.push(LiveRoom {
+                && !self.detail.as_ref().is_some_and(|detail| {
+                    detail
+                        .channels
+                        .iter()
+                        .any(|item| item.joined && item.id == visit.channel)
+                })
+        })?;
+        let people = self
+            .channel_rosters
+            .get(&visit.channel)
+            .filter(|people| !people.is_empty())?
+            .clone();
+        Some(LiveRoom {
+            row: ChannelRow {
                 id: visit.channel.clone(),
                 name: visit.name.clone(),
                 private: false,
-                people,
-            });
-        }
-        sort_live_rooms(&mut rooms);
-        rooms
+            },
+            people,
+        })
     }
 
-    /// Design H's "Live now", above the channels: your call's card, then the
-    /// viewed space's other live rooms. Absent while you are in no call and
-    /// nobody is in voice here.
-    fn live_now(&mut self, ui: &mut egui::Ui) {
+    /// Voice without a row in the list below, stacked above the channels
+    /// with no heading: your call's card when its channel isn't listed, and
+    /// a visited channel's live room. Absent otherwise.
+    fn unlisted_voice(&mut self, ui: &mut egui::Ui) {
         let in_call = self.in_voice();
         if !in_call {
             self.call_list = None;
         }
-        let rooms = self.live_rooms();
-        if !in_call && rooms.is_empty() {
+        let call = in_call && self.listed_call().is_none();
+        let room = self.visited_room();
+        if !call && room.is_none() {
             return;
         }
-        let entering = motion::entrance(ui.ctx(), egui::Id::new("live-now"), motion::BASE);
-        motion::arrive(ui, entering, ARRIVE_OFFSET, |ui| {
-            ui.add_space(12.0);
-            live_heading(ui, rooms.len() + usize::from(in_call));
-            ui.add_space(6.0);
-            if in_call {
-                self.call_card(ui);
-                if !rooms.is_empty() {
+        ui.add_space(12.0);
+        ui.scope(|ui| {
+            // Screen readers still find these under "Live now"; nothing
+            // shows that title.
+            ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                node.set_role(egui::accesskit::Role::Group);
+                node.set_label("Live now");
+            });
+            if call {
+                self.call_card(ui, None);
+                if room.is_some() {
                     ui.add_space(8.0);
                 }
             }
-            self.live_rooms_list(ui, &rooms);
+            if let Some(room) = &room {
+                self.room_card(ui, room, false);
+            }
         });
     }
 
-    /// Your call's card (design H §1a): where it is, who is in it, who is
-    /// speaking, then Mute, Deafen and Leave.
-    fn call_card(&mut self, ui: &mut egui::Ui) {
+    /// Your call's card (design H §1a): headed by its channel's own row
+    /// when the list has one (`row`), else by where the call is. Then who
+    /// is in it, and Mute, Deafen and Leave. A click anywhere else opens the
+    /// call's chat, as the row does; a secondary click or long touch on a
+    /// face or the "+N" tile opens the full list instead.
+    fn call_card(&mut self, ui: &mut egui::Ui, row: Option<&ChannelRow>) {
         let (Phase::Joining(call) | Phase::Connected(call) | Phase::Reconnecting(call)) =
             self.voice.state.phase.clone()
         else {
@@ -11678,41 +11744,120 @@ impl CaperApp {
             egui::Id::new(("live-call", &call.channel_id)),
             motion::BASE,
         );
-        let (card, picked) = motion::arrive(ui, entering, ARRIVE_OFFSET, |ui| {
-            let shown = egui::Frame::new()
-                .fill(LIVE_CARD)
-                .stroke(Stroke::new(1.0, LIVE_CARD_BORDER))
-                .corner_radius(10)
-                .inner_margin(12)
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.spacing_mut().item_spacing.y = 10.0;
-                    self.call_card_title(ui, &call, people.len());
-                    let picked = if people.is_empty() {
-                        false
-                    } else {
-                        self.call_faces(ui, &people, &speaking, touch)
-                    };
-                    // Holds its line through pauses (blank then), so the channels below never jump.
-                    if let Some(index) = speaking.iter().position(|speaking| *speaking) {
-                        speaker_line(ui, &people[index].name);
-                    } else if !people.is_empty() {
-                        speaker_line_space(ui);
-                    }
-                    self.call_card_controls(ui, joining, touch);
-                    picked
+        let (card, clicked, (head, faces)) = motion::arrive(ui, entering, ARRIVE_OFFSET, |ui| {
+            // Registered behind everything in it, so the row, the faces
+            // and the controls keep their own clicks.
+            let shown = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::CLICK), |ui| {
+                let label = format!("Your call in #{}", call.channel_name);
+                ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                    node.set_role(egui::accesskit::Role::Group);
+                    node.set_label(label);
                 });
-            (shown.response.rect, shown.inner)
+                egui::Frame::new()
+                    .fill(LIVE_CARD)
+                    .stroke(Stroke::new(1.0, LIVE_CARD_BORDER))
+                    .corner_radius(10)
+                    .inner_margin(12)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = 10.0;
+                        let head = match row {
+                            Some(row) => {
+                                let mark = self.call_mark(ui, &call, people.len());
+                                self.channel_row(ui, row, Some(mark))
+                            }
+                            None => self.call_card_title(ui, &call, people.len()),
+                        };
+                        let faces = if people.is_empty() {
+                            FacePick::None
+                        } else {
+                            self.call_faces(ui, &people, &speaking, touch)
+                        };
+                        self.call_card_controls(ui, joining, touch);
+                        (head, faces)
+                    })
+                    .inner
+            });
+            (shown.response.rect, shown.response.clicked(), shown.inner)
         });
+        // The keyboard's way to the list: Shift+F10 on the card's row.
+        let keyed = head.has_focus()
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::SHIFT, egui::Key::F10));
+        let picked = match &faces {
+            FacePick::List(audio) => Some(audio.clone()),
+            _ if keyed => Some(None),
+            _ => None,
+        };
+        if let Some(audio) = &picked {
+            self.effects.toggle(true);
+            self.call_list = Some(CallList {
+                audio: audio.clone(),
+            });
+        } else if clicked || faces == FacePick::Open {
+            self.open_call_chat(&call, row.is_some());
+        }
         if self.call_list.is_some() {
-            self.call_list_panel(ui, card, &call.channel_name, &people, &speaking, picked);
+            self.call_list_panel(
+                ui,
+                card,
+                &call.channel_name,
+                &people,
+                &speaking,
+                picked.is_some(),
+            );
         }
     }
 
-    /// The call card's first row: a waveform, the call's channel (opening
-    /// its chat; another space's name follows it), how many are in, and
-    /// the session's timer.
-    fn call_card_title(&mut self, ui: &mut egui::Ui, call: &CallContext, count: usize) {
+    /// Opens your call's chat: as its row does when it is `listed`, else in
+    /// the call's own space. A visited channel's is already open.
+    fn open_call_chat(&mut self, call: &CallContext, listed: bool) {
+        if listed {
+            self.select_channel(call.channel_id.clone(), false);
+        } else if self.visited_channel(&call.channel_id).is_none() {
+            let space = self.voice.active_space.clone();
+            self.navigate(NavigationTarget {
+                channel: space.as_ref().map(|_| call.channel_id.clone()),
+                space,
+            });
+        }
+    }
+
+    /// Your call's state: "You're in · N" (and its short "In · N") in green
+    /// once connected, else amber "Connecting…" or "Reconnecting…".
+    fn call_status(&self, count: usize) -> (String, String, Color32) {
+        match &self.voice.state.phase {
+            Phase::Connected(_) => (
+                format!("You're in · {count}"),
+                format!("In · {count}"),
+                VOICE_SESSION_GREEN,
+            ),
+            Phase::Joining(_) => ("Connecting…".into(), "Connecting…".into(), VOICE_AMBER),
+            _ => ("Reconnecting…".into(), "Reconnecting…".into(), VOICE_AMBER),
+        }
+    }
+
+    /// Your call's state and session timer, for its row or heading.
+    fn call_mark(&self, ui: &egui::Ui, call: &CallContext, count: usize) -> CallMark {
+        let (status, short, tone) = self.call_status(count);
+        CallMark {
+            status,
+            short,
+            tone,
+            timer: self
+                .voice_started(&call.channel_id)
+                .map(|started| live_timer(ui.ctx(), started)),
+        }
+    }
+
+    /// The heading of a call card above the channels: a waveform, the
+    /// call's channel (opening its chat; another space's name follows it),
+    /// how many are in, and the session's timer. Returns the channel's link.
+    fn call_card_title(
+        &mut self,
+        ui: &mut egui::Ui,
+        call: &CallContext,
+        count: usize,
+    ) -> egui::Response {
         let (row, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
         let icon = egui::Rect::from_center_size(
@@ -11722,58 +11867,31 @@ impl CaperApp {
         paint_icon(ui.painter(), icon, NavIcon::AudioLines, VOICE_SESSION_GREEN);
         let left = icon.right() + 8.0;
         let font = egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into()));
-        let (status, short, tone) = match &self.voice.state.phase {
-            Phase::Connected(_) => (
-                format!("You're in · {count}"),
-                format!("In · {count}"),
-                VOICE_SESSION_GREEN,
-            ),
-            Phase::Joining(_) => ("Connecting…".into(), "Connecting…".into(), VOICE_AMBER),
-            _ => ("Reconnecting…".into(), "Reconnecting…".into(), VOICE_AMBER),
-        };
-        let timer = self.voice_started(&call.channel_id).map(|started| {
-            let text = live_timer(ui.ctx(), started);
-            let width = tabular_galley(ui, &text, &font, VOICE_SESSION_GREEN).1;
-            (text, width)
-        });
-        let width = |text: &str| {
-            ui.painter()
-                .layout_no_wrap(text.to_owned(), font.clone(), tone)
-                .size()
-                .x
-        };
+        let mark = self.call_mark(ui, call, count);
+        let title = egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into()));
+        let name = ui
+            .painter()
+            .layout_no_wrap(format!("#{}", call.channel_name), title.clone(), TEXT)
+            .size()
+            .x;
         // In a narrow sidebar the status shortens, then the timer goes, so
         // the channel's name keeps some room.
-        let timer_width = timer.as_ref().map_or(0.0, |(_, width)| width + 8.0);
-        let room = |status: &str, timer: f32| row.right() - timer - width(status) - 10.0 - left;
-        let (status, timer) = if room(&status, timer_width) >= 72.0 {
-            (status, timer)
-        } else if room(&short, timer_width) >= 48.0 || room(&short, 0.0) < 48.0 {
-            (short, timer)
-        } else {
-            (short, None)
-        };
+        let (status, timer) = fit_call_status(ui, &font, (left, row.right()), name, &mark);
         let mut right = row.right();
-        if let Some((text, _)) = &timer {
+        if let Some(text) = &timer {
             right = paint_live_timer(ui, text, right, row.center().y, 12.0) - 8.0;
         }
-        let status = ui.painter().layout_no_wrap(status, font, tone);
+        let status = ui.painter().layout_no_wrap(status, font, mark.tone);
         let status_left = right - status.size().x;
         ui.painter().galley(
             egui::pos2(status_left, row.center().y - status.size().y / 2.0),
             status,
-            tone,
+            mark.tone,
         );
         // The channel's name gives way first; another space's name goes
         // before the name is cut short.
         let room = (status_left - 10.0 - left).max(1.0);
-        let name = truncated_galley(
-            ui,
-            &format!("#{}", call.channel_name),
-            egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
-            TEXT,
-            room,
-        );
+        let name = truncated_galley(ui, &format!("#{}", call.channel_name), title, TEXT, room);
         let elsewhere = self.voice.active_space.as_deref() != self.selected_space.as_deref();
         let space = (elsewhere && room - name.size().x - 6.0 >= 32.0).then(|| {
             truncated_galley(
@@ -11815,25 +11933,47 @@ impl CaperApp {
             format!("Open #{}", call.channel_name)
         };
         open.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
-        if open.on_hover_text(label).clicked() {
-            let space = self.voice.active_space.clone();
-            self.navigate(NavigationTarget {
-                channel: space.as_ref().map(|_| call.channel_id.clone()),
-                space,
-            });
+        let open = open.on_hover_text(label);
+        if open.clicked() {
+            self.open_call_chat(call, false);
+        }
+        open
+    }
+
+    /// `person`'s mute and deafen as their face shows them: your own from
+    /// your local intent, everyone else's from the roster.
+    fn face_audio(&self, person: &model::VoiceOccupant) -> (bool, bool) {
+        if person.id == self.voice.self_id {
+            (
+                self.voice.state.audio.muted,
+                self.voice.state.audio.deafened,
+            )
+        } else {
+            (person.muted, person.deafened)
+        }
+    }
+
+    /// A face's name: yours says "(you)".
+    fn face_name(&self, person: &model::VoiceOccupant) -> String {
+        if person.id == self.voice.self_id {
+            format!("{} (you)", person.name)
+        } else {
+            person.name.clone()
         }
     }
 
     /// The call's faces, wrapping in at most two rows. Past them a "+N"
-    /// tile folds in the rest. A face or the tile opens the full list,
-    /// another person's with their audio controls open. True when one did.
+    /// tile folds in the rest. They are no buttons of their own: a click
+    /// opens the chat as the rest of the card does, while a secondary click,
+    /// a long touch or the accessibility context-menu action opens the full
+    /// list, another person's with their audio controls open.
     fn call_faces(
         &mut self,
         ui: &mut egui::Ui,
         people: &[model::VoiceOccupant],
         speaking: &[bool],
         touch: bool,
-    ) -> bool {
+    ) -> FacePick {
         let size = if touch { 38.0 } else { 36.0 };
         let gap = 8.0;
         let width = ui.available_width();
@@ -11854,54 +11994,38 @@ impl CaperApp {
                 egui::Vec2::splat(size),
             )
         };
-        let mut open = None;
+        let mut pick = FacePick::None;
         for (index, person) in people.iter().take(faces).enumerate() {
             let rect = slot(index);
             let own = person.id == self.voice.self_id;
-            let (muted, deafened) = if own {
-                (
-                    self.voice.state.audio.muted,
-                    self.voice.state.audio.deafened,
-                )
-            } else {
-                (person.muted, person.deafened)
-            };
+            let (muted, deafened) = self.face_audio(person);
             let face = ui.interact(
                 rect,
                 ui.id().with(("call-face", &person.id)),
-                egui::Sense::click(),
+                egui::Sense::CLICK,
             );
             let picture = paint_avatar(ui, rect, &person.name, person.avatar_id, person.picture());
             if speaking[index] {
                 speaking_ring(ui, rect, picture, LIVE_CARD);
-            } else if face.hovered() || face.has_focus() {
-                avatar_ring(ui, rect, picture, 2.0, Stroke::new(2.0, BORDER));
             }
             if deafened {
                 face_badge(ui, rect, NavIcon::HeadphoneOff, LIVE_CARD);
             } else if muted {
                 face_badge(ui, rect, NavIcon::MicOff, LIVE_CARD);
             }
-            let name = if own {
-                format!("{} (you)", person.name)
-            } else {
-                person.name.clone()
-            };
+            let name = self.face_name(person);
             let label = participant_label(&name, speaking[index], muted, deafened);
-            face.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
-            if face.on_hover_text(name).clicked() {
-                open = Some((!own).then(|| person.id.clone()));
+            let picked = face_pick(&face, &label, (!own).then(|| person.id.clone()));
+            if pick == FacePick::None {
+                pick = picked;
             }
+            face.on_hover_text(name);
         }
         if more > 0 {
             let rect = slot(faces);
-            let tile = ui.interact(rect, ui.id().with("call-more"), egui::Sense::click());
-            let lit = tile.hovered() || tile.has_focus();
-            ui.painter().circle_filled(
-                rect.center(),
-                size / 2.0,
-                if lit { MORE_TILE_HOVER } else { MORE_TILE },
-            );
+            let tile = ui.interact(rect, ui.id().with("call-more"), egui::Sense::CLICK);
+            ui.painter()
+                .circle_filled(rect.center(), size / 2.0, MORE_TILE);
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -11913,18 +12037,13 @@ impl CaperApp {
             if speaking[faces..].iter().any(|speaking| *speaking) {
                 speaking_ring(ui, rect, false, LIVE_CARD);
             }
-            let label = format!("{more} more in the call");
-            tile.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
-            if tile.on_hover_text("Everyone in the call").clicked() {
-                open = Some(None);
+            let picked = face_pick(&tile, &format!("{more} more in the call"), None);
+            if pick == FacePick::None {
+                pick = picked;
             }
+            tile.on_hover_text("Everyone in the call");
         }
-        let Some(audio) = open else {
-            return false;
-        };
-        self.effects.toggle(true);
-        self.call_list = Some(CallList { audio });
-        true
+        pick
     }
 
     /// The call card's Mute and Deafen (the account bar's state), then
@@ -12013,136 +12132,61 @@ impl CaperApp {
         }
     }
 
-    /// Live now's other rooms: two cards, the rest folded behind one
-    /// "N more live" row until it is opened.
-    fn live_rooms_list(&mut self, ui: &mut egui::Ui, rooms: &[LiveRoom]) {
-        let shown = if self.live_rooms_expanded {
-            rooms.len()
-        } else {
-            rooms.len().min(LIVE_ROOM_CARDS)
-        };
-        for (index, room) in rooms[..shown].iter().enumerate() {
-            if index > 0 {
-                ui.add_space(6.0);
-            }
-            self.room_card(ui, room);
-        }
-        if rooms.len() > LIVE_ROOM_CARDS {
-            ui.add_space(4.0);
-            self.rooms_fold(ui, &rooms[LIVE_ROOM_CARDS..]);
-        }
-    }
-
-    /// The row that unfolds the rest of Live now's rooms: a chevron, "N
-    /// more live" and their names, or "Show less" once open.
-    fn rooms_fold(&mut self, ui: &mut egui::Ui, folded: &[LiveRoom]) {
-        let open = self.live_rooms_expanded;
-        let height = if self.narrow_layout { 44.0 } else { 30.0 };
-        let (rect, response) = ui.allocate_exact_size(
-            egui::vec2(ui.available_width(), height),
-            egui::Sense::click(),
-        );
-        if response.hovered() || response.has_focus() {
-            ui.painter().rect_filled(rect, 8.0, SURFACE_HOVER);
-        }
-        paint_chevron(
-            ui,
-            egui::Rect::from_center_size(
-                egui::pos2(rect.left() + 14.0, rect.center().y),
-                egui::vec2(14.0, 14.0),
-            ),
-            chevron_turn(ui.ctx(), response.id.with("open"), open),
-            MUTED,
-        );
-        let text = if open {
-            "Show less".to_owned()
-        } else {
-            format!("{} more live", folded.len())
-        };
-        let galley = ui.painter().layout_no_wrap(
-            text.clone(),
-            egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
-            TEXT,
-        );
-        let text_left = rect.left() + 28.0;
-        let text_width = galley.size().x;
-        ui.painter().galley(
-            egui::pos2(text_left, rect.center().y - galley.size().y / 2.0),
-            galley,
-            TEXT,
-        );
-        let names = folded_room_names(folded);
-        let room = rect.right() - 8.0 - (text_left + text_width + 8.0);
-        if !open && room >= 24.0 {
-            let galley = truncated_galley(
-                ui,
-                &names,
-                egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Medium".into())),
-                MUTED,
-                room,
-            );
-            ui.painter().galley(
-                egui::pos2(
-                    text_left + text_width + 8.0,
-                    rect.center().y - galley.size().y / 2.0,
-                ),
-                galley,
-                MUTED,
-            );
-        }
-        let label = if open {
-            text
-        } else {
-            format!("{text}: {names}")
-        };
-        response.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::Button, true, open, &label)
-        });
-        if response.clicked() {
-            self.live_rooms_expanded = !open;
-        }
-    }
-
-    /// Another live room's card (design H §1c): its channel and timer, then
-    /// a few faces, who is there and Join or Switch. Rooms you are not in
-    /// carry no speaking rings: there is no audio from them.
-    fn room_card(&mut self, ui: &mut egui::Ui, room: &LiveRoom) {
+    /// Another live room's card (design H §1c). In the list (`listed`) the
+    /// channel's own row heads it; above the channels (a visited room) its
+    /// name and the session's timer do. Beneath: a few faces, who is there,
+    /// the timer when the row heads it, and Join or Switch. A click anywhere
+    /// but its buttons opens the room's chat, as the row does. Rooms you are
+    /// not in carry no speaking rings: there is no audio from them.
+    fn room_card(&mut self, ui: &mut egui::Ui, room: &LiveRoom, listed: bool) {
         let touch = self.narrow_layout;
-        let entering = motion::entrance(
-            ui.ctx(),
-            egui::Id::new(("live-room", &room.id)),
-            motion::BASE,
-        );
-        motion::arrive(ui, entering, ARRIVE_OFFSET, |ui| {
-            egui::Frame::new()
-                .fill(ROOM_CARD)
-                .stroke(Stroke::new(1.0, ROOM_CARD_BORDER))
-                .corner_radius(10)
-                .inner_margin(egui::Margin::symmetric(10, 8))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    ui.push_id(&room.id, |ui| {
-                        self.room_title(ui, room);
-                        self.room_people(ui, room, if touch { 40.0 } else { 28.0 });
-                    });
-                });
+        let id = &room.row.id;
+        let entering = motion::entrance(ui.ctx(), egui::Id::new(("live-room", id)), motion::BASE);
+        let (clicked, on_action) = motion::arrive(ui, entering, ARRIVE_OFFSET, |ui| {
+            // Behind its row and buttons, which keep their own clicks.
+            let shown = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::CLICK), |ui| {
+                egui::Frame::new()
+                    .fill(ROOM_CARD)
+                    .stroke(Stroke::new(1.0, ROOM_CARD_BORDER))
+                    .corner_radius(10)
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        ui.push_id(id, |ui| {
+                            if listed {
+                                self.channel_row(ui, &room.row, None);
+                            } else {
+                                self.room_title(ui, room);
+                            }
+                            self.room_people(ui, room, if touch { 40.0 } else { 28.0 }, listed)
+                        })
+                        .inner
+                    })
+                    .inner
+            });
+            (shown.response.clicked(), shown.inner)
         });
+        // An unavailable Join lets clicks through; they do nothing there. A
+        // visited room is the conversation already open.
+        if clicked && !on_action && self.visited_channel(id).is_none() {
+            self.select_channel(id.clone(), false);
+        }
     }
 
-    /// A room card's first row: # (or a lock) and the name, which opens
-    /// its chat, then the session's timer.
+    /// A visited room card's first row: # (or a lock) and the name, which
+    /// opens its chat, then the session's timer.
     fn room_title(&mut self, ui: &mut egui::Ui, room: &LiveRoom) {
         let (row, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
         let mut right = row.right();
-        if let Some(started) = self.voice_started(&room.id) {
+        if let Some(started) = self.voice_started(&room.row.id) {
             let text = live_timer(ui.ctx(), started);
             right = paint_live_timer(ui, &text, right, row.center().y, 11.5) - 8.0;
         }
         let name = truncated_galley(
             ui,
-            &room.name,
+            &room.row.name,
             egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
             TEXT,
             (right - row.left() - 24.0).max(1.0),
@@ -12161,7 +12205,7 @@ impl CaperApp {
                 egui::pos2(row.left() + 10.0, row.center().y),
                 egui::vec2(14.0, 14.0),
             ),
-            if room.private {
+            if room.row.private {
                 NavIcon::Lock
             } else {
                 NavIcon::Hash
@@ -12174,23 +12218,40 @@ impl CaperApp {
             name,
             TEXT,
         );
-        let label = format!("Open #{}", room.name);
+        let label = format!("Open #{}", room.row.name);
         open.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
         // A visited room is the conversation already open.
-        if open.on_hover_text(label).clicked() && self.visited_channel(&room.id).is_none() {
-            self.select_channel(room.id.clone(), false);
+        if open.on_hover_text(label).clicked() && self.visited_channel(&room.row.id).is_none() {
+            self.select_channel(room.row.id.clone(), false);
         }
     }
 
-    /// A room card's second row: up to three overlapping faces and a "+N"
-    /// chip, who is there on one line, and Join, Switch or Joining….
-    fn room_people(&mut self, ui: &mut egui::Ui, room: &LiveRoom, height: f32) {
+    /// A room card's people: up to three overlapping faces and a "+N"
+    /// chip, who is there on one line, with `timer` the session's timer
+    /// (the row above only counts them), and Join, Switch or Joining…. The
+    /// names give way first. True while the pointer is on the button.
+    fn room_people(
+        &mut self,
+        ui: &mut egui::Ui,
+        room: &LiveRoom,
+        height: f32,
+        timer: bool,
+    ) -> bool {
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), height),
             egui::Layout::right_to_left(egui::Align::Center),
             |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                self.room_action(ui, room, height);
+                let on_action = self.room_action(ui, room, height);
+                if timer && let Some(started) = self.voice_started(&room.row.id) {
+                    let text = live_timer(ui.ctx(), started);
+                    let font =
+                        egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Medium".into()));
+                    let width = tabular_galley(ui, &text, &font, VOICE_SESSION_GREEN).1;
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+                    paint_live_timer(ui, &text, rect.right(), rect.center().y, 11.5);
+                }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     // Names need room to read: when three faces and the
@@ -12251,16 +12312,19 @@ impl CaperApp {
                         egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &names)
                     });
                 });
+                on_action
             },
-        );
+        )
+        .inner
     }
 
     /// Join (eggshell) outside a call, Switch (neutral) in one elsewhere,
-    /// or a busy Joining…; unavailable joins say why, as the rows do.
-    fn room_action(&mut self, ui: &mut egui::Ui, room: &LiveRoom, height: f32) {
-        let name = &room.name;
+    /// or a busy Joining…; unavailable joins say why, as the rows do. True
+    /// while the pointer is on it, enabled or not.
+    fn room_action(&mut self, ui: &mut egui::Ui, room: &LiveRoom, height: f32) -> bool {
+        let name = &room.row.name;
         ui.spacing_mut().button_padding.x = 12.0;
-        match self.voice_action(&room.id) {
+        match self.voice_action(&room.row.id) {
             VoiceAction::Join { switching, enabled } => {
                 let button = toned(
                     ui,
@@ -12281,7 +12345,9 @@ impl CaperApp {
                 } else {
                     (format!("Join #{name}"), format!("Join voice in #{name}"))
                 };
-                self.voice_join_response(ui, button, &room.id, &label, &tooltip);
+                let on = button.contains_pointer();
+                self.voice_join_response(ui, button, &room.row.id, &label, &tooltip);
+                on
             }
             VoiceAction::Joining | VoiceAction::Leave => {
                 let button = toned(
@@ -12298,7 +12364,9 @@ impl CaperApp {
                         format!("Joining #{name}"),
                     )
                 });
+                let on = button.contains_pointer();
                 button.on_disabled_hover_text(format!("Connecting to #{name}…"));
+                on
             }
         }
     }
@@ -12624,8 +12692,10 @@ impl CaperApp {
         );
     }
 
-    /// The strip during a call: waveform, the call's channel, two faces,
-    /// who is speaking, the timer and a 44px Mute.
+    /// The strip during a call: waveform, the call's channel, the card's
+    /// faces (its first five, or four and "+N"), the connection's state
+    /// until connected, the timer and a 44px Mute. Who speaks shows only as
+    /// a ring, so nothing moves while people talk.
     fn strip_call(&mut self, ui: &mut egui::Ui) {
         let (Phase::Joining(call) | Phase::Connected(call) | Phase::Reconnecting(call)) =
             self.voice.state.phase.clone()
@@ -12634,6 +12704,14 @@ impl CaperApp {
         };
         let people = self.call_people();
         let speaking = self.call_speaking(&people);
+        let labels: Vec<String> = people
+            .iter()
+            .zip(&speaking)
+            .map(|(person, speaking)| {
+                let (muted, deafened) = self.face_audio(person);
+                participant_label(&self.face_name(person), *speaking, muted, deafened)
+            })
+            .collect();
         let inner = ui.max_rect();
         // Registered first, so Mute (added after) takes its own clicks.
         let strip = ui.interact(
@@ -12658,27 +12736,36 @@ impl CaperApp {
             let text = live_timer(ui.ctx(), started);
             right = paint_live_timer(ui, &text, right, inner.center().y, 12.0) - 10.0;
         }
+        let font = egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into()));
+        let status = (!matches!(self.voice.state.phase, Phase::Connected(_))).then(|| {
+            let (status, _, tone) = self.call_status(people.len());
+            let width = ui
+                .painter()
+                .layout_no_wrap(status.clone(), font.clone(), tone)
+                .size()
+                .x;
+            (status, tone, width)
+        });
+        // The faces keep their room; the channel's name gives way.
+        let room = right
+            - inner.left()
+            - strip_faces_width(people.len())
+            - status.as_ref().map_or(0.0, |(_, _, width)| width + 10.0);
         let mut left = strip_lead(
             ui,
             inner,
             &format!("#{}", call.channel_name),
-            (right - inner.left()) * 0.5,
+            room.max(64.0),
         );
-        left = strip_faces(ui, &people, &speaking, left, inner.center().y);
-        if let Some(index) = speaking.iter().position(|speaking| *speaking)
+        left = strip_call_faces(ui, &people, &speaking, &labels, left, inner.center().y);
+        if let Some((status, tone, _)) = status
             && right - left >= 24.0
         {
-            let name = truncated_galley(
-                ui,
-                &people[index].name,
-                egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into())),
-                MUTED,
-                right - left,
-            );
+            let galley = truncated_galley(ui, &status, font, tone, right - left);
             ui.painter().galley(
-                egui::pos2(left, inner.center().y - name.size().y / 2.0),
-                name,
-                MUTED,
+                egui::pos2(left, inner.center().y - galley.size().y / 2.0),
+                galley,
+                tone,
             );
         }
         if strip.clicked() {
@@ -12798,7 +12885,7 @@ impl CaperApp {
     }
 
     /// The account bar: profile, microphone, deafen, device menus and
-    /// settings. The call itself lives in Live now's card.
+    /// settings. The call itself lives in its card in the sidebar.
     fn account_bar(&mut self, ui: &mut egui::Ui) {
         // Phones show the conversation alone, so its voice error moves there.
         if !self.inline_voice_error(ui.ctx())
@@ -22237,15 +22324,14 @@ const VOICE_STRIP: Color32 = Color32::from_rgb(0x1a, 0x26, 0x22);
 const VOICE_STRIP_BORDER: Color32 = Color32::from_rgb(0x26, 0x35, 0x2f);
 /// Connecting and reconnecting.
 const VOICE_AMBER: Color32 = Color32::from_rgb(0xd9, 0xab, 0x5c);
-/// The call card's "+N" tile.
+/// The call card's and strip's "+N" tile.
 const MORE_TILE: Color32 = Color32::from_rgb(0x24, 0x3a, 0x2e);
-const MORE_TILE_HOVER: Color32 = Color32::from_rgb(0x2e, 0x4a, 0x3a);
 /// Phones' always-visible row shortcut on quiet rows.
 const QUIET_SHORTCUT: Color32 = Color32::from_rgb(0x68, 0x71, 0x74);
-/// Live now shows this many other rooms before folding the rest.
-const LIVE_ROOM_CARDS: usize = 2;
 /// The call card shows everyone up to this many faces.
 const CALL_FACES: usize = 10;
+/// Phones' strip shows the card's first faces, up to this many.
+const STRIP_FACES: usize = 5;
 
 /// The call's full list: whose audio controls are open, if anyone's.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -22253,13 +22339,93 @@ struct CallList {
     audio: Option<String>,
 }
 
-/// A channel with people in voice that isn't your call.
+/// A joined channel's row in the sidebar.
 #[derive(Clone, Debug)]
-struct LiveRoom {
+struct ChannelRow {
     id: String,
     name: String,
     private: bool,
+}
+
+/// A channel with people in voice that isn't your call.
+#[derive(Clone, Debug)]
+struct LiveRoom {
+    row: ChannelRow,
     people: Vec<model::VoiceOccupant>,
+}
+
+/// What a click on the call card's faces asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FacePick {
+    None,
+    /// A primary click, which opens the chat as the rest of the card does.
+    Open,
+    /// The full list, with this person's audio controls open (none for
+    /// yourself or the "+N" tile).
+    List(Option<String>),
+}
+
+/// Your call's row ends with its state ("You're in · 3", or `short` when
+/// the name needs the room) in `tone`, then the session's timer, where a
+/// live row counts who is there.
+#[derive(Clone, Debug)]
+struct CallMark {
+    status: String,
+    short: String,
+    tone: Color32,
+    timer: Option<String>,
+}
+
+/// Which of `mark`'s states, and whether its timer, fit between `left`
+/// (where the channel's name starts) and `right` with the name (`name`
+/// wide) keeping some room: the full state, then the short one, then the
+/// short one without the timer.
+fn fit_call_status(
+    ui: &egui::Ui,
+    font: &egui::FontId,
+    (left, right): (f32, f32),
+    name: f32,
+    mark: &CallMark,
+) -> (String, Option<String>) {
+    let width = |text: &str| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font.clone(), mark.tone)
+            .size()
+            .x
+    };
+    let timer = mark.timer.as_ref().map_or(0.0, |text| {
+        tabular_galley(ui, text, font, VOICE_SESSION_GREEN).1 + 8.0
+    });
+    let room = |status: &str, timer: f32| right - timer - width(status) - 10.0 - left;
+    if room(&mark.status, timer) >= name.min(72.0) {
+        (mark.status.clone(), mark.timer.clone())
+    } else if room(&mark.short, timer) >= name.min(48.0) || room(&mark.short, 0.0) < name.min(48.0)
+    {
+        (mark.short.clone(), mark.timer.clone())
+    } else {
+        (mark.short.clone(), None)
+    }
+}
+
+/// Names a call face (or the "+N" tile) `label` and says what it was asked
+/// for: the full list, at `audio`'s controls, on a secondary click, a long
+/// touch or the accessibility context-menu action (which it offers); the
+/// chat on a primary click.
+fn face_pick(face: &egui::Response, label: &str, audio: Option<String>) -> FacePick {
+    use egui::accesskit::Action;
+    face.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label));
+    face.ctx
+        .accesskit_node_builder(face.id, |node| node.add_action(Action::ShowContextMenu));
+    let action = face
+        .ctx
+        .input(|input| input.has_accesskit_action_request(face.id, Action::ShowContextMenu));
+    if face.secondary_clicked() || action {
+        FacePick::List(audio)
+    } else if face.clicked() {
+        FacePick::Open
+    } else {
+        FacePick::None
+    }
 }
 
 /// How many of `total` people the call card draws as faces in two rows of
@@ -22284,25 +22450,6 @@ fn room_names(names: &[&str]) -> String {
         [first, second, third] => format!("{first}, {second} and {third}"),
         [first, second, rest @ ..] => format!("{first}, {second} and {} more", rest.len()),
     }
-}
-
-/// The rooms behind "N more live": "#planning, #random".
-fn folded_room_names(rooms: &[LiveRoom]) -> String {
-    rooms
-        .iter()
-        .map(|room| format!("#{}", room.name))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Busiest first, then by name.
-fn sort_live_rooms(rooms: &mut [LiveRoom]) {
-    rooms.sort_by(|a, b| {
-        b.people
-            .len()
-            .cmp(&a.people.len())
-            .then_with(|| a.name.cmp(&b.name))
-    });
 }
 
 /// Keeps `order` (participant IDs, first seen first) in step with who is in
@@ -22378,6 +22525,12 @@ fn live_timer(context: &egui::Context, started: u64) -> String {
 /// Paints a green session timer in tabular digits ending at `right`,
 /// centered on `y`. Returns where it starts.
 fn paint_live_timer(ui: &egui::Ui, text: &str, right: f32, y: f32, size: f32) -> f32 {
+    place_live_timer(ui, text, right, y, size, true)
+}
+
+/// [`paint_live_timer`]'s timer, painted only while `shown`; it keeps its
+/// place and accessible duration either way.
+fn place_live_timer(ui: &egui::Ui, text: &str, right: f32, y: f32, size: f32, shown: bool) -> f32 {
     let font = egui::FontId::new(size, egui::FontFamily::Name("Satoshi Medium".into()));
     let (galley, width) = tabular_galley(ui, text, &font, VOICE_SESSION_GREEN);
     let rect = egui::Rect::from_min_size(
@@ -22396,40 +22549,11 @@ fn paint_live_timer(ui: &egui::Ui, text: &str, right: f32, y: f32, size: f32) ->
             format!("Voice session duration: {text}"),
         )
     });
-    ui.painter().galley(rect.min, galley, VOICE_SESSION_GREEN);
-    timer.on_hover_text("Voice session duration");
+    if shown {
+        ui.painter().galley(rect.min, galley, VOICE_SESSION_GREEN);
+        timer.on_hover_text("Voice session duration");
+    }
     rect.left()
-}
-
-/// Live now's heading: a green waveform and the title, then a muted "N
-/// rooms" once two or more are live.
-fn live_heading(ui: &mut egui::Ui, rooms: usize) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), 28.0),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            // The title lines up with the Channels heading's below.
-            ui.add_space(7.0);
-            let (icon, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-            paint_icon(ui.painter(), icon, NavIcon::AudioLines, VOICE_SESSION_GREEN);
-            ui.add_space(7.0);
-            ui.add(egui::Label::new(bold("Live now").size(12.0).color(MUTED)).selectable(false));
-            if rooms >= 2 {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(4.0);
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(format!("{rooms} rooms"))
-                                .size(11.0)
-                                .color(MUTED),
-                        )
-                        .selectable(false),
-                    );
-                });
-            }
-        },
-    );
 }
 
 /// The speaking ring of design H: a 2px gap in the `background`'s color,
@@ -22454,50 +22578,6 @@ fn face_badge(ui: &egui::Ui, face: egui::Rect, icon: NavIcon, background: Color3
         egui::Rect::from_center_size(center, egui::vec2(10.0, 10.0)),
         icon,
         ERROR,
-    );
-}
-
-/// "<Name> is speaking", 12px and muted with the name bold.
-fn speaker_line(ui: &mut egui::Ui, name: &str) {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        name,
-        0.0,
-        egui::TextFormat::simple(
-            egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
-            MUTED,
-        ),
-    );
-    job.append(
-        " is speaking",
-        0.0,
-        egui::TextFormat::simple(egui::FontId::proportional(12.0), MUTED),
-    );
-    job.wrap = egui::text::TextWrapping::truncate_at_width(ui.available_width().max(1.0));
-    ui.add(egui::Label::new(job).selectable(false));
-}
-
-/// The speaker line's height with nobody speaking, so the card keeps its size:
-/// the same fonts as `speaker_line`, laid out with nothing visible.
-fn speaker_line_space(ui: &mut egui::Ui) {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        " ",
-        0.0,
-        egui::TextFormat::simple(
-            egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
-            egui::Color32::TRANSPARENT,
-        ),
-    );
-    job.append(
-        " ",
-        0.0,
-        egui::TextFormat::simple(egui::FontId::proportional(12.0), egui::Color32::TRANSPARENT),
-    );
-    let height = ui.painter().layout_job(job).size().y;
-    ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), height),
-        egui::Sense::hover(),
     );
 }
 
@@ -22599,6 +22679,90 @@ fn strip_faces(
     x + 2.0
 }
 
+/// How many of `total` people in the call the strip draws as faces, and
+/// how many its "+N" tile folds in: everyone up to five, else four and the
+/// rest, so for five or fewer it shows the card's faces exactly.
+fn strip_face_slots(total: usize) -> (usize, usize) {
+    if total <= STRIP_FACES {
+        (total, 0)
+    } else {
+        (STRIP_FACES - 1, total - (STRIP_FACES - 1))
+    }
+}
+
+/// The width of the strip's overlapping faces (and tile) for `total`
+/// people, with the gap after them.
+fn strip_faces_width(total: usize) -> f32 {
+    let (faces, more) = strip_face_slots(total);
+    match faces + usize::from(more > 0) {
+        0 => 0.0,
+        slots => 24.0 + (slots - 1) as f32 * 18.0 + 10.0,
+    }
+}
+
+/// The call card's first faces as 24px overlapping ones from `left`, in
+/// its order, ringed while `speaking`, with a "+N" tile past the fifth
+/// person (lit when someone folded into it speaks). `labels` name them for
+/// screen readers. Returns where what follows starts.
+fn strip_call_faces(
+    ui: &egui::Ui,
+    people: &[model::VoiceOccupant],
+    speaking: &[bool],
+    labels: &[String],
+    left: f32,
+    y: f32,
+) -> f32 {
+    let (faces, more) = strip_face_slots(people.len());
+    let slot = |index: usize| {
+        egui::Rect::from_min_size(
+            egui::pos2(left + index as f32 * 18.0, y - 12.0),
+            egui::vec2(24.0, 24.0),
+        )
+    };
+    let label = |rect: egui::Rect, id: egui::Id, label: &str| {
+        ui.interact(rect, id, egui::Sense::hover())
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label));
+    };
+    // Each face goes over the one before, so every face shows some of
+    // itself; the strip's color parts them.
+    for (index, person) in people.iter().take(faces).enumerate() {
+        let rect = slot(index);
+        let picture = paint_avatar(ui, rect, &person.name, person.avatar_id, person.picture());
+        if speaking[index] {
+            speaking_ring(ui, rect, picture, VOICE_STRIP);
+        } else {
+            avatar_ring(ui, rect, picture, 1.0, Stroke::new(2.0, VOICE_STRIP));
+        }
+        label(
+            rect,
+            ui.id().with(("strip-face", &person.id)),
+            &labels[index],
+        );
+    }
+    if more > 0 {
+        let rect = slot(faces);
+        ui.painter().circle_filled(rect.center(), 12.0, MORE_TILE);
+        if speaking[faces..].iter().any(|speaking| *speaking) {
+            speaking_ring(ui, rect, false, VOICE_STRIP);
+        } else {
+            avatar_ring(ui, rect, false, 1.0, Stroke::new(2.0, VOICE_STRIP));
+        }
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("+{more}"),
+            egui::FontId::new(11.0, egui::FontFamily::Name("Satoshi Bold".into())),
+            TEXT,
+        );
+        label(
+            rect,
+            ui.id().with("strip-more"),
+            &format!("{more} more in the call"),
+        );
+    }
+    left + strip_faces_width(people.len())
+}
+
 /// A sidebar row's options (⋯) menu.
 struct RowMenu<'a> {
     /// Accessible name and tooltip, like "Channel options for general".
@@ -22622,6 +22786,9 @@ struct RowExtras<'a> {
     suffix: Option<&'a str>,
     /// How many are in voice in a live channel: a green waveform and count.
     live: Option<usize>,
+    /// Your call's row, heading its card: the call's state and timer in
+    /// place of the count.
+    call: Option<CallMark>,
     /// Web's hover-revealed voice shortcut before the menu, and whether it
     /// can join now. The caller names it and handles its click.
     voice: Option<bool>,
@@ -22750,6 +22917,43 @@ fn channel_button(
         }
         indicator.on_hover_text(format!("{count} in voice"));
         live_left = live.left() - 9.0;
+    } else if let Some(mark) = &extras.call {
+        // Your call's state and timer step aside for the menu the same way.
+        let revealed = (row_hovered || response.has_focus())
+            && (extras.voice.is_some() || extras.menu.is_some());
+        let font = egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into()));
+        let right = rect.right() - 8.0;
+        // The name, with its unread dot and bell.
+        let name = ui
+            .painter()
+            .layout_no_wrap(
+                name.to_owned(),
+                egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
+                TEXT,
+            )
+            .size()
+            .x
+            + if extras.unread { 16.0 } else { 0.0 }
+            + if extras.muted.is_some() { 20.0 } else { 0.0 };
+        let (status, timer) = fit_call_status(ui, &font, (rect.left() + 32.0, right), name, mark);
+        let mut left = right;
+        if let Some(text) = &timer {
+            left = place_live_timer(ui, text, left, rect.center().y, 12.0, !revealed) - 8.0;
+        }
+        let galley = ui.painter().layout_no_wrap(status.clone(), font, mark.tone);
+        let state = egui::Rect::from_min_size(
+            egui::pos2(
+                left - galley.size().x,
+                rect.center().y - galley.size().y / 2.0,
+            ),
+            galley.size(),
+        );
+        let indicator = ui.interact(state, response.id.with("call"), egui::Sense::hover());
+        indicator.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &status));
+        if !revealed {
+            ui.painter().galley(state.min, galley, mark.tone);
+        }
+        live_left = state.left() - 9.0;
     }
     let mut trailing = rect.right() - if extras.menu.is_some() { 34.0 } else { 6.0 };
     // Web's `.channel-quick-join`: always laid out so nothing shifts, but
@@ -27637,6 +27841,20 @@ mod tests {
     }
 
     fn click(app: &mut CaperApp, context: &egui::Context, pos: egui::Pos2) {
+        click_with(app, context, pos, egui::PointerButton::Primary);
+    }
+
+    /// A right-click.
+    fn secondary_click(app: &mut CaperApp, context: &egui::Context, pos: egui::Pos2) {
+        click_with(app, context, pos, egui::PointerButton::Secondary);
+    }
+
+    fn click_with(
+        app: &mut CaperApp,
+        context: &egui::Context,
+        pos: egui::Pos2,
+        button: egui::PointerButton,
+    ) {
         for pressed in [true, false] {
             render(
                 app,
@@ -27645,7 +27863,7 @@ mod tests {
                     egui::Event::PointerMoved(pos),
                     egui::Event::PointerButton {
                         pos,
-                        button: egui::PointerButton::Primary,
+                        button,
                         pressed,
                         modifiers: egui::Modifiers::NONE,
                     },
@@ -29121,41 +29339,67 @@ mod tests {
                 _ => None,
             })
         };
-        // Live now sits above the channels, with one room card.
-        let heading = sidebar_text(&output, "Live now").expect("Live now heading");
+        // The live row grows into its card in place under the Channels
+        // heading: no "Live now" and no count of rooms.
+        assert!(sidebar_text(&output, "Live now").is_none());
+        assert!(sidebar_text(&output, "2 rooms").is_none());
         let channels = sidebar_text(&output, "Channels").expect("Channels heading");
-        assert!(heading.y < channels.y);
-        let names = sidebar_text(&output, "Maya and Alex").expect("the room's names");
-        assert!(names.y < channels.y);
-        assert!(
-            sidebar_text(&output, "2 rooms").is_none(),
-            "one live room has no count"
-        );
-        // No roster under the row: the row only counts who is there.
-        assert!(sidebar_text(&output, "Maya").is_none());
         let row = node_bounds(&output, "design").unwrap();
+        let names = sidebar_text(&output, "Maya and Alex").expect("the room's names");
+        assert!(channels.y < row.top() && row.bottom() < names.y);
+        let card = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == super::ROOM_CARD
+                        && rect.stroke.color == super::ROOM_CARD_BORDER =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("the room's card");
+        assert!(card.contains_rect(row) && card.contains(names));
+        let general = node_bounds(&output, "general").unwrap();
+        let planning = node_bounds(&output, "planning").unwrap();
+        assert!(general.bottom() < card.top() && card.bottom() < planning.top());
+        // The row counts who is there; the card's body names them.
+        assert!(sidebar_text(&output, "Maya").is_none());
         let live = node_bounds(&output, "2 in voice").expect("the row's live count");
         assert!(row.contains_rect(live), "{live:?} in {row:?}");
-        let timer = output
+        // The session's timer sits in the body, between the names and Join.
+        let (timer, timer_bounds) = output
             .platform_output
             .accesskit_update
             .as_ref()
             .unwrap()
             .nodes
             .iter()
-            .filter_map(|(_, node)| node.value())
-            .find(|value| value.starts_with("Voice session duration: "))
+            .find_map(|(_, node)| {
+                node.value()
+                    .filter(|value| value.starts_with("Voice session duration: "))
+                    .map(|value| (value.to_owned(), node.bounds().unwrap()))
+            })
             .expect("the room's timer");
         assert!(
             timer.ends_with("28:21") || timer.ends_with("28:22"),
             "{timer}"
         );
+        let join = node_bounds(&output, "Join #design").unwrap();
+        assert!(
+            f64::from(names.x) < timer_bounds.x0
+                && timer_bounds.x1 <= f64::from(join.left())
+                && timer_bounds.y0 > f64::from(row.bottom()),
+            "{timer_bounds:?}"
+        );
         // Spectators never get playback controls.
         for hidden in ["Audio", "User volume", "Mute for me"] {
             assert!(!texts(&output).contains(&hidden), "{hidden}");
         }
-        // Join keeps the open conversation; the name opens the room's chat.
-        click(&mut app, &context, node_center(&output, "Join #design"));
+        // Join keeps the open conversation; anywhere else on the card opens
+        // the room's chat.
+        click(&mut app, &context, join.center());
         assert_eq!(
             app.pending_voice_join
                 .as_ref()
@@ -29166,10 +29410,12 @@ mod tests {
         assert!(app.navigation_target.is_none());
         let joining = render(&mut app, &context, vec![]);
         assert!(texts(&joining).contains(&"Joining…"));
-        assert!(node_bounds(&joining, "Joining #design").is_some());
         assert!(node_bounds(&joining, "Join #design").is_none());
         assert!(matches!(app.voice.state.phase, Phase::Idle));
-        click(&mut app, &context, node_center(&joining, "Open #design"));
+        // The busy button is no way through to the chat either.
+        click(&mut app, &context, node_center(&joining, "Joining #design"));
+        assert!(app.navigation_target.is_none());
+        click(&mut app, &context, names + egui::vec2(4.0, 6.0));
         assert_eq!(
             app.navigation_target
                 .as_ref()
@@ -29281,13 +29527,15 @@ mod tests {
     }
 
     #[test]
-    fn call_faces_open_the_full_list_whose_audio_changes_only_that_listener() {
+    fn secondary_clicks_on_call_faces_open_the_full_list_whose_audio_changes_only_that_listener() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-voice-connected"),
         );
+        // Another chat is open, so opening the call's would show.
+        app.selected_channel = Some("chan00000003".into());
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         // You first, then the others, in one row of faces in the card.
@@ -29302,6 +29550,18 @@ mod tests {
         assert!(faces[2].right() <= 327.0, "faces stay inside the card");
         assert!(texts(&output).contains(&"You're in · 3"));
         assert!(!texts(&output).contains(&"User volume"));
+        // A face is no button of its own: a click opens the call's chat,
+        // as the rest of the card does.
+        click(&mut app, &context, faces[1].center());
+        assert!(app.call_list.is_none());
+        assert_eq!(
+            app.navigation_target
+                .as_ref()
+                .and_then(|target| target.channel.as_deref()),
+            Some("chan00000001")
+        );
+        app.navigation_target = None;
+        app.opening = false;
         app.voice.set_participant_playback(
             "fixture-maya",
             crate::media::TrackPlayback {
@@ -29309,14 +29569,16 @@ mod tests {
                 muted: false,
             },
         );
-        // Another person's face opens the list at their audio controls.
-        click(&mut app, &context, faces[1].center());
+        // A right-click on another person's face opens the list at their
+        // audio controls, without opening the chat.
+        secondary_click(&mut app, &context, faces[1].center());
         assert_eq!(
             app.call_list,
             Some(super::CallList {
                 audio: Some("fixture-maya".into())
             })
         );
+        assert!(app.navigation_target.is_none());
         let list = render(&mut app, &context, vec![]);
         let shown = texts(&list);
         for label in [
@@ -29356,7 +29618,7 @@ mod tests {
             }],
         );
         assert!(app.call_list.is_none());
-        click(&mut app, &context, faces[0].center());
+        secondary_click(&mut app, &context, faces[0].center());
         assert_eq!(app.call_list, Some(super::CallList { audio: None }));
         let list = render(&mut app, &context, vec![]);
         assert!(!texts(&list).contains(&"User volume"));
@@ -29376,7 +29638,7 @@ mod tests {
         click(&mut app, &context, egui::pos2(1000.0, 500.0));
         assert!(app.call_list.is_none());
         // And Close does too.
-        click(&mut app, &context, faces[2].center());
+        secondary_click(&mut app, &context, faces[2].center());
         let list = render(&mut app, &context, vec![]);
         click(&mut app, &context, node_center(&list, "Close"));
         assert!(app.call_list.is_none());
@@ -29387,13 +29649,96 @@ mod tests {
                 muted: false,
             },
         );
-        click(&mut app, &context, faces[1].center());
+        secondary_click(&mut app, &context, faces[1].center());
         let restored = render(&mut app, &context, vec![]);
         assert!(
             !texts(&restored)
                 .iter()
                 .any(|text| text.starts_with("You muted "))
         );
+        assert!(
+            app.navigation_target.is_none(),
+            "the list never opens the chat"
+        );
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        // Faces offer the list to screen readers as a context-menu action,
+        // and Shift+F10 on the card's focused row opens it too.
+        let maya = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Maya"))
+            .unwrap();
+        assert!(
+            maya.1
+                .supports_action(egui::accesskit::Action::ShowContextMenu)
+        );
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action: egui::accesskit::Action::ShowContextMenu,
+                    target: maya.0,
+                    data: None,
+                },
+            )],
+        );
+        assert_eq!(
+            app.call_list,
+            Some(super::CallList {
+                audio: Some("fixture-maya".into())
+            })
+        );
+        app.call_list = None;
+        let output = render(&mut app, &context, vec![]);
+        let row = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("general"))
+            .map(|(id, _)| *id)
+            .unwrap();
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action: egui::accesskit::Action::Focus,
+                    target: row,
+                    data: None,
+                },
+            )],
+        );
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Key {
+                key: egui::Key::F10,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::SHIFT,
+            }],
+        );
+        assert_eq!(app.call_list, Some(super::CallList { audio: None }));
+        assert!(app.navigation_target.is_none());
     }
 
     #[test]
@@ -29457,7 +29802,7 @@ mod tests {
     }
 
     #[test]
-    fn call_card_opens_exact_voice_target_without_replacing_call_or_denied_chat() {
+    fn call_card_opens_its_chat_anywhere_but_its_controls_without_replacing_call_or_denied_chat() {
         for space in [Some("space0000001"), Some("other-space"), None] {
             let context = egui::Context::default();
             let mut app = CaperApp::new(
@@ -29482,18 +29827,104 @@ mod tests {
             app.draft = "Unsent text".into();
             render(&mut app, &context, vec![]);
             let output = render(&mut app, &context, vec![]);
-            // Another space's call names its space after the channel.
-            let label = if space == Some("space0000001") {
-                "Open #design"
-            } else {
-                "Open #design in Voice Space"
+            let listed = space == Some("space0000001");
+            let card = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.fill == super::LIVE_CARD
+                            && rect.stroke.color == super::LIVE_CARD_BORDER =>
+                    {
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                })
+                .expect("the call's card");
+            let channels = text_position(&output, "Channels");
+            // The card's own controls, not the account bar's.
+            let control = |output: &egui::FullOutput, label: &str| {
+                output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .filter(|(_, node)| node.label() == Some(label))
+                    .filter_map(|(_, node)| node.bounds())
+                    .map(|bounds| {
+                        egui::Rect::from_min_max(
+                            egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                            egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                        )
+                    })
+                    .find(|bounds| card.contains_rect(*bounds))
+                    .unwrap_or_else(|| panic!("the card's {label}"))
             };
-            let open = node_center(&output, label);
-            assert!(open.x < 340.0 && open.y < 160.0, "{label} heads the card");
-            assert_eq!(
-                texts(&output).contains(&"Voice Space"),
-                space != Some("space0000001")
+            assert!(
+                output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some("Your call in #design")),
+                "the card is named for screen readers"
             );
+            if listed {
+                // #design's own row heads the card, in its place in the list.
+                assert!(node_bounds(&output, "Open #design").is_none());
+                let row = node_bounds(&output, "design").unwrap();
+                assert!(card.contains_rect(row) && row.top() - card.top() < 16.0);
+                assert!(channels.y < card.top());
+                assert!(node_bounds(&output, "general").unwrap().bottom() < card.top());
+                assert!(card.bottom() < node_bounds(&output, "planning").unwrap().top());
+                // The ⋯ menu keeps its own click.
+                render(
+                    &mut app,
+                    &context,
+                    vec![egui::Event::PointerMoved(row.center())],
+                );
+                let hovered = render(&mut app, &context, vec![]);
+                click(
+                    &mut app,
+                    &context,
+                    node_center(&hovered, "Channel options for design"),
+                );
+                assert!(app.navigation_target.is_none(), "the menu opens no chat");
+                render(
+                    &mut app,
+                    &context,
+                    vec![egui::Event::Key {
+                        key: egui::Key::Escape,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            } else {
+                // Another space's call names its space after the channel,
+                // and its card sits above the channels.
+                let link = node_center(&output, "Open #design in Voice Space");
+                assert!(card.contains(link) && link.y - card.top() < 30.0);
+                assert!(card.bottom() < channels.y);
+            }
+            assert_eq!(texts(&output).contains(&"Voice Space"), !listed);
+            // Mute, Deafen and Leave keep their own clicks: twice each
+            // leaves the call as it was.
+            for label in ["Mute microphone", "Deafen audio"] {
+                let bounds = control(&output, label);
+                click(&mut app, &context, bounds.center());
+                click(&mut app, &context, bounds.center());
+                assert!(app.navigation_target.is_none(), "{label} opens no chat");
+            }
+            assert!(!app.voice.state.audio.muted && !app.voice.state.audio.deafened);
+            assert!(control(&output, "Leave voice").height() > 0.0);
+            // Anywhere else on the card opens the call's chat.
+            let open = egui::pos2(card.left() + 5.0, card.center().y);
             click(&mut app, &context, open);
             let target = app
                 .navigation_target
@@ -31623,7 +32054,9 @@ mod tests {
                 );
                 app.sidebar_width = sidebar;
                 app.token = Some("fixture-only".into());
-                let target = app.voice_target("chan00000001").unwrap().0;
+                let (target, space) = app.voice_target("chan00000001").unwrap();
+                // Where a join would put the call.
+                app.voice.active_space = space;
                 if state == "occupied" {
                     app.channel_rosters.insert(
                         "chan00000002".into(),
@@ -31714,9 +32147,14 @@ mod tests {
                     );
                     assert!(bounds.x1 <= 60.0 + f64::from(sidebar));
                     assert_eq!(node.is_disabled(), busy, "{state}: {label}");
-                    // Live now above the channels moves rows down, never
-                    // the shortcut within its row.
-                    let placed = (bounds.x0, bounds.x1, bounds.y0 - row.y0, bounds.y1 - row.y0);
+                    // A live row's card moves and narrows the row, never
+                    // the shortcut within it.
+                    let placed = (
+                        row.x1 - bounds.x0,
+                        row.x1 - bounds.x1,
+                        bounds.y0 - row.y0,
+                        bounds.y1 - row.y0,
+                    );
                     match reference.get(name) {
                         Some(first) => assert_eq!(
                             &placed, first,
@@ -31762,15 +32200,39 @@ mod tests {
                         .iter()
                         .any(|text| text.contains("No one in voice") || text.contains("in voice"))
                 );
+                // Nothing says "Live now": your call's row and a live row
+                // grow into their cards in place.
+                assert!(!texts.contains(&"Live now"), "{state}");
+                let card = |fill: egui::Color32, name: &str| {
+                    let row = find(name).bounds().unwrap();
+                    output.shapes.iter().any(|shape| {
+                        matches!(&shape.shape, egui::Shape::Rect(rect)
+                            if rect.fill == fill
+                                && f64::from(rect.rect.left()) < row.x0
+                                && f64::from(rect.rect.right()) > row.x1
+                                && f64::from(rect.rect.top()) < row.y0
+                                && f64::from(rect.rect.bottom()) > row.y1)
+                    })
+                };
                 assert_eq!(
-                    texts.contains(&"Live now"),
-                    state != "empty" && state != "authorizing",
-                    "{state}: Live now shows a call or a live room"
+                    card(super::LIVE_CARD, "general"),
+                    matches!(state, "joining" | "connected" | "switching"),
+                    "{state}: your call's card"
                 );
-                // Every channel is a single line.
+                assert_eq!(
+                    card(super::ROOM_CARD, "design"),
+                    state == "occupied",
+                    "{state}: the live room's card"
+                );
+                // Quiet channels are a single line; a live one's card adds
+                // its people beneath.
                 let gap =
                     find("planning").bounds().unwrap().y0 - find("design").bounds().unwrap().y1;
-                assert!(gap < 20.0, "{state}: {gap}");
+                if state == "occupied" {
+                    assert!(gap > 20.0, "{state}: {gap}");
+                } else {
+                    assert!(gap < 20.0, "{state}: {gap}");
+                }
             }
         }
     }
@@ -32433,7 +32895,7 @@ mod tests {
                 );
             }
             // The live room's card and the row's count fit the sidebar.
-            for label in ["2 in voice", "Open #design", "Join #design"] {
+            for label in ["2 in voice", "design", "Join #design"] {
                 let bounds =
                     node_bounds(&output, label).unwrap_or_else(|| panic!("missing {label}"));
                 assert!(bounds.right() <= edge, "{label} at {sidebar}px: {bounds:?}");
@@ -34881,7 +35343,7 @@ mod tests {
         assert_eq!(
             app.header_voice_channel().as_ref(),
             Some(&channel),
-            "the narrow strip and Live now offer its voice, as for a joined channel"
+            "the narrow strip and the sidebar offer its voice, as for a joined channel"
         );
         app.media_availability.remove(&channel);
         assert!(
@@ -38454,27 +38916,82 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_pause_keeps_the_speaker_lines_height() {
-        // The call card holds the line while nobody speaks, so channels below stay put.
-        let (context, _app) = fixture("parity-voice-connected");
-        let mut heights = (0.0, 0.0);
-        let _ = context.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                let top = ui.cursor().top();
-                super::speaker_line(ui, "Alex");
-                let middle = ui.cursor().top();
-                super::speaker_line_space(ui);
-                heights = (middle - top, ui.cursor().top() - middle);
-            });
-        });
-        assert!(heights.0 > 0.0, "{heights:?}");
-        assert_eq!(heights.0, heights.1);
+    /// Where `fill`'s cards are, top first.
+    fn card_rects(output: &egui::FullOutput, fill: egui::Color32) -> Vec<egui::Rect> {
+        let mut cards: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.fill == fill && rect.stroke.width > 0.0 => {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .collect();
+        cards.sort_by(|a, b| a.top().total_cmp(&b.top()));
+        cards
+    }
+
+    /// The texts painted inside `area`.
+    fn texts_in(output: &egui::FullOutput, area: egui::Rect) -> Vec<&str> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if area.contains(text.pos) => {
+                    Some(text.galley.job.text.as_str())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The bounds of the node named `label` inside `area`.
+    fn node_in(output: &egui::FullOutput, label: &str, area: egui::Rect) -> Option<egui::Rect> {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()?
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.label() == Some(label))
+            .filter_map(|(_, node)| node.bounds())
+            .map(|bounds| {
+                egui::Rect::from_min_max(
+                    egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                    egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                )
+            })
+            .find(|bounds| area.contains_rect(*bounds))
+    }
+
+    /// The labels of face images inside `area`, in reading order.
+    fn face_labels(output: &egui::FullOutput, area: egui::Rect) -> Vec<String> {
+        let mut faces: Vec<_> = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.role() == egui::accesskit::Role::Image)
+            .filter_map(|(_, node)| {
+                let bounds = node.bounds()?;
+                let rect = egui::Rect::from_min_max(
+                    egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                    egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                );
+                let label = node.label()?.to_owned();
+                area.contains_rect(rect)
+                    .then(|| (rect.top() as i32, rect.left() as i32, label))
+            })
+            .collect();
+        faces.sort();
+        faces.into_iter().map(|(_, _, label)| label).collect()
     }
 
     #[test]
-    fn call_card_faces_fold_into_plus_n_and_rooms_fold_behind_more_live() {
+    fn call_card_and_live_rooms_grow_from_their_rows_in_list_order() {
         // A wide sidebar fits the ten slots in one row.
         for (sidebar, faces, more, lines) in [(280.0, 9, 3, 2), (220.0, 7, 5, 2), (440.0, 9, 3, 1)]
         {
@@ -38483,35 +39000,33 @@ mod tests {
             render(&mut app, &context, vec![]);
             let output = render(&mut app, &context, vec![]);
             let shown = texts(&output);
-            let card = output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Rect(rect)
-                        if rect.fill == super::LIVE_CARD
-                            && rect.stroke.color == super::LIVE_CARD_BORDER =>
-                    {
-                        Some(rect.rect)
-                    }
-                    _ => None,
-                })
-                .expect("the call's green card");
+            let card = card_rects(&output, super::LIVE_CARD)[0];
             assert!(card.right() <= 59.0 + sidebar - 12.0 + 0.5, "{card:?}");
-            // The narrowest sidebar shortens the status for the name.
+            // No heading, room count, fold or speaker line.
+            for text in ["Live now", "5 rooms", "4 rooms", "2 more live", "Show less"] {
+                assert!(!shown.contains(&text), "{sidebar}: {text}");
+            }
+            assert!(
+                !shown.iter().any(|text| text.contains("is speaking")),
+                "{sidebar}: {shown:?}"
+            );
+            // #general's own row heads the card, under the Channels heading,
+            // with the call's state where a live row counts who is there.
+            let channels = text_position(&output, "Channels");
+            let general = node_bounds(&output, "general").unwrap();
+            assert!(channels.y < card.top() && card.contains_rect(general));
+            assert!(
+                general.top() - card.top() < 16.0,
+                "the row is the card's top line"
+            );
             let status = if sidebar < 280.0 {
                 "In · 12"
             } else {
                 "You're in · 12"
             };
-            for text in [
-                "Live now",
-                "5 rooms",
-                "#general",
-                status,
-                "Alex is speaking",
-            ] {
-                assert!(shown.contains(&text), "{sidebar}: {text}: {shown:?}");
-            }
+            assert!(shown.contains(&status), "{sidebar}: {status}: {shown:?}");
+            assert!(general.contains(text_position(&output, status)));
+            assert!(node_bounds(&output, "12 in voice").is_none());
             // You, then the others as they joined; faces in two rows at most.
             let names = [
                 "Fixture Owner (you)",
@@ -38532,7 +39047,7 @@ mod tests {
                 })
                 .collect();
             for face in &bounds {
-                assert!(card.contains_rect(*face));
+                assert!(card.contains_rect(*face) && face.top() > general.bottom());
                 assert_eq!(face.size(), egui::vec2(36.0, 36.0));
             }
             let rows: std::collections::BTreeSet<_> =
@@ -38559,41 +39074,249 @@ mod tests {
                 "{sidebar}: the tile's speaking ring"
             );
             // Mute, Deafen and Leave close the card.
-            let mute = node_bounds(&output, "Mute microphone").unwrap();
-            let deafen = node_bounds(&output, "Deafen audio").unwrap();
-            let leave = node_bounds(&output, "Leave voice").unwrap();
-            assert!(card.contains_rect(mute) && card.contains_rect(leave));
+            let mute = node_in(&output, "Mute microphone", card).unwrap();
+            let deafen = node_in(&output, "Deafen audio", card).unwrap();
+            let leave = node_in(&output, "Leave voice", card).unwrap();
             assert_eq!(mute.size(), egui::vec2(32.0, 32.0));
+            assert!(mute.top() > tile.bottom());
             assert!(mute.right() < deafen.left() && deafen.right() < leave.left());
             assert!(
                 (card.right() - 13.0 - leave.right()).abs() <= 1.0,
                 "Leave ends the row"
             );
-            // Two rooms, busiest first, then "2 more live".
-            let design = node_bounds(&output, "Open #design").unwrap();
-            let standup = node_bounds(&output, "Open #standup").unwrap();
-            assert!(card.bottom() < design.top() && design.bottom() < standup.top());
-            assert!(node_bounds(&output, "Open #planning").is_none());
-            assert!(node_bounds(&output, "Open #random").is_none());
-            for text in ["Maya, Alex and 3 more", "Kai, Rosa and Theo"] {
-                assert!(shown.contains(&text), "{sidebar}: {text}");
+            // Every other live room keeps its row, in list order rather
+            // than busiest first, with a card of who is there beneath.
+            let rooms = card_rects(&output, super::ROOM_CARD);
+            assert_eq!(rooms.len(), 4, "{sidebar}: {rooms:?}");
+            assert!(card.bottom() < rooms[0].top());
+            for ((name, count, people), room) in [
+                ("design", 5, "Maya, Alex and 3 more"),
+                ("planning", 2, "Lee and Ana"),
+                ("random", 1, "Noor"),
+                ("standup", 3, "Kai, Rosa and Theo"),
+            ]
+            .into_iter()
+            .zip(&rooms)
+            {
+                let row = node_bounds(&output, name).unwrap();
+                assert!(
+                    room.contains_rect(row),
+                    "{sidebar}: #{name}'s row heads its card"
+                );
+                assert!(
+                    row.contains_rect(node_bounds(&output, &format!("{count} in voice")).unwrap())
+                );
+                let names = text_position(&output, people);
+                assert!(
+                    room.contains(names) && names.y > row.bottom(),
+                    "{sidebar}: {people}"
+                );
+                assert!(node_bounds(&output, &format!("Switch to #{name}")).is_some());
             }
-            let fold = node_center(&output, "2 more live: #planning, #random");
-            click(&mut app, &context, fold);
-            let open = render(&mut app, &context, vec![]);
-            let planning = node_bounds(&open, "Open #planning").unwrap();
-            let random = node_bounds(&open, "Open #random").unwrap();
-            assert!(standup.bottom() < planning.top() && planning.bottom() < random.top());
-            assert!(texts(&open).contains(&"Show less"));
-            click(&mut app, &context, node_center(&open, "Show less"));
-            let folded = render(&mut app, &context, vec![]);
-            assert!(node_bounds(&folded, "Open #planning").is_none());
-            // The tile opens the full list.
+            assert!(node_bounds(&output, "Open #design").is_none());
+            // Each room's card keeps the session's timer.
+            let timers = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .filter_map(|(_, node)| node.value())
+                .filter(|value| value.starts_with("Voice session duration: "))
+                .count();
+            assert!(timers >= 4, "{sidebar}: {timers}");
+            // The tile opens the full list on a right-click, none expanded.
             click(&mut app, &context, tile.center());
+            assert!(
+                app.call_list.is_none(),
+                "a click on the tile opens the chat"
+            );
+            secondary_click(&mut app, &context, tile.center());
+            assert_eq!(app.call_list, Some(super::CallList { audio: None }));
             let list = render(&mut app, &context, vec![]);
             assert!(texts(&list).contains(&"In #general · 12 people"));
             assert!(texts(&list).contains(&"Rosa"));
         }
+    }
+
+    #[test]
+    fn narrow_strip_shows_the_cards_faces_in_its_order_without_who_speaks() {
+        for (people, faces, more) in [
+            (3, 3, None),
+            (5, 5, None),
+            (6, 4, Some(2)),
+            (12, 4, Some(8)),
+        ] {
+            let (context, mut app) = fixture("parity-voice-strip-narrow");
+            app.voice.participants.truncate(people);
+            // The card, beside a wide conversation.
+            render(&mut app, &context, vec![]);
+            let wide = render(&mut app, &context, vec![]);
+            let card = card_rects(&wide, super::LIVE_CARD)[0];
+            let card_faces = face_labels(&wide, card);
+            assert_eq!(card_faces.len(), people.min(10), "{people}: {card_faces:?}");
+            // The strip under a narrow chat header.
+            let narrow = |app: &mut CaperApp| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(390.0, 844.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |context| app.shell(context),
+                )
+            };
+            narrow(&mut app);
+            let output = narrow(&mut app);
+            assert!(!app.navigation_open);
+            let strip = node_bounds(&output, "Voice in #general: show the call").unwrap();
+            let strip_faces = face_labels(&output, strip);
+            // The same people in the same order: everyone up to five, else
+            // the first four and a tile for the rest.
+            assert_eq!(strip_faces[..faces], card_faces[..faces], "{people}");
+            match more {
+                Some(more) => {
+                    assert_eq!(strip_faces.len(), faces + 1, "{people}: {strip_faces:?}");
+                    assert_eq!(strip_faces[faces], format!("{more} more in the call"));
+                    assert!(texts(&output).contains(&format!("+{more}").as_str()));
+                }
+                None => assert_eq!(strip_faces, card_faces, "{people}"),
+            }
+            // Alex speaks: his ring shows, never his name, on the card or
+            // the strip.
+            assert!(strip_faces.contains(&"Alex, speaking".to_owned()));
+            for shown in [texts_in(&wide, card), texts_in(&output, strip)] {
+                assert!(
+                    !shown
+                        .iter()
+                        .any(|text| text.contains("is speaking") || *text == "Alex"),
+                    "{people}: {shown:?}"
+                );
+            }
+            // While connecting, the strip says so instead.
+            if people == 3 {
+                let Phase::Connected(call) = app.voice.state.phase.clone() else {
+                    panic!("the fixture's call is connected");
+                };
+                app.voice.state.phase = Phase::Reconnecting(call);
+                let output = narrow(&mut app);
+                assert!(texts(&output).contains(&"Reconnecting…"));
+            }
+        }
+    }
+
+    #[test]
+    fn collapsing_channels_hides_quiet_rows_but_keeps_live_ones_in_order() {
+        let (context, mut app) = fixture("parity-voice-rosters");
+        app.token = Some("fixture-only".into());
+        // Your call in #planning; Maya and Alex in #design; #general quiet.
+        let (call, _) = app.voice_target("chan00000003").unwrap();
+        app.voice.active_space = Some("space0000001".into());
+        app.voice.state.phase = Phase::Connected(call);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        for name in ["general", "design", "planning"] {
+            assert!(node_bounds(&output, name).is_some(), "{name}");
+        }
+        click(&mut app, &context, node_center(&output, "Toggle channels"));
+        assert!(!app.channels_expanded);
+        let collapsed = render(&mut app, &context, vec![]);
+        assert!(
+            node_bounds(&collapsed, "general").is_none(),
+            "quiet rows fold away"
+        );
+        let design = node_bounds(&collapsed, "design").expect("the live room stays");
+        let planning = node_bounds(&collapsed, "planning").expect("your call stays");
+        assert!(design.bottom() < planning.top(), "in list order");
+        assert!(card_rects(&collapsed, super::ROOM_CARD)[0].contains_rect(design));
+        assert!(card_rects(&collapsed, super::LIVE_CARD)[0].contains_rect(planning));
+        assert!(node_bounds(&collapsed, "Join #design").is_none());
+        assert!(node_bounds(&collapsed, "Switch to #design").is_some());
+        assert!(node_bounds(&collapsed, "Leave voice").is_some());
+        // Once nobody is in voice there, collapsing hides it too.
+        app.voice.leave();
+        app.channel_rosters.clear();
+        let quiet = render(&mut app, &context, vec![]);
+        for name in ["general", "design", "planning"] {
+            assert!(node_bounds(&quiet, name).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn voice_without_a_row_here_sits_above_the_channels() {
+        // A call in another space keeps its own card above this one's list.
+        let (context, mut app) = fixture("parity-voice-elsewhere");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let shown = texts(&output);
+        assert!(!shown.contains(&"Live now"));
+        let card = card_rects(&output, super::LIVE_CARD)[0];
+        let channels = text_position(&output, "Channels");
+        assert!(card.bottom() < channels.y, "{card:?} above {channels:?}");
+        let link = node_bounds(&output, "Open #lounge in TEST FIXTURE Night Shift")
+            .expect("the call's heading");
+        assert!(card.contains_rect(link));
+        assert!(shown.contains(&"#lounge") && shown.contains(&"You're in · 3"));
+        // The list's rows stay plain rows.
+        for name in ["general", "design", "planning"] {
+            assert!(
+                !card.intersects(node_bounds(&output, name).unwrap()),
+                "{name}"
+            );
+        }
+        // Collapsing the list leaves it be.
+        app.channels_expanded = false;
+        let collapsed = render(&mut app, &context, vec![]);
+        assert!(node_bounds(&collapsed, "Leave voice").is_some());
+        assert!(node_bounds(&collapsed, "general").is_none());
+        // A click on it opens the call's chat in its own space.
+        click(
+            &mut app,
+            &context,
+            egui::pos2(card.left() + 5.0, card.center().y),
+        );
+        let target = app.navigation_target.clone().expect("the call's chat");
+        assert_eq!(target.space.as_deref(), Some("fixture-space-elsewhere"));
+        assert_eq!(target.channel.as_deref(), Some("fixture-channel-elsewhere"));
+
+        // A visited channel's live room has no row either.
+        let (context, mut app) = fixture("parity-feedback-visit");
+        let visited = "fixture-visited-channel".to_owned();
+        let visit = app.visit.as_mut().unwrap();
+        visit.channel.clone_from(&visited);
+        visit.name = "plans".into();
+        app.selected_channel = Some(visited.clone());
+        app.selected_direct = Some(visited.clone());
+        app.channel_rosters.insert(
+            visited.clone(),
+            vec![crate::model::VoiceOccupant {
+                id: "fixture-maya".into(),
+                avatar_id: Some(15),
+                avatar_asset: None,
+                avatar_url: None,
+                name: "Maya".into(),
+                muted: false,
+                deafened: false,
+            }],
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let room = card_rects(&output, super::ROOM_CARD)[0];
+        assert!(room.bottom() < text_position(&output, "Channels").y);
+        assert!(room.contains_rect(node_bounds(&output, "Open #plans").unwrap()));
+        assert!(texts_in(&output, room).contains(&"Maya"));
+        assert!(!texts(&output).contains(&"Live now"));
+        // It is the open conversation: a click there changes nothing.
+        click(
+            &mut app,
+            &context,
+            egui::pos2(room.left() + 4.0, room.center().y),
+        );
+        assert!(app.navigation_target.is_none());
+        assert_eq!(app.selected_channel.as_deref(), Some(visited.as_str()));
     }
 
     #[test]
@@ -38745,40 +39468,6 @@ mod tests {
         assert_eq!(
             ids(&super::in_call_order(people, &order, "me")),
             ["me", "z", "a"]
-        );
-    }
-
-    #[test]
-    fn live_rooms_sort_busiest_first_then_by_name_and_fold_by_name() {
-        let room = |name: &str, count: usize| super::LiveRoom {
-            id: name.into(),
-            name: name.into(),
-            private: false,
-            people: (0..count)
-                .map(|index| crate::model::VoiceOccupant {
-                    id: format!("{name}-{index}"),
-                    avatar_id: None,
-                    avatar_asset: None,
-                    avatar_url: None,
-                    name: format!("Person {index}"),
-                    muted: false,
-                    deafened: false,
-                })
-                .collect(),
-        };
-        let mut rooms = vec![
-            room("random", 1),
-            room("design", 5),
-            room("planning", 2),
-            room("standup", 5),
-            room("art", 2),
-        ];
-        super::sort_live_rooms(&mut rooms);
-        let names: Vec<_> = rooms.iter().map(|room| room.name.as_str()).collect();
-        assert_eq!(names, ["design", "standup", "art", "planning", "random"]);
-        assert_eq!(
-            super::folded_room_names(&rooms[2..]),
-            "#art, #planning, #random"
         );
     }
 
