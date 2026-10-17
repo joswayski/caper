@@ -34,6 +34,13 @@ class PicturesTest {
         assertNull(gifSize("GIF89a".toByteArray(Charsets.US_ASCII) + byteArrayOf(1, 0, 1)))
     }
 
+    @Test fun `gifs upload unchanged at any size within 1024 on each side`() {
+        assertTrue(gifUploadsUnchanged(1024, 1024))
+        assertTrue(gifUploadsUnchanged(480, 480))
+        assertFalse(gifUploadsUnchanged(1025, 480))
+        assertFalse(gifUploadsUnchanged(480, 1025))
+        assertFalse(gifUploadsUnchanged(0, 480))
+    }
 
     @Test fun `stills crop to the centered square and scale to at most 512`() {
         assertEquals(SquareCrop(420, 0, 3024), squareCrop(3864, 3024))
@@ -73,6 +80,7 @@ class PicturesTest {
         val avatar = PictureTarget.Avatar
         val icon = PictureTarget.SpaceIcon("space0000001")
         assertEquals("Use a PNG, JPEG, WebP or GIF picture.", pictureError(ApiException(400, "unsupported", "picture_type"), avatar))
+        assertEquals("Pictures can be up to 1024 × 1024.", pictureError(ApiException(400, "invalid dimensions"), avatar))
         assertEquals("That picture is too large. Try another one.", pictureError(ApiException(413, "too large", "picture_too_large"), avatar))
         assertEquals("That picture couldn’t be used. Try another one.", pictureError(ApiException(422, "bad", "picture_invalid"), icon))
         assertEquals("You’ve changed pictures too many times today. Try again later.", pictureError(ApiException(429, "slow down", "picture_rate_limited"), avatar))
@@ -80,6 +88,7 @@ class PicturesTest {
         assertEquals("Only the space owner can change its icon.", pictureError(ApiException(404, "resource not found"), icon))
         assertEquals("That’s no longer available.", pictureError(ApiException(404, "resource not found"), avatar))
         assertEquals("The upload didn’t finish. Try again.", pictureError(ApiException(409, "upload not finished"), avatar))
+        assertEquals(PicturePolicy.GIF_UNREADABLE, pictureError(PictureException(PicturePolicy.GIF_UNREADABLE), avatar))
         assertEquals("Storage refused the upload (403).", pictureError(UploadException("Storage refused the upload (403)."), avatar))
         assertEquals("Couldn’t reach Caper. Check your connection.", pictureError(IOException("reset"), avatar))
     }

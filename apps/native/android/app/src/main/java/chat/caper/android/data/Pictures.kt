@@ -7,18 +7,22 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 
 /**
- * Custom profile pictures and space icons: GIFs upload byte for byte, whatever their size or
- * shape, so they keep animating; every other picture becomes a centered square of at most
- * 512 px, encoded as WebP. The server re-checks the type and that it is a real picture.
+ * Custom profile pictures and space icons: GIFs keep animating (unchanged at any byte size
+ * within 1024 × 1024, else shrunk by [GifShrink]); every other picture becomes a centered square of at most 512 px,
+ * encoded as WebP. The server
+ * re-checks size, type and real pixel dimensions before applying one.
  */
 object PicturePolicy {
     /** Re-encoded stills step down in quality to fit this (a 512 px WebP always does). */
     const val STILL_MAX_BYTES = 1024L * 1024
+    /** Neither side of a stored picture may exceed this. */
+    const val MAX_SIDE = 1024
     /** Re-encoded pictures are squares of at most this many pixels. */
     const val TARGET_EDGE = 512
     /** WebP quality, then fallbacks for the (unlikely) picture still over [STILL_MAX_BYTES]. */
     val QUALITIES = listOf(90, 75, 60)
 
+    const val GIF_UNREADABLE = "That GIF couldn’t be opened. Try another one."
     const val UNUSABLE = "That picture couldn’t be used. Try another one."
 }
 
@@ -49,6 +53,10 @@ fun gifSize(header: ByteArray): Pair<Int, Int>? {
     val height = (header[8].toInt() and 0xFF) or ((header[9].toInt() and 0xFF) shl 8)
     return width to height
 }
+
+/** Whether a GIF of header size [width] × [height] uploads byte for byte, whatever its size; a wider or taller one is shrunk. */
+fun gifUploadsUnchanged(width: Int, height: Int): Boolean =
+    width in 1..PicturePolicy.MAX_SIDE && height in 1..PicturePolicy.MAX_SIDE
 
 /** The centered square of a picture: its [left] and [top] offsets and its [side]. */
 data class SquareCrop(val left: Int, val top: Int, val side: Int)
@@ -95,6 +103,7 @@ fun pictureError(error: Throwable, target: PictureTarget): String = when (error)
         error.status == 503 -> "Picture uploads aren’t available right now."
         error.status == 409 -> "The upload didn’t finish. Try again."
         error.status == 404 && target is PictureTarget.SpaceIcon -> "Only the space owner can change its icon."
+        error.status == 400 -> "Pictures can be up to 1024 × 1024."
         else -> friendlyError(error)
     }
     else -> friendlyError(error)

@@ -1204,6 +1204,13 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         (StatusCode::BAD_REQUEST, Some("picture_type"))
     );
     assert_eq!(
+        create_as(&owner, picture("avatar", "image/gif", 100, 1025))
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
         create_as(&outsider, picture("spaceIcon", "image/gif", 100, 100))
             .await
             .unwrap_err()
@@ -1313,15 +1320,15 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         StatusCode::NO_CONTENT
     );
 
-    // No pixel limit: a 4000 px wide picture applies as it is.
-    let (_, Json(wide)) = create_as(&owner, picture("avatar", "image/png", 64, 100))
+    // Real pixel size comes from the stored bytes, not the reservation.
+    let (_, Json(huge)) = create_as(&owner, picture("avatar", "image/png", 64, 100))
         .await
         .unwrap();
-    put(&wide, "upload", &sized_png(4000, 10, 64)).await;
-    let wide_id = wide["id"].as_str().unwrap().to_owned();
+    put(&huge, "upload", &sized_png(4000, 10, 64)).await;
+    let huge_id = huge["id"].as_str().unwrap().to_owned();
     assert_eq!(
-        complete_as(&owner, &wide_id).await.unwrap().0["account"]["avatarAsset"],
-        wide_id.as_str()
+        code(complete_as(&owner, &huge_id).await.unwrap_err()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("picture_invalid"))
     );
     let (_, Json(fake)) = create_as(&owner, picture("avatar", "image/png", 6, 10))
         .await
@@ -1341,7 +1348,7 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(current.as_deref(), Some(wide_id.as_str()));
+    assert_eq!(current.as_deref(), Some(second_id.as_str()));
 
     // Space icons apply to spaces the uploader still owns.
     let (_, Json(icon)) = create_as(&owner, picture("spaceIcon", "image/png", 64, 256))
@@ -1398,9 +1405,9 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
     .execute(&pool)
     .await
     .unwrap();
-    // One rejected, one cancelled, one orphaned by ownership, one abandoned.
-    assert_eq!(purge(&assets).await.unwrap(), 4);
-    for kept in [&first_id, &second_id, &wide_id, &icon_id] {
+    // Two rejected, one cancelled, one orphaned by ownership, one abandoned.
+    assert_eq!(purge(&assets).await.unwrap(), 5);
+    for kept in [&first_id, &second_id, &icon_id] {
         assert!(store.lock().unwrap().contains_key(&original_key(kept)));
         let deleted: bool = sqlx::query_scalar(
             "SELECT deleted_at IS NOT NULL FROM public.assets WHERE external_id=$1",
@@ -1451,8 +1458,8 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         .iter()
         .find(|member| member["id"] == owner.user.external_id.as_str())
         .unwrap();
-    assert_eq!(owner_entry["avatarAsset"], wide_id.as_str());
-    assert_eq!(owner_entry["avatarUrl"], signed(&wide_id));
+    assert_eq!(owner_entry["avatarAsset"], second_id.as_str());
+    assert_eq!(owner_entry["avatarUrl"], signed(&second_id));
     let team = members
         .iter()
         .find(|member| member["id"] != owner.user.external_id.as_str())
@@ -1497,7 +1504,7 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         crate::chat::history_with(&pool, &channel, None, Some(owner.user.id), Some(&signer))
             .await
             .unwrap();
-    assert_eq!(author(history)["avatarAsset"], wide_id.as_str());
+    assert_eq!(author(history)["avatarAsset"], second_id.as_str());
 
     // Removing returns to the same saved mascot; only owners clear icons.
     let removed = crate::pictures::remove_avatar(State(state.clone()), Extension(owner.clone()))

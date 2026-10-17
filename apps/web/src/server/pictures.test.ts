@@ -6,6 +6,7 @@ import { getRememberedAccount, subscribeAccount, withAccountProfile, type Accoun
 import { PictureError, preparePicture, uploadAvatar, uploadPicture } from "../account/picture-upload.ts";
 import {
   gifSize,
+  gifUploadsUnchanged,
   pictureEdge,
   pictureErrorMessage,
   pictureFailed,
@@ -39,6 +40,16 @@ test("GIFs are recognised by their magic bytes and logical screen size, not thei
   assert.equal(gifSize(gif(10, 10).subarray(0, 9)), undefined);
 });
 
+test("GIFs upload unchanged at any byte size within 1024 × 1024; wider or taller ones are shrunk", () => {
+  assert.equal(gifUploadsUnchanged({ width: 1024, height: 1024 }), true);
+  for (const [width, height] of [
+    [1025, 10],
+    [10, 1025],
+    [0, 10],
+  ])
+    assert.equal(gifUploadsUnchanged({ width, height }), false);
+});
+
 test("stills are center-cropped square and scaled to their short edge, at most 512", () => {
   assert.deepEqual(squareCrop(1200, 800), { x: 200, y: 0, side: 800 });
   assert.deepEqual(squareCrop(801, 1001), { x: 0, y: 100, side: 801 });
@@ -59,7 +70,7 @@ test("API errors read as friendly sentences", () => {
     message(400, { error: "pictures must be PNG, JPEG, WebP or GIF", code: "picture_type" }),
     pictureMessages.type,
   );
-  assert.equal(message(400, { error: "invalid media dimensions" }), pictureMessages.invalid);
+  assert.equal(message(400, { error: "width and height must be 1-1024" }), pictureMessages.dimensions);
   assert.equal(message(413, { code: "picture_too_large" }), pictureMessages.serverTooLarge);
   assert.equal(message(429, { code: "picture_rate_limited" }), pictureMessages.rateLimited);
   assert.equal(message(422, { code: "picture_invalid" }), "That picture couldn’t be used. Try another one.");
@@ -200,7 +211,7 @@ test("avatars lay a custom picture over the mascot, which stays for loading and 
   resetPicturesForTests();
 });
 
-test("GIFs are prepared unchanged at any size; empty GIFs and undecodable files fail before any upload", async () => {
+test("GIFs are prepared unchanged; unreadable GIFs and undecodable files fail before any upload", async () => {
   const animated = new Blob([gif(480, 480)], { type: "" });
   const prepared = await preparePicture(animated);
   assert.equal(prepared.blob, animated);
@@ -208,11 +219,9 @@ test("GIFs are prepared unchanged at any size; empty GIFs and undecodable files 
     { ...prepared, blob: undefined },
     { blob: undefined, contentType: "image/gif", width: 480, height: 480 },
   );
-  // Any size or shape goes up byte for byte; only an empty logical screen is refused.
-  const wide = new Blob([gif(4000, 10)]);
-  assert.equal((await preparePicture(wide)).blob, wide);
-  await assert.rejects(preparePicture(new Blob([gif(0, 10)])), (error: unknown) => {
-    return error instanceof PictureError && error.message === pictureMessages.invalid;
+  // Too big to keep unchanged, and no frames to shrink.
+  await assert.rejects(preparePicture(new Blob([gif(2048, 10)])), (error: unknown) => {
+    return error instanceof PictureError && error.message === pictureMessages.gifUnreadable;
   });
   // Node has no image decoder, like a browser given HEIC it can't open.
   await assert.rejects(preparePicture(new Blob([new Uint8Array(64)], { type: "image/heic" })), (error: unknown) => {
