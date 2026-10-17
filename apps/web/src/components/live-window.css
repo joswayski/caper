@@ -596,7 +596,7 @@
   width: 30px;
   height: 16px;
 }
-/* Just two rows now that voice sits in Live now: keep them whole; on short
+/* Just two rows, one of them #general's live card: keep them whole; on short
    screens the sidebar scrolls below them, as in the app. */
 .sim-sidebar .sim-channel-list {
   flex: none;
@@ -614,7 +614,8 @@
     .member-list-toggle,
     .chat-reaction,
     .chat-thread-summary,
-    .chat-edited
+    .chat-edited,
+    .live-card
   ) {
   cursor: inherit;
 }
@@ -645,7 +646,7 @@
   gap: 7px;
   min-width: 0;
 }
-/* Voice lives in the sidebar's Live now, as in the app; the header keeps only Members. */
+/* Voice lives in the sidebar's live cards, as in the app; the header keeps only Members. */
 .sim-chat > .chat-heading > .member-list-toggle {
   margin-left: auto;
 }
@@ -780,7 +781,7 @@
   }
 }
 
-/* Touch screens see the same scaled desktop canvas: keep Live now's desktop sizes. */
+/* Touch screens see the same scaled desktop canvas: keep the live cards' desktop sizes. */
 @media (hover: none), (pointer: coarse) {
   .sim-demo .live-join {
     height: 30px;

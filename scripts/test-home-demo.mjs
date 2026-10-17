@@ -68,8 +68,8 @@ const memberCount = () =>
   evaluate(
     'return Number(document.querySelector(".member-list-toggle").getAttribute("aria-label").match(/(\\d+) online/)[1])',
   );
-// Live now, as in the app: your call card's faces while Maya is in voice, or the
-// room card's (first three) faces while she steps out.
+// As in the app, #general's row is a live card: your call card's faces while Maya is
+// in voice, or the room card's (first three) faces while she steps out.
 const voices = () =>
   evaluate(
     `return [...document.querySelectorAll(".live-call .live-face .sim-avatar, .live-room .live-stack .sim-avatar")].map(el => el.getAttribute("aria-label").replace("'s caper avatar", ""))`,
@@ -81,18 +81,19 @@ const speakers = () =>
 const checkVoiceSummary = (people) => {
   const inCall = people[0] === "Maya";
   const summary = evaluate(`
-    const card = document.querySelector('.live-now .live-card');
-    const mark = document.querySelector('.sim-channel .channel-live');
+    const card = document.querySelector('.sim-channel-list .live-card');
+    const mark = card.querySelector('.sim-channel .channel-live');
     const faces = [...card.querySelectorAll('.live-avatar')];
     const bounds = card.getBoundingClientRect();
     return {
       card: card.classList.contains('live-call') ? 'call' : 'room',
+      row: card.querySelector('.channel-select > span').textContent,
       avatars: faces.filter(el => el.getClientRects().length > 0).map(el => el.querySelector('.sim-avatar').getAttribute('aria-label')),
       status: card.querySelector('.live-status')?.textContent ?? null,
       names: card.querySelector('.live-names')?.textContent ?? null,
       chip: card.querySelector('.live-chip')?.textContent ?? null,
       join: card.querySelector('.live-join')?.textContent ?? null,
-      mark: [mark.getAttribute('aria-label'), mark.textContent, mark.hasAttribute('data-active')],
+      mark: mark?.textContent ?? null,
       contained: faces.every(el => { const r = el.getBoundingClientRect(); return r.left >= bounds.left && r.right <= bounds.right && r.top >= bounds.top && r.bottom <= bounds.bottom; }),
       unframedIdleAvatars: faces.filter(el => !el.hasAttribute('data-speaking')).every(el => getComputedStyle(el).boxShadow === 'none' || getComputedStyle(el).boxShadow.endsWith(' 0px 0px 0px 2px')),
       speakingRings: faces.filter(el => el.hasAttribute('data-speaking')).every(el => getComputedStyle(el).boxShadow.includes('rgb(74, 168, 107) 0px 0px 0px 4px')),
@@ -104,6 +105,7 @@ const checkVoiceSummary = (people) => {
     summary,
     {
       card: inCall ? "call" : "room",
+      row: "general",
       avatars: shown.map((name) => `${name}'s caper avatar`),
       status: inCall ? `You’re in · ${people.length}` : null,
       names: inCall
@@ -115,12 +117,13 @@ const checkVoiceSummary = (people) => {
             : people.join(" and "),
       chip: !inCall && people.length > 3 ? `+${people.length - 3}` : null,
       join: inCall ? null : "Join",
-      mark: [`${people.length} in voice`, String(people.length), inCall],
+      // Your call's row shows its status instead of the room's count.
+      mark: inCall ? null : String(people.length),
       contained: true,
       unframedIdleAvatars: true,
       speakingRings: true,
     },
-    "Live now shows everyone in Maya's call (or the room's first faces with Join), ringing speakers, and the row's live count",
+    "#general's card shows everyone in Maya's call (or the room's first faces, its count and Join), ringing speakers",
   );
 };
 const pointFor = (selector) =>
@@ -512,9 +515,9 @@ try {
   );
   assert.ok(
     evaluate(
-      'const live = document.querySelector(".sim-sidebar .live-now"), channels = document.querySelector(".sim-sidebar .sim-section-title"); return live.compareDocumentPosition(channels) & Node.DOCUMENT_POSITION_FOLLOWING && live.querySelector(".live-now-heading").textContent === "Live now";',
+      'return !document.querySelector(".sim-sidebar :is(.live-now, .live-now-heading, .live-speaker)") && !document.querySelector(".sim-sidebar").textContent.includes("Live now") && !!document.querySelector(".sim-channel-list > li > .live-card");',
     ),
-    "Live now sits above the channels, as in the app",
+    "The live card grows from #general's row, with no Live now heading or speaker line, as in the app",
   );
   assert.ok(!evaluate('return document.querySelector(".sim-sidebar").textContent.includes("In voice")'));
   assert.equal(
@@ -541,7 +544,7 @@ try {
   assert.deepEqual(speakers(), ["Maya", "Theo", "June"], "Multiple people speak simultaneously");
   assert.deepEqual(
     evaluate(
-      'return [...document.querySelectorAll(".live-now :is(.live-face, .voice-hangup, .live-toggle), .channel-live")].map(el => el.tagName)',
+      'return [...document.querySelectorAll(".live-card :is(.live-face, .voice-hangup, .live-toggle, .live-join), .channel-live")].map(el => el.tagName)',
     ).every((tag) => tag === "SPAN"),
     true,
     "The illustration's voice controls are not real buttons",
@@ -688,7 +691,7 @@ try {
   assert.equal(voices().length, 6);
   checkVoiceSummary(["Maya", "Theo", "June", "Leo", "Noor", "Sam"]);
   assert.equal(
-    evaluate('return document.querySelectorAll(".live-now .participant-country").length'),
+    evaluate('return document.querySelectorAll(".live-card .participant-country").length'),
     0,
     "Joining/rejoining demo participants have no flags",
   );
@@ -774,7 +777,7 @@ try {
     "PASS: pinned edits, thread avatars/counts and live-forward replies arrive on schedule and persist across loops; peer DMs and closed members match the app",
   );
   console.log(
-    "PASS: general/feedback channels, no join notices/hints/actions, Live now call and room cards with a live row count, simultaneous speakers, burst messages and multi-person typing",
+    "PASS: general/feedback channels, no join notices/hints/actions, #general's call and room cards in its row with no Live now heading, simultaneous speakers, burst messages and multi-person typing",
   );
 
   // Resize after history checks: changing the scroll viewport can stop following.
@@ -789,7 +792,7 @@ try {
         const sidebar = document.querySelector('.sim-sidebar');
         const chat = document.querySelector('.sim-chat');
         const scene = document.querySelector('.live-scene');
-        const desktopChrome = ['.sim-section-title', '.sim-brand', '.sim-direct', '.browse-channels', '.live-now', '.member-list-toggle', '.live-call .live-controls'];
+        const desktopChrome = ['.sim-section-title', '.sim-brand', '.sim-direct', '.browse-channels', '.live-card', '.member-list-toggle', '.live-call .live-controls'];
         return rail.offsetWidth > 0 && sidebar.offsetWidth > 0 && chat.clientWidth >= 320
           && rail.offsetTop === sidebar.offsetTop && sidebar.offsetTop === chat.offsetTop
           && rail.offsetLeft < sidebar.offsetLeft && sidebar.offsetLeft < chat.offsetLeft
