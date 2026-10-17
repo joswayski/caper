@@ -681,6 +681,10 @@ struct MentionCard {
 /// Manage space's "Invite link" section: the open space's live links and the
 /// next link's choices.
 struct InviteLinkPanel {
+    /// Panel lifetime and latest mutation fence for concurrently executed requests.
+    request: u64,
+    /// Code, regenerate (rather than revoke), and initial Cancel focus.
+    confirmation: Option<(String, bool, bool)>,
     default_link: Option<invites::InviteLink>,
     regenerating: bool,
     settings_open: bool,
@@ -707,6 +711,8 @@ struct InviteLinkPanel {
 impl Default for InviteLinkPanel {
     fn default() -> Self {
         Self {
+            request: 0,
+            confirmation: None,
             default_link: None,
             regenerating: false,
             settings_open: false,
@@ -4506,20 +4512,36 @@ impl CaperApp {
                     Err(error) => self.invite_links.error = Some(error),
                 }
                 self.invite_links.regenerating = false;
+                self.invite_links.loading = true;
+                self.account_op(AccountOperation::LoadInviteLinks {
+                    space,
+                    request: self.invite_links.request,
+                });
             }
-            AccountResult::InviteLinks { space, result }
-                if self.invite_panel_is_current(&space) =>
-            {
+            AccountResult::InviteLinks {
+                space,
+                request,
+                result,
+            } if self.invite_panel_is_current(&space) && request == self.invite_links.request => {
                 let panel = &mut self.invite_links;
                 panel.loading = false;
                 match result {
-                    Ok(links) => panel.links = links,
+                    Ok(links) => {
+                        if panel.default_link.as_ref().is_some_and(|default| {
+                            !links.iter().any(|link| link.code == default.code)
+                        }) {
+                            panel.default_link = None;
+                        }
+                        panel.links = links;
+                    }
                     Err(error) => panel.error = Some(error),
                 }
             }
-            AccountResult::InviteLinkCreated { space, result }
-                if self.invite_panel_is_current(&space) =>
-            {
+            AccountResult::InviteLinkCreated {
+                space,
+                request,
+                result,
+            } if self.invite_panel_is_current(&space) && request == self.invite_links.request => {
                 let panel = &mut self.invite_links;
                 panel.creating = false;
                 match result {
@@ -4536,9 +4558,10 @@ impl CaperApp {
             }
             AccountResult::InviteLinkRevoked {
                 space,
+                request,
                 code,
                 result,
-            } if self.invite_panel_is_current(&space) => {
+            } if self.invite_panel_is_current(&space) && request == self.invite_links.request => {
                 self.invite_links.revoking.remove(&code);
                 match result {
                     Ok(()) => {
@@ -4556,7 +4579,7 @@ impl CaperApp {
                         // It may have expired or been revoked elsewhere: reload.
                         self.invite_links.error = Some(error);
                         self.invite_links.loading = true;
-                        self.account_op(AccountOperation::LoadInviteLinks { space });
+                        self.account_op(AccountOperation::LoadInviteLinks { space, request });
                     }
                 }
             }
@@ -4860,6 +4883,7 @@ impl CaperApp {
             self.invite_links.loading = true;
             self.account_op(AccountOperation::LoadInviteLinks {
                 space: space.clone(),
+                request: self.invite_links.request,
             });
             self.worker.send(Command::Admin {
                 generation: self.generation,
@@ -4904,6 +4928,8 @@ impl CaperApp {
         }
         self.invite_join.request = self.invite_join.request.wrapping_add(1);
         if let Some(space) = self.selected_space.clone() {
+            self.invite_links.request = self.invite_links.request.wrapping_add(1);
+            self.invite_links.loading = false;
             self.invite_links.creating = true;
             self.invite_links.error = None;
             self.account_op(AccountOperation::EnsureDefaultInviteLink {
@@ -4922,6 +4948,7 @@ impl CaperApp {
             .and_then(|detail| detail.channels.iter().find(|channel| !channel.private))
             .map(|channel| channel.id.clone());
         self.invite_links = InviteLinkPanel {
+            request: self.invite_links.request.wrapping_add(1),
             space: self.selected_space.clone(),
             channel,
             ..InviteLinkPanel::default()
@@ -18279,7 +18306,9 @@ impl CaperApp {
                     | Dialog::LeaveSpace { .. }
             );
         let mut close = context.input(|input| input.key_pressed(egui::Key::Escape))
-            && !egui::Popup::is_any_open(context);
+            && !egui::Popup::is_any_open(context)
+            && !(matches!(dialog, Dialog::InvitePeople | Dialog::ManageSpace)
+                && self.invite_links.confirmation.is_some());
         // A stray click outside must not throw away unsaved space or channel edits.
         let dismiss_on_backdrop = match &dialog {
             Dialog::Settings
@@ -19382,6 +19411,9 @@ impl CaperApp {
     }
 
     fn invite_people_dialog(&mut self, ui: &mut egui::Ui) {
+        if self.invite_link_confirmation(ui) {
+            return;
+        }
         ui.label("Anyone with this link can join. New links allow 100 joins for 30 days.");
         let channels = self.invite_channel_choices();
         let mut selected = self
@@ -19409,42 +19441,24 @@ impl CaperApp {
                 ui.label("Preparing invite link…");
             }
             ui.horizontal(|ui| {
-                let pending =
-                    self.invite_links.creating || !self.invite_links.revoking.is_empty();
+                let pending = self.invite_links.creating || !self.invite_links.revoking.is_empty();
                 if primary_button(ui, "Copy link", !pending).clicked() {
                     ui.ctx().copy_text(url);
                 }
                 ui.add_enabled_ui(!pending, |ui| {
                     ui.menu_button("More options", |ui| {
                         ui.set_max_width(280.0);
-                        ui.label("Regenerating stops the previous code from working. The new link allows 100 joins for 30 days.");
                         if ui.button("Regenerate link").clicked() {
                             ui.close();
-                            if let Some(space) = self.selected_space.clone() {
-                                self.invite_join.request = self.invite_join.request.wrapping_add(1);
-                                self.invite_links.creating = true;
-                                self.invite_links.regenerating = true;
-                                self.invite_links.error = None;
-                                self.account_op(AccountOperation::RegenerateInviteLink {
-                                    space,
-                                    code: link.code.clone(),
-                                    request: self.invite_join.request,
-                                });
-                            }
+                            self.invite_links.confirmation = Some((link.code.clone(), true, true));
                         }
-                        if ui.button("Link settings").clicked() {
+                        if ui.button("Custom links").clicked() {
                             self.invite_links.settings_open = !self.invite_links.settings_open;
                             ui.close();
                         }
                         if ui.button("Deactivate link").clicked() {
                             ui.close();
-                            if let Some(space) = self.selected_space.clone() {
-                                self.invite_links.revoking.insert(link.code.clone());
-                                self.account_op(AccountOperation::RevokeInviteLink {
-                                    space,
-                                    code: link.code.clone(),
-                                });
-                            }
+                            self.invite_links.confirmation = Some((link.code.clone(), false, true));
                         }
                     });
                 });
@@ -19455,6 +19469,9 @@ impl CaperApp {
             ui.label("Opening this dialog again prepares a new link. Existing members remain.");
             if primary_button(ui, "Create another link", true).clicked() {
                 self.ensure_default_invite_link();
+            }
+            if ui.button("Custom links").clicked() {
+                self.invite_links.settings_open = !self.invite_links.settings_open;
             }
         }
         if let Some(error) = &self.invite_links.error {
@@ -19493,13 +19510,16 @@ impl CaperApp {
     /// Manage space's "Invite link": the next link's choices, Create link, and
     /// the space's live links with Copy and Revoke.
     fn invite_link_section(&mut self, ui: &mut egui::Ui) {
+        if self.invite_link_confirmation(ui) {
+            return;
+        }
         if let Some(url) = self.invite_links.copy.take() {
             ui.ctx().copy_text(url);
         }
-        ui.label(bold("Invite link").size(14.0));
+        ui.label(bold("Custom links").size(14.0));
         ui.add_space(2.0);
         ui.label(
-            RichText::new("Anyone with the link can join this space.")
+            RichText::new("Create a separate invite link. This does not change the primary link or other shared links.")
                 .size(12.0)
                 .color(MUTED),
         );
@@ -19514,7 +19534,7 @@ impl CaperApp {
         if !channels.iter().any(|(id, _)| *id == panel.channel) {
             panel.channel = channels.first().and_then(|(id, _)| id.clone());
         }
-        let enabled = !panel.creating && panel.revoking.is_empty();
+        let enabled = !panel.loading && !panel.creating && panel.revoking.is_empty();
         let mut edited = false;
         ui.columns(3, |columns| {
             let ui = &mut columns[0];
@@ -19564,7 +19584,7 @@ impl CaperApp {
                         if panel.creating {
                             "Creating…"
                         } else {
-                            "Create link"
+                            "Create separate link"
                         },
                         enabled,
                     )
@@ -19584,10 +19604,13 @@ impl CaperApp {
             match parsed {
                 Err(error) => panel.error = Some(error.into()),
                 Ok((max_age, max_uses)) => {
+                    panel.request = panel.request.wrapping_add(1);
+                    panel.loading = false;
                     panel.creating = true;
                     panel.error = None;
                     let operation = AccountOperation::CreateInviteLink {
                         space,
+                        request: panel.request,
                         channel: panel.channel.clone(),
                         max_age,
                         max_uses,
@@ -19683,15 +19706,73 @@ impl CaperApp {
                 ui.ctx().copy_text(url);
                 self.invite_links.copied = Some((link.code.clone(), Instant::now()));
             }
-            if revoke && let Some(space) = self.selected_space.clone() {
-                self.invite_links.revoking.insert(link.code.clone());
-                self.invite_links.error = None;
+            if revoke {
+                self.invite_links.confirmation = Some((link.code, false, true));
+            }
+        }
+    }
+
+    /// Confirmation replaces the invite controls; opening it never sends a request.
+    fn invite_link_confirmation(&mut self, ui: &mut egui::Ui) -> bool {
+        let Some((code, regenerate, fresh)) = self.invite_links.confirmation.clone() else {
+            return false;
+        };
+        ui.label(bold(if regenerate {
+            "Regenerate link?"
+        } else {
+            "Deactivate link?"
+        }));
+        ui.label(
+            "The shared old URL will stop accepting new joins. Existing members stay in the space.",
+        );
+        if regenerate {
+            ui.label("The replacement link resets to 30 days and 100 joins.");
+        }
+        let (cancel, confirm) = dialog_buttons(
+            ui,
+            "Cancel",
+            if regenerate {
+                "Regenerate link"
+            } else {
+                "Deactivate link"
+            },
+            DANGER_TONE,
+            true,
+            true,
+        );
+        if fresh {
+            cancel.request_focus();
+            self.invite_links.confirmation = Some((code.clone(), regenerate, false));
+        }
+        if cancel.clicked() || ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.invite_links.confirmation = None;
+        } else if confirm.clicked()
+            && !confirm.double_clicked()
+            && let Some(space) = self.selected_space.clone()
+        {
+            self.invite_links.confirmation = None;
+            self.invite_links.request = self.invite_links.request.wrapping_add(1);
+            self.invite_links.loading = false;
+            self.invite_links.error = None;
+            if regenerate {
+                self.invite_join.request = self.invite_join.request.wrapping_add(1);
+                self.invite_links.creating = true;
+                self.invite_links.regenerating = true;
+                self.account_op(AccountOperation::RegenerateInviteLink {
+                    space,
+                    code,
+                    request: self.invite_join.request,
+                });
+            } else {
+                self.invite_links.revoking.insert(code.clone());
                 self.account_op(AccountOperation::RevokeInviteLink {
                     space,
-                    code: link.code,
+                    code,
+                    request: self.invite_links.request,
                 });
             }
         }
+        true
     }
 
     /// "Join with invite link": paste a link, preview its space, then join.
@@ -36384,6 +36465,99 @@ mod tests {
     }
 
     #[test]
+    fn invite_refresh_cannot_overwrite_mutations_or_reopened_panel() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.open_invite_people();
+        let space = app.selected_space.clone().unwrap();
+        let request = app.invite_links.request;
+        let link = app.fixture_invite_links().remove(0);
+        app.invite_links.default_link = Some(link.clone());
+        app.invite_links.links = vec![link.clone()];
+        app.account_result(crate::worker::AccountResult::InviteLinks {
+            space: space.clone(),
+            request: request.wrapping_sub(1),
+            result: Ok(vec![]),
+        });
+        assert_eq!(app.invite_links.default_link.as_ref(), Some(&link));
+        assert_eq!(app.invite_links.links, vec![link.clone()]);
+        app.account_result(crate::worker::AccountResult::InviteLinks {
+            space: space.clone(),
+            request,
+            result: Ok(vec![]),
+        });
+        assert!(
+            app.invite_links.default_link.is_none(),
+            "fresh list removes externally revoked default"
+        );
+        app.open_invite_people();
+        app.account_result(crate::worker::AccountResult::InviteLinkCreated {
+            space: space.clone(),
+            request,
+            result: Ok(link.clone()),
+        });
+        app.account_result(crate::worker::AccountResult::InviteLinks {
+            space,
+            request,
+            result: Ok(vec![link]),
+        });
+        assert!(
+            app.invite_links.links.is_empty(),
+            "old panel answers cannot resurrect links"
+        );
+        assert!(app.invite_links.copy.is_none());
+    }
+
+    #[test]
+    fn invite_confirmation_cancel_has_no_mutation() {
+        for (regenerate, key) in [false, true].into_iter().flat_map(|regenerate| {
+            [egui::Key::Enter, egui::Key::Escape].map(|key| (regenerate, key))
+        }) {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-desktop"),
+            );
+            app.reset_invite_links();
+            app.dialog = Some(Dialog::InvitePeople);
+            let link = app.fixture_invite_links().remove(0);
+            app.invite_links.default_link = Some(link.clone());
+            app.invite_links.confirmation = Some((link.code.clone(), regenerate, true));
+            let request = app.invite_links.request;
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            assert!(texts(&output).contains(&"Cancel"));
+            assert!(!app.invite_links.creating);
+            assert!(app.invite_links.revoking.is_empty());
+            render(
+                &mut app,
+                &context,
+                vec![egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            assert!(
+                app.invite_links.confirmation.is_none(),
+                "Enter initially chooses Cancel; Escape cancels only the confirmation"
+            );
+            assert!(matches!(app.dialog, Some(Dialog::InvitePeople)));
+            assert_eq!(app.invite_links.request, request);
+            assert!(!app.invite_links.creating);
+            assert!(app.invite_links.revoking.is_empty());
+            assert_eq!(app.invite_links.default_link.as_ref(), Some(&link));
+        }
+    }
+
+    #[test]
     fn default_invite_answers_are_fenced_and_never_copy_on_open_or_revoke() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -36445,6 +36619,7 @@ mod tests {
         assert!(!app.invite_links.creating);
         app.account_result(crate::worker::AccountResult::InviteLinkRevoked {
             space,
+            request: app.invite_links.request,
             code: link.code,
             result: Ok(()),
         });

@@ -13,6 +13,7 @@ import {
   useRole,
 } from "@floating-ui/react";
 import { Ban, ChevronDown, Copy, RefreshCw, Settings } from "lucide-react";
+import { Dialog } from "./Dialog";
 import {
   type Channel,
   createInviteLink,
@@ -111,7 +112,7 @@ function InviteLinkActions({
               </span>
             </button>
             <button type="button" onClick={() => choose(settings)}>
-              <Settings size={16} aria-hidden="true" /> Link settings
+              <Settings size={16} aria-hidden="true" /> Custom links
             </button>
             <button
               type="button"
@@ -150,6 +151,7 @@ export function InviteLinkManager({
   const [copied, setCopied] = useState<string>();
   const [error, setError] = useState<string>();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [confirmation, setConfirmation] = useState<{ action: "regenerate" | "deactivate"; code: string }>();
   const [now, setNow] = useState(Date.now);
   const ids = useId();
   useEffect(() => {
@@ -253,7 +255,8 @@ export function InviteLinkManager({
             <h3>Share an invite link</h3>
           </div>
           <p className="channel-name-guidance">
-            Up to {DEFAULT_INVITE_MAX_USES} people can join within {DEFAULT_INVITE_EXPIRY.amount} days of creation.
+            Anyone with this link can join this space. New links allow {DEFAULT_INVITE_MAX_USES} joins for{" "}
+            {DEFAULT_INVITE_EXPIRY.amount} days.
           </p>
           <label className="invite-link-destination" htmlFor={`${ids}-destination`}>
             Opens in
@@ -295,9 +298,9 @@ export function InviteLinkManager({
                   </button>
                   <InviteLinkActions
                     disabled={pending}
-                    regenerate={() => void regenerate(defaultLink.code)}
+                    regenerate={() => setConfirmation({ action: "regenerate", code: defaultLink.code })}
                     settings={() => setSettingsOpen(true)}
-                    deactivate={() => void deactivate(defaultLink.code)}
+                    deactivate={() => setConfirmation({ action: "deactivate", code: defaultLink.code })}
                   />
                 </div>
               </div>
@@ -321,7 +324,7 @@ export function InviteLinkManager({
           )}
           {!defaultLink && !pending && !settingsOpen && (
             <button type="button" onClick={() => setSettingsOpen(true)}>
-              Link settings
+              Custom links
             </button>
           )}
         </>
@@ -337,23 +340,7 @@ export function InviteLinkManager({
         hidden={prepareDefault && !settingsOpen}
         onToggle={(event) => setSettingsOpen(event.currentTarget.open)}
       >
-        <summary>Link settings</summary>
-        {defaultLink && (
-          <div className="invite-link-deactivate">
-            <p className="channel-name-guidance">
-              Deactivate this link to stop new joins. Existing members stay. Opening Invite people again prepares a new
-              link.
-            </p>
-            <button
-              type="button"
-              className="danger-outline"
-              disabled={pending}
-              onClick={() => void deactivate(defaultLink.code)}
-            >
-              Deactivate link
-            </button>
-          </div>
-        )}
+        <summary>Custom links</summary>
         <div className="dialog-section-heading">
           <h3>Create a separate link</h3>
         </div>
@@ -465,7 +452,11 @@ export function InviteLinkManager({
                   <button type="button" className="invite-link-copy" onClick={() => void copy(link.code)}>
                     {copied === link.code ? "Copied" : "Copy"}
                   </button>
-                  <button type="button" disabled={pending} onClick={() => void deactivate(link.code)}>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => setConfirmation({ action: "deactivate", code: link.code })}
+                  >
                     Deactivate
                   </button>
                 </span>
@@ -478,6 +469,37 @@ export function InviteLinkManager({
         <p className="sr-only" role="status">
           Invite link copied.
         </p>
+      )}
+      {confirmation && (
+        <Dialog
+          title={confirmation.action === "regenerate" ? "Regenerate invite link?" : "Deactivate invite link?"}
+          dismissOnBackdrop
+          onClose={() => setConfirmation(undefined)}
+        >
+          <div className="delete-confirmation">
+            <p>This shared URL will stop accepting new joins. Existing members stay.</p>
+            {confirmation.action === "regenerate" && <p>The replacement allows 100 joins for 30 days.</p>}
+            <p className="channel-name-guidance">Current link: {inviteUrl(confirmation.code)}</p>
+            <div className="space-dialog-actions">
+              <button type="button" className="secondary" data-initial-focus onClick={() => setConfirmation(undefined)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={pending}
+                onClick={(event) => {
+                  if (event.detail > 1) return;
+                  const { action, code } = confirmation;
+                  setConfirmation(undefined);
+                  void (action === "regenerate" ? regenerate(code) : deactivate(code));
+                }}
+              >
+                {confirmation.action === "regenerate" ? "Regenerate link" : "Deactivate link"}
+              </button>
+            </div>
+          </div>
+        </Dialog>
       )}
     </section>
   );

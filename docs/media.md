@@ -984,7 +984,10 @@ actual destination; clients list channels in API creation order.
 revokes the displayed code and creates a new code for the same public channel,
 with 30 full days and 100 available joins in one transaction. If the old destination
 became private or was deleted, regeneration and joining fall back to the oldest
-public channel. Failures leave the previous link intact;
+public channel. Regeneration and deactivation (including list revocation) require
+confirmation on every client. Cancel leaves the shared URL working; the warning
+explains that existing members stay and regeneration resets the limits.
+Failures leave the previous link intact;
 simultaneous regenerations of the same code mint only one replacement (the stale
 request returns 404). Other links and existing memberships are untouched. The
 newest matching link for each selected channel is used, so it cannot revert to an older
@@ -992,9 +995,9 @@ compatible link after regeneration, exhaustion or deactivation. Separate links
 created with exactly these settings are also eligible for selection. The UI shows remaining joins
 and remaining time, rather than presenting the initial lifetime as time left.
 
-**Link settings** in the options menu retains custom creation and management
-of other links. These settings create a separate link, not an edit to an existing
-one. Owners type the expiry as a number of minutes, hours or days (the API accepts
+**Custom links** in the options menu creates and manages separate links,
+not settings for the primary shared URL. Existing links keep their settings.
+Owners type the expiry as a number of minutes, hours or days (the API accepts
 any `maxAge` from 60 to 31,536,000 seconds) or choose Never, and optionally type max
 uses (1 to 10,000; empty is unlimited; spaces have no member cap). Custom forms
 also start at 30 days and 100 joins. The existing custom-create API still treats

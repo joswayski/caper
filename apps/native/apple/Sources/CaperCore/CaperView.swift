@@ -7583,6 +7583,8 @@ private struct DefaultInviteLinkSection: View {
     @State private var settingsExpanded = false
     @State private var customPending = false
     @State private var channelID: String?
+    @State private var confirmation: InviteLink?
+    @State private var confirmingRegenerate = false
 
     private var publicChannels: [Channel] { (model.detail?.channels ?? []).filter { !$0.private } }
     private var channelOptions: [InviteOption<String?>] {
@@ -7613,11 +7615,11 @@ private struct DefaultInviteLinkSection: View {
                     Button(copied ? "Copied" : "Copy link") { copy(link) }.buttonStyle(CaperPrimaryButton())
                         .accessibilityIdentifier("default-invite-link-copy")
                     Menu {
-                        Button("Regenerate link") { regenerate(link) }
+                        Button("Regenerate link") { confirmingRegenerate = true; confirmation = link }
                             .accessibilityIdentifier("default-invite-link-regenerate")
                         Text("The previous link stops working. The new link allows 100 joins for 30 days.")
-                        Button("Link settings") { settingsExpanded = true }
-                        Button("Deactivate link", role: .destructive) { deactivate(link) }
+                        Button("Custom links") { settingsExpanded = true }
+                        Button("Deactivate link", role: .destructive) { confirmingRegenerate = false; confirmation = link }
                             .accessibilityIdentifier("default-invite-link-deactivate")
                     } label: {
                         CaperIcon(name: "ellipsis", size: 16)
@@ -7643,7 +7645,7 @@ private struct DefaultInviteLinkSection: View {
             }
             if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
             if settingsExpanded || link == nil {
-                DisclosureGroup("Link settings", isExpanded: $settingsExpanded) {
+                DisclosureGroup("Custom links", isExpanded: $settingsExpanded) {
                     Text("Create a separate custom link. These settings do not edit existing links.")
                         .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     InviteLinksSection(model: model, mutationPending: $customPending, onRevoked: { code in
@@ -7655,6 +7657,18 @@ private struct DefaultInviteLinkSection: View {
         .task(id: model.detail?.space.id) {
             link = nil; deactivated = false; channelID = publicChannels.first?.id
             await prepare()
+        }
+        .alert(confirmingRegenerate ? "Regenerate link?" : "Deactivate link?", isPresented: Binding(
+            get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }
+        ), presenting: confirmation) { target in
+            Button("Cancel", role: .cancel) { confirmation = nil }
+            Button(confirmingRegenerate ? "Regenerate link" : "Deactivate link", role: .destructive) {
+                confirmation = nil
+                if confirmingRegenerate { regenerate(target) } else { deactivate(target) }
+            }
+        } message: { _ in
+            Text("The previous URL stops admitting new members. Existing members stay." +
+                 (confirmingRegenerate ? " The new link resets to 30 days and 100 joins." : ""))
         }
     }
 
@@ -7737,6 +7751,7 @@ private struct InviteLinksSection: View {
     /// The link whose Copy button reads "Copied".
     @State private var copied: String?
     @State private var copiedReset: Task<Void, Never>?
+    @State private var revokeTarget: InviteLink?
 
     private var publicChannels: [Channel] { (model.detail?.channels ?? []).filter { !$0.private } }
     private var unitOptions: [InviteOption<InviteExpiryUnit>] {
@@ -7751,15 +7766,16 @@ private struct InviteLinksSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Invite link").font(CaperTheme.font(14, weight: .bold))
+                Text("Create a custom link").font(CaperTheme.font(14, weight: .bold))
                 Text("Anyone with the link can join this space.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                Text("Create a separate link. Existing links keep their settings.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             }
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 10) { pickers }
                 VStack(alignment: .leading, spacing: 10) { pickers }
             }
             Button(pending == "create" ? "Creating…" : "Create link", action: create)
-                .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil)
+                .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil || loading)
                 .accessibilityIdentifier("invite-link-create")
             if let error {
                 Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
@@ -7773,6 +7789,14 @@ private struct InviteLinksSection: View {
         }
         .task(id: model.detail?.space.id) { await load() }
         .onDisappear { copiedReset?.cancel() }
+        .alert("Revoke link?", isPresented: Binding(
+            get: { revokeTarget != nil }, set: { if !$0 { revokeTarget = nil } }
+        ), presenting: revokeTarget) { target in
+            Button("Cancel", role: .cancel) { revokeTarget = nil }
+            Button("Revoke", role: .destructive) { revokeTarget = nil; revoke(target) }
+        } message: { _ in
+            Text("The previous URL stops admitting new members. Existing members stay.")
+        }
     }
 
     @ViewBuilder private var pickers: some View {
@@ -7838,8 +7862,8 @@ private struct InviteLinksSection: View {
             Spacer(minLength: 8)
             Button(copied == link.code ? "Copied" : "Copy") { copy(link) }.buttonStyle(CaperSecondaryButton())
                 .accessibilityLabel(copied == link.code ? "Copied" : "Copy invite link")
-            Button(pending == link.code ? "Revoking…" : "Revoke", role: .destructive) { revoke(link) }
-                .buttonStyle(CaperSecondaryButton()).disabled(pending != nil)
+            Button(pending == link.code ? "Revoking…" : "Revoke", role: .destructive) { revokeTarget = link }
+                .buttonStyle(CaperSecondaryButton()).disabled(pending != nil || loading)
         }
         .padding(10).background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
@@ -7847,15 +7871,16 @@ private struct InviteLinksSection: View {
     }
 
     private func load() async {
-        loading = true; error = nil
+        guard !loading, pending == nil else { return }
+        loading = true; mutationPending = true; error = nil
+        defer { loading = false; mutationPending = false }
         do { links = try await model.loadInviteLinks() }
         catch is CancellationError {}
         catch { self.error = FriendlyError.message(for: error) }
-        loading = false
     }
 
     private func create() {
-        guard pending == nil else { return }
+        guard pending == nil, !loading else { return }
         // Out-of-range options show beside their fields and aren't sent.
         let expiry = InviteLinks.expirySeconds(expiryNumber, unit: expiryUnit)
         let uses = InviteLinks.maxUses(maxUses)
@@ -7878,7 +7903,7 @@ private struct InviteLinksSection: View {
     }
 
     private func revoke(_ link: InviteLink) {
-        guard pending == nil else { return }
+        guard pending == nil, !loading else { return }
         pending = link.code; mutationPending = true; error = nil
         Task {
             defer { mutationPending = false }

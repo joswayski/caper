@@ -364,6 +364,7 @@ pub enum AccountOperation {
     /// An owner's live invite links for one space.
     LoadInviteLinks {
         space: String,
+        request: u64,
     },
     EnsureDefaultInviteLink {
         space: String,
@@ -377,12 +378,14 @@ pub enum AccountOperation {
     },
     CreateInviteLink {
         space: String,
+        request: u64,
         channel: Option<String>,
         max_age: Option<u32>,
         max_uses: Option<u32>,
     },
     RevokeInviteLink {
         space: String,
+        request: u64,
         code: String,
     },
     /// The "Join with invite link" preview and join; `request` drops answers
@@ -435,10 +438,12 @@ pub enum AccountResult {
     },
     InviteLinks {
         space: String,
+        request: u64,
         result: Result<Vec<InviteLink>, String>,
     },
     InviteLinkCreated {
         space: String,
+        request: u64,
         result: Result<InviteLink, String>,
     },
     DefaultInviteLink {
@@ -448,6 +453,7 @@ pub enum AccountResult {
     },
     InviteLinkRevoked {
         space: String,
+        request: u64,
         code: String,
         result: Result<(), String>,
     },
@@ -2060,9 +2066,10 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
                 result: result.map_err(text),
             }
         }
-        AccountOperation::LoadInviteLinks { space } => AccountResult::InviteLinks {
+        AccountOperation::LoadInviteLinks { space, request } => AccountResult::InviteLinks {
             result: api.invite_links(token, &space).map_err(text),
             space,
+            request,
         },
         AccountOperation::EnsureDefaultInviteLink {
             space,
@@ -2088,6 +2095,7 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
         },
         AccountOperation::CreateInviteLink {
             space,
+            request,
             channel,
             max_age,
             max_uses,
@@ -2096,11 +2104,17 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
                 .create_invite_link(token, &space, channel.as_deref(), max_age, max_uses)
                 .map_err(text),
             space,
+            request,
         },
-        AccountOperation::RevokeInviteLink { space, code } => AccountResult::InviteLinkRevoked {
+        AccountOperation::RevokeInviteLink {
+            space,
+            code,
+            request,
+        } => AccountResult::InviteLinkRevoked {
             result: api.revoke_invite_link(token, &space, &code).map_err(text),
             space,
             code,
+            request,
         },
         AccountOperation::PreviewInvite { request, code } => AccountResult::InvitePreview {
             request,

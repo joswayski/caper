@@ -72,8 +72,22 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(options.frame.minX, copy.frame.maxX)
         options.tap()
         XCTAssertTrue(app.descendants(matching: .any)["Regenerate link"].firstMatch.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any)["Link settings"].firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["Custom links"].firstMatch.exists)
         XCTAssertTrue(app.descendants(matching: .any)["Deactivate link"].firstMatch.exists)
+        app.descendants(matching: .any)["Regenerate link"].firstMatch.tap()
+        let regenerateAlert = app.alerts["Regenerate link?"]
+        XCTAssertTrue(regenerateAlert.waitForExistence(timeout: 5))
+        XCTAssertTrue(regenerateAlert.staticTexts["The previous URL stops admitting new members. Existing members stay. The new link resets to 30 days and 100 joins."].exists)
+        regenerateAlert.buttons["Cancel"].tap()
+        XCTAssertTrue(copy.exists)
+        XCTAssertFalse(regenerateAlert.exists)
+        options.tap()
+        app.descendants(matching: .any)["Deactivate link"].firstMatch.tap()
+        let deactivateAlert = app.alerts["Deactivate link?"]
+        XCTAssertTrue(deactivateAlert.waitForExistence(timeout: 5))
+        deactivateAlert.buttons["Cancel"].tap()
+        XCTAssertTrue(copy.exists)
+        XCTAssertFalse(app.buttons["default-invite-link-create"].exists)
     }
 
     #if os(iOS)

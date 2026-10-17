@@ -3961,7 +3961,7 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     Icon(painterResource(R.drawable.lucide_lock_keyhole), null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, { CaperEffects.toggle(it); changed(it) }, colors = caperSwitchColors())
 }
 
-@Composable private fun ConfirmDialog(
+@Composable internal fun ConfirmDialog(
     title: String, body: String, action: String, busy: Boolean, close: () -> Unit, warn: Boolean = false,
     pendingLabel: String = if (action.startsWith("Delete")) "Deleting…" else "Saving…",
     /** The app-wide error, shown once this action has run. */

@@ -54,15 +54,21 @@ const options = () => {
 };
 const settings = () => {
   options();
-  click("Link settings");
+  click("Custom links");
   wait('document.querySelector(".invite-link-settings")?.open');
+};
+const confirm = (action) => {
+  wait('document.querySelectorAll("dialog[open]").length === 2');
+  assert.equal(evaluate("return document.activeElement?.textContent;"), "Cancel");
+  click(action);
+  wait('document.querySelectorAll("dialog[open]").length === 1');
 };
 const capture = (name) => {
   if (!artifacts) return;
   evaluate(
     'return Promise.all(document.querySelector("dialog[open]").getAnimations({subtree:true}).filter(a => a.effect?.getComputedTiming().iterations !== Infinity).map(a => a.finished.catch(() => {})));',
   );
-  browser("screenshot", "dialog[open]", `${artifacts}/${name}.png`);
+  browser("screenshot", "dialog[open]:not(:has(dialog[open]))", `${artifacts}/${name}.png`);
 };
 try {
   browser("open", origin.href);
@@ -70,10 +76,13 @@ try {
   browser("open", new URL("/spaces", origin).href);
   wait('!!document.querySelector("#chat-message:not(:disabled)")');
   browser("set", "viewport", "1280", "900", "2");
+  evaluate(
+    "return document.fonts.ready.then(() => Promise.all(document.getAnimations().filter(a => a.effect?.getComputedTiming().iterations !== Infinity).map(a => a.finished.catch(() => {}))));",
+  );
   open();
   const initial = url();
   assert.match(initial, /\/invite\/[a-zA-Z0-9]{10}$/);
-  assert.match(text(), /100 people.*30 days/);
+  assert.match(text(), /Anyone with this link can join this space.*100 joins.*30 days/);
   assert.match(text(), /100 of 100 joins remaining · Expires in 30 days/);
   assert.equal(destination(), "chan00000001");
   assert.doesNotMatch(text(), /\bdefault\b/i);
@@ -96,9 +105,25 @@ try {
   wait('!!document.querySelector(".invite-link-menu")');
   assert.equal(evaluate('return document.activeElement?.getAttribute("aria-label");'), "Regenerate link");
   browser("press", "Tab");
-  assert.match(evaluate("return document.activeElement?.textContent;"), /Link settings/);
+  assert.match(evaluate("return document.activeElement?.textContent;"), /Custom links/);
   browser("press", "Escape");
   const initialCode = initial.split("/").at(-1);
+  options();
+  click("Regenerate link");
+  wait('document.querySelectorAll("dialog[open]").length === 2');
+  assert.equal(evaluate("return document.activeElement?.textContent;"), "Cancel");
+  capture("web-invite-regenerate-confirmation");
+  browser("press", "Enter");
+  wait('document.querySelectorAll("dialog[open]").length === 1');
+  assert.equal(url(), initial, "Enter initially cancels instead of invalidating a shared URL");
+  const stillLive = await fetch("http://127.0.0.1:3001/api/spaces/space0000001/invite-links", {
+    headers: { cookie: "caper_fixture=owner", connection: "close" },
+  }).then((r) => r.json());
+  assert.deepEqual(
+    stillLive.links.map((link) => link.code),
+    [initialCode],
+    "Cancellation must not mutate live links",
+  );
   await control({
     failure: {
       path: `/api/spaces/space0000001/invite-links/${initialCode}/regenerate`,
@@ -109,12 +134,14 @@ try {
   });
   options();
   click("Regenerate link");
+  confirm("Regenerate link");
   wait('!!document.querySelector("dialog[open] [role=alert]")');
   assert.equal(url(), initial, "A failed regeneration preserves the displayed link");
   capture("web-invite-regenerate-error");
   await control({ clearFailures: true });
   options();
   click("Regenerate link");
+  confirm("Regenerate link");
   wait(`document.querySelector('.invite-link-share input')?.value !== ${JSON.stringify(initial)}`);
   const regenerated = url();
   assert.match(text(), /100 of 100 joins remaining · Expires in 30 days/);
@@ -147,6 +174,7 @@ try {
   await control({ clearFailures: true });
   options();
   click("Regenerate link");
+  confirm("Regenerate link");
   wait(`document.querySelector('.invite-link-share input')?.value !== ${JSON.stringify(designLink)}`);
   assert.equal(destination(), "chan00000002", "Regeneration retains the chosen channel");
   chooseChannel("chan00000001");
@@ -168,7 +196,21 @@ try {
   wait('document.querySelector(".invite-links ul")?.textContent.includes("17 joins remaining")');
   assert.match(text(), /#design.*17 of 17 joins remaining.*Expires in 4 hours/);
   assert.equal(url(), regenerated, "Custom creation must not replace the default");
+  // List actions must identify and deactivate only that separate link.
+  browser("click", ".invite-links li:first-child .invite-link-actions button:last-child");
+  confirm("Deactivate link");
+  wait('!document.querySelector(".invite-links ul")?.textContent.includes("17 joins remaining")');
+  assert.equal(url(), regenerated, "Deactivating a custom link preserves the primary link");
+  options();
   click("Deactivate link");
+  wait('document.querySelectorAll("dialog[open]").length === 2');
+  capture("web-invite-deactivate-confirmation");
+  browser("press", "Escape");
+  wait('document.querySelectorAll("dialog[open]").length === 1');
+  assert.equal(url(), regenerated, "Escape dismisses only confirmation, preserving the shared link");
+  options();
+  click("Deactivate link");
+  confirm("Deactivate link");
   wait('!document.querySelector(".invite-link-share input")');
   assert.match(text(), /No active invite link/);
   capture("web-invite-deactivated");
@@ -188,7 +230,12 @@ try {
   );
   assert.ok(menu.left >= 0 && menu.right <= 390 && menu.top >= 0 && menu.bottom <= 844, JSON.stringify(menu));
   capture("web-invite-options-narrow");
-  click("Link settings");
+  click("Deactivate link");
+  wait('document.querySelectorAll("dialog[open]").length === 2');
+  capture("web-invite-confirmation-narrow");
+  click("Cancel");
+  wait('document.querySelectorAll("dialog[open]").length === 1');
+  settings();
   capture("web-invite-settings-narrow");
   browser("scrollintoview", '.invite-link-options button[type="submit"]');
   const bounds = evaluate(
@@ -263,7 +310,7 @@ try {
     "No public channels",
   );
   console.log(
-    "PASS: channel picker, oldest public selection, preserved shared links, selection failure recovery, regeneration retaining channel, no-public-channel state, 30-day/100-join defaults, copy, keyboard options, custom links, deactivation, narrow layout/scroll and username invitations.",
+    "PASS: safe regeneration/deactivation confirmations, Cancel/Enter/Escape preserve shared links, separate custom-link deactivation, channel picker, failure recovery, 30-day/100-join defaults, copy, narrow layout/scroll and username invitations.",
   );
 } finally {
   browser("close");

@@ -48,11 +48,24 @@ class InvitePeopleUiTest {
         compose.onNodeWithText("Previous link stops working. Resets to 30 days / 100 joins.").assertExists()
         listOf("Rename", "Delete space", "Manage space").forEach { compose.onNodeWithText(it).assertDoesNotExist() }
         compose.onNodeWithText("Regenerate link").performClick()
+        compose.runOnIdle { assertEquals(0, regenerated); assertEquals(0, deactivated) }
+        compose.onNodeWithText("The previous URL stops admitting new members. Existing members stay. The new link resets to 30 days and 100 joins.").assertExists()
+        compose.onNodeWithText("Cancel").performClick()
+        compose.runOnIdle { assertEquals(0, regenerated) }
+        compose.onNodeWithContentDescription("More link options").performClick()
+        compose.onNodeWithText("Regenerate link").performClick()
+        compose.onNodeWithText("Regenerate link").performClick()
         compose.runOnIdle { assertEquals(1, regenerated); assertEquals(0, deactivated) }
         compose.onNodeWithContentDescription("More link options").performClick()
-        compose.onNodeWithText("Link settings").performClick()
+        compose.onNodeWithText("Custom links").performClick()
         compose.runOnIdle { assertEquals(1, settings) }
         compose.onNodeWithContentDescription("More link options").performClick()
+        compose.onNodeWithText("Deactivate link").performClick()
+        compose.runOnIdle { assertEquals(0, deactivated) }
+        compose.onNodeWithText("Cancel").performClick()
+        compose.runOnIdle { assertEquals(0, deactivated) }
+        compose.onNodeWithContentDescription("More link options").performClick()
+        compose.onNodeWithText("Deactivate link").performClick()
         compose.onNodeWithText("Deactivate link").performClick()
         compose.runOnIdle { assertEquals(1, deactivated) }
     }

@@ -2785,16 +2785,28 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (context.isCurrent(accountGeneration, mutable.value.selectedSpace))
             mutable.value = mutable.value.copy(pendingSpaceInvitations = mutable.value.pendingSpaceInvitations.filter { it.id != member.id })
     }
+    private var inviteLinksRevision = 0L
+
     /** The open space's live invite links, for its owner; a failed load is [failed]'s, beside the links. */
     fun loadInviteLinks(loaded: () -> Unit, failed: (String) -> Unit) {
         val detail = mutable.value.selectedSpace ?: return
         val context = AdminMutationContext(accountGeneration, detail.space.id)
+        val revision = inviteLinksRevision
         viewModelScope.launch {
             try {
                 val links = api.inviteLinks(requireAccountToken(), detail.space.id).links
-                if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) { mutable.value = mutable.value.copy(inviteLinks = links); loaded() }
+                if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) {
+                    if (revision == inviteLinksRevision) {
+                        mutable.value = mutable.value.copy(inviteLinks = links)
+                        loaded()
+                    } else loadInviteLinks(loaded, failed)
+                }
             } catch (error: CancellationException) { throw error }
-            catch (error: Throwable) { if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) failed(message(error)) }
+            catch (error: Throwable) {
+                if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) {
+                    if (revision == inviteLinksRevision) failed(message(error)) else loadInviteLinks(loaded, failed)
+                }
+            }
         }
     }
     /** Reuses or prepares this channel's link without changing previously shared links. */
@@ -2808,6 +2820,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             return@launchAction
         }
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
+        inviteLinksRevision++
         mutable.value = mutable.value.copy(inviteLinks = listOf(link) + mutable.value.inviteLinks.filter { it.code != link.code })
         done(link)
     }
@@ -2822,6 +2835,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             return@launchAction
         }
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
+        inviteLinksRevision++
         mutable.value = mutable.value.copy(inviteLinks = listOf(replacement) + mutable.value.inviteLinks.filter { it.code != link.code && it.code != replacement.code })
         done(replacement)
     }
@@ -2831,6 +2845,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val context = AdminMutationContext(request, detail.space.id)
         val link = formRequest(request, failed) { api.createInviteLink(requireAccountToken(), detail.space.id, channelId, maxAge, maxUses) } ?: return@launchAction
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
+        inviteLinksRevision++
         mutable.value = mutable.value.copy(inviteLinks = listOf(link) + mutable.value.inviteLinks.filter { it.code != link.code })
         done(link)
     }
@@ -2843,8 +2858,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             catch (error: ApiException) { if (error.status != 404) throw error }
             Unit
         } ?: return@launchAction
-        if (context.isCurrent(accountGeneration, mutable.value.selectedSpace))
+        if (context.isCurrent(accountGeneration, mutable.value.selectedSpace)) {
+            inviteLinksRevision++
             mutable.value = mutable.value.copy(inviteLinks = mutable.value.inviteLinks.filter { it.code != link.code })
+        }
     }
     fun inviteUrl(code: String): String = api.inviteUrl(code)
     /** What a live invite link shares before joining; an invalid or expired one fails with [INVALID_INVITE_LINK]. */

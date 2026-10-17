@@ -69,6 +69,7 @@ import kotlinx.coroutines.delay
     val choices = publicChannels.map { (it.id as String?) to "#${it.name}" }
         .ifEmpty { listOf(null to "No public channels") }
     Text("Invite link", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    Text("Anyone with this link can join this space.", color = TextMuted, fontSize = 11.sp)
     Text("New links allow 100 joins for 30 days. Choosing a channel leaves previously shared links unchanged.", color = TextMuted, fontSize = 11.sp)
     InviteChoice("Opens in", choices, link?.channel?.id ?: publicChannels.firstOrNull()?.id,
         !state.busy && !preparing && publicChannels.isNotEmpty()) { selected ->
@@ -91,6 +92,7 @@ import kotlinx.coroutines.delay
     } else if (!preparing) {
         Text("No active invite link.", color = TextMuted, fontSize = 12.sp)
         Button({ prepare() }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Create another link") }
+        TextButton({ settings = !settings }, enabled = !state.busy, colors = neutralTextButtonColors()) { Text(if (settings) "Hide custom links" else "Custom links") }
     }
     error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
     if (settings) InviteLinkSection(if (preparing) state.copy(busy = true) else state, detail, viewModel)
@@ -99,6 +101,15 @@ import kotlinx.coroutines.delay
 /** The link's actions, immediately beside Copy; no space administration actions. */
 @Composable internal fun InviteLinkActions(enabled: Boolean, regenerate: () -> Unit, settings: () -> Unit, deactivate: () -> Unit) {
     var open by remember { mutableStateOf(false) }
+    var confirmation by remember { mutableStateOf<String?>(null) }
+    confirmation?.let { action ->
+        ConfirmDialog("$action?", "The previous URL stops admitting new members. Existing members stay." +
+            if (action == "Regenerate link") " The new link resets to 30 days and 100 joins." else "",
+            action, false, { confirmation = null }, focusCancel = true) {
+            confirmation = null
+            if (enabled) { if (action == "Regenerate link") regenerate() else deactivate() }
+        }
+    }
     Box {
         OutlinedButton({ open = true }, Modifier.semantics { contentDescription = "More link options" }, enabled = enabled,
             shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border), colors = ButtonDefaults.outlinedButtonColors(contentColor = Text)) {
@@ -108,16 +119,16 @@ import kotlinx.coroutines.delay
             DropdownMenuItem(text = { Column {
                 Text("Regenerate link", fontSize = 13.sp)
                 Text("Previous link stops working. Resets to 30 days / 100 joins.", color = TextMuted, fontSize = 11.sp)
-            } }, onClick = { open = false; regenerate() })
-            DropdownMenuItem(text = { Text("Link settings", fontSize = 13.sp) }, onClick = { open = false; settings() })
-            DropdownMenuItem(text = { Text("Deactivate link", color = ErrorText, fontSize = 13.sp) }, onClick = { open = false; deactivate() })
+            } }, onClick = { open = false; confirmation = "Regenerate link" })
+            DropdownMenuItem(text = { Text("Custom links", fontSize = 13.sp) }, onClick = { open = false; settings() })
+            DropdownMenuItem(text = { Text("Deactivate link", color = ErrorText, fontSize = 13.sp) }, onClick = { open = false; confirmation = "Deactivate link" })
         }
     }
 }
 
 @Composable internal fun InviteLinkSettingsDisclosure(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, enabled: Boolean = !state.busy) {
     var settings by remember(detail.space.id) { mutableStateOf(false) }
-    TextButton({ settings = !settings }, enabled = enabled, colors = neutralTextButtonColors()) { Text(if (settings) "Hide link settings" else "Link settings") }
+    TextButton({ settings = !settings }, enabled = enabled, colors = neutralTextButtonColors()) { Text(if (settings) "Hide custom links" else "Custom links") }
     if (settings) InviteLinkSection(state, detail, viewModel)
 }
 
@@ -145,6 +156,14 @@ import kotlinx.coroutines.delay
     // Which request is running, so only that button says so.
     var creating by remember { mutableStateOf(false) }
     var revoking by remember { mutableStateOf<String?>(null) }
+    var revokeTarget by remember(detail.space.id) { mutableStateOf<chat.caper.android.model.InviteLink?>(null) }
+    revokeTarget?.let { link ->
+        ConfirmDialog("Revoke link?", "The previous URL stops admitting new members. Existing members stay.",
+            "Revoke", false, { revokeTarget = null }, focusCancel = true) {
+            revokeTarget = null
+            if (!state.busy) { error = null; revoking = link.code; viewModel.revokeInviteLink(link) { error = it } }
+        }
+    }
     LaunchedEffect(detail.space.id) { viewModel.loadInviteLinks({ loaded = true }) { error = it; loaded = true } }
     LaunchedEffect(state.busy) { if (!state.busy) { creating = false; revoking = null } }
     LaunchedEffect(copied) { if (copied != null) { delay(2_000); copied = null } }
@@ -165,9 +184,9 @@ import kotlinx.coroutines.delay
         viewModel.createInviteLink(landing?.id, expiry.value, uses.value, {}) { error = it }
     }
 
-    Text("Invite link", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    Text("Create a custom link", fontSize = 13.sp, fontWeight = FontWeight.Bold)
     Text("Anyone with the link can join this space.", color = TextMuted, fontSize = 11.sp)
-    Text("“Opens in” changes this link only.", color = TextMuted, fontSize = 11.sp)
+    Text("Create a separate link. Existing links keep their settings.", color = TextMuted, fontSize = 11.sp)
     InviteRow("Expire after") {
         // "Never" has no number; the typed one comes back with another unit.
         if (expiryUnit != InviteExpiryUnit.Never) {
@@ -205,7 +224,7 @@ import kotlinx.coroutines.delay
                 TextButton({ copy(link.code) }, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) {
                     PendingLabel("Copy", "Copied", copied == link.code)
                 }
-                TextButton({ error = null; revoking = link.code; viewModel.revokeInviteLink(link) { error = it } }, enabled = !state.busy,
+                TextButton({ revokeTarget = link }, enabled = !state.busy,
                     shape = MaterialTheme.shapes.small, colors = ButtonDefaults.textButtonColors(contentColor = ErrorText)) {
                     PendingLabel("Revoke", "Revoking…", state.busy && revoking == link.code)
                 }
