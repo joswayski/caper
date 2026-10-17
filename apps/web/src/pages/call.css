@@ -2086,7 +2086,9 @@
   font-size: 0.62rem;
   font-weight: 900;
 }
-.live-avatar[data-speaking] {
+/* Outranks a stack's plain gap ring (the phone strip's faces). */
+.live-avatar[data-speaking],
+.live-stack > .live-avatar[data-speaking] {
   overflow: visible;
   box-shadow:
     0 0 0 2px var(--live-face-gap, var(--live-card)),
@@ -2536,6 +2538,10 @@ button.voice-strip-open {
 .voice-strip .live-stack > .live-avatar {
   width: 24px;
   height: 24px;
+}
+/* Your call's faces ring while speaking, so they sit apart rather than overlap. */
+.voice-strip .live-stack > .live-avatar + .live-avatar {
+  margin-left: 6px;
 }
 .voice-strip-detail {
   min-width: 0;

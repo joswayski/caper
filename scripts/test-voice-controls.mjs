@@ -1266,6 +1266,21 @@ try {
         evaluate(`return document.querySelector('.live-call .live-speaker')?.textContent;`),
         "UI fixture is speaking",
       );
+      if (width === 390) {
+        // The phone strip over the conversation rings its speaking face too.
+        browser("click", '.channel-select[aria-current="page"]');
+        settleBrowse();
+        wait(`document.querySelector('.voice-strip .live-avatar[data-speaking]')`);
+        assert.match(
+          evaluate(
+            `return getComputedStyle(document.querySelector('.voice-strip .live-avatar[data-speaking]')).boxShadow;`,
+          ),
+          /rgb\(74, 168, 107\) 0px 0px 0px 4px/,
+          "The strip's speaking face shows the voice-green ring",
+        );
+        screenshot("voice-avatars-strip-speaking-390");
+        openBrowse();
+      }
       browser("mouse", "move", "5", "5");
       screenshot(`voice-avatars-speaking-${width}`);
       click("Mute microphone");
