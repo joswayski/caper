@@ -117,12 +117,45 @@ try {
     [message.id],
     "pins the chosen GIF, not its neighbor",
   );
-  browser("reload");
-  wait('!!document.querySelector(".chat-pins-toggle") && !document.querySelector(".chat-initial-messages")');
   for (const width of [1280, 390]) {
     browser("set", "viewport", String(width), "900", "2");
+    browser("reload");
+    wait('!!document.querySelector(".chat-pins-toggle") && !document.querySelector(".chat-initial-messages")');
+    wait(`document.querySelector('${row} .chat-pin-author')?.textContent === 'Pinned by you'`);
+    browser("mouse", "move", "0", "0");
+    assert.equal(
+      evaluate(`getComputedStyle(document.querySelector('${row}')).backgroundColor`),
+      "rgba(182, 77, 50, 0.12)",
+      "your pins use terracotta even when someone else wrote the message",
+    );
+    browser("hover", `${row} p`);
+    assert.equal(
+      evaluate(`getComputedStyle(document.querySelector('${row}')).backgroundColor`),
+      "rgba(182, 77, 50, 0.12)",
+      "hover does not replace the pinned highlight",
+    );
+    assert.equal(
+      evaluate(`(() => {
+        const row = document.querySelector('${row}');
+        const marker = row.querySelector('.chat-pin-marker').getBoundingClientRect();
+        const text = row.querySelector('p').getBoundingClientRect();
+        return marker.bottom <= text.top && Math.abs(marker.left - text.left) < 1;
+      })()`),
+      true,
+      "pin attribution sits above the message and aligns with its text",
+    );
+    screenshot(`pins-timeline-${width}`);
     openPins();
     wait('!!document.querySelector(".chat-pinned-message .chat-gif img")?.complete');
+    assert.equal(
+      evaluate('document.querySelector(".chat-pinned-message .chat-pin-author").textContent'),
+      "Pinned by you",
+    );
+    assert.equal(
+      evaluate('getComputedStyle(document.querySelector(".chat-pinned-message")).backgroundColor'),
+      "rgba(182, 77, 50, 0.12)",
+      "your Pins cards use the same terracotta as chat",
+    );
     screenshot(`pins-gif-${width}`);
     const bounds = evaluate(`(() => {
       const card = document.querySelector('.chat-pinned-message');
@@ -137,6 +170,27 @@ try {
     assert.ok(Math.abs(bounds.width / bounds.height - 16 / 9) < 0.02, "GIF keeps its aspect ratio");
     assert.ok(Math.abs(bounds.left - bounds.textLeft) < 1, "media aligns with message text");
     assert.ok(bounds.goTop >= bounds.bottom && bounds.right < bounds.cardRight, "navigation stays below fitted media");
+    browser("click", ".chat-pinned-message .chat-pin-author");
+    wait('document.querySelector(".chat-mention-card strong")?.textContent === "Fixture Owner"');
+    action("Close profile");
+    await control({ incomingPin: { channelId: message.channelId, messageId: message.id, active: false } });
+    wait(`!document.querySelector('${row} .chat-pin-marker')`);
+    assert.notEqual(
+      evaluate(`getComputedStyle(document.querySelector('${row}')).backgroundColor`),
+      "rgba(182, 77, 50, 0.12)",
+      "unpin removes the persistent timeline highlight",
+    );
+    await control({ incomingPin: { channelId: message.channelId, messageId: message.id, userId: "member000001" } });
+    wait('document.querySelector(".chat-pinned-message .chat-pin-author")?.textContent === "Pinned by Maya"');
+    assert.equal(evaluate(`document.querySelector('${row} .chat-pin-author').textContent`), "Pinned by Maya");
+    for (const selector of [row, ".chat-pinned-message"]) {
+      assert.equal(
+        evaluate(`getComputedStyle(document.querySelector('${selector}')).backgroundColor`),
+        "rgba(228, 199, 106, 0.06)",
+        "other people's pins switch to faded yellow in chat and Pins",
+      );
+    }
+    screenshot(`pins-other-${width}`);
     browser("click", ".chat-pinned-message .chat-media");
     wait('!!document.querySelector(".chat-viewer")');
     action("Close viewer");
@@ -155,6 +209,9 @@ try {
     );
     browser("click", ".chat-pinned-message > p");
     wait(`!document.querySelector('.chat-pins-dialog') && !!document.querySelector('${row}.chat-message-jump-target')`);
+    assert.equal(evaluate(`document.querySelector('${row} .chat-pin-author').textContent`), "Pinned by Maya");
+    await control({ incomingPin: { channelId: message.channelId, messageId: message.id, active: false } });
+    await control({ incomingPin: { channelId: message.channelId, messageId: message.id, userId: "owner0000001" } });
   }
   // Reload without the original in the latest page; failures must leave Pins retryable.
   for (let i = 0; i < 60; i++)
@@ -183,6 +240,11 @@ try {
   wait('document.querySelector(".chat-pins-dialog")?.textContent.includes("No pinned messages.")');
   assert.equal((await history()).pinnedMessages.length, 0);
   action("Close pins");
+  assert.equal(
+    evaluate(`!!document.querySelector('${row} .chat-pin-marker')`),
+    false,
+    "unpin removes timeline attribution",
+  );
   await control({ incomingReply: { rootId: root.id, text: "Pinned thread reply" } });
   const reply = (await history(root.id)).messages.at(-1);
   await control({ incomingPin: { channelId: reply.channelId, messageId: reply.id } });
@@ -191,8 +253,30 @@ try {
   wait(
     `!document.querySelector('.chat-pins-dialog') && !!document.querySelector('.chat-thread-panel [data-message-id="${reply.id}"]')`,
   );
+  assert.equal(
+    evaluate(
+      `document.querySelector('.chat-thread-panel [data-message-id="${reply.id}"] .chat-pin-author').textContent`,
+    ),
+    "Pinned by Alex",
+  );
+  // A mention must not make someone else's pin look like one of yours.
+  await control({ reset: true });
+  browser("reload");
+  wait('!document.querySelector(".chat-initial-messages") && !!document.querySelector(".chat-pins-toggle")');
+  const mentioned = (await history()).messages.find((m) =>
+    m.content.mentions?.some((mention) => mention.id === "owner0000001"),
+  );
+  assert.ok(mentioned, "fixture includes a real mention of the viewer");
+  await control({ incomingPin: { channelId: mentioned.channelId, messageId: mentioned.id, userId: "member000001" } });
+  const mentionedRow = `.chat-message[data-message-id="${mentioned.id}"]`;
+  wait(`document.querySelector('${mentionedRow} .chat-pin-author')?.textContent === 'Pinned by Maya'`);
+  assert.equal(
+    evaluate(`getComputedStyle(document.querySelector('${mentionedRow}')).backgroundColor`),
+    "rgba(228, 199, 106, 0.06)",
+    "pin ownership, not a mention, determines the pin's wash",
+  );
   console.log(
-    "PASS: GIF pin survives reload; proportional desktop/narrow previews; media/profile controls; body/keyboard jumps; failed jump retry; unpin; thread jump.",
+    "PASS: GIF pin survives reload; your pins are terracotta and other people's pins faded yellow in chat/Pins at desktop/narrow widths; live pinner changes update labels and washes; hover persists; mentions do not mask ownership; pinner/media/profile controls; proportional previews; body/keyboard jumps; failed jump retry; unpin removes attribution/highlight; pinned thread attribution and jump.",
   );
 } finally {
   await mediaServer?.terminate();

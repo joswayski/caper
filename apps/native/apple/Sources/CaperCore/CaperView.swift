@@ -4174,11 +4174,11 @@ private struct MessageRow: View {
         let pills = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
         let rendered = messageText
         let row = VStack(alignment: .leading, spacing: 5) {
-            if inPins, let pin = message.pin {
+            if let pin = message.pin {
                 Button { mentionCards.openAuthor?(pin.author) } label: {
                     HStack(spacing: 4) {
                         CaperIcon(name: "pin", size: 12)
-                        Text("Pinned by \(pin.author.name)")
+                        Text("Pinned by \(pin.author.id == currentUserID ? "you" : pin.author.name)")
                     }.contentShape(Rectangle())
                 }
                     .buttonStyle(.plain).font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.muted)
@@ -4431,16 +4431,19 @@ private struct MessageRow: View {
     }
     #endif
     /// The jump target (a link or search result) and the open thread's root
-    /// are selections: terracotta, like web. Gold stays reserved for pins.
+    /// are selections: terracotta, like web. Other people's pins are faded gold.
     private var jumpTarget: Bool { !inPins && chat.focusedMessageID == message.id }
-    private var threadOpen: Bool { !inThread && chat.threadRootID == message.id }
+    private var threadOpen: Bool { !inPins && !inThread && chat.threadRootID == message.id }
     /// Web's inset 3px terracotta bar on selected rows and mentions of you.
-    private func showsAccentBar(mentionsMe: Bool) -> Bool { jumpTarget || threadOpen || mentionsMe }
+    private func showsAccentBar(mentionsMe: Bool) -> Bool { jumpTarget || threadOpen || (message.pin == nil && mentionsMe) }
     private func rowBackground(mentionsMe: Bool) -> Color {
         if jumpTarget || threadOpen { return CaperTheme.terracotta.opacity(0.12) }
+        if let pin = message.pin {
+            return pin.author.id == currentUserID ? CaperTheme.terracotta.opacity(0.12) : CaperTheme.pinGold.opacity(0.06)
+        }
         if mentionsMe { return CaperTheme.terracotta.opacity(0.08) }
         if message.replyTo != nil { return CaperTheme.text.opacity(0.03) }
-        return inPins && message.pin != nil ? CaperTheme.pinGold.opacity(0.06) : .clear
+        return .clear
     }
     /// Resolved `@mention` tokens render as pills: #F3F4F5 medium text on 24%
     /// terracotta. SwiftUI `Text` styles an inline run's background but cannot

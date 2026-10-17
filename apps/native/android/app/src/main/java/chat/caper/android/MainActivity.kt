@@ -2426,11 +2426,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         revealedRuns = if (row.run.revealed) revealedRuns - row.run.key else revealedRuns + row.run.key
                     }
                 } else Column(Modifier.arrival(arrivals, message.clientMessageId).then(
-                    // The open thread is a selection (web): a terracotta wash with a 3dp leading edge; gold stays for pins.
+                    // Selections and your pins are terracotta; other people's pins are faded gold.
                     if (!inThread && state.thread?.rootId == message.id) Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else Terracotta.copy(alpha = 0.12f)).drawBehind {
                         val edge = 3.dp.toPx()
                         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
-                    } else Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else Color.Transparent))) {
+                    } else Modifier.background(if (state.focusedMessageId == message.id) TerracottaWash else if (message.pin != null) {
+                        if (message.pin.author.id == (state.account?.id ?: state.chatAuthorId)) Terracotta.copy(alpha = 0.12f) else PinGoldWash
+                    } else Color.Transparent))) {
                     ReactionMessageRow(
                         message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                         openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
@@ -2743,6 +2745,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     openReference: ((MessageReply) -> Unit)? = null,
     /** Compact under the same person's previous message (`data/Grouping.kt`). */
     grouped: Boolean = false,
+    inPins: Boolean = false,
     /** Only pinned cards opt in; nested links and controls consume their own taps. */
     openMessage: (() -> Unit)? = null,
     openActions: (ChatMessage) -> Unit,
@@ -2752,15 +2755,27 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
     val interaction = remember(message.id) { MutableInteractionSource() }
     val pressing by interaction.collectIsPressedAsState()
-    // A message that mentions you: terracotta wash with a 2dp leading edge.
-    val mentioned = mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
-    val replyWash = message.replyTo != null && state.focusedMessageId != message.id && state.thread?.rootId != message.id
+    // Pin ownership takes precedence over the mention wash; inline mention pills remain visible.
+    val mentioned = message.pin == null && mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
+    val replyWash = message.replyTo != null && message.pin == null && state.focusedMessageId != message.id && state.thread?.rootId != message.id
     Column((if (!mentioned) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
         val edge = 2.dp.toPx()
         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
     }).drawBehind {
         if (pressing) drawRect(Text.copy(alpha = 0.08f))
     }) {
+        message.pin?.let { pin ->
+            val pinInteraction = remember(message.id) { MutableInteractionSource() }
+            val hovered by pinInteraction.collectIsHoveredAsState()
+            LaunchedEffect(hovered) { if (hovered) openAuthor?.invoke(pin.author) }
+            Text("Pinned by ${if (pin.author.id == (state.account?.id ?: state.chatAuthorId)) "you" else pin.author.name}", Modifier.padding(start = 62.dp, end = 18.dp)
+                .heightIn(min = 44.dp).wrapContentHeight()
+                .hoverable(pinInteraction)
+                .clip(MaterialTheme.shapes.small).combinedClickable(enabled = openAuthor != null, role = Role.Button, onClick = { openAuthor?.invoke(pin.author) }, onLongClick = { openAuthor?.invoke(pin.author) })
+                .semantics { contentDescription = "Open profile for ${pin.author.name}" },
+                color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        }
+        if (inPins) Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
         message.replyTo?.let { reference -> ReplyContext(reference, state, message.clientMessageId, openReference?.let { open -> { open(reference) } }) }
         // A grouped row stays a full-width long-press target, but drops the 48dp minimum so a run reads as one block.
         Box(Modifier.heightIn(min = if (grouped) 0.dp else 48.dp).combinedClickable(
@@ -2921,22 +2936,10 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     viewModel.goToMessage(message, onLoaded = close)
                 }
             }
-            Column(Modifier.background(PinGoldWash)) {
-                message.pin?.let { pin ->
-                    val interaction = remember(message.id) { MutableInteractionSource() }
-                    val hovered by interaction.collectIsHoveredAsState()
-                    LaunchedEffect(hovered) { if (hovered) pinnerTarget = pin.author }
-                    Text("Pinned by ${pin.author.name}", Modifier.padding(start = 62.dp, end = 18.dp)
-                        .heightIn(min = 44.dp).wrapContentHeight()
-                        .hoverable(interaction)
-                        .clip(MaterialTheme.shapes.small).combinedClickable(role = Role.Button, onClick = { pinnerTarget = pin.author }, onLongClick = { pinnerTarget = pin.author })
-                        .semantics { contentDescription = "Open profile for ${pin.author.name}" },
-                        color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                }
-                Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
+            Column(Modifier.background(if (message.pin?.author?.id == (state.account?.id ?: state.chatAuthorId)) Terracotta.copy(alpha = 0.12f) else PinGoldWash)) {
                 ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
-                    openMessage = goToMessage,
+                    inPins = true, openMessage = goToMessage,
                     openAuthor = { pinnerTarget = it },
                     openConversation = { target -> viewModel.openForwardedConversation(target, { conversationTarget = target }, close) }, openHistory = { historyTarget = it },
                     openReference = { reference -> viewModel.goToMessage(message.copy(id = reference.id, threadRootId = reference.threadRootId), onLoaded = close) },
