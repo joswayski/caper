@@ -7582,29 +7582,14 @@ private struct DefaultInviteLinkSection: View {
     @State private var settingsRevision = 0
     @State private var settingsExpanded = false
     @State private var customPending = false
-    @State private var channelID: String?
     @State private var confirmation: InviteLink?
     @State private var confirmingRegenerate = false
-
-    private var publicChannels: [Channel] { (model.detail?.channels ?? []).filter { !$0.private } }
-    private var channelOptions: [InviteOption<String?>] {
-        publicChannels.isEmpty
-            ? [InviteOption<String?>(label: "No public channels", value: nil)]
-            : publicChannels.map { InviteOption<String?>(label: "#\($0.name)", value: $0.id) }
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Invite link").font(CaperTheme.font(14, weight: .bold))
             Text("Anyone with this link can join. Up to 100 total joins, valid for 30 days from creation.")
                 .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-            InviteOptionPicker(title: "Opens in", selection: Binding(get: { channelID }, set: { selected in
-                guard !pending, !customPending, selected != channelID else { return }
-                pending = true; error = nil; copied = false
-                Task { await prepareSelected(channelID: selected) }
-            }), options: channelOptions)
-                .disabled(pending || customPending || publicChannels.isEmpty)
-                .accessibilityIdentifier("invite-link-channel")
             if let link {
                 Text(model.inviteLinkURL(link.code)).font(.system(size: 12, design: .monospaced))
                     .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
@@ -7636,7 +7621,7 @@ private struct DefaultInviteLinkSection: View {
                 ProgressView("Preparing invite link…")
             } else {
                 if deactivated {
-                    Text("This link is deactivated. Existing members remain. Opening Invite people again prepares a new link, or you can create another now.")
+                    Text("This link is deactivated. Opening Invite people again prepares a new link, or you can create another now.")
                         .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 }
                 Button(deactivated ? "Create another link" : "Prepare link") { Task { await prepare() } }
@@ -7655,7 +7640,7 @@ private struct DefaultInviteLinkSection: View {
             }
         }
         .task(id: model.detail?.space.id) {
-            link = nil; deactivated = false; channelID = publicChannels.first?.id
+            link = nil; deactivated = false
             await prepare()
         }
         .alert(confirmingRegenerate ? "Regenerate link?" : "Deactivate link?", isPresented: Binding(
@@ -7667,7 +7652,7 @@ private struct DefaultInviteLinkSection: View {
                 if confirmingRegenerate { regenerate(target) } else { deactivate(target) }
             }
         } message: { _ in
-            Text("The previous URL stops admitting new members. Existing members stay." +
+            Text("The previous URL stops admitting new members." +
                  (confirmingRegenerate ? " The new link resets to 30 days and 100 joins." : ""))
         }
     }
@@ -7675,14 +7660,9 @@ private struct DefaultInviteLinkSection: View {
     private func prepare() async {
         guard !pending, !customPending else { return }
         pending = true; error = nil; copied = false
-        await prepareSelected(channelID: channelID)
-    }
-
-    private func prepareSelected(channelID: String?) async {
         defer { pending = false }
         do {
-            let prepared = try await model.defaultInviteLink(channelID: channelID)
-            link = prepared; self.channelID = prepared.channel?.id
+            link = try await model.defaultInviteLink()
             deactivated = false; settingsRevision += 1
         }
         catch is CancellationError {}
@@ -7697,7 +7677,7 @@ private struct DefaultInviteLinkSection: View {
             do {
                 let replacement = try await model.regenerateInviteLink(current)
                 guard link?.code == current.code else { return }
-                link = replacement; channelID = replacement.channel?.id
+                link = replacement
                 copied = false; deactivated = false; settingsRevision += 1
             } catch is CancellationError {}
             catch { self.error = FriendlyError.message(for: error) }
@@ -7795,7 +7775,7 @@ private struct InviteLinksSection: View {
             Button("Cancel", role: .cancel) { revokeTarget = nil }
             Button("Revoke", role: .destructive) { revokeTarget = nil; revoke(target) }
         } message: { _ in
-            Text("The previous URL stops admitting new members. Existing members stay.")
+            Text("The previous URL stops admitting new members.")
         }
     }
 

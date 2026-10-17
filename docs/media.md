@@ -971,14 +971,12 @@ exhausted or deactivated links are not reused. Deactivating stops new joins, not
 existing memberships; it leaves the dialog without a prepared link until the owner
 creates another or reopens Invite people. No QR code is generated.
 
-The main dialog has an **Opens in** picker with actual public-channel names, not
-“Default channel”. Choosing another channel prepares or reuses its own link;
-previously shared links keep their destinations. Reopening starts with the oldest
-public channel again. There is no special preference for a channel named `general`
-and no space-wide destination setting. With no public channels, the picker says
-**No public channels** and space-only invitations remain usable. Failed selection
-preserves the previous displayed URL and selected channel. The API returns the
-actual destination; clients list channels in API creation order.
+The main dialog shows a ready-to-copy link without a destination picker. The server
+chooses the oldest public channel, with no special preference for a channel named
+`general` and no space-wide destination setting. With no public channels, space-only
+invitations remain usable. Owners can choose a different public destination when
+creating a separate link under **Custom links**; previously shared links keep their
+destinations. The API returns the actual destination, which appears in link metadata.
 
 **More invite options** sits beside the primary Copy action. **Regenerate link**
 revokes the displayed code and creates a new code for the same public channel,
@@ -986,7 +984,7 @@ with 30 full days and 100 available joins in one transaction. If the old destina
 became private or was deleted, regeneration and joining fall back to the oldest
 public channel. Regeneration and deactivation (including list revocation) require
 confirmation on every client. Cancel leaves the shared URL working; the warning
-explains that existing members stay and regeneration resets the limits.
+explains that the previous URL stops new joins and regeneration resets the limits.
 Failures leave the previous link intact;
 simultaneous regenerations of the same code mint only one replacement (the stale
 request returns 404). Other links and existing memberships are untouched. The

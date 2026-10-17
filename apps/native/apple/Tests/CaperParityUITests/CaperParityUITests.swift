@@ -62,9 +62,8 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.descendants(matching: .any)["space-members-heading"].exists)
         let copy = app.buttons["default-invite-link-copy"]
         XCTAssertTrue(copy.waitForExistence(timeout: 10))
-        let channelPicker = app.descendants(matching: .any)["invite-link-channel"].firstMatch
-        XCTAssertTrue(channelPicker.exists)
-        XCTAssertTrue(app.staticTexts["Opens in"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["invite-link-channel"].exists)
+        XCTAssertFalse(app.staticTexts["Opens in"].exists)
         XCTAssertFalse(app.staticTexts["Default channel"].exists)
         let options = app.descendants(matching: .any)["default-invite-link-options"].firstMatch
         XCTAssertTrue(options.exists)
@@ -77,7 +76,7 @@ final class CaperParityUITests: XCTestCase {
         app.descendants(matching: .any)["Regenerate link"].firstMatch.tap()
         let regenerateAlert = app.alerts["Regenerate link?"]
         XCTAssertTrue(regenerateAlert.waitForExistence(timeout: 5))
-        XCTAssertTrue(regenerateAlert.staticTexts["The previous URL stops admitting new members. Existing members stay. The new link resets to 30 days and 100 joins."].exists)
+        XCTAssertTrue(regenerateAlert.staticTexts["The previous URL stops admitting new members. The new link resets to 30 days and 100 joins."].exists)
         regenerateAlert.buttons["Cancel"].tap()
         XCTAssertTrue(copy.exists)
         XCTAssertFalse(regenerateAlert.exists)

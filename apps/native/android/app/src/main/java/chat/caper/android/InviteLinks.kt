@@ -55,9 +55,9 @@ import kotlinx.coroutines.delay
     var settings by remember(detail.space.id) { mutableStateOf(false) }
     var now by remember { mutableStateOf(Instant.now()) }
     LaunchedEffect(Unit) { while (true) { delay(30_000); now = Instant.now() } }
-    fun prepare(channelId: String? = null) {
+    fun prepare() {
         preparing = true; error = null; copied = false
-        viewModel.ensureDefaultInviteLink(channelId, { code = it.code; preparing = false }) { error = it; preparing = false }
+        viewModel.ensureDefaultInviteLink(null, { code = it.code; preparing = false }) { error = it; preparing = false }
     }
     var started by remember(detail.space.id) { mutableStateOf(false) }
     LaunchedEffect(detail.space.id, state.busy) {
@@ -65,16 +65,9 @@ import kotlinx.coroutines.delay
     }
     LaunchedEffect(copied) { if (copied) { delay(2_000); copied = false } }
     val link = state.inviteLinks.firstOrNull { it.code == code }
-    val publicChannels = detail.channels.filter { !it.private && !it.direct }
-    val choices = publicChannels.map { (it.id as String?) to "#${it.name}" }
-        .ifEmpty { listOf(null to "No public channels") }
     Text("Invite link", fontSize = 13.sp, fontWeight = FontWeight.Bold)
     Text("Anyone with this link can join this space.", color = TextMuted, fontSize = 11.sp)
-    Text("New links allow 100 joins for 30 days. Choosing a channel leaves previously shared links unchanged.", color = TextMuted, fontSize = 11.sp)
-    InviteChoice("Opens in", choices, link?.channel?.id ?: publicChannels.firstOrNull()?.id,
-        !state.busy && !preparing && publicChannels.isNotEmpty()) { selected ->
-        if (selected != link?.channel?.id) prepare(selected)
-    }
+    Text("New links allow 100 joins for 30 days.", color = TextMuted, fontSize = 11.sp)
     if (preparing) Text("Preparing link…", color = TextMuted, fontSize = 12.sp)
     if (link != null) {
         Text(viewModel.inviteUrl(link.code), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
@@ -103,7 +96,7 @@ import kotlinx.coroutines.delay
     var open by remember { mutableStateOf(false) }
     var confirmation by remember { mutableStateOf<String?>(null) }
     confirmation?.let { action ->
-        ConfirmDialog("$action?", "The previous URL stops admitting new members. Existing members stay." +
+        ConfirmDialog("$action?", "The previous URL stops admitting new members." +
             if (action == "Regenerate link") " The new link resets to 30 days and 100 joins." else "",
             action, false, { confirmation = null }, focusCancel = true) {
             confirmation = null
@@ -158,7 +151,7 @@ import kotlinx.coroutines.delay
     var revoking by remember { mutableStateOf<String?>(null) }
     var revokeTarget by remember(detail.space.id) { mutableStateOf<chat.caper.android.model.InviteLink?>(null) }
     revokeTarget?.let { link ->
-        ConfirmDialog("Revoke link?", "The previous URL stops admitting new members. Existing members stay.",
+        ConfirmDialog("Revoke link?", "The previous URL stops admitting new members.",
             "Revoke", false, { revokeTarget = null }, focusCancel = true) {
             revokeTarget = null
             if (!state.busy) { error = null; revoking = link.code; viewModel.revokeInviteLink(link) { error = it } }

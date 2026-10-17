@@ -49,7 +49,7 @@ class InvitePeopleUiTest {
         listOf("Rename", "Delete space", "Manage space").forEach { compose.onNodeWithText(it).assertDoesNotExist() }
         compose.onNodeWithText("Regenerate link").performClick()
         compose.runOnIdle { assertEquals(0, regenerated); assertEquals(0, deactivated) }
-        compose.onNodeWithText("The previous URL stops admitting new members. Existing members stay. The new link resets to 30 days and 100 joins.").assertExists()
+        compose.onNodeWithText("The previous URL stops admitting new members. The new link resets to 30 days and 100 joins.").assertExists()
         compose.onNodeWithText("Cancel").performClick()
         compose.runOnIdle { assertEquals(0, regenerated) }
         compose.onNodeWithContentDescription("More link options").performClick()

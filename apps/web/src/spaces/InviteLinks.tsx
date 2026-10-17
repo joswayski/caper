@@ -142,7 +142,6 @@ export function InviteLinkManager({
   const publicChannels = channels.filter((channel) => !channel.private);
   const [links, setLinks] = useState<InviteLink[]>();
   const [defaultCode, setDefaultCode] = useState<string>();
-  const [selectedChannel, setSelectedChannel] = useState<string | null>(publicChannels[0]?.id ?? null);
   const [expiryAmount, setExpiryAmount] = useState(DEFAULT_INVITE_EXPIRY.amount);
   const [expiryUnit, setExpiryUnit] = useState<InviteExpiryUnit>(DEFAULT_INVITE_EXPIRY.unit);
   const [usesText, setUsesText] = useState(DEFAULT_INVITE_MAX_USES);
@@ -166,7 +165,6 @@ export function InviteLinkManager({
           const link = await ensureDefaultInviteLink(spaceId);
           if (!current) return;
           setDefaultCode(link.code);
-          setSelectedChannel(link.channel?.id ?? null);
           setLinks([link]);
         }
         const result = await listInviteLinks(spaceId);
@@ -187,17 +185,14 @@ export function InviteLinkManager({
     return () => clearTimeout(timeout);
   }, [copied]);
   const defaultLink = links?.find((link) => link.code === defaultCode);
-  const chosenChannel =
-    publicChannels.find((channel) => channel.id === selectedChannel)?.id ?? publicChannels[0]?.id ?? null;
   const customChannel = publicChannels.find((channel) => channel.id === landing)?.id ?? publicChannels[0]?.id ?? null;
-  const prepare = async (channelId: string | null = chosenChannel) => {
+  const prepare = async () => {
     if (pending) return;
     setPending(true);
     setError(undefined);
     try {
-      const link = await ensureDefaultInviteLink(spaceId, channelId);
+      const link = await ensureDefaultInviteLink(spaceId);
       setDefaultCode(link.code);
-      setSelectedChannel(link.channel?.id ?? null);
       setCopied(undefined);
       setLinks((current) => [link, ...(current ?? []).filter((item) => item.code !== link.code)]);
     } catch (reason) {
@@ -213,7 +208,6 @@ export function InviteLinkManager({
     try {
       const link = await regenerateInviteLink(spaceId, code);
       setDefaultCode(link.code);
-      setSelectedChannel(link.channel?.id ?? null);
       setCopied(undefined);
       setNow(Date.now());
       setLinks((current) => [link, ...(current ?? []).filter((item) => item.code !== code)]);
@@ -258,22 +252,6 @@ export function InviteLinkManager({
             Anyone with this link can join this space. New links allow {DEFAULT_INVITE_MAX_USES} joins for{" "}
             {DEFAULT_INVITE_EXPIRY.amount} days.
           </p>
-          <label className="invite-link-destination" htmlFor={`${ids}-destination`}>
-            Opens in
-            <select
-              id={`${ids}-destination`}
-              value={chosenChannel ?? ""}
-              disabled={pending || publicChannels.length === 0}
-              onChange={(event) => void prepare(event.target.value || null)}
-            >
-              {publicChannels.length === 0 && <option value="">No public channels</option>}
-              {publicChannels.map((channel) => (
-                <option key={channel.id} value={channel.id}>
-                  #{channel.name}
-                </option>
-              ))}
-            </select>
-          </label>
           {publicChannels.length === 0 && (
             <p className="channel-name-guidance">People will join the space without opening a channel.</p>
           )}
@@ -477,7 +455,7 @@ export function InviteLinkManager({
           onClose={() => setConfirmation(undefined)}
         >
           <div className="delete-confirmation">
-            <p>This shared URL will stop accepting new joins. Existing members stay.</p>
+            <p>This shared URL will stop accepting new joins.</p>
             {confirmation.action === "regenerate" && <p>The replacement allows 100 joins for 30 days.</p>}
             <p className="channel-name-guidance">Current link: {inviteUrl(confirmation.code)}</p>
             <div className="space-dialog-actions">

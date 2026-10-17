@@ -37,11 +37,6 @@ const evaluate = (code) => browser("eval", `(() => { ${code} })()`).result;
 const wait = (code) => browser("wait", "--fn", code);
 const text = () => evaluate('return document.querySelector("dialog[open]").textContent;');
 const url = () => evaluate('return document.querySelector(".invite-link-share input").value;');
-const destination = () => evaluate('return document.querySelector(".invite-link-destination select").value;');
-const chooseChannel = (id) => {
-  browser("select", ".invite-link-destination select", id);
-  wait('!!document.querySelector(".invite-link-more:not(:disabled)")');
-};
 const click = (name) => browser("find", "role", "button", "click", "--name", name, "--exact");
 const open = () => {
   click("Invite people");
@@ -83,8 +78,12 @@ try {
   const initial = url();
   assert.match(initial, /\/invite\/[a-zA-Z0-9]{10}$/);
   assert.match(text(), /Anyone with this link can join this space.*100 joins.*30 days/);
-  assert.match(text(), /100 of 100 joins remaining · Expires in 30 days/);
-  assert.equal(destination(), "chan00000001");
+  assert.match(text(), /#general · 100 of 100 joins remaining · Expires in 30 days/);
+  assert.equal(
+    evaluate('return [...document.querySelectorAll("dialog select")].some(select => select.checkVisibility());'),
+    false,
+    "The normal invite flow has no destination or settings picker",
+  );
   assert.doesNotMatch(text(), /\bdefault\b/i);
   assert.doesNotMatch(text(), /Space name|Save name|Delete space|Remove/);
   assert.equal(evaluate('return document.querySelector(".invite-link-settings").open;'), false);
@@ -112,6 +111,7 @@ try {
   click("Regenerate link");
   wait('document.querySelectorAll("dialog[open]").length === 2');
   assert.equal(evaluate("return document.activeElement?.textContent;"), "Cancel");
+  assert.doesNotMatch(text(), /Existing members (stay|remain)/);
   capture("web-invite-regenerate-confirmation");
   browser("press", "Enter");
   wait('document.querySelectorAll("dialog[open]").length === 1');
@@ -153,32 +153,11 @@ try {
     false,
   );
   assert.equal(live.links.length, 1);
+  assert.equal(live.links[0].channel.id, "chan00000001", "Regeneration retains the default destination");
   close();
   open();
   assert.equal(url(), regenerated, "Reopening selects the regenerated code");
   capture("web-invite-regenerated");
-  chooseChannel("chan00000002");
-  const designLink = url();
-  assert.notEqual(designLink, regenerated);
-  assert.equal(destination(), "chan00000002");
-  assert.match(text(), /#design · 100 of 100 joins remaining/);
-  capture("web-invite-channel-selected");
-  await control({
-    failure: { path: "/api/spaces/space0000001/invite-links/default", method: "POST", status: 503, persistent: true },
-  });
-  chooseChannel("chan00000001");
-  assert.equal(url(), designLink, "Failed selection preserves the previous link");
-  assert.equal(destination(), "chan00000002", "Failed selection preserves the previous channel");
-  assert.match(text(), /requested failure/);
-  capture("web-invite-channel-error");
-  await control({ clearFailures: true });
-  options();
-  click("Regenerate link");
-  confirm("Regenerate link");
-  wait(`document.querySelector('.invite-link-share input')?.value !== ${JSON.stringify(designLink)}`);
-  assert.equal(destination(), "chan00000002", "Regeneration retains the chosen channel");
-  chooseChannel("chan00000001");
-  assert.equal(url(), regenerated, "Switching back reuses the unchanged old link");
   settings();
   assert.equal(evaluate('return document.querySelector(".invite-link-expiry input").value;'), "30");
   assert.equal(evaluate('return document.querySelector(".invite-link-options label input").value;'), "100");
@@ -286,12 +265,12 @@ try {
   await changeChannel("chan00000001", "welcome", false);
   await changeChannel("chan00000002", "general", false);
   reopenSpace();
-  assert.equal(destination(), "chan00000001", "Oldest public channel wins even when a newer one is named general");
+  // The server picks the oldest public channel, not the newer one named general.
   assert.match(text(), /#welcome · 100 of 100 joins remaining/);
   close();
   await changeChannel("chan00000001", "welcome", true);
   reopenSpace();
-  assert.equal(destination(), "chan00000002", "Private channels are excluded");
+  assert.match(text(), /#general · 100 of 100 joins remaining/, "Private channels are excluded");
   capture("web-invite-default-fallback");
   settings();
   assert.equal(
@@ -302,7 +281,6 @@ try {
   await changeChannel("chan00000002", "general", true);
   reopenSpace();
   assert.match(text(), /People will join the space without opening a channel/);
-  assert.equal(evaluate('return document.querySelector(".invite-link-destination select").disabled;'), true);
   capture("web-invite-no-public-channel");
   settings();
   assert.equal(
@@ -310,7 +288,7 @@ try {
     "No public channels",
   );
   console.log(
-    "PASS: safe regeneration/deactivation confirmations, Cancel/Enter/Escape preserve shared links, separate custom-link deactivation, channel picker, failure recovery, 30-day/100-join defaults, copy, narrow layout/scroll and username invitations.",
+    "PASS: copy-first invites without a main destination picker, safe regeneration/deactivation confirmations, Cancel/Enter/Escape preserve shared links, separate custom-link destinations and deactivation, failure recovery, 30-day/100-join defaults, narrow layout/scroll and username invitations.",
   );
 } finally {
   browser("close");

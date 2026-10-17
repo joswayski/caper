@@ -4919,10 +4919,6 @@ impl CaperApp {
     }
 
     fn ensure_default_invite_link(&mut self) {
-        self.prepare_invite_link(None);
-    }
-
-    fn prepare_invite_link(&mut self, channel: Option<String>) {
         if self.invite_links.creating || !self.invite_links.revoking.is_empty() {
             return;
         }
@@ -4934,7 +4930,7 @@ impl CaperApp {
             self.invite_links.error = None;
             self.account_op(AccountOperation::EnsureDefaultInviteLink {
                 space,
-                channel,
+                channel: None,
                 request: self.invite_join.request,
             });
         }
@@ -19415,24 +19411,6 @@ impl CaperApp {
             return;
         }
         ui.label("Anyone with this link can join. New links allow 100 joins for 30 days.");
-        let channels = self.invite_channel_choices();
-        let mut selected = self
-            .invite_links
-            .default_link
-            .as_ref()
-            .and_then(|link| link.channel.as_ref().map(|channel| channel.id.clone()))
-            .or_else(|| channels.first().and_then(|(id, _)| id.clone()));
-        let previous = selected.clone();
-        invite_picker(
-            ui,
-            "Opens in",
-            &channels,
-            &mut selected,
-            !self.invite_links.creating && self.invite_links.revoking.is_empty(),
-        );
-        if selected != previous {
-            self.prepare_invite_link(selected);
-        }
         if let Some(link) = self.invite_links.default_link.clone() {
             let url = invites::invite_url(&self.api_base, &link.code);
             ui.label(RichText::new(&url).monospace());
@@ -19466,7 +19444,7 @@ impl CaperApp {
         } else if self.invite_links.creating {
             ui.label("Preparing invite link…");
         } else {
-            ui.label("Opening this dialog again prepares a new link. Existing members remain.");
+            ui.label("Opening this dialog again prepares a new link.");
             if primary_button(ui, "Create another link", true).clicked() {
                 self.ensure_default_invite_link();
             }
@@ -19722,9 +19700,7 @@ impl CaperApp {
         } else {
             "Deactivate link?"
         }));
-        ui.label(
-            "The shared old URL will stop accepting new joins. Existing members stay in the space.",
-        );
+        ui.label("The shared old URL will stop accepting new joins.");
         if regenerate {
             ui.label("The replacement link resets to 30 days and 100 joins.");
         }
