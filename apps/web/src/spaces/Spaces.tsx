@@ -3204,7 +3204,7 @@ export default function Spaces({
       </button>
     </p>
   );
-  const channelNavigation = (voiceFor: (channelId: string) => VoiceSlot | null) => (
+  const channelNavigation = (voiceFor: (channelId: string) => VoiceSlot | null, liveNow: ReactNode) => (
     <nav
       ref={channelNavigationRef}
       className="channel-navigation"
@@ -3296,6 +3296,8 @@ export default function Spaces({
         </header>
       )}
       {notificationAlert(`space:${detail.space.id}`)}
+      {/* Where people are talking now, and your call, above the channels. */}
+      {liveNow}
       {!!detail.space.id && !detail.space.demo && (
         <div className="channel-section-heading">
           <button
@@ -3397,7 +3399,7 @@ export default function Spaces({
                       <span className="sr-only">, muted</span>
                     </>
                   )}
-                  {voice?.timer}
+                  {voice?.live}
                 </button>
                 {voice?.join}
                 {!detail.space.demo && (
@@ -3466,9 +3468,7 @@ export default function Spaces({
                     </div>
                   </details>
                 )}
-                {voice?.summary}
               </div>
-              {voice?.list}
               {notificationAlert(`channel:${item.id}`)}
             </li>
           );
@@ -3608,7 +3608,8 @@ export default function Spaces({
         }
         stage={emptyStage || undefined}
         space={{ id: detail.space.id, name: detail.space.name, demo: detail.space.demo }}
-        voiceChannels={joinedChannels.map((item) => ({ id: item.id, name: item.name }))}
+        voiceChannels={joinedChannels.map((item) => ({ id: item.id, name: item.name, private: item.private }))}
+        onOpenChannel={(spaceId, channelId) => choose(spaceId ?? detail.space.id, channelId)}
         headerMenuItems={visitView ? undefined : directMenuItems}
         channelActions={
           visitView ? undefined : currentDirect ? (

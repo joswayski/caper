@@ -625,13 +625,6 @@
 .spaces-room .channel-navigation ul[data-collapsed] {
   display: none;
 }
-/* Collapsing navigation keeps the active call's channel and roster in view. */
-.spaces-room #space-channel-list[data-collapsed]:has(.channel-voice[data-active]) {
-  display: grid;
-}
-.spaces-room #space-channel-list[data-collapsed] > li:not(:has(.channel-voice[data-active])) {
-  display: none;
-}
 .spaces-room .channel-navigation[data-demo] > ul {
   min-height: 54px;
   align-content: center;

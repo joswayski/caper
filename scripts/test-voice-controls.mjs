@@ -5,9 +5,9 @@
 // Focus on DM navigation, hover menus and ringless focus with VOICE_TEST_SIDEBAR=1.
 // Focus on stable channel rows with VOICE_TEST_CHANNEL_ROWS=1.
 // Focus only on avatar borders with VOICE_TEST_AVATARS=1.
-// Focus on the profile/voice dock with VOICE_TEST_DOCK=1.
+// Focus on the connected account bar and call card links with VOICE_TEST_DOCK=1.
 // Focus on click-time/shared timers with VOICE_TEST_TIMERS=1.
-// Check the channel-centric redesign with VOICE_TEST_REDESIGN=1.
+// Check Live now (call card, live rooms, row joins, phone strip) with VOICE_TEST_REDESIGN=1.
 // Serve an interactive, explicitly simulated preview with VOICE_TEST_PREVIEW=1.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -63,9 +63,9 @@ const openBrowse = () => {
   if (evaluate(`return !document.querySelector('.navigation-open');`)) click("Back to Browse");
   browser("wait", "600");
 };
-// Whether a channel row in the current space shows the active call's roster.
+// Whether your call card names this channel and its row marks the call as yours.
 const connectedRow = (name) =>
-  `[...document.querySelectorAll('#space-channel-list > li')].some(li => li.querySelector('.channel-select')?.textContent === ${JSON.stringify(name)} && li.querySelector('.channel-voice[data-active]'))`;
+  `document.querySelector('.live-call .live-channel > span')?.textContent === ${JSON.stringify(name)} && [...document.querySelectorAll('#space-channel-list > li')].some(li => li.querySelector('.channel-select > span')?.textContent === ${JSON.stringify(name)} && li.querySelector('.channel-live[data-active]'))`;
 const centeredDialog = () => {
   // Measure after the dialog's entrance animation (a short translate) settles.
   wait(`!document.querySelector('dialog[open]').getAnimations().some(a => a.playState === 'running')`);
@@ -200,6 +200,8 @@ async function fixture() {
       });
     if (path.endsWith("/typing")) return new Response(null, { status: 204 });
     if (path === "/api/media/status") return Response.json({ enabled: true });
+    // No release highlights in this fixture; What's new stays closed.
+    if (path === "/api/whats-new") return Response.json({ error: "Fixture" }, { status: 404 });
     if (path === "/api/media/presence" || path === "/api/media/snapshot")
       return Response.json(snapshot(options.channelId));
     if (path === "/api/media/join") {
@@ -526,7 +528,7 @@ try {
   browser("wait", "1500");
   evaluate(`await (${fixture.toString()})();`);
   wait(
-    `document.querySelector('#chat-message:not(:disabled)') && document.querySelector('.voice-button[aria-disabled="false"]')`,
+    `document.querySelector('#chat-message:not(:disabled)') && document.querySelector('.channel-join[aria-disabled="false"]')`,
   );
   if (process.env.VOICE_TEST_SIDEBAR === "1") {
     const channelGeometry = () =>
@@ -541,7 +543,7 @@ try {
     for (const width of [1280, 390]) {
       browser("set", "viewport", String(width), "900", "2");
       evaluate(`voiceFixture.publishPresence([]); voiceFixture.showSpaces(${width === 1280});`);
-      wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha'`);
+      wait(`document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha'`);
       if (width === 390) click("Back to Browse");
       evaluate(
         `await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); document.activeElement.blur();`,
@@ -615,7 +617,7 @@ try {
         browser("hover", '.channel-line:has([aria-label="Join voice in #beta"])');
         click("Join voice in #beta");
       } else {
-        // Touch hides the row shortcut (people join from #beta's header); its handler is the same.
+        // Touch shows quiet rows' shortcut at rest; its handler is the same.
         evaluate(`document.querySelector('[aria-label="Join voice in #beta"]').click();`);
       }
       wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('[aria-label="Leave voice"]')`);
@@ -629,7 +631,7 @@ try {
         click("Back to Browse");
       }
       browser("find", "role", "button", "click", "--name", "alpha", "--exact");
-      wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha'`);
+      wait(`document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha'`);
       if (width === 390) click("Back to Browse");
       const leaves = evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`);
       browser("click", ".direct-self");
@@ -640,6 +642,13 @@ try {
         "Opening a DM must preserve an active voice connection",
       );
       assert.equal(evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`), leaves);
+      if (width === 390) {
+        // Phones read the DM under the call's strip; tapping it opens Browse, where Leave is.
+        assert.ok(evaluate(`return !!document.querySelector('.voice-strip .voice-strip-open');`));
+        browser("click", ".voice-strip .voice-strip-open");
+        settleBrowse();
+        wait(`document.querySelector('.navigation-open .live-call')`);
+      }
       click("Leave voice");
       wait(`voiceFixture.client.phase === 'idle'`);
     }
@@ -651,14 +660,14 @@ try {
       inviter: { id: "inviter", username: "inviter", displayName: "Inviter" } }];
       voiceFixture.showSpaces(true);`);
     wait(
-      `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`,
+      `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha' && document.querySelector('.channel-join[aria-disabled="false"]')`,
     );
     const mediaLeaves = () => evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`);
     click("Other test space");
     wait(
-      `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'lobby' && document.querySelector('.voice-button[aria-disabled="false"]')`,
+      `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'lobby' && document.querySelector('.channel-join[aria-disabled="false"]')`,
     );
-    click("Join voice");
+    click("Join voice in #lobby");
     wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('[aria-label="Leave voice"]')`);
     let leaves = mediaLeaves();
     evaluate(`voiceFixture.otherDeleted = true; window.dispatchEvent(new Event("focus"));`);
@@ -666,9 +675,9 @@ try {
     assert.equal(mediaLeaves(), leaves + 1, "A call whose channel disappears still ends in the empty view");
     click("Test space");
     wait(
-      `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`,
+      `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha' && document.querySelector('.channel-join[aria-disabled="false"]')`,
     );
-    click("Join voice");
+    click("Join voice in #alpha");
     wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('[aria-label="Leave voice"]')`);
     leaves = mediaLeaves();
     click("Other test space");
@@ -679,19 +688,21 @@ try {
       "A space with no joined channel keeps the call",
     );
     assert.equal(mediaLeaves(), leaves);
-    assert.match(
-      evaluate(`return document.querySelector('.voice-dock .connected-channel')?.textContent ?? '';`),
-      /alpha \/ Test space/,
-      "The dock keeps the call's channel and leave control",
+    assert.equal(
+      evaluate(
+        `const card = document.querySelector('.live-call'); return card && card.querySelector('.live-channel').textContent + '|' + !!card.querySelector('[aria-label="Leave voice"]');`,
+      ),
+      "alphaTest space|true",
+      "Your call card names the call's channel and space, with Leave",
     );
     screenshot("empty-space-in-call-1280");
     browser("set", "viewport", "390", "844", "2");
     wait(`document.querySelector('.empty-channel')?.getBoundingClientRect().width < 390`);
     assert.equal(evaluate(`return document.documentElement.scrollWidth > innerWidth;`), false);
-    // Phones show the empty space alone; Browse keeps the call's dock and Leave.
+    // Phones show the empty space alone; Browse keeps your call card and Leave.
     openBrowse();
     assert.ok(
-      evaluate(`const r = document.querySelector('.voice-dock [aria-label="Leave voice"]').getBoundingClientRect();
+      evaluate(`const r = document.querySelector('.live-call [aria-label="Leave voice"]').getBoundingClientRect();
         return r.width > 0 && r.top >= 0 && r.bottom <= innerHeight;`),
       "Phones reach the call's Leave from Browse",
     );
@@ -734,70 +745,92 @@ try {
       "PASS DM row geometry, voice retention/join from DMs, calls kept across empty spaces and rail invitations, cold DM/no-space routes, hover/open/keyboard menus, ringless click/keyboard focus and 6px channel gaps at 1280px/390px (mock signaling/WebRTC)",
     );
   } else if (process.env.VOICE_TEST_REDESIGN === "1") {
+    // Live now: your call card and other live rooms above the channels, one-click
+    // joins from rooms and rows, no voice in the conversation header, and a strip
+    // under it on phones.
     evaluate(`voiceFixture.timerEnabled = true; voiceFixture.showSpaces();`);
-    wait(`document.querySelector('[aria-label="Join voice"]')?.getAttribute('aria-disabled') === 'false'`);
+    wait(`document.querySelector('[aria-label="Join voice in #alpha"]')?.getAttribute('aria-disabled') === 'false'`);
     const footerControls = () => {
       for (const label of ["Input Options", "Output Options", "User Settings"]) {
         assert.equal(evaluate(`return document.querySelectorAll('[aria-label="${label}"]').length;`), 1);
       }
       assert.equal(evaluate(`return document.querySelectorAll('.call-account .voice-action-group').length;`), 2);
     };
+    const current = (name) =>
+      `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === '${name}'`;
+    // Phones: close Browse onto the conversation the current row opens.
+    const readConversation = () => {
+      browser("click", '.channel-select[aria-current="page"]');
+      settleBrowse();
+      wait(`!document.querySelector('.navigation-open')`);
+    };
+    const lastJoin = () =>
+      evaluate(`return voiceFixture.commands.filter(command => command.method === 'media.join').at(-1).channelId;`);
     for (const width of [1280, 390]) {
+      const phone = width === 390;
       browser("set", "viewport", String(width), "900", "2");
-      if (width === 390 && !evaluate(`return !!document.querySelector('.navigation-open');`)) click("Back to Browse");
-      // Each pass starts in #alpha, the channel whose header and roster it checks.
-      if (
-        evaluate(
-          `return document.querySelector('.channel-select[aria-current="page"] > span:first-of-type')?.textContent !== 'alpha';`,
-        )
-      ) {
-        if (width === 390) openBrowse();
+      if (phone) openBrowse();
+      // Each pass starts in #alpha, where Maya and Alex are talking.
+      if (!evaluate(`return ${current("alpha")};`)) {
         browser("click", "#space-channel-list > li:first-child .channel-select");
-        wait(
-          `document.querySelector('.channel-select[aria-current="page"] > span:first-of-type')?.textContent === 'alpha'`,
-        );
-        if (width === 390) openBrowse();
+        wait(current("alpha"));
+        if (phone) openBrowse();
       }
       evaluate(`voiceFixture.sessionStartedAt = Date.now() - 37000; voiceFixture.publishPresence([
         {id:'peer',name:'Maya',avatarId:31,muted:false,deafened:false,tracks:[]},
         {id:'other',name:'Alex',avatarId:799,muted:true,deafened:false,tracks:[]}
       ]);`);
-      wait(`document.querySelector('.voice-stack-count')?.textContent === '2 in voice'`);
+      wait(`document.querySelector('.live-room')?.getAttribute('aria-label') === 'Voice in #alpha, 2 in voice'`);
+      browser("mouse", "move", "5", "5");
       footerControls();
+      assert.deepEqual(
+        evaluate(`const room = document.querySelector('.live-room'), join = room.querySelector('.live-join');
+          return [document.querySelector('.live-now-heading').textContent, room.querySelector('.live-channel').textContent,
+            room.querySelector('.live-names').textContent, room.querySelectorAll('.live-stack .live-avatar').length,
+            !!room.querySelector('[role="timer"]'), join.textContent, getComputedStyle(join).backgroundColor];`),
+        ["Live now", "alpha", "Maya and Alex", 2, true, "Join", "rgb(241, 237, 228)"],
+        "A live room shows its people, timer and an eggshell Join",
+      );
       assert.equal(
         evaluate(
-          `return [...document.querySelectorAll('.channel-line')].filter(line => line.querySelector('.channel-voice')).map(line => line.querySelector('.channel-select > span').textContent).join();`,
+          `return [...document.querySelectorAll('.channel-line')].filter(line => line.querySelector('.channel-live')).map(line => line.querySelector('.channel-select > span').textContent + ':' + line.querySelector('.channel-live').getAttribute('aria-label')).join();`,
         ),
-        "alpha",
-        "Only occupied channels show a voice line",
+        "alpha:2 in voice",
+        "Only occupied rows carry the live mark",
       );
       assert.equal(
-        evaluate(`return document.querySelector('.header-voice-join .channel-join-label')?.textContent;`),
-        "Join voice",
-      );
-      assert.equal(
-        evaluate(`return document.querySelector('.header-voice-people')?.getAttribute('aria-label');`),
-        "Maya and Alex are in voice",
-      );
-      const captures = evaluate(`return voiceFixture.captures.length;`);
-      if (
-        evaluate(
-          `return document.querySelector('.channel-line:has(.channel-select[aria-current="page"]) .voice-stack').getAttribute('aria-expanded') === 'false';`,
-        )
-      )
-        browser("click", '.channel-line:has(.channel-select[aria-current="page"]) .voice-stack');
-      wait(`!document.querySelector('#voice-occupants-alpha0000000 .voice-occupants-inner').inert`);
-      assert.equal(
-        evaluate(`return voiceFixture.captures.length;`),
-        captures,
-        "Previewing participants must not open the microphone",
-      );
-      assert.equal(
-        evaluate(`return document.querySelectorAll('.participant-menu-button').length;`),
+        evaluate(`return document.querySelectorAll('.participant-menu-button, .live-call, .live-everyone').length;`),
         0,
-        "Spectators have no audio controls",
+        "Spectators have no call card or audio controls",
       );
-      screenshot(`voice-redesign-idle-${width}`);
+      screenshot(`voice-live-browse-${width}`);
+      if (phone) readConversation();
+      assert.equal(
+        evaluate(
+          `return !!document.querySelector('.chat-heading :is(.channel-join, .voice-hangup, .live-toggle, .live-face, .header-voice)');`,
+        ),
+        false,
+        "The conversation header carries no voice controls",
+      );
+      assert.match(evaluate(`return document.querySelector('.chat-title-subtitle')?.textContent ?? '';`), /2 in voice/);
+      if (phone) {
+        assert.deepEqual(
+          evaluate(`const strip = document.querySelector('.voice-strip');
+            return strip && [strip.querySelector('strong').textContent, strip.querySelector('.voice-strip-detail').textContent,
+              strip.querySelector('.live-join').getAttribute('aria-label')];`),
+          ["2 talking", "Maya and Alex", "Join voice in #alpha"],
+          "Phones show the open channel's live room under the header",
+        );
+        assert.ok(
+          evaluate(`const strip = document.querySelector('.voice-strip').getBoundingClientRect(), header = document.querySelector('.chat-heading').getBoundingClientRect();
+            return Math.abs(strip.top - header.bottom) <= 1 && strip.height === 56;`),
+          "The strip sits directly under the header",
+        );
+        screenshot(`voice-live-strip-idle-${width}`);
+        openBrowse();
+      } else {
+        assert.equal(evaluate(`return !!document.querySelector('.voice-strip');`), false, "Wide layouts have no strip");
+      }
 
       click("Input Options");
       browser("select", 'select[name="input-device"]', "headset");
@@ -808,7 +841,6 @@ try {
         evaluate(`return document.querySelector('[aria-label="Input volume"]').getAttribute('aria-valuenow');`),
         "10",
       );
-      screenshot(`voice-redesign-prejoin-input-${width}`);
       browser("press", "Escape");
       click("Output Options");
       browser("select", 'select[name="output-device"]', "headphones");
@@ -822,28 +854,47 @@ try {
       browser("press", "Escape");
       click("Mute microphone");
       click("Deafen audio");
-      // Phones join from the conversation header, outside Browse.
-      if (width === 390) {
-        browser("click", '.channel-select[aria-current="page"]');
-        browser("wait", "600"); // Let Browse close before the header takes focus.
-      }
-      browser("focus", '[aria-label="Join voice"]');
+      const captures = evaluate(`return voiceFixture.captures.length;`);
+      // Desktop joins from the room card; phones from the strip, staying in the conversation.
+      if (phone) {
+        readConversation();
+        browser("focus", ".voice-strip .live-join");
+      } else browser("focus", ".live-room .live-join");
       browser("press", "Enter");
-      wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('.header-voice .voice-hangup')`);
-      wait(`document.querySelector('#voice-occupants-alpha0000000')?.hasAttribute('data-open')`);
-      assert.equal(
+      wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('.live-call')`);
+      assert.equal(lastJoin(), "alpha0000000");
+      assert.equal(evaluate(`return voiceFixture.captures.length;`), captures + 1);
+      assert.ok(
         evaluate(
-          `return document.activeElement.closest('.header-voice') && document.activeElement.getAttribute('aria-label');`,
+          phone
+            ? `return document.activeElement.matches('.voice-strip .voice-strip-open');`
+            : `return document.activeElement.matches('.live-call .voice-hangup');`,
         ),
-        "Leave voice",
-        "Join transfers keyboard focus to the header's Leave control",
+        "Join hands keyboard focus to your call (its strip on phones, Leave on its card)",
       );
-      assert.equal(
-        evaluate(`return document.querySelectorAll('.voice-dock [aria-label="Leave voice"]').length;`),
-        1,
-        "The dock keeps Leave wherever you browse",
+      if (phone) {
+        assert.deepEqual(
+          evaluate(`const strip = document.querySelector('.voice-strip');
+            return [strip.querySelector('strong').textContent, !!strip.querySelector('[role="timer"]'),
+              strip.querySelector('.live-toggle').getAttribute('aria-label'), strip.querySelectorAll('.live-avatar').length,
+              !!document.querySelector('.navigation-open')];`),
+          ["#alpha", true, "Unmute microphone", 2, false],
+          "Joining keeps the conversation, under your call's strip",
+        );
+        screenshot(`voice-live-strip-connected-${width}`);
+        // Tapping the strip opens Browse, where your call card is.
+        browser("click", ".voice-strip .voice-strip-open");
+        settleBrowse();
+        wait(`document.querySelector('.navigation-open .live-call')`);
+      }
+      assert.deepEqual(
+        evaluate(`const card = document.querySelector('.live-call');
+          return [card.querySelector('.live-channel').textContent, card.querySelector('.live-status').textContent,
+            !!card.querySelector('[role="timer"]'), [...card.querySelectorAll('.live-face')].map(face => face.getAttribute('aria-label')),
+            document.querySelectorAll('.live-room').length, document.querySelectorAll('[aria-label="Leave voice"]').length];`),
+        ["alpha", "You’re in · 3", true, ["UI fixture (you), deafened", "Maya", "Alex, muted"], 0, 1],
+        "Your call card: channel, count, timer, you first with badges, and one Leave",
       );
-      if (width === 390) openBrowse();
       assert.equal(evaluate(`return voiceFixture.devices.at(-1);`), "headset");
       assert.deepEqual(
         evaluate(`return [voiceFixture.client.muted, voiceFixture.client.deafened, voiceFixture.client.inputVolume];`),
@@ -852,10 +903,29 @@ try {
       footerControls();
       evaluate(`document.activeElement.blur();`);
       browser("mouse", "move", "5", "5");
-      screenshot(`voice-redesign-connected-${width}`);
+      screenshot(`voice-live-connected-${width}`);
+      // A face opens the full list with that person's audio controls.
+      browser("click", '.live-call .live-face[aria-label="Alex, muted"]');
+      wait(`document.activeElement === document.querySelector('.live-everyone [aria-label="Alex volume"]')`);
+      assert.ok(
+        evaluate(`const list = document.querySelector('.live-everyone').getBoundingClientRect(), menu = document.querySelector('.participant-volume'), r = menu.getBoundingClientRect();
+          return list.top >= 0 && list.bottom <= innerHeight + 1 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth
+            && menu.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))
+            && ${phone ? "Math.abs(list.bottom - innerHeight) <= 1" : "list.left >= document.querySelector('.people-panel').getBoundingClientRect().right - 1"};`),
+        phone ? "Phones open the list as a bottom sheet" : "The list opens beside the sidebar",
+      );
+      assert.equal(
+        evaluate(`return document.querySelector('.live-everyone-heading p').textContent;`),
+        "In #alpha3 people",
+      );
+      screenshot(`voice-live-everyone-${width}`);
+      browser("press", "Escape");
+      wait(`!document.querySelector('.participant-volume') && document.querySelector('.live-everyone:popover-open')`);
+      browser("press", "Escape");
+      wait(`!document.querySelector('.live-everyone')`);
       evaluate(`voiceFixture.joinedTrack = voiceFixture.captures.at(-1);`);
 
-      if (width === 1280) {
+      if (!phone) {
         browser("click", '[aria-controls="space-channel-list"]');
         assert.ok(
           evaluate(
@@ -866,108 +936,132 @@ try {
         browser("click", '[aria-controls="space-channel-list"]');
       }
       browser("find", "role", "button", "click", "--name", "beta", "--exact");
-      wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'beta'`);
-      if (width === 390) {
-        wait(`document.querySelector('.voice-pinned .participant')`);
+      wait(current("beta"));
+      assert.equal(evaluate(`return voiceFixture.joinedTrack.readyState;`), "live");
+      if (phone) {
+        assert.equal(
+          evaluate(`return document.querySelector('.voice-strip strong')?.textContent;`),
+          "#alpha",
+          "Reading another channel keeps your call's strip",
+        );
       } else {
         assert.ok(
-          evaluate(`return !!document.querySelector('#voice-occupants-alpha0000000[data-open]');`),
-          "Browsing another chat keeps the active channel's roster inline",
+          evaluate(
+            `return ${connectedRow("alpha")} && !!document.querySelector('[aria-label="Switch voice to #beta"]');`,
+          ),
+          "Reading another channel keeps your call card; its row offers Switch",
         );
       }
-      assert.equal(evaluate(`return voiceFixture.joinedTrack.readyState;`), "live");
-      assert.equal(evaluate(`return document.querySelectorAll('[aria-label="Leave voice"]').length;`), 1);
-      screenshot(`voice-redesign-browsing-${width}`);
-      if (width === 390) openBrowse();
+      screenshot(`voice-live-browsing-${width}`);
+      if (phone) openBrowse();
       click("Other test space");
-      wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'lobby'`);
-      if (width === 390) {
-        // Phones show the lobby conversation with the call's mute; its roster and dock wait in Browse.
-        assert.ok(
-          evaluate(
-            `return !!document.querySelector('.header-voice .header-voice-mute') && document.querySelector('.header-voice-join')?.textContent === 'Switch here';`,
-          ),
-        );
+      wait(current("lobby"));
+      if (phone) {
+        assert.equal(evaluate(`return document.querySelector('.voice-strip strong')?.textContent;`), "#alpha");
         openBrowse();
       }
-      wait(`document.querySelector('.voice-pinned .participant')`);
+      assert.equal(
+        evaluate(`return document.querySelector('.live-call .live-channel')?.textContent;`),
+        "alphaTest space",
+        "Your call card names its space while you are elsewhere",
+      );
       assert.equal(
         evaluate(`return voiceFixture.joinedTrack.readyState;`),
         "live",
         "Switching spaces does not leave voice",
       );
-      assert.equal(
-        evaluate(`return document.querySelectorAll('.participant').length;`),
-        3,
-        "Pinned roster is rendered only once",
-      );
       assert.equal(evaluate(`return document.querySelectorAll('[aria-label="Leave voice"]').length;`), 1);
       footerControls();
-      assert.ok(
-        evaluate(
-          `const roster = document.querySelector('.voice-pinned').getBoundingClientRect(), footer = document.querySelector('.call-account').getBoundingClientRect(); return roster.bottom <= footer.top && footer.top - roster.bottom < 20;`,
-        ),
-        "Off-space roster is pinned above the audio footer",
-      );
-      screenshot(`voice-redesign-other-space-${width}`);
-      browser("hover", '.voice-pinned .participant:has([aria-label="Audio controls for Alex"])');
-      click("Audio controls for Alex");
-      assert.ok(
-        evaluate(
-          `const menu = document.querySelector('.participant-volume'), r = menu.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth && menu.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));`,
-        ),
-        "Pinned participant controls open upward and remain fully reachable",
-      );
-      screenshot(`voice-redesign-pinned-audio-${width}`);
-      browser("press", "Escape");
+      screenshot(`voice-live-other-space-${width}`);
       click("Leave voice");
-      wait(`voiceFixture.client.phase === 'idle' && !document.querySelector('.voice-pinned')`);
+      wait(`voiceFixture.client.phase === 'idle' && !document.querySelector('.live-call')`);
       assert.equal(evaluate(`return voiceFixture.joinedTrack.readyState;`), "ended");
       footerControls();
       click("Undeafen audio");
       if (evaluate(`return !!document.querySelector('[aria-label="Unmute microphone"]');`)) click("Unmute microphone");
-      if (width === 390) openBrowse();
       click("Test space");
       wait(`document.querySelector('.space-menu h1')?.textContent === 'Test space'`);
-      if (width === 390) openBrowse();
-      browser("click", "#space-channel-list > li:first-child .channel-select");
+      if (phone) openBrowse();
+      // A row joins in one click without opening that channel; another row switches.
+      const reading = evaluate(
+        `return document.querySelector('.channel-select[aria-current="page"] > span')?.textContent;`,
+      );
+      browser("click", '.channel-line [aria-label="Join voice in #alpha"]');
+      wait(`voiceFixture.client.phase === 'connected' && ${connectedRow("alpha")}`);
+      browser("click", '.channel-line [aria-label="Switch voice to #beta"]');
+      // (Timed fixtures report people only in #alpha, so #beta's row has no live mark.)
       wait(
-        `document.querySelector('.channel-select[aria-current="page"] > span:first-of-type')?.textContent === 'alpha'`,
+        `voiceFixture.client.phase === 'connected' && document.querySelector('.live-call .live-channel > span')?.textContent === 'beta'`,
       );
-      if (width === 390) browser("wait", "600"); // Let Browse close before the header takes clicks.
-      click("Join voice");
-      wait(`voiceFixture.client.phase === 'connected'`);
-      if (width === 390) openBrowse();
-      browser("find", "role", "button", "click", "--name", "beta", "--exact");
-      wait(`document.querySelector('.header-voice-join')?.textContent === 'Switch here'`);
-      if (width === 390) browser("wait", "600"); // Let Browse close before the header takes clicks.
-      browser("click", ".header-voice-join");
-      wait(`voiceFixture.client.phase === 'connected' && document.querySelector('.header-voice .voice-hangup')`);
-      assert.equal(
-        evaluate(`return voiceFixture.commands.filter(command => command.method === 'media.join').at(-1).channelId;`),
-        "beta00000000",
-      );
-      browser("click", ".header-voice .voice-leave");
+      assert.equal(lastJoin(), "beta00000000");
+      assert.ok(evaluate(`return ${current(reading)};`), "Joining from a row keeps the conversation you are reading");
+      click("Leave voice");
       wait(`voiceFixture.client.phase === 'idle'`);
-      if (width === 390 && !evaluate(`return !!document.querySelector('.navigation-open');`)) click("Back to Browse");
     }
+    // Busy spaces: two room cards, the rest folded into one row.
+    browser("set", "viewport", "1280", "900", "2");
+    evaluate(`voiceFixture.timerEnabled = false; voiceFixture.publishPresence([
+      {id:'peer',name:'Maya',avatarId:31,muted:false,deafened:false,tracks:[]},
+      {id:'other',name:'Alex',avatarId:799,muted:true,deafened:false,tracks:[]}
+    ]);`);
+    wait(`document.querySelectorAll('.live-room').length === 2`);
+    assert.deepEqual(
+      evaluate(
+        `return [document.querySelector('.live-now-heading span')?.textContent, [...document.querySelectorAll('.live-room .live-channel')].map(node => node.textContent), document.querySelector('.live-more-rooms')?.textContent];`,
+      ),
+      ["3 rooms", ["alpha", "beta"], "1 more live#planning-for-the-next-release"],
+      "Rooms beyond two fold into one row",
+    );
+    browser("click", ".live-more-rooms");
+    wait(`document.querySelectorAll('.live-room').length === 3`);
+    assert.equal(evaluate(`return document.querySelector('.live-more-rooms').textContent;`), "Show less");
+    screenshot("voice-live-rooms-1280");
+    browser("click", ".live-more-rooms");
+    wait(`document.querySelectorAll('.live-room').length === 2`);
+    // Crowded calls: nine faces and a +N tile that opens everyone.
+    browser("click", '.live-room [aria-label="Join voice in #alpha"]');
+    wait(`voiceFixture.client.phase === 'connected' && document.querySelector('.live-call')`);
+    evaluate(`const client = voiceFixture.client;
+      client.participants = [client.participants.find(person => person.id === 'self'), ...Array.from({ length: 12 }, (_, i) =>
+        ({ id: 'crowd' + i, name: 'Crowd ' + (i + 1), avatarId: i + 1, muted: false, deafened: false, tracks: [] }))];
+      client.emit();`);
+    wait(`document.querySelectorAll('.live-call .live-face').length === 9`);
+    assert.deepEqual(
+      evaluate(`const more = document.querySelector('.live-call .live-more'), tops = new Set([...document.querySelectorAll('.live-call .live-faces > li')].map(li => Math.round(li.getBoundingClientRect().top)));
+        return [more.textContent, more.getAttribute('aria-label'), tops.size, document.querySelector('.live-call .live-status').textContent];`),
+      ["+4", "4 more: Crowd 9, Crowd 10 and 2 more. Show everyone.", 2, "You’re in · 13"],
+      "Thirteen people fit two rows: nine faces and +4",
+    );
+    browser("click", ".live-call .live-more");
+    wait(`document.querySelectorAll('.live-everyone .participant').length === 13`);
+    assert.ok(
+      evaluate(
+        `const list = document.querySelector('.live-everyone'), r = list.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && list.querySelector('ul').scrollHeight >= list.querySelector('ul').clientHeight;`,
+      ),
+      "The full list stays within the viewport",
+    );
+    screenshot("voice-live-crowd-1280");
+    browser("press", "Escape");
+    click("Leave voice");
+    wait(`voiceFixture.client.phase === 'idle'`);
     evaluate(`await voiceFixture.cleanup();`);
     console.log(
-      "PASS voice redesign at 1280px/390px: header join, passive overview, pre-join device/volume/mute/deafen, automatic roster, header and dock Leave, collapsed navigation, chat/space persistence, pinned fallback, switching and capture cleanup (mock API/WebRTC).",
+      "PASS Live now at 1280px/390px: room cards and row marks, voice-free header, phone strip join/focus/Browse, pre-join device/volume/mute/deafen, call card faces/badges/order, full list placement, collapsed navigation, chat/space persistence, row join/switch, folded rooms and crowded calls (mock API/WebRTC).",
     );
   } else if (process.env.VOICE_TEST_DOCK === "1") {
     evaluate(`voiceFixture.showSpaces();`);
     wait(
-      `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`,
+      `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha' && document.querySelector('.channel-join[aria-disabled="false"]')`,
     );
     click("Mute microphone");
-    click("Join voice");
+    click("Join voice in #alpha");
     wait(`document.querySelector('[aria-label="Leave voice"]')`);
-    click("Other test space");
-    wait(`document.querySelector('.voice-pinned .participant')`);
     for (const width of [1280, 390]) {
       browser("set", "viewport", String(width), "900", "2");
-      if (width === 390) click("Back to Browse");
+      if (width === 390) openBrowse();
+      click("Other test space");
+      wait(`document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'lobby'`);
+      if (width === 390) openBrowse();
       evaluate(
         `await document.fonts.ready; await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`,
       );
@@ -980,37 +1074,33 @@ try {
         "Connected profile/audio controls are centered and contained, not clipped",
       );
       assert.equal(
-        evaluate(
-          `return document.querySelector('.voice-dock-channel').matches('button, a, [role="button"], [tabindex]');`,
-        ),
-        false,
-        "Connection status is not an interactive control",
-      );
-      browser("hover", ".voice-dock-channel");
-      assert.deepEqual(
-        evaluate(
-          `const status = document.querySelector('.voice-dock-channel'); return [getComputedStyle(status).backgroundColor, getComputedStyle(status).cursor, getComputedStyle(status.querySelector('small')).textDecorationLine];`,
-        ),
-        ["rgba(0, 0, 0, 0)", "default", "none"],
-        "Status hover has no highlight, hand cursor, or underline",
-      );
-      const beforeClick = evaluate(`return location.href;`);
-      browser("click", ".voice-dock-channel");
-      assert.equal(evaluate(`return location.href;`), beforeClick, "Status clicks do not navigate");
-      assert.equal(
-        evaluate(`return !!document.querySelector('dialog[open]');`),
-        false,
-        "Status clicks do not open a dialog",
+        evaluate(`return document.querySelectorAll('.voice-dock .connected-channel, .voice-pinned').length;`),
+        0,
+        "Your call lives on its card; no dock or pinned roster",
       );
       assert.ok(
-        evaluate(`return !!document.querySelector('[aria-label="Leave voice"]');`),
-        "Disconnect remains an explicit button",
+        evaluate(
+          `const card = document.querySelector('.live-call').getBoundingClientRect(), heading = document.querySelector('.channel-section-heading').getBoundingClientRect(); return card.bottom <= heading.top;`,
+        ),
+        "Your call card sits above the other space's channels",
       );
       browser("mouse", "move", "5", "5");
       screenshot(`dock-connected-${width}`);
+      // The card's channel name opens the call's chat, back in its own space.
+      browser("click", ".live-call .live-channel");
+      wait(
+        `document.querySelector('.space-menu h1')?.textContent === 'Test space' && document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha'`,
+      );
+      assert.equal(
+        evaluate(`return voiceFixture.client.phase;`),
+        "connected",
+        "Opening the call's chat keeps the call",
+      );
     }
+    if (!evaluate(`return !!document.querySelector('.navigation-open');`) && evaluate(`return innerWidth <= 760;`))
+      openBrowse();
     click("Leave voice");
-    wait(`!document.querySelector('.connected-channel')`);
+    wait(`!document.querySelector('.live-call')`);
     assert.equal(
       evaluate(`return voiceFixture.captures.at(-1).readyState;`),
       "ended",
@@ -1018,21 +1108,22 @@ try {
     );
     evaluate(`await voiceFixture.cleanup();`);
     console.log(
-      "PASS centered/unclipped connected profile dock, neutral non-interactive status, and working disconnect at 1280px/390px (mock signaling/WebRTC)",
+      "PASS centered/unclipped connected account bar, call card above another space's channels, card link back to the call's chat, and working disconnect at 1280px/390px (mock signaling/WebRTC)",
     );
   } else if (process.env.VOICE_TEST_TIMERS === "1") {
     evaluate(`voiceFixture.timerEnabled = true; voiceFixture.showSpaces();`);
     wait(
-      `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`,
+      `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha' && document.querySelector('.channel-join[aria-disabled="false"]')`,
     );
-    const timer = '.channel-line:has(.channel-select[aria-current="page"]) [role="timer"]';
+    // Your call card's timer while you join or talk; #alpha's room card's while you watch.
+    const timer = '.live-now [role="timer"]';
     for (const width of [1280, 390]) {
       browser("set", "viewport", String(width), "900", "2");
-      if (width === 390) click("Back to Browse");
+      if (width === 390) openBrowse();
       evaluate(
         `voiceFixture.holdJoin = true; voiceFixture.releaseJoin = undefined; voiceFixture.clicked = Date.now();`,
       );
-      click("Join voice");
+      click("Join voice in #alpha");
       wait(`voiceFixture.releaseJoin && document.querySelector(${JSON.stringify(timer)})`);
       assert.ok(
         evaluate(
@@ -1048,7 +1139,7 @@ try {
         "The timer counts while the server join is still pending",
       );
       assert.equal(
-        evaluate(`return document.querySelectorAll('.voice-stack').length;`),
+        evaluate(`return document.querySelectorAll('.channel-live, .live-room, .live-call .live-face').length;`),
         0,
         "A pending timer cannot invent occupancy",
       );
@@ -1063,14 +1154,16 @@ try {
         "The connected timer adopts the shared click timestamp without restarting",
       );
       click("Leave voice");
-      wait(`document.querySelector('[aria-label="Join voice"]') && !document.querySelector(${JSON.stringify(timer)})`);
+      wait(
+        `document.querySelector('[aria-label="Join voice in #alpha"]') && !document.querySelector(${JSON.stringify(timer)})`,
+      );
       evaluate(
         `voiceFixture.sessionStartedAt = Date.now() - 601_000; voiceFixture.publishPresence([{ id: 'peer', name: 'Timer test observer', muted: false, deafened: false, tracks: [] }]);`,
       );
       wait(`/^10:0[1-9]$/.test(document.querySelector(${JSON.stringify(timer)})?.textContent)`);
       screenshot(`voice-timer-${width}-spectator`);
       evaluate(`voiceFixture.holdJoin = true; voiceFixture.releaseJoin = undefined;`);
-      click("Join voice");
+      click("Join voice in #alpha");
       wait(
         `voiceFixture.releaseJoin && voiceFixture.client.phase === 'joining' && document.querySelector('[aria-label="Cancel joining voice"]')`,
       );
@@ -1079,7 +1172,7 @@ try {
         "Joining an occupied room preserves its existing duration",
       );
       click("Cancel joining voice");
-      wait(`document.querySelector('[aria-label="Join voice"]')`);
+      wait(`document.querySelector('[aria-label="Join voice in #alpha"]')`);
       evaluate(`voiceFixture.holdJoin = false; voiceFixture.releaseJoin();`);
       wait(`voiceFixture.commands.at(-1).method === 'media.leave'`);
       assert.ok(
@@ -1091,7 +1184,7 @@ try {
       evaluate(`voiceFixture.sessionStartedAt = undefined; voiceFixture.publishPresence([]);`);
       wait(`!document.querySelector(${JSON.stringify(timer)})`);
       evaluate(`voiceFixture.holdJoin = true; voiceFixture.releaseJoin = undefined;`);
-      click("Join voice");
+      click("Join voice in #alpha");
       wait(`voiceFixture.releaseJoin && document.querySelector('[aria-label="Cancel joining voice"]')`);
       evaluate(
         `voiceFixture.sessionStartedAt = Date.now() - 601_000; voiceFixture.publishPresence([{ id: 'peer', name: 'Timer test observer', muted: false, deafened: false, tracks: [] }]);`,
@@ -1106,9 +1199,11 @@ try {
       evaluate(`voiceFixture.holdJoin = false; voiceFixture.releaseJoin();`);
       wait(`voiceFixture.commands.at(-1).method === 'media.leave'`);
       evaluate(`voiceFixture.sessionStartedAt = undefined; voiceFixture.publishPresence([]);`);
-      wait(`document.querySelector('[aria-label="Join voice"]') && !document.querySelector(${JSON.stringify(timer)})`);
+      wait(
+        `document.querySelector('[aria-label="Join voice in #alpha"]') && !document.querySelector(${JSON.stringify(timer)})`,
+      );
       evaluate(`voiceFixture.captureError = 'NotAllowedError';`);
-      click("Join voice");
+      click("Join voice in #alpha");
       wait(`voiceFixture.client.phase === 'failed' && !document.querySelector(${JSON.stringify(timer)})`);
       evaluate(`voiceFixture.captureError = undefined;`);
     }
@@ -1119,76 +1214,89 @@ try {
   } else if (process.env.VOICE_TEST_AVATARS === "1") {
     evaluate(`voiceFixture.showSpaces();`);
     wait(
-      `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`,
+      `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha' && document.querySelector('.channel-join[aria-disabled="false"]')`,
     );
     click("Mute microphone");
-    click("Join voice");
+    click("Join voice in #alpha");
     wait(`document.querySelector('[aria-label="Leave voice"]')`);
     evaluate(`voiceFixture.addRemoteAudio(); await document.fonts.ready;`);
-    wait(`document.querySelectorAll('.voice-occupants .avatar.quiet').length === 2`);
+    wait(`document.querySelectorAll('.live-call .live-avatar').length === 2`);
     for (const width of [1280, 390]) {
       browser("set", "viewport", String(width), "900", "2");
-      if (width === 390) click("Back to Browse");
+      if (width === 390) openBrowse();
       evaluate(`await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));`);
+      // Card faces: borderless at rest, a green ring (with a gap) while speaking.
       assert.deepEqual(
         evaluate(
-          `return [...document.querySelectorAll('.voice-occupants .avatar')].map(el => { const s = getComputedStyle(el); return [s.borderTopColor, s.boxShadow, s.width, s.height]; });`,
+          `return [...document.querySelectorAll('.live-call .live-avatar')].map(el => { const s = getComputedStyle(el); return [s.borderTopWidth, s.boxShadow, s.width, s.height]; });`,
         ),
-        Array(2).fill(["rgba(0, 0, 0, 0)", "none", "20px", "20px"]),
-        "Idle image and initial avatars have no visible border or halo, without resizing",
+        Array(2).fill(["0px", "none", "34px", "34px"]),
+        "Idle image and initial faces have no ring, without resizing",
       );
       assert.deepEqual(
         evaluate(
-          `return [...document.querySelectorAll('.voice-occupants .avatar > span')].map(el => el.getAttribute('data-avatar-id'));`,
+          `return [...document.querySelectorAll('.live-call .live-avatar > span')].map(el => el.getAttribute('data-avatar-id'));`,
         ),
         ["0", null],
         "Exercise both image artwork and the initials fallback",
       );
+      browser("click", ".live-call .live-face");
+      wait(`document.querySelectorAll('.live-everyone .avatar.quiet').length === 2`);
+      assert.deepEqual(
+        evaluate(
+          `return [...document.querySelectorAll('.live-everyone .avatar')].map(el => { const s = getComputedStyle(el); return [s.borderTopColor, s.boxShadow]; });`,
+        ),
+        Array(2).fill(["rgba(0, 0, 0, 0)", "none"]),
+        "The full list's idle avatars have no visible border or halo",
+      );
+      browser("press", "Escape");
+      wait(`!document.querySelector('.live-everyone')`);
+      browser("mouse", "move", "5", "5");
       screenshot(`voice-avatars-idle-${width}`);
       click("Unmute microphone");
-      wait(`document.querySelector('.voice-occupants .avatar.speaking')`);
-      assert.equal(
+      wait(`document.querySelector('.live-call .live-avatar[data-speaking]')`);
+      assert.match(
         evaluate(
-          `return getComputedStyle(document.querySelector('.voice-occupants .avatar.speaking')).borderTopColor;`,
+          `return getComputedStyle(document.querySelector('.live-call .live-avatar[data-speaking]')).boxShadow;`,
         ),
-        "rgb(99, 122, 67)",
-        "Speaking retains the green indicator",
+        /rgb\(74, 168, 107\) 0px 0px 0px 4px/,
+        "Speaking shows the voice-green ring",
       );
-      assert.notEqual(
-        evaluate(`return getComputedStyle(document.querySelector('.voice-occupants .avatar.speaking')).boxShadow;`),
-        "none",
+      assert.equal(
+        evaluate(`return document.querySelector('.live-call .live-speaker')?.textContent;`),
+        "UI fixture is speaking",
       );
+      browser("mouse", "move", "5", "5");
       screenshot(`voice-avatars-speaking-${width}`);
       click("Mute microphone");
-      wait(`document.querySelectorAll('.voice-occupants .avatar.quiet').length === 2`);
+      wait(`!document.querySelector('.live-call .live-avatar[data-speaking]')`);
     }
     evaluate(`await voiceFixture.cleanup();`);
     console.log(
-      "PASS borderless idle image/initial avatars and green speaking indicator at 1280px and 390px (mock signaling/WebRTC)",
+      "PASS ringless idle image/initial faces and list avatars, green speaking ring and speaker line at 1280px and 390px (mock signaling/WebRTC)",
     );
   } else if (process.env.VOICE_TEST_CHANNEL_ROWS === "1") {
     evaluate(`voiceFixture.showSpaces();`);
     wait(
-      `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`,
+      `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha' && document.querySelector('.channel-join[aria-disabled="false"]')`,
     );
     evaluate(`await document.fonts.ready;`);
     const geometry = () =>
       evaluate(
-        `return [...document.querySelectorAll('.channel-line')].map(line => [...line.querySelectorAll('.channel-select, .channel-manage, .channel-quick-join')].map(node => { const r = node.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }));`,
+        // Within each row (Live now above the channels may move whole rows), plus the row's own size.
+        `return [...document.querySelectorAll('.channel-line')].map(line => { const top = line.getBoundingClientRect().top; return [...line.querySelectorAll('.channel-select, .channel-manage, .channel-quick-join'), line].map(node => { const r = node.getBoundingClientRect(); return [r.x, r.y - top, r.width, r.height]; }); });`,
       );
     const countPosition = () =>
       evaluate(
         `const r = document.querySelector('.channel-section-toggle .section-count').getBoundingClientRect(); return [r.x, r.y];`,
       );
-    const headerActionFits = () =>
-      evaluate(
-        `const button = document.querySelector('.header-voice .channel-join, .header-voice .voice-leave'), bounds = button.getBoundingClientRect(), text = button.querySelector('span'), label = text.getBoundingClientRect(); if (!text.getClientRects().length) return !!button.getAttribute('aria-label') && !!button.querySelector('svg'); return label.left > bounds.left && label.right < bounds.right && label.top >= bounds.top && label.bottom <= bounds.bottom;`,
-      );
+    // Names keep their line whatever happens to voice; touch hides a live row's shortcut.
+    const names = () => geometry().map((row) => [row[0][0], row[0][1], row[0][3]]);
     const checkChannelTargets = () => {
       for (const area of ["leading padding", "icon", "name", "trailing padding"]) {
         for (const name of ["beta", "alpha"]) {
           const [x, y] =
-            evaluate(`const button = [...document.querySelectorAll('.channel-select')].find(button => button.textContent === ${JSON.stringify(name)});
+            evaluate(`const button = [...document.querySelectorAll('.channel-select')].find(button => button.querySelector('span').textContent === ${JSON.stringify(name)});
             const r = button.getBoundingClientRect(), area = ${JSON.stringify(area)};
             const target = area === 'icon' ? button.querySelector('svg') : area === 'name' ? button.querySelector('span') : button;
             const t = target.getBoundingClientRect();
@@ -1200,7 +1308,7 @@ try {
           browser("mouse", "down", "left");
           browser("mouse", "up", "left");
           wait(
-            `document.querySelector('.channel-select[aria-current="page"]')?.textContent === ${JSON.stringify(name)} && document.querySelector('.chat-heading h2')?.textContent.includes(${JSON.stringify(name)})`,
+            `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === ${JSON.stringify(name)} && document.querySelector('.chat-heading h2')?.textContent.includes(${JSON.stringify(name)})`,
           );
         }
       }
@@ -1240,21 +1348,21 @@ try {
       const fine = evaluate(`return matchMedia('(hover: hover) and (pointer: fine)').matches;`);
       assert.ok(
         evaluate(
-          `return [...document.querySelectorAll('.channel-line')].every(line => !line.querySelector('.channel-voice') && line.querySelectorAll('.channel-quick-join').length === 1);`,
+          `return [...document.querySelectorAll('.channel-line')].every(line => !line.querySelector('.channel-live') && line.querySelectorAll('.channel-quick-join').length === 1);`,
         ),
         "Empty channels are one line, each with one join shortcut",
       );
       assert.ok(
         evaluate(
-          `return [...document.querySelectorAll('.channel-quick-join')].every(button => button.getAttribute('aria-label') === 'Join voice in #' + button.closest('.channel-line').querySelector('.channel-select').textContent && !!button.querySelector('svg') && !button.textContent.trim());`,
+          `return [...document.querySelectorAll('.channel-quick-join')].every(button => button.getAttribute('aria-label') === 'Join voice in #' + button.closest('.channel-line').querySelector('.channel-select > span').textContent && !!button.querySelector('svg') && !button.textContent.trim());`,
         ),
         "Row shortcuts are icon-only and name their channel",
       );
       assert.ok(
         evaluate(
-          `return [...document.querySelectorAll('.channel-line')].every(line => { const name = line.querySelector('.channel-select').getBoundingClientRect(), join = line.querySelector('.channel-quick-join'), style = getComputedStyle(join), r = join.getBoundingClientRect(); return ${fine} ? Math.abs(r.top + r.height / 2 - (name.top + name.height / 2)) <= 1 && r.width === 28 && style.opacity === '0' : style.display === 'none'; });`,
+          `return [...document.querySelectorAll('.channel-line')].every(line => { const name = line.querySelector('.channel-select').getBoundingClientRect(), join = line.querySelector('.channel-quick-join'), style = getComputedStyle(join), r = join.getBoundingClientRect(); return Math.abs(r.top + r.height / 2 - (name.top + name.height / 2)) <= 1 && (${fine} ? r.width === 28 && style.opacity === '0' : r.width >= 44 && style.opacity === '1' && style.color === 'rgb(104, 113, 116)'); });`,
         ),
-        "Fine pointers keep a hidden 28px shortcut on the name's line; touch has none",
+        "Fine pointers keep a hidden 28px shortcut on the name's line; touch shows a dim 44px one on quiet rows",
       );
       assert.ok(
         evaluate(
@@ -1263,16 +1371,15 @@ try {
         "Compact desktop rows; mobile/no-hover keeps 44px targets",
       );
       assert.equal(
-        evaluate(`return document.querySelectorAll('.voice-stack').length;`),
+        evaluate(`return document.querySelectorAll('.channel-live, .live-now').length;`),
         0,
-        "Empty channels do not show a zero-occupancy count",
+        "Empty channels show no zero-occupancy count and no Live now section",
       );
       assert.equal(
-        evaluate(`return document.querySelector('.header-voice [aria-label="Join voice"]')?.textContent;`),
-        "Join voice",
-        "The open channel joins from its header",
+        evaluate(`return !!document.querySelector('.chat-heading :is(.channel-join, .voice-hangup, .header-voice)');`),
+        false,
+        "Joining lives in the sidebar, not the conversation header",
       );
-      assert.ok(headerActionFits(), "The header's Join label fits");
       screenshot(`channel-${width}-empty`);
       if (fine) {
         browser("hover", '.channel-line:has([aria-label="Join voice in #beta"])');
@@ -1295,7 +1402,7 @@ try {
       browser("press", "Tab");
       assert.equal(
         evaluate(`return document.activeElement.getAttribute('aria-label');`),
-        fine ? "Join voice in #alpha" : "Manage alpha",
+        "Join voice in #alpha",
         "Keyboard order runs name, join shortcut, then channel settings",
       );
       wait(
@@ -1313,19 +1420,26 @@ try {
       evaluate(
         `voiceFixture.publishPresence([{ id: 'peer', name: 'Mock peer', muted: false, deafened: false, tracks: [] }, { id: 'other', name: 'Other mock peer', muted: true, deafened: false, tracks: [] }]);`,
       );
-      wait(`document.querySelector('.voice-stack-count')?.textContent === '2 in voice'`);
+      wait(`document.querySelector('.channel-live')?.getAttribute('aria-label') === '2 in voice'`);
       const occupied = geometry();
-      assert.deepEqual(occupied[0], before[0], "Roster arrivals keep the occupied channel's name, menu and shortcut");
-      assert.ok(occupied[1][0][1] > before[1][0][1], "Only occupied channels add a voice line, below their name");
+      if (fine) assert.deepEqual(occupied, before, "Live marks keep every row, menu and shortcut where it was");
+      else
+        assert.deepEqual(
+          names(),
+          before.map((row) => [row[0][0], row[0][1], row[0][3]]),
+          "Live rows stay one line",
+        );
       assert.ok(
-        evaluate(`return [...document.querySelectorAll('.voice-occupants-inner')].every(node => node.inert);`),
-        "Participant lists start collapsed",
+        evaluate(`const mark = document.querySelector('.channel-live'), row = mark.closest('.channel-select').getBoundingClientRect(), r = mark.getBoundingClientRect();
+          return mark.textContent === '2' && r.right <= row.right && r.top >= row.top && r.bottom <= row.bottom && getComputedStyle(mark).color === 'rgb(74, 168, 107)';`),
+        "The live mark is a readable green count inside its row",
       );
-      assert.ok(
+      assert.equal(
         evaluate(
-          `return [...document.querySelectorAll('.voice-stack-count')].every(node => node.scrollWidth <= node.clientWidth);`,
+          `return getComputedStyle(document.querySelector('[aria-label="Join voice in #alpha"].channel-quick-join')).display === 'none';`,
         ),
-        "Voice counts must remain readable, not ellipsized",
+        !fine,
+        "Touch hides a live row's shortcut; its room card has Join",
       );
       browser("hover", '.channel-select[aria-current="page"]');
       browser("mouse", "move", "5", "5");
@@ -1334,9 +1448,11 @@ try {
       assert.deepEqual(geometry(), occupied, "Opening channel actions must overlay, not reflow the channel list");
       assert.ok(
         evaluate(
-          `const menu = document.querySelector('.channel-menu[open]'); return menu.querySelector('.space-actions').getBoundingClientRect().top >= menu.closest('.channel-line').getBoundingClientRect().bottom;`,
+          `const menu = document.querySelector('.channel-menu[open]'), actions = menu.querySelector('.space-actions').getBoundingClientRect(), row = menu.closest('.channel-line').getBoundingClientRect();
+          return menu.dataset.placement === 'above' ? actions.bottom <= row.top : actions.top >= row.bottom;`,
         ),
-        "Channel actions open below their own row",
+        // Live now above the channels can leave the last row too little room below.
+        "Channel actions open below their own row, or above it when there is no room",
       );
       screenshot(`channel-${width}-menu`);
       browser("press", "Escape");
@@ -1354,7 +1470,11 @@ try {
         "Outside clicks dismiss channel actions",
       );
       click("Manage planning-for-the-next-release");
-      browser("find", "role", "button", "click", "--name", "Channel settings", "--exact");
+      // By selector: a role lookup here measured the item mid-entrance and pressed the one above.
+      evaluate(
+        `[...document.querySelectorAll('.channel-menu[open] .space-actions button')].find(button => button.textContent.trim() === 'Channel settings').dataset.testTarget = '';`,
+      );
+      browser("click", "[data-test-target]");
       wait(`document.querySelector('.space-dialog[open] .member-manager')`);
       assert.equal(evaluate(`return document.querySelector('.channel-privacy input').checked;`), true);
       browser("press", "Escape");
@@ -1369,26 +1489,22 @@ try {
         "Opening settings must not connect voice",
       );
       screenshot(`channel-${width}-before-join`);
-      // Phones join from the conversation header, outside Browse.
-      if (width === 390) {
-        browser("click", '.channel-select[aria-current="page"]');
-        browser("wait", "600"); // Let Browse close before the header takes focus.
-      }
-      browser("focus", '[aria-label="Join voice"]');
+      // The live room's card joins in one press.
+      browser("focus", '.live-room [aria-label="Join voice in #alpha"]');
       browser("press", "Enter");
       wait(
-        `voiceFixture.client?.phase === 'connected' && document.querySelector('.header-voice [aria-label="Leave voice"]')`,
+        `voiceFixture.client?.phase === 'connected' && document.querySelector('.live-call [aria-label="Leave voice"]')`,
       );
       browser("wait", "650");
-      if (width === 1280)
+      if (fine)
         assert.deepEqual(geometry()[0], occupied[0], "Connecting preserves the channel's name, menu and shortcut slot");
+      else assert.deepEqual(names()[0], [occupied[0][0][0], occupied[0][0][1], occupied[0][0][3]]);
       assert.ok(
         evaluate(
-          `return document.activeElement === document.querySelector('.header-voice .voice-hangup') && !!document.querySelector('.header-voice .lucide-phone-off') && !!document.querySelector('.voice-dock [aria-label="Leave voice"]');`,
+          `return document.activeElement === document.querySelector('.live-call .voice-hangup') && !!document.querySelector('.live-call .lucide-phone-off') && document.querySelectorAll('[aria-label="Leave voice"]').length === 1;`,
         ),
-        "Joining focuses the header's Leave; the dock keeps one too",
+        "Joining focuses Leave on your call card, the only one",
       );
-      assert.ok(headerActionFits(), "The header's Leave label fits");
       assert.equal(
         evaluate(`return document.querySelector('[data-channel="alpha0000000"].channel-quick-join');`),
         null,
@@ -1402,29 +1518,22 @@ try {
       );
       screenshot(`channel-${width}-joined`);
       if (width === 390) {
+        browser("click", '.channel-select[aria-current="page"]');
+        settleBrowse();
         assert.ok(
           evaluate(
-            `const composer = document.querySelector('#chat-message'), r = composer.getBoundingClientRect(); return document.querySelector('.header-voice .voice-hangup').getBoundingClientRect().height >= 44 && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === composer;`,
+            `const composer = document.querySelector('#chat-message'), r = composer.getBoundingClientRect(); return document.querySelector('.voice-strip .live-toggle').getBoundingClientRect().height >= 44 && document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === composer;`,
           ),
-          "Narrow conversation retains the header Leave target and unobscured text entry",
+          "Narrow conversation keeps the strip's 44px Mute and unobscured text entry",
         );
         screenshot("channel-390-conversation");
         click("Back to Browse");
       }
-      wait(`document.querySelector('#voice-occupants-alpha0000000').getBoundingClientRect().height > 20`);
-      assert.equal(
-        evaluate(`return document.querySelector('#voice-occupants-alpha0000000 .voice-occupants-inner').inert;`),
-        false,
-      );
-      screenshot(`channel-${width}-expanded`);
-      browser("click", '.channel-line:has(.channel-select[aria-current="page"]) .voice-stack');
-      wait(`document.querySelector('#voice-occupants-alpha0000000').getBoundingClientRect().height === 0`);
-      assert.deepEqual(geometry()[0], occupied[0], "Collapsing the roster keeps the channel's own line");
       evaluate(
         `voiceFixture.joinedTrack = voiceFixture.captures.at(-1); voiceFixture.leaveCount = voiceFixture.commands.filter(c => c.method === 'media.leave').length;`,
       );
       browser("find", "role", "button", "click", "--name", "beta", "--exact");
-      wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'beta'`);
+      wait(`document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'beta'`);
       assert.equal(
         evaluate(`return voiceFixture.joinedTrack.readyState;`),
         "live",
@@ -1434,15 +1543,11 @@ try {
         evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.leave').length;`),
         evaluate(`return voiceFixture.leaveCount;`),
       );
-      assert.equal(evaluate(`return document.querySelector('.header-voice-join').textContent;`), "Switch here");
-      assert.equal(
-        evaluate(`return document.querySelector('.header-voice-join').getAttribute('aria-label');`),
-        "Switch voice to #beta",
+      if (width === 390) openBrowse();
+      browser("click", '.channel-line [aria-label="Switch voice to #beta"]');
+      wait(
+        `voiceFixture.client?.phase === 'connected' && document.querySelector('.live-call .live-channel > span')?.textContent === 'beta'`,
       );
-      if (width === 390) browser("wait", "600"); // Let Browse close before the header takes clicks.
-      browser("click", ".header-voice-join");
-      wait(`voiceFixture.client?.phase === 'connected' && document.querySelector('.header-voice .voice-leave')`);
-      if (width === 390) click("Back to Browse");
       assert.equal(
         evaluate(`return voiceFixture.joinedTrack.readyState;`),
         "ended",
@@ -1453,58 +1558,55 @@ try {
         "beta00000000",
       );
       assert.equal(
-        evaluate(`return document.querySelectorAll('.voice-dock [aria-label="Leave voice"]').length;`),
+        evaluate(`return document.querySelectorAll('[aria-label="Leave voice"]').length;`),
         1,
-        "Switching keeps one call in the dock",
+        "Switching keeps one call card",
       );
       click("Leave voice");
       wait(`voiceFixture.client.phase === 'idle'`);
-      // Disclosure state is remembered after leaving; reset the visited beta
-      // roster before checking fresh, collapsed rows at the next viewport.
-      browser("click", '.channel-line:has(.channel-select[aria-current="page"]) .voice-stack');
       browser("find", "role", "button", "click", "--name", "alpha", "--exact");
-      wait(`document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha'`);
+      wait(`document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha'`);
+      if (width === 390) openBrowse();
       evaluate(
         `voiceFixture.publishPresence([]); voiceFixture.holdCapture = true; voiceFixture.releaseCapture = undefined;`,
       );
-      click("Join voice");
-      wait(`document.querySelector('[aria-label="Joining voice in #alpha"]') && voiceFixture.releaseCapture`);
-      if (width === 390) click("Back to Browse");
-      assert.deepEqual(geometry(), before, "Pending microphone permission/capture must not shift controls");
-      assert.equal(
-        evaluate(
-          `return document.querySelector('[aria-label="Joining voice in #alpha"]').getAttribute('aria-disabled');`,
-        ),
-        "true",
-      );
-      assert.equal(
-        evaluate(`return document.querySelector('[aria-label="Joining voice in #alpha"]').getAttribute('aria-busy');`),
-        "true",
-        "Joining is busy in the header",
-      );
-      assert.ok(headerActionFits(), "Pending labels must fit");
+      wait(`!document.querySelector('.channel-live')`);
       const joins = evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').length;`);
-      evaluate(`document.querySelector('[aria-label="Joining voice in #alpha"]').click();`);
-      assert.equal(
-        evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').length;`),
-        joins,
-        "Busy action must not issue a second Join",
+      browser("click", '.channel-line [aria-label="Join voice in #alpha"]');
+      // While the microphone is pending your call card says so and offers Cancel; no
+      // second Join exists to press.
+      wait(
+        `document.querySelector('.live-call[data-phase="joining"] .live-status')?.textContent === 'Connecting…' && voiceFixture.releaseCapture`,
       );
+      assert.equal(
+        evaluate(`return document.querySelectorAll('[data-channel="alpha0000000"].channel-join').length;`),
+        0,
+      );
+      assert.ok(
+        evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').length;`) <= joins + 1,
+        "One press issues at most one Join while capture is pending",
+      );
+      if (fine) assert.deepEqual(geometry(), before, "Pending microphone permission/capture must not shift controls");
+      else
+        assert.deepEqual(
+          names(),
+          before.map((row) => [row[0][0], row[0][1], row[0][3]]),
+        );
       screenshot(`channel-${width}-joining`);
-      wait(`document.querySelector('[aria-label="Cancel joining voice"]')`);
       click("Cancel joining voice");
-      wait(`document.querySelector('[aria-label="Join voice"]')`);
+      wait(`document.querySelector('[aria-label="Join voice in #alpha"]') && !document.querySelector('.live-call')`);
       evaluate(`voiceFixture.holdCapture = false; voiceFixture.releaseCapture();`);
       wait(`voiceFixture.captures.at(-1).readyState === 'ended'`);
       assert.deepEqual(geometry(), before, "Cancelled joins restore the same targets");
       evaluate(`voiceFixture.captureError = 'NotAllowedError';`);
-      if (width === 390) browser("click", '.channel-select[aria-current="page"]');
-      click("Join voice");
+      // Cancel's card is gone, so the pointer now rests on #beta's shortcut; its tooltip covers #alpha's.
+      browser("mouse", "move", "5", "5");
+      wait(`!document.querySelector('.top-layer-tooltip:popover-open')`);
+      click("Join voice in #alpha");
       wait(`voiceFixture.client.phase === 'failed' && document.querySelector('.voice-error')`);
-      if (width === 390) click("Back to Browse");
       assert.deepEqual(geometry(), before, "Failed joins keep the channel controls stable and retryable");
       assert.equal(
-        evaluate(`return document.querySelector('[aria-label="Join voice"]').getAttribute('aria-disabled');`),
+        evaluate(`return document.querySelector('[aria-label="Join voice in #alpha"]').getAttribute('aria-disabled');`),
         "false",
       );
       screenshot(`channel-${width}-error`);
@@ -1529,7 +1631,7 @@ try {
           "Shortcuts must fit at the 220px sidebar minimum",
         );
         assert.equal(
-          evaluate(`return document.querySelectorAll('.channel-voice').length;`),
+          evaluate(`return document.querySelectorAll('.channel-live').length;`),
           0,
           "Minimum-width empty rows stay one line",
         );
@@ -1579,9 +1681,10 @@ try {
     browser("mouse", "move", "5", "5");
     assert.deepEqual(countPosition(), ownerDesktopCount, "Revealing owner section actions cannot shift the count");
     screenshot("channel-1280-owner");
-    evaluate(`voiceFixture.showSpaces(false);`);
+    // (The fixture keeps your last call's roster; nobody is talking for this comparison.)
+    evaluate(`voiceFixture.publishPresence([]); voiceFixture.showSpaces(false);`);
     wait(
-      `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.channel-manage')`,
+      `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha' && document.querySelector('.channel-manage') && !document.querySelector('.live-now')`,
     );
     browser("click", '[aria-label="Manage alpha"]');
     assert.equal(
@@ -1613,14 +1716,14 @@ try {
     screenshot("channel-390-member");
     evaluate(`await voiceFixture.cleanup();`);
     console.log(
-      "PASS one-line empty channel rows with hover/focus join shortcuts at 1280px/390px and 220px sidebar, header Join/Switch/Leave, neutral shortcut feedback and visible keyboard focus, owned/shared count alignment, empty/live/private channels, owner menu and focus return, join/leave/switch/cancel, browsing preserves voice, busy guard, reduced motion and member permissions (mock signaling/WebRTC)",
+      "PASS one-line channel rows with hover/focus (touch: dim) join shortcuts at 1280px/390px and 220px sidebar, live marks, voice-free header, room-card join and card Leave/Cancel, neutral shortcut feedback and visible keyboard focus, owned/shared count alignment, empty/live/private channels, owner menu and focus return, join/leave/switch/cancel, browsing preserves voice, busy guard, reduced motion and member permissions (mock signaling/WebRTC)",
     );
   } else {
     for (const label of ["Input Options", "Output Options", "User Settings"]) {
       click(label);
       for (const position of ["top", "side", "bottom"]) {
         const [x, y] = evaluate(
-          `const r = document.querySelector('.call-settings-panel').getBoundingClientRect(); return ${JSON.stringify(position)} === 'top' ? [Math.round(r.left + r.width / 2), Math.round(r.top + 5)] : ${JSON.stringify(position)} === 'side' ? [Math.round(r.right - 5), Math.round(r.top + r.height / 2)] : [Math.round(r.left + r.width / 2), Math.round(r.bottom - 5)];`,
+          `const r = document.querySelector('.call-settings-panel').getBoundingClientRect(); return ${JSON.stringify(position)} === 'top' ? [Math.round(r.left + r.width / 2), Math.round(r.top + 3)] : ${JSON.stringify(position)} === 'side' ? [Math.round(r.right - 3), Math.round(r.top + r.height / 2)] : [Math.round(r.left + r.width / 2), Math.round(r.bottom - 3)];`,
         );
         browser("mouse", "move", String(x), String(y));
         browser("mouse", "down", "left");
@@ -1671,7 +1774,13 @@ try {
       ),
       "Account bar and single-line composer must align",
     );
-    assert.equal(evaluate(`return !!document.querySelector('.chat-composer button[type="submit"]');`), false);
+    // Only touch layouts show a send button; Enter sends here.
+    assert.equal(
+      evaluate(
+        `const send = document.querySelector('.chat-composer button[type="submit"]'); return !!send && getComputedStyle(send).display !== 'none';`,
+      ),
+      false,
+    );
     browser("click", ".account-profile");
     wait(`document.querySelector('.profile-dialog[open] input')`);
     browser("fill", "#username", "taken");
@@ -1789,8 +1898,14 @@ try {
     screenshot("voice-prejoin-deafened-hover");
     click("Undeafen audio");
     if (evaluate(`return !!document.querySelector('[aria-label="Unmute microphone"]');`)) click("Unmute microphone");
-    click("Join voice");
-    wait(`document.querySelector('[aria-label="Leave voice"]')`);
+    // One click on the channel row joins; your call card appears at the top of the channels.
+    click("Join voice in #general");
+    wait(`document.querySelector('.live-call [aria-label="Leave voice"]')`);
+    assert.equal(
+      evaluate(`return !!document.querySelector('.chat-header .voice-hangup, .chat-header .channel-join');`),
+      false,
+      "Voice stays out of the conversation header",
+    );
     assert.equal(evaluate(`return voiceFixture.sockets.length;`), 1, "Chat and joined voice must share one socket");
     assert.deepEqual(bounds(), initialBounds, "Joining must not move the chat header or composer");
     assert.equal(evaluate(`return voiceFixture.devices.at(-1);`), "headset");
@@ -1798,8 +1913,15 @@ try {
     wait(`voiceFixture.outputGain`);
     const gain = () => evaluate(`return voiceFixture.outputGain.gain.value;`);
     assert.ok(Math.abs(gain() - 0.9) < 0.00001, `Master volume must reach the audio graph (gain ${gain()})`);
+    // Faces on your call card open the full list, where per-person audio lives.
+    const openEveryone = () => {
+      if (!evaluate(`return !!document.querySelector('.live-everyone:popover-open');`))
+        browser("click", ".live-call .live-face");
+      wait(`document.querySelector('.live-everyone:popover-open')`);
+    };
+    openEveryone();
     if (evaluate(`return matchMedia('(hover: hover) and (pointer: fine)').matches;`)) {
-      browser("click", ".chat-heading");
+      browser("click", ".live-everyone-heading p");
       assert.equal(
         evaluate(`return getComputedStyle(document.querySelector('.participant-menu-button')).opacity;`),
         "0",
@@ -1813,7 +1935,7 @@ try {
         "1",
         "Keyboard focus reveals Audio",
       );
-      browser("click", ".chat-heading");
+      browser("click", ".live-everyone-heading p");
     }
     browser("hover", ".participant:has(.participant-menu-button)");
     // Hover reveals Audio through a short opacity transition.
@@ -1832,13 +1954,27 @@ try {
       false,
       "Outside click closes participant controls",
     );
+    assert.equal(
+      evaluate(`return !!document.querySelector('.live-everyone');`),
+      false,
+      "Outside click closes the full list too",
+    );
+    // At every sidebar width the full list opens beside the sidebar, inside the viewport.
+    const everyoneBeside = () => {
+      openEveryone();
+      assert.ok(
+        evaluate(
+          `const list = document.querySelector('.live-everyone').getBoundingClientRect(), panel = document.querySelector('.people-panel').getBoundingClientRect(); return list.left >= panel.right - 1 && list.right <= innerWidth && list.top >= 0 && list.bottom <= innerHeight;`,
+        ),
+        "Full list opens beside the sidebar",
+      );
+      browser("press", "Escape");
+      wait(`!document.querySelector('.live-everyone')`);
+    };
     for (const key of ["Home", "End", "Home", "End"]) {
       browser("focus", ".channel-sidebar-resize");
       browser("press", key);
-      browser("click", ".voice-stack");
-      assert.equal(evaluate(`return document.querySelector('.voice-stack').getAttribute('aria-expanded');`), "false");
-      browser("click", ".voice-stack");
-      assert.equal(evaluate(`return document.querySelector('.voice-stack').getAttribute('aria-expanded');`), "true");
+      everyoneBeside();
     }
     for (const width of [250, 330, 440]) {
       const [x, y, target] = evaluate(
@@ -1848,10 +1984,7 @@ try {
       browser("mouse", "down", "left");
       browser("mouse", "move", String(target), String(y));
       browser("mouse", "up", "left");
-      browser("click", ".voice-stack");
-      assert.equal(evaluate(`return document.querySelector('.voice-stack').getAttribute('aria-expanded');`), "false");
-      browser("click", ".voice-stack");
-      assert.equal(evaluate(`return document.querySelector('.voice-stack').getAttribute('aria-expanded');`), "true");
+      everyoneBeside();
     }
     click("Input Options");
     assert.ok(
@@ -1860,12 +1993,19 @@ try {
     );
     screenshot("compact-input-wide-sidebar");
     browser("press", "Escape");
+    openEveryone();
     browser("hover", ".participant:has(.participant-menu-button)");
     click("Audio controls for Peach Donkey");
     browser("press", "Escape");
     assert.equal(evaluate(`return !!document.querySelector('.participant-volume');`), false);
+    assert.ok(
+      evaluate(`return !!document.querySelector('.live-everyone:popover-open');`),
+      "Escape closes the volume menu before the list",
+    );
     click("Audio controls for Peach Donkey");
     click("Audio controls for Peach Donkey");
+    browser("press", "Escape");
+    wait(`!document.querySelector('.live-everyone')`);
     click("Output Options");
     browser("focus", '[aria-label="Output volume"]');
     browser("press", "Home");
@@ -1948,7 +2088,7 @@ try {
       "An arrival must not play the departure sound",
     );
     console.log(
-      "PASS participant audio visibility/dismissal, resized roster toggles, compact menu width, diagnostics copy/dismissal, and departure sound (mock signaling/WebRTC)",
+      "PASS participant audio visibility/dismissal, full list beside resized sidebar, compact menu width, diagnostics copy/dismissal, and departure sound (mock signaling/WebRTC)",
     );
 
     click("User Settings");
@@ -2042,7 +2182,7 @@ try {
     wait(`voiceFixture.sampleGains.every(node => node.context.state === 'closed')`);
     const beforeDisconnect = evaluate(`return voiceFixture.effectStarts;`);
     click("Leave voice");
-    wait(`document.querySelector('[aria-label="Join voice"]')`);
+    wait(`document.querySelector('[aria-label="Join voice in #general"]') && !document.querySelector('.live-call')`);
     wait(`voiceFixture.effectStarts === ${beforeDisconnect + 1}`);
     assert.ok(
       evaluate(`return Math.abs(voiceFixture.effectDurations.at(-1) - 0.890159) < 0.001;`),
@@ -2099,11 +2239,11 @@ try {
     browser("set", "viewport", "1280", "900", "2");
     evaluate(`voiceFixture.showSpaces();`);
     wait(
-      `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'alpha' && document.querySelector('.voice-button[aria-disabled="false"]')`,
+      `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'alpha' && document.querySelector('.channel-join[aria-disabled="false"]')`,
     );
     click("Mute microphone");
-    click("Join voice");
-    wait(`document.querySelector('[aria-label="Leave voice"]')`);
+    click("Join voice in #alpha");
+    wait(`document.querySelector('.live-call [aria-label="Leave voice"]')`);
     assert.equal(
       evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').at(-1).body.muted;`),
       true,
@@ -2114,7 +2254,7 @@ try {
     );
     browser("find", "role", "button", "click", "--name", "beta", "--exact");
     wait(
-      `document.querySelector('.channel-select[aria-current="page"]')?.textContent === 'beta' && document.querySelector('.voice-button[aria-disabled="false"]')`,
+      `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === 'beta' && document.querySelector('.channel-join[aria-disabled="false"]')`,
     );
     assert.ok(
       evaluate(
@@ -2128,9 +2268,8 @@ try {
       "Navigation must not send Leave",
     );
     assert.ok(
-      // Since #408 the call's roster and Leave stay under its channel in the
-      // same space; the dock appears only when that row is not shown.
-      evaluate(`return ${connectedRow("alpha")} && !!document.querySelector('[aria-label="Leave voice"]');`),
+      // Your call card stays at the top of the channels while you read another one.
+      evaluate(`return ${connectedRow("alpha")} && !!document.querySelector('.live-call [aria-label="Leave voice"]');`),
       "Connected channel must remain visible",
     );
     assert.ok(
@@ -2143,11 +2282,8 @@ try {
       ),
     );
     screenshot("voice-browsing-another-channel");
-    // The dock's connection status is not shown while alpha's row holds the call
-    // (#408); it is a plain role=status element wherever it does appear.
-    assert.ok(evaluate(`return !!document.querySelector('[aria-label="Leave voice"]');`));
     click("Switch voice to #beta");
-    wait(`document.querySelector('[aria-label="Leave voice"]')`);
+    wait(`${connectedRow("beta")}`);
     assert.equal(
       evaluate(`return voiceFixture.callTrack.readyState;`),
       "ended",
@@ -2170,9 +2306,9 @@ try {
       "Voice switch must preserve mute",
     );
     click("Leave voice");
-    wait(`!document.querySelector('.connected-channel, .channel-voice[data-active]')`);
+    wait(`!document.querySelector('.live-call, .channel-live[data-active]')`);
     evaluate(`voiceFixture.captureError = 'NotReadableError';`);
-    click("Join voice");
+    click("Join voice in #beta");
     // Capture failures show in the voice panel beside the controls.
     wait(`document.querySelector('.voice-error')`);
     assert.ok(
@@ -2189,10 +2325,10 @@ try {
     evaluate(
       `voiceFixture.captureError = undefined; voiceFixture.holdCapture = true; voiceFixture.releaseCapture = undefined;`,
     );
-    click("Join voice");
+    click("Join voice in #beta");
     wait(`document.querySelector('[aria-label="Cancel joining voice"]') && voiceFixture.releaseCapture`);
     click("Cancel joining voice");
-    wait(`document.querySelector('[aria-label="Join voice"]')`);
+    wait(`document.querySelector('[aria-label="Join voice in #beta"]') && !document.querySelector('.live-call')`);
     evaluate(`voiceFixture.holdCapture = false; voiceFixture.releaseCapture();`);
     wait(`voiceFixture.captures.at(-1).readyState === 'ended'`);
     assert.equal(
@@ -2210,7 +2346,7 @@ try {
   console.error(browser("errors"));
   console.error(
     evaluate(
-      `return { alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent), phase: window.voiceFixture?.client?.phase, channels: [...document.querySelectorAll('.channel-select')].map(node => [node.textContent, node.getAttribute('aria-current')]), voice: [...document.querySelectorAll('.voice-button')].map(node => [node.textContent, node.getAttribute('aria-disabled')]), pages: document.querySelectorAll('.call-page').length };`,
+      `return { alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent), phase: window.voiceFixture?.client?.phase, channels: [...document.querySelectorAll('.channel-select')].map(node => [node.textContent, node.getAttribute('aria-current')]), voice: [...document.querySelectorAll('.channel-join, .voice-hangup')].map(node => [node.getAttribute('aria-label'), node.getAttribute('aria-disabled')]), pages: document.querySelectorAll('.call-page').length };`,
     ),
   );
   throw error;

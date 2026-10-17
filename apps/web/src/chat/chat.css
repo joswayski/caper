@@ -19,6 +19,10 @@
   overflow: hidden;
   background: var(--surface-conversation);
 }
+/* A voice strip under the header (phones) takes its own row above the messages. */
+.chat-panel:has(> .voice-strip) {
+  grid-template-rows: auto auto minmax(140px, 1fr) auto auto;
+}
 /* Files dragged over the conversation. The overlay never takes pointer events,
    so the drag keeps reporting the elements underneath. */
 .chat-drop {

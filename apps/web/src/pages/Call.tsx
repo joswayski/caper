@@ -15,6 +15,7 @@ import {
   AudioLines,
   ChevronDown,
   Hash,
+  LockKeyhole,
   HeadphoneOff,
   Headphones,
   Mic,
@@ -410,14 +411,32 @@ function AudioOutput({
 }
 
 /**
- * Voice for one channel row: a summary and list beneath it only while people are
- * in voice, and a join shortcut that fine pointers reveal on hover or focus.
+ * Voice for one channel row: a quiet "N in voice" mark while people talk there,
+ * and the one-click join button (revealed on hover for fine pointers, always shown
+ * on quiet rows for touch). Who is in voice lives in the Live now cards instead.
  */
 export interface VoiceSlot {
-  timer: ReactNode;
-  summary: ReactNode;
+  live: ReactNode;
   join: ReactNode;
-  list: ReactNode;
+}
+
+/** Faces your call card shows before folding the rest into "+N": two rows of five. */
+export const CALL_CARD_FACES = 10;
+/** Live rooms shown as cards besides your call; more fold into "N more live". */
+export const LIVE_ROOM_CARDS = 2;
+
+/** "Maya", "Maya and Alex", "Maya, Alex and Sam", "Maya, Alex and 6 more". */
+export function liveNames(names: string[]) {
+  if (names.length <= 1) return names[0] ?? "";
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  if (names.length === 3) return `${names[0]}, ${names[1]} and ${names[2]}`;
+  return `${names[0]}, ${names[1]} and ${names.length - 2} more`;
+}
+
+/** The faces a call card shows and how many fold into its "+N" tile. */
+export function callCardFaces<T>(people: T[], capacity = CALL_CARD_FACES) {
+  if (people.length <= capacity) return { shown: people, hidden: [] as T[] };
+  return { shown: people.slice(0, capacity - 1), hidden: people.slice(capacity - 1) };
 }
 
 interface CallProps {
@@ -449,10 +468,17 @@ interface CallProps {
   headerMenuItems?: ReactNode;
   membersPanel?: (onClose: () => void) => ReactNode;
   spaceRail?: ReactNode;
-  /** Channels in the current space, whose voice rosters appear under them. */
-  voiceChannels?: Array<{ id: string; name: string }>;
-  /** Channel list. As a function it receives voiceFor, to place the voice roster under its channel. */
-  channelNavigation?: ReactNode | ((voiceFor: (channelId: string) => VoiceSlot | null) => ReactNode);
+  /** Channels in the current space, whose voice shows in Live now and on their rows. */
+  voiceChannels?: Array<{ id: string; name: string; private?: boolean }>;
+  /**
+   * Channel list. As a function it receives voiceFor, for each row's voice mark and
+   * join button, and the Live now section to place above the channels.
+   */
+  channelNavigation?:
+    | ReactNode
+    | ((voiceFor: (channelId: string) => VoiceSlot | null, liveNow: ReactNode) => ReactNode);
+  /** Opens a channel's conversation from its Live now card, in any space. */
+  onOpenChannel?: (spaceId: string | undefined, channelId: string) => void;
   navigationOpen?: boolean;
   onNavigationToggle?: () => void;
   /** Sets Browse at once; swipes on phones animate it themselves. */
@@ -498,6 +524,7 @@ export default function Call({
   voiceChannels,
   spaceRail,
   channelNavigation,
+  onOpenChannel,
   membersPanel,
   navigationOpen = false,
   onNavigationToggle,
@@ -570,7 +597,9 @@ export default function Call({
     return () => media.removeEventListener("change", update);
   }, []);
   // Phones show the conversation without the sidebar, so voice errors move into it.
-  const inlineVoiceError = narrow && !navigationOpen && !!onNavigationToggle;
+  // A phone showing the conversation, with Browse hidden behind it.
+  const phoneReading = narrow && !navigationOpen && !!onNavigationToggle;
+  const inlineVoiceError = phoneReading;
   const roomRef = useRef<HTMLElement>(null);
   const browsing = narrow && navigationOpen && !!onNavigationToggle;
   const members = useMembersDrawer(roomRef, narrow && !navigationOpen && !!membersPanel, membersVisible, (open) => {
@@ -632,7 +661,11 @@ export default function Call({
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
   const volumeMenuRef = useRef<HTMLLIElement>(null);
   const previousVoiceRoster = useRef<{ selfId: string; ids: Set<string> } | undefined>(undefined);
-  const [expandedRosters, setExpandedRosters] = useState<ReadonlySet<string>>(() => new Set());
+  // Your call card's full list of people (with per-person audio), and whether
+  // Live now shows every room rather than folding the rest into "N more live".
+  const [everyoneOpen, setEveryoneOpen] = useState(false);
+  const everyoneRef = useRef<HTMLDivElement>(null);
+  const [allRoomsShown, setAllRoomsShown] = useState(false);
   const [publicParticipants, setPublicParticipants] = useState<Record<string, PublicPresence>>({});
   const [voiceChannel, setVoiceChannel] = useState(channel);
   const clientRef = useRef<PublicCallClient | undefined>(undefined);
@@ -686,12 +719,13 @@ export default function Call({
       !focusedJoin.current.isConnected &&
       document.activeElement === document.body
     ) {
-      (
-        document.querySelector<HTMLButtonElement>(".header-voice .voice-hangup") ??
-        document.querySelector<HTMLButtonElement>(".voice-hangup")
-      )?.focus();
+      // The Join that was pressed is gone; Leave on your call card takes its place,
+      // or on a phone reading the conversation (Browse hidden), the call's strip.
+      const strip = phoneReading && document.querySelector<HTMLButtonElement>(".voice-strip button.voice-strip-open");
+      (strip || document.querySelector<HTMLButtonElement>(".live-call .voice-hangup"))?.focus();
+      focusedJoin.current = null;
     }
-  }, [connected, voiceChannel?.id]);
+  }, [connected, voiceChannel?.id, phoneReading]);
   // The client reports an error only on the update where it happens, so keep
   // it until the next voice action or until it is dismissed.
   const [voiceError, setVoiceError] = useState<string>();
@@ -738,12 +772,6 @@ export default function Call({
   }, [connected, idle]);
 
   useEffect(() => {
-    if (!connected) return;
-    const key = voiceChannel?.id ?? "general";
-    setExpandedRosters((current) => new Set(current).add(key));
-  }, [connected, voiceChannel?.id]);
-
-  useEffect(() => {
     const previous = previousVoiceRoster.current;
     if (!connected || !state.selfId) {
       previousVoiceRoster.current = undefined;
@@ -759,6 +787,39 @@ export default function Call({
     else if (joined) playSound("channel-join");
     previousVoiceRoster.current = { selfId: state.selfId, ids };
   }, [connected, state.selfId, state.participants]);
+
+  // The full list closes on Escape or an outside press, and whenever the call ends.
+  useEffect(() => {
+    if (!everyoneOpen) return;
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target as Node;
+      const panel = everyoneRef.current;
+      // A press on the phone sheet's backdrop reaches the sheet itself, above its top edge.
+      if (panel && target === panel && event.clientY < panel.getBoundingClientRect().top) {
+        setEveryoneOpen(false);
+        return;
+      }
+      if (panel?.contains(target)) return;
+      // Its own opener toggles it; everything else outside closes it.
+      if ((target as Element).closest?.(".live-call .live-faces")) return;
+      setEveryoneOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || volumeParticipant) return;
+      event.preventDefault();
+      setEveryoneOpen(false);
+      document.querySelector<HTMLButtonElement>(".live-call .live-faces button")?.focus();
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", escape);
+    };
+  }, [everyoneOpen, volumeParticipant]);
+  useEffect(() => {
+    if (idle) setEveryoneOpen(false);
+  }, [idle]);
 
   useEffect(() => {
     if (!volumeParticipant) return;
@@ -788,8 +849,6 @@ export default function Call({
     const anchor = panel?.parentElement;
     if (!panel || !anchor) return;
     if (typeof panel.showPopover === "function" && !panel.matches(":popover-open")) panel.showPopover();
-    // The pinned roster sits above the footer, so its menus prefer opening upward.
-    const preferAbove = !!anchor.closest(".voice-pinned");
     const position = () => {
       const viewport = window.visualViewport;
       const x = viewport?.offsetLeft ?? 0;
@@ -801,7 +860,7 @@ export default function Call({
       const box = panel.getBoundingClientRect();
       const below = y + height - bounds.bottom - edge;
       const above = bounds.top - y - edge;
-      const up = preferAbove ? box.height + 4 <= above || above > below : box.height + 4 > below && above > below;
+      const up = box.height + 4 > below && above > below;
       panel.style.left = `${Math.max(x + edge, Math.min(bounds.right - 8 - box.width, x + width - box.width - edge))}px`;
       panel.style.top = `${Math.max(y + edge, Math.min(up ? bounds.top - 4 - box.height : bounds.bottom + 4, y + height - box.height - edge))}px`;
     };
@@ -819,6 +878,56 @@ export default function Call({
       window.removeEventListener("scroll", position, true);
       window.visualViewport?.removeEventListener("resize", position);
       window.visualViewport?.removeEventListener("scroll", position);
+    };
+  }, []);
+
+  // Your call's full list opens beside the sidebar, level with the card, in the
+  // top layer so the channel list never clips it. Phones show it as a bottom
+  // sheet instead (CSS), so only wide layouts are positioned here.
+  const placeEveryone = useCallback((panel: HTMLDivElement | null) => {
+    everyoneRef.current = panel;
+    const anchor = panel?.closest<HTMLElement>(".live-call");
+    if (!panel || !anchor) return;
+    if (typeof panel.showPopover === "function" && !panel.matches(":popover-open")) {
+      panel.showPopover();
+      // A person's audio menu opened with the list was shown first; lift it back above.
+      panel.querySelectorAll<HTMLElement>(".participant-volume:popover-open").forEach((menu) => {
+        menu.hidePopover();
+        menu.showPopover();
+      });
+      // The list is a dialog: focus moves into it, onto that person's volume when a face
+      // chose one (a frame later: the slider's thumb is hidden on its first commit).
+      requestAnimationFrame(() => {
+        if (!panel.isConnected || panel.contains(document.activeElement)) return;
+        (
+          panel.querySelector<HTMLElement>('.participant-volume [role="slider"]') ??
+          panel.querySelector<HTMLElement>(".live-everyone-heading button")
+        )?.focus({ preventScroll: true });
+      });
+    }
+    const position = () => {
+      if (window.matchMedia("(max-width: 760px)").matches) {
+        panel.style.left = "";
+        panel.style.top = "";
+        return;
+      }
+      const edge = 8;
+      const bounds = anchor.getBoundingClientRect();
+      const box = panel.getBoundingClientRect();
+      const sidebar = anchor.closest(".people-panel")?.getBoundingClientRect() ?? bounds;
+      panel.style.left = `${Math.max(edge, Math.min(sidebar.right + edge, window.innerWidth - box.width - edge))}px`;
+      panel.style.top = `${Math.max(edge, Math.min(bounds.top, window.innerHeight - box.height - edge))}px`;
+    };
+    position();
+    const observer = new ResizeObserver(position);
+    observer.observe(panel);
+    observer.observe(anchor);
+    window.addEventListener("resize", position);
+    window.addEventListener("scroll", position, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", position);
+      window.removeEventListener("scroll", position, true);
     };
   }, []);
 
@@ -1200,13 +1309,9 @@ export default function Call({
       {people.map((participant) => {
         const self = participant.id === state.selfId;
         const participantName = self ? (account?.displayName ?? participant.name) : participant.name;
-        const stream = self
-          ? state.localMedia
-          : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream;
         const participantMuted = self ? state.muted : participant.muted;
         const participantDeafened = self ? state.deafened : participant.deafened;
         const participantStatus = participantDeafened ? "Deafened" : participantMuted ? "Muted" : undefined;
-        const activityMuted = participantMuted;
         const speaking = isSpeaking(participant);
         return (
           <li
@@ -1246,20 +1351,6 @@ export default function Call({
                 </span>
               )}
             </span>
-            {own && (
-              <VoiceActivity
-                stream={stream}
-                muted={activityMuted}
-                onActivityChange={(active) =>
-                  setActiveParticipants((current) => {
-                    if (current.has(participant.id) === active) return current;
-                    const next = new Set(current);
-                    active ? next.add(participant.id) : next.delete(participant.id);
-                    return next;
-                  })
-                }
-              />
-            )}
             {own && !self && (
               <button
                 className="participant-menu-button"
@@ -1314,7 +1405,6 @@ export default function Call({
       })}
     </ul>
   );
-  const voiceChannelKey = (channelId?: string) => channelId ?? "general";
   /** Who is in voice in a channel; your own call's roster (with controls) when you are in it. */
   const rosterFor = (channelId?: string) => {
     const watched = channelId ? channelRosters[channelId] : undefined;
@@ -1332,112 +1422,64 @@ export default function Call({
       ? (channel?.name ?? "general")
       : (voiceChannels?.find((item) => item.id === channelId)?.name ?? "voice");
   // The call's channel and space as they are named now: renames here, or live
-  // from elsewhere, reach the dock as they reach the channel list.
+  // from elsewhere, reach your call card as they reach the channel list.
   const voiceHere = !!voiceChannel && voiceChannel.spaceId === spaceId;
   const voiceChannelName =
     (voiceHere && voiceChannels?.find((item) => item.id === voiceChannel.id)?.name) || voiceChannel?.name;
   const voiceSpaceName = (voiceHere && space?.name) || voiceChannel?.spaceName;
-  // Keep the active call's roster with its channel. If navigation hides that
-  // channel, render the same roster above the persistent audio controls.
-  let rosterPlaced = false;
+  // Your call card appears once joining takes a moment, like the old dock did.
+  const inCall = !idle && !pendingJoin;
+  const personName = (person: { id: string; name: string }) =>
+    person.id === state.selfId ? (account?.displayName ?? person.name) : person.name;
   const voiceFor = (channelId?: string): VoiceSlot | null => {
     if ((voiceless && (!channelId || channelId === channel?.id)) || (channelId === channel?.id && !channelJoined))
       return null;
-    const { people, startedAt, own } = rosterFor(channelId);
-    const ownVisible = own && (!narrow || !onNavigationToggle || navigationOpen || channelId === channel?.id);
-    if (ownVisible) rosterPlaced = true;
-    const key = voiceChannelKey(channelId);
-    const label = channelLabel(channelId);
-    const open = expandedRosters.has(key);
-    const listId = `voice-occupants-${key.replace(/[^\w-]/g, "")}`;
+    const { people } = rosterFor(channelId);
     const activeHere = !idle && voiceChannel?.id === channelId;
-    const joiningHere = activeHere && state.phase === "joining";
-    const stack = people.length > 0 && (
-      <button
-        className="voice-stack"
-        type="button"
-        aria-expanded={open}
-        aria-controls={listId}
-        aria-label={`${people.length} in voice in ${label}. ${open ? "Hide" : "Show"} who is in voice.`}
-        onClick={() => {
-          setExpandedRosters((current) => {
-            const next = new Set(current);
-            open ? next.delete(key) : next.add(key);
-            return next;
-          });
-          setVolumeParticipant(undefined);
-        }}
-      >
-        {activeHere && connected ? (
-          <AudioLines className="voice-connected-icon" aria-hidden="true" />
-        ) : (
-          <span className="voice-stack-faces" aria-hidden="true">
-            {people.slice(0, 2).map((participant) => (
-              <span key={participant.id} className="voice-stack-avatar">
-                <Avatar person={voicePicture(participant)} name={participant.name} />
-              </span>
-            ))}
-          </span>
-        )}
-        <span className="voice-stack-count">{people.length} in voice</span>
-        <ChevronDown aria-hidden="true" />
-      </button>
-    );
     return {
-      timer:
-        startedAt != null && (people.length > 0 || joiningHere) ? <VoiceSessionTimer startedAt={startedAt} /> : null,
-      // Empty channels add nothing beneath their name; only occupied ones show who is there.
-      summary: stack ? (
-        <span className="channel-voice" data-active={activeHere && connected ? "" : undefined}>
-          {stack}
-        </span>
-      ) : null,
-      // Your call's channel keeps the shortcut's slot, so connecting never shifts its row.
+      live:
+        people.length > 0 ? (
+          <span
+            className="channel-live"
+            data-active={activeHere ? "" : undefined}
+            role="img"
+            aria-label={`${people.length} in voice`}
+          >
+            <AudioLines aria-hidden="true" />
+            <span aria-hidden="true">{people.length}</span>
+          </span>
+        ) : null,
+      // Your call's channel keeps the button's slot, so connecting never shifts its row.
       join: activeHere ? (
         <span className="channel-quick-join" data-placeholder="" aria-hidden="true" />
       ) : (
-        voiceAction(channelId, "row")
+        voiceAction(channelId, "row", people.length > 0)
       ),
-      list:
-        people.length > 0 && (!own || ownVisible) ? (
-          <div
-            className="voice-occupants"
-            id={listId}
-            data-open={open ? "" : undefined}
-            data-active={activeHere && connected ? "" : undefined}
-          >
-            <div className="voice-occupants-inner" inert={!open}>
-              {renderRoster(people, own, label)}
-            </div>
-          </div>
-        ) : null,
     };
   };
   /**
-   * Join, switch or leave voice for a channel. The conversation header carries the
-   * labelled action on every device; channel rows add a hover-revealed shortcut
-   * for fine pointers, so empty channels stay a single quiet line.
+   * Join or switch voice for a channel in one click. Rows carry an icon button
+   * (revealed on hover for fine pointers, always shown on quiet rows for touch);
+   * Live now cards and the phone strip carry a labelled one. Leaving lives on your
+   * call card.
    */
-  const voiceAction = (channelId: string | undefined, placement: "row" | "header") => {
+  const voiceAction = (channelId: string | undefined, placement: "row" | "card" | "strip", occupied = false) => {
     const label = channelLabel(channelId);
     const activeHere = !idle && voiceChannel?.id === channelId;
     const joiningHere = activeHere && state.phase === "joining";
     const leavingHere = state.phase === "leaving" && voiceChannel?.id === channelId;
     const switching = !idle && !activeHere;
-    if (activeHere && (connected || state.phase === "reconnecting"))
-      return placement === "header" ? leaveControl : null;
+    if (activeHere && (connected || state.phase === "reconnecting")) return null;
     const blocked = joiningHere || leavingHere || actionPending || (!activeHere && joinBlocked);
-    const actionLabel = leavingHere ? "Leaving…" : joiningHere ? "Joining…" : switching ? "Switch here" : "Join voice";
+    const actionLabel = leavingHere ? "Leaving…" : joiningHere ? "Joining…" : switching ? "Switch" : "Join";
     const actionName = leavingHere
       ? `Leaving voice in #${label}`
       : joiningHere
         ? `Joining voice in #${label}`
         : switching
           ? `Switch voice to #${label}`
-          : placement === "header"
-            ? "Join voice"
-            : `Join voice in #${label}`;
-    const header = placement === "header";
+          : `Join voice in #${label}`;
+    const row = placement === "row";
     return (
       <Tooltip
         content={
@@ -1451,12 +1493,12 @@ export default function Call({
                 ? `Leave your current voice channel and join #${label}`
                 : `Join voice in #${label}`
         }
-        placement={header ? "bottom" : "top"}
+        placement="top"
       >
         <button
-          ref={header && !activeHere ? viewedJoin : undefined}
-          className={`channel-join ${header ? "voice-button header-voice-join" : "channel-quick-join"}`}
-          data-occupied={header && !activeHere && rosterFor(channelId).people.length > 0 ? "" : undefined}
+          ref={placement === "strip" && !activeHere ? viewedJoin : undefined}
+          className={`channel-join ${row ? "channel-quick-join" : `live-join${switching ? " live-switch" : ""}`}`}
+          data-occupied={row && occupied ? "" : undefined}
           type="button"
           data-channel={channelId ?? ""}
           data-connected={activeHere ? "" : undefined}
@@ -1477,19 +1519,16 @@ export default function Call({
             if (!blocked) joinChannel(channelId);
           }}
         >
-          <Headphones aria-hidden="true" />
-          {header && <span className="channel-join-label">{actionLabel}</span>}
+          {row ? <Headphones aria-hidden="true" /> : <span className="channel-join-label">{actionLabel}</span>}
         </button>
       </Tooltip>
     );
   };
-  /** Who is in voice in the open channel, with its join or leave action, for the conversation header. */
-  const muteControl = !idle && (
-    // Phones keep the call's mute and deafen in the header, since Browse holds the account bar.
-    <>
+  const muteToggle = (
+    <Tooltip content={state.monitoring ? "Stop mic test to change mute" : state.muted ? "Unmute" : "Mute"}>
       <button
         type="button"
-        className={`voice-icon-button header-voice-mute${state.muted ? " active" : ""}`}
+        className={`voice-icon-button live-toggle${state.muted ? " active" : ""}`}
         aria-disabled={state.monitoring}
         aria-label={state.muted ? "Unmute microphone" : "Mute microphone"}
         aria-pressed={state.muted}
@@ -1497,9 +1536,13 @@ export default function Call({
       >
         {state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}
       </button>
+    </Tooltip>
+  );
+  const deafenToggle = (
+    <Tooltip content={state.monitoring ? "Stop mic test to change deafen" : state.deafened ? "Undeafen" : "Deafen"}>
       <button
         type="button"
-        className={`voice-icon-button header-voice-mute${state.deafened ? " active" : ""}`}
+        className={`voice-icon-button live-toggle${state.deafened ? " active" : ""}`}
         aria-disabled={state.monitoring}
         aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"}
         aria-pressed={state.deafened}
@@ -1507,49 +1550,314 @@ export default function Call({
       >
         {state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}
       </button>
-    </>
+    </Tooltip>
   );
-  const headerVoice = (() => {
-    // A DM or preview has no voice of its own; on phones it still offers the call's mute and Leave.
-    if (voiceless || !channelJoined)
-      return idle ? null : (
-        <div className="header-voice header-voice-elsewhere">
-          {muteControl}
+  const liveFace = (participant: (typeof roster)[number]) => (
+    <span className="live-avatar" key={participant.id} data-speaking={isSpeaking(participant) ? "" : undefined}>
+      <Avatar person={voicePicture(participant)} name={personName(participant)} />
+    </span>
+  );
+  // Your call's faces keep a stable order: you, then everyone else as they joined.
+  const callPeople = () => {
+    const { people, ...rest } = rosterFor(voiceChannel?.id);
+    const self = people.filter((person) => person.id === state.selfId);
+    return { people: [...self, ...people.filter((person) => person.id !== state.selfId)], ...rest };
+  };
+  /** Your call: who is in it and who is speaking, with mute, deafen and Leave. */
+  const callCard = (() => {
+    if (!inCall) return null;
+    const { people, startedAt, own } = callPeople();
+    const name = voiceChannelName ?? "general";
+    const { shown, hidden } = callCardFaces(people);
+    const speaker = people.find(isSpeaking);
+    const elsewhere = !!voiceChannel?.spaceId && !voiceHere;
+    const status = connected
+      ? `You’re in · ${people.length}`
+      : state.phase === "joining"
+        ? "Connecting…"
+        : state.phase === "reconnecting"
+          ? "Reconnecting…"
+          : "Leaving…";
+    const openEveryone = (personId?: string) => {
+      setEveryoneOpen(true);
+      setVolumeParticipant(personId && personId !== state.selfId ? personId : undefined);
+    };
+    return (
+      <section className="live-card live-call" data-phase={state.phase} aria-label={`Your call in #${name}`}>
+        <div className="live-card-heading">
+          <AudioLines className="live-wave" aria-hidden="true" />
+          <button
+            type="button"
+            className="live-channel"
+            disabled={!onOpenChannel || !voiceChannel}
+            onClick={() => voiceChannel && onOpenChannel?.(voiceChannel.spaceId, voiceChannel.id)}
+          >
+            <span>{name}</span>
+            {elsewhere && voiceSpaceName && <small>{voiceSpaceName}</small>}
+          </button>
+          <span className="live-status">{status}</span>
+          {startedAt != null && <VoiceSessionTimer startedAt={startedAt} />}
+        </div>
+        {people.length > 0 && (
+          <ul className="live-faces" aria-label={`${people.length} in this call`}>
+            {shown.map((participant) => {
+              const self = participant.id === state.selfId;
+              const muted = self ? state.muted : participant.muted;
+              const deafened = self ? state.deafened : participant.deafened;
+              const label = [
+                `${personName(participant)}${self ? " (you)" : ""}`,
+                isSpeaking(participant) && "speaking",
+                deafened ? "deafened" : muted && "muted",
+              ]
+                .filter(Boolean)
+                .join(", ");
+              const face = (
+                <>
+                  {liveFace(participant)}
+                  {(muted || deafened) && (
+                    <span className="live-badge">
+                      {deafened ? <HeadphoneOff aria-hidden="true" /> : <MicOff aria-hidden="true" />}
+                    </span>
+                  )}
+                </>
+              );
+              return (
+                <li key={participant.id}>
+                  {own ? (
+                    <Tooltip content={personName(participant)}>
+                      <button
+                        type="button"
+                        className="live-face"
+                        aria-label={label}
+                        aria-haspopup="dialog"
+                        onClick={() => openEveryone(participant.id)}
+                      >
+                        {face}
+                      </button>
+                    </Tooltip>
+                  ) : (
+                    <span className="live-face" role="img" aria-label={label}>
+                      {face}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+            {hidden.length > 0 && (
+              <li>
+                <button
+                  type="button"
+                  className="live-more"
+                  data-speaking={hidden.some(isSpeaking) ? "" : undefined}
+                  aria-label={`${hidden.length} more: ${liveNames(hidden.map(personName))}. Show everyone.`}
+                  aria-haspopup="dialog"
+                  aria-expanded={everyoneOpen}
+                  disabled={!own}
+                  onClick={() => (everyoneOpen ? setEveryoneOpen(false) : openEveryone())}
+                >
+                  +{hidden.length}
+                </button>
+              </li>
+            )}
+          </ul>
+        )}
+        {speaker && (
+          <p className="live-speaker">
+            <strong>{personName(speaker)}</strong> is speaking
+          </p>
+        )}
+        <div className="live-controls">
+          {muteToggle}
+          {deafenToggle}
           {leaveControl}
         </div>
-      );
-    const channelId = channel?.id;
-    const { people } = rosterFor(channelId);
-    const names = people.map((person) => person.name);
-    const summary =
-      names.length > 3
-        ? `${names.slice(0, 3).join(", ")} and ${names.length - 3} more are in voice`
-        : names.length > 1
-          ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)} are in voice`
-          : `${names[0]} is in voice`;
-    return (
-      <div className="header-voice">
-        {people.length > 0 && (
-          <Tooltip content={summary} placement="bottom">
-            <span className="header-voice-people" role="img" aria-label={summary}>
-              <span className="voice-stack-faces" aria-hidden="true">
-                {people.slice(0, 3).map((participant) => (
-                  <span key={participant.id} className="voice-stack-avatar">
-                    <Avatar person={voicePicture(participant)} name={participant.name} />
-                  </span>
-                ))}
-              </span>
-              <span className="header-voice-count" aria-hidden="true">
-                {people.length}
-              </span>
-            </span>
-          </Tooltip>
+        {everyoneOpen && own && (
+          <div
+            ref={placeEveryone}
+            className="live-everyone"
+            popover="manual"
+            role="dialog"
+            aria-label={`Everyone in voice in #${name}`}
+          >
+            <div className="live-everyone-heading">
+              <p>
+                <strong>In #{name}</strong>
+                <span>
+                  {people.length} {people.length === 1 ? "person" : "people"}
+                </span>
+              </p>
+              <button
+                type="button"
+                className="voice-icon-button"
+                aria-label="Close"
+                onClick={() => {
+                  setEveryoneOpen(false);
+                  setVolumeParticipant(undefined);
+                  document.querySelector<HTMLButtonElement>(".live-call .live-faces button")?.focus();
+                }}
+              >
+                <X aria-hidden="true" />
+              </button>
+            </div>
+            {renderRoster(people, own, `#${name}`)}
+          </div>
         )}
-        {muteControl}
-        {voiceAction(channelId, "header")}
+      </section>
+    );
+  })();
+  // Other channels of this space where people are talking, busiest first. A channel
+  // you are visiting (feedback) has no row here, so its room joins them while you read it.
+  const visited =
+    channel?.visitor && !channel.direct && !voiceChannels?.some((item) => item.id === channel.id)
+      ? [{ id: channel.id, name: channel.name, private: false }]
+      : [];
+  const liveRooms = [...(voiceChannels ?? []), ...visited]
+    .filter((item) => !(inCall && voiceChannel?.id === item.id))
+    .map((item) => ({ item, ...rosterFor(item.id) }))
+    .filter((room) => room.people.length > 0)
+    .sort((a, b) => b.people.length - a.people.length || a.item.name.localeCompare(b.item.name));
+  const roomCard = ({ item, people, startedAt }: (typeof liveRooms)[number]) => (
+    <section
+      key={item.id}
+      className="live-card live-room"
+      aria-label={`Voice in #${item.name}, ${people.length} in voice`}
+    >
+      <div className="live-card-heading">
+        {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
+        <button
+          type="button"
+          className="live-channel"
+          disabled={!onOpenChannel}
+          // Its chat may already be open (a visit has no place in this space to open it from).
+          onClick={() => item.id !== channel?.id && onOpenChannel?.(spaceId, item.id)}
+        >
+          <span>{item.name}</span>
+        </button>
+        {startedAt != null && <VoiceSessionTimer startedAt={startedAt} />}
+      </div>
+      <div className="live-room-body">
+        <span className="live-stack" aria-hidden="true">
+          {people.slice(0, 3).map(liveFace)}
+          {people.length > 3 && <span className="live-chip">+{people.length - 3}</span>}
+        </span>
+        <span className="live-names">{liveNames(people.map((person) => person.name))}</span>
+        {voiceAction(item.id, "card")}
+      </div>
+    </section>
+  );
+  const foldedRooms = allRoomsShown ? [] : liveRooms.slice(LIVE_ROOM_CARDS);
+  const roomCount = liveRooms.length + (callCard ? 1 : 0);
+  const liveNow = (callCard || liveRooms.length > 0) && (
+    <section className="live-now" aria-label="Live now">
+      <h2 className="live-now-heading">
+        <AudioLines aria-hidden="true" />
+        Live now
+        {roomCount > 1 && <span>{roomCount} rooms</span>}
+      </h2>
+      {callCard}
+      {(allRoomsShown ? liveRooms : liveRooms.slice(0, LIVE_ROOM_CARDS)).map(roomCard)}
+      {foldedRooms.length > 0 ? (
+        <button type="button" className="live-more-rooms" aria-expanded="false" onClick={() => setAllRoomsShown(true)}>
+          <ChevronDown aria-hidden="true" />
+          {foldedRooms.length} more live
+          <span>{foldedRooms.map((room) => `#${room.item.name}`).join(", ")}</span>
+        </button>
+      ) : (
+        allRoomsShown &&
+        liveRooms.length > LIVE_ROOM_CARDS && (
+          <button
+            type="button"
+            className="live-more-rooms"
+            aria-expanded="true"
+            onClick={() => setAllRoomsShown(false)}
+          >
+            <ChevronDown aria-hidden="true" />
+            Show less
+          </button>
+        )
+      )}
+    </section>
+  );
+  /**
+   * Phones show the conversation without the sidebar, so a slim strip under its
+   * header carries voice: your call (tap to open Browse, where its card is, or mute
+   * in place), or the open channel's live room with Join.
+   */
+  const voiceStrip = (() => {
+    if (!narrow || !onNavigationToggle) return null;
+    if (inCall) {
+      const { people, startedAt } = callPeople();
+      const speaker = people.find(isSpeaking);
+      const name = voiceChannelName ?? "general";
+      return (
+        // Keyed apart from the Join strip, so its Join never becomes this Mute (keeping focus).
+        <div key="call" className="voice-strip" data-phase={state.phase}>
+          <button
+            type="button"
+            className="voice-strip-open"
+            aria-label={`Your call in #${name}${speaker ? `, ${personName(speaker)} is speaking` : ""}. Open Browse.`}
+            onClick={onNavigationToggle}
+          >
+            <AudioLines className="live-wave" aria-hidden="true" />
+            <strong>#{name}</strong>
+            <span className="live-stack" aria-hidden="true">
+              {people.slice(0, 2).map(liveFace)}
+            </span>
+            <span className="voice-strip-detail">
+              {connected
+                ? speaker
+                  ? personName(speaker)
+                  : ""
+                : state.phase === "joining"
+                  ? "Connecting…"
+                  : "Reconnecting…"}
+            </span>
+            {startedAt != null && <VoiceSessionTimer startedAt={startedAt} />}
+          </button>
+          {muteToggle}
+        </div>
+      );
+    }
+    if (voiceless || !channelJoined) return null;
+    const { people } = rosterFor(channel?.id);
+    if (!people.length) return null;
+    return (
+      <div key="room" className="voice-strip">
+        <p className="voice-strip-open">
+          <AudioLines className="live-wave" aria-hidden="true" />
+          <strong>{people.length} talking</strong>
+          <span className="live-stack" aria-hidden="true">
+            {people.slice(0, 3).map(liveFace)}
+          </span>
+          <span className="voice-strip-detail">{liveNames(people.map((person) => person.name))}</span>
+        </p>
+        {voiceAction(channel?.id, "strip")}
       </div>
     );
   })();
+  // Speaking is detected from your call's audio, for its card, list and strip.
+  const voiceActivity =
+    !publicRoster &&
+    state.participants.map((participant) => {
+      const self = participant.id === state.selfId;
+      return (
+        <VoiceActivity
+          key={participant.id}
+          stream={
+            self ? state.localMedia : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream
+          }
+          muted={self ? state.muted : participant.muted}
+          onActivityChange={(active) =>
+            setActiveParticipants((current) => {
+              if (current.has(participant.id) === active) return current;
+              const next = new Set(current);
+              active ? next.add(participant.id) : next.delete(participant.id);
+              return next;
+            })
+          }
+        />
+      );
+    });
   const memberCount = membersPanel && channelJoined ? mentionMembers?.length : undefined;
   const inVoiceHere = voiceless || !channelJoined ? 0 : rosterFor(channel?.id).people.length;
   const headerSubtitle =
@@ -1560,23 +1868,24 @@ export default function Call({
       .filter(Boolean)
       .join(" · ") || undefined;
   let navigation: ReactNode;
-  if (typeof channelNavigation === "function") navigation = channelNavigation(voiceFor);
+  if (typeof channelNavigation === "function") navigation = channelNavigation(voiceFor, liveNow);
   else if (channelNavigation) navigation = channelNavigation;
   else {
     const voice = voiceFor(undefined);
     navigation = (
-      <div className="channel-item">
-        <div className="channel-row">
-          <a className="channel-link" href="#chat-heading" aria-current="location">
-            <Hash aria-hidden="true" />
-            <span>general</span>
-            {voice?.timer}
-          </a>
-          {voice?.join}
-          {voice?.summary}
+      <>
+        {liveNow}
+        <div className="channel-item">
+          <div className="channel-row">
+            <a className="channel-link" href="#chat-heading" aria-current="location">
+              <Hash aria-hidden="true" />
+              <span>general</span>
+              {voice?.live}
+            </a>
+            {voice?.join}
+          </div>
         </div>
-        {voice?.list}
-      </div>
+      </>
     );
   }
 
@@ -1607,41 +1916,15 @@ export default function Call({
         <ChannelSidebar>
           <div className="sidebar-channels">{navigation}</div>
           <div className="voice-panel">
-            {((!idle && !pendingJoin) || (voiceError && !audioPanel && !inlineVoiceError)) && (
+            {/* Your call itself lives on its Live now card, at the top of the channels. */}
+            {voiceError && !audioPanel && !inlineVoiceError && (
               <div className="voice-dock">
-                {/* Wherever you browse, the call stays one Leave away. */}
-                {!idle && !pendingJoin && (
-                  <div className="connected-channel" data-phase={state.phase} role="status">
-                    <div className="voice-dock-channel">
-                      <AudioLines aria-hidden="true" />
-                      <span>
-                        <strong>
-                          {connected ? "Connected" : state.phase === "joining" ? "Connecting…" : "Reconnecting…"}
-                        </strong>
-                        <small>
-                          {voiceChannelName ?? initialHistory?.channel.name ?? "general"} /{" "}
-                          {voiceSpaceName ?? initialHistory?.space.name ?? "Public demo"}
-                        </small>
-                      </span>
-                    </div>
-                    {leaveControl}
-                  </div>
-                )}
-                {connected && !rosterPlaced && (
-                  <div className="voice-occupants voice-pinned" data-open="" data-active="">
-                    <div className="voice-occupants-inner">
-                      {renderRoster(state.participants, true, voiceChannelName ?? "general")}
-                    </div>
-                  </div>
-                )}
-                {voiceError && !audioPanel && !inlineVoiceError && (
-                  <p className="voice-error" role="alert">
-                    <span>{voiceError}</span>
-                    <button type="button" aria-label="Dismiss voice error" onClick={() => setVoiceError(undefined)}>
-                      <X aria-hidden="true" />
-                    </button>
-                  </p>
-                )}
+                <p className="voice-error" role="alert">
+                  <span>{voiceError}</span>
+                  <button type="button" aria-label="Dismiss voice error" onClick={() => setVoiceError(undefined)}>
+                    <X aria-hidden="true" />
+                  </button>
+                </p>
               </div>
             )}
             <div className="call-account">
@@ -1847,6 +2130,7 @@ export default function Call({
           </div>
         </ChannelSidebar>
         <div className="stage" inert={browsing}>
+          {voiceActivity}
           {state.remoteMedia.map((media) => (
             <AudioOutput
               key={media.trackId}
@@ -1921,7 +2205,7 @@ export default function Call({
                   </button>
                 )
               }
-              headerVoice={headerVoice}
+              headerBelow={voiceStrip}
               headerSubtitle={headerSubtitle}
               headerMenu={
                 (membersPanel || headerMenuItems) && (
