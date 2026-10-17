@@ -1989,6 +1989,17 @@
   color: var(--text-muted);
   opacity: 0.65;
 }
+@media (max-width: 480px) {
+  .join-invite-link .member-add {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .join-invite-link input::placeholder {
+    font-size: 0.75rem;
+  }
+  .join-invite-link .member-add > button {
+    justify-self: end;
+  }
+}
 
 .danger-zone {
   margin-bottom: 5px;

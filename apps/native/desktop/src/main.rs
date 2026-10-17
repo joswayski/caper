@@ -19841,7 +19841,7 @@ impl CaperApp {
         }
         let label = ui.label(bold("Invite link").size(11.5).color(MUTED));
         ui.label(
-            RichText::new("It should look like this →")
+            RichText::new("Paste it below to join!")
                 .size(12.0)
                 .color(MUTED),
         );
@@ -19853,7 +19853,7 @@ impl CaperApp {
                     .vertical_align(egui::Align::Center)
                     .margin(egui::Margin::symmetric(8, 4))
                     .hint_text(
-                        RichText::new("https://caper.chat/invite/…")
+                        RichText::new("it looks like --> caper.chat/invite/AbCdE12345")
                             .color(MUTED.gamma_multiply(0.65)),
                     ),
             )

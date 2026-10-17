@@ -220,7 +220,7 @@ export function JoinInviteLinkForm({ disabled = false }: { disabled?: boolean })
         <h3>Have an invite link?</h3>
       </div>
       <p className="invite-link-example" id={`${id}-example`}>
-        It should look like this →
+        Paste it below to join!
       </p>
       <div className="member-add">
         <label className="sr-only" htmlFor={id}>
@@ -235,7 +235,7 @@ export function JoinInviteLinkForm({ disabled = false }: { disabled?: boolean })
           autoCorrect="off"
           spellCheck={false}
           disabled={disabled}
-          placeholder="https://caper.chat/invite/…"
+          placeholder="it looks like --> caper.chat/invite/AbCdE12345"
           onChange={(event) => {
             setValue(event.target.value);
             setError(undefined);

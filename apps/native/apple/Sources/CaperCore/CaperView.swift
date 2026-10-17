@@ -7605,9 +7605,9 @@ private struct JoinInviteSheet: View {
     private var linkField: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text("Invite link").font(CaperTheme.font(12, weight: .bold))
-            Text("It should look like this →").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            Text("Paste it below to join!").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             TextField("Invite link", text: Binding(get: { link }, set: { if !pending { link = $0; error = nil } }),
-                      prompt: Text(verbatim: "https://caper.chat/invite/…").foregroundStyle(CaperTheme.muted.opacity(0.65)))
+                      prompt: Text(verbatim: "it looks like --> caper.chat/invite/AbCdE12345").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted.opacity(0.65)))
                 .textFieldStyle(CaperTextFieldStyle())
                 .foregroundStyle(CaperTheme.text)
                 .autocorrectionDisabled()
