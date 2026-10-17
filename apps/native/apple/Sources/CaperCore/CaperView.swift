@@ -5561,6 +5561,7 @@ private struct MessageActionsSheet: View {
             ForEach(quickReactions, id: \.self) { emoji in
                 Button { quickReaction(emoji) } label: {
                     EmojiArtworkView(emoji: emoji, size: 28).frame(maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!canReact)
@@ -5570,6 +5571,7 @@ private struct MessageActionsSheet: View {
             Button { showingEmojiPicker = true } label: {
                 CaperIcon(name: "smile-plus", size: 24)
                     .frame(maxWidth: .infinity, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(!canReact)
@@ -5583,14 +5585,26 @@ private struct MessageActionsSheet: View {
             Button {
                 chat.reply(to: message, inThread: inThread)
                 dismiss()
-            } label: { CaperLabel("Reply", icon: "reply") }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).disabled(!chat.canInteract || chat.pendingMessage != nil)
+            } label: {
+                CaperLabel("Reply", icon: "reply")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+            }.disabled(!chat.canInteract || chat.pendingMessage != nil)
             Divider()
             if chat.canEdit(message) {
-                Button { editing = true } label: { CaperLabel("Edit message", icon: "pencil") }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                Button { editing = true } label: {
+                    CaperLabel("Edit message", icon: "pencil")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
                 Divider()
             }
             if message.forward == nil && (message.revision ?? 1) > 1 {
-                Button { history = true } label: { CaperLabel("Message history", icon: "history") }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                Button { history = true } label: {
+                    CaperLabel("Message history", icon: "history")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
                 Divider()
             }
             if viewReactions != nil, let reaction = message.reactions?.first {
@@ -5599,18 +5613,21 @@ private struct MessageActionsSheet: View {
                     dismiss()
                 } label: {
                     CaperLabel("View reactions", icon: "users").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }.accessibilityIdentifier("message-action-view-reactions")
                 Divider()
             }
             Button(action: togglePin) {
                 CaperLabel(message.pin == nil ? "Pin message" : "Unpin message", icon: message.pin == nil ? "pin" : "pin-off")
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
             }.disabled(!canPin)
             if let reply {
                 Divider()
                 Button(action: reply) {
                     Label { Text("Reply in thread") } icon: { CaperIcon(name: "thread") }
                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
             }
             if canForward {
@@ -5620,6 +5637,7 @@ private struct MessageActionsSheet: View {
                     dismiss()
                 } label: {
                     CaperLabel("Forward message", icon: "forward").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
             }
             // Attachment-only messages have no text to copy.
@@ -5630,6 +5648,7 @@ private struct MessageActionsSheet: View {
                     dismiss()
                 } label: {
                     CaperLabel("Copy text", icon: "copy").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
             }
             Divider()
@@ -5638,6 +5657,7 @@ private struct MessageActionsSheet: View {
                 dismiss()
             } label: {
                 CaperLabel("Copy message ID", icon: "hash").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             if block != nil {
                 Divider()
@@ -5647,6 +5667,7 @@ private struct MessageActionsSheet: View {
                 } label: {
                     CaperLabel("Block \(message.author.name)", icon: "ban").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         .foregroundStyle(CaperTheme.terracottaBright)
+                        .contentShape(Rectangle())
                 }.accessibilityIdentifier("message-action-block")
             } else if let unblock {
                 Divider()
@@ -5655,6 +5676,7 @@ private struct MessageActionsSheet: View {
                     dismiss()
                 } label: {
                     CaperLabel("Unblock \(message.author.name)", icon: "ban").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }.accessibilityIdentifier("message-action-unblock")
             }
         }

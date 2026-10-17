@@ -519,6 +519,41 @@ final class CaperParityUITests: XCTestCase {
     }
 
     #if os(iOS)
+    func testIPhoneMessageActionsAcceptTapsInTrailingWhitespace() throws {
+        let app = launch()
+        let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
+                              "Missing fixture message")
+        let text = "TEST FIXTURE — local sample data, not a live conversation."
+        for label in ["Copy text", "Copy message ID", "Edit message", "Reply"] {
+            hold(row)
+            let sheet = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
+                                    "Missing message actions")
+            let action = try require(sheet.buttons[label], timeout: 5, "Missing \(label) action")
+            // Use the sheet's right edge, not the button's reported width:
+            // a text-sized button must not silently move the tap onto its label.
+            sheet.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+                dx: sheet.frame.width - 36, dy: action.frame.midY - sheet.frame.minY
+            )).tap()
+            switch label {
+            case "Copy text":
+                assertCopied(text, in: app)
+            case "Copy message ID":
+                assertCopied("chan00000001m01", in: app)
+            case "Edit message":
+                let editor = try require(app.textViews["message-edit-text"], timeout: 5,
+                                         "Tapping the row's blank right side must open the editor")
+                XCTAssertEqual(editor.value as? String, text)
+                try require(app.buttons["Cancel"], timeout: 5, "Missing editor cancel action").tap()
+            default:
+                try require(app.buttons["Cancel reply"], timeout: 5,
+                            "Tapping the row's blank right side must start a reply")
+            }
+            let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sheet)
+            XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed,
+                           "\(label) must respond to a tap in the row's trailing whitespace")
+        }
+    }
+
     func testIPhoneComposerUsesContentHeightAndShrinksAfterEditing() throws {
         let app = launch()
         let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
