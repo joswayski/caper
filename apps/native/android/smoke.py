@@ -867,7 +867,11 @@ def main() -> None:
     assert general_row is not None and abs(center(general_row)[1] - center(action)[1]) <= 4, (
         "The headphones join belongs to #general's row"
     )
-    assert find(voice_ready, contains="in voice") is None, "No room is live: no voice cards or counts"
+    # A live count reads "2 in voice", a call "You’re in · 2" ("Join voice in #x" is a join, not a count).
+    live = re.compile(r"\d+ in voice|You’re in")
+    assert not any(live.search(node.get("text", "") + node.get("content-desc", "")) for node in nodes(voice_ready)), (
+        "No room is live: no voice cards or counts"
+    )
     # Web's mute and deafen work before joining, without starting a call.
     tap(description="Mute microphone")
     muted = wait_for(description="Unmute microphone")
