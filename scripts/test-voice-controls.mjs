@@ -1389,6 +1389,8 @@ try {
       );
     // Names keep their line whatever happens to voice; touch hides a live row's shortcut.
     const names = () => geometry().map((row) => [row[0][0], row[0][1], row[0][3]]);
+    // What stays put while your call's status takes a row's join slot: name, menu and line.
+    const kept = (row) => [row[0][0], row[0][1], row[0][3], row.at(-2), row.at(-1)];
     const checkChannelTargets = () => {
       for (const area of ["leading padding", "icon", "name", "trailing padding"]) {
         for (const name of ["beta", "alpha"]) {
@@ -1593,7 +1595,6 @@ try {
       );
       browser("wait", "650");
       // The room's card becomes your call's: name, menu and line stay put (the status takes the shortcut's slot).
-      const kept = (row) => [row[0][0], row[0][1], row[0][3], row.at(-2), row.at(-1)];
       assert.deepEqual(
         kept(geometry()[0]),
         kept(occupied[0]),
@@ -1685,12 +1686,11 @@ try {
         evaluate(`return voiceFixture.commands.filter(c => c.method === 'media.join').length;`) <= joins + 1,
         "One press issues at most one Join while capture is pending",
       );
-      if (fine) assert.deepEqual(geometry(), before, "Pending microphone permission/capture must not shift controls");
-      else
-        assert.deepEqual(
-          names(),
-          before.map((row) => [row[0][0], row[0][1], row[0][3]]),
-        );
+      assert.deepEqual(
+        geometry().map(kept),
+        before.map(kept),
+        "Pending microphone permission/capture must not shift the name, menu or line",
+      );
       screenshot(`channel-${width}-joining`);
       click("Cancel joining voice");
       wait(`document.querySelector('[aria-label="Join voice in #alpha"]') && !document.querySelector('.live-call')`);

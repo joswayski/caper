@@ -1990,12 +1990,21 @@
   min-width: 0;
   flex: 1 1 100%;
 }
-/* The row's own line heads its card, its icon in line with the faces below. */
+/* Every row sits in the same 1px frame, so becoming a card never moves its name or
+   menu. In a card the row's own line spans it edge to edge, its icon in line with
+   the faces below. */
+.channel-card {
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+.live-card:has(> :is(.channel-line, .channel-row)) {
+  padding-inline: 9px;
+}
 .live-card > :is(.channel-line, .channel-row) {
-  margin: -4px -4px 0 -9px;
+  margin: -10px -9px 0;
 }
 .live-call > :is(.channel-line, .channel-row) {
-  margin: -6px -8px 0 -9px;
+  margin-top: -12px;
 }
 @media (hover: hover) {
   .live-card:hover > .channel-line:not(:has(.channel-select[aria-current="page"])) {
