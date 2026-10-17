@@ -215,7 +215,8 @@ import kotlinx.coroutines.delay
             val field = remember { FocusRequester() }
             // An opened link is already loading; the keyboard would only cover its preview.
             LaunchedEffect(Unit) { if (opened == null) runCatching { field.requestFocus() } }
-            OutlinedTextField(input, { input = it; error = null }, label = { Text("Invite link") }, placeholder = { Text("https://caper.chat/invite/…") },
+            Text("It should look like this →", color = TextMuted, fontSize = 12.sp)
+            OutlinedTextField(input, { input = it; error = null }, label = { Text("Invite link") }, placeholder = { Text("https://caper.chat/invite/…", color = TextMuted.copy(alpha = 0.65f)) },
                 modifier = Modifier.fillMaxWidth().focusRequester(field), singleLine = true, readOnly = checking,
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
                 keyboardActions = KeyboardActions(onGo = { if (!checking && input.isNotBlank()) submit() }))

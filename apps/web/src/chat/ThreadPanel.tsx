@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Plus, Send, X } from "lucide-react";
+import { ArrowLeft, Send, X } from "lucide-react";
+import AttachmentPicker from "./AttachmentPicker.tsx";
 import Avatar from "../components/Avatar";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState } from "./client.ts";
@@ -79,8 +80,6 @@ export default function ThreadPanel({
   const [validation, setValidation] = useState<string>();
   const composer = useRef<HTMLTextAreaElement>(null);
   const keyboardDismiss = useTimelineKeyboardDismiss("chat-thread-reply");
-  const fileInput = useRef<HTMLInputElement>(null);
-  const pickerAdd = useRef<ComposerAttachments["onAdd"]>(undefined);
   const canAttach = !!attachments?.enabled;
   const dragDepth = useRef(0);
   const [dropping, setDropping] = useState(false);
@@ -631,40 +630,17 @@ export default function ThreadPanel({
                 </span>
               </label>
               {attachments && (
-                <>
-                  <button
-                    type="button"
-                    className="chat-attach"
-                    aria-label="Attach files"
-                    title={
-                      !canAttach
-                        ? (attachments.disabledReason ?? "Checking file uploads…")
-                        : attachments.drafts.length >= MAX_ATTACHMENTS
-                          ? `You can attach up to ${MAX_ATTACHMENTS} files.`
-                          : "Attach files"
-                    }
-                    disabled={!canAttach || attachments.drafts.length >= MAX_ATTACHMENTS}
-                    onClick={() => {
-                      pickerAdd.current = attachments.onAdd;
-                      fileInput.current?.click();
-                    }}
-                  >
-                    <Plus size={18} aria-hidden="true" />
-                  </button>
-                  <input
-                    ref={fileInput}
-                    type="file"
-                    multiple
-                    hidden
-                    disabled={!canAttach}
-                    onChange={(event) => {
-                      if (!canAttach) return;
-                      (pickerAdd.current ?? attachments.onAdd)([...(event.target.files ?? [])]);
-                      pickerAdd.current = undefined;
-                      event.target.value = "";
-                    }}
-                  />
-                </>
+                <AttachmentPicker
+                  title={
+                    !canAttach
+                      ? (attachments.disabledReason ?? "Checking file uploads…")
+                      : attachments.drafts.length >= MAX_ATTACHMENTS
+                        ? `You can attach up to ${MAX_ATTACHMENTS} files.`
+                        : "Attach files"
+                  }
+                  disabled={!canAttach || attachments.drafts.length >= MAX_ATTACHMENTS}
+                  onAdd={attachments.onAdd}
+                />
               )}
               <label className="sr-only" htmlFor="chat-thread-reply">
                 Reply to thread

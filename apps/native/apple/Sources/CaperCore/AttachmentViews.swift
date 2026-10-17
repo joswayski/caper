@@ -1888,6 +1888,7 @@ struct AttachmentPickerButton: View {
                 .contentShape(Rectangle())
         }
         .menuStyle(.button)
+        .menuOrder(.fixed)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()

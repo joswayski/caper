@@ -219,12 +219,16 @@ export function JoinInviteLinkForm({ disabled = false }: { disabled?: boolean })
       <div className="dialog-section-heading">
         <h3>Have an invite link?</h3>
       </div>
+      <p className="invite-link-example" id={`${id}-example`}>
+        It should look like this →
+      </p>
       <div className="member-add">
         <label className="sr-only" htmlFor={id}>
           Invite link
         </label>
         <input
           id={id}
+          aria-describedby={`${id}-example`}
           value={value}
           autoComplete="off"
           autoCapitalize="none"

@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
-import { Plus, Send } from "lucide-react";
+import { useEffect, useLayoutEffect, useState, useSyncExternalStore, type RefObject } from "react";
+import { Send } from "lucide-react";
+import AttachmentPicker from "./AttachmentPicker.tsx";
 import { getAccount } from "../account/client.ts";
 import { createDirectConversation, directStatus, listDirectConversations } from "../spaces/client.ts";
 import { directMessageErrors } from "../spaces/direct-errors.ts";
@@ -75,7 +76,6 @@ export default function ProfileComposer({
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [choosingFile, setChoosingFile] = useState(false);
-  const fileInput = useRef<HTMLInputElement>(null);
   const locked = sending || !!draft.command;
 
   const save = (next: ProfileDraft) => {
@@ -106,15 +106,6 @@ export default function ProfileComposer({
   useEffect(() => {
     onStateChange({ picking: emojiOpen || choosingFile, sending });
   }, [emojiOpen, choosingFile, sending, onStateChange]);
-  useEffect(() => {
-    const element = fileInput.current;
-    const cancel = () => {
-      setChoosingFile(false);
-      requestAnimationFrame(() => input.current?.focus());
-    };
-    element?.addEventListener("cancel", cancel);
-    return () => element?.removeEventListener("cancel", cancel);
-  }, []);
 
   // Grow with the draft, like the channel composer, up to the CSS max-height.
   useLayoutEffect(() => {
@@ -313,30 +304,12 @@ export default function ProfileComposer({
           void submit();
         }}
       >
-        <button
-          type="button"
-          className="chat-attach"
-          aria-label="Attach files"
+        <AttachmentPicker
           disabled={locked || !settings || draft.files.length >= MAX_ATTACHMENTS}
           title={settings ? "Attach files" : settingsLoaded ? "File uploads are unavailable" : "Checking file uploads…"}
-          onClick={() => {
-            setChoosingFile(true);
-            fileInput.current?.click();
-          }}
-        >
-          <Plus size={18} aria-hidden="true" />
-        </button>
-        <input
-          type="file"
-          ref={fileInput}
-          multiple
-          hidden
-          onChange={(event) => {
-            setChoosingFile(false);
-            addFiles([...(event.target.files ?? [])]);
-            event.target.value = "";
-            restoreFocus();
-          }}
+          onAdd={addFiles}
+          onPickingChange={setChoosingFile}
+          onRestoreFocus={() => input.current?.focus()}
         />
         <label className="sr-only" htmlFor="profile-message">
           Message @{username}

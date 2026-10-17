@@ -6871,6 +6871,14 @@ impl CaperApp {
         std::thread::spawn(move || {
             let files = rfd::FileDialog::new()
                 .set_title("Attach files")
+                .add_filter(
+                    "Photos and videos",
+                    &[
+                        "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "avif", "bmp", "tif",
+                        "tiff", "mp4", "mov", "m4v", "webm", "mkv", "avi", "mpeg", "mpg", "3gp",
+                    ],
+                )
+                .add_filter("All files", &["*"])
                 .pick_files()
                 .unwrap_or_default();
             let _ = sender.send(files);
@@ -18117,6 +18125,15 @@ impl CaperApp {
             std::thread::spawn(move || {
                 let files = rfd::FileDialog::new()
                     .set_title("Attach files")
+                    .add_filter(
+                        "Photos and videos",
+                        &[
+                            "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "avif", "bmp",
+                            "tif", "tiff", "mp4", "mov", "m4v", "webm", "mkv", "avi", "mpeg",
+                            "mpg", "3gp",
+                        ],
+                    )
+                    .add_filter("All files", &["*"])
                     .pick_files()
                     .unwrap_or_default();
                 let _ = sender.send(files);
@@ -19823,6 +19840,11 @@ impl CaperApp {
             return;
         }
         let label = ui.label(bold("Invite link").size(11.5).color(MUTED));
+        ui.label(
+            RichText::new("It should look like this →")
+                .size(12.0)
+                .color(MUTED),
+        );
         ui.add_space(8.0);
         let field = ui
             .add_sized(
