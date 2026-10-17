@@ -1095,6 +1095,12 @@ struct CaperApp {
     profile_send_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     profile_navigation: Option<u64>,
     thread_view: Option<ThreadView>,
+    thread_unread: BTreeMap<String, String>,
+    thread_unread_scope: Option<(u64, u64, String)>,
+    thread_unread_busy: bool,
+    thread_unread_dirty: bool,
+    thread_unread_revision: u64,
+    thread_unread_retry: Option<Instant>,
     /// Last rendered thread bounds, for routing native file drops by pointer.
     thread_drop_rect: Option<egui::Rect>,
     thread_request: u64,
@@ -1391,6 +1397,12 @@ impl CaperApp {
             profile_send_cancel: None,
             profile_navigation: None,
             thread_view: None,
+            thread_unread: BTreeMap::new(),
+            thread_unread_scope: None,
+            thread_unread_busy: false,
+            thread_unread_dirty: true,
+            thread_unread_revision: 0,
+            thread_unread_retry: None,
             thread_drop_rect: None,
             thread_request: 0,
             thread_pages: BTreeMap::new(),
@@ -1679,6 +1691,10 @@ impl CaperApp {
                         app.thread_pages.insert(root.clone(), thread.clone());
                     }
                     app.thread_view = Some(thread);
+                    if name.contains("unread") {
+                        app.thread_unread.insert(root.clone(), "4".into());
+                        app.thread_view = None;
+                    }
                     if name.contains("attachments") {
                         app.install_attachments_fixture();
                         for draft in &mut app.draft_files {
@@ -3364,6 +3380,39 @@ impl CaperApp {
                 } if generation == self.generation => {
                     self.directs = directs;
                 }
+                Event::ThreadUnread {
+                    scope,
+                    revision,
+                    read,
+                    result,
+                } if self.thread_unread_scope.as_ref() == Some(&scope)
+                    && scope.0 == self.account_epoch
+                    && scope.1 == self.navigation
+                    && self.selected_channel.as_ref() == Some(&scope.2)
+                    && revision == self.thread_unread_revision =>
+                {
+                    self.thread_unread_busy = false;
+                    match result {
+                        Ok(threads) => {
+                            if let Some((root, seq)) = read {
+                                if self.thread_unread.get(&root).is_some_and(|unread| {
+                                    model::sequence(unread).unwrap_or(0)
+                                        <= model::sequence(&seq).unwrap_or(0)
+                                }) {
+                                    self.thread_unread.remove(&root);
+                                }
+                                self.thread_unread_dirty = true;
+                            } else {
+                                self.thread_unread = threads;
+                            }
+                        }
+                        Err(_) => {
+                            self.thread_unread_dirty = true;
+                            self.thread_unread_retry =
+                                Some(Instant::now() + Duration::from_secs(2));
+                        }
+                    }
+                }
                 Event::UnreadLoaded {
                     epoch,
                     revision,
@@ -4167,6 +4216,7 @@ impl CaperApp {
     }
 
     fn refresh_unread(&mut self) {
+        self.thread_unread_dirty = true;
         if let Some(token) = self.token.clone() {
             self.unread_revision += 1;
             self.worker.send(Command::LoadUnread {
@@ -5285,6 +5335,7 @@ impl CaperApp {
         self.session = session.ok();
         self.live = "Connecting…".into();
         self.connect_gateway();
+        self.thread_unread_dirty = true;
         self.mark_selected_direct_read();
         if self.thread_view.is_some() {
             self.load_thread(false);
@@ -5356,6 +5407,55 @@ impl CaperApp {
                 space,
                 channel,
                 seq,
+            });
+        }
+    }
+
+    // One in-flight operation serializes snapshots and acknowledgements. A
+    // dirty bit coalesces live bursts without dropping a refresh during a read.
+    fn refresh_thread_unread(&mut self) {
+        let scope = self
+            .selected_channel
+            .as_ref()
+            .filter(|_| self.token.is_some())
+            .map(|channel| (self.account_epoch, self.navigation, channel.clone()));
+        if self.thread_unread_scope != scope {
+            self.thread_unread_scope = scope;
+            self.thread_unread.clear();
+            self.thread_unread_busy = false;
+            self.thread_unread_dirty = true;
+            self.thread_unread_retry = None;
+        }
+        if self.thread_unread_dirty {
+            self.send_thread_unread(None);
+        }
+    }
+
+    fn send_thread_unread(&mut self, read: Option<(String, String)>) {
+        if self.thread_unread_busy
+            || self
+                .thread_unread_retry
+                .is_some_and(|retry| Instant::now() < retry)
+        {
+            return;
+        }
+        if let (Some(scope), Some(token)) = (self.thread_unread_scope.clone(), self.token.clone()) {
+            if scope.0 != self.account_epoch
+                || scope.1 != self.navigation
+                || self.selected_channel.as_ref() != Some(&scope.2)
+            {
+                return;
+            }
+            self.thread_unread_revision += 1;
+            self.thread_unread_busy = true;
+            if read.is_none() {
+                self.thread_unread_dirty = false;
+            }
+            self.worker.send(Command::ThreadUnread {
+                scope,
+                revision: self.thread_unread_revision,
+                token,
+                read,
             });
         }
     }
@@ -6208,6 +6308,9 @@ impl CaperApp {
             ) =>
             {
                 let root = message.thread_root_id.clone();
+                if root.is_some() {
+                    self.thread_unread_dirty = true;
+                }
                 let confirmed = self.pending.as_ref().is_some_and(|pending| {
                     self.session
                         .as_ref()
@@ -8168,6 +8271,13 @@ impl eframe::App for CaperApp {
         let was_foreground = self.foreground;
         self.foreground = context.input(|input| input.viewport().focused.unwrap_or(false));
         self.receive();
+        self.refresh_thread_unread();
+        if self
+            .thread_unread_retry
+            .is_some_and(|retry| Instant::now() < retry)
+        {
+            context.request_repaint_after(Duration::from_secs(2));
+        }
         if self.foreground && !was_foreground {
             let stale: Vec<_> = self
                 .draft_files
@@ -16169,7 +16279,13 @@ impl CaperApp {
                                 false,
                             );
                         }
-                        if thread_summary_link(ui, summary.reply_count).clicked() {
+                        if thread_summary_link(
+                            ui,
+                            summary.reply_count,
+                            self.thread_unread.contains_key(&message.id),
+                        )
+                        .clicked()
+                        {
                             self.open_thread(message.id.clone());
                         }
                     });
@@ -16261,6 +16377,32 @@ impl CaperApp {
         {
             ui.scroll_to_rect(message_rect, Some(egui::Align::Center));
             self.scroll_to_target = false;
+        }
+        // Only a rendered reply in the foreground thread pane counts. The
+        // reply's end must be inside the clip (also works for a reply taller
+        // than the viewport); off-screen newer replies never advance reads.
+        if in_thread
+            && !in_pins
+            && self.foreground
+            && ui.is_enabled()
+            && self.dialog.is_none()
+            && self.viewer.is_none()
+            && !self.showing_pins
+            && !self.browse_covers_conversation()
+            && self
+                .thread_view
+                .as_ref()
+                .is_some_and(|thread| !thread.loading && !thread.has_newer)
+            && ui
+                .clip_rect()
+                .contains(message_rect.center_bottom() - egui::vec2(0.0, 1.0))
+            && let Some(root) = &message.thread_root_id
+            && self.thread_unread.get(root).is_some_and(|unread| {
+                model::sequence(&message.seq).unwrap_or(0)
+                    >= model::sequence(unread).unwrap_or(u64::MAX)
+            })
+        {
+            self.send_thread_unread(Some((root.clone(), message.seq.clone())));
         }
     }
 
@@ -21760,6 +21902,7 @@ fn carries_identities(event: &Event) -> bool {
             | Event::NotificationActivity { .. }
             | Event::NotificationError { .. }
             | Event::UnreadLoaded { .. }
+            | Event::ThreadUnread { .. }
             | Event::ChannelRead { .. }
             | Event::CodeRequested { .. }
             | Event::MediaStatus { .. }
@@ -23725,7 +23868,7 @@ fn copy_items(ui: &mut egui::Ui, message: &model::Message) {
 
 /// Web's `.chat-thread-summary`: the reply count in bold terracotta, then a
 /// quiet "View thread", without a button frame.
-fn thread_summary_link(ui: &mut egui::Ui, replies: u64) -> egui::Response {
+fn thread_summary_link(ui: &mut egui::Ui, replies: u64, unread: bool) -> egui::Response {
     let mut job = egui::text::LayoutJob::default();
     let count = format!(
         "{replies} {}",
@@ -23739,6 +23882,13 @@ fn thread_summary_link(ui: &mut egui::Ui, replies: u64) -> egui::Response {
             TERRACOTTA_BRIGHT,
         ),
     );
+    if unread {
+        job.append(
+            "● Unread",
+            8.0,
+            egui::TextFormat::simple(egui::FontId::proportional(12.0), PIN_GOLD),
+        );
+    }
     job.append(
         "View thread",
         8.0,
@@ -23754,7 +23904,10 @@ fn thread_summary_link(ui: &mut egui::Ui, replies: u64) -> egui::Response {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
             true,
-            format!("{count} · View thread"),
+            format!(
+                "{count}{} · View thread",
+                if unread { " · Unread" } else { "" }
+            ),
         )
     });
     response
@@ -34081,6 +34234,140 @@ mod tests {
             Some(name),
         );
         (context, app)
+    }
+
+    #[test]
+    fn thread_unread_ack_requires_latest_visible_foreground_reply() {
+        for case in [
+            "visible",
+            "background",
+            "channel",
+            "clipped",
+            "older",
+            "unseen-newer",
+            "switched",
+            "account-switched",
+            "loading",
+            "pins",
+        ] {
+            let (context, mut app) = fixture("parity-thread");
+            let reply = app
+                .timeline
+                .messages()
+                .find(|message| message.thread_root_id.is_some())
+                .unwrap()
+                .clone();
+            let root = reply.thread_root_id.clone().unwrap();
+            app.token = Some("test-token".into());
+            app.foreground = case != "background";
+            app.navigation_open = false;
+            app.thread_unread_scope = Some((
+                app.account_epoch,
+                app.navigation,
+                app.selected_channel.clone().unwrap(),
+            ));
+            app.thread_unread.insert(
+                root,
+                if case == "unseen-newer" {
+                    "999".into()
+                } else {
+                    reply.seq.clone()
+                },
+            );
+            app.thread_view.as_mut().unwrap().has_newer = case == "older";
+            app.thread_view.as_mut().unwrap().loading = case == "loading";
+            app.showing_pins = case == "pins";
+            if case == "switched" {
+                app.navigation += 1;
+            }
+            if case == "account-switched" {
+                app.account_epoch += 1;
+            }
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 700.0),
+                    )),
+                    ..Default::default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        if case == "clipped" {
+                            ui.set_clip_rect(egui::Rect::NOTHING);
+                        }
+                        app.message_in(ui, &reply, case != "channel", false, false);
+                    });
+                },
+            );
+            assert_eq!(app.thread_unread_busy, case == "visible", "{case}");
+            assert_eq!(
+                app.thread_unread.len(),
+                1,
+                "only successful server acknowledgements clear badges"
+            );
+        }
+    }
+
+    #[test]
+    fn thread_unread_worker_retries_failed_ack_and_refreshes_authoritative_list() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = attempts.clone();
+        let (base, seen) = account_server_with(move |line, body| {
+            if line == "GET /api/chat/channels/test-channel/threads/unread" {
+                return (
+                    200,
+                    r#"{"threads":[{"rootId":"root","seq":"9007199254740995"}]}"#.into(),
+                );
+            }
+            if line == "PUT /api/chat/channels/test-channel/messages/root/thread/read" {
+                let value = serde_json::from_slice::<serde_json::Value>(body).unwrap();
+                assert!(matches!(
+                    value["seq"].as_str(),
+                    Some("9007199254740995" | "9007199254740996")
+                ));
+                return if count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    (503, r#"{"error":"retry"}"#.into())
+                } else {
+                    (204, String::new())
+                };
+            }
+            (404, "{}".into())
+        });
+        let (context, mut app) = fixture("parity-thread");
+        app.worker = crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context);
+        app.token = Some("test-token".into());
+        app.selected_channel = Some("test-channel".into());
+        app.refresh_thread_unread();
+        app.refresh_thread_unread();
+        receive_until(&mut app, |app| !app.thread_unread_busy);
+        assert_eq!(app.thread_unread["root"], "9007199254740995");
+        let read = Some(("root".into(), "9007199254740995".into()));
+        app.send_thread_unread(read.clone());
+        receive_until(&mut app, |app| !app.thread_unread_busy);
+        assert!(app.thread_unread.contains_key("root"));
+        assert!(app.thread_unread_retry.is_some());
+        app.thread_unread_retry = None;
+        app.send_thread_unread(read);
+        // A later unread entry must survive an older successful ack.
+        app.thread_unread
+            .insert("root".into(), "9007199254740996".into());
+        receive_until(&mut app, |app| !app.thread_unread_busy);
+        assert_eq!(app.thread_unread["root"], "9007199254740996");
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+        app.send_thread_unread(Some(("root".into(), "9007199254740996".into())));
+        receive_until(&mut app, |app| !app.thread_unread_busy);
+        assert!(app.thread_unread.is_empty());
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(
+                    |line| line.starts_with("GET /api/chat/channels/test-channel/threads/unread")
+                )
+                .count(),
+            1
+        );
     }
 
     #[test]

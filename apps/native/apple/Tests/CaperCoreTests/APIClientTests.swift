@@ -70,6 +70,96 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    func testUnreadThreadContractUsesAuthenticatedGetAndVisibleSequencePut() async throws {
+        let api = client()
+        let root = "root00000000001"
+        let sequence = "9007199254740993"
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            if request.httpMethod == "GET" {
+                XCTAssertEqual(request.url?.path, "/api/chat/channels/chan00000001/threads/unread")
+                return (200, Data("{\"threads\":[{\"rootId\":\"\(root)\",\"seq\":\"\(sequence)\"}]}".utf8))
+            }
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.url?.path, "/api/chat/channels/chan00000001/messages/\(root)/thread/read")
+            let body = try XCTUnwrap(requestBodyData(request))
+            XCTAssertEqual(try JSONSerialization.jsonObject(with: body) as? [String: String], ["seq": sequence])
+            return (204, Data())
+        }
+        let rows = try await api.unreadThreads(channelID: "chan00000001")
+        XCTAssertEqual(rows.map(\.rootId), [root])
+        XCTAssertEqual(rows.map(\.seq), [sequence])
+        try await api.markThreadRead(channelID: "chan00000001", rootID: root, seq: sequence)
+    }
+
+    func testUnreadThreadRejectsMalformedSequenceRatherThanClearingBadge() async throws {
+        let api = client()
+        MockURLProtocol.handler = { _ in
+            (200, Data(#"{"threads":[{"rootId":"root00000000001","seq":"invalid"}]}"#.utf8))
+        }
+        do {
+            _ = try await api.unreadThreads(channelID: "chan00000001")
+            XCTFail("Invalid unread state must fail, not become an empty snapshot")
+        } catch let error as APIError { XCTAssertEqual(error.status, 502) }
+        MockURLProtocol.handler = { _ in
+            XCTFail("Invalid visible sequences must never reach the server")
+            return (204, Data())
+        }
+        do {
+            try await api.markThreadRead(channelID: "chan00000001", rootID: "root00000000001", seq: "invalid")
+            XCTFail("Invalid sequence accepted")
+        } catch { }
+    }
+
+    @MainActor
+    func testThreadReadRequiresVisibleLatestReplyAndPreservesLaterUnread() async throws {
+        let channel = "chan00000001", rootID = "Message00000001"
+        let reply = ChatMessage(id: "Message00000003", channelId: channel, seq: "3",
+                                author: ChatAuthor(id: "other", name: "Other", isGuest: false),
+                                content: ChatContent(version: 1, type: "text", text: "Reply"),
+                                createdAt: "now", clientMessageId: "reply", threadRootId: rootID)
+        let history = ChatHistory(space: HistoryIdentity(id: "space0000001", name: "Space"),
+                                  channel: HistoryIdentity(id: channel, name: "general"), messages: [reply], cursor: "3", hasMore: false)
+        var latestUnread = "3"
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" {
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            }
+            XCTAssertTrue(request.url?.path.hasSuffix("/threads/unread") == true)
+            return (200, Data("{\"threads\":[{\"rootId\":\"\(rootID)\",\"seq\":\"\(latestUnread)\"}]}".utf8))
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(history: history, displayName: "Me")
+        chat.threadRootID = rootID
+        await chat.refreshUnreadThreads()
+        XCTAssertTrue(chat.threadUnread(rootID))
+        chat.acknowledgeVisibleThread() // Merely opening/fetching cannot acknowledge.
+        chat.visibleThreadReply = (rootID, "2")
+        chat.acknowledgeVisibleThread() // A scrolled-away/old reply cannot acknowledge.
+        chat.visibleThreadReply = (rootID, "3")
+        chat.threadHasNewer = true
+        chat.acknowledgeVisibleThread() // An older window cannot acknowledge.
+        await Task.yield()
+        XCTAssertTrue(chat.threadUnread(rootID))
+
+        let started = expectation(description: "visible reply read started")
+        var held: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.httpMethod == "PUT" else { return false }
+            held = request; started.fulfill(); return true
+        }
+        chat.threadHasNewer = false
+        chat.acknowledgeVisibleThread()
+        await fulfillment(of: [started], timeout: 2)
+        latestUnread = "4"
+        await chat.refreshUnreadThreads()
+        held?.respond(status: 204)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(chat.unreadThreads[rootID], "4", "A delayed read must not erase a later reply")
+        await chat.stop()
+        XCTAssertFalse(chat.threadUnread(rootID))
+    }
+
     func testReleaseNotesArePublicBoundedAndPinnedToSourceRevision() async throws {
         let revision = String(repeating: "a", count: 40)
         func body(_ sha: String) -> Data {

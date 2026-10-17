@@ -49,6 +49,14 @@ class CaperApi(
     suspend fun logout(token: String) { request<Unit>("/api/auth/logout", "POST", token = token) }
     suspend fun spaces(token: String): SpaceList = get("/api/spaces", token)
     suspend fun unreadSpaces(token: String): UnreadSpaces = get("/api/spaces/unread", token)
+    suspend fun unreadThreads(token: String, channel: String): UnreadThreads =
+        get("/api/chat/channels/${channel.pathId()}/threads/unread", token)
+    suspend fun markThreadRead(token: String, channel: String, root: String, seq: String) {
+        require(messageId.matches(root)) { "Invalid message ID." }
+        require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
+        request<Unit>("/api/chat/channels/${channel.pathId()}/messages/$root/thread/read", "PUT", token,
+            buildJsonObject { put("seq", seq) }.toString())
+    }
     suspend fun markChannelRead(token: String, space: String, channel: String, seq: String) {
         require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
         request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/read", "POST", token, buildJsonObject { put("seq", seq) }.toString())

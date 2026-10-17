@@ -1966,6 +1966,23 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val selfId = state.chatAuthorId ?: state.account?.id
     val blocked = state.blockedIds
     val rows = remember(messages, blocked, selfId, revealedRuns) { timelineRows(groupBlocked(messages, blocked, selfId, revealedRuns)) }
+    // Recheck while stationary too: foreground return and failed acknowledgements need no scroll.
+    // The bottom of a real reply must be visible (also works for replies taller than the viewport).
+    LaunchedEffect(inThread, state.selectedChannel?.id, state.thread, rows) {
+        if (!inThread) return@LaunchedEffect
+        val channel = state.selectedChannel?.id ?: return@LaunchedEffect
+        val root = state.thread?.rootId ?: return@LaunchedEffect
+        while (true) {
+            val layout = listState.layoutInfo
+            val visible = layout.visibleItemsInfo.filter {
+                it.offset + it.size > layout.viewportStartOffset && it.offset + it.size <= layout.viewportEndOffset
+            }.map { it.key }.toSet()
+            rows.filterIsInstance<TimelineRow.Message>().map { it.message }
+                .filter { it.id in visible && it.threadRootId == root }
+                .maxByOrNull { it.seq.toBigInteger() }?.let { viewModel.threadReplyVisible(channel, root, it.seq) }
+            delay(1_000)
+        }
+    }
     val listedPending = state.pendingMessage?.takeIf { inThread || it.threadRootId == null }
     // Rows sent or received while the reader is at the live end settle in; see Arrivals.
     val arrivals = remember { Arrivals() }
@@ -2086,6 +2103,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                             if (summary != null) Text(buildAnnotatedString {
                                 withStyle(SpanStyle(color = TerracottaBright, fontWeight = FontWeight.Bold)) {
                                     append("${summary.replyCount} ${if (summary.replyCount == 1) "reply" else "replies"}")
+                                }
+                                if (state.unreadThreads.containsKey(message.id)) {
+                                    withStyle(SpanStyle(color = PinGold)) { append("  ● Unread") }
                                 }
                                 withStyle(SpanStyle(color = TextMuted)) { append("  View thread") }
                             }) else Text("Replied to a thread · View thread")

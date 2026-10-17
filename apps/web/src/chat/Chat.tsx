@@ -642,6 +642,19 @@ export default function Chat({
     };
   }, [state.phase, state.hasNewer, readCursor, channelId, readActive]);
 
+  useEffect(() => {
+    const refresh = () => {
+      if (readActive && document.visibilityState === "visible") void clientRef.current?.refreshUnreadThreads();
+    };
+    refresh();
+    document.addEventListener("visibilitychange", refresh);
+    const timer = setInterval(refresh, 15_000);
+    return () => {
+      document.removeEventListener("visibilitychange", refresh);
+      clearInterval(timer);
+    };
+  }, [channelId, readActive, signedIn]);
+
   // The composer resizes itself; keep the conversation pinned to the newest
   // message when it already was. Read the position before resizing, not a
   // delayed bottom callback, and correct only real height changes using the
@@ -1619,7 +1632,7 @@ export default function Chat({
                       onMouseEnter={() => prefetchThread(message.id)}
                       onFocus={() => prefetchThread(message.id)}
                       onClick={() => openThread(message.id)}
-                      aria-label={`View thread with ${message.thread.replyCount} ${message.thread.replyCount === 1 ? "reply" : "replies"}`}
+                      aria-label={`View thread with ${message.thread.replyCount} ${message.thread.replyCount === 1 ? "reply" : "replies"}${state.unreadThreads?.[message.id] ? ", unread" : ""}`}
                     >
                       <span className="chat-thread-avatars">
                         {message.thread.participants.map((person) => (
@@ -1631,6 +1644,7 @@ export default function Chat({
                       <strong>
                         {message.thread.replyCount} {message.thread.replyCount === 1 ? "reply" : "replies"}
                       </strong>
+                      {state.unreadThreads?.[message.id] && <span className="chat-thread-unread">Unread</span>}
                       <span>View thread</span>
                     </button>
                   )}
@@ -2334,6 +2348,7 @@ export default function Chat({
         channelName={channelName}
         direct={direct}
         readOnly={readOnly}
+        readActive={readActive}
         mentionPeople={mentionPeople}
         specialMentions={!direct}
         replyTo={state.thread ? replyTargets[state.thread.rootId] : undefined}

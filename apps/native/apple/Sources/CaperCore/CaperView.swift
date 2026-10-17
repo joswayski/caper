@@ -4235,6 +4235,24 @@ private struct NativeThreadView: View {
                    grouped: grouping.grouped.contains(message.id), continued: grouping.continued.contains(message.id),
                    requestBlock: { blockTarget = BlockTarget(author: $0) }) { reactionMessage = message }
             .modifier(Entrance.message(arrivals.claim(message.clientMessageId)))
+            .onGeometryChange(for: String?.self) { geometry in
+                // A later own or collapsed blocked reply must not hide a read acknowledgement.
+                guard let rootID = message.threadRootId, message.seq == chat.unreadThreads[rootID],
+                      !chat.threadHasNewer, !chat.threadLoading,
+                      let visible = geometry.bounds(of: .named(MentionCard.timelineSpace)),
+                      visible.height > 0, visible.minY < geometry.size.height,
+                      visible.maxY >= geometry.size.height - 1 else { return nil }
+                return message.seq
+            } action: { seq in
+                guard message.threadRootId == chat.threadRootID,
+                      message.seq == chat.unreadThreads[chat.threadRootID ?? ""] else { return }
+                model.threadVisibilityChanged(rootID: chat.threadRootID, seq: seq)
+            }
+            .onDisappear {
+                if chat.visibleThreadReply?.seq == message.seq {
+                    model.threadVisibilityChanged(rootID: nil, seq: nil)
+                }
+            }
     }
     /// The root and replies collapse like the channel: blocked runs show "Show".
     /// Replies group among themselves; the root never groups (empty `grouping`).
@@ -4338,6 +4356,7 @@ private struct NativeThreadView: View {
                         }
                     }
                     // Follow reaction height changes as well as a shorter viewport.
+                    .onDisappear { model.threadVisibilityChanged(rootID: nil, seq: nil) }
                     .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: firstReplyID, recent: recentRows) } action: { pin in
                         if timelinePin.needsReveal(to: pin), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
                     }
@@ -4753,6 +4772,10 @@ private struct MessageRow: View {
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies")")
                                     .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright)
                                     .padding(.leading, 3)
+                                if chat.threadUnread(message.id) {
+                                    Circle().fill(CaperTheme.pinGold).frame(width: 5, height: 5)
+                                    Text("Unread").foregroundStyle(CaperTheme.pinGold)
+                                }
                                 Text("View thread").foregroundStyle(CaperTheme.muted).padding(.leading, 3)
                             } else {
                                 CaperIcon(name: "thread", size: 14); Text("Replied to a thread · View thread")
@@ -4764,7 +4787,7 @@ private struct MessageRow: View {
                         #else
                         .modifier(ControlHover())
                         #endif
-                        .accessibilityLabel("View thread")
+                        .accessibilityLabel(chat.threadUnread(message.threadRootId ?? message.id) ? "View thread, unread" : "View thread")
                 }
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {

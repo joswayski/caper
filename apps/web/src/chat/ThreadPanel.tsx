@@ -33,6 +33,7 @@ export default function ThreadPanel({
   channelName,
   direct = false,
   readOnly,
+  readActive = true,
   mentionPeople,
   specialMentions,
   replyTo,
@@ -51,6 +52,7 @@ export default function ThreadPanel({
   channelName: string;
   direct?: boolean;
   readOnly: boolean;
+  readActive?: boolean;
   /** People `@` can suggest, without the author; undefined until loaded. */
   mentionPeople?: MentionCandidate[];
   specialMentions: boolean;
@@ -314,6 +316,45 @@ export default function ThreadPanel({
     scroll.current.scrollTop = olderAnchor.current.top + scroll.current.scrollHeight - olderAnchor.current.height;
     olderAnchor.current = undefined;
   }, [state.thread?.loadingOlder, replies.length]);
+  useEffect(() => {
+    // Measure the newest unread reply, not a later own or collapsed blocked row.
+    const latest = replies.find((message) => message.seq === (rootId ? state.unreadThreads?.[rootId] : undefined));
+    const list = scroll.current;
+    if (!readActive || !rootId || !latest || !list || state.thread?.loading || state.thread?.hasNewer) return;
+    const row = list.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(latest.id)}"]`);
+    if (!row) return;
+    const read = () => {
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+      const viewport = list.getBoundingClientRect(),
+        bounds = row.getBoundingClientRect();
+      const bottom = bounds.bottom - 1;
+      if (
+        bounds.height <= 0 ||
+        bottom < Math.max(viewport.top, 0) ||
+        bounds.bottom > Math.min(viewport.bottom, window.innerHeight)
+      )
+        return;
+      // A covering dialog, mobile navigation, or hidden panel is not being read.
+      const visible = document.elementFromPoint(bounds.left + bounds.width / 2, bottom);
+      if (visible && row.contains(visible)) void client?.markThreadRead(rootId, latest.seq);
+    };
+    const frame = requestAnimationFrame(read);
+    const observer = new ResizeObserver(read);
+    observer.observe(list);
+    observer.observe(row);
+    list.addEventListener("scroll", read);
+    document.addEventListener("visibilitychange", read);
+    window.addEventListener("focus", read);
+    const timer = setInterval(read, 15_000);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      list.removeEventListener("scroll", read);
+      document.removeEventListener("visibilitychange", read);
+      window.removeEventListener("focus", read);
+      clearInterval(timer);
+    };
+  }, [client, rootId, replies, readActive, state.thread?.loading, state.thread?.hasNewer, state.unreadThreads]);
   arrivals.observe(
     "thread",
     rootId ?? "",

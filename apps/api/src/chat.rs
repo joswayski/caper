@@ -33,6 +33,7 @@ use uuid::Uuid;
 
 mod editing;
 mod forwarding;
+mod thread_reads;
 
 pub(crate) const TOPIC: &str = "caper:chat:v1:events";
 // Separate from durable events: older gateways require a sequence on that topic.
@@ -190,6 +191,7 @@ pub(crate) fn routes() -> Router<AppState> {
         )
         .route("/api/chat/channels/{channel}/typing", post(typing))
         .merge(forwarding::routes())
+        .merge(thread_reads::routes())
 }
 
 fn enabled(state: &AppState) -> Result<&Chat, ApiError> {

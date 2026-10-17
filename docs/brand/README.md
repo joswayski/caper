@@ -8,6 +8,8 @@ These owner-supplied references describe the intended brand, not implemented pro
 
 Canonical colors: blackout `#0C0D0F`, surface `#151719`, border `#34383B`, text `#F3F4F5`, eggshell action `#F1EDE4`, terracotta `#B64D32`, caper green `#637A43`. Use `shared/design.css` tokens. Prefer 8px control corners, subtle borders, and Satoshi regular/medium/bold. Green for the character; eggshell for primary actions (blackout labels); terracotta for selection, focus and mentions. Motion is short and decelerating (`--motion-*`, `--ease-out` in `shared/design.css`); nothing teleports, and reduced-motion settings turn it off. The examples are design references, not image assets to slice into a working UI.
 
+Thread unread indicators use the existing gold `#E4C76A` (`--pin-gold`) for both the dot and label, distinct from the terracotta reply count. This does not change channel or DM unread colors.
+
 Source: images supplied by Jose Valerio in the browser-media implementation thread, September 6, 2026.
 
 ## Echo mark (saved for later, not in the product)
