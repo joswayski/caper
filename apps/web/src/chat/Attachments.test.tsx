@@ -131,4 +131,12 @@ test("draft files can be previewed before uploading finishes, with removal separ
   expect(markup).toContain('href="blob:notes" target="_blank" rel="noopener noreferrer" aria-label="Open notes.pdf"');
   expect(markup).not.toContain('aria-label="Preview missing.zip"');
   expect(markup).not.toContain('aria-label="Open missing.zip"');
+  // Filenames remain in accessible action labels, not in the compact tiles.
+  const visibleText = markup.replace(/<[^>]*>/g, "");
+  for (const draft of drafts) expect(visibleText).not.toContain(draft.name);
+  expect(visibleText).toContain("Preparing…");
+  expect(visibleText).toContain("40%");
+  expect(visibleText).toContain("Failed · Retry");
+  expect(markup).toContain('title="Upload failed"');
+  expect(markup).toContain('src="https://cdn.test/preview/photo"');
 });

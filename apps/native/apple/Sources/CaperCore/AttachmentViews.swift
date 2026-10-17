@@ -1538,7 +1538,7 @@ private struct MediaViewerAspect: ViewModifier {
 
 // MARK: Composer
 
-/// Draft files above the composer: thumbnail, name, size, upload progress, remove.
+/// Compact, wrapping draft previews shared by channel and thread composers.
 struct AttachmentDraftsView: View {
     @Bindable var chat: ChatModel
     var inThread = false
@@ -1547,14 +1547,12 @@ struct AttachmentDraftsView: View {
 
     var body: some View {
         if !files.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(files) { draft in
-                        AttachmentDraftChip(draft: draft, preview: { previewID = draft.id }, retry: { chat.retryAttachmentDraft(id: draft.id) }) {
-                            chat.removeAttachmentDraft(id: draft.id)
-                        }
-                        .modifier(Entrance.chip)
+            StagedFileLayout() {
+                ForEach(files) { draft in
+                    AttachmentDraftChip(draft: draft, preview: { previewID = draft.id }, retry: { chat.retryAttachmentDraft(id: draft.id) }) {
+                        chat.removeAttachmentDraft(id: draft.id)
                     }
+                    .modifier(Entrance.chip)
                 }
             }
             .accessibilityLabel("Files to send")
@@ -1575,13 +1573,41 @@ private struct AttachmentDraftChip: View {
     var body: some View {
         StagedFileChip(id: draft.id, name: draft.name, kind: draft.kind, localURL: draft.localURL,
                        status: draft.statusLabel, failed: draft.error != nil,
+                       busyLabel: draft.attachment == nil && draft.error == nil ? (draft.preparing ? "Preparing…" : "Uploading…") : nil,
                        progress: draft.attachment == nil && draft.error == nil ? draft.progress : nil,
                        retry: draft.error == nil ? nil : retry, preview: preview, remove: remove)
     }
 }
 
-/// A composer's staged file: thumbnail (images) or kind icon, name, status,
-/// optional upload progress and Remove. Shared by channel and profile composers.
+/// At most four compact squares per row, even in a wide composer. A single
+/// attachment keeps the same tile size rather than filling the available width.
+struct StagedFileLayout: Layout {
+    private func metrics(width: CGFloat?) -> (columns: Int, side: CGFloat) {
+        let width = max(0, width ?? 440)
+        let columns = min(4, max(1, Int(min(width, 440) + 8) / 98))
+        return (columns, min(104, max(0, (width - CGFloat(columns - 1) * 8) / CGFloat(columns))))
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let (columns, side) = metrics(width: proposal.width)
+        let rows = (subviews.count + columns - 1) / columns
+        return CGSize(width: proposal.width ?? (CGFloat(columns) * (side + 8) - 8),
+                      height: CGFloat(rows) * (side + 8) - 8)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let (columns, side) = metrics(width: bounds.width)
+        for (index, subview) in subviews.enumerated() {
+            subview.place(at: CGPoint(x: bounds.minX + CGFloat(index % columns) * (side + 8),
+                                      y: bounds.minY + CGFloat(index / columns) * (side + 8)),
+                          anchor: .topLeading, proposal: ProposedViewSize(width: side, height: side))
+        }
+    }
+}
+
+/// A staged square with independent preview, remove and retry controls. Filenames
+/// and full status remain accessible without covering healthy image thumbnails.
 struct StagedFileChip: View {
     let id: String
     let name: String
@@ -1589,6 +1615,7 @@ struct StagedFileChip: View {
     let localURL: URL
     let status: String
     var failed = false
+    var busyLabel: String?
     var progress: Double?
     var removable = true
     /// Offered for a failed upload.
@@ -1599,63 +1626,99 @@ struct StagedFileChip: View {
     @State private var thumbnail: CGImage?
 
     var body: some View {
-        HStack(spacing: 8) {
+        ZStack(alignment: .topTrailing) {
             Button(action: preview) {
-                HStack(spacing: 8) {
+                GeometryReader { geometry in
                     Group {
                         if let thumbnail {
                             Image(decorative: thumbnail, scale: 1).resizable().scaledToFill()
-                        } else if kind == .file {
-                            CaperIcon(name: "file-text", size: 18).foregroundStyle(CaperTheme.muted)
                         } else {
-                            Image(systemName: icon).font(.system(size: 15)).foregroundStyle(CaperTheme.muted)
+                            VStack(spacing: 6) {
+                                if kind == .file {
+                                    CaperIcon(name: "file-text", size: 22)
+                                } else {
+                                    Image(systemName: icon).font(.system(size: 22))
+                                }
+                                Text(kindLabel).font(CaperTheme.font(11, weight: .bold))
+                            }
+                            .foregroundStyle(CaperTheme.muted)
                         }
                     }
-                    .frame(width: 36, height: 36)
-                    .background(CaperTheme.raised)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(name).font(CaperTheme.font(12, weight: .bold)).lineLimit(1).truncationMode(.middle)
-                        Text(status).font(CaperTheme.font(10))
-                            .foregroundStyle(failed ? CaperTheme.error : CaperTheme.muted).lineLimit(2)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Preview \(name)")
+            .accessibilityValue(status)
+            .help(name)
+            if failed || busyLabel != nil {
+                VStack {
+                    Spacer(minLength: 0)
+                    VStack(spacing: 3) {
+                        if failed, let retry {
+                            Button(action: retry) {
+                                Text("Failed · Retry")
+                                    .frame(maxWidth: .infinity, minHeight: 44)
+                                    .contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                                .accessibilityLabel("Retry uploading \(name)")
+                                .accessibilityHint(status)
+                        } else {
+                            Text(failed ? "Failed" : busyLabel ?? "Uploading…")
+                                .lineLimit(1).minimumScaleFactor(0.8)
+                                .accessibilityLabel(status)
+                        }
                         if let progress {
-                            ProgressView(value: progress).progressViewStyle(.linear).tint(CaperTheme.terracottaBright).frame(width: 110)
+                            ProgressView(value: progress).progressViewStyle(.linear).tint(CaperTheme.terracottaBright)
                                 // Glides between progress events instead of jumping.
                                 .animation(reduceMotion ? nil : .linear(duration: CaperMotion.base), value: progress)
                                 .accessibilityLabel("Uploading \(name)")
                         }
                     }
-                    .frame(maxWidth: 160, alignment: .leading)
+                    .font(CaperTheme.font(10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, failed && retry != nil ? 0 : 4)
+                    .frame(maxWidth: .infinity)
+                    .background(.black.opacity(0.8))
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Preview \(name)")
-            if let retry {
-                Button("Retry", action: retry).buttonStyle(.plain)
-                    .accessibilityLabel("Retry uploading \(name)")
             }
             if removable {
                 Button(action: remove) {
                     CaperIcon(name: "x", size: 14).frame(width: 24, height: 24)
+                        .background(.black.opacity(0.8), in: Circle())
                         #if os(iOS)
                         .frame(minWidth: 44, minHeight: 44)
                         #endif
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(CaperTheme.muted)
+                .foregroundStyle(.white)
                 .accessibilityLabel("Remove \(name)")
             }
         }
-        .padding(.leading, 6).padding(.trailing, 4).padding(.vertical, 6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CaperTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(failed ? Color(red: 138/255, green: 67/255, blue: 52/255) : CaperTheme.border))
         .task(id: localURL) {
             guard kind == .image else { thumbnail = nil; return }
             let key = "draft:\(id):\(localURL.lastPathComponent)"
-            thumbnail = try? await AttachmentImageLoader.shared.load(key: key, url: localURL, maxPixelSize: 120)
+            thumbnail = nil
+            thumbnail = try? await AttachmentImageLoader.shared.load(key: key, url: localURL, maxPixelSize: 312)
+        }
+    }
+
+    private var kindLabel: String {
+        switch kind {
+        case .image: return "Image"
+        case .video: return "Video"
+        case .audio: return "Audio"
+        case .file: return "File"
         }
     }
 
