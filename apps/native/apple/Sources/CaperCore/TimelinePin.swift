@@ -45,8 +45,10 @@ final class TimelinePinBox {
         // A changed first row above cancels follow for prepended/replaced
         // history. Growth with no row update while leaving the bottom is lazy
         // history being measured as the reader scrolls; it must not snap back.
+        // Removing draft files expands the viewport: re-pin then too, or the
+        // old scroll offset leaves the files' former space below the last row.
         return !scrolledAway && (last.atBottom || updatedAtBottom) &&
-            (pin.height < last.height ||
+            (pin.height != last.height ||
              (pin.contentHeight > last.contentHeight && (pin.atBottom || updatedAtBottom)))
     }
 }
