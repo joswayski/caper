@@ -1544,7 +1544,8 @@ try {
         evaluate(`return voiceFixture.leaveCount;`),
       );
       if (width === 390) openBrowse();
-      browser("click", '.channel-line [aria-label="Switch voice to #beta"]');
+      // Touch hides a live row's shortcut; #beta's room card switches instead.
+      browser("click", `${fine ? ".channel-line" : ".live-room"} [aria-label="Switch voice to #beta"]`);
       wait(
         `voiceFixture.client?.phase === 'connected' && document.querySelector('.live-call .live-channel > span')?.textContent === 'beta'`,
       );
