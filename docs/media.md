@@ -1832,7 +1832,7 @@ without a Swift toolchain and awaits macOS CI (`FileDropTests` covers the shared
 text). Real Finder/Files/Photos drags, iPad and Android split-screen drops,
 Windows/X11 drags and physical devices remain to be checked.
 
-Composer thumbnails and filenames are clickable before sending, including while
+Composer attachment tiles are clickable before sending, including while
 preparing/uploading or after an upload fails. Web images and videos use the
 in-app viewer with local object URLs; audio, PDFs and plain text open in the
 browser, and unsupported/active document formats download instead. Apple uses
@@ -1840,6 +1840,26 @@ Quick Look for the staged local file. Android grants the selected content URI
 to a system preview app; Rust desktop opens the selected file in the system
 browser. Native format support depends on the installed system handlers.
 Remove remains a separate control and never opens a preview.
+
+Draft tiles show video posters with a small translucent play indicator centred
+in the preview area, clear of any progress or retry footer. The whole tile still
+opens the preview; the indicator adds no separate hit target. Web and Apple
+decode a bounded early frame locally; Android reuses its prepared poster;
+Rust desktop uses FFmpeg, including for profile-card files not yet uploaded.
+Undecodable videos retain the play
+indicator. The visible X sits near the top-right corner without shrinking the
+44-point Apple/web touch target or Android's 48dp target. Long press (or desktop
+context click) offers **Remove attachment**, affecting only the unsent draft,
+not the original library file or a sent message. Sending profile-card files
+retain their removal lock. Source byte counts and upload behavior are unchanged.
+
+Validation for these draft controls: Chromium desktop and touch-emulated narrow
+layouts with the local API fixture cover posters, long press, tap preview,
+movement cancellation, removal, retry and unsupported video. Rust desktop was
+built and rendered with its labelled attachment fixture; its removal regression
+and a real FFmpeg-backed staged-video poster test pass. Apple and Android builds
+and physical-device rendering still need verification; browser captures are not
+evidence of native iOS/Android behavior.
 
 Ready draft chips show only the final upload size on Android, iOS and the web's
 mobile/touch layout (up to 760px or a coarse pointer). Desktop web, macOS and Rust

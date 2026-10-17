@@ -1,4 +1,16 @@
-import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  autoUpdate,
+  flip,
+  FloatingFocusManager,
+  FloatingPortal,
+  offset,
+  shift,
+  useDismiss,
+  useFloating,
+  useInteractions,
+  useRole,
+} from "@floating-ui/react";
 import { FileText, FileWarning, Maximize2, Play, X } from "lucide-react";
 import GifImage from "./GifImage.tsx";
 import MediaViewer from "./MediaViewer.tsx";
@@ -324,6 +336,175 @@ export interface DraftAttachment extends UploadState {
   localKind?: "image" | "video";
 }
 
+/** Decode one early frame, then release the decoder instead of keeping a
+ * player alive for every draft. This also works before a staged file uploads. */
+function DraftVideoThumbnail({ url, poster }: { url?: string; poster?: string }) {
+  const [frame, setFrame] = useState<{ url: string; image: string }>();
+  useEffect(() => {
+    if (!url || poster) return;
+    const video = document.createElement("video");
+    const release = () => {
+      clearTimeout(timer);
+      video.onloadeddata = video.onseeked = video.onerror = null;
+      video.removeAttribute("src");
+      video.load();
+    };
+    const capture = () => {
+      try {
+        if (!video.videoWidth || !video.videoHeight) return;
+        const scale = Math.min(1, 312 / Math.max(video.videoWidth, video.videoHeight));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+        canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+        const context = canvas.getContext("2d");
+        if (!context) return;
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        setFrame({ url, image: canvas.toDataURL("image/jpeg", 0.8) });
+      } catch {
+        // Unsupported media or cross-origin pixels keep the labelled fallback.
+      } finally {
+        release();
+      }
+    };
+    const timer = setTimeout(release, 8_000);
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.onloadeddata = () => {
+      video.onloadeddata = null;
+      const time = Number.isFinite(video.duration) && video.duration > 0 ? Math.min(0.5, video.duration / 2) : 0;
+      if (time > 0) {
+        video.onseeked = capture;
+        video.currentTime = time;
+      } else capture();
+    };
+    video.onerror = release;
+    video.src = url;
+    return release;
+  }, [url, poster]);
+  const thumbnail = poster ?? (frame?.url === url ? frame?.image : undefined);
+  return thumbnail ? <img src={thumbnail} alt="" draggable={false} /> : null;
+}
+
+/** Keep the long-press lifetime tied to its tile. Scrolling cancels the press;
+ * releasing after the menu opens must not also open the media viewer. */
+function DraftAttachmentTile({
+  draft,
+  onRemove,
+  children,
+}: {
+  draft: DraftAttachment;
+  onRemove?: (key: string) => void;
+  children: ReactNode;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number }>(undefined);
+  const suppressClick = useRef(false);
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const cancelPress = useCallback(() => {
+    if (press.current) clearTimeout(press.current.timer);
+    press.current = undefined;
+  }, []);
+  useEffect(() => cancelPress, [cancelPress]);
+  useEffect(() => {
+    if (!onRemove) {
+      cancelPress();
+      setMenuOpen(false);
+    }
+  }, [onRemove, cancelPress]);
+  const open = menuOpen && !!onRemove;
+  const { refs, floatingStyles, context } = useFloating({
+    open,
+    onOpenChange: setMenuOpen,
+    placement: "top-end",
+    strategy: "fixed",
+    middleware: [offset(6), flip(), shift({ padding: 12 })],
+    whileElementsMounted: autoUpdate,
+  });
+  const { getFloatingProps } = useInteractions([useDismiss(context), useRole(context, { role: "menu" })]);
+  return (
+    <>
+      <li
+        ref={refs.setReference}
+        data-error={draft.error ? true : undefined}
+        title={draft.error ?? draft.name}
+        onPointerDown={(event) => {
+          cancelPress();
+          suppressClick.current = false;
+          if (!onRemove || !event.isPrimary || event.button !== 0) return;
+          const target = event.target as HTMLElement;
+          if (target.closest(".chat-draft-remove, .chat-draft-retry")) return;
+          returnFocus.current = event.currentTarget.querySelector<HTMLElement>(".chat-draft-preview");
+          press.current = {
+            x: event.clientX,
+            y: event.clientY,
+            timer: setTimeout(() => {
+              suppressClick.current = true;
+              setMenuOpen(true);
+            }, 500),
+          };
+        }}
+        onPointerMove={(event) => {
+          const current = press.current;
+          if (current && Math.hypot(event.clientX - current.x, event.clientY - current.y) > 10) cancelPress();
+        }}
+        onPointerUp={cancelPress}
+        onPointerCancel={cancelPress}
+        onPointerLeave={cancelPress}
+        onClickCapture={(event) => {
+          if (suppressClick.current) {
+            event.preventDefault();
+            event.stopPropagation();
+            suppressClick.current = false;
+          }
+        }}
+        onContextMenu={(event) => {
+          if (!onRemove) return;
+          event.preventDefault();
+          cancelPress();
+          returnFocus.current = event.currentTarget.querySelector<HTMLElement>(".chat-draft-preview");
+          setMenuOpen(true);
+        }}
+        onKeyDown={(event) => {
+          if (!onRemove || (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))) return;
+          event.preventDefault();
+          returnFocus.current = event.target as HTMLElement;
+          setMenuOpen(true);
+        }}
+      >
+        {children}
+      </li>
+      {open && (
+        <FloatingPortal>
+          <FloatingFocusManager context={context} returnFocus={returnFocus}>
+            <div
+              ref={refs.setFloating}
+              style={floatingStyles}
+              className="chat-message-actions chat-draft-menu"
+              aria-label={`Attachment options for ${draft.name}`}
+              {...getFloatingProps()}
+            >
+              <div className="chat-copy-actions">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onRemove?.(draft.key);
+                  }}
+                >
+                  <X size={16} aria-hidden="true" />
+                  Remove attachment
+                </button>
+              </div>
+            </div>
+          </FloatingFocusManager>
+        </FloatingPortal>
+      )}
+    </>
+  );
+}
+
 /** Without `onRemove` (while a message is sending) files cannot be removed;
  * without `onRetry` a failed upload has no chip-level Retry. */
 export function DraftAttachments({
@@ -375,19 +556,21 @@ export function DraftAttachments({
                 : `${Math.round(draft.progress * 100)}%`;
           const content = (
             <>
-              {thumbnail ? (
-                <img src={thumbnail} alt="" />
+              {kind === "video" ? (
+                <DraftVideoThumbnail url={url} poster={draft.attachment?.previewUrl} />
+              ) : thumbnail ? (
+                <img src={thumbnail} alt="" draggable={false} />
               ) : (
                 <span className="chat-draft-kind" aria-hidden="true">
-                  {kind === "video" || kind === "audio" ? <Play size={24} /> : <FileText size={24} />}
-                  {kind === "image" ? "Image" : kind === "video" ? "Video" : kind === "audio" ? "Audio" : "File"}
+                  {kind === "audio" ? <Play size={24} /> : <FileText size={24} />}
+                  {kind === "image" ? "Image" : kind === "audio" ? "Audio" : "File"}
                 </span>
               )}
             </>
           );
           const viewable = media.some((attachment) => attachment.id === draft.key);
           return (
-            <li key={draft.key} data-error={draft.error ? true : undefined} title={draft.error ?? draft.name}>
+            <DraftAttachmentTile key={draft.key} draft={draft} onRemove={onRemove}>
               {viewable ? (
                 <button
                   type="button"
@@ -412,6 +595,17 @@ export function DraftAttachments({
                 <div className="chat-draft-preview" aria-label={draft.name}>
                   {content}
                 </div>
+              )}
+              {kind === "video" && (
+                <span
+                  className="chat-draft-video-play"
+                  role="img"
+                  aria-label="Video"
+                  data-status={!!status || undefined}
+                  data-retry={!!(draft.error && onRetry) || undefined}
+                >
+                  <Play size={16} fill="currentColor" aria-hidden="true" />
+                </span>
               )}
               {status && !(draft.error && onRetry) && (
                 <small className="chat-draft-status" aria-label={draft.error ?? status}>
@@ -440,7 +634,7 @@ export function DraftAttachments({
                   <X size={14} aria-hidden="true" />
                 </button>
               )}
-            </li>
+            </DraftAttachmentTile>
           );
         })}
       </ul>

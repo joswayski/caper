@@ -129,15 +129,14 @@ pub fn sniff(content_type: &str, bytes: &[u8]) -> bool {
     }
 }
 
-/// Desktop files have names, not browser MIME types: guess from the extension,
-/// prefer a still's real signature, and fall back to a download when an
-/// inline type's signature does not match.
-pub fn content_type_for(name: &str, head: &[u8]) -> String {
+/// A lightweight hint for local preview UI. Uploads must use `content_type_for`
+/// instead, which also checks the file signature.
+pub fn type_from_name(name: &str) -> &'static str {
     let extension = name
         .rsplit_once('.')
         .map(|(_, extension)| extension.to_ascii_lowercase())
         .unwrap_or_default();
-    let guessed = match extension.as_str() {
+    match extension.as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" | "jpe" | "jfif" => "image/jpeg",
         "gif" => "image/gif",
@@ -166,7 +165,14 @@ pub fn content_type_for(name: &str, head: &[u8]) -> String {
         "txt" | "log" | "md" => "text/plain",
         "csv" => "text/csv",
         _ => "application/octet-stream",
-    };
+    }
+}
+
+/// Desktop files have names, not browser MIME types: guess from the extension,
+/// prefer a still's real signature, and fall back to a download when an
+/// inline type's signature does not match.
+pub fn content_type_for(name: &str, head: &[u8]) -> String {
+    let guessed = type_from_name(name);
     let signature = ["image/png", "image/jpeg", "image/gif", "image/webp"]
         .into_iter()
         .find(|candidate| sniff(candidate, head));

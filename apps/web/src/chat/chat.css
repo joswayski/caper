@@ -2412,6 +2412,8 @@
   color: inherit;
   background: transparent;
   text-decoration: none;
+  -webkit-touch-callout: none;
+  user-select: none;
 }
 button.chat-draft-preview,
 a.chat-draft-preview {
@@ -2433,6 +2435,40 @@ a.chat-draft-preview {
   justify-items: center;
   gap: 4px;
   font-size: 0.68rem;
+}
+.chat-draft-video-play {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: rgb(243 244 245 / 72%);
+  pointer-events: none;
+}
+.chat-draft-video-play > svg {
+  box-sizing: content-box;
+  padding: 8px;
+  border-radius: 50%;
+  background: rgb(12 13 15 / 32%);
+}
+.chat-draft-video-play[data-status] {
+  bottom: 28px;
+}
+.chat-draft-video-play[data-retry] {
+  bottom: 32px;
+}
+.chat-draft-menu {
+  width: max-content;
+  max-width: calc(100vw - 24px);
+  padding: 4px;
+  animation: chat-viewer-in var(--motion-fast) var(--ease-out);
+}
+.chat-draft-menu button {
+  min-height: 44px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-draft-menu {
+    animation: none;
+  }
 }
 .chat-draft-status,
 .chat-draft-retry {
@@ -2483,7 +2519,8 @@ a.chat-draft-preview {
   width: 32px;
   height: 32px;
   display: grid;
-  place-items: center;
+  place-items: start end;
+  padding: 4px;
   border: 0;
   border-radius: 8px;
   color: var(--text);
@@ -2515,6 +2552,9 @@ a.chat-draft-preview {
   }
   .chat-draft-retry {
     min-height: 44px;
+  }
+  .chat-draft-video-play[data-retry] {
+    bottom: 44px;
   }
 }
 .chat-attachments {
