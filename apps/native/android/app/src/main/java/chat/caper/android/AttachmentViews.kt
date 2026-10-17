@@ -2,6 +2,7 @@ package chat.caper.android
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.os.Build
 import android.widget.Toast
 import androidx.annotation.OptIn
@@ -47,6 +48,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import chat.caper.android.data.AttachmentEdit
 import chat.caper.android.data.AttachmentPolicy
 import chat.caper.android.model.AttachmentState
 import chat.caper.android.model.ChatAttachment
@@ -338,12 +340,28 @@ internal fun durationLabel(durationMs: Long?): String? {
     }
 }
 
-/** Compact composer previews shared by message and profile uploads; never scroll sideways. */
+/**
+ * Compact composer previews shared by message and profile uploads; never scroll sideways. With
+ * [edit], editable images and videos get a pencil that opens [AttachmentEditor] on the original;
+ * a saved change arrives as the draft key, the edit (null for the original) and its render.
+ * Files that upload on Send ([uploadOnSend]) offer Retry only when preparing them failed.
+ */
 @kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable internal fun DraftAttachmentStrip(
     drafts: List<DraftAttachmentUi>, remove: (String) -> Unit, retry: ((String) -> Unit)? = null,
     enabled: Boolean = true, uploadOnSend: Boolean = false, sending: Boolean = false,
+    edit: ((String, AttachmentEdit?, Bitmap?) -> Unit)? = null,
 ) {
+    var editing by remember { mutableStateOf<String?>(null) }
+    editing?.let { key ->
+        val draft = drafts.find { it.key == key }
+        val source = draft?.original ?: draft?.pickedUri
+        val kind = draft?.editKind
+        if (draft != null && source != null && kind != null && edit != null && enabled) AttachmentEditor(
+            source, kind, draft.name, draft.edit, cancel = { editing = null },
+            save = { change, preview -> editing = null; edit(key, change, preview) },
+        ) else SideEffect { editing = null }
+    }
     if (drafts.isEmpty()) return
     val context = LocalContext.current
     val still = reducedMotion()
@@ -379,7 +397,10 @@ internal fun durationLabel(durationMs: Long?): String? {
                 drafts.forEach { draft -> key(draft.key) {
                     Surface(Modifier.entrance(MOTION_BASE).size(tileSize), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {
                         Box(Modifier.fillMaxSize()) {
-                            val url = draft.pickedUri ?: draft.attachment?.url
+                            // An edited file never previews its unedited original: tapping it reopens the editor.
+                            val editable = edit != null && draft.editKind != null && enabled
+                            val edited = draft.edit != null
+                            val url = if (edited) null else draft.pickedUri ?: draft.attachment?.url
                             val busy = draft.attachment == null && draft.error == null && (!uploadOnSend || sending || draft.compressing)
                             val status = when {
                                 draft.error != null -> "Failed"
@@ -387,12 +408,14 @@ internal fun durationLabel(durationMs: Long?): String? {
                                 draft.compressing -> if (draft.progress > 0f) "Prep ${(draft.progress * 100).toInt()}%" else "Preparing…"
                                 else -> "Uploading ${(draft.progress * 100).toInt()}%"
                             }
-                            Box(Modifier.fillMaxSize().clickable(enabled = url != null, role = Role.Button, onClickLabel = "Preview ${draft.name}") {
-                                url?.let(open)
+                            Box(Modifier.fillMaxSize().clickable(enabled = url != null || edited && editable, role = Role.Button,
+                                onClickLabel = if (edited) "Edit ${draft.name}" else "Preview ${draft.name}") {
+                                if (edited) editing = draft.key else url?.let(open)
                             }.semantics { contentDescription = listOfNotNull(draft.name, draft.error ?: status).joinToString(", ") }, contentAlignment = Alignment.Center) {
                                 val thumbnail = draft.thumbnail
                                 if (thumbnail != null) AsyncImage(
-                                    model = remember(thumbnail) { AttachmentImages.request(context, thumbnail, "draft:${draft.key}") },
+                                    // Keyed by the file too, so an edited thumbnail never shows the picture it replaced.
+                                    model = remember(thumbnail) { AttachmentImages.request(context, thumbnail, "draft:${draft.key}:$thumbnail") },
                                     contentDescription = null, imageLoader = AttachmentImages.loader(context), modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
                                 ) else Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Icon(painterResource(if (draft.kind == "video" || draft.kind == "audio") R.drawable.lucide_play else R.drawable.lucide_file_text), null, Modifier.size(18.dp), tint = TextMuted)
@@ -400,8 +423,10 @@ internal fun durationLabel(durationMs: Long?): String? {
                                 }
                             }
                             if (status != null) {
-                                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Blackout.copy(alpha = 0.9f)).padding(horizontal = 4.dp, vertical = if (draft.error != null && retry != null) 0.dp else 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    if (draft.error != null && retry != null) {
+                                // Profile files retry from the tile only when preparing them (an edit) failed; Send retries uploads.
+                                val retriable = draft.error != null && retry != null && (!uploadOnSend || draft.localUrl == null)
+                                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Blackout.copy(alpha = 0.9f)).padding(horizontal = 4.dp, vertical = if (retriable) 0.dp else 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    if (retriable) {
                                         Button({ retry(draft.key) }, Modifier.heightIn(min = 44.dp).semantics { contentDescription = "Retry uploading ${draft.name}" }, enabled = enabled,
                                             colors = ButtonDefaults.buttonColors(containerColor = Action, contentColor = OnAction),
                                             shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 4.dp)) {
@@ -415,6 +440,12 @@ internal fun durationLabel(durationMs: Long?): String? {
                                         progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
                                         color = Terracotta, trackColor = Border,
                                     )
+                                }
+                            }
+                            // Editing works on the local original, so it is offered as soon as the file is known editable.
+                            if (editable) {
+                                IconButton({ editing = draft.key }, Modifier.align(Alignment.TopStart).size(40.dp).background(Blackout.copy(alpha = 0.9f), CircleShape).semantics { contentDescription = "Edit ${draft.name}" }) {
+                                    Icon(painterResource(R.drawable.lucide_pencil), null, Modifier.size(14.dp), tint = Text)
                                 }
                             }
                             IconButton({ remove(draft.key) }, Modifier.align(Alignment.TopEnd).size(40.dp).background(Blackout.copy(alpha = 0.9f), CircleShape).semantics { contentDescription = "Remove ${draft.name}" }, enabled = enabled) {

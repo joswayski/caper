@@ -60,6 +60,11 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
         if (get(person).files.any { it.key == key }) prepared[key] = file
     }
 
+    /** An edited file prepares again; until then it cannot be sent. */
+    fun unprepare(key: String) {
+        prepared.remove(key)
+    }
+
     fun remove(person: String, key: String): Boolean {
         if (!get(person).editable) return false
         prepared.remove(key)

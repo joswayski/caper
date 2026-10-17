@@ -3,9 +3,13 @@ package chat.caper.android.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BitmapRegionDecoder
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.RectF
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
@@ -16,10 +20,15 @@ import android.webkit.MimeTypeMap
 import androidx.annotation.OptIn
 import androidx.exifinterface.media.ExifInterface
 import androidx.media3.common.C
+import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.BitmapOverlay
+import androidx.media3.effect.Crop
+import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.Presentation
+import androidx.media3.effect.ScaleAndRotateTransformation
 import androidx.media3.transformer.AudioEncoderSettings
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
@@ -38,6 +47,9 @@ import chat.caper.android.model.CompressionSettings
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.sqrt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -55,7 +67,8 @@ data class PickedFile(val source: File, val name: String, val contentType: Strin
  * and previews", web `prepareFile`). Lossless stills stay lossless, photos become AVIF (or
  * lossy WebP) only when that saves 10%, videos are transcoded to H.264/AAC MP4 only when
  * needed (HDR tone mapped to SDR), and previews are drawn. Whenever a rule cannot be met the
- * original uploads.
+ * original uploads, except with edits (crop, turns, drawing, text): those must apply, or
+ * preparing fails with [AttachmentEdits.FAILED], since people crop to hide things.
  */
 class AttachmentPreparer(private val context: Context) {
     /** Copies the picked content into [directory] so its exact byte size is known. */
@@ -79,8 +92,12 @@ class AttachmentPreparer(private val context: Context) {
         PickedFile(source, name, type)
     }
 
-    suspend fun prepare(picked: PickedFile, settings: CompressionSettings, directory: File, transcodeProgress: (Float) -> Unit = {}): PreparedAttachment {
+    /** Prepares [picked] into [directory]; an [edit] applies to the original first (see [prepareEdited]). */
+    suspend fun prepare(
+        picked: PickedFile, settings: CompressionSettings, directory: File, transcodeProgress: (Float) -> Unit = {}, edit: AttachmentEdit? = null,
+    ): PreparedAttachment {
         val base = PreparedAttachment(picked.source, picked.name, picked.contentType, AttachmentPolicy.kind(picked.contentType), picked.source.length())
+        if (AttachmentEdits.isEdited(edit)) return prepareEdited(base, settings, directory, requireNotNull(edit), transcodeProgress)
         val prepared = when {
             picked.contentType.startsWith("image/") -> withContext(Dispatchers.Default) { prepareImage(base, settings, directory) }
             picked.contentType.startsWith("video/") -> prepareVideo(base, settings, directory, transcodeProgress)
@@ -112,13 +129,7 @@ class AttachmentPreparer(private val context: Context) {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(base.file.path, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return base
-        val header = base.file.inputStream().use { stream ->
-            val bytes = ByteArray(64 * 1024)
-            var read = 0
-            while (read < bytes.size) { val count = stream.read(bytes, read, bytes.size - read); if (count < 0) break; read += count }
-            bytes.copyOf(read)
-        }
-        val still = AttachmentPolicy.stillClass(base.contentType, header)
+        val still = AttachmentPolicy.stillClass(base.contentType, header(base.file))
         val rotation = if (still == StillClass.KEEP) 0 else orientation(base.file)
         val swapped = rotation == 90 || rotation == 270
         val width = if (swapped) bounds.outHeight else bounds.outWidth
@@ -192,14 +203,23 @@ class AttachmentPreparer(private val context: Context) {
         return if (written && file.length() > 0) file else null.also { file.delete() }
     }
 
-    private fun orientation(file: File): Int = runCatching {
-        when (ExifInterface(file.path).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+    /** The first 64 KB, enough to tell animation and WebP coding apart. */
+    private fun header(file: File): ByteArray = file.inputStream().use { stream ->
+        val bytes = ByteArray(64 * 1024)
+        var read = 0
+        while (read < bytes.size) { val count = stream.read(bytes, read, bytes.size - read); if (count < 0) break; read += count }
+        bytes.copyOf(read)
+    }
+
+    private fun orientation(file: File): Int = runCatching { orientation(ExifInterface(file.path)) }.getOrDefault(0)
+
+    private fun orientation(exif: ExifInterface): Int =
+        when (exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
             ExifInterface.ORIENTATION_ROTATE_90, ExifInterface.ORIENTATION_TRANSPOSE -> 90
             ExifInterface.ORIENTATION_ROTATE_180 -> 180
             ExifInterface.ORIENTATION_ROTATE_270, ExifInterface.ORIENTATION_TRANSVERSE -> 270
             else -> 0
         }
-    }.getOrDefault(0)
 
     /**
      * Decodes with subsampling, applies EXIF rotation, then scales to exactly the target size.
@@ -374,11 +394,13 @@ class AttachmentPreparer(private val context: Context) {
      * H.264 + AAC in MP4 with Media3 Transformer on the device's (hardware) encoders. Requesting a
      * video bitrate forces a real re-encode even for H.264 input; AAC audio is passed through
      * unchanged and other audio is encoded at `audioBitrateKbps`. HDR input is tone mapped to SDR
-     * with OpenGL. Returns null when the device cannot export it, so the original is kept.
+     * with OpenGL. [videoEffects], when given, replace the resize (an edit's turn, crop, size and
+     * overlay). Returns null when the device cannot export it, so the original is kept.
      */
     @OptIn(UnstableApi::class)
     private suspend fun transcode(
         input: File, output: File, plan: AttachmentPolicy.VideoPlan, settings: CompressionSettings, audioMime: String?, progress: (Float) -> Unit,
+        videoEffects: List<Effect>? = null,
     ): ExportResult? =
         // Transformer must be driven from a thread with a Looper.
         withContext(Dispatchers.Main) {
@@ -401,7 +423,8 @@ class AttachmentPreparer(private val context: Context) {
                     override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) { done.complete(null) }
                 })
                 .build()
-            val effects = plan.outputHeight?.let { Effects(emptyList(), listOf(Presentation.createForHeight(it))) } ?: Effects.EMPTY
+            val effects = videoEffects?.let { Effects(emptyList(), it) }
+                ?: plan.outputHeight?.let { Effects(emptyList(), listOf(Presentation.createForHeight(it))) } ?: Effects.EMPTY
             val item = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(input))).setEffects(effects).build()
             val composition = Composition.Builder(EditedMediaItemSequence.Builder(item).build())
                 .setHdrMode(if (plan.toneMap) Composition.HDR_MODE_TONE_MAP_HDR_TO_SDR_USING_OPEN_GL else Composition.HDR_MODE_KEEP_HDR)
@@ -424,4 +447,241 @@ class AttachmentPreparer(private val context: Context) {
                 poll.cancel()
             }
         }
+
+    // --- Edits --------------------------------------------------------------------------------
+
+    /**
+     * "image" or "video" when the editor can open [picked] here: a still this device decodes
+     * without animation (GIF, animated WebP/PNG and SVG would keep one frame), or a video with a
+     * video track for Media3 to re-encode. Null for anything else.
+     */
+    suspend fun editableKind(picked: PickedFile): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val type = AttachmentPolicy.normalizedType(picked.contentType)
+            when {
+                type.startsWith("image/") -> {
+                    if (!AttachmentEdits.editableImageType(type) || isAnimatedImage(type, header(picked.source))) return@runCatching null
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(picked.source.path, bounds)
+                    if (bounds.outWidth > 0 && bounds.outHeight > 0) "image" else null
+                }
+                type.startsWith("video/") -> {
+                    val measured = metadata(picked.source)
+                    if (tracks(picked.source)?.videoMime != null && measured?.width != null && measured.height != null) "video" else null
+                }
+                else -> null
+            }
+        }.getOrNull()
+    }
+
+    /**
+     * The picture the editor shows: the upright original (a video's frame just after the start,
+     * as posters are) at most [edge] pixels on its longer side, or null when it cannot be read.
+     */
+    suspend fun editorPicture(uri: Uri, kind: String, edge: Int = EDITOR_EDGE): Bitmap? = withContext(Dispatchers.IO) {
+        runCatching { if (kind == "video") editorFrame(uri, edge) else editorStill(uri, edge) }.getOrNull()
+    }
+
+    private fun editorStill(uri: Uri, edge: Int): Bitmap? {
+        val resolver = context.contentResolver
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (max(bounds.outWidth, bounds.outHeight) / sample > edge) sample *= 2
+        val options = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
+        val decoded = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) } ?: return null
+        val rotation = runCatching { resolver.openInputStream(uri)?.use { orientation(ExifInterface(it)) } }.getOrNull() ?: 0
+        if (rotation == 0) return decoded
+        val turned = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, Matrix().apply { postRotate(rotation.toFloat()) }, true)
+        if (turned !== decoded) decoded.recycle()
+        return turned
+    }
+
+    private fun editorFrame(uri: Uri, edge: Int): Bitmap? {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(context, uri)
+            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()?.takeIf { it >= 0 }
+            val frame = retriever.getFrameAtTime(minOf(500L, (durationMs ?: 1000L) / 2) * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC) ?: return null
+            val (width, height) = AttachmentPolicy.fitWithin(frame.width, frame.height, edge)
+            if (width == frame.width && height == frame.height) return frame
+            val scaled = Bitmap.createScaledBitmap(frame, width, height, true)
+            if (scaled !== frame) frame.recycle()
+            return scaled
+        } finally {
+            retriever.release()
+        }
+    }
+
+    /**
+     * Applies [edit] to the original and prepares the result, which always replaces the original:
+     * stills are rendered at the original's resolution and encoded by the source's class; videos
+     * always transcode with the turn, crop and an overlay of the marks. Anything that cannot be
+     * done fails with [AttachmentEdits.FAILED] rather than uploading the unedited file.
+     */
+    private suspend fun prepareEdited(
+        base: PreparedAttachment, settings: CompressionSettings, directory: File, edit: AttachmentEdit, progress: (Float) -> Unit,
+    ): PreparedAttachment = try {
+        when {
+            base.contentType.startsWith("image/") -> withContext(Dispatchers.Default) { prepareEditedImage(base, settings, directory, edit) }
+            base.contentType.startsWith("video/") -> prepareEditedVideo(base, settings, directory, edit, progress)
+            else -> throw UploadException(AttachmentEdits.FAILED)
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Throwable) {
+        // Includes running out of memory on an enormous picture.
+        throw UploadException(AttachmentEdits.FAILED)
+    }
+
+    private suspend fun prepareEditedImage(base: PreparedAttachment, settings: CompressionSettings, directory: File, edit: AttachmentEdit): PreparedAttachment {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(base.file.path, bounds)
+        val rawWidth = bounds.outWidth
+        val rawHeight = bounds.outHeight
+        check(rawWidth > 0 && rawHeight > 0) { "Undecodable image." }
+        val still = AttachmentEdits.stillClass(base.contentType, header(base.file))
+        val orientation = orientation(base.file)
+        val (width, height) = AttachmentEdits.rotatedSize(rawWidth, rawHeight, orientation)
+        val region = AttachmentEdits.cropPixels(edit, width, height)
+        // Photos shrink to imageMaxEdge; lossless sources keep every pixel of the crop.
+        var (outWidth, outHeight) = if (still == StillClass.PHOTO) AttachmentPolicy.fitWithin(region.width, region.height, settings.imageMaxEdge)
+            else region.width to region.height
+        if (outWidth.toLong() * outHeight > AttachmentPolicy.MAX_COMPRESS_PIXELS) {
+            val scale = sqrt(AttachmentPolicy.MAX_COMPRESS_PIXELS.toDouble() / (outWidth.toLong() * outHeight))
+            outWidth = max(1, floor(outWidth * scale).toInt())
+            outHeight = max(1, floor(outHeight * scale).toInt())
+        }
+        // Only the crop is decoded, subsampled while it stays at least the output size.
+        var sample = 1
+        while (region.width / (sample * 2) >= outWidth && region.height / (sample * 2) >= outHeight) sample *= 2
+        val turn = (orientation + edit.rotation) % 360
+        val wanted = AttachmentEdits.unrotatedRect(region, rawWidth, rawHeight, turn)
+        var decodedRect = wanted
+        val decoded = decodeRegion(base.file, wanted, sample) ?: run {
+            // Formats the region decoder cannot read decode whole, subsampled to fit in memory.
+            var whole = sample
+            while ((rawWidth.toLong() / whole) * (rawHeight / whole) > AttachmentPolicy.MAX_COMPRESS_PIXELS) whole *= 2
+            decodedRect = PixelRect(0, 0, rawWidth, rawHeight)
+            BitmapFactory.decodeFile(base.file.path, BitmapFactory.Options().apply { inSampleSize = whole; inPreferredConfig = Bitmap.Config.ARGB_8888 })
+        } ?: error("Undecodable image.")
+        val output = try {
+            currentCoroutineContext().ensureActive()
+            editedBitmap(outWidth, outHeight, decoded).also { bitmap ->
+                val canvas = Canvas(bitmap)
+                canvas.scale(outWidth.toFloat() / region.width, outHeight.toFloat() / region.height)
+                canvas.translate(-region.left.toFloat(), -region.top.toFloat())
+                canvas.save()
+                EditPainter.turn(canvas, rawWidth.toFloat(), rawHeight.toFloat(), turn)
+                val target = RectF(decodedRect.left.toFloat(), decodedRect.top.toFloat(), (decodedRect.left + decodedRect.width).toFloat(), (decodedRect.top + decodedRect.height).toFloat())
+                canvas.drawBitmap(decoded, null, target, Paint(Paint.FILTER_BITMAP_FLAG))
+                canvas.restore()
+                val (turnedWidth, turnedHeight) = AttachmentEdits.rotatedSize(width, height, edit.rotation)
+                EditPainter.paintMarks(canvas, edit.marks, turnedWidth.toFloat(), turnedHeight.toFloat(), EditPainter.typeface(context))
+            }
+        } finally {
+            decoded.recycle()
+        }
+        try {
+            currentCoroutineContext().ensureActive()
+            // The original is not an option, so the result is always kept, with PNG as the last resort.
+            val encoded = (if (still == StillClass.LOSSLESS) encodeLossless(output, settings, inline = false, directory) else photo(output, settings, File(directory, "still")))
+                ?: compress(output, Bitmap.CompressFormat.PNG, 100, File(directory, "still.png"))?.let { it to "image/png" }
+                ?: throw UploadException(AttachmentEdits.FAILED)
+            directory.listFiles { file -> file.name.startsWith("still") && file != encoded.first }?.forEach { it.delete() }
+            var prepared = base.copy(
+                file = encoded.first, contentType = encoded.second, kind = "image",
+                name = AttachmentPolicy.renamed(base.name, encoded.second), width = outWidth, height = outHeight,
+            )
+            if (AttachmentPolicy.needsPreview(prepared.kind, outWidth, outHeight, prepared.file.length(), settings.previewEdge)) {
+                preview(output, settings.previewEdge, directory)?.let { prepared = prepared.copy(preview = it.first, previewContentType = it.second) }
+            }
+            return prepared
+        } finally {
+            output.recycle()
+        }
+    }
+
+    /** [rect] of the unturned image at [sample], or null when this format has no region decoder. */
+    private fun decodeRegion(file: File, rect: PixelRect, sample: Int): Bitmap? = runCatching {
+        @Suppress("DEPRECATION")
+        val decoder = BitmapRegionDecoder.newInstance(file.path, false) ?: return@runCatching null
+        try {
+            val options = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
+            decoder.decodeRegion(Rect(rect.left, rect.top, rect.left + rect.width, rect.top + rect.height), options)
+        } finally {
+            decoder.recycle()
+        }
+    }.getOrNull()
+
+    /** An output bitmap in [like]'s colour space, opaque when it is. */
+    private fun editedBitmap(width: Int, height: Int, like: Bitmap): Bitmap =
+        like.colorSpace?.let { space -> runCatching { Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888, like.hasAlpha(), space) }.getOrNull() }
+            ?: Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+
+    /**
+     * Always an H.264 MP4 at the cropped size (short edge within `videoMaxHeight`): Media3 turns
+     * the displayed frames, crops, scales, then composites the marks painted once at the output
+     * size. HDR is tone mapped as usual; a device that cannot (below Android 10) fails the edit.
+     */
+    @OptIn(UnstableApi::class)
+    private suspend fun prepareEditedVideo(
+        base: PreparedAttachment, settings: CompressionSettings, directory: File, edit: AttachmentEdit, progress: (Float) -> Unit,
+    ): PreparedAttachment {
+        val (measured, tracks) = withContext(Dispatchers.IO) { metadata(base.file) to tracks(base.file) }
+        val width = measured?.width ?: error("Unknown video size.")
+        val height = measured.height ?: error("Unknown video size.")
+        val facts = tracks?.takeIf { it.videoMime != null } ?: error("No video track.")
+        check(!facts.hdr || Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { "HDR cannot be tone mapped here." }
+        val crop = AttachmentEdits.cropPixels(edit, width, height, even = true)
+        val (outWidth, outHeight) = AttachmentEdits.videoSize(crop.width, crop.height, settings)
+        val kbps = AttachmentPolicy.outputKbps(
+            AttachmentPolicy.videoTargetKbps(outWidth, outHeight, settings, facts.fps), measured.bitrate, facts.videoMime == "video/avc", settings,
+        )
+        val (turnedWidth, turnedHeight) = AttachmentEdits.rotatedSize(width, height, edit.rotation)
+        val overlay = if (edit.marks.isEmpty()) null else Bitmap.createBitmap(outWidth, outHeight, Bitmap.Config.ARGB_8888).also {
+            EditPainter.paintEdit(Canvas(it), null, width, height, edit, crop, outWidth, outHeight, EditPainter.typeface(context))
+        }
+        val output = File(directory, "video.mp4")
+        try {
+            val effects = buildList<Effect> {
+                if (edit.rotation != 0) add(ScaleAndRotateTransformation.Builder().setRotationDegrees(AttachmentEdits.media3Rotation(edit.rotation)).build())
+                if (crop.left != 0 || crop.top != 0 || crop.width != turnedWidth || crop.height != turnedHeight) {
+                    val (left, right, bottom, top) = AttachmentEdits.cropNdc(crop, turnedWidth, turnedHeight)
+                    add(Crop(left, right, bottom, top))
+                }
+                // The crop's aspect, so stretching only absorbs rounding to even sizes.
+                add(Presentation.createForWidthAndHeight(outWidth, outHeight, Presentation.LAYOUT_STRETCH_TO_FIT))
+                overlay?.let { add(OverlayEffect(listOf(BitmapOverlay.createStaticBitmapOverlay(it)))) }
+            }
+            val plan = AttachmentPolicy.VideoPlan(null, kbps, sizeOnly = false, toneMap = facts.hdr)
+            val result = transcode(base.file, output, plan, settings, facts.audioMime, progress, effects) ?: error("Transcode failed.")
+            val after = withContext(Dispatchers.IO) { tracks(output) } ?: error("Unreadable transcode.")
+            val outputHdr = after.hdr || result.colorInfo?.colorTransfer.let { it == C.COLOR_TRANSFER_ST2084 || it == C.COLOR_TRANSFER_HLG }
+            check(output.length() > 0 && after.videoMime == MimeTypes.VIDEO_H264 && !outputHdr && (facts.audioMime == null || after.audioMime != null)) {
+                "The transcode lost the edit's requirements."
+            }
+            val measuredAfter = withContext(Dispatchers.IO) { metadata(output) }
+            var prepared = base.copy(
+                file = output, contentType = "video/mp4", kind = "video", name = AttachmentPolicy.renamed(base.name, "video/mp4"),
+                width = measuredAfter?.width ?: outWidth, height = measuredAfter?.height ?: outHeight,
+                durationMs = measuredAfter?.durationMs ?: measured.durationMs,
+            )
+            withContext(Dispatchers.IO) { poster(output, prepared.durationMs, settings.previewEdge, directory) }?.let {
+                prepared = prepared.copy(preview = it.first, previewContentType = it.second)
+            }
+            return prepared
+        } catch (error: Throwable) {
+            output.delete()
+            throw error
+        } finally {
+            overlay?.recycle()
+        }
+    }
+
+    companion object {
+        /** The editor's picture: downscaled for the screen; uploads use the original. */
+        const val EDITOR_EDGE = 2048
+    }
 }
