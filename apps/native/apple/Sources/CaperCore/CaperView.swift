@@ -1,3 +1,4 @@
+import PhotosUI
 import QuickLook
 import SwiftUI
 import UniformTypeIdentifiers
@@ -162,7 +163,7 @@ private struct FirstSpaceView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Choose something you will recognize easily. You can always change it later!")
                     .font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
-                CaperField(title: "Space name", text: $name).onSubmit(create)
+                CaperField(title: "Space name", text: $name, placeholder: "Gaming nights").onSubmit(create)
                 Button(pending ? "Creating…" : "Create space", action: create)
                     .buttonStyle(CaperPrimaryButton())
                     .disabled(pending || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.canCreateSpace)
@@ -5257,6 +5258,9 @@ private struct MentionCardView: View {
     @State private var showingEmojiPicker = false
     @State private var insertEmoji: ((String) -> Void)?
     @State private var showingFiles = false
+    @State private var showingPhotos = false
+    @State private var photoItems: [PhotosPickerItem] = []
+    @State private var photoLoading: Task<Void, Never>?
     @State private var uploadsAvailable = false
     @State private var previewFile: URL?
     @State private var pending: String?
@@ -5409,6 +5413,31 @@ private struct MentionCardView: View {
         })
         #endif
         .interactiveDismissDisabled(draft.preventsImplicitDismissal)
+        .photosPicker(isPresented: $showingPhotos, selection: $photoItems,
+                      maxSelectionCount: max(1, AttachmentPolicy.maxAttachments - draft.files.count),
+                      matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
+        .onChange(of: photoItems) { _, items in
+            guard !items.isEmpty else { return }
+            photoItems = []
+            photoLoading = Task { @MainActor in
+                defer { photoLoading = nil; updateDialogState() }
+                var files: [LocalAttachmentFile] = []
+                // Until the draft owns them, cancellation must remove staged copies.
+                defer { files.forEach { AttachmentStaging.remove($0.url) } }
+                for item in items {
+                    guard !Task.isCancelled, !draft.discarded else { return }
+                    if let picked = try? await item.loadTransferable(type: PickedAttachmentMedia.self) {
+                        files.append(picked.file)
+                    }
+                }
+                guard !Task.isCancelled, draft.editable else { return }
+                let failed = files.count < items.count
+                draft.add(files)
+                files = []
+                if failed { draft.error = "Some items couldn’t be added." }
+            }
+            updateDialogState()
+        }
         .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             defer { draft.presentingDialog = false }
             switch result {
@@ -5432,10 +5461,12 @@ private struct MentionCardView: View {
         .sheet(isPresented: $showingEmojiPicker, onDismiss: finishEmojiPicker) { emojiPicker }
         #endif
         .onChange(of: showingFiles) { _, _ in updateDialogState() }
+        .onChange(of: showingPhotos) { _, _ in updateDialogState() }
         .onChange(of: showingEmojiPicker) { _, _ in updateDialogState() }
         .onChange(of: previewFile) { _, _ in updateDialogState() }
         .onChange(of: draft.editable) { _, editable in if !editable { autocomplete.update(nil) } }
         .onDisappear {
+            photoLoading?.cancel()
             draft.presentingDialog = false
             if blockRequested {
                 requestBlock(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId,
@@ -5473,12 +5504,20 @@ private struct MentionCardView: View {
             }
             ComposerSuggestionsView(controller: autocomplete).disabled(!draft.editable || pending != nil)
             HStack(alignment: .bottom, spacing: 0) {
-                Button { draft.presentingDialog = true; showingFiles = true } label: {
+                Menu {
+                    Button { draft.presentingDialog = true; showingPhotos = true } label: {
+                        Label("Photos and videos", systemImage: "photo.on.rectangle")
+                    }
+                    Button { draft.presentingDialog = true; showingFiles = true } label: {
+                        Label("Files", systemImage: "doc")
+                    }
+                } label: {
                     CaperIcon(name: "plus", size: 18).foregroundStyle(CaperTheme.muted)
                         .frame(width: 40, height: 42).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.files.count >= AttachmentPolicy.maxAttachments)
+                .menuStyle(.button).menuOrder(.fixed).buttonStyle(.plain).menuIndicator(.hidden)
+                .fixedSize()
+                .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog || draft.files.count >= AttachmentPolicy.maxAttachments)
                 .opacity(uploadsAvailable ? 1 : 0.4)
                 .help(uploadsAvailable ? "Attach files" : "File uploads are unavailable")
                 .accessibilityLabel("Attach files")
@@ -5557,7 +5596,7 @@ private struct MentionCardView: View {
     }
 
     private func updateDialogState() {
-        draft.presentingDialog = showingFiles || showingEmojiPicker || previewFile != nil
+        draft.presentingDialog = showingFiles || showingPhotos || photoLoading != nil || showingEmojiPicker || previewFile != nil
     }
 
     private func pasteAttachments() -> Bool {
@@ -8070,9 +8109,23 @@ private struct JoinInviteSheet: View {
 
     private var linkField: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text("Invite link").font(CaperTheme.font(12, weight: .bold))
-            TextField("https://caper.chat/invite/…", text: Binding(get: { link }, set: { if !pending { link = $0; error = nil } }))
+            Text("Paste it below to join!").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            TextField("Invite link", text: Binding(get: { link }, set: { if !pending { link = $0; error = nil } }),
+                      prompt: Text(verbatim: ""))
                 .textFieldStyle(CaperTextFieldStyle())
+                .foregroundStyle(CaperTheme.text)
+                .overlay(alignment: .leading) {
+                    if link.isEmpty {
+                        HStack(spacing: 4) {
+                            Text("it looks like")
+                            CaperIcon(name: "arrow-right", size: 12)
+                            Text(verbatim: "caper.chat/invite/AbCdE12345")
+                        }
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted.opacity(0.65))
+                        .lineLimit(1).padding(.horizontal, 11)
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                }
                 .autocorrectionDisabled()
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
@@ -8417,7 +8470,7 @@ private struct SpaceEditor: View {
             SheetHeader(title: managing ? "Manage space" : "Create a space", detail: managing ? "Only the owner can change this space and its membership." : nil, closeDisabled: creating, close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    CaperField(title: "Space name", text: $name, focus: $nameFocused)
+                    CaperField(title: "Space name", text: $name, placeholder: "Gaming nights", focus: $nameFocused)
                         .onChange(of: name) { _, _ in error = nil }
                     Button(pending ? (managing ? "Saving…" : "Creating…") : managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton())
                         .disabled(pending || (!managing && model.limits != nil && !model.canCreateSpace))

@@ -39,7 +39,14 @@ function fixture() {
       state.posts++;
       return Response.json({ space, channelId: "channel00001", joined: mode !== "member" });
     }
-    if (path === "/api/spaces") return Response.json({ spaces: [space], invitations: [] });
+    if (path === "/api/spaces")
+      return Response.json({
+        spaces: [space],
+        invitations: [],
+        limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 },
+      });
+    if (path === `/api/spaces/${space.id}`)
+      return Response.json({ space, channels: [], members: [{ ...account, owner: false }] });
     if (path === "/api/dms") return Response.json({ conversations: [] });
     return Response.json({ error: "TEST FIXTURE: disabled endpoint" }, { status: 503 });
   };
@@ -61,6 +68,28 @@ try {
   browser("open", "about:blank");
   for (const width of [1280, 390]) {
     browser("set", "viewport", String(width), "844", "2");
+    browser("open", `${origin}/spaces?fixture=newcomer`);
+    if (width === 390) {
+      browser("wait", '[aria-label="Back to Browse"]');
+      browser("click", '[aria-label="Back to Browse"]');
+    }
+    browser("wait", '[aria-label="Create space"]');
+    browser("click", '[aria-label="Create space"]');
+    browser("wait", "dialog[open]");
+    assert.ok(evaluate("document.querySelector('dialog[open]').innerText.includes('it looks like')"));
+    assert.equal(evaluate("document.querySelector('.join-invite-link button').disabled"), true);
+    // The decorative hint must not intercept clicks or remain over a pasted link.
+    browser("find", "label", "Invite link", "click");
+    assert.equal(evaluate("document.activeElement.labels[0].textContent.trim()"), "Invite link");
+    browser("find", "label", "Invite link", "fill", "caper.chat/invite/TESTfixt01");
+    browser(
+      "wait",
+      "--fn",
+      "!document.querySelector('dialog[open]').innerText.includes('it looks like') && !document.querySelector('.join-invite-link button').disabled",
+    );
+    browser("press", "Enter");
+    browser("wait", "--url", "**/invite/TESTfixt01");
+    assert.equal(evaluate("inviteFixture.posts"), 0, "Pasting a link must only open its preview");
     for (const mode of ["newcomer", "member", "guest", "legacy"]) {
       browser("open", `${origin}/invite/TESTfixt01?fixture=${mode}`);
       browser("wait", "--fn", '!!document.querySelector("main button")');
@@ -88,7 +117,7 @@ try {
     }
   }
   console.log(
-    "PASS: desktop/narrow member Open space, newcomer Join space, signed-out sign-in, older API fallback, read-only previews, and landing-channel navigation.",
+    "PASS: desktop/narrow accessible invite entry, decorative hint click-through and dismissal, member Open space, newcomer Join space, signed-out sign-in, older API fallback, read-only previews, and landing-channel navigation.",
   );
 } finally {
   try {

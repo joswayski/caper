@@ -3361,7 +3361,7 @@ internal fun counterTone(count: Int): Color = when {
         Spacer(Modifier.height(12.dp))
         Text("Choose something you will recognize easily. You can always change it later!", color = TextMuted, fontSize = 12.sp)
         Spacer(Modifier.height(20.dp))
-        OutlinedTextField(name, { name = it.codePointTake(80); error = null }, label = { Text("Space name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(name, { name = it.codePointTake(80); error = null }, label = { Text("Space name") }, placeholder = { Text("Gaming nights") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         if (!allowed) Text("You have reached your space limit.", color = TextMuted, fontSize = 12.sp)
         (error ?: state.error)?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         Spacer(Modifier.height(16.dp))
@@ -3386,7 +3386,7 @@ internal fun counterTone(count: Int): Color = when {
         LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
         // Web validates on submit and says why (spaces/client.ts spaceNameError).
         fun submit() { spaceNameError(name)?.let { error = it } ?: run { submitted = true; create(name.trim()) } }
-        OutlinedTextField(name, { name = it.codePointTake(80); error = null; if (submitted && serverError != null) clearError() }, label = { Text("Space name") }, placeholder = { Text("Studio") },
+        OutlinedTextField(name, { name = it.codePointTake(80); error = null; if (submitted && serverError != null) clearError() }, label = { Text("Space name") }, placeholder = { Text("Gaming nights") },
             modifier = Modifier.fillMaxWidth().focusRequester(field), singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { if (!busy) submit() }))
         (error ?: serverError?.takeIf { submitted })?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
@@ -3459,7 +3459,7 @@ internal fun counterTone(count: Int): Color = when {
         val canRename = !state.busy && name.isNotBlank() && name.trim() != detail.space.name
         // Web validates on submit and says why (spaces/client.ts spaceNameError); Done saves too.
         fun rename() { spaceNameError(name)?.let { nameError = it } ?: viewModel.renameSpace(name) }
-        OutlinedTextField(name, { name = it.codePointTake(80); nameError = null; if (state.error != null) viewModel.clearError() }, label = { Text("Space name") }, placeholder = { Text("Studio") },
+        OutlinedTextField(name, { name = it.codePointTake(80); nameError = null; if (state.error != null) viewModel.clearError() }, label = { Text("Space name") }, placeholder = { Text("Gaming nights") },
             modifier = Modifier.fillMaxWidth(), singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { if (canRename) rename() }))
         nameError?.let { Text(it, color = ErrorText, fontSize = 12.sp) }

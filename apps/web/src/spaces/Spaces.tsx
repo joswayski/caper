@@ -424,7 +424,7 @@ function NameField({
           maxLength={channel ? 80 : undefined}
           autoComplete="off"
           spellCheck={!channel}
-          placeholder={channel ? "project-updates" : "Studio"}
+          placeholder={channel ? "project-updates" : "Gaming nights"}
           onChange={(event) => {
             const input = event.currentTarget;
             if (!channel) return onChange(Array.from(input.value).slice(0, 80).join(""));

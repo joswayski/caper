@@ -76,6 +76,26 @@ const history = (channel) =>
     headers: { authorization: "Bearer fixture-owner-token", connection: "close" },
   }).then((response) => response.json());
 
+const chooseUpload = (scope, label) => {
+  browser("click", `${scope} [aria-label="Attach files"]`);
+  wait('!!document.querySelector(".chat-profile-menu")');
+  assert.deepEqual(
+    evaluate('return [...document.querySelectorAll(".chat-profile-menu button")].map(button => button.textContent)'),
+    ["Photos and videos", "Files"],
+  );
+  // Mock only the OS dialog: headless Chrome cancels it before upload can supply files.
+  evaluate(`window.pickedAccept = null;
+    for (const input of document.querySelectorAll('${scope} input[type="file"]')) {
+      input.addEventListener('click', event => { event.preventDefault(); window.pickedAccept = input.accept; }, {once:true});
+    }`);
+  browser("find", "role", "menuitem", "click", "--name", label, "--exact");
+  assert.equal(evaluate("return window.pickedAccept"), label === "Photos and videos" ? "image/*,video/*" : "");
+};
+const uploadFile = (scope) => {
+  chooseUpload(scope, "Files");
+  browser("upload", `${scope} input[type="file"]:not([accept])`, file);
+};
+
 try {
   await control({ reset: true, uploadsEnabled: true });
   browser("open", web);
@@ -90,7 +110,7 @@ try {
       return realFetch(input, options);
     };`);
   wait("!document.querySelector('.chat-composer [aria-label=\"Attach files\"]').disabled");
-  browser("upload", '.chat-composer input[type="file"]', file);
+  uploadFile(".chat-composer");
   wait(
     '!!document.querySelector(\'.chat-drafts [aria-label="Open review-notes.txt"]\') && !document.querySelector(".chat-drafts progress")',
   );
@@ -124,7 +144,10 @@ try {
   browser("fill", "#profile-message", "Hello suffix");
   evaluate('document.querySelector("#profile-message").setSelectionRange(6, 6)');
   // Cancelling a chooser keeps both the draft and the selected caret.
-  evaluate('document.querySelector(\'.chat-profile-composer input[type="file"]\').dispatchEvent(new Event("cancel"))');
+  chooseUpload(".chat-profile-composer", "Photos and videos");
+  evaluate(
+    'document.querySelector(\'.chat-profile-composer input[accept="image/*,video/*"]\').dispatchEvent(new Event("cancel"))',
+  );
   wait('document.activeElement.id === "profile-message"');
   assert.equal(value(), "Hello suffix");
   assert.equal(evaluate('return document.querySelector("#profile-message").selectionStart'), 6);
@@ -136,7 +159,7 @@ try {
   assert.equal(evaluate("return document.activeElement.id"), "profile-message");
   // Browser-supported file upload, then a file-bearing paste event.
   wait(`!document.querySelector('.chat-profile-composer [aria-label="Attach files"]').disabled`);
-  browser("upload", '.chat-profile-composer input[type="file"]', file);
+  uploadFile(".chat-profile-composer");
   evaluate(`const transfer = new DataTransfer();
     transfer.items.add(new File(['TEST FIXTURE pasted bytes'], 'pasted.txt', {type:'text/plain'}));
     document.querySelector('#profile-message').dispatchEvent(new ClipboardEvent('paste', {clipboardData:transfer, bubbles:true, cancelable:true}));`);
@@ -229,7 +252,7 @@ try {
   browser("fill", "#profile-message", "Rejected draft");
   // Each card checks upload settings when it opens; files wait for that.
   wait(`!document.querySelector('.chat-profile-composer [aria-label="Attach files"]').disabled`);
-  browser("upload", '.chat-profile-composer input[type="file"]', file);
+  uploadFile(".chat-profile-composer");
   wait('document.querySelectorAll(".chat-profile-composer .chat-drafts li").length === 1');
   capture("profile-narrow-files");
   assert.equal(evaluate('return !!document.querySelector(".chat-mention-card-drawer")'), true);
@@ -303,7 +326,7 @@ try {
     "Open conversation must not silently accept a request",
   );
   console.log(
-    "PASS: secondary Block menu/confirmation, profile text/emoji/files and file-only sends, caret/chooser cancellation, outside dismissal with retained drafts, active-send protection, person-keyed drafts, uncertain idempotent retry, rejection, retained channel text/files, request acceptance isolation, desktop/narrow layouts.",
+    "PASS: photo-first upload menus and media/file filters (mock OS dialog), secondary Block menu/confirmation, profile text/emoji/files and file-only sends, caret/chooser cancellation, outside dismissal with retained drafts, active-send protection, person-keyed drafts, uncertain idempotent retry, rejection, retained channel text/files, request acceptance isolation, desktop/narrow layouts.",
   );
 } catch (error) {
   // Preserve the original failure even if the browser itself stopped responding.

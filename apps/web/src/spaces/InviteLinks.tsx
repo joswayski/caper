@@ -1,4 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
+import { ArrowRight } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import {
   type Channel,
@@ -216,27 +217,36 @@ export function JoinInviteLinkForm({ disabled = false }: { disabled?: boolean })
         void navigate({ to: "/invite/$code", params: { code } });
       }}
     >
-      <div className="dialog-section-heading">
-        <h3>Have an invite link?</h3>
-      </div>
+      <p className="invite-link-example" id={`${id}-example`}>
+        Paste it below to join!
+      </p>
       <div className="member-add">
         <label className="sr-only" htmlFor={id}>
           Invite link
         </label>
-        <input
-          id={id}
-          value={value}
-          autoComplete="off"
-          autoCapitalize="none"
-          autoCorrect="off"
-          spellCheck={false}
-          disabled={disabled}
-          placeholder="https://caper.chat/invite/…"
-          onChange={(event) => {
-            setValue(event.target.value);
-            setError(undefined);
-          }}
-        />
+        <div className="invite-link-input">
+          <input
+            id={id}
+            aria-describedby={`${id}-example`}
+            value={value}
+            autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            disabled={disabled}
+            onChange={(event) => {
+              setValue(event.target.value);
+              setError(undefined);
+            }}
+          />
+          {!value && (
+            <span className="invite-link-placeholder" aria-hidden="true">
+              <span>it looks like</span>
+              <ArrowRight size={14} />
+              <span>caper.chat/invite/AbCdE12345</span>
+            </span>
+          )}
+        </div>
         <button type="submit" disabled={disabled || !value.trim()}>
           Join
         </button>
