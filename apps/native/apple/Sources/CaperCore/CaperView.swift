@@ -1007,6 +1007,8 @@ private struct WorkspaceView: View {
         .modifier(LoginPresentation(sheet: $sheet, model: model))
         // Timeline, thread and (on the Mac) pinned attachments open here, over the whole window.
         .modifier(MediaViewerHost())
+        // The channel and thread composers' files open in the editor here too.
+        .modifier(AttachmentEditorHost())
         .onChange(of: sheet?.id, initial: true) { _, new in
             modalDismissDisabled = false
             model.whatsNew.workspaceModalOpen = new != nil
@@ -4515,6 +4517,7 @@ private struct NativeThreadView: View {
             #if os(iOS)
             // The thread is a cover on iPhone, which only it can present over.
             .modifier(MediaViewerHost())
+            .modifier(AttachmentEditorHost())
             #endif
             // One element for the whole panel; without it SwiftUI copies the
             // identifier onto every child and a query for the panel is ambiguous.
@@ -5274,6 +5277,8 @@ private struct MentionCardView: View {
     @State private var invited: [String: String] = [:]
     @State private var blockRequested = false
     @State private var editingProfile = false
+    /// A staged file open in the attachment editor.
+    @State private var editingFile: AttachmentEditRequest?
     private var blocked: Bool { model.blockedIDs.contains(person.id) }
     private var ownedSpaces: [Space] {
         // Don't offer the open space to someone who is already in it.
@@ -5304,7 +5309,24 @@ private struct MentionCardView: View {
                 .presentationBackground(CaperTheme.surface)
                 #endif
         } else {
+            #if os(macOS)
+            // Only the popover can present over itself: the editor replaces the
+            // card inside it, which grows to fit, while the card stays underneath
+            // so its pickers and composer state carry on.
+            ZStack {
+                profileCard
+                    .opacity(editingFile == nil ? 1 : 0)
+                    .disabled(editingFile != nil)
+                    .accessibilityHidden(editingFile != nil)
+                if let editingFile {
+                    AttachmentEditor(request: editingFile) { self.editingFile = nil }
+                        .frame(width: 720, height: 600)
+                        .id(editingFile.id)
+                }
+            }
+            #else
             profileCard
+            #endif
         }
     }
 
@@ -5462,11 +5484,17 @@ private struct MentionCardView: View {
         .popover(isPresented: $showingEmojiPicker) { emojiPicker.onDisappear { finishEmojiPicker() } }
         #else
         .sheet(isPresented: $showingEmojiPicker, onDismiss: finishEmojiPicker) { emojiPicker }
+        .fullScreenCover(item: $editingFile) { request in
+            AttachmentEditor(request: request) { withoutPresentationAnimation { editingFile = nil } }
+                .presentationBackground(.clear)
+                .preferredColorScheme(.dark)
+        }
         #endif
         .onChange(of: showingFiles) { _, _ in updateDialogState() }
         .onChange(of: showingPhotos) { _, _ in updateDialogState() }
         .onChange(of: showingEmojiPicker) { _, _ in updateDialogState() }
         .onChange(of: previewFile) { _, _ in updateDialogState() }
+        .onChange(of: editingFile?.id) { _, _ in updateDialogState() }
         .onChange(of: draft.editable) { _, editable in if !editable { autocomplete.update(nil) } }
         .onDisappear {
             photoLoading?.cancel()
@@ -5504,12 +5532,14 @@ private struct MentionCardView: View {
                         StagedFileChip(id: file.id, name: file.local.name,
                                        kind: AttachmentKind.local(contentType: file.local.contentType),
                                        localURL: file.local.url,
+                                       thumbnailURL: file.editPreview,
                                        status: file.uploadError ?? AttachmentPolicy.formatBytes(file.local.size),
                                        failed: file.uploadError != nil,
                                        busyLabel: file.progress != nil ? "Uploading…" : nil,
                                        progress: file.progress,
                                        removable: draft.editable,
-                                       preview: { draft.presentingDialog = true; previewFile = file.local.url },
+                                       edit: editAction(file),
+                                       preview: { draft.presentingDialog = true; previewFile = file.editPreview ?? file.local.url },
                                        remove: { draft.remove(id: file.id) })
                     }
                 }.accessibilityLabel("Files to send")
@@ -5609,6 +5639,20 @@ private struct MentionCardView: View {
 
     private func updateDialogState() {
         draft.presentingDialog = showingFiles || showingPhotos || photoLoading != nil || showingEmojiPicker || previewFile != nil
+            || editingFile != nil
+    }
+
+    /// The pencil on files the editor can open; the edit applies at Send.
+    private func editAction(_ file: ProfileMessageDraft.File) -> (() -> Void)? {
+        guard file.editable, draft.editable, pending == nil else { return nil }
+        return {
+            withoutPresentationAnimation {
+                editingFile = AttachmentEditRequest(name: file.local.name, kind: AttachmentKind.local(contentType: file.local.contentType),
+                                                    original: file.local.url, edit: file.edit) { edit, preview in
+                    draft.setEdit(id: file.id, edit: edit, preview: preview)
+                }
+            }
+        }
     }
 
     private func pasteAttachments() -> Bool {

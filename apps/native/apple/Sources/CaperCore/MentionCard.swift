@@ -94,6 +94,12 @@ final class ProfileMessageDraft {
         var attachment: ChatAttachment?
         var uploadError: String?
         var progress: Double?
+        /// The editor can open it (a still or video this device can change).
+        var editable = false
+        /// Applied to `local` when Send prepares it.
+        var edit = AttachmentEdit.original
+        /// A small render of `edit` for the chip.
+        var editPreview: URL?
     }
 
     var text = ""
@@ -116,17 +122,49 @@ final class ProfileMessageDraft {
     func add(_ incoming: [LocalAttachmentFile]) {
         guard editable else { incoming.forEach { AttachmentStaging.remove($0.url) }; return }
         let room = max(0, AttachmentPolicy.maxAttachments - files.count)
-        files.append(contentsOf: incoming.prefix(room).map { File(local: $0) })
+        let added = incoming.prefix(room).map { File(local: $0) }
+        files.append(contentsOf: added)
         incoming.dropFirst(room).forEach { AttachmentStaging.remove($0.url) }
         error = incoming.count > room ? "You can attach up to \(AttachmentPolicy.maxAttachments) files." : nil
+        for file in added {
+            Task { [weak self] in
+                let editable = await AttachmentPreparer.canEdit(file.local)
+                guard let self, let index = self.files.firstIndex(where: { $0.id == file.id }) else { return }
+                self.files[index].editable = editable
+            }
+        }
     }
 
     func remove(id: String) {
         guard editable, let file = files.first(where: { $0.id == id }) else { return }
-        AttachmentStaging.remove(file.local.url)
-        if let prepared = file.prepared { AttachmentStaging.remove(prepared.fileURL) }
+        Self.removeFiles(of: file)
         files.removeAll { $0.id == id }
         error = nil
+    }
+
+    /// The editor's change to a staged file, applied when Send prepares it.
+    /// Anything prepared or uploaded before is dropped, as Remove drops it.
+    func setEdit(id: String, edit: AttachmentEdit, preview: URL?) {
+        guard editable, let index = files.firstIndex(where: { $0.id == id }), files[index].editable, files[index].edit != edit else {
+            if let preview { AttachmentStaging.remove(preview) }
+            return
+        }
+        if let prepared = files[index].prepared, prepared.fileURL != files[index].local.url { AttachmentStaging.remove(prepared.fileURL) }
+        if let old = files[index].editPreview { AttachmentStaging.remove(old) }
+        files[index].prepared = nil
+        files[index].attachment = nil
+        files[index].uploadError = nil
+        files[index].progress = nil
+        files[index].edit = edit
+        files[index].editPreview = edit.isEdited ? preview : nil
+        if !edit.isEdited, let preview { AttachmentStaging.remove(preview) }
+        error = nil
+    }
+
+    private static func removeFiles(of file: File) {
+        AttachmentStaging.remove(file.local.url)
+        if let prepared = file.prepared { AttachmentStaging.remove(prepared.fileURL) }
+        if let preview = file.editPreview { AttachmentStaging.remove(preview) }
     }
 
     func checkActive() throws {
@@ -144,7 +182,12 @@ final class ProfileMessageDraft {
             let file = files[index].local
             if files[index].prepared == nil {
                 progress = "Preparing \(file.name)…"
-                let prepared = await AttachmentPreparer.prepare(file, settings: usage.compression)
+                // An edit that can't be applied stops the send; the original never goes instead.
+                guard let prepared = try? await AttachmentPreparer.prepare(file, edit: files[index].edit, settings: usage.compression) else {
+                    try checkActive()
+                    files[index].uploadError = AttachmentEdit.failureMessage
+                    throw UserFacingError(message: AttachmentEdit.failureMessage)
+                }
                 if discarded || Task.isCancelled {
                     AttachmentStaging.remove(prepared.fileURL)
                     try checkActive()
@@ -180,10 +223,7 @@ final class ProfileMessageDraft {
     }
 
     func clear() {
-        for file in files {
-            AttachmentStaging.remove(file.local.url)
-            if let prepared = file.prepared { AttachmentStaging.remove(prepared.fileURL) }
-        }
+        files.forEach(Self.removeFiles)
         text = ""; files = []; pending = nil; conversation = nil; error = nil; progress = nil
     }
 

@@ -3784,6 +3784,8 @@ public final class ChatModel {
         draftChannels[draft.id] = nil
         if let asset = draft.attachment?.id { Task { await api.cancelAsset(id: asset) } }
         AttachmentStaging.remove(draft.localURL)
+        if let original = draft.original { AttachmentStaging.remove(original.url) }
+        if let preview = draft.editPreviewURL { AttachmentStaging.remove(preview) }
     }
 
     private func clearLocal(preservingPending: Bool = false) {
@@ -4042,39 +4044,111 @@ public final class ChatModel {
         setAttachmentNotice(files.count > room ? "Only \(room) more file\(room == 1 ? "" : "s") can be attached." : nil, target: target)
         files.dropFirst(room).forEach { AttachmentStaging.remove($0.url) }
         if error == "Write a message first." || error == "Wait for files to finish uploading." { error = nil }
-        let settings = attachmentCompression
         let expectedGeneration = uploadGeneration
         for file in files.prefix(room) {
             let id = UUID().uuidString
             draftChannels[id] = target.channelID
-            stagedFiles[target, default: []].append(AttachmentDraft(id: id, name: file.name, kind: AttachmentKind.local(contentType: file.contentType),
-                                                                  localURL: file.url, sourceSize: file.size))
+            var draft = AttachmentDraft(id: id, name: file.name, kind: AttachmentKind.local(contentType: file.contentType),
+                                        localURL: file.url, sourceSize: file.size)
+            draft.original = file
+            stagedFiles[target, default: []].append(draft)
             uploadTasks[id] = Task { [weak self] in
-                let prepared = await AttachmentPreparer.prepare(file, settings: settings)
-                guard let self, self.uploadGeneration == expectedGeneration, !Task.isCancelled, self.hasDraft(id) else {
-                    // Removed or access revoked while compressing.
-                    AttachmentStaging.remove(prepared.fileURL)
-                    if prepared.fileURL != file.url { AttachmentStaging.remove(file.url) }
-                    return
-                }
-                if prepared.fileURL != file.url { AttachmentStaging.remove(file.url) }
-                self.preparedUploads[id] = prepared
-                self.updateDraft(id) {
-                    $0.name = prepared.name
-                    $0.kind = AttachmentKind.local(contentType: prepared.contentType)
-                    $0.localURL = prepared.fileURL
-                    $0.storedSize = prepared.byteSize
-                    $0.preparing = false
-                }
-                do {
-                    _ = try await self.uploadAttachmentDraft(id: id)
-                } catch {
-                    guard self.uploadGeneration == expectedGeneration, !Task.isCancelled else { return }
-                    self.updateDraft(id) { $0.error = "Failed to upload." }
-                }
-                self.uploadTasks[id] = nil
+                // Only headers are read, so the pencil appears before compressing.
+                let editable = await AttachmentPreparer.canEdit(file)
+                // Removed or access revoked meanwhile (that removed the file too).
+                guard let self, self.uploadGeneration == expectedGeneration, !Task.isCancelled, self.hasDraft(id) else { return }
+                self.updateDraft(id) { $0.editable = editable }
+                await self.prepareDraft(id: id, original: file, edit: .original, generation: expectedGeneration)
             }
         }
+    }
+
+    /// Compresses a staged file's original with `edit` applied, then uploads
+    /// the result. An edit that can't be applied fails the draft (with Retry)
+    /// and nothing is uploaded: the unedited file is never a fallback.
+    private func prepareDraft(id: String, original file: LocalAttachmentFile, edit: AttachmentEdit, generation expected: Int) async {
+        let prepared: PreparedAttachment
+        do {
+            prepared = try await AttachmentPreparer.prepare(file, edit: edit, settings: attachmentCompression)
+        } catch {
+            guard uploadGeneration == expected, !Task.isCancelled, hasDraft(id) else { return }
+            updateDraft(id) { $0.preparing = false; $0.error = AttachmentEdit.failureMessage }
+            uploadTasks[id] = nil
+            return
+        }
+        guard uploadGeneration == expected, !Task.isCancelled, hasDraft(id) else {
+            // Removed, edited again or access revoked while compressing.
+            if prepared.fileURL != file.url { AttachmentStaging.remove(prepared.fileURL) }
+            if !hasDraft(id) { AttachmentStaging.remove(file.url) }
+            return
+        }
+        // Editable drafts keep their original for the editor until sent or removed.
+        let keepsOriginal = stagedDraft(id)?.editable == true
+        if prepared.fileURL != file.url, !keepsOriginal { AttachmentStaging.remove(file.url) }
+        preparedUploads[id] = prepared
+        updateDraft(id) {
+            if !keepsOriginal { $0.original = nil }
+            $0.name = prepared.name
+            $0.kind = AttachmentKind.local(contentType: prepared.contentType)
+            $0.localURL = prepared.fileURL
+            $0.storedSize = prepared.byteSize
+            $0.preparing = false
+        }
+        do {
+            _ = try await uploadAttachmentDraft(id: id)
+        } catch {
+            guard uploadGeneration == expected, !Task.isCancelled else { return }
+            updateDraft(id) { $0.error = "Failed to upload." }
+        }
+        uploadTasks[id] = nil
+    }
+
+    /// Saves the editor's change to a staged file (docs/media.md, "Editing
+    /// attachments before sending"): cancels its compression or upload and
+    /// the server reservation, as Remove does, then prepares the original
+    /// with `edit` applied and uploads that in the same place. `preview`, a
+    /// staged render of the edit, is the chip's thumbnail meanwhile.
+    public func editAttachmentDraft(id: String, edit: AttachmentEdit, preview: URL?) {
+        guard let draft = stagedDraft(id), draft.editable, let original = draft.original, edit != draft.edit else {
+            if let preview { AttachmentStaging.remove(preview) }
+            return
+        }
+        uploadTasks[id]?.cancel()
+        uploadTasks[id] = nil
+        preparedUploads[id] = nil
+        if let asset = draft.attachment?.id {
+            localAttachmentCopies[asset] = nil
+            Task { await api.cancelAsset(id: asset) }
+        }
+        if draft.localURL != original.url { AttachmentStaging.remove(draft.localURL) }
+        if let old = draft.editPreviewURL { AttachmentStaging.remove(old) }
+        // Back to the original: the chip shows it again.
+        let thumbnail = edit.isEdited ? preview : nil
+        if thumbnail == nil, let preview { AttachmentStaging.remove(preview) }
+        // Same place and name; the old compressed file is gone, so it shows the original until the new one is ready.
+        updateDraft(id) {
+            $0.edit = edit
+            $0.editPreviewURL = thumbnail
+            $0.localURL = original.url
+            $0.storedSize = nil
+            $0.preparing = true
+            $0.progress = 0
+            $0.error = nil
+            $0.attachment = nil
+            $0.uploadedAt = nil
+        }
+        let expected = uploadGeneration
+        uploadTasks[id] = Task { [weak self] in
+            guard let self else { return }
+            await self.prepareDraft(id: id, original: original, edit: edit, generation: expected)
+        }
+    }
+
+    private func stagedDraft(_ id: String) -> AttachmentDraft? {
+        for files in stagedFiles.values {
+            if let draft = files.first(where: { $0.id == id }) { return draft }
+        }
+        return nil
     }
 
     public func removeAttachmentDraft(id: String) {
@@ -4100,13 +4174,24 @@ public final class ChatModel {
     }
 
     public func retryAttachmentDraft(id: String) {
-        guard uploadTasks[id] == nil, preparedUploads[id] != nil,
-              stagedFiles.values.contains(where: { $0.contains(where: { $0.id == id }) }) else { return }
+        guard uploadTasks[id] == nil, let draft = stagedDraft(id) else { return }
+        guard preparedUploads[id] != nil else {
+            // Edits that couldn't be applied are tried again, from the original.
+            guard draft.error != nil, let original = draft.original else { return }
+            updateDraft(id) { $0.error = nil; $0.preparing = true; $0.progress = 0 }
+            let expected = uploadGeneration
+            uploadTasks[id] = Task { [weak self] in
+                guard let self else { return }
+                await self.prepareDraft(id: id, original: original, edit: draft.edit, generation: expected)
+            }
+            return
+        }
         uploadTasks[id] = Task { [weak self] in
             guard let self else { return }
             do { _ = try await uploadAttachmentDraft(id: id) }
             catch { if !Task.isCancelled { updateDraft(id) { $0.error = "Failed to upload." } } }
-            uploadTasks[id] = nil
+            // An edit cancels this task and starts its own.
+            if !Task.isCancelled { uploadTasks[id] = nil }
         }
     }
 
@@ -4139,7 +4224,12 @@ public final class ChatModel {
 
     private func releasePendingUploads(keepingDrafts: Bool = false) {
         if !keepingDrafts {
-            for file in pendingDrafts { preparedUploads[file.id] = nil; draftChannels[file.id] = nil }
+            for file in pendingDrafts {
+                preparedUploads[file.id] = nil; draftChannels[file.id] = nil
+                // Kept only for editing; the pending and processing rows show the uploaded copy.
+                if let original = file.original, original.url != file.localURL { AttachmentStaging.remove(original.url) }
+                if let preview = file.editPreviewURL { AttachmentStaging.remove(preview) }
+            }
         }
         pendingDrafts = []; pendingNeedsUpload = false; sendUploadFailed = false
     }

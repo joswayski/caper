@@ -176,8 +176,16 @@ export function paintMarks(context: Context, marks: EditMark[], width: number, h
       if (!mark.text) continue;
       context.font = editFont(mark.size * edge);
       context.textAlign = "center";
-      context.textBaseline = "middle";
-      context.fillText(mark.text, mark.x * width, mark.y * height);
+      // Centred on the middle of the font's ascent and descent, like the
+      // native clients; the em box's middle where browsers lack the metrics.
+      context.textBaseline = "alphabetic";
+      const { fontBoundingBoxAscent: ascent, fontBoundingBoxDescent: descent } = context.measureText(mark.text);
+      if (Number.isFinite(ascent) && Number.isFinite(descent))
+        context.fillText(mark.text, mark.x * width, mark.y * height + (ascent - descent) / 2);
+      else {
+        context.textBaseline = "middle";
+        context.fillText(mark.text, mark.x * width, mark.y * height);
+      }
       continue;
     }
     const lineWidth = mark.width * edge;

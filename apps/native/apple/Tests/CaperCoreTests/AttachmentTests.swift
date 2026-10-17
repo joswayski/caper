@@ -1937,6 +1937,86 @@ final class AttachmentTests: XCTestCase {
     }
 
     @MainActor
+    func testEditingAReadyDraftCancelsItsUploadAndUploadsTheEditedOriginal() async throws {
+        AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.checkUploadAvailability()
+        let halves = rgbaImage(width: 16, height: 8) { x, _ in x < 8 ? [255, 0, 0, 255] : [0, 0, 255, 255] }
+        let file = try AttachmentStaging.stage(data: try encoded(halves, type: .png), filename: "shot.png")
+        chat.addAttachments([file])
+        await waitUntil("uploaded") { chat.attachmentDrafts.first?.attachment != nil }
+        let first = try XCTUnwrap(chat.attachmentDrafts.first)
+        XCTAssertTrue(first.editable, "a still can be edited")
+        XCTAssertEqual(first.original, file)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.url.path), "the original is kept for the editor")
+        let firstAsset = try XCTUnwrap(first.attachment?.id)
+
+        let edit = AttachmentEdit(rotation: 90)
+        chat.editAttachmentDraft(id: first.id, edit: edit, preview: nil)
+        XCTAssertNil(chat.attachmentDrafts.first?.attachment, "the earlier upload is dropped at once")
+        XCTAssertEqual(chat.attachmentDrafts.first?.preparing, true)
+        XCTAssertFalse(chat.canSubmit)
+        await waitUntil("cancelled") { AttachmentURLProtocol.requests.contains { $0.url.path == "/api/assets/\(firstAsset)/cancel" } }
+        await waitUntil("uploaded again") { chat.attachmentDrafts.first?.attachment != nil }
+        let edited = try XCTUnwrap(chat.attachmentDrafts.first)
+        XCTAssertEqual(chat.attachmentDrafts.map(\.id), [first.id], "the same draft, in the same place")
+        XCTAssertEqual(edited.edit, edit)
+        XCTAssertNotEqual(edited.attachment?.id, firstAsset)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.url.path), "kept to edit again")
+        let uploaded = try decodedPixels(try XCTUnwrap(AttachmentURLProtocol.requests.last { $0.method == "PUT" }?.body))
+        XCTAssertEqual(uploaded.width, 8, "turned a quarter clockwise")
+        XCTAssertEqual(uploaded.height, 16)
+        XCTAssertEqual(Array(uploaded.rgba[0..<4]), [255, 0, 0, 255], "the left (red) half is now on top")
+        XCTAssertEqual(Array(uploaded.rgba[(15 * 8) * 4..<(15 * 8) * 4 + 4]), [0, 0, 255, 255])
+
+        let puts = AttachmentURLProtocol.requests.filter { $0.method == "PUT" }.count
+        chat.editAttachmentDraft(id: first.id, edit: edit, preview: nil)
+        XCTAssertNotNil(chat.attachmentDrafts.first?.attachment, "saving the same edit changes nothing")
+        XCTAssertEqual(AttachmentURLProtocol.requests.filter { $0.method == "PUT" }.count, puts)
+
+        chat.removeAttachmentDraft(id: first.id)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path), "removing the draft removes its original")
+        await chat.stop()
+    }
+
+    @MainActor
+    func testFilesTheEditorCantOpenGetNoPencilAndLoseTheirOriginal() async throws {
+        AttachmentURLProtocol.handler = composerHandler()
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.checkUploadAvailability()
+        let file = try AttachmentStaging.stage(data: Data("hello".utf8), filename: "notes.txt")
+        chat.addAttachments([file])
+        await waitUntil("uploaded") { chat.attachmentDrafts.first?.attachment != nil }
+        let draft = try XCTUnwrap(chat.attachmentDrafts.first)
+        XCTAssertFalse(draft.editable)
+        XCTAssertNil(draft.original)
+        chat.editAttachmentDraft(id: draft.id, edit: AttachmentEdit(rotation: 90), preview: nil)
+        XCTAssertEqual(chat.attachmentDrafts.first?.attachment, draft.attachment, "only editable drafts take edits")
+        await chat.stop()
+    }
+
+    @MainActor
+    func testProfileDraftsKeepEditsForSendAndDropWhatWasPrepared() async throws {
+        let draft = ProfileMessageDraft()
+        let halves = rgbaImage(width: 16, height: 8) { x, _ in x < 8 ? [255, 0, 0, 255] : [0, 0, 255, 255] }
+        let file = try AttachmentStaging.stage(data: try encoded(halves, type: .png), filename: "shot.png")
+        draft.add([file])
+        await waitUntil("editable") { draft.files.first?.editable == true }
+        let id = try XCTUnwrap(draft.files.first?.id)
+        let preview = try XCTUnwrap(AttachmentPreparer.writeStaged(Data([1]), name: "edit-preview.png"))
+        draft.setEdit(id: id, edit: AttachmentEdit(rotation: 270), preview: preview)
+        XCTAssertEqual(draft.files.first?.edit, AttachmentEdit(rotation: 270))
+        XCTAssertEqual(draft.files.first?.editPreview, preview)
+        draft.setEdit(id: id, edit: .original, preview: nil)
+        XCTAssertNil(draft.files.first?.editPreview, "back to the original shows the original")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: preview.path))
+        draft.clear()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path))
+    }
+
+    @MainActor
     func testReadyDraftRemovalCancelsAndUnavailableSendReuploadsWithoutLosingText() async throws {
         try await checkUnavailableRecovery(failRenewal: false)
         try await checkUnavailableRecovery(failRenewal: true)

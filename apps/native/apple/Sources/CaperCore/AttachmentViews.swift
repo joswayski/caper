@@ -1543,6 +1543,7 @@ struct AttachmentDraftsView: View {
     @Bindable var chat: ChatModel
     var inThread = false
     @State private var previewID: String?
+    @Environment(\.attachmentEditor) private var editor
     private var files: [AttachmentDraft] { chat.attachmentFiles(inThread: inThread) }
 
     var body: some View {
@@ -1562,17 +1563,28 @@ struct AttachmentDraftsView: View {
             }
             StagedFileLayout() {
                 ForEach(files) { draft in
-                    AttachmentDraftChip(draft: draft, preview: { previewID = draft.id }, retry: { chat.retryAttachmentDraft(id: draft.id) }) {
-                        chat.removeAttachmentDraft(id: draft.id)
-                    }
+                    AttachmentDraftChip(draft: draft, preview: { previewID = draft.id }, retry: { chat.retryAttachmentDraft(id: draft.id) },
+                                        edit: editAction(draft), remove: { chat.removeAttachmentDraft(id: draft.id) })
                     .modifier(Entrance.chip)
                 }
             }
             .accessibilityLabel("Files to send")
             .quickLookPreview(Binding(
-                get: { files.first(where: { $0.id == previewID })?.localURL },
+                // While an edit prepares, its render rather than the unedited original.
+                get: { files.first(where: { $0.id == previewID }).map { $0.preparing ? ($0.editPreviewURL ?? $0.localURL) : $0.localURL } },
                 set: { if $0 == nil { previewID = nil } }
             ))
+        }
+    }
+
+    /// The pencil, on files the editor can open, below an `AttachmentEditorHost`.
+    private func editAction(_ draft: AttachmentDraft) -> (() -> Void)? {
+        guard let editor, draft.editable, let original = draft.original else { return nil }
+        return {
+            editor(AttachmentEditRequest(name: draft.name, kind: AttachmentKind.local(contentType: original.contentType),
+                                         original: original.url, edit: draft.edit) { edit, preview in
+                chat.editAttachmentDraft(id: draft.id, edit: edit, preview: preview)
+            })
         }
     }
 }
@@ -1581,14 +1593,15 @@ private struct AttachmentDraftChip: View {
     let draft: AttachmentDraft
     let preview: () -> Void
     let retry: () -> Void
+    let edit: (() -> Void)?
     let remove: () -> Void
 
     var body: some View {
-        StagedFileChip(id: draft.id, name: draft.name, kind: draft.kind, localURL: draft.localURL,
+        StagedFileChip(id: draft.id, name: draft.name, kind: draft.kind, localURL: draft.localURL, thumbnailURL: draft.editPreviewURL,
                        status: draft.statusLabel, failed: draft.error != nil,
                        busyLabel: draft.attachment == nil && draft.error == nil ? (draft.preparing ? "Preparing…" : "Uploading…") : nil,
                        progress: draft.attachment == nil && draft.error == nil ? draft.progress : nil,
-                       retry: draft.error == nil ? nil : retry, preview: preview, remove: remove)
+                       retry: draft.error == nil ? nil : retry, edit: edit, preview: preview, remove: remove)
     }
 }
 
@@ -1624,13 +1637,15 @@ struct StagedFileLayout: Layout {
     }
 }
 
-/// A staged square with independent preview, remove and retry controls. Filenames
-/// and full status remain accessible without covering healthy image thumbnails.
+/// A staged square with independent preview, edit, remove and retry controls.
+/// Filenames and full status remain accessible without covering healthy image thumbnails.
 struct StagedFileChip: View {
     let id: String
     let name: String
     let kind: AttachmentKind
     let localURL: URL
+    /// An edited file's render, shown in place of `localURL` (videos too).
+    var thumbnailURL: URL?
     let status: String
     var failed = false
     var busyLabel: String?
@@ -1638,6 +1653,8 @@ struct StagedFileChip: View {
     var removable = true
     /// Offered for a failed upload.
     var retry: (() -> Void)?
+    /// Opens the editor (a pencil opposite Remove), for files it can change.
+    var edit: (() -> Void)?
     let preview: () -> Void
     let remove: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1707,6 +1724,21 @@ struct StagedFileChip: View {
                     .background(.black.opacity(0.8))
                 }
             }
+            if removable, let edit {
+                Button(action: edit) {
+                    CaperIcon(name: "pencil", size: 14).frame(width: 24, height: 24)
+                        .background(.black.opacity(0.8), in: Circle())
+                        #if os(iOS)
+                        .frame(minWidth: 44, minHeight: 44)
+                        #endif
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .help("Edit")
+                .accessibilityLabel("Edit \(name)")
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
             if removable {
                 Button(action: remove) {
                     CaperIcon(name: "x", size: 14).frame(width: 24, height: 24)
@@ -1725,11 +1757,13 @@ struct StagedFileChip: View {
         .background(CaperTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(failed ? Color(red: 138/255, green: 67/255, blue: 52/255) : CaperTheme.border))
-        .task(id: localURL) {
-            guard kind == .image else { thumbnail = nil; return }
-            let key = "draft:\(id):\(localURL.lastPathComponent)"
+        .task(id: thumbnailURL ?? localURL) {
+            let source = thumbnailURL ?? localURL
+            guard kind == .image || thumbnailURL != nil else { thumbnail = nil; return }
+            // Each prepared or edited file has its own staging directory; its name may repeat.
+            let key = "draft:\(id):\(source.path)"
             thumbnail = nil
-            thumbnail = try? await AttachmentImageLoader.shared.load(key: key, url: localURL, maxPixelSize: 312)
+            thumbnail = try? await AttachmentImageLoader.shared.load(key: key, url: source, maxPixelSize: 312)
         }
     }
 

@@ -362,6 +362,13 @@ public enum AttachmentPolicy {
         }
     }
 
+    /// How an edited still is encoded (docs/media.md, "Editing attachments
+    /// before sending"): by its source class, with AVIF taking the photo path.
+    /// `.unchanged` means the editor doesn't open it.
+    public static func editedStillSource(contentType: String, webP: WebPFormat? = nil) -> StillSource {
+        baseType(contentType) == "image/avif" ? .photo : stillSource(contentType: contentType, webP: webP)
+    }
+
     /// Reads the RIFF chunks of a WebP file's first bytes: `VP8 ` is lossy,
     /// `VP8L` lossless, and an animation flag or `ANIM` chunk is animated.
     public static func webPFormat(_ bytes: Data) -> WebPFormat? {
@@ -703,6 +710,15 @@ public struct AttachmentDraft: Identifiable, Equatable, Sendable {
     /// The confirmed upload.
     public var attachment: ChatAttachment?
     public var uploadedAt: Date?
+    /// The editor can open this file (a still or video this device can change).
+    public var editable = false
+    /// The staged original, kept while the draft can still be edited so
+    /// reopening the editor starts from it (nil for files that can't be).
+    public var original: LocalAttachmentFile?
+    /// What the editor changed; applied to `original` when preparing.
+    public var edit = AttachmentEdit.original
+    /// A small render of `edit` for the chip while the edited file prepares.
+    public var editPreviewURL: URL?
     public var needsUpload: Bool { attachment == nil || uploadedAt.map { Date().timeIntervalSince($0) >= 23 * 60 * 60 } == true }
 
     public init(id: String, name: String, kind: AttachmentKind, localURL: URL, sourceSize: Int) {

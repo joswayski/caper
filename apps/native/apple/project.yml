@@ -374,6 +374,7 @@ targets:
       - Tests/CaperCoreTests/InviteLinksTests.swift
       - Tests/CaperCoreTests/MessageLinksTests.swift
       - Tests/CaperCoreTests/FileDropTests.swift
+      - Tests/CaperCoreTests/AttachmentEditTests.swift
       - Tests/CaperCoreTests/MessageGroupingTests.swift
       - Tests/CaperCoreTests/MessageArrivalsTests.swift
       - Tests/CaperCoreTests/CodeResendTests.swift

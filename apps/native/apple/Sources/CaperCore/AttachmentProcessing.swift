@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreGraphics
+import CoreImage
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -46,6 +47,179 @@ public enum AttachmentPreparer {
         if kind == .video || type.hasPrefix("video/") { return await prepareVideo(file, settings: settings) }
         if kind == .audio { return await prepareAudio(file) }
         return PreparedAttachment(original: file)
+    }
+
+    // MARK: Edits (docs/media.md, "Editing attachments before sending")
+
+    struct EditFailed: LocalizedError {
+        var errorDescription: String? { AttachmentEdit.failureMessage }
+    }
+
+    /// `file` with `edit` applied; unedited, exactly `prepare(_:settings:)`.
+    /// Edits are never dropped: when they can't be applied this throws and
+    /// nothing is uploaded, because a crop may hide something private.
+    public static func prepare(_ file: LocalAttachmentFile, edit: AttachmentEdit, settings: AttachmentCompression) async throws -> PreparedAttachment {
+        guard edit.isEdited else { return await prepare(file, settings: settings) }
+        let prepared: PreparedAttachment?
+        switch AttachmentKind.local(contentType: file.contentType) {
+        case .image: prepared = prepareEditedImage(file, edit: edit, settings: settings)
+        case .video: prepared = await prepareEditedVideo(file, edit: edit, settings: settings)
+        case .audio, .file: prepared = nil
+        }
+        guard let prepared else { throw EditFailed() }
+        return prepared
+    }
+
+    /// The editor opens this staged file: a still this device decodes that
+    /// isn't animated (HEIC/HEIF use their primary image), or a video
+    /// AVFoundation can read. Reads only headers.
+    public static func canEdit(_ file: LocalAttachmentFile) async -> Bool {
+        let kind = AttachmentKind.local(contentType: file.contentType)
+        if kind == .video {
+            let asset = AVURLAsset(url: file.url)
+            guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+                  let size = try? await track.load(.naturalSize), size.width > 0, size.height > 0 else { return false }
+            return (try? await asset.load(.isReadable)) == true
+        }
+        guard kind == .image, AttachmentEdit.editableImageType(file.contentType),
+              let source = CGImageSourceCreateWithURL(file.url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, CGImageSourceGetPrimaryImageIndex(source), nil) as? [CFString: Any],
+              ((properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0) > 0,
+              ((properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0) > 0,
+              editedStillSource(file) != .unchanged else { return false }
+        let baseType = AttachmentPolicy.baseType(file.contentType)
+        return baseType == "image/heic" || baseType == "image/heif" || CGImageSourceGetCount(source) == 1
+    }
+
+    /// The still class an edit is encoded by: the original's (AVIF counts as
+    /// a photo); `.unchanged` for animated WebP and types that can't be edited.
+    static func editedStillSource(_ file: LocalAttachmentFile) -> AttachmentPolicy.StillSource {
+        let baseType = AttachmentPolicy.baseType(file.contentType)
+        var webP: AttachmentPolicy.WebPFormat?
+        if baseType == "image/webp", let handle = try? FileHandle(forReadingFrom: file.url) {
+            webP = AttachmentPolicy.webPFormat((try? handle.read(upToCount: 65_536)) ?? Data())
+            try? handle.close()
+        }
+        return AttachmentPolicy.editedStillSource(contentType: file.contentType, webP: webP)
+    }
+
+    /// Renders the edit at the original's native pixels (the crop region), then
+    /// encodes by the original's class: photos as AVIF/WebP/JPEG within
+    /// `imageMaxEdge`, lossless sources as an exact indexed PNG or lossless WebP
+    /// at full size. The result is always used (the original is not an
+    /// option), with PNG when the preferred encoders fail. It is upright and
+    /// carries no metadata.
+    static func prepareEditedImage(_ file: LocalAttachmentFile, edit: AttachmentEdit, settings: AttachmentCompression) -> PreparedAttachment? {
+        let stillSource = editedStillSource(file)
+        guard stillSource != .unchanged,
+              let source = CGImageSourceCreateWithURL(file.url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        let index = CGImageSourceGetPrimaryImageIndex(source)
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
+              let pixelWidth = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let pixelHeight = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              pixelWidth > 0, pixelHeight > 0 else { return nil }
+        let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        // Decoding enormous images can exhaust memory on phones: those are
+        // edited at the largest size that fits the compression limit.
+        let pixels = Double(pixelWidth) * Double(pixelHeight)
+        let limit = Double(AttachmentPolicy.maxCompressPixels)
+        let upright: CGImage?
+        if orientation == 1, pixels <= limit {
+            upright = CGImageSourceCreateImageAtIndex(source, index, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+        } else {
+            let edge = Double(max(pixelWidth, pixelHeight)) * min(1, (limit / pixels).squareRoot())
+            upright = thumbnail(source, index: index, maxPixelSize: max(1, Int(edge)))
+        }
+        guard let upright else { return nil }
+        let region = edit.cropPixels(width: upright.width, height: upright.height)
+        let output = stillSource == .photo && settings.imageMaxEdge > 0
+            ? AttachmentPolicy.fitWithin(width: region.width, height: region.height, edge: settings.imageMaxEdge)
+            : (width: region.width, height: region.height)
+        func render(in space: CGColorSpace) -> CGImage? {
+            AttachmentEditRenderer.render(upright, width: upright.width, height: upright.height, edit: edit, region: region,
+                                          outputWidth: output.width, outputHeight: output.height, space: space)
+        }
+        // The original's own RGB space keeps its colours; sRGB where a bitmap can't use it.
+        guard let rendered = drawingSpace(upright).flatMap(render) ?? CGColorSpace(name: CGColorSpace.sRGB).flatMap(render) else { return nil }
+        let encoded = encodeDecoded(rendered, contentType: file.contentType, stillSource: stillSource, settings: settings)
+            ?? encode(rendered, type: UTType.png.identifier, quality: 1).map {
+                EncodedStill(data: $0, contentType: "image/png", width: rendered.width, height: rendered.height, lossless: true)
+            }
+        guard let encoded, let destination = writeStaged(encoded.data, name: AttachmentPolicy.renamed(file.name, contentType: encoded.contentType)) else {
+            return nil
+        }
+        var prepared = PreparedAttachment(original: file)
+        prepared.fileURL = destination
+        prepared.name = destination.lastPathComponent
+        prepared.contentType = encoded.contentType
+        prepared.kind = .image
+        prepared.byteSize = encoded.data.count
+        prepared.width = encoded.width
+        prepared.height = encoded.height
+        if AttachmentPolicy.needsPreview(kind: .image, width: encoded.width, height: encoded.height, byteSize: encoded.data.count, settings: settings),
+           let decoded = CGImageSourceCreateWithData(encoded.data as CFData, nil),
+           let image = thumbnail(decoded, maxPixelSize: settings.previewEdge) {
+            prepared.preview = previewImage(image)
+        }
+        return prepared
+    }
+
+    /// Always a transcode to H.264/AAC MP4 with the rotation and crop baked
+    /// into the frames and the marks composited over every frame, even when
+    /// the original would upload unchanged. The output must verify as SDR
+    /// H.264 with the source's audio, or the edit fails.
+    static func prepareEditedVideo(_ file: LocalAttachmentFile, edit: AttachmentEdit, settings: AttachmentCompression) async -> PreparedAttachment? {
+        let asset = AVURLAsset(url: file.url)
+        guard let probe = await probeVideo(asset, contentType: file.contentType, fileSize: file.size) else { return nil }
+        let frames = edit.videoFrames(displayWidth: probe.facts.width, displayHeight: probe.facts.height, maxHeight: settings.videoMaxHeight)
+        let target = AttachmentPolicy.videoTargetKbps(width: frames.width, height: frames.height, settings: settings, fps: probe.facts.fps)
+        let kbps = AttachmentPolicy.outputKbps(targetKbps: target, sourceKbps: probe.facts.bitrateKbps, sourceIsH264: probe.facts.isH264,
+                                               settings: settings)
+        var overlay: CGImage?
+        if !edit.marks.isEmpty {
+            // Painted once at the output size, mapped into the crop.
+            guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+                  let drawn = AttachmentEditRenderer.render(nil, width: probe.facts.width, height: probe.facts.height, edit: edit,
+                                                            region: frames.crop, outputWidth: frames.width, outputHeight: frames.height,
+                                                            space: space) else { return nil }
+            overlay = drawn
+        }
+        let edited = EditedFrames(rotation: edit.rotation, crop: frames.crop, display: (probe.facts.width, probe.facts.height), overlay: overlay)
+        guard let output = await export(asset, plan: .transcode(width: frames.width, height: frames.height, bitrateKbps: kbps, required: true),
+                                        name: file.name, audioBitrateKbps: settings.audioBitrateKbps, edited: edited) else { return nil }
+        let transcoded = AVURLAsset(url: output.url)
+        guard let result = await probeVideo(transcoded, contentType: "video/mp4", fileSize: output.size),
+              AttachmentPolicy.keepTranscoded(required: true, originalSize: file.size, outputSize: output.size,
+                                              outputIsH264: result.facts.isH264, outputIsHDR: result.facts.isHDR,
+                                              sourceHasAudio: probe.hasAudio, outputHasAudio: result.hasAudio) else {
+            AttachmentStaging.remove(output.url)
+            return nil
+        }
+        AttachmentMetadata.patchQuickTimeMetadata(at: output.url)
+        var prepared = PreparedAttachment(original: file)
+        prepared.fileURL = output.url
+        prepared.name = output.url.lastPathComponent
+        prepared.contentType = "video/mp4"
+        prepared.kind = .video
+        prepared.byteSize = output.size
+        prepared.width = result.facts.width
+        prepared.height = result.facts.height
+        prepared.durationMs = result.durationMs ?? probe.durationMs
+        if settings.previewEdge > 0 {
+            prepared.preview = await poster(transcoded, durationMs: prepared.durationMs, edge: settings.previewEdge)
+        }
+        return prepared
+    }
+
+    /// Rotation, crop and marks baked into every frame of an edited video.
+    struct EditedFrames {
+        let rotation: Int
+        /// Even pixels of the display-oriented frames, turned by the rotation.
+        let crop: PixelRect
+        /// The display-oriented frame size the crop was measured on.
+        let display: (width: Int, height: Int)
+        /// The marks at the output size, or nil without any.
+        let overlay: CGImage?
     }
 
     // MARK: Stills
@@ -144,6 +318,13 @@ public enum AttachmentPreparer {
             image = thumbnail(source, index: index, maxPixelSize: target)
         }
         guard let image else { return nil }
+        return encodeDecoded(image, contentType: contentType, stillSource: stillSource, settings: settings)
+    }
+
+    /// The best re-encoding of decoded pixels (`encodeStill`'s candidates, in
+    /// its order), or nil when none succeeds.
+    static func encodeDecoded(_ image: CGImage, contentType: String, stillSource: AttachmentPolicy.StillSource,
+                              settings: AttachmentCompression) -> EncodedStill? {
         if stillSource == .lossless, image.bitsPerComponent > 8 || nativeRGBSpace(image) == nil { return nil }
 
         var palette: IndexedPNG.Palette?
@@ -529,29 +710,36 @@ public enum AttachmentPreparer {
         }
 
         if prepared.kind == .video, settings.previewEdge > 0 {
-            let generator = AVAssetImageGenerator(asset: finalAsset)
-            generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: settings.previewEdge, height: settings.previewEdge)
-            // A poster from just after the start, past common black first frames.
-            let seconds = Double(prepared.durationMs ?? 1000) / 1000
-            let time = CMTime(seconds: min(0.5, seconds / 2), preferredTimescale: 600)
-            if let poster = try? await generator.image(at: time).image { prepared.preview = previewImage(poster) }
+            prepared.preview = await poster(finalAsset, durationMs: prepared.durationMs, edge: settings.previewEdge)
         }
         return prepared
     }
 
+    /// A poster from just after the start, past common black first frames.
+    static func poster(_ asset: AVURLAsset, durationMs: Int?, edge: Int) async -> AttachmentPreviewImage? {
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: edge, height: edge)
+        let seconds = Double(durationMs ?? 1000) / 1000
+        let time = CMTime(seconds: min(0.5, seconds / 2), preferredTimescale: 600)
+        guard let poster = try? await generator.image(at: time).image else { return nil }
+        return previewImage(poster)
+    }
+
     /// Runs one export into a new staging directory; nil on any failure.
     static func export(_ asset: AVURLAsset, plan: AttachmentPolicy.VideoPlan, name: String,
-                       audioBitrateKbps: Int) async -> (url: URL, size: Int)? {
+                       audioBitrateKbps: Int, edited: EditedFrames? = nil) async -> (url: URL, size: Int)? {
         guard let directory = try? AttachmentStaging.newDirectory() else { return nil }
         let output = directory.appendingPathComponent(AttachmentStaging.sanitized(AttachmentPolicy.renamed(name, contentType: "video/mp4")))
         let written: Bool
         switch plan {
         case .keep: written = false
-        case .remux: written = await remux(asset, to: output)
+        case .remux:
+            // Edits always transcode.
+            if edited == nil { written = await remux(asset, to: output) } else { written = false }
         case .transcode(let width, let height, let bitrateKbps, _):
             written = await transcode(asset, to: output, width: width, height: height, bitrateKbps: bitrateKbps,
-                                      audioBitrateKbps: audioBitrateKbps)
+                                      audioBitrateKbps: audioBitrateKbps, edited: edited)
         }
         let size = (try? output.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         guard written, size > 0, !Task.isCancelled else {
@@ -588,9 +776,10 @@ public enum AttachmentPreparer {
     /// orientation and whose colour properties are BT.709, so the compositor
     /// converts HDR (HLG/PQ) to SDR (WWDC20 10009 and 10010); the writer then
     /// scales and encodes them. The caller re-probes the output and discards
-    /// anything that is not SDR H.264.
+    /// anything that is not SDR H.264. `edited` frames are turned, cropped,
+    /// scaled and drawn on (`editedFrameWriter`) before encoding instead.
     private static func transcode(_ asset: AVURLAsset, to output: URL, width: Int, height: Int, bitrateKbps: Int,
-                                  audioBitrateKbps: Int) async -> Bool {
+                                  audioBitrateKbps: Int, edited: EditedFrames? = nil) async -> Bool {
         guard let track = try? await asset.loadTracks(withMediaType: .video).first,
               let base = try? await AVMutableVideoComposition.videoComposition(withPropertiesOf: asset),
               let composition = base.mutableCopy() as? AVMutableVideoComposition,
@@ -601,8 +790,10 @@ public enum AttachmentPreparer {
         composition.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
         writer.shouldOptimizeForNetworkUse = true
 
+        // Edited frames are drawn on in BGRA before encoding.
+        let pixelFormat = edited == nil ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange : kCVPixelFormatType_32BGRA
         let frames = AVAssetReaderVideoCompositionOutput(videoTracks: [track], videoSettings: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
         ])
         frames.videoComposition = composition
         frames.alwaysCopiesSampleData = false
@@ -630,6 +821,15 @@ public enum AttachmentPreparer {
         guard writer.canAdd(videoInput) else { return false }
         writer.add(videoInput)
         var pairs: [(AVAssetReaderOutput, AVAssetWriterInput)] = [(frames, videoInput)]
+        // The adaptor must exist before writing starts.
+        let drawFrame = edited.map { edited in
+            editedFrameWriter(edited, adaptor: AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: videoInput, sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height,
+                kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+            ]), width: width, height: height)
+        }
 
         let audioTracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
         if !audioTracks.isEmpty {
@@ -675,7 +875,7 @@ public enum AttachmentPreparer {
         }
         writer.startSession(atSourceTime: .zero)
         await withTaskCancellationHandler {
-            await copy(pairs, from: reader, to: writer)
+            await copy(pairs, from: reader, to: writer, drawFrame: drawFrame)
         } onCancel: {
             reader.cancelReading()
         }
@@ -689,11 +889,34 @@ public enum AttachmentPreparer {
         return writer.status == .completed
     }
 
+    /// Appends display-oriented BGRA frames with the edit applied, through
+    /// `adaptor`. Nothing is colour managed: only the geometry and the marks
+    /// change, so the compositor's SDR BT.709 values pass through as they are.
+    private static func editedFrameWriter(_ edited: EditedFrames, adaptor: AVAssetWriterInputPixelBufferAdaptor,
+                                          width: Int, height: Int) -> (CMSampleBuffer) -> Bool {
+        let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull(), .cacheIntermediates: false])
+        let overlay = edited.overlay.map { CIImage(cgImage: $0, options: [.colorSpace: NSNull()]) }
+        return { sample in
+            autoreleasepool { () -> Bool in
+                guard let source = CMSampleBufferGetImageBuffer(sample), let pool = adaptor.pixelBufferPool,
+                      let image = AttachmentEditRenderer.editedFrame(CIImage(cvPixelBuffer: source, options: [.colorSpace: NSNull()]),
+                                                                     rotation: edited.rotation, crop: edited.crop, display: edited.display,
+                                                                     width: width, height: height, overlay: overlay) else { return false }
+                var buffer: CVPixelBuffer?
+                guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer) == kCVReturnSuccess, let buffer else { return false }
+                CVBufferPropagateAttachments(source, buffer)
+                context.render(image, to: buffer, bounds: CGRect(x: 0, y: 0, width: width, height: height), colorSpace: nil)
+                return adaptor.append(buffer, withPresentationTime: CMSampleBufferGetPresentationTimeStamp(sample))
+            }
+        }
+    }
+
     /// Feeds each reader output into its writer input until all run out, on
     /// one background thread. Polling (rather than per-input ready callbacks)
     /// also ends the copy when the writer fails or the reader is cancelled.
+    /// `drawFrame` appends the first (video) pair's frames instead, when given.
     private static func copy(_ pairs: [(AVAssetReaderOutput, AVAssetWriterInput)], from reader: AVAssetReader,
-                             to writer: AVAssetWriter) async {
+                             to writer: AVAssetWriter, drawFrame: ((CMSampleBuffer) -> Bool)? = nil) async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 var open = Array(pairs.indices)
@@ -708,7 +931,8 @@ public enum AttachmentPreparer {
                                 open.removeAll { $0 == index }
                                 break
                             }
-                            guard input.append(buffer) else { break copying }
+                            let appended = index == 0 ? (drawFrame?(buffer) ?? input.append(buffer)) : input.append(buffer)
+                            guard appended else { break copying }
                         }
                     }
                     if !progressed { Thread.sleep(forTimeInterval: 0.005) }
