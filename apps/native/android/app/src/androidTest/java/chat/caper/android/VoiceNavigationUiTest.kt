@@ -20,20 +20,22 @@ import org.junit.runner.RunWith
 class VoiceNavigationUiTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun connectedDockOpensChannelWhileLeaveRemainsIndependent() {
+    @Test fun callCardOpensItsChannelWhileLeaveRemainsIndependent() {
         var opened = 0
         var left = 0
+        // A call in another space than the one being viewed names its space.
         val voice = VoiceState(phase = VoiceState.Phase.CONNECTED, spaceName = "Fixture Studio", channelName = "Planning")
         compose.setContent {
             CaperTheme {
                 Column(Modifier.width(280.dp)) {
-                    ConnectedVoiceContext(voice, { opened++ }, { left++ })
+                    LiveCallCard(voice, null, otherSpaceName = "Fixture Studio", sessionStartedAt = null, narrow = false,
+                        openCall = { opened++ }, leave = { left++ })
                 }
             }
         }
 
-        compose.onNodeWithText("Planning / Fixture Studio").assertExists()
-        compose.onNodeWithContentDescription("Open voice channel").performClick()
+        compose.onNodeWithText("Fixture Studio").assertExists()
+        compose.onNodeWithText("Planning").performClick()
         compose.runOnIdle { assertEquals(1, opened); assertEquals(0, left) }
 
         compose.onNodeWithContentDescription("Leave voice").performClick()
