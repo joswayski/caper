@@ -102,7 +102,7 @@ export default function InvitePage({ code }: { code: string }) {
             <h1 className="my-4 text-[clamp(2.2rem,7vw,3.1rem)] leading-[1.08] font-bold tracking-[-.055em] wrap-anywhere">
               {state.preview.space.name}
             </h1>
-            <div className="flex items-center gap-3 text-content-muted">
+            <div className="flex items-center gap-2 text-content-muted">
               <span className="size-8 shrink-0 overflow-hidden rounded-[var(--radius-avatar)]" aria-hidden="true">
                 <Avatar person={state.preview.inviter} name={state.preview.inviter.displayName} />
               </span>
