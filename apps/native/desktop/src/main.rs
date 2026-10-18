@@ -14605,7 +14605,8 @@ impl CaperApp {
                                         .auto_shrink([false, true])
                                         .show(ui, |ui| egui::TextEdit::multiline(&mut draft.0)
                                             .id(composer_id).desired_rows(1).desired_width(f32::INFINITY).char_limit(4000)
-                                            .min_size(egui::vec2(0.0, 18.0))
+                                            .min_size(egui::vec2(0.0, 28.0))
+                                            .vertical_align(egui::Align::Center)
                                             .font(egui::FontId::proportional(13.6))
                                             .margin(egui::vec2(0.0, 5.0))
                                             .frame(false)
@@ -15069,6 +15070,7 @@ impl CaperApp {
                             .layouter(&mut layouter)
                             .desired_width(f32::INFINITY)
                             .min_size(egui::vec2(0.0, 42.0))
+                            .vertical_align(egui::Align::Center)
                             .desired_rows(1)
                             .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter)))
                             .font(egui::FontId::proportional(13.6))
@@ -19318,6 +19320,7 @@ impl CaperApp {
                                                 )
                                                 .desired_width(f32::INFINITY)
                                                 .min_size(egui::vec2(0.0, 42.0))
+                                                .vertical_align(egui::Align::Center)
                                                 .desired_rows(1)
                                                 .return_key(Some(egui::KeyboardShortcut::new(
                                                     egui::Modifiers::SHIFT,
@@ -38901,6 +38904,89 @@ mod tests {
                         shows(&output, &error),
                         "{fixture}: {:?}",
                         text_shapes(&output)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn composer_text_and_placeholders_are_vertically_centered() {
+        for name in [
+            "parity-desktop",
+            "parity-direct",
+            "parity-thread",
+            "parity-mentions",
+        ] {
+            let (context, mut app) = fixture(name);
+            context.all_styles_mut(|style| style.animation_time = 0.0);
+            if name == "parity-mentions" {
+                render(&mut app, &context, vec![]);
+                let output = render(&mut app, &context, vec![]);
+                click_at(
+                    &mut app,
+                    &context,
+                    pill_center(&output, ALEX_MESSAGE, "@alex"),
+                );
+                render(&mut app, &context, vec![]);
+            }
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                context.set_pixels_per_point(scale);
+                for draft in ["", "welcome :)", "First line\nSecond line\nThird line"] {
+                    let expected = if name == "parity-mentions" {
+                        app.profile_drafts.get_mut("fixture-alex").unwrap().text = draft.into();
+                        "Message @alex".to_owned()
+                    } else if name == "parity-thread" {
+                        let root = app.thread_view.as_ref().unwrap().root.clone();
+                        app.thread_drafts.entry(root).or_default().0 = draft.into();
+                        "Reply to thread…".to_owned()
+                    } else {
+                        app.draft = draft.into();
+                        format!(
+                            "Message {}{}",
+                            if app.conversation_is_direct() {
+                                ""
+                            } else {
+                                "#"
+                            },
+                            app.channel_name()
+                        )
+                    };
+                    let expected = if draft.is_empty() {
+                        expected.as_str()
+                    } else {
+                        draft
+                    };
+                    render(&mut app, &context, vec![]);
+                    let output = render(&mut app, &context, vec![]);
+                    let text = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) if text.galley.job.text == expected => {
+                                Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| panic!("{name}: missing {expected:?}"));
+                    let field = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Rect(rect)
+                                if rect.fill == super::COMPOSER
+                                    && rect.rect.contains_rect(text) =>
+                            {
+                                Some(rect.rect)
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| {
+                            panic!("{name}, {scale}x: no message-box surface contains {text:?}")
+                        });
+                    assert!(
+                        (text.center().y - field.center().y).abs() <= 1.0 / scale,
+                        "{name}, {scale}x, {draft:?}: text {text:?} must be centered in {field:?}"
                     );
                 }
             }
