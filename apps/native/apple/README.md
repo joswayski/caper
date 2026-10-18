@@ -46,7 +46,8 @@ offers Files. Library changes and foreground permission changes refresh the grid
 Browsing requests only local, bounded thumbnails; Add streams selected PhotoKit
 resources to staging (including iCloud downloads), preferring full-size edited
 resources when supplied by Photos. Failed/cancelled imports keep no draft files;
-an in-flight PhotoKit disk write finishes before its temporary directory is removed.
+Cancel cancels the resource request, and its completion cleans the temporary files.
+Metadata is exposed in 60-item pages rather than materializing the whole library.
 
 Selection contract tests are in `AttachmentGallerySelectionTests`. This change has
 not been Apple-SDK compiled or rendered in an iOS simulator/device in the Linux

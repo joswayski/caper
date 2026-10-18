@@ -1867,9 +1867,50 @@ npx wrangler deploy --env staging
 | Platform | Send files | Show files |
 | --- | --- | --- |
 | Web (desktop and mobile layouts) | Yes: picker, clipboard files/images, and drag and drop with an overlay | Images, video, audio, file cards; images and videos open in the in-app viewer |
-| Apple (iOS and macOS) | Yes: Photos picker, file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
-| Android | Yes: system photo picker and document picker, clipboard content URIs, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Apple (iOS and macOS) | Yes: Caper photo/video gallery on iOS (awaiting Apple build/device validation), system Photos picker on macOS, file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
+| Android | Yes: Caper photo/video gallery (awaiting device validation) and document picker, clipboard content URIs, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
 | Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux), clipboard files/images, and drag and drop with an overlay, up to 10. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+
+#### Mobile attachment gallery
+
+The iOS and Android attachment **Photos and videos** actions use Caper's own
+three-column gallery, including channel, DM, thread and profile-message drafts.
+Numbered selection badges preserve tap order. The remaining count includes files
+already in the original draft; at ten total, other tiles dim and cannot be selected,
+while chosen tiles remain removable. If the draft grows while picking, Add is blocked
+until the selection fits instead of silently dropping selected items. **Add N** hands
+media to the existing attachment pipeline; it does not send the message. Files and
+single-image profile/space-icon pickers are unchanged. The mobile web app still uses
+the browser's system picker: websites cannot enumerate a phone's photo library.
+
+Unlike the system attachment picker, this gallery needs photo-library permission.
+It asks only after an explicit action inside the sheet and supports limited access;
+it never requires the full library. iOS uses PhotoKit read/write authorization (no
+library edits are made); Android uses version-appropriate read-media permissions,
+including Android 14's selected-photo permission. Both expose access management and
+a Files fallback. Revocation and library changes refresh accessible media and remove
+inaccessible selections. Browsing stays local; only Add imports selected originals.
+iOS may download selected iCloud resources and cancels that request on dismissal.
+No library list, unselected originals or photo identifiers are sent to Caper servers.
+
+Before a Google Play release, submit the new `READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO`
+declaration and obtain approval under the
+[photo/video permissions policy](https://support.google.com/googleplay/android-developer/answer/16935362).
+Google requires justification for why system pickers cannot provide the app's core
+functionality; a custom appearance alone does not establish eligibility. Approval
+has not been checked or obtained for this change. Do not assume automated release
+can publish this permission change; if rejected, Android must retain the system
+media picker (or limit the custom gallery to user-imported files).
+
+Native UI acceptance remains outstanding: render portrait/landscape and large-text
+states, exercise 0/8/10 existing files, select to capacity then replace one, select
+across more than 60 library items, use mixed photos/videos, cancel, deny/restrict/
+limit access, grant more photos, revoke access while backgrounded, switch accounts,
+and verify the original channel/thread/profile draft receives only confirmed media.
+On iOS also exercise edited assets, iCloud offline/error/cancellation and nested
+profile-sheet dismissal. Check VoiceOver/TalkBack selected/disabled announcements.
+These require Apple SDK/device and Android device execution; web tests do not prove
+the native galleries render or that OS permission flows work.
 
 #### File drop overlay
 

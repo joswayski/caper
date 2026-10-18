@@ -52,13 +52,13 @@ class ComposerCounterTest {
         assertEquals(emptyList<String>(), toggleGallerySelection(listOf("photo"), "photo", 0))
     }
 
-    @Test fun `gallery prunes revoked media and reduced capacity without reordering`() {
+    @Test fun `gallery prunes only revoked media without reordering or discarding other selections`() {
         val selected = listOf("revoked", "video", "photo")
-        assertEquals(listOf("video", "photo"), pruneGallerySelection(selected, 10) { it != "revoked" })
-        assertEquals(listOf("video"), pruneGallerySelection(selected, 1) { it != "revoked" })
-        assertEquals(emptyList<String>(), pruneGallerySelection(selected, 10) { false })
-        assertEquals(emptyList<String>(), pruneGallerySelection(selected, 0) { true })
-        assertEquals(selected, pruneGallerySelection(selected, 10) { true })
+        assertEquals(listOf("video", "photo"), pruneGallerySelection(selected) { it != "revoked" })
+        assertEquals(emptyList<String>(), pruneGallerySelection(selected) { false })
+        assertEquals(selected, pruneGallerySelection(selected) { true })
+        assertEquals(selected, toggleGallerySelection(selected, "another", 1))
+        assertEquals(listOf("video", "photo"), toggleGallerySelection(selected, "revoked", 1))
     }
 
     @Test fun `counter tones match the web thresholds`() {

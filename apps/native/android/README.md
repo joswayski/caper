@@ -121,11 +121,13 @@ grid tiles and at most four thumbnail workers. Dismissal removes observers and
 cancels loading, including legacy thumbnail cancellation requests on Android 8–9.
 
 Validation: selection/capacity/revoked-access unit cases extend
-`ComposerCounterTest`. This orb has JDK 17 but no Android SDK or attached device;
-Gradle configuration stopped at “SDK location not found”, so compilation, JVM
-tests, lint, native UI rendering, permission dialogs (full/partial/denied),
-Settings/reselection, large-library paging, cancellation, and TalkBack still need
-Android execution. This is not device-validated behavior.
+`ComposerCounterTest`. Kotlin compilation, 448 JVM tests and Android lint passed
+with JDK 17 and SDK 36 in the Linux orb (lint reports warnings, not errors).
+There is no attached device: native UI rendering, permission dialogs
+(full/partial/denied), Settings/reselection, large-library paging, cancellation,
+and TalkBack still need Android execution. Google Play also requires review of
+the new media permissions before publishing; see `docs/media.md`.
+This is not device-validated behavior.
 
 ## Implemented
 

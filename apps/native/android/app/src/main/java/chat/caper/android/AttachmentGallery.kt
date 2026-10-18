@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import chat.caper.android.data.AttachmentPolicy
 import chat.caper.android.ui.Action
 import chat.caper.android.ui.OnAction
 import chat.caper.android.ui.Border
@@ -49,8 +50,8 @@ import kotlinx.coroutines.*
 internal fun <T> toggleGallerySelection(selected: List<T>, item: T, capacity: Int): List<T> =
     if (item in selected) selected - item else if (selected.size < capacity.coerceAtLeast(0)) selected + item else selected
 
-internal fun <T> pruneGallerySelection(selected: List<T>, capacity: Int, accessible: (T) -> Boolean): List<T> =
-    selected.filter(accessible).take(capacity.coerceAtLeast(0))
+internal fun <T> pruneGallerySelection(selected: List<T>, accessible: (T) -> Boolean): List<T> =
+    selected.filter(accessible)
 
 private data class GalleryItem(val uri: Uri, val id: Long, val date: Long, val video: Boolean, val duration: Long)
 private val collection: Uri get() = MediaStore.Files.getContentUri("external")
@@ -117,6 +118,7 @@ private suspend fun page(context: Context, after: GalleryItem?): List<GalleryIte
     var loading by remember { mutableStateOf(true) }
     var end by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var loadFailed by remember { mutableStateOf(false) }
     var next by remember { mutableIntStateOf(0) }
     var loadedRevision by remember { mutableIntStateOf(-1) }
     var loadedCapacity by remember { mutableIntStateOf(-1) }
@@ -139,14 +141,18 @@ private suspend fun page(context: Context, after: GalleryItem?): List<GalleryIte
         if (!refresh && (end || !allowed)) return@LaunchedEffect
         if (refresh) {
             allowed = context.access(); full = context.fullAccess()
-            items = emptyList(); end = false; error = null
+            items = emptyList(); end = false; error = null; loadFailed = false
         }
         loading = true
         try {
-            if (refresh) selected = withContext(Dispatchers.IO) {
-                pruneGallerySelection(selected, remaining) { uri ->
-                    runCatching { context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } == true }.getOrDefault(false)
+            if (refresh) {
+                val accessible = withContext(Dispatchers.IO) {
+                    pruneGallerySelection(selected) { uri ->
+                        runCatching { context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } == true }.getOrDefault(false)
+                    }
                 }
+                if (accessible != selected) error = "Some selected media is no longer accessible. Review your selection."
+                selected = accessible
             }
             if (allowed) {
                 val more = page(context, items.lastOrNull())
@@ -154,27 +160,35 @@ private suspend fun page(context: Context, after: GalleryItem?): List<GalleryIte
             }
             loadedRevision = revision; loadedCapacity = remaining
         } catch (cancel: CancellationException) { throw cancel }
-        catch (_: Exception) { error = "Couldn’t read available media. Review access or use Files." }
+        catch (_: Exception) { error = "Couldn’t read available media. Review access or use Files."; loadFailed = true }
         finally { loading = false }
     }
     val nearEnd by remember { derivedStateOf { (grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1) >= items.size - 12 } }
-    LaunchedEffect(nearEnd, items.size, loading) { if (nearEnd && !loading && !end && allowed && error == null) next++ }
+    LaunchedEffect(nearEnd, items.size, loading) { if (nearEnd && !loading && !end && allowed && !loadFailed) next++ }
     var submitting by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val currentRemaining by rememberUpdatedState(remaining)
+    val currentAdd by rememberUpdatedState(add)
     ModalBottomSheet(onDismissRequest = dismiss, containerColor = Surface,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(max = 640.dp)) {
             Text("Photos and videos", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-            Text("${selected.size} of ${remaining.coerceAtLeast(0)} available slots selected", color = TextMuted)
-            Text("Up to 10 attachments per message. Add to your draft; nothing sends yet.", color = TextMuted)
+            Text("${selected.size} selected · ${(remaining - selected.size).coerceAtLeast(0)} remaining", color = TextMuted,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+            Text("${AttachmentPolicy.MAX_ATTACHMENTS - remaining.coerceIn(0, AttachmentPolicy.MAX_ATTACHMENTS)} already in this draft · ${AttachmentPolicy.MAX_ATTACHMENTS} attachments maximum", color = TextMuted)
+            if (selected.size >= remaining) Text(
+                if (remaining == 0) "Draft is full. Remove an attachment from your draft to add more."
+                else "Attachment limit reached. Deselect an item to choose another.", color = TextMuted,
+            )
             if (!allowed) Text("Allow photo and video access to browse here. If denied or restricted by device policy, review Settings or use Files without library access.", color = TextMuted)
             else if (!full) Text("Showing only media Android allows Caper to access. You can choose more below.", color = TextMuted)
             Row(Modifier.fillMaxWidth()) {
-                TextButton({ permission.launch(permissions()) }, Modifier.weight(1f)) { Text(if (allowed) "Manage access" else "Allow access") }
-                TextButton({ runCatching { context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))) } }, Modifier.weight(1f)) { Text("Settings") }
-                TextButton(files, Modifier.weight(1f)) { Text("Files") }
+                if (!full) TextButton({ permission.launch(permissions()) }, Modifier.weight(1f), enabled = !submitting) { Text(if (allowed) "Manage access" else "Allow access") }
+                TextButton({ runCatching { context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))) } }, Modifier.weight(1f), enabled = !submitting) { Text("Settings") }
+                TextButton(files, Modifier.weight(1f), enabled = !submitting) { Text("Files") }
             }
             error?.let { Text(it, color = TextMuted) }
+            if (loadFailed) TextButton({ revision++ }, enabled = !submitting) { Text("Try loading again") }
             if (allowed && !loading && items.isEmpty() && error == null) Text(if (full) "No photos or videos found." else "No accessible photos or videos. Choose more media or use Files.", color = TextMuted)
             LazyVerticalGrid(GridCells.Fixed(3), Modifier.weight(1f, fill = false).fillMaxWidth(), state = grid,
                 horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -197,9 +211,10 @@ private suspend fun page(context: Context, after: GalleryItem?): List<GalleryIte
                 submitting = true
                 scope.launch {
                     val valid = withContext(Dispatchers.IO) {
-                        pruneGallerySelection(selected, remaining) { uri -> runCatching { context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } == true }.getOrDefault(false) }
+                        pruneGallerySelection(selected) { uri -> runCatching { context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } == true }.getOrDefault(false) }
                     }
-                    if (valid == selected) { add(valid); dismiss() }
+                    if (valid.size > currentRemaining) { error = "Your draft changed. Deselect items to fit the remaining slots."; submitting = false }
+                    else if (valid == selected) { currentAdd(valid); dismiss() }
                     else { selected = valid; error = "Some selected media is no longer accessible. Review your selection."; submitting = false; revision++ }
                 }
             }, enabled = selected.isNotEmpty() && selected.size <= remaining && !submitting && !loading,
