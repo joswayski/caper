@@ -1,5 +1,5 @@
 {
-  "description": "Geometry of attachment edits (crop, rotate, drawing and text before sending). Every client's tests must produce exactly these results, within 1e-9 for fractions. Edits are fractions of the rotated, uncropped image: crop and mark positions of its width and height, stroke widths and text sizes of its longer edge. See apps/web/src/chat/edit.ts and docs/media.md#editing-attachments-before-sending.",
+  "description": "Geometry of attachment edits (crop, rotate, drawing and text before sending). Every client's tests must produce exactly these results, within 1e-9 for fractions. Edits are fractions of the rotated, uncropped image: crop and mark positions of its width and height, stroke widths and text sizes of its longer edge. See apps/web/src/chat/edit.ts and docs/media.md#editing-attachments-before-sending. `wire` is how an edit description travels when a sent file is edited.",
   "rotateLeft": [
     {
       "note": "an unedited file turns a quarter anticlockwise",
@@ -118,5 +118,259 @@
       },
       "edited": true
     }
-  ]
+  ],
+  "wire": {
+    "description": "An edit description as it travels with a replacement file when a sent message's files are edited (PUT /api/chat/channels/{channel}/messages/{message}; docs/media.md#editing-attachments-after-sending). The API stores it with the new file and shows it only to the author, whose editor reopens from the first-sent file and this description. Every client checks a description against these rules before uploading, and the API refuses one that breaks them.",
+    "rules": [
+      "Exactly the fields rotation, crop and marks; no other field anywhere.",
+      "rotation is the integer 0, 90, 180 or 270.",
+      "crop x and y are at least 0, width and height are above 0, and x + width and y + height are at most 1 (within cropTolerance).",
+      "At most `marks` marks, each a stroke {kind, color, width, points} or a text {kind, color, size, x, y, text}.",
+      "Colors are #RRGGBB, hex digits of either case.",
+      "A stroke width and a text size are above 0 and at most 1.",
+      "points is an even number of values, at least 2 (one point is a dot); points may lie outside the picture. At most `pointValues` point values across all strokes.",
+      "text is one line of 1 to `textCharacters` Unicode scalar values (not UTF-16 units or grapheme clusters), not only whitespace, with no control characters.",
+      "Every number is finite.",
+      "The compact JSON is at most `serializedBytes` bytes. The API measures its own serialization, so editors keep a margin.",
+      "Editors round every fraction (crop, positions, widths and sizes) to the nearest `roundTo` when they save, before rendering, so the uploaded file matches what is stored; `round` shows the results.",
+      "`generated` cases start from the untouched description and add `strokes` copies of {kind: stroke, color: #000000, width: 0.01, points} with `pointValues` values of 0.5 each, or one {kind: text, color: #FFFFFF, size: 0.05, x: 0.5, y: 0.5} whose text is `text` repeated `repeat` times."
+    ],
+    "limits": {
+      "marks": 500,
+      "pointValues": 100000,
+      "textCharacters": 200,
+      "serializedBytes": 131072,
+      "roundTo": 0.000001,
+      "cropTolerance": 0.00001
+    },
+    "valid": [
+      { "note": "untouched", "edit": { "rotation": 0, "crop": { "x": 0, "y": 0, "width": 1, "height": 1 }, "marks": [] } },
+      {
+        "note": "turned, cropped, drawn on and labelled",
+        "edit": {
+          "rotation": 270,
+          "crop": { "x": 0.2, "y": 0.4, "width": 0.3, "height": 0.5 },
+          "marks": [
+            { "kind": "stroke", "color": "#E5484D", "width": 0.01, "points": [0.2, 0.9, 0.4, 0.7] },
+            { "kind": "text", "color": "#FFFFFF", "size": 0.05, "x": 0.75, "y": 0.75, "text": "Look" }
+          ]
+        }
+      },
+      {
+        "note": "rounding may leave a crop a millionth past the edge",
+        "edit": { "rotation": 90, "crop": { "x": 0.333334, "y": 0, "width": 0.666667, "height": 1 }, "marks": [] }
+      },
+      {
+        "note": "colors may use lowercase hex digits",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "stroke", "color": "#e5484d", "width": 0.01, "points": [0.5, 0.5] }]
+        }
+      },
+      {
+        "note": "a stroke may run past the edge of the picture",
+        "edit": {
+          "rotation": 180,
+          "crop": { "x": 0.25, "y": 0.25, "width": 0.5, "height": 0.5 },
+          "marks": [{ "kind": "stroke", "color": "#000000", "width": 1, "points": [-0.25, 0.5, 1.5, 0.5] }]
+        }
+      },
+      {
+        "note": "text keeps its emoji and inner spaces",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "text", "color": "#3B82F6", "size": 1, "x": 0.5, "y": 0.5, "text": "Look here 🙂" }]
+        }
+      }
+    ],
+    "invalid": [
+      { "note": "a turn that is not a quarter", "edit": { "rotation": 45, "crop": { "x": 0, "y": 0, "width": 1, "height": 1 }, "marks": [] } },
+      { "note": "a negative turn", "edit": { "rotation": -90, "crop": { "x": 0, "y": 0, "width": 1, "height": 1 }, "marks": [] } },
+      { "note": "a turn written as text", "edit": { "rotation": "90", "crop": { "x": 0, "y": 0, "width": 1, "height": 1 }, "marks": [] } },
+      {
+        "note": "a crop past the right edge",
+        "edit": { "rotation": 0, "crop": { "x": 0.6, "y": 0, "width": 0.5, "height": 1 }, "marks": [] }
+      },
+      {
+        "note": "a crop further past the edge than rounding explains",
+        "edit": { "rotation": 0, "crop": { "x": 0.5, "y": 0, "width": 0.50002, "height": 1 }, "marks": [] }
+      },
+      {
+        "note": "a crop starting before the top",
+        "edit": { "rotation": 0, "crop": { "x": 0, "y": -0.1, "width": 1, "height": 0.5 }, "marks": [] }
+      },
+      {
+        "note": "an empty crop",
+        "edit": { "rotation": 0, "crop": { "x": 0, "y": 0, "width": 0, "height": 1 }, "marks": [] }
+      },
+      { "note": "a crop without a height", "edit": { "rotation": 0, "crop": { "x": 0, "y": 0, "width": 1 }, "marks": [] } },
+      { "note": "no marks list", "edit": { "rotation": 0, "crop": { "x": 0, "y": 0, "width": 1, "height": 1 } } },
+      { "note": "an unknown field", "edit": { "rotation": 0, "crop": { "x": 0, "y": 0, "width": 1, "height": 1 }, "marks": [], "scale": 2 } },
+      {
+        "note": "an unknown crop field",
+        "edit": { "rotation": 0, "crop": { "x": 0, "y": 0, "width": 1, "height": 1, "aspect": 1 }, "marks": [] }
+      },
+      {
+        "note": "an unknown mark field",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "stroke", "color": "#000000", "width": 0.01, "points": [0.5, 0.5], "opacity": 0.5 }]
+        }
+      },
+      {
+        "note": "an unknown kind of mark",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "arrow", "color": "#000000", "width": 0.01, "points": [0.1, 0.1, 0.9, 0.9] }]
+        }
+      },
+      {
+        "note": "a colour by name",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "stroke", "color": "red", "width": 0.01, "points": [0.5, 0.5] }]
+        }
+      },
+      {
+        "note": "a short hex colour",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "text", "color": "#FFF", "size": 0.05, "x": 0.5, "y": 0.5, "text": "Hi" }]
+        }
+      },
+      {
+        "note": "a colour with transparency",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "stroke", "color": "#000000FF", "width": 0.01, "points": [0.5, 0.5] }]
+        }
+      },
+      {
+        "note": "an odd number of point values",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "stroke", "color": "#000000", "width": 0.01, "points": [0.1, 0.2, 0.3] }]
+        }
+      },
+      {
+        "note": "a stroke without points",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "stroke", "color": "#000000", "width": 0.01, "points": [] }]
+        }
+      },
+      {
+        "note": "a stroke with no width",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "stroke", "color": "#000000", "width": 0, "points": [0.5, 0.5] }]
+        }
+      },
+      {
+        "note": "a stroke wider than the picture",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "stroke", "color": "#000000", "width": 1.5, "points": [0.5, 0.5] }]
+        }
+      },
+      {
+        "note": "empty text",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "text", "color": "#FFFFFF", "size": 0.05, "x": 0.5, "y": 0.5, "text": "" }]
+        }
+      },
+      {
+        "note": "only whitespace",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "text", "color": "#FFFFFF", "size": 0.05, "x": 0.5, "y": 0.5, "text": "   " }]
+        }
+      },
+      {
+        "note": "two lines of text",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "text", "color": "#FFFFFF", "size": 0.05, "x": 0.5, "y": 0.5, "text": "one\ntwo" }]
+        }
+      },
+      {
+        "note": "text with no size",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "text", "color": "#FFFFFF", "size": 0, "x": 0.5, "y": 0.5, "text": "Hi" }]
+        }
+      },
+      {
+        "note": "text without a position",
+        "edit": {
+          "rotation": 0,
+          "crop": { "x": 0, "y": 0, "width": 1, "height": 1 },
+          "marks": [{ "kind": "text", "color": "#FFFFFF", "size": 0.05, "x": 0.5, "text": "Hi" }]
+        }
+      }
+    ],
+    "generated": [
+      { "note": "500 dots are the most marks", "strokes": 500, "pointValues": 2, "valid": true },
+      { "note": "501 dots are too many marks", "strokes": 501, "pointValues": 2, "valid": false },
+      { "note": "30,000 point values stay under 128 KiB", "strokes": 1, "pointValues": 30000, "valid": true },
+      { "note": "40,000 point values pass 128 KiB", "strokes": 1, "pointValues": 40000, "valid": false },
+      { "note": "200 characters of text", "text": "🙂", "repeat": 200, "valid": true },
+      { "note": "201 characters of text", "text": "🙂", "repeat": 201, "valid": false }
+    ],
+    "round": [
+      {
+        "note": "every fraction rounds to the nearest millionth; turns, colours and text stay",
+        "before": {
+          "rotation": 90,
+          "crop": { "x": 0.1234564, "y": 0.2, "width": 0.5000004, "height": 0.3333333333 },
+          "marks": [
+            {
+              "kind": "stroke",
+              "color": "#E5484D",
+              "width": 0.0123456789,
+              "points": [0.11111111, 0.22222222, 1.00000041, 0.00000039]
+            },
+            { "kind": "text", "color": "#FFFFFF", "size": 0.0456789, "x": 0.33333333, "y": 0.66666666, "text": "Hi" }
+          ]
+        },
+        "after": {
+          "rotation": 90,
+          "crop": { "x": 0.123456, "y": 0.2, "width": 0.5, "height": 0.333333 },
+          "marks": [
+            { "kind": "stroke", "color": "#E5484D", "width": 0.012346, "points": [0.111111, 0.222222, 1, 0] },
+            { "kind": "text", "color": "#FFFFFF", "size": 0.045679, "x": 0.333333, "y": 0.666667, "text": "Hi" }
+          ]
+        }
+      },
+      {
+        "note": "an already rounded description is unchanged",
+        "before": {
+          "rotation": 270,
+          "crop": { "x": 0.2, "y": 0.4, "width": 0.3, "height": 0.5 },
+          "marks": [{ "kind": "stroke", "color": "#E5484D", "width": 0.01, "points": [0.2, 0.9, 0.4, 0.7] }]
+        },
+        "after": {
+          "rotation": 270,
+          "crop": { "x": 0.2, "y": 0.4, "width": 0.3, "height": 0.5 },
+          "marks": [{ "kind": "stroke", "color": "#E5484D", "width": 0.01, "points": [0.2, 0.9, 0.4, 0.7] }]
+        }
+      }
+    ]
+  }
 }
