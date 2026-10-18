@@ -8410,6 +8410,7 @@ private struct InvitePreviewCard: View {
                 HStack(spacing: 6) {
                     Avatar(name: preview.inviter.displayName, size: 18, avatarID: preview.inviter.avatarId, picture: preview.inviter.avatarPicture)
                     Text("Invited by \(preview.inviter.displayName)").lineLimit(1)
+                    if preview.inviter.admin == true { AdminBadge().fixedSize() }
                 }
                 Text(InviteLinks.memberCount(preview.memberCount))
                 if let channel = preview.channel { Text("Opens in #\(channel.name)").lineLimit(1) }

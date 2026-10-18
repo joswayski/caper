@@ -2,6 +2,8 @@ import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { type Account, getAccount } from "../account/client";
 import { primaryButtonClass, Spinner } from "../account/controls";
+import AdminBadge from "../chat/AdminBadge";
+import "../chat/chat.css";
 import Avatar from "../components/Avatar";
 import SpaceIcon from "../components/SpaceIcon";
 import Wordmark from "../components/Wordmark";
@@ -105,7 +107,11 @@ export default function InvitePage({ code }: { code: string }) {
                 <Avatar person={state.preview.inviter} name={state.preview.inviter.displayName} />
               </span>
               <p className="leading-[1.5]">
-                <strong className="text-content">{state.preview.inviter.displayName}</strong> invited you
+                <span className="inline-flex items-center gap-1.5">
+                  <strong className="text-content">{state.preview.inviter.displayName}</strong>
+                  {state.preview.inviter.admin && <AdminBadge />}
+                </span>{" "}
+                invited you
                 {state.preview.channel && (
                   <>
                     {" "}

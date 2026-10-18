@@ -260,6 +260,8 @@ pub struct Inviter {
     pub username: String,
     pub display_name: String,
     #[serde(default)]
+    pub admin: bool,
+    #[serde(default)]
     pub avatar_id: Option<i32>,
     /// A custom picture replacing the mascot: `avatarAsset` is its stable
     /// cache key and `avatarUrl` its signed URL. Old servers omit both.

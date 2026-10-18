@@ -7,6 +7,7 @@ public struct InvitePerson: Codable, Equatable, Sendable {
     public var avatarId: Int?
     public var avatarAsset: String? = nil
     public var avatarUrl: String? = nil
+    public var admin: Bool? = nil
 }
 
 extension InvitePerson: AvatarPictureCarrying {}

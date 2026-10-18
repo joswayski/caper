@@ -112,6 +112,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class InvitePerson(
     val username: String, val displayName: String, val avatarId: Int? = null,
     val avatarAsset: String? = null, val avatarUrl: String? = null,
+    val admin: Boolean = false,
 )
 @Serializable data class InviteNamed(val name: String)
 /** The previewed space: its name and, when the owner set one, its icon. */
