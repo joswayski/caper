@@ -57,6 +57,22 @@ final class AttachmentImageLoader: @unchecked Sendable {
         return image
     }
 
+    /// Local draft posters do not wait for compression or an upload. Keep the
+    /// same orientation and early-frame policy as uploaded video previews.
+    func loadVideo(key: String, url: URL, maxPixelSize: Int) async throws -> CGImage {
+        if let hit = cached(key) { return hit }
+        let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration).seconds
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
+        let seconds = duration.isFinite && duration > 0 ? min(0.5, duration / 2) : 0
+        let image = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600)).image
+        try Task.checkCancellation()
+        cache.setObject(CachedAttachmentImage(image), forKey: key as NSString, cost: image.bytesPerRow * image.height)
+        return image
+    }
+
     /// Bound decode work and retained pixels. Lower playback resolution when
     /// needed instead of turning an otherwise ordinary GIF into a still.
     private static let maxAnimationFrames = 600
@@ -1747,6 +1763,8 @@ struct StagedFileChip: View {
                             SpoilerThumbnail(image: failed ? nil : thumbnail)
                         } else if let thumbnail {
                             Image(decorative: thumbnail, scale: 1).resizable().scaledToFill()
+                        } else if kind == .video {
+                            Color.clear
                         } else {
                             VStack(spacing: 6) {
                                 if kind == .file {
@@ -1771,9 +1789,25 @@ struct StagedFileChip: View {
             .accessibilityLabel(spoiler ? "Preview spoiler attachment" : "Preview \(name)")
             .accessibilityValue(spoiler ? "Spoiler" : status)
             .help(spoiler ? "Spoiler attachment" : name)
-            if failed || busyLabel != nil {
-                VStack {
-                    Spacer(minLength: 0)
+            .contextMenu {
+                if removable {
+                    Button("Remove attachment", role: .destructive, action: remove)
+                }
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                ZStack {
+                    if kind == .video && !spoiler {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.72))
+                            .frame(width: 32, height: 32)
+                            .background(.black.opacity(0.32), in: Circle())
+                            .accessibilityLabel("Video")
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+                if failed || busyLabel != nil {
                     VStack(spacing: 3) {
                         if failed, let retry {
                             Button(action: retry) {
@@ -1805,12 +1839,16 @@ struct StagedFileChip: View {
                     .background(.black.opacity(0.8))
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             if removable {
                 Button(action: remove) {
                     CaperIcon(name: "x", size: 14).frame(width: 24, height: 24)
                         .background(.black.opacity(0.8), in: Circle())
                         #if os(iOS)
-                        .frame(minWidth: 44, minHeight: 44)
+                        .padding(4)
+                        .frame(width: 44, height: 44, alignment: .topTrailing)
+                        #else
+                        .padding(4)
                         #endif
                         .contentShape(Rectangle())
                 }
@@ -1824,10 +1862,18 @@ struct StagedFileChip: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(failed ? Color(red: 138/255, green: 67/255, blue: 52/255) : CaperTheme.border))
         .task(id: localURL) {
-            guard kind == .image else { thumbnail = nil; return }
             let key = "draft:\(id):\(localURL.lastPathComponent)"
             thumbnail = nil
-            thumbnail = try? await AttachmentImageLoader.shared.load(key: key, url: localURL, maxPixelSize: 312)
+            let loaded: CGImage?
+            switch kind {
+            case .image:
+                loaded = try? await AttachmentImageLoader.shared.load(key: key, url: localURL, maxPixelSize: 312)
+            case .video:
+                loaded = try? await AttachmentImageLoader.shared.loadVideo(key: key, url: localURL, maxPixelSize: 312)
+            default:
+                loaded = nil
+            }
+            if !Task.isCancelled { thumbnail = loaded }
         }
     }
 

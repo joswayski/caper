@@ -1130,9 +1130,11 @@ private struct SpaceRailButton: View {
     private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
     private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
     private var unread: Bool { model.unreadSpaces.contains { $0.id == space.id } }
+    private var connected: Bool { model.account != nil && model.voice.phase == .connected && model.voice.context?.spaceID == space.id }
+    private var voiceActive: Bool { model.account != nil && (connected || model.voiceActivitySpaceIDs.contains(space.id)) }
     private var state: String {
         let base: String = model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : ""
-        return [base, unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
+        return [base, unread ? "Unread activity" : "", muted ? "Muted" : "", connected ? "Connected to voice" : voiceActive ? "Voice active" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     var body: some View {
@@ -1143,10 +1145,20 @@ private struct SpaceRailButton: View {
                 .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
                 .overlay(alignment: .bottomTrailing) { mutedBadge }
                 .overlay(alignment: .topTrailing) {
+                    if voiceActive {
+                        CaperIcon(name: "volume-2", size: 11)
+                            .foregroundStyle(CaperTheme.text)
+                            .frame(width: 18, height: 18)
+                            .background(Circle().fill(connected ? CaperTheme.voiceSessionGreen : CaperTheme.blackout))
+                            .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
+                            .offset(x: 3, y: -3).accessibilityHidden(true)
+                    }
+                }
+                .overlay(alignment: .topLeading) {
                     if unread {
                         Circle().fill(CaperTheme.text).frame(width: 8, height: 8)
                             .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
-                            .offset(x: 2, y: -2).accessibilityHidden(true)
+                            .offset(x: -2, y: -2).accessibilityHidden(true)
                     }
                 }
         }
@@ -1665,20 +1677,19 @@ private struct ChannelSidebarItem: View {
     /// Your call's row ends with its status and time when they fit beside the
     /// name; otherwise with the time, and the status drops beneath the name.
     private var callLine: some View {
-        let count = model.voice.participants.count
         return ViewThatFits(in: .horizontal) {
-            line(live: true) { callMark(count: count, status: true) }
+            line(live: true) { callMark(status: true) }
             VStack(alignment: .leading, spacing: 0) {
-                line(live: true) { callMark(count: count, status: false) }
+                line(live: true) { callMark(status: false) }
                 // Under the name: the label's 9-point inset, the icon and its gap.
-                CallStatusText(voice: model.voice, count: count).padding(.leading, 33)
+                CallStatusText(voice: model.voice).padding(.leading, 33)
             }
         }
     }
 
-    private func callMark(count: Int, status: Bool) -> some View {
+    private func callMark(status: Bool) -> some View {
         HStack(spacing: 6) {
-            if status { CallStatusText(voice: model.voice, count: count) }
+            if status { CallStatusText(voice: model.voice) }
             if let startedAt = callStartedAt(model) { VoiceTimer(startedAt: startedAt).allowsHitTesting(false) }
         }
         .padding(.horizontal, 4)
@@ -1878,9 +1889,9 @@ private struct SidebarIconButton: ButtonStyle {
 
 /// Design H's voice colours (the "Live now" spec), beside the shared tokens.
 private enum LiveNowPalette {
-    /// Your call's green-tinted card (#1a2a22, border #3a6b4b).
-    static let callFill = Color(red: 26/255, green: 42/255, blue: 34/255)
-    static let callBorder = Color(red: 58/255, green: 107/255, blue: 75/255)
+    /// Your call's green-tinted card (#22382c, border #4b8a60).
+    static let callFill = Color(red: 34/255, green: 56/255, blue: 44/255)
+    static let callBorder = Color(red: 75/255, green: 138/255, blue: 96/255)
     /// Other live rooms (#18231f, border #28362f).
     static let roomFill = Color(red: 24/255, green: 35/255, blue: 31/255)
     static let roomBorder = Color(red: 40/255, green: 54/255, blue: 47/255)
@@ -2039,19 +2050,18 @@ private struct LiveNowSection: View {
     }
 }
 
-/// Your call's state: "You’re in · N" (counting you) in voice green, or
 /// Connecting… and Reconnecting… in amber. Not a control: a tap on it opens
 /// the chat like the rest of the card.
 private struct CallStatusText: View {
     @Bindable var voice: VoiceClient
-    let count: Int
     var body: some View {
-        let pending = callPending(voice)
-        Text(pending ?? "You’re in · \(count)").font(CaperTheme.font(12, weight: .bold))
-            .foregroundStyle(pending == nil ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
-            .lineLimit(1).fixedSize()
-            .allowsHitTesting(false)
-            .accessibilityIdentifier("voice-call-status")
+        if let pending = callPending(voice) {
+            Text(pending).font(CaperTheme.font(12, weight: .bold))
+                .foregroundStyle(LiveNowPalette.connecting)
+                .lineLimit(1).fixedSize()
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("voice-call-status")
+        }
     }
 }
 
@@ -2076,7 +2086,7 @@ private struct CallHeading: View {
     private var title: some View {
         let icon = CaperIcon(name: "audio-lines", size: 14)
             .foregroundStyle(callPending(voice) == nil ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
-        let state = CallStatusText(voice: voice, count: voice.participants.count)
+        let state = CallStatusText(voice: voice)
         return ViewThatFits(in: .horizontal) {
             HStack(spacing: 6) { icon; channelButton; state; Spacer(minLength: 6); timer }
             VStack(alignment: .leading, spacing: 2) {
@@ -2206,6 +2216,9 @@ private struct VoiceCallCard<Heading: View>: View {
             heading.padding([.horizontal, .top], row ? 3 : 12)
             VStack(alignment: .leading, spacing: 10) {
                 faces(split.shown, folded: split.folded)
+                Text(LiveNow.people(people.count)).font(CaperTheme.font(11))
+                    .foregroundStyle(CaperTheme.muted)
+                    .accessibilityIdentifier("voice-call-count")
                 controls
             }
             .padding([.horizontal, .bottom], 12)
@@ -7022,13 +7035,24 @@ private struct ProfileView: View {
 public struct DesktopUpdateControls {
     public let isChecking: Bool
     public let canApply: Bool
+    public let lastSuccessfulCheck: Date?
+    public let installedVersion: String
+    public let sourceRevision: String?
+    public var commitURL: URL? {
+        sourceRevision.flatMap { WhatsNewSnapshot.validRevision($0) ? URL(string: "https://github.com/joswayski/caper/commit/\($0)") : nil }
+    }
     public let check: (@MainActor () -> Void)?
     public let review: (@MainActor () -> Void)?
 
     public init(isChecking: Bool = false, canApply: Bool = false,
+                lastSuccessfulCheck: Date? = nil, installedVersion: String = "Installed: Development build",
+                sourceRevision: String? = nil,
                 check: (@MainActor () -> Void)? = nil, review: (@MainActor () -> Void)? = nil) {
         self.isChecking = isChecking
         self.canApply = canApply
+        self.lastSuccessfulCheck = lastSuccessfulCheck
+        self.installedVersion = installedVersion
+        self.sourceRevision = sourceRevision
         self.check = check
         self.review = review
     }
@@ -7091,7 +7115,20 @@ extension EnvironmentValues {
                 Rectangle().fill(CaperTheme.border).frame(height: 1)
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Updates").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                    Button(updates.isChecking ? "Checking…" : "Check for updates") { updates.check?() }
+                    HStack(spacing: 4) {
+                        Text(updates.installedVersion).foregroundStyle(CaperTheme.muted)
+                        if let revision = updates.sourceRevision, let url = updates.commitURL {
+                            Text("·").foregroundStyle(CaperTheme.muted)
+                            Link(String(revision.prefix(7)), destination: url)
+                        }
+                    }.font(CaperTheme.font(12))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(updates.isChecking ? "Checking for updates…" : updates.review != nil ? "An update is available." : updates.lastSuccessfulCheck != nil ? "Caper is up to date." : "Not checked yet.")
+                        TimelineView(.periodic(from: .now, by: 10)) { context in
+                            Text(lastCheckedText(now: context.date))
+                        }
+                    }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    Button("Check for updates") { updates.check?() }
                         .disabled(updates.check == nil || updates.isChecking)
                         .accessibilityIdentifier("check-for-updates")
                     Text(updates.check == nil
@@ -7115,6 +7152,14 @@ extension EnvironmentValues {
             WhatsNewSheet(notes: notes, display: notes.presentation ?? display)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in loginItem.refresh() }
+    }
+
+    private func lastCheckedText(now: Date) -> String {
+        guard let date = updates.lastSuccessfulCheck else { return "Last checked: Never" }
+        if now.timeIntervalSince(date) < 10 { return "Last checked: a few seconds ago" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return "Last checked: \(formatter.localizedString(for: date, relativeTo: now))"
     }
 }
 #endif
@@ -7198,8 +7243,7 @@ private struct FeedbackRow: View {
     let rowHeight: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        // The archived list has no waiting count.
-        let waiting = model.showingArchivedFeedback ? 0 : FeedbackInbox.waitingCount(model.feedbackReports)
+        let waiting = model.feedbackWaiting
         Button {
             guard !SwipeTapGuard.swiping else { return }
             // Phones push the inbox; sidebars expand it in place.
@@ -7215,8 +7259,7 @@ private struct FeedbackRow: View {
                 if waiting > 0 {
                     Text("\(waiting)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.text)
                         .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 18)
-                        .background(CaperTheme.raised, in: Capsule())
-                        .overlay(Capsule().stroke(CaperTheme.border))
+                        .background(CaperTheme.terracotta, in: Capsule())
                 }
             }.font(CaperTheme.font(13, weight: .medium))
                 .foregroundStyle(model.visit != nil ? CaperTheme.text : CaperTheme.muted)
@@ -7224,7 +7267,7 @@ private struct FeedbackRow: View {
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).modifier(ControlHover())
             .accessibilityLabel(FeedbackInbox.title)
-            .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
+            .accessibilityValue(waiting > 0 ? "\(waiting) feedback conversations waiting for a reply" : "")
             .accessibilityHint(narrow ? "Opens the feedback inbox" : model.showingFeedback ? "Collapses the inbox" : "Expands the inbox")
             .accessibilityIdentifier("feedback-inbox")
     }

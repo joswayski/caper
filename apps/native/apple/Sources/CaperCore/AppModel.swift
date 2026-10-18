@@ -7,6 +7,8 @@ public final class AppModel {
     public var phase: Phase = .loading
     public var account: Account?
     public var spaces: [Space] = []
+    public private(set) var voiceActivitySpaceIDs: Set<String> = []
+    private var voiceActivityRefreshing = false
     public var invitations: [Space] = []
     public var notificationInvitation: Space?
     public var notificationChannelInvitation: ChannelInvitation?
@@ -43,7 +45,7 @@ public final class AppModel {
             guard let self else { return }
             let snapshot = try? await api.unreadSpaces()
             guard generation == attempt, unreadVisitToken == token, selectedChannelID == id else { return }
-            unreadVisit = snapshot?.flatMap(\.channels).first { $0.id == id }
+            unreadVisit = snapshot?.spaces.flatMap(\.channels).first { $0.id == id }
             // A failed/old-server snapshot deliberately yields no divider, not a guessed boundary.
             unreadVisitReady = true
             markSelectedChannelRead()
@@ -212,6 +214,7 @@ public final class AppModel {
     }
     private var browseCoversConversation: Bool { narrowLayout && navigationOpen }
     public private(set) var unreadSpaces: [UnreadSpace] = []
+    public private(set) var feedbackWaiting: Int = 0
     public func channelUnread(_ id: String) -> Bool { unreadSpaces.contains { $0.channels.contains { $0.id == id } } }
     @ObservationIgnored private var unreadRevision = 0
     @ObservationIgnored private var unreadRefreshScheduled = false
@@ -783,6 +786,31 @@ public final class AppModel {
         }
     }
 
+    /// Whether `sendUpdateReport` can post: signed in with a username.
+    public var canSendUpdateReport: Bool { account?.username != nil }
+
+    /// Posts a failed update's error as `@feedback` in the account's notes, where
+    /// the Caper team can read it and reply. Never navigates. Returns a message
+    /// to show on failure, or nil once the message is sent.
+    public func sendUpdateReport(error report: String, installed: String, target: String) async -> String? {
+        guard let account, let username = account.username else { return "Sign in to send this to the Caper team." }
+        do {
+            let conversation: DirectMessageConversation
+            if let known = directMessages.first(where: { $0.peer.id == account.id }) { conversation = known }
+            else { conversation = try await api.createDirectMessage(username: username) }
+            guard conversation.peer.id == account.id else { return "Couldn’t open your notes. Try again." }
+            replaceDirectMessage(conversation)
+            let session = try await api.chatSession(name: account.displayName ?? "")
+            let text = "@feedback My Caper update didn’t finish.\n\n\(report)\n\n\(installed) → Caper \(target) on macOS"
+            let message = try await api.send(channelID: conversation.id, sessionToken: session.token,
+                                             clientMessageID: UUID().uuidString.lowercased(), text: text)
+            chat.receiveProfileMessage(message)
+            return nil
+        } catch {
+            return FriendlyError.message(for: error)
+        }
+    }
+
     /// Opens the account's notes conversation, creating it through the normal DM
     /// endpoint only when the server has not returned one yet.
     public func openSelfDirectMessage() async {
@@ -1043,7 +1071,7 @@ public final class AppModel {
             chat.refreshDraftUploads()
             markSelectedDirectRead()
             removeShownNotifications()
-            Task { await refreshDirectMessages(); await refreshUnreadSpaces() }
+            Task { await refreshVoiceActivity(); await refreshDirectMessages(); await refreshUnreadSpaces() }
             refreshNotificationSettingsIfStale()
             refreshMembership()
         }
@@ -1088,6 +1116,21 @@ public final class AppModel {
         }
     }
 
+    private func refreshVoiceActivity() async {
+        guard account != nil, !voiceActivityRefreshing else { return }
+        voiceActivityRefreshing = true
+        defer { voiceActivityRefreshing = false }
+        let attempt = generation
+        do {
+            let snapshot = try await api.spaceVoiceActivity()
+            guard generation == attempt, account != nil, !Task.isCancelled else { return }
+            voiceActivitySpaceIDs = Set(snapshot.spaceIds)
+        } catch {
+            guard generation == attempt else { return }
+            voiceActivitySpaceIDs = []
+        }
+    }
+
     public func refreshUnreadSpaces() async {
         guard account != nil else { return }
         let accountGeneration = generation
@@ -1097,7 +1140,8 @@ public final class AppModel {
         unreadRevision += 1
         let attempt = generation, revision = unreadRevision
         guard let snapshot = try? await api.unreadSpaces(), generation == attempt, unreadRevision == revision else { return }
-        unreadSpaces = snapshot
+        unreadSpaces = snapshot.spaces
+        feedbackWaiting = snapshot.feedbackWaiting
         markSelectedChannelRead()
     }
 
@@ -1158,6 +1202,7 @@ public final class AppModel {
             // Sign-in has just loaded the spaces; membership waits for the next pass.
             var reconcile = false
             while !Task.isCancelled {
+                await self?.refreshVoiceActivity()
                 await self?.refreshDirectMessages()
                 await self?.refreshUnreadSpaces()
                 if reconcile { self?.refreshMembership() }
@@ -2230,7 +2275,8 @@ extension AppModel {
     }
 
     private func clearNotificationState() {
-        unreadSpaces = []; channelReads = [:]; unreadRevision += 1
+        voiceActivitySpaceIDs = []
+        unreadSpaces = []; feedbackWaiting = 0; channelReads = [:]; unreadRevision += 1
         unreadVisitToken = UUID(); unreadVisit = nil; unreadVisitReady = false
         #if os(macOS)
         desktopNotifications.stop()

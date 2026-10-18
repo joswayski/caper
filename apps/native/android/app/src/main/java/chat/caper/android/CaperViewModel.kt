@@ -87,6 +87,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val pinWorkers = mutableMapOf<String, Job>()
     private var reactionIntentVersion = 0L
     private var directRefresh: Job? = null
+    private var voiceActivityRefresh: Job? = null
     private var peopleRefresh: Job? = null
     private var pendingDirectIntent: String? = null
     private var pendingChannelIntent: Pair<String, String>? = null
@@ -315,6 +316,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         channelReads.clear(); ++unreadRevision
         pendingFeedback = null; pendingFocus = null; lastVisit = null; ++feedbackRequest
         directRefresh?.cancel(); directRefresh = null
+        voiceActivityRefresh?.cancel(); voiceActivityRefresh = null
+        mutable.value = mutable.value.copy(voiceActivitySpaceIds = emptySet())
         peopleRefresh?.cancel(); peopleRefresh = null
         tokens.clear()
         drafts.clear()
@@ -1146,7 +1149,23 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun startDirectRefresh() {
         directRefresh?.cancel()
         refreshUnreadSpaces()
-        directRefresh = viewModelScope.launch { while (true) { delay(15_000); refreshDirectConversations(); refreshUnreadSpaces(); refreshMembership() } }
+        refreshVoiceActivity()
+        directRefresh = viewModelScope.launch { while (true) { delay(15_000); refreshVoiceActivity(); refreshDirectConversations(); refreshUnreadSpaces(); refreshMembership() } }
+    }
+
+    private fun refreshVoiceActivity() {
+        val token = accountToken ?: return
+        if (voiceActivityRefresh?.isActive == true) return
+        val account = accountGeneration
+        voiceActivityRefresh = viewModelScope.launch {
+            try {
+                val snapshot = api.spaceVoiceActivity(token)
+                if (account == accountGeneration) mutable.value = mutable.value.copy(voiceActivitySpaceIds = snapshot.spaceIds.toSet())
+            } catch (error: CancellationException) { throw error }
+            catch (_: Throwable) {
+                if (account == accountGeneration) mutable.value = mutable.value.copy(voiceActivitySpaceIds = emptySet())
+            }
+        }
     }
 
     /** Pushes refresh unread state between polls; a burst coalesces into one request about a second after the first. */
@@ -1162,7 +1181,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching { api.unreadSpaces(token) }.onSuccess {
                 if (account == accountGeneration && revision == unreadRevision) {
-                    mutable.value = mutable.value.copy(unreadSpaces = it.spaces)
+                    mutable.value = mutable.value.copy(unreadSpaces = it.spaces, feedbackWaiting = it.feedbackWaiting)
                     if (!mutable.value.messagesLoading) mutable.value.selectedChannel?.id?.let { id -> markConversationRead(id, durableReplayCursor) }
                 }
             }
@@ -1321,6 +1340,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value.pendingMessage?.takeIf { it.uploadFailed }?.let { send(it.text, threadRootId = it.threadRootId, broadcast = it.broadcast) }
         refreshMembership()
         refreshUnreadSpaces()
+        refreshVoiceActivity()
         val current = mutable.value
         if (!current.messagesLoading) current.selectedChannel?.id?.let { markConversationRead(it, durableReplayCursor) }
     }

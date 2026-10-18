@@ -379,6 +379,22 @@ impl Api {
         self.request(Method::GET, "api/spaces/unread", Some(token), None, None)
     }
 
+    pub fn voice_activity(&self, token: &str) -> Result<Vec<String>, ApiError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Activity {
+            space_ids: Vec<String>,
+        }
+        let activity: Activity = self.request(
+            Method::GET,
+            "api/spaces/voice-activity",
+            Some(token),
+            None,
+            None,
+        )?;
+        Ok(activity.space_ids)
+    }
+
     pub fn unread_threads(
         &self,
         token: &str,

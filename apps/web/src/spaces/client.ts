@@ -131,7 +131,7 @@ export interface UnreadSpace {
 }
 
 export function listUnreadSpaces() {
-  return request<{ spaces: UnreadSpace[] }>("/api/spaces/unread");
+  return request<{ spaces: UnreadSpace[]; feedbackWaiting?: number }>("/api/spaces/unread");
 }
 
 export function readChannel(spaceId: string, channelId: string, seq: string) {
@@ -350,6 +350,10 @@ function pathId(id: string) {
 
 export function listSpaces() {
   return request<{ spaces: Space[]; invitations?: Space[]; limits: SpaceLimits }>("/api/spaces");
+}
+
+export function listSpaceVoiceActivity() {
+  return request<{ spaceIds: string[] }>("/api/spaces/voice-activity", { signal: AbortSignal.timeout(10_000) });
 }
 
 export function getSpace(spaceId: string) {

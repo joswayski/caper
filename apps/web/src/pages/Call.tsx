@@ -459,7 +459,7 @@ interface CallProps {
   /** Extra items for the phone header menu, where wide-header actions move. */
   headerMenuItems?: ReactNode;
   membersPanel?: (onClose: () => void) => ReactNode;
-  spaceRail?: ReactNode;
+  spaceRail?: ReactNode | ((connectedSpaceId: string | undefined) => ReactNode);
   /** Channels in the current space, whose voice shows on their rows. */
   voiceChannels?: Array<{ id: string; name: string; private?: boolean }>;
   /**
@@ -1574,9 +1574,9 @@ export default function Call({
     const self = people.filter((person) => person.id === state.selfId);
     return { people: [...self, ...people.filter((person) => person.id !== state.selfId)], ...rest };
   };
-  const callStatusText = (count: number) =>
+  const callStatusText = () =>
     connected
-      ? `You’re in · ${count}`
+      ? null
       : state.phase === "joining"
         ? "Connecting…"
         : state.phase === "reconnecting"
@@ -1584,10 +1584,10 @@ export default function Call({
           : "Leaving…";
   /** Your call's status and running time, on its row or its card's heading. */
   const callStatus = () => {
-    const { people, startedAt } = callPeople();
+    const { startedAt } = callPeople();
     return (
       <span className="live-call-status">
-        <span className="live-status">{callStatusText(people.length)}</span>
+        {!connected && <span className="live-status">{callStatusText()}</span>}
         {startedAt != null && <VoiceSessionTimer startedAt={startedAt} />}
       </span>
     );
@@ -1671,7 +1671,7 @@ export default function Call({
               <span>{name}</span>
               {elsewhere && voiceSpaceName && <small>{voiceSpaceName}</small>}
             </button>
-            <span className="live-status">{callStatusText(people.length)}</span>
+            {!connected && <span className="live-status">{callStatusText()}</span>}
             {startedAt != null && <VoiceSessionTimer startedAt={startedAt} />}
           </div>
         )}
@@ -1721,6 +1721,9 @@ export default function Call({
             )}
           </ul>
         )}
+        <span className="live-people-count">
+          {people.length} {people.length === 1 ? "person" : "people"}
+        </span>
         <div className="live-controls">
           {muteToggle}
           {deafenToggle}
@@ -1955,7 +1958,7 @@ export default function Call({
           members.swipe.onClickCapture(event);
         }}
       >
-        {spaceRail}
+        {typeof spaceRail === "function" ? spaceRail(connected ? voiceChannel?.spaceId : undefined) : spaceRail}
         <ChannelSidebar>
           <div className="sidebar-channels">{navigation}</div>
           <div className="voice-panel">

@@ -49,6 +49,7 @@ class CaperApi(
     suspend fun logout(token: String) { request<Unit>("/api/auth/logout", "POST", token = token) }
     suspend fun spaces(token: String): SpaceList = get("/api/spaces", token)
     suspend fun unreadSpaces(token: String): UnreadSpaces = get("/api/spaces/unread", token)
+    suspend fun spaceVoiceActivity(token: String): SpaceVoiceActivity = get("/api/spaces/voice-activity", token)
     suspend fun unreadThreads(token: String, channel: String): UnreadThreads =
         get("/api/chat/channels/${channel.pathId()}/threads/unread", token)
     suspend fun markThreadRead(token: String, channel: String, root: String, seq: String) {

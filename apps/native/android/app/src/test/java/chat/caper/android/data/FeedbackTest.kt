@@ -1,6 +1,7 @@
 package chat.caper.android.data
 
 import chat.caper.android.model.Account
+import chat.caper.android.model.AppUiState
 import chat.caper.android.model.ChatContent
 import chat.caper.android.model.ChatHistory
 import chat.caper.android.model.ChatMessage
@@ -8,6 +9,7 @@ import chat.caper.android.model.DirectConversationList
 import chat.caper.android.model.FeedbackReports
 import chat.caper.android.model.MessageMention
 import chat.caper.android.model.ThreadHistory
+import chat.caper.android.model.UnreadSpaces
 import chat.caper.android.model.VisitUi
 import java.time.Instant
 import java.time.ZoneOffset
@@ -38,6 +40,15 @@ class FeedbackTest {
     @Test fun `the account says whether it is on the feedback team`() {
         assertTrue(json.decodeFromString<Account>("""{"id":"account00001","username":"jose","displayName":"Jose","feedbackTeam":true}""").feedbackTeam)
         assertFalse(json.decodeFromString<Account>("""{"id":"account00001","username":"jose","displayName":"Jose"}""").feedbackTeam)
+    }
+
+    @Test fun `waiting count is independent of unread spaces and defaults to zero`() {
+        val response = json.decodeFromString<UnreadSpaces>("""{"spaces":[],"feedbackWaiting":137}""")
+        assertTrue(response.spaces.isEmpty())
+        assertEquals(137, response.feedbackWaiting)
+        assertEquals(0, json.decodeFromString<UnreadSpaces>("""{"spaces":[],"feedbackWaiting":0}""").feedbackWaiting)
+        assertEquals(0, json.decodeFromString<UnreadSpaces>("""{"spaces":[]}""").feedbackWaiting)
+        assertEquals(0, AppUiState().feedbackWaiting)
     }
 
     @Test fun `admin authors, visitor windows and feedback mentions decode`() {

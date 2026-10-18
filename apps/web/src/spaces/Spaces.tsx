@@ -26,6 +26,7 @@ import {
   Plus,
   Search,
   Settings,
+  Volume2,
   X,
 } from "lucide-react";
 import {
@@ -108,6 +109,7 @@ import {
   listPeople,
   readDirectConversation,
   listUnreadSpaces,
+  listSpaceVoiceActivity,
   readChannel,
   directStatus,
   directUnread,
@@ -1783,6 +1785,7 @@ export default function Spaces({
   const [spaces, setSpaces] = useState<Space[]>(initialSpaceList?.spaces ?? []);
   const [invitations, setInvitations] = useState<Space[]>(initialSpaceList?.invitations ?? []);
   const [unreadSpaces, setUnreadSpaces] = useState<UnreadSpace[]>([]);
+  const [feedbackWaiting, setFeedbackWaiting] = useState(0);
   const unreadRevision = useRef(0);
   const channelReads = useRef(new Map<string, string>());
   const unreadAccount = useRef(account?.id);
@@ -1793,7 +1796,10 @@ export default function Spaces({
     const revision = ++unreadRevision.current;
     try {
       const result = await listUnreadSpaces();
-      if (unreadAccount.current === accountId && unreadRevision.current === revision) setUnreadSpaces(result.spaces);
+      if (unreadAccount.current === accountId && unreadRevision.current === revision) {
+        setUnreadSpaces(result.spaces);
+        setFeedbackWaiting(result.feedbackWaiting ?? 0);
+      }
     } catch {
       /* Keep the last known indicators during an outage. */
     }
@@ -1802,6 +1808,7 @@ export default function Spaces({
     unreadRevision.current++;
     channelReads.current.clear();
     setUnreadSpaces([]);
+    setFeedbackWaiting(0);
     const refresh = () => {
       if (!document.hidden) void refreshUnread();
     };
@@ -2514,6 +2521,36 @@ export default function Spaces({
     };
   }, [selected, loading, invitation?.id]);
 
+  const [voiceActivity, setVoiceActivity] = useState<string[]>([]);
+  useEffect(() => {
+    setVoiceActivity([]);
+    if (!account) return;
+    let current = true;
+    let refreshing = false;
+    const refresh = async () => {
+      if (document.hidden || refreshing) return;
+      refreshing = true;
+      try {
+        const result = await listSpaceVoiceActivity();
+        if (current) setVoiceActivity(unlessSame(result.spaceIds));
+      } catch {
+        if (current) setVoiceActivity([]);
+      } finally {
+        refreshing = false;
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 15_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      current = false;
+      clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [account?.id]);
+
   // Membership can change in another account/tab while this page is open.
   // Reconcile the rail on focus and every 15s; transport authorization still
   // enforces access independently of this UI refresh.
@@ -2731,10 +2768,14 @@ export default function Spaces({
     );
     void archiveFeedback(report.channel.id, report.threadRootId, archived)
       .catch((reason) => setFeedbackError(errorMessage(reason)))
-      .finally(() => void refreshFeedback());
+      .finally(() => {
+        void refreshFeedback();
+        void refreshUnread();
+      });
   };
   const feedbackNavigation = feedbackTeam && (
     <FeedbackInbox
+      waiting={feedbackWaiting}
       reports={(feedback?.reports ?? []).map((report) => ({
         ...report,
         reporter: withLatestProfile(report.reporter, account, profiles),
@@ -3129,18 +3170,28 @@ export default function Spaces({
     </>
   );
 
-  const rail = (
+  const rail = (connectedSpaceId: string | undefined) => (
     <nav className="space-rail" aria-label="Spaces">
       {spaces.map((space) => {
         const muted = isMuted(overrideFor(notifications, { spaceId: space.id })?.mutedUntil);
         const unread = unreadSpaces.some((item) => item.id === space.id);
-        const label = [space.name, unread && "unread activity", muted && "muted"].filter(Boolean).join(", ");
+        const connected = connectedSpaceId === space.id;
+        const voiceActive = connected || voiceActivity.includes(space.id);
+        const label = [
+          space.name,
+          unread && "unread activity",
+          muted && "muted",
+          voiceActive && (connected ? "connected to voice" : "voice active"),
+        ]
+          .filter(Boolean)
+          .join(", ");
         return (
           <div
             className="space-rail-item"
             key={space.id}
             data-active={space.id === detail.space.id}
             data-muted={muted ? "" : undefined}
+            data-voice={voiceActive ? "" : undefined}
           >
             <button
               type="button"
@@ -3155,6 +3206,9 @@ export default function Spaces({
               <SpaceIcon space={space} />
               {unread && <i className="space-unread" aria-hidden="true" />}
               {muted && <BellOff className="space-rail-muted" aria-hidden="true" />}
+              {voiceActive && (
+                <Volume2 className="space-rail-voice" data-connected={connected ? "" : undefined} aria-hidden="true" />
+              )}
             </button>
           </div>
         );

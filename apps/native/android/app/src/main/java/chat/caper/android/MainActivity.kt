@@ -620,7 +620,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                             // Browse, account bar included, stays still beneath the conversation, which slides off to reveal it.
                             if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize().then(if (navigationOpen) Modifier else Modifier.clearAndSetSemantics {})) {
                                 Row(Modifier.weight(1f).browseSwipeRegion(drawer, enabled = state.selectedChannel != null || state.selectedDirectId != null || state.feedbackShown)) {
-                                    SpaceRail(state, viewModel, show, Modifier.width(60.dp))
+                                    SpaceRail(state, voice, viewModel, show, Modifier.width(60.dp))
                                     ChannelSidebar(state, voice, viewModel, show,
                                         Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp)),
                                         channelsExpanded, { channelsExpanded = it }, browsing, { browsing = it }, pendingVoiceJoin, voicePermissionError,
@@ -660,7 +660,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         }
                     }
                 } else Row {
-                    SpaceRail(state, viewModel, show, Modifier.width(60.dp))
+                    SpaceRail(state, voice, viewModel, show, Modifier.width(60.dp))
                     ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, browsing, { browsing = it }, pendingVoiceJoin, voicePermissionError, { voicePermissionError = null },
                         joinVoice, leaveVoice)
                     if (medium) Box(Modifier.weight(1f).fillMaxHeight()) {
@@ -678,13 +678,15 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     }
 }
 
-@Composable private fun SpaceRail(state: AppUiState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
+@Composable private fun SpaceRail(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
     val now = rememberMuteClock(state.notificationSettings)
     Column(modifier.fillMaxHeight().background(Blackout).verticalScroll(rememberScrollState()).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         state.spaces.forEach { space ->
             val selected = state.selectedSpace?.space?.id == space.id
             val muted = state.notificationSettings?.spaceMuted(space.id, now) == true
             val unread = state.unreadSpaces.any { it.id == space.id }
+            val connected = state.account != null && voice.phase == VoiceState.Phase.CONNECTED && voice.spaceId == space.id
+            val voiceActive = state.account != null && (connected || space.id in state.voiceActivitySpaceIds)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.width(3.dp).height(if (selected) 24.dp else 0.dp).background(if (selected) TerracottaBright else Color.Transparent))
                 Spacer(Modifier.width(3.dp))
@@ -692,12 +694,15 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     Surface(
                         // Clipped first, so the press ripple keeps the tile's corners.
                         Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clip(MaterialTheme.shapes.medium).clickable { viewModel.selectSpace(space.id) }
-                            .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread activity" else null, if (muted) "Muted" else null).joinToString(", ") },
+                            .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread activity" else null, if (muted) "Muted" else null, if (connected) "Connected to voice" else if (voiceActive) "Voice active" else null).joinToString(", ") },
                         color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
                         border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
                     ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, if (selected) Color.White else TextMuted) }
                     if (muted) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
-                    if (unread) Box(Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp).size(10.dp).background(Blackout, CircleShape).padding(2.dp).background(Text, CircleShape).clearAndSetSemantics {})
+                    if (voiceActive) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp).size(18.dp).background(if (connected) VoiceSessionGreen else Blackout, CircleShape).border(2.dp, Blackout, CircleShape).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
+                        Icon(painterResource(R.drawable.lucide_volume_2), null, Modifier.size(11.dp), tint = Text)
+                    }
+                    if (unread) Box(Modifier.align(Alignment.TopStart).offset(x = (-2).dp, y = (-2).dp).size(10.dp).background(Blackout, CircleShape).padding(2.dp).background(Text, CircleShape).clearAndSetSemantics {})
                 }
             }
         }
@@ -976,6 +981,13 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         Icon(painterResource(R.drawable.lucide_inbox), null, Modifier.size(17.dp), tint = if (feedbackSelected) TerracottaBright else TextMuted)
                         Spacer(Modifier.width(9.dp))
                         Text("Feedback", Modifier.weight(1f), color = if (feedbackSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        if (state.feedbackWaiting > 0) {
+                            Text(state.feedbackWaiting.toString(),
+                                Modifier.padding(start = 6.dp).background(Terracotta, CircleShape)
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    .clearAndSetSemantics { contentDescription = "${state.feedbackWaiting} feedback conversations waiting for a reply" },
+                                color = Text, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
                 val invitePeople = owner && detail?.space?.demo == false

@@ -182,3 +182,29 @@ test("draft files can be previewed before uploading finishes, with removal separ
   );
   expect(staged).not.toContain('role="status"');
 });
+
+test("a draft video keeps its poster and spoiler state, and cannot be removed while sending", () => {
+  const draft: DraftAttachment = {
+    key: "clip",
+    name: "clip.mp4",
+    sourceSize: 80000,
+    progress: 1,
+    localUrl: "blob:clip",
+    localKind: "video",
+    attachment: { ...files[1], previewUrl: "https://cdn.test/preview/clip" },
+  };
+  for (const removable of [true, false]) {
+    for (const spoiler of [true, false]) {
+      const markup = renderToStaticMarkup(
+        <DraftAttachments drafts={[{ ...draft, spoiler }]} onRemove={removable ? () => {} : undefined} />,
+      );
+      expect(markup).toContain('src="https://cdn.test/preview/clip"');
+      expect(markup.includes('aria-label="Video"')).toBe(!spoiler);
+      expect(markup.includes('data-spoiler="true"')).toBe(spoiler);
+      expect(markup.includes(">Spoiler</span>")).toBe(spoiler);
+      expect(markup).toContain('aria-label="Preview clip.mp4"');
+      expect(markup.includes('aria-label="Remove clip.mp4"')).toBe(removable);
+      expect(markup).not.toContain("Remove attachment");
+    }
+  }
+});

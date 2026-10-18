@@ -1929,7 +1929,7 @@ without a Swift toolchain and awaits macOS CI (`FileDropTests` covers the shared
 text). Real Finder/Files/Photos drags, iPad and Android split-screen drops,
 Windows/X11 drags and physical devices remain to be checked.
 
-Composer thumbnails and filenames are clickable before sending, including while
+Composer attachment tiles are clickable before sending, including while
 preparing/uploading or after an upload fails. Web images and videos use the
 in-app viewer with local object URLs; audio, PDFs and plain text open in the
 browser, and unsupported/active document formats download instead. Apple uses
@@ -1937,6 +1937,26 @@ Quick Look for the staged local file. Android grants the selected content URI
 to a system preview app; Rust desktop opens the selected file in the system
 browser. Native format support depends on the installed system handlers.
 Remove remains a separate control and never opens a preview.
+
+Draft tiles show video posters with a small translucent play indicator centred
+in the preview area, clear of any progress or retry footer. The whole tile still
+opens the preview; the indicator adds no separate hit target. Web and Apple
+decode a bounded early frame locally; Android reuses its prepared poster;
+Rust desktop uses FFmpeg, including for profile-card files not yet uploaded.
+Undecodable videos retain the play
+indicator. The visible X sits near the top-right corner without shrinking the
+44-point Apple/web touch target or Android's 48dp target. Long press (or desktop
+context click) offers **Remove attachment**, affecting only the unsent draft,
+not the original library file or a sent message. Sending profile-card files
+retain their removal lock. Source byte counts and upload behavior are unchanged.
+
+Validation for these draft controls: Chromium desktop and touch-emulated narrow
+layouts with the local API fixture cover posters, long press, tap preview,
+movement cancellation, removal, retry and unsupported video. Rust desktop was
+built and rendered with its labelled attachment fixture; its removal regression
+and a real FFmpeg-backed staged-video poster test pass. Apple and Android builds
+and physical-device rendering still need verification; browser captures are not
+evidence of native iOS/Android behavior.
 
 Ready draft chips show only the final upload size on Android, iOS and the web's
 mobile/touch layout (up to 760px or a coarse pointer). Desktop web, macOS and Rust
@@ -3055,6 +3075,14 @@ and is marked **Caper team has been notified 🫡** for everyone there.
   reports). Anyone but the team posting in the thread afterwards brings it back, and
   `?archived=true` lists archived threads. `GET /api/account/me` adds
   `feedbackTeam: true` for team members.
+- **Waiting badge.** `GET /api/spaces/unread` also returns `feedbackWaiting`:
+  the total unarchived conversations waiting for a team reply, grouped by
+  channel/thread using the newest report, independent of inbox pagination.
+  Non-team accounts receive zero. Web, Android, Apple and Rust desktop show a
+  terracotta count on Feedback through their existing unread refresh loop.
+  Opening, collapsing or viewing archived feedback does not clear it; replying
+  or archiving changes it on the next refresh. Failed refreshes retain the last
+  count; zero hides it. This is a shared team backlog, not a personal unread count.
 
 **Messaging Caper.** Any team name in **New message** opens an accepted DM with
 the Caper account (`users.team_account`, username `caper`, no email, so nobody
@@ -3097,6 +3125,7 @@ API image**: an older API keeps working against the new schema.
 | Rust desktop | `cargo fmt --check`, `cargo test` (422 passed) and Clippy with libwebrtc: decoding, pills, autocomplete, open order, inbox paging, notification routing, headless egui inbox/visit flows. No real window or live server |
 | Android | No Android SDK here. Models, `data/*`, push payloads and autocomplete compiled with standalone kotlinc and their JVM tests pass; Compose UI, view model and FCM taps unbuilt |
 | Apple | No Xcode here. Models, `AppModel`, autocomplete, notifications and API client type-checked with Swift 6 on Linux (stubbed Apple-only modules) and their XCTests pass; SwiftUI views, APNs taps and macOS notification clicks unbuilt |
+| Waiting badges (October 18) | Disposable Postgres HTTP regression covers 55 conversations beyond the first page, duplicate reports, team-only counts, archive/answer/reopen and removed channels. Web unit test and Chromium 1280px/390px mocked-response checks cover counts, collapse/archive views, outage retention and zero hiding. Linux desktop fixtures visually inspected; 13 feedback-related tests and the unread-divider integration test pass. Apple/Android decoding tests added but not run: Swift/Xcode and Android SDK unavailable in this orb; no physical-device checks |
 
 ## Message editing
 
@@ -8130,7 +8159,14 @@ blocked. Confirmed restart still leaves a call; non-writable copies use the inst
 
 Desktop clients pass their source revision to the bundled updater, which reads
 current/target exact snapshots and shows the same user-facing highlights for skipped
-releases. Missing editorial metadata never blocks installing the signed update.
+releases. The updater returns them as one stacked list (newest first, repeated
+titles dropped) with the newest release's date, so the review shows a date
+next to the version (linked to its commit on GitHub), bold titles over short
+descriptions and a close button. Installing from the review marks that build's
+highlights read, so the restarted app does not open the same What's new again. After a failed update, the error's "use the installer" links straight to
+the installer; there is no separate footer link. Signed in, **Send this to the
+Caper team** posts the error, installed build and target version as `@feedback`
+in your personal notes (no navigation); the team reads and replies there. Missing editorial metadata never blocks installing the signed update.
 Older clients keep their signed commit-title changelog until updated once. Linux
 fixture rendering and modal regressions cover narrow screens, errors, history gaps,
 call warnings and installer fallback; physical Mac/Windows focus, scrolling, motion
@@ -8575,3 +8611,30 @@ Verify on an iPhone: drag from Browse past the middle toward the conversation,
 slowly and with a flick, and let go. The conversation carries on to the left edge
 and stops there, never passing it. Do the same back to Browse and for the member
 list, and check that a finger still catches a moving slide.
+
+## Space-rail voice activity (October 18, 2026)
+
+Web, Android, Apple and Rust desktop show a small speaker on a space's icon:
+white on neutral chrome when voice is occupied, white on green when this
+client is connected there. Browsing a different space does not move the green
+badge. Joining/reconnecting alone never turns it green. Unread and mute marks
+remain separate.
+
+Authenticated `GET /api/spaces/voice-activity` returns `{ "spaceIds": [...] }`.
+It includes only current member spaces with non-monitor participants in
+channels the caller has joined and can access; private grants and revocations
+use the same authorization as joining voice. Reservations and monitor-only
+rooms do not count. No participant identities or channel IDs are returned.
+Clients refresh every 15 seconds (web skips hidden tabs), clear polled activity
+on failure/logout, and derive their own green badge immediately from the local
+connected state. This is a polling hint, not an instantaneous presence feed.
+
+Validation: API HTTP authorization cases pass against disposable Postgres and
+Valkey and the in-memory room backend; SFU responses are mocked. Web checks and
+tests pass; `VOICE_TEST_RAIL=1 node scripts/test-voice-controls.mjs` exercises
+idle/joining/connected, cross-space navigation, outage cleanup and leaving with
+mocked media. Chromium 1280px/390px captures were inspected (not physical-device
+or Safari acceptance). Rust desktop has endpoint, state and rail tests; its
+connected and neutral badges were rendered and inspected in Linux/Xvfb fixtures.
+Android SDK and Apple/Xcode toolchains are unavailable in this Linux orb;
+their new API tests and native rendering still need platform validation.

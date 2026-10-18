@@ -40,6 +40,23 @@ final class TimelinePinTests: XCTestCase {
         XCTAssertTrue(follow.needsReveal(to: pin(contentHeight: 944, atBottom: false, reacted: true)))
     }
 
+    func testRemovingAttachmentRowsKeepsLatestAtComposerWithoutMovingHistoryReader() {
+        for readingHistory in [false, true] {
+            let follow = TimelinePinBox()
+            var offset: CGFloat = readingHistory ? 200 : 600
+            XCTAssertFalse(follow.needsReveal(to: pin(offset: offset, atBottom: !readingHistory)))
+            // Removing one wrapped row, then the final file, expands the
+            // viewport before SwiftUI corrects its old bottom scroll offset.
+            for height: CGFloat in [412, 524] {
+                XCTAssertEqual(follow.needsReveal(to: pin(height: height, offset: offset, atBottom: !readingHistory)), !readingHistory,
+                               "Only a reader already at the bottom should be re-pinned after removing files")
+                if !readingHistory { offset = 900 - height }
+                XCTAssertFalse(follow.needsReveal(to: pin(height: height, offset: offset, atBottom: !readingHistory)),
+                               "The correction must settle without repeated scrolling")
+            }
+        }
+    }
+
     func testHistoryReaderDoesNotFollowReactionsOrKeyboard() {
         let follow = TimelinePinBox()
         XCTAssertFalse(follow.needsReveal(to: pin(atBottom: false)))

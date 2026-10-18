@@ -109,6 +109,10 @@ pub enum Command {
         visit: Option<u64>,
         token: String,
     },
+    LoadVoiceActivity {
+        epoch: u64,
+        token: String,
+    },
     ThreadUnread {
         scope: (u64, u64, String),
         revision: u64,
@@ -620,7 +624,11 @@ pub enum Event {
         epoch: u64,
         revision: u64,
         visit: Option<u64>,
-        result: Result<Vec<crate::model::UnreadSpace>, String>,
+        result: Result<crate::model::UnreadSpaces, String>,
+    },
+    VoiceActivityLoaded {
+        epoch: u64,
+        result: Result<Vec<String>, String>,
     },
     ThreadUnread {
         scope: (u64, u64, String),
@@ -1593,9 +1601,12 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             epoch,
             revision,
             visit,
+            result: api.unread_spaces(&token).map_err(|error| error.to_string()),
+        },
+        Command::LoadVoiceActivity { epoch, token } => Event::VoiceActivityLoaded {
+            epoch,
             result: api
-                .unread_spaces(&token)
-                .map(|value| value.spaces)
+                .voice_activity(&token)
                 .map_err(|error| error.to_string()),
         },
         Command::ThreadUnread {
@@ -2494,6 +2505,74 @@ mod tests {
             refused.err().unwrap().message,
             "Caper returned another conversation."
         );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn feedback_waiting_count_survives_unread_poll_and_defaults_on_older_servers() {
+        let (api, worker, _) = serve(vec![
+            (
+                "GET /api/spaces/unread",
+                "200 OK",
+                r#"{"spaces":[],"feedbackWaiting":12}"#,
+            ),
+            ("GET /api/spaces/unread", "200 OK", r#"{"spaces":[]}"#),
+        ]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        for expected in [12, 0] {
+            super::execute(
+                &api,
+                super::Command::LoadUnread {
+                    epoch: 7,
+                    revision: 3,
+                    visit: None,
+                    token: "account".into(),
+                },
+                &sender,
+                &eframe::egui::Context::default(),
+            );
+            match receiver.recv().unwrap() {
+                super::Event::UnreadLoaded {
+                    epoch: 7,
+                    revision: 3,
+                    visit: None,
+                    result: Ok(unread),
+                } => {
+                    assert_eq!(unread.feedback_waiting, expected);
+                    assert!(unread.spaces.is_empty());
+                }
+                _ => panic!("expected unread result"),
+            }
+        }
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn voice_activity_uses_the_member_endpoint_and_preserves_account_epoch() {
+        let (api, worker, _) = serve(vec![(
+            "GET /api/spaces/voice-activity",
+            "200 OK",
+            r#"{"spaceIds":["space-one","space-two"]}"#,
+        )]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        super::execute(
+            &api,
+            super::Command::LoadVoiceActivity {
+                epoch: 7,
+                token: "account".into(),
+            },
+            &sender,
+            &eframe::egui::Context::default(),
+        );
+        match receiver.recv().unwrap() {
+            super::Event::VoiceActivityLoaded {
+                epoch: 7,
+                result: Ok(ids),
+            } => {
+                assert_eq!(ids, ["space-one", "space-two"]);
+            }
+            _ => panic!("expected voice activity result"),
+        }
         worker.join().unwrap();
     }
 

@@ -11,7 +11,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The installer for a copy that cannot update in place, e.g. the Linux .deb.
 pub const DOWNLOAD_URL: &str = if cfg!(windows) {
@@ -28,9 +28,24 @@ pub struct Available {
     pub notes: String,
     pub changelog: Vec<ChangelogEntry>,
     pub history_complete: bool,
+    /// Every release being installed, stacked newest first. `None` when the
+    /// highlights could not be read, so the plain `notes` explain why.
+    pub highlights: Option<Vec<Highlight>>,
+    /// The newest highlighted release's date (YYYY-MM-DD).
+    pub released: Option<String>,
+    /// The update's source commit, linked from its version.
+    pub revision: Option<String>,
+    /// The update's highlights sequence, marked read when it is installed.
+    pub sequence: Option<u64>,
     pub last_error: Option<String>,
     /// False when the updater cannot replace this install, e.g. the .deb.
     pub can_apply: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Highlight {
+    pub title: String,
+    pub body: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -43,6 +58,8 @@ pub struct ChangelogEntry {
 struct CheckOutput {
     update: bool,
     #[serde(default)]
+    deferred: bool,
+    #[serde(default)]
     version: String,
     #[serde(default)]
     notes: String,
@@ -50,6 +67,14 @@ struct CheckOutput {
     changelog: Vec<ChangelogEntry>,
     #[serde(default)]
     history_complete: bool,
+    #[serde(default)]
+    highlights: Option<Vec<Highlight>>,
+    #[serde(default)]
+    released: Option<String>,
+    #[serde(default)]
+    revision: Option<String>,
+    #[serde(default)]
+    sequence: Option<u64>,
     #[serde(default)]
     last_error: Option<String>,
     #[serde(default)]
@@ -63,7 +88,14 @@ pub enum Status {
     Checking,
     UpToDate,
     Available,
+    Deferred,
     Failed(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Outcome {
+    Checked(Option<Available>),
+    Deferred,
 }
 
 #[derive(Default)]
@@ -72,12 +104,14 @@ struct State {
     status: Status,
     reviewing: bool,
     show_after_check: bool,
+    last_checked: Option<Instant>,
 }
 
 impl State {
     fn finish(&mut self, result: Result<Option<Available>, String>) {
         match result {
             Ok(found) => {
+                self.last_checked = Some(Instant::now());
                 self.status = if found.is_some() {
                     Status::Available
                 } else {
@@ -129,7 +163,15 @@ impl Updates {
                         state.lock().unwrap().status = Status::Checking;
                         context.request_repaint();
                         let result = check(&install);
-                        state.lock().unwrap().finish(result);
+                        let mut state = state.lock().unwrap();
+                        match result {
+                            Ok(Outcome::Deferred) => {
+                                state.status = Status::Deferred;
+                                state.show_after_check = false;
+                            }
+                            Ok(Outcome::Checked(found)) => state.finish(Ok(found)),
+                            Err(error) => state.finish(Err(error)),
+                        }
                         context.request_repaint();
                         delay = CHECK_EVERY;
                     }
@@ -156,6 +198,7 @@ impl Updates {
                 status: Status::Available,
                 reviewing: true,
                 show_after_check: false,
+                last_checked: Some(Instant::now()),
             })),
             requests: None,
             error: None,
@@ -165,6 +208,9 @@ impl Updates {
     /// Static check feedback for Settings fixtures; never runs the updater.
     pub fn preview_status(status: Status) -> Self {
         let updates = Self::with_install(&egui::Context::default(), None);
+        if matches!(status, Status::UpToDate | Status::Available) {
+            updates.state.lock().unwrap().last_checked = Some(Instant::now());
+        }
         updates.state.lock().unwrap().status = status;
         updates
     }
@@ -193,6 +239,22 @@ impl Updates {
 
     pub fn status(&self) -> Status {
         self.state.lock().unwrap().status.clone()
+    }
+
+    pub fn last_checked(&self) -> String {
+        let Some(checked) = self.state.lock().unwrap().last_checked else {
+            return "Last checked: Never".into();
+        };
+        let seconds = checked.elapsed().as_secs();
+        let age = match seconds {
+            0..10 => "a few seconds ago".into(),
+            10..60 => format!("{seconds} seconds ago"),
+            60..120 => "1 minute ago".into(),
+            120..3600 => format!("{} minutes ago", seconds / 60),
+            3600..7200 => "1 hour ago".into(),
+            _ => format!("{} hours ago", seconds / 3600),
+        };
+        format!("Last checked: {age}")
     }
 
     /// Wakes the same worker used by automatic checks, without overlapping them.
@@ -248,16 +310,22 @@ fn build_number() -> Option<u64> {
         .filter(|build| *build > 0)
 }
 
+/// A build's source on GitHub, or `None` for anything but a full commit SHA.
+pub fn commit_url(revision: &str) -> Option<String> {
+    (revision.len() == 40
+        && revision
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+    .then(|| format!("https://github.com/joswayski/caper/commit/{revision}"))
+}
+
 /// The installed app, not the latest release returned by the update server.
 pub fn installed_version() -> String {
     let version = match build_number() {
         Some(build) => format!("Caper 0.1.{build} (build {build})"),
         None => "Development build".into(),
     };
-    format!(
-        "Installed: {version} · {}",
-        &crate::whats_new::REVISION[..7]
-    )
+    format!("Installed: {version} ·")
 }
 
 fn locate() -> Option<Install> {
@@ -283,7 +351,7 @@ fn locate() -> Option<Install> {
     })
 }
 
-fn check(install: &Install) -> Result<Option<Available>, String> {
+fn check(install: &Install) -> Result<Outcome, String> {
     let mut command = Command::new(&install.updater);
     command
         .arg("check")
@@ -306,20 +374,27 @@ fn check(install: &Install) -> Result<Option<Available>, String> {
     parse(&output.stdout)
 }
 
-fn parse(stdout: &[u8]) -> Result<Option<Available>, String> {
+fn parse(stdout: &[u8]) -> Result<Outcome, String> {
     let line = stdout
         .split(|byte| *byte == b'\n')
         .next()
         .unwrap_or_default();
     let output: CheckOutput = serde_json::from_slice(line).map_err(|error| error.to_string())?;
-    Ok(output.update.then_some(Available {
+    if output.deferred {
+        return Ok(Outcome::Deferred);
+    }
+    Ok(Outcome::Checked(output.update.then_some(Available {
         version: output.version,
         notes: output.notes,
         changelog: output.changelog,
         history_complete: output.history_complete,
+        highlights: output.highlights,
+        released: output.released,
+        revision: output.revision,
+        sequence: output.sequence,
         last_error: output.last_error,
         can_apply: output.can_apply,
-    }))
+    })))
 }
 
 #[cfg(windows)]
@@ -342,6 +417,10 @@ mod tests {
             notes: "Release notes".into(),
             changelog: Vec::new(),
             history_complete: false,
+            highlights: None,
+            released: None,
+            revision: None,
+            sequence: None,
             last_error: None,
             can_apply: true,
         }
@@ -441,6 +520,54 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(matches!(updates.status(), Status::Failed(_)));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn deferred_checks_keep_known_updates_and_the_last_successful_check_time() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir(&folder).unwrap();
+        let updater = folder.join("updater");
+        std::fs::write(
+            &updater,
+            "#!/bin/sh\nprintf '%s\\n' '{\"update\":false,\"deferred\":true}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&updater, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut updates = Updates::with_install(
+            &egui::Context::default(),
+            Some(Install {
+                build: 18,
+                updater,
+                folder: folder.clone(),
+            }),
+        );
+        assert_eq!(updates.last_checked(), "Last checked: Never");
+        {
+            let mut state = updates.state.lock().unwrap();
+            state.finish(Ok(Some(release("0.1.19"))));
+            state.last_checked = Some(Instant::now() - Duration::from_secs(125));
+        }
+        updates.check_now();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while updates.status() == Status::Checking {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(updates.status(), Status::Deferred);
+        assert_eq!(updates.known_available(), Some(release("0.1.19")));
+        assert!(
+            updates.available().is_none(),
+            "throttling must not open a review"
+        );
+        assert_eq!(updates.last_checked(), "Last checked: 2 minutes ago");
+        updates.state.lock().unwrap().finish(Err("Offline".into()));
+        assert_eq!(updates.last_checked(), "Last checked: 2 minutes ago");
+        updates.state.lock().unwrap().finish(Ok(None));
+        assert_eq!(updates.last_checked(), "Last checked: a few seconds ago");
+        drop(updates);
+        std::fs::remove_dir_all(folder).unwrap();
     }
 
     #[test]
@@ -558,9 +685,10 @@ mod tests {
             .unwrap()
             .nodes
             .iter()
-            .find(|(_, node)| node.label() == Some("Checking…"))
+            .find(|(_, node)| node.label() == Some("Check for updates"))
             .unwrap();
         assert!(button.1.is_disabled(), "a second check must not overlap");
+        let checking_bounds = button.1.bounds().unwrap();
         for (result, expected) in [
             (Ok(None), "No newer published release is available."),
             (
@@ -595,6 +723,10 @@ mod tests {
                 "success and failure allow another check"
             );
             let bounds = button.1.bounds().unwrap();
+            assert_eq!(
+                bounds, checking_bounds,
+                "a fast check must not move the action"
+            );
             let pos = egui::pos2(
                 ((bounds.x0 + bounds.x1) / 2.0) as f32,
                 ((bounds.y0 + bounds.y1) / 2.0) as f32,
@@ -633,42 +765,79 @@ mod tests {
 
     #[test]
     fn parses_the_updater_check_line() {
-        assert_eq!(parse(b"{\"update\":false}\n").unwrap(), None);
+        assert_eq!(
+            parse(b"{\"update\":false}\n").unwrap(),
+            Outcome::Checked(None)
+        );
+        assert_eq!(
+            parse(br#"{"update":false,"deferred":true}"#).unwrap(),
+            Outcome::Deferred
+        );
         assert_eq!(
             parse(
                 b"{\"update\":true,\"build\":7,\"version\":\"0.1.7\",\"notes\":\"Screen sharing\",\"can_apply\":true}\n"
             )
             .unwrap(),
-            Some(Available {
+            Outcome::Checked(Some(Available {
                 version: "0.1.7".into(),
                 notes: "Screen sharing".into(),
                 changelog: Vec::new(),
                 history_complete: false,
+                highlights: None,
+                released: None,
+                revision: None,
+                sequence: None,
                 last_error: None,
                 can_apply: true,
-            })
+            }))
         );
         // Without --install permission details the app offers a direct download.
         assert!(
-            !parse(b"{\"update\":true,\"version\":\"0.1.7\"}")
-                .unwrap()
+            !parsed_update(b"{\"update\":true,\"version\":\"0.1.7\"}")
                 .unwrap()
                 .can_apply
         );
         assert!(parse(b"not json").is_err());
-        let failed = parse(br#"{"update":true,"version":"0.1.7","last_error":"Access denied"}"#)
-            .unwrap()
-            .unwrap();
+        let failed =
+            parsed_update(br#"{"update":true,"version":"0.1.7","last_error":"Access denied"}"#)
+                .unwrap();
         assert_eq!(failed.last_error.as_deref(), Some("Access denied"));
+    }
+
+    fn parsed_update(bytes: &[u8]) -> Option<Available> {
+        let Outcome::Checked(found) = parse(bytes).unwrap() else {
+            panic!("expected a completed check")
+        };
+        found
     }
 
     #[test]
     fn parses_stacked_notes_and_the_explicit_history_gap() {
         let output = br#"{"update":true,"version":"0.1.42","notes":"Latest only","changelog":[{"build":42,"version":"0.1.42","notes":"Newest"},{"build":39,"version":"0.1.39","notes":"Skipped"}],"history_complete":true,"can_apply":true}"#;
-        let available = parse(output).unwrap().unwrap();
+        let available = parsed_update(output).unwrap();
         assert!(available.history_complete);
         assert_eq!(available.changelog.len(), 2);
         assert_eq!(available.changelog[1].notes, "Skipped");
         assert_eq!(available.changelog[1].version, "0.1.39");
+        assert_eq!(available.highlights, None);
+    }
+
+    #[test]
+    fn parses_structured_highlights_and_their_date() {
+        let output = br#"{"update":true,"version":"0.1.82","notes":"plain","history_complete":true,"highlights":[{"title":"Voice in the channel list","body":"Hop in with one click."}],"released":"2026-10-18","revision":"377205cd7c68e109b0d77f31a97c2cb3b2d40c39","sequence":4,"can_apply":true}"#;
+        let available = parsed_update(output).unwrap();
+        assert_eq!(
+            available.highlights,
+            Some(vec![Highlight {
+                title: "Voice in the channel list".into(),
+                body: "Hop in with one click.".into(),
+            }])
+        );
+        assert_eq!(available.released.as_deref(), Some("2026-10-18"));
+        assert_eq!(
+            available.revision.as_deref(),
+            Some("377205cd7c68e109b0d77f31a97c2cb3b2d40c39")
+        );
+        assert_eq!(available.sequence, Some(4));
     }
 }

@@ -867,8 +867,8 @@ def main() -> None:
     assert general_row is not None and abs(center(general_row)[1] - center(action)[1]) <= 4, (
         "The headphones join belongs to #general's row"
     )
-    # A live count reads "2 in voice", a call "You’re in · 2" ("Join voice in #x" is a join, not a count).
-    live = re.compile(r"\d+ in voice|You’re in")
+    # Live rooms expose a count; joined calls expose Leave (join shortcuts match neither).
+    live = re.compile(r"\d+ in voice|Leave voice")
     assert not any(live.search(node.get("text", "") + node.get("content-desc", "")) for node in nodes(voice_ready)), (
         "No room is live: no voice cards or counts"
     )
@@ -876,7 +876,6 @@ def main() -> None:
     tap(description="Mute microphone")
     muted = wait_for(description="Unmute microphone")
     assert find(muted, description="Leave voice") is None, "Pre-join mute must not start voice"
-    assert find(muted, contains="You’re in") is None, "Pre-join mute must not start voice"
     tap(description="Deafen audio")
     wait_for(description="Undeafen audio")
     tap(description="Undeafen audio")
@@ -899,9 +898,7 @@ def main() -> None:
     failed = capture("caper-android-voice-fixture-error", "TEST FIXTURE: no real media engine or SFU is connected.")
     assert find(failed, description=join) is not None and find(failed, description="Leave voice") is None
     assert find(failed, contains="Microphone permission is required") is None
-    assert find(failed, contains="You’re in") is None and find(failed, description="Cancel joining voice") is None, (
-        "A failed join leaves no call card"
-    )
+    assert find(failed, description="Cancel joining voice") is None, "A failed join leaves no call card"
     # Browse keeps voice errors in the sidebar panel above the account bar, with a dismiss.
     assert find(failed, description="Dismiss voice error") is not None, "Browse can dismiss the voice error"
     # Phones also show the error in the conversation, above the composer, with its own dismiss.
