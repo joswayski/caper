@@ -186,60 +186,72 @@ Run both Apple parity scripts above and inspect the pending-send captures and
 iPhone send transition before release. No API/configuration/migration change is
 needed; only updated Apple binaries receive this fix.
 
-Voice lives in the sidebar's Live now (design H; October 17, 2026, on web,
-Android, iOS/macOS and Rust desktop). Channels stay text and voice together:
+Voice lives in the sidebar's channel list (design H, revised October 17, 2026, on
+web, Android, iOS/macOS and Rust desktop). Channels stay text and voice together:
 opening a channel never joins or switches voice, and joining never changes the
-conversation you are reading. Live now sits above a space's Channels whenever
-you are in voice (in any space) or one of its joined channels has people in
-voice.
+conversation you are reading. A live channel's own row grows into a card, in its
+place in the list, so no channel appears twice and nothing says "Live now".
+Pressing a card anywhere except its controls and `⋯` menu opens that channel's
+chat, like its row.
 
-- Your call card comes first: the call's channel (it opens that chat and names
-  the space when the call is elsewhere), "You're in · N", Connecting… or
-  Reconnecting… in amber, and the shared session timer. Faces follow, you first
-  and then in join order (speaking never reorders them), with a green speaking
-  ring and mute/deafen badges, in at most two rows: up to ten faces, or nine and
-  a "+N" tile. Then "Name is speaking", and Mute, Deafen and Leave (Cancel while
-  joining). Faces and "+N" open the full list ("In #channel · N people") with
-  per-person volume and Mute for me, beside the sidebar on wide layouts and as a
-  bottom sheet on phones. Escape, an outside press and Close dismiss it; on web,
-  focus moves into it.
-- Other live rooms follow, busiest first and then by name: up to three faces, a
-  one-line summary of names, and Join (eggshell) or Switch (neutral) when you
-  are in a call elsewhere. Two show; the rest fold into "N more live". A channel
-  opened from the feedback inbox has no row, so while it is live it appears here
-  too. Starting voice in an empty visited channel is no longer offered.
+- Your call's card is green: the channel's row line (name, unread, muted, `⋯`
+  and the selected tint) ends with "You're in · N" (Connecting… or Reconnecting…
+  in amber) and the shared session timer instead of a join. Faces follow, you
+  first and then in join order (speaking never reorders them), with a green
+  speaking ring and mute/deafen badges, in at most two rows: up to ten faces, or
+  nine and a "+N" tile. Then Mute, Deafen and Leave (Cancel while joining).
+  There is no "is speaking" line: the ring shows who talks, so the card never
+  changes size with speech. Faces and "+N" are not separate tap targets. A
+  right-click (pointer), long press (touch) or the accessibility action on them
+  opens the full list ("In #channel · N people") with per-person volume and Mute
+  for me, beside the sidebar on wide layouts and as a bottom sheet on phones; a
+  face opens with that person's controls expanded. On web the context-menu key
+  on the card's row opens it too. Escape, an outside press and Close dismiss it;
+  on web, focus moves into it.
+- Another live room keeps its row (waveform and count) and gains a body beneath
+  it: up to three faces, a one-line summary of names, the shared session timer,
+  and Join (eggshell) or Switch (neutral) when you are in a call elsewhere.
+  Rooms stay in list order; nothing folds away.
+- Voice without a row in the listed space sits above the Channels heading, with
+  no heading of its own: your call when it is in another space (its card names
+  the space and opens that chat there) or in a channel opened from the feedback
+  inbox, and such a visited channel's live room. Starting voice in an empty
+  visited channel is no longer offered.
+- Collapsing Channels hides quiet rows only; live cards stay listed.
 
-Channel rows are one line, with no roster, count expander or row timer; a live
-row ends with a green waveform and count ("N in voice"). Every row except your
-call's keeps a one-click headphones join ("Join voice in #x", or "Switch voice
-to #x"). Fine pointers reveal it on hover or keyboard focus in space reserved
-beside the `⋯` menu. Touch (Android, iPhone, iPad, touch web) and Rust desktop at
-760px or narrower show it dimmed with a 44px target on quiet rows and hide it on
-live rows, whose cards carry Join. The conversation header carries no voice;
-"N members · M in voice" stays beneath channel names where shown. While reading
-any conversation, phones add a 56px strip under its header: your call (channel,
-two faces, who is speaking, timer and a 44px Mute; the rest opens Browse), or,
-out of a call, the open channel's live room with Join. The bottom dock and its
-pinned roster are gone; voice errors keep their place. Mic, deafen and device
-settings stay in the account bar, including before joining, and mirror the
-card's Mute and Deafen. Speaking rings appear only for your own call, since
-other rooms carry no audio. Browsing other chats, spaces or DMs does not leave
-voice. That includes a space with no joined channel, whose empty state replaces
-only the conversation (Live now and your call card remain), and a pending
-invitation opened from the rail, which opens over the room. Voice still ends
-when its own channel is left, deleted or revoked. Joined-channel menus offer Leave channel to members;
+Quiet channel rows are one line, with no roster or count expander. Every row
+except your call's keeps a one-click headphones join ("Join voice in #x", or
+"Switch voice to #x"). Fine pointers reveal it on hover or keyboard focus in
+space reserved beside the `⋯` menu. Touch (Android, iPhone, iPad, touch web) and
+Rust desktop at 760px or narrower show it dimmed with a 44px target on quiet rows
+and hide it on live rows, whose cards carry Join. The conversation header
+carries no voice; "N members · M in voice" stays beneath channel names where
+shown. While reading any conversation, phones add a 56px strip under its header:
+your call (channel, the card's faces in the card's order, up to five or four and
+"+N", Connecting…/Reconnecting… while not connected, timer and a 44px Mute; the
+rest opens Browse), or, out of a call, the open channel's live room with Join.
+The strip names no speaker. The bottom dock and its pinned roster are gone;
+voice errors keep their place. Mic, deafen and device settings stay in the
+account bar, including before joining, and mirror the card's Mute and Deafen.
+Speaking rings appear only for your own call, since other rooms carry no audio.
+Browsing other chats, spaces or DMs does not leave voice. That includes a space
+with no joined channel, whose empty state replaces only the conversation (your
+call card remains above it), and a pending invitation opened from the rail,
+which opens over the room. Voice still ends when its own channel is left,
+deleted or revoked. Joined-channel menus offer Leave channel to members;
 owners also have the existing privacy/member settings. Leave channel requires
 confirmation and no longer appears in the chat header on web, Apple or Rust
 desktop; Android already uses its channel menu.
-Web tooltips follow their control while open, because the call card arriving or
+Web tooltips follow their control while open, because a card arriving or
 leaving shifts the rows below it.
 
 `VOICE_TEST_CHROME="$PWD/scripts/fine-pointer-chromium.sh" node
 scripts/test-voice-controls.mjs http://localhost:5174` runs the mocked web flow.
 Each `VOICE_TEST_*=1` mode adds a focus:
 
-- `REDESIGN`: Live now itself, covering cards, folding, crowded calls, list
-  placement, the phone strip's join and focus, and row join/switch.
+- `REDESIGN`: live cards in their rows (no heading, fold or duplicate row),
+  pressing a card, right-click and long press for the full list, crowded calls,
+  collapsed lists, the phone strip's faces, join and focus, and row join/switch.
 - `CHANNEL_ROWS`: row geometry, permissions and pending/error/cancel states; run
   it with stock Chromium too, for the touch rows.
 - `SIDEBAR`: DMs, empty spaces and rail invitations during a call.
@@ -1214,10 +1226,11 @@ pre-spaces image after migration; complete the forward rollout instead.
 
 ## Uploads and attachments
 
-Signed-in members attach up to 10 files to a message. Bytes never pass through
-AWS: the API reserves quota and presigns one exact upload, the client `PUT`s
-straight to the private R2 bucket, and the `apps/cdn` Worker serves downloads
-from its own domain after checking a signature the API issued.
+Signed-in members attach up to 10 files to a message. The API reserves quota
+and presigns an exact upload to private R2 staging. On completion it streams
+those bytes through temporary disk, removes media metadata without recompression,
+and publishes separate server-written objects. The `apps/cdn` Worker serves
+only published objects after checking a signature the API issued.
 
 ### Data model
 
@@ -1230,6 +1243,7 @@ preview is a fixed derived object beside the original, not another row:
 | --- | --- |
 | Original | `original/{asset id}` |
 | Preview (≤ 640 px, ≤ 512 KiB, WebP/JPEG/PNG) | `preview/{asset id}` |
+| Private upload sources (never a CDN route) | `staging/original/{asset id}`, `staging/preview/{asset id}` |
 
 `message_id`/`position` link a sent file to one message. Message content keeps
 its version 1 `type:"text"` shape and gains an optional `attachments` array
@@ -1245,11 +1259,18 @@ its R2 objects were removed.
    channel access, locks the user row, enforces quota, 30 reservations/minute
    and 20 pending uploads, inserts a pending row, and returns presigned `PUT`
    URLs (15 minutes). The signature covers `content-type`, `content-length`
-   and the download name in `content-disposition`, so R2 rejects other bytes.
+   and the download name in `content-disposition`, so R2 rejects other sizes
+   and headers (the signature does not authenticate the body).
 2. The client uploads the preview, then the original, directly to R2.
 3. `POST /api/assets/{id}/complete`: the API `HEAD`s each object, requires the
    exact reserved size, and for inline types checks magic bytes from a 64-byte
-   ranged `GET`. A mismatch soft-deletes the reservation (`422`).
+   ranged `GET`. It then streams the full source, checks its length and signature
+   again, strips metadata from original and preview, and PUTs the results to
+   distinct CDN keys. A mismatch or unsafe media soft-deletes the reservation
+   (`422`); there is no fallback to the source. Quota and returned sizes use the
+   actual cleaned bytes. A row lock serializes completion and cancellation.
+   Slow jobs continue after a `409`; clients poll completion rather than hold
+   one HTTP request through a proxy timeout.
 4. `POST /api/chat/channels/{id}/messages` accepts `attachmentIds`. Inside the
    send transaction the API locks the sender's ready, unattached uploads for
    that channel, embeds their descriptions and links them. Text may be empty
@@ -1265,7 +1286,7 @@ for tabs open longer than a URL's lifetime.
 - Per person, across every space: `ASSET_QUOTA_BYTES` (default 10 GiB) of stored
   bytes, original plus preview. No separate per-file limit; one file may use
   the whole allowance. Space owners are not charged for members' uploads.
-- Quota counts what is **stored** (after browser compression), and reservations
+- Quota counts what is **stored** (after client compression and metadata removal), and reservations
   count immediately so parallel uploads cannot overshoot.
 - Bytes stay counted until the purge loop successfully deletes the original and
   preview. Late storage writes may briefly recreate uncharged bytes until the
@@ -1382,7 +1403,8 @@ Rules shared by every client:
 - **HDR video** (iPhone/Android HLG, HDR10) is tone mapped to SDR BT.709 (Hable,
   1000-nit peak) where the platform can do it; otherwise the original uploads
   unchanged rather than a washed-out SDR copy.
-- **GIF, SVG, AVIF, audio, documents and other files** upload unchanged.
+- **GIF, AVIF, audio, documents and other files** are not re-encoded locally;
+  the server metadata policy below still applies.
 
 AVIF quality parity. `avifQuality` is libavif's quality scale as of
 libavif 1.0 (`avifenc -q`). On five 9–14 MP photos, quality 85 scored
@@ -1398,9 +1420,51 @@ decoders also store an H.264 rendition, which would defeat the storage saving,
 and browsers cannot use a bundled decoder for `<video>` (Safari plays AV1 only
 on devices with AV1 hardware).
 
-The server never transcodes: it verifies the stored bytes (exact size, and
-magic bytes for inline types) and charges quota for exactly what was stored,
-so a client that skips compression only spends its own allowance faster.
+The server never transcodes, but it independently removes embedded media
+metadata before publication, including when an older client skips stripping.
+Client compression remains optional; server metadata removal does not.
+
+### Metadata privacy on completion
+
+- JPEG, PNG, GIF, WebP, AVIF and HEIC/HEIF use ExifTool to remove EXIF/GPS,
+  XMP, comments and other writable descriptive metadata. Only image orientation
+  and colour-rendering metadata are copied back. GIF/WebP frames, loop settings
+  and delays are not re-encoded.
+- MP4/MOV, WebM, AVI and the supported audio containers (MP3, MP4/M4A, AAC,
+  Ogg, WAV, FLAC, AIFF) are remuxed by FFmpeg with stream copy. Global tags,
+  per-stream tags, capture dates, chapters, cover art and non-audio/video tracks
+  (including GPS/timecode/data/subtitle tracks) are omitted. Audio/video samples,
+  rotation, colour information and playback timing remain.
+- Detection uses bytes, not just filenames or MIME types; labelling a known
+  media file `application/octet-stream` does not bypass cleaning. Unsupported
+  declared media (including SVG, BMP and TIFF originals) is refused rather than
+  shared unchanged. Clients normally convert BMP/TIFF to a supported still format.
+- This is **container metadata removal, not complete anonymisation**: it does
+  not redact visible/audible locations, proprietary information embedded inside
+  copied codec samples, ICC profile contents, or documents/archives and their
+  embedded files. Non-media downloads retain their contents. Already-published
+  uploads are not rewritten by this change.
+- Upload URLs target only staging, so a repeated PUT after completion cannot
+  replace a cleaned file. Sources are erased after success; the bounded purge
+  sweep repeats cleanup after the 15-minute PUT lifetime, including late writes.
+  Rejected/cancelled sources follow the existing purge/reconciliation loop.
+- The Linux API image includes FFmpeg, ExifTool and `prlimit`. One job per pod
+  streams to a private temporary directory, removed on success/error/cancellation.
+  Processes have address-space/heap, CPU, output-size and wall-clock limits,
+  closed stdin, no shell/config-file interpolation and no network protocols.
+  Neither command output nor embedded metadata is logged. The production API
+  needs a disk-backed writable `/tmp` (12 GiB for a 5 GiB R2 PUT plus its result)
+  and 512 MiB memory; infrastructure provisions these before the API release.
+  Storage/process failures fail closed. Cleaning may take up to two minutes
+  per object. `/complete` responds within ten seconds with the result or a
+  retriable `409`, leaving slow work running. Clients allow a queued batch of
+  ten files to finish; a process restart safely restarts from private staging.
+
+Apple's “Location Included” picker/drag badge describes the **selected source**,
+before Caper processes it; it is not an inspection of the shared object. Verify
+privacy by inspecting the downloaded result. Reservations created by the previous
+API during a rolling update may need to be selected/uploaded again (their signed
+PUT used the old final key, not staging).
 
 Web specifics: WebCodecs via Mediabunny (loaded on demand). Google Chrome on
 Linux encodes H.264 but not AAC, so those uploads carry Opus audio in MP4;
@@ -1434,8 +1498,9 @@ Follow-ups:
 
 - Desktop cannot decode HEIC (uploads it unchanged) or AVIF (opens originals
   in the browser; the inline image is the preview).
-- Location written as a timed metadata track or a top-level XMP `uuid` box in
-  MP4 is not removed; WebP originals keep EXIF/XMP chunks.
+- Server metadata stripping regression checks use real FFmpeg/ExifTool on
+  synthetic geotagged fixtures plus a disposable Postgres and fake R2. Live R2,
+  Apple picker/share workflows and physical native-device checks remain separate.
 - HEVC/AV1 delivery once every client can play it; chunked parallel encoding
   if server processing returns.
 - JPEG XL: Chrome 155 (October 2026) decodes it by default, Safari since 17
@@ -1680,6 +1745,15 @@ again, leaving a one-hour margin. Desktop retains an owned copy rather than
 re-reading a picked path that may change. Concurrent triggers share the active
 upload; successful files in a partially failed batch are reused on Retry.
 
+For unsent composer drafts, Send retries failed uploads and continues once the
+entire selected batch is ready. Another failure keeps the text and files in the
+composer instead of sending the successful subset. Failed tiles have a **Retry
+upload** action and a highlighted warning explaining that Send retries; the
+normal uploading status/progress returns during each attempt. There is no new
+continuous retry loop. Native Send attempts are cancelled if their composer or
+destination changes while waiting; profile composers retain their complete
+selection on failure as well.
+
 Send enforces expiry even before cleanup and returns 409 `attachment_unavailable`.
 Clients treat this as a definitive refusal, silently re-upload and send with a
 new message UUID and attachment IDs. Recovery is bounded to one replacement
@@ -1697,6 +1771,16 @@ reserve quota normally; cancelled bytes remain charged until purge succeeds.
 History marks deleted attachments `unavailable` without URLs. No user-facing
 sent-message or sent-file delete exists yet; account deletion should set `deleted_at` on
 the owner's assets when that flow lands.
+
+#### Upload retry feedback validation (October 17, 2026)
+
+| Platform | Local validation boundary |
+| --- | --- |
+| Web | `npm run check` and all 657 `npm test` tests pass. `scripts/test-chat-paste.mjs` and `scripts/test-profile-composer.mjs` pass against the disposable parity fixture: held retries, repeated failure, retained text/files, complete-selection delivery exactly once after recovery, channel/thread isolation, and profile queued-file neutrality. Inspected 1280px/390px DPR-2 Chromium failed/uploading states, thread/profile composers, and a recorded two-image failure/recovery interaction. This is not live R2, Safari, touch or physical-device validation. |
+| Rust desktop | All 555 tests pass; 12 device/audio tests ignored. Formatting, Clippy and Linux binary build pass. Tests cover complete-selection retry, duplicate Send and stale destination/draft guards. Inspected the Linux `parity-attachments` fixture; no live native upload or Windows/macOS render acceptance. |
+| Android | Implementation and Compose regression updated. `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` stops during configuration because the Android SDK is absent. No Kotlin build or device rendering verified. |
+| iOS/macOS | Implementation and XCTest updated for retry success/failure, duplicate Send and stale composer protection. Swift/Xcode unavailable; no Apple compilation, tests or rendering verified. |
+| Containers | Docker daemon unavailable. Web production build validated directly; no infrastructure or API changes. |
 
 #### Cancellation validation and rollout (October 11, 2026)
 
@@ -5427,6 +5511,34 @@ a follow-up PR after physical recovery and a complete native build on the
 intended main revision; toggling the repository variable alone does not remove
 it. Roll back a failed recovery to GitHub-hosted routing, not to an unverified PC.
 
+**Live channels in the list, October 17, 2026:** after the owner tried Live now
+on an iPhone, the separate Live now section is superseded on every client by
+live channel rows that grow into cards in place (see the voice section above):
+no "Live now" heading or "N more live" fold, no "is speaking" line (it shifted
+the card), the phone strip shows the card's faces in its order, and pressing a
+card opens its chat while a right-click, long press or accessibility action on
+its faces opens per-person volume. Validation:
+
+- Web: `npm run check` passes, and `npm test` passes 657 of 658 tests (the
+  known Node 22 `noise-assets.test.ts` failure). Every `test-voice-controls.mjs`
+  mode passes at 1280px and 390px in fine-pointer Chromium, and `CHANNEL_ROWS`
+  also passes in stock (touch-style) Chromium; desktop and phone captures were
+  inspected. The long press is exercised with synthetic touch pointer events.
+  All of this uses a mocked API and WebRTC.
+- Android: main, unit-test and androidTest Kotlin compile, the 436 JVM unit
+  tests pass and lint is clean. The 14 voice UI tests passed only under a
+  temporary, uncommitted Robolectric setup. `connectedDebugAndroidTest`,
+  `smoke.py`, `assembleDebug` and devices were not run.
+- Apple: the eight `LiveNow` unit tests pass on a Linux Swift 6.1.2 toolchain
+  and every changed Swift file parses. The SwiftUI views, `ProtocolTests`, the
+  parity UI tests and screenshots need Xcode and were not run here.
+- Rust desktop: fmt, `cargo clippy -p caper-desktop --all-targets --no-deps -D
+  warnings` and 554 tests pass; the wide and narrow `parity-voice-*` fixtures,
+  including the new `parity-voice-elsewhere`, were inspected under Xvfb.
+
+No live SFU, physical-device, touch-hardware or screen-reader validation was
+done, and there is no API, protocol, configuration or migration change.
+
 **Live now, October 17, 2026:** the October 11 header voice below is
 superseded on every client by the sidebar's Live now (see the voice section
 above). Validation:
@@ -7316,11 +7428,33 @@ DM behavior is unchanged. This is message activity, not a new invitation alert,
 mention counter or notification inbox.
 
 `GET /api/spaces/unread` returns only unread spaces/channels, with decimal-string
-`lastSeq` values. Joined channels count other unblocked, active authors' main
+`lastSeq` and `readSeq` values. Joined channels count other unblocked, active authors' main
 messages and broadcast replies. Accessible unjoined channels and non-broadcast
 thread replies count direct personal mentions only; forwarded mention metadata
 does not notify. Space membership, private grants and soft removals constrain
 every result. Edits, reactions and pins alone do not create unread messages.
+
+Channel visits capture this snapshot before acknowledging history. Web,
+Android, iOS/macOS and Rust desktop place a terracotta **New messages** divider
+before the first incoming, nonblocked channel message after that saved read
+position. The divider breaks author grouping and remains for the visit even
+after badges clear; switching away and returning captures a new boundary.
+Live arrivals on an already-read visit do not introduce a divider. DMs, thread
+panels and feedback visits are unchanged. If older unloaded history may contain
+the boundary, the divider waits for that history rather than labeling the start
+of the latest page; this does not change initial scroll position. Old servers
+without `readSeq` show no divider.
+
+Divider validation (October 18, 2026): web build/typecheck/lint and 659 JS tests
+pass; labelled Chromium desktop/narrow fixtures exercise the read boundary and
+grouping break, including returning after new arrivals and revisiting after
+reading. API workspace tests, Clippy and the unread/read route regression against
+disposable loopback Postgres pass; no migration is needed. Rust desktop passes
+557 tests (12 device/audio tests ignored) and Clippy, with inspected
+desktop/narrow fixture renders. Android SDK and Apple toolchains are unavailable
+here, so their compile, native render
+and device checks remain outstanding. These fixtures are not live-account or
+cross-device acceptance.
 
 `POST /api/spaces/{space}/channels/{channel}/read` accepts `{"seq":"42"}`.
 Read positions are saved per account/channel, advance monotonically, and are
@@ -8077,8 +8211,11 @@ at most 100/500 Unicode code points. Missing metadata fails closed.
    `fallbacks: "default"`, so a classifier decline retries on Anthropic's
    recommended model. Optional Caper Actions variables `CAPER_RELEASE_NOTES_MODEL`
    and `CAPER_RELEASE_NOTES_EFFORT` (`low`-`max`) override them. One request per
-   shipped release is roughly 10-40K input tokens, about $0.10-0.50 at Opus 5.5
-   rates. The native workflow uses its own `contents:write` token.
+   shipped release sends at most 400,000 characters (about 100K tokens, under
+   $0.50 at Opus 5.5 rates); a typical release is far smaller. When a long gap
+   between releases exceeds that, server-only diffs are dropped and client
+   diffs shortened evenly (`diffTruncated`); every commit's subject, body and
+   paths are always kept. The native workflow uses its own `contents:write` token.
    No AWS/Cloudflare secret, OpenTofu initialization/plan/apply or new capacity
    is required. No shared credentials were configured during development.
 3. Choose the merged Caper SHA and wait for its immutable web/API images to exist.

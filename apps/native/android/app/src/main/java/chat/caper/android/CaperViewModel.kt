@@ -558,6 +558,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             mutable.value = mutable.value.copy(selectedChannel = channel, messagesLoading = true)
         conversationHistoryJob = viewModelScope.launch {
             try {
+                // Fetch before installing history or allowing any automatic read acknowledgement.
+                // A background badge refresh may already have replaced the cached unread snapshot.
+                val visitUnread = if (!channel.direct) runCatching {
+                    api.unreadSpaces(requireAccountToken()).spaces.flatMap { it.channels }
+                        .firstOrNull { it.id == channel.id }
+                }.getOrElse { if (it is CancellationException) throw it else null } else null
                 val history = conversationHistories[channel.id] ?: api.history(accountToken, channel.id)
                 if (request != generation || accountRequest != accountGeneration || navigation != conversationOpeningRevision) return@launch
                 require(history.channel?.id == channel.id && history.space?.id == channel.spaceId) { "Caper returned another conversation." }
@@ -567,7 +573,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val committed = ++generation
                 closeChannel(clearPending = true)
                 if (!channel.direct) lastChannelBySpace[channel.spaceId] = channel.id
-                mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = null)
+                mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = null, channelVisitUnread = visitUnread)
                 renewDraftUploads(channel.id)
                 installHistoryPins(history)
                 mutable.value = mutable.value.copy(messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore, busy = false, messagesLoading = false, restoring = false)
@@ -1218,6 +1224,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun markConversationRead(id: String, seq: String?) {
         if (seq == null) return
+        if (openingConversationId == id) return
         val current = mutable.value
         // A visit never marks anything read: the team member is not in the conversation.
         if (current.visit != null) return
@@ -1455,7 +1462,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     openGateway(channel.id, history.cursor, committed, channel.joined && direct?.incoming != true)
                     if (direct != null) refreshPeople()
                 }
-                goToMessage(target, notify = true, onLoaded = onOpened)
+                goToMessage(target, notify = true) {
+                    if (target.threadRootId == null) openThread(target.id)
+                    onOpened()
+                }
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) {
                 if (request == generation && accountRequest == accountGeneration && navigation == conversationOpeningRevision)
@@ -1837,10 +1847,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun closeThread() { ++threadRequest; mutable.value = mutable.value.copy(thread = null) }
+    fun closeThread() { uploadSend?.cancel(); ++threadRequest; mutable.value = mutable.value.copy(thread = null) }
 
     fun openThread(root: String) {
         if (mutable.value.thread?.rootId == root) return
+        uploadSend?.cancel()
         ++threadRequest
         val cached = threadPages[root]
         mutable.value = mutable.value.copy(thread = cached ?: ThreadUi(root))
@@ -1896,8 +1907,43 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun cancelReply(root: String = "channel") { mutable.value = mutable.value.copy(replyTargets = mutable.value.replyTargets - root) }
 
+    private var uploadSend: Job? = null
+
+    /** Preflight leaves the whole selection in the composer until every upload is ready. */
+    fun send(text: String, confirmed: () -> Unit = {}, threadRootId: String? = null, broadcast: Boolean = false,
+        unchanged: () -> Boolean = { true }, accepted: () -> Unit = {},
+    ): Boolean {
+        if (uploadSend?.isActive == true) return false
+        val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return false
+        val target = AttachmentDraftTarget(channel.id, threadRootId)
+        val files = mutable.value.attachmentDrafts[target].orEmpty()
+        if (mutable.value.pendingMessage == null && files.any { it.attachment == null }) {
+            val request = generation
+            val account = accountGeneration
+            val thread = threadRequest
+            val reply = mutable.value.replyTargets[threadRootId ?: "channel"]?.id
+            val keys = files.map { it.key }
+            uploadSend = viewModelScope.launch {
+                files.filter { it.attachment == null && uploadJobs[it.key]?.isActive != true }.forEach { retryDraft(it.key) }
+                keys.mapNotNull { uploadJobs[it] }.forEach { it.join() }
+                if (request != generation || account != accountGeneration) return@launch
+                if (chatAuthor == null && createChatSession(account) == null) return@launch
+                val current = mutable.value
+                if (request != generation || account != accountGeneration || current.selectedChannel?.id != channel.id ||
+                    (threadRootId != null && (thread != threadRequest || current.thread?.rootId != threadRootId)) || !unchanged() ||
+                    current.replyTargets[threadRootId ?: "channel"]?.id != reply ||
+                    current.pendingMessage != null || !current.canParticipate) return@launch
+                val ready = current.attachmentDrafts[target].orEmpty()
+                if (ready.map { it.key } != keys || ready.any { it.attachment == null || it.error != null }) return@launch
+                if (sendReady(text, confirmed, threadRootId, broadcast)) accepted()
+            }
+            return false
+        }
+        return sendReady(text, confirmed, threadRootId, broadcast)
+    }
+
     /** Returns false when nothing was sent, so the composer keeps its text and files. */
-    fun send(text: String, confirmed: () -> Unit = {}, threadRootId: String? = null, broadcast: Boolean = false): Boolean {
+    private fun sendReady(text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean): Boolean {
         if (mutable.value.pendingMessage?.let { it.error == null || it.rejected } == true) return false
         if (mutable.value.pendingMessage?.let { it.threadRootId != threadRootId } == true) return false
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return false
@@ -1921,7 +1967,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val retry = pendingSends.retrying(channel.id, author)
         val files = if (retry != null) mutable.value.pendingMessage?.attachments.orEmpty() else {
             if (drafts.any { it.attachment == null }) {
-                drafts.filter { it.error != null }.forEach { retryDraft(it.key) }
                 return false
             }
             // Pending messages show the local compressed copies until the server's message arrives.
@@ -2621,6 +2666,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         // Keep the conversation readable while it reloads, as the web does.
         mutable.value = mutable.value.copy(
             selectedChannel = channel, selectedDirectId = previous.selectedDirectId, visit = previous.visit,
+            channelVisitUnread = previous.channelVisitUnread,
             messages = previous.messages, hasMoreMessages = previous.hasMoreMessages,
             thread = previous.thread, threadOnlyRows = previous.threadOnlyRows,
             contextStart = previous.contextStart, contextEnd = previous.contextEnd,
@@ -3141,6 +3187,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         cancelConversationOpening()
         ++historyAnchorRequest
         gateway?.close(); gateway = null
+        uploadSend?.cancel()
         ++threadRequest
         threadPages.clear()
         ++threadUnreadRevision
@@ -3174,6 +3221,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         pinSnapshotCursor = null
         mutable.value = mutable.value.copy(
             selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
+            channelVisitUnread = null,
             visit = null, feedbackShown = false,
             thread = null, threadOnlyRows = emptySet(), replyTargets = emptyMap(),
             contextStart = null, contextEnd = null, hasNewerMessages = false, loadingNewer = false,

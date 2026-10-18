@@ -571,6 +571,7 @@ public enum AttachmentPolicy {
     public static func uploadErrorMessage(_ error: Error) -> String {
         if let error = error as? APIError {
             if error.code == "storage_full" { return "You’ve used all of your file storage." }
+            if error.code == "media_metadata" { return error.message }
             switch error.status {
             case 413: return "This file is too large to upload."
             case 429: return "Uploading too quickly. Try again shortly."

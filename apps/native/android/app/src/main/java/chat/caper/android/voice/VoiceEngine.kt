@@ -5,6 +5,10 @@ import android.util.Log
 import chat.caper.android.data.CaperApi
 import chat.caper.android.data.ApiException
 import chat.caper.android.model.*
+import java.util.concurrent.Executor
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.resume
@@ -56,7 +60,12 @@ class VoiceEngine(
     private val remoteAudioByMid = mutableMapOf<String, MutableSet<AudioTrack>>()
     private val remoteAudioByParticipant = mutableMapOf<String, MutableSet<AudioTrack>>()
     private val remoteParticipantForAudio = mutableMapOf<AudioTrack, String>()
-    private var peerDisposing = false // guarded by remoteLock
+    // Written under remoteLock; onTrack reads it on WebRTC's signaling thread, which never takes that lock.
+    @Volatile private var peerDisposing = false
+    /** Maps new remote tracks off WebRTC's signaling thread ([onRemoteTrack]); its one thread ends when idle. */
+    private val remoteTracks = ThreadPoolExecutor(0, 1, 1, TimeUnit.SECONDS, LinkedBlockingQueue()) { task ->
+        Thread(task, "caper-voice-tracks").apply { isDaemon = true }
+    }
     private val participantVolumes = mutableMapOf<String, Int>()
     private val locallyMutedParticipants = mutableSetOf<String>()
     private var outputVolume = audioPreferences.getInt("outputVolume", 100).coerceIn(0, 200)
@@ -355,14 +364,15 @@ class VoiceEngine(
     }
 
     /** Audio levels by participant: inbound-rtp through the subscription MID, media-source for this microphone. */
-    suspend fun audioLevels(): Map<String, Double> = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
-        resources.use {
+    suspend fun audioLevels(): Map<String, Double> {
+        // Mapped before asking: the stats arrive on WebRTC's signaling thread, which must not wait for remoteLock ([onRemoteTrack]).
+        val participantByMid = synchronized(remoteLock) {
+            subscriptions.entries.mapNotNull { (track, mid) -> participantForTrack[track]?.let { mid to it } }.toMap()
+        }
+        return kotlinx.coroutines.suspendCancellableCoroutine { continuation -> resources.use {
             val current = peer ?: error("Voice transport is unavailable.")
             current.getStats { report -> guardCallback(continuation) {
                 if (!resources.isOpen) return@guardCallback
-                val participantByMid = synchronized(remoteLock) {
-                    subscriptions.entries.mapNotNull { (track, mid) -> participantForTrack[track]?.let { mid to it } }.toMap()
-                }
                 val levels = mutableMapOf<String, Double>()
                 for (stat in report.statsMap.values) {
                     if (stat.members["kind"] != "audio") continue
@@ -376,7 +386,7 @@ class VoiceEngine(
                 }
                 if (continuation.isActive) continuation.resume(levels)
             } }
-        }
+        } }
     }
 
     suspend fun diagnostics(): VoiceDiagnostics = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
@@ -563,19 +573,27 @@ class VoiceEngine(
         override fun onRenegotiationNeeded() = Unit
         override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) = Unit
         override fun onTrack(transceiver: RtpTransceiver?) = guardCallback {
-            (transceiver?.receiver?.track() as? AudioTrack)?.let { registerRemote(transceiver.mid, it) }
+            (transceiver?.receiver?.track() as? AudioTrack)?.let { onRemoteTrack(transceiver.mid, it) }
         }
     }
 
-    private fun registerRemote(mid: String?, track: AudioTrack) {
-        synchronized(remoteLock) {
-            // closeLocal sets its closed marker before peer disposal. Callbacks
-            // in that interval must be silenced, but callbacks during/after
-            // dispose must never dereference a receiver-owned wrapper.
-            if (!acceptRemoteCallback(peerDisposing, {
-                runCatching { track.setVolume(0.0) }
-                runCatching { track.setEnabled(false) }
-            }, { resources.isOpen })) return
+    /**
+     * onTrack, on WebRTC's signaling thread. That thread must never wait for remoteLock: its
+     * holders (Main among them) call AudioTrack.setEnabled, which WebRTC runs on that thread, so
+     * both waited forever and the next stop hung until Android killed the app. The new track
+     * starts silent here and is mapped on [remoteTracks].
+     */
+    private fun onRemoteTrack(mid: String?, track: AudioTrack) {
+        // closeLocal sets its closed marker before peer disposal. Callbacks
+        // in that interval must be silenced, but callbacks during/after
+        // dispose must never dereference a receiver-owned wrapper.
+        if (!acceptRemoteCallback(peerDisposing, {
+            runCatching { track.setVolume(0.0) }
+            runCatching { track.setEnabled(false) }
+        }, { resources.isOpen })) return
+        handOffRemoteTrack(remoteTracks, remoteLock) {
+            // A stop since onTrack has let go of the call's tracks.
+            if (peerDisposing || !resources.isOpen) return@handOffRemoteTrack
             remoteAudio += track
             if (mid != null) {
                 remoteAudioByMid.getOrPut(mid) { mutableSetOf() } += track
@@ -652,6 +670,12 @@ internal fun acceptRemoteCallback(disposing: Boolean, silence: () -> Unit, isOpe
     if (disposing) return false
     silence()
     return isOpen()
+}
+
+/** Runs [register] under [lock] on [executor], so the WebRTC callback thread handing it off never waits for [lock]. */
+internal fun handOffRemoteTrack(executor: Executor, lock: Any, register: () -> Unit) {
+    // A throw on the executor's thread would abort the app, as on WebRTC's.
+    executor.execute { guardCallback { synchronized(lock) { register() } } }
 }
 
 internal data class RemoteAudioPreference(val gain: Double, val enabled: Boolean)

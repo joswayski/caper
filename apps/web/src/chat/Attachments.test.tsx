@@ -135,10 +135,21 @@ test("draft files can be previewed before uploading finishes, with removal separ
   const visibleText = markup.replace(/<[^>]*>/g, "");
   for (const draft of drafts) expect(visibleText).not.toContain(draft.name);
   expect(visibleText).toContain("Preparing…");
-  expect(visibleText).toContain("40%");
-  expect(visibleText).toContain("Failed · Retry");
+  expect(visibleText).toContain("Uploading 40%");
+  expect(visibleText).toContain("Retry upload");
+  expect(visibleText).toContain("1 file failed to upload. Send will retry it, or you can remove it.");
   expect(markup).toContain('title="Upload failed"');
   expect(markup).toContain('src="https://cdn.test/preview/photo"');
+
+  const retrying = drafts.map((draft) => ({ ...draft, error: undefined }));
+  const uploading = renderToStaticMarkup(<DraftAttachments drafts={retrying} />);
+  expect(uploading).toContain('role="status"');
+  expect(uploading).toContain("Uploading 5 files… Your message won’t send until every file is ready.");
+  expect(uploading).not.toContain("failed to upload");
+  const staged = renderToStaticMarkup(
+    <DraftAttachments drafts={retrying.map((draft) => ({ ...draft, staged: true }))} />,
+  );
+  expect(staged).not.toContain('role="status"');
 });
 
 test("a draft video uses its poster, keeps its video identity, and cannot be removed while sending", () => {

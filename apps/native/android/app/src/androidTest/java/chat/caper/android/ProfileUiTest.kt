@@ -30,6 +30,29 @@ import org.junit.runner.RunWith
 class ProfileUiTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun attachmentFailuresRetryWithProgressAndKeepStagedProfilesNeutral() {
+        val files = mutableStateOf(listOf(chat.caper.android.model.DraftAttachmentUi(
+            "file-1", "notes.txt", "file", compressing = false, error = "Failed to upload.",
+        )))
+        val sending = mutableStateOf(false)
+        compose.setContent {
+            CaperTheme {
+                DraftAttachmentStrip(files.value, {}, retry = {
+                    files.value = files.value.map { it.copy(error = null, progress = 0.2f) }
+                    sending.value = true
+                }, uploadOnSend = true, sending = sending.value)
+            }
+        }
+        compose.onNodeWithText("1 file failed to upload. Send will retry it, or you can remove it.").assertExists()
+        compose.onNodeWithText("Retry upload").performClick()
+        compose.onNodeWithText("Uploading 1 file… Your message won’t send until every file is ready.").assertExists()
+        compose.runOnIdle { sending.value = false }
+        compose.onNodeWithText("Uploading 1 file… Your message won’t send until every file is ready.").assertDoesNotExist()
+        compose.onNodeWithText("1 file failed to upload. Send will retry it, or you can remove it.").assertDoesNotExist()
+        compose.runOnIdle { files.value = files.value.map { it.copy(error = "Failed to upload.") } }
+        compose.onNodeWithText("1 file failed to upload. Send will retry it, or you can remove it.").assertExists()
+    }
+
     @Test fun onboardingAndExistingAccountUseTheirWebActions() {
         val account = mutableStateOf(Account("new-account"))
         val busy = mutableStateOf(false)

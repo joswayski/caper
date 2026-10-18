@@ -578,7 +578,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             }.toTypedArray())
         }
     }
-    // Live now's call card: Leave, or Cancel while joining.
+    // Your call card's Leave, or Cancel while joining.
     val leaveVoice: () -> Unit = {
         if (voice.phase == VoiceState.Phase.CONNECTED) CaperEffects.play(CaperEffects.Effect.Disconnect)
         VoiceCallService.stop(context)
@@ -757,7 +757,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     val canCreateChannel = detail != null && state.limits?.let { channelCount < it.channelsPerSpace } == true
     var channelMenuOpen by remember(detail?.space?.id) { mutableStateOf(false) }
     var channelQuery by remember(detail?.space?.id) { mutableStateOf("") }
-    val activeChannel = voice.channelId.takeIf { voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED }
+    // Your call's row becomes its call card when its channel is listed here.
+    val callRowId = callRowChannelId(detail, voice)
     Column(modifier.fillMaxHeight().background(SurfaceSidebar)) {
         // Web: the space name and its menu stay put while a long channel list scrolls.
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
@@ -809,7 +810,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
-            // Your call and the space's live rooms lead the list, above Channels. Joining keeps the chat being read.
+            // Voice with no row in this list (your call elsewhere, a visited channel's room) sits above
+            // Channels; listed channels show theirs in place. Joining keeps the chat being read.
             LiveNowSection(
                 state, voice, pendingVoiceJoin, narrow = closeNavigation != null, joinVoice = joinVoice, prepareVoice = viewModel::prepareVoiceJoin,
                 // A visited channel's room is the conversation already open.
@@ -858,13 +860,17 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             }
             // People often type the name as it is shown, with its `#` (web).
             val channelSearch = channelQuery.trim().trimStart('#').trim()
-            if (channelsExpanded) detail?.channels?.filter { channel ->
-                (browsing || channel.joined) && channel.name.contains(channelSearch, ignoreCase = true)
+            val voiceOf = { channel: Channel ->
+                if (BuildConfig.ENABLE_NATIVE_VOICE && detail != null) rowVoice(channel, detail.space.demo, state.voiceRosters, callRowId) else RowVoice.QUIET
+            }
+            // Rows with voice stay listed, in list order, while collapsing or searching hides quiet rows.
+            detail?.channels?.let { channels ->
+                listedChannels(channels, { channelsExpanded && (browsing || it.joined) && it.name.contains(channelSearch, ignoreCase = true) }, voiceOf)
             }?.forEach { channel ->
                 key(channel.id) {
                     val selected = channel.id == state.selectedChannel?.id
-                    val callHere = activeChannel == channel.id
-                    val people = if (callHere) voice.participants else state.voiceRosters[voiceRootKey(detail.space.demo, channel.id)].orEmpty()
+                    val kind = voiceOf(channel)
+                    val people = if (kind == RowVoice.CALL) voice.participants else state.voiceRosters[voiceRootKey(detail.space.demo, channel.id)].orEmpty()
                     val channelVoice = channel.joined && BuildConfig.ENABLE_NATIVE_VOICE
                     var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
                     var channelMenuPage by remember(channel.id) { mutableStateOf(NotificationMenuPage.Main) }
@@ -878,7 +884,9 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     LaunchedEffect(channel.id, channel.joined, detail.space.demo, state.account?.id, available) {
                         if (channel.joined && BuildConfig.ENABLE_NATIVE_VOICE && available == null) viewModel.checkVoiceAvailability(channel)
                     }
-                    Column(Modifier.fillMaxWidth()) {
+                    val openChannel: () -> Unit = { viewModel.selectChannel(channel); closeNavigation?.invoke() }
+                    // The channel's row. In a voice card the whole card opens the chat, so the row itself doesn't.
+                    val row: @Composable () -> Unit = {
                         Row(
                             Modifier.fillMaxWidth().height(48.dp).clip(MaterialTheme.shapes.small)
                                 .background(if (selected) TerracottaWash else Color.Transparent),
@@ -886,17 +894,22 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         ) {
                             // The press starts at the row's edge; only the content is inset.
                             Row(Modifier.weight(1f).fillMaxHeight().alpha(if (channelMuted) MUTED_ALPHA else 1f)
-                                .clickable { viewModel.selectChannel(channel); closeNavigation?.invoke() }.padding(start = 9.dp)
+                                .then(if (kind == RowVoice.QUIET) Modifier.clickable(onClick = openChannel) else Modifier).padding(start = 9.dp)
                                 .semantics { if (channelMuted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
                                 Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
                                 Spacer(Modifier.width(6.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 if (state.unreadSpaces.any { it.channels.any { it.id == channel.id } }) Box(Modifier.padding(horizontal = 6.dp).size(6.dp).background(Text, CircleShape).semantics { contentDescription = "Unread activity" })
                                 if (ownMute) MutedBell(Modifier.padding(horizontal = 6.dp))
-                                // A live row ends with a waveform and its count; its Live now card has the Join.
-                                if (channelVoice && people.isNotEmpty()) LiveVoiceCount(people.size)
+                                // A live room's row ends with a waveform and its count, your call's with its status and timer.
+                                when (kind) {
+                                    RowVoice.ROOM -> LiveVoiceCount(people.size)
+                                    // The ⋯ button's own inset spaces it from the menu; the name gives way first.
+                                    RowVoice.CALL -> CallStatus(voice, callSessionStartedAt(state, voice), Modifier.padding(start = 6.dp))
+                                    RowVoice.QUIET -> Unit
+                                }
                             }
-                            // Touch keeps a quiet row's one-tap join in view, except on your own call's row.
-                            if (channelVoice && people.isEmpty() && !callHere) RowVoiceJoin(channel.name, voiceJoinAction(state, voice, pendingVoiceJoin, channel),
+                            // Touch keeps a quiet row's one-tap join in view; a live room's card has its Join.
+                            if (channelVoice && kind == RowVoice.QUIET) RowVoiceJoin(channel.name, voiceJoinAction(state, voice, pendingVoiceJoin, channel),
                                 { joinVoice(channel) }) { viewModel.prepareVoiceJoin(channel) }
                             if (owner || notifiable || (channel.joined && !detail.space.demo)) Box {
                                 IconButton({ channelMenuOpen = true; if (notifiable) viewModel.refreshNotificationSettings() }, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_ellipsis), "${channel.name} channel menu", Modifier.size(18.dp), tint = TextMuted) }
@@ -914,6 +927,19 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                     ) else { settingsItem(); leaveItem() }
                                 }
                             }
+                        }
+                    }
+                    Column(Modifier.fillMaxWidth()) {
+                        // In its place in the list: your call's row grows into your call card, a live room's gains who is there and Join.
+                        when (kind) {
+                            RowVoice.CALL -> RowCallCard(voice, state.account, narrow = closeNavigation != null, open = openChannel, leave = leaveVoice,
+                                Modifier.padding(vertical = 4.dp), row = row)
+                            RowVoice.ROOM -> RowRoomCard(
+                                LiveRoom(channel, people), voiceJoinAction(state, voice, pendingVoiceJoin, channel),
+                                state.voiceSessionStartedAt[voiceRootKey(detail.space.demo, channel.id)], open = openChannel, join = { joinVoice(channel) },
+                                prepare = { viewModel.prepareVoiceJoin(channel) }, Modifier.padding(vertical = 4.dp), row = row,
+                            )
+                            RowVoice.QUIET -> row()
                         }
                         NotificationSaveError(state.notificationErrors[channelKey(channel.id)], Modifier.padding(start = 35.dp)) { viewModel.dismissNotificationError(channelKey(channel.id)) }
                     }
@@ -1368,8 +1394,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (state.pendingMessage != null && pending == null || pending?.rejected == true || pending != null && pending.error == null) return
         if (pending != null) viewModel.send(pending.text, threadRootId = thread.rootId, broadcast = pending.broadcast)
         // "Also send to channel" applies to one reply, so it resets with the draft.
-        else if ((draft.text.isNotBlank() || files.isNotEmpty()) && viewModel.send(draft.text, threadRootId = thread.rootId, broadcast = broadcast)) {
-            draft = TextFieldValue(""); broadcast = false
+        else if (draft.text.isNotBlank() || files.isNotEmpty()) {
+            val sent = draft.text
+            val sentBroadcast = broadcast
+            val clear = { draft = TextFieldValue(""); broadcast = false }
+            if (viewModel.send(sent, threadRootId = thread.rootId, broadcast = sentBroadcast,
+                unchanged = { draft.text == sent && broadcast == sentBroadcast }, accepted = clear)) clear()
         }
     }
     Box(modifier.attachmentDrop(canAttach, target, viewModel, dropping)) {
@@ -1506,7 +1536,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             val live = state.gateway == GatewayStatus.LIVE
             var showConnection by remember(channel.id) { mutableStateOf(false) }
             LaunchedEffect(live, channel.id) { showConnection = false; if (!live) { kotlinx.coroutines.delay(1_000); showConnection = true } }
-            // The header carries no voice (Live now has it); phones' strip under it offers this channel's Join.
+            // The header carries no voice (the channel list has it); phones' strip under it offers this channel's Join.
             val channelVoice = !channel.direct && joined && BuildConfig.ENABLE_NATIVE_VOICE
             // A visited channel is never in the (demo) space you have open.
             val demo = visit == null && state.selectedSpace?.space?.demo == true
@@ -1683,7 +1713,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     if (hasContent && state.pendingMessage == null) {
                         val sent = draft.text
                         viewModel.setTyping(false)
-                        if (viewModel.send(sent)) updateDraft(TextFieldValue(""))
+                        val clear = { updateDraft(TextFieldValue("")) }
+                        if (viewModel.send(sent, unchanged = { draft.text == sent }, accepted = clear)) clear()
                     }
                 }
                 fun submit() {
@@ -1966,6 +1997,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val selfId = state.chatAuthorId ?: state.account?.id
     val blocked = state.blockedIds
     val rows = remember(messages, blocked, selfId, revealedRuns) { timelineRows(groupBlocked(messages, blocked, selfId, revealedRuns)) }
+    val newMessagesId = if (!inThread && state.visit == null && !state.feedbackShown && state.selectedDirectId == null && state.selectedChannel?.direct == false)
+        chat.caper.android.data.channelNewMessagesId(messages, state.channelVisitUnread, state.hasMoreMessages, blocked, selfId) else null
     // Recheck while stationary too: foreground return and failed acknowledgements need no scroll.
     // The bottom of a real reply must be visible (also works for replies taller than the viewport).
     LaunchedEffect(inThread, state.selectedChannel?.id, state.thread, rows) {
@@ -2068,6 +2101,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }) {
                 if (divider && row !is TimelineRow.Blocked) DateDivider(message.createdAt)
+                if (row is TimelineRow.Message && message.id == newMessagesId) Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    HorizontalDivider(Modifier.weight(1f), color = Terracotta, thickness = 1.dp)
+                    Text("New messages", color = Terracotta, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    HorizontalDivider(Modifier.weight(1f), color = Terracotta, thickness = 1.dp)
+                }
                 if (row is TimelineRow.Blocked) {
                     BlockedRunRow(row.run.messages.size, row.run.revealed) {
                         revealedRuns = if (row.run.revealed) revealedRuns - row.run.key else revealedRuns + row.run.key
@@ -2093,7 +2135,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         retryPin = viewModel::retryPin,
                         dismissPinError = viewModel::dismissPinError,
                         onAttachmentFailed = viewModel::reportAttachmentFailure,
-                        grouped = row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
+                        grouped = message.id != newMessagesId && row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
                     )
                     if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
                         message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl) }
@@ -3141,7 +3183,7 @@ internal fun counterTone(count: Int): Color = when {
  * in a rounded square ([PictureShape]) over the saved mascot ([avatarId]), which shows (in its
  * circle) while the picture loads, when it fails and when there is none; initials only without a
  * valid mascot. The speaking ring and an [outline] (voice stacks) follow whichever shape shows;
- * presence dots stay outside, at the bottom-right corner. [voiceRing] (Live now) draws the speaking
+ * presence dots stay outside, at the bottom-right corner. [voiceRing] (your call's faces) draws the speaking
  * ring as a 2dp gap in the surrounding colour and 2dp of voice green, outside the avatar.
  */
 @Composable internal fun Avatar(
@@ -3158,7 +3200,7 @@ internal fun counterTone(count: Int): Color = when {
             // Web: caper-green border with a soft outer ring while speaking.
             .size(size)
             .then(if (speaking) Modifier.drawBehind {
-                // Live now: the gap shows the surface behind, then a solid voice-green ring.
+                // Your call's faces: the gap shows the surface behind, then a solid voice-green ring.
                 val ring = if (voiceRing) VoiceSessionGreen else CaperGreen.copy(alpha = .2f)
                 val stroke = (if (voiceRing) 2.dp else 3.dp).toPx()
                 val gap = if (voiceRing) 2.dp.toPx() + stroke / 2 else 1.5.dp.toPx()
@@ -3361,7 +3403,7 @@ internal fun counterTone(count: Int): Color = when {
         Spacer(Modifier.height(12.dp))
         Text("Choose something you will recognize easily. You can always change it later!", color = TextMuted, fontSize = 12.sp)
         Spacer(Modifier.height(20.dp))
-        OutlinedTextField(name, { name = it.codePointTake(80); error = null }, label = { Text("Space name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        OutlinedTextField(name, { name = it.codePointTake(80); error = null }, label = { Text("Space name") }, placeholder = { Text("Gaming nights") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         if (!allowed) Text("You have reached your space limit.", color = TextMuted, fontSize = 12.sp)
         (error ?: state.error)?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         Spacer(Modifier.height(16.dp))
@@ -3386,7 +3428,7 @@ internal fun counterTone(count: Int): Color = when {
         LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
         // Web validates on submit and says why (spaces/client.ts spaceNameError).
         fun submit() { spaceNameError(name)?.let { error = it } ?: run { submitted = true; create(name.trim()) } }
-        OutlinedTextField(name, { name = it.codePointTake(80); error = null; if (submitted && serverError != null) clearError() }, label = { Text("Space name") }, placeholder = { Text("Studio") },
+        OutlinedTextField(name, { name = it.codePointTake(80); error = null; if (submitted && serverError != null) clearError() }, label = { Text("Space name") }, placeholder = { Text("Gaming nights") },
             modifier = Modifier.fillMaxWidth().focusRequester(field), singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { if (!busy) submit() }))
         (error ?: serverError?.takeIf { submitted })?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
@@ -3459,7 +3501,7 @@ internal fun counterTone(count: Int): Color = when {
         val canRename = !state.busy && name.isNotBlank() && name.trim() != detail.space.name
         // Web validates on submit and says why (spaces/client.ts spaceNameError); Done saves too.
         fun rename() { spaceNameError(name)?.let { nameError = it } ?: viewModel.renameSpace(name) }
-        OutlinedTextField(name, { name = it.codePointTake(80); nameError = null; if (state.error != null) viewModel.clearError() }, label = { Text("Space name") }, placeholder = { Text("Studio") },
+        OutlinedTextField(name, { name = it.codePointTake(80); nameError = null; if (state.error != null) viewModel.clearError() }, label = { Text("Space name") }, placeholder = { Text("Gaming nights") },
             modifier = Modifier.fillMaxWidth(), singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { if (canRename) rename() }))
         nameError?.let { Text(it, color = ErrorText, fontSize = 12.sp) }

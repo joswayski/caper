@@ -27,6 +27,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -341,7 +343,7 @@ internal fun durationLabel(durationMs: Long?): String? {
 @kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable internal fun DraftAttachmentStrip(
     drafts: List<DraftAttachmentUi>, remove: (String) -> Unit, retry: ((String) -> Unit)? = null,
-    enabled: Boolean = true, uploadOnSend: Boolean = false,
+    enabled: Boolean = true, uploadOnSend: Boolean = false, sending: Boolean = false,
 ) {
     if (drafts.isEmpty()) return
     val context = LocalContext.current
@@ -358,78 +360,93 @@ internal fun durationLabel(durationMs: Long?): String? {
             Toast.makeText(context, "No app is available to preview this file.", Toast.LENGTH_SHORT).show()
         }
     }
-    BoxWithConstraints(Modifier.fillMaxWidth().padding(bottom = 8.dp).semantics { contentDescription = "Files to send" }) {
-        val columns = ((maxWidth.value + 8f) / 98f).toInt().coerceIn(1, 4)
-        val tileSize = minOf(104.dp, (maxWidth - 8.dp * (columns - 1)) / columns)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), maxItemsInEachRow = columns) {
-            // Keyed, so each tile arrives once and keeps its own progress animation.
-            drafts.forEach { draft -> key(draft.key) {
-                var menuOpen by remember { mutableStateOf(false) }
-                LaunchedEffect(enabled) { if (!enabled) menuOpen = false }
-                Surface(Modifier.entrance(MOTION_BASE).size(tileSize), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {
-                    Box(Modifier.fillMaxSize()) {
-                        val url = draft.pickedUri ?: draft.attachment?.url
-                        val busy = draft.attachment == null && draft.error == null && (!uploadOnSend || draft.compressing)
-                        val status = when {
-                            draft.error != null -> "Failed"
-                            !busy -> null
-                            draft.compressing -> if (draft.progress > 0f) "Prep ${(draft.progress * 100).toInt()}%" else "Preparing…"
-                            else -> "${(draft.progress * 100).toInt()}%"
-                        }
-                        Box(Modifier.fillMaxSize().combinedClickable(
-                            enabled = url != null || enabled, role = Role.Button, onClickLabel = "Preview ${draft.name}",
-                            onClick = { url?.let(open) },
-                            onLongClickLabel = "Attachment options",
-                            onLongClick = if (enabled) ({ menuOpen = true }) else null,
-                        ).semantics { contentDescription = listOfNotNull(draft.name, draft.error ?: status).joinToString(", ") }, contentAlignment = Alignment.Center) {
-                            val thumbnail = draft.thumbnail
-                            if (thumbnail != null) AsyncImage(
-                                model = remember(thumbnail) { AttachmentImages.request(context, thumbnail, "draft:${draft.key}") },
-                                contentDescription = null, imageLoader = AttachmentImages.loader(context), modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
-                            ) else if (draft.kind != "video") Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Icon(painterResource(if (draft.kind == "audio") R.drawable.lucide_play else R.drawable.lucide_file_text), null, Modifier.size(18.dp), tint = TextMuted)
-                                Text(when (draft.kind) { "image" -> "Image"; "audio" -> "Audio"; else -> "File" }, color = TextMuted, fontSize = 11.sp)
+    Column(Modifier.fillMaxWidth()) {
+        val failed = drafts.count { it.error != null }
+        val active = drafts.count { it.attachment == null && it.error == null && (!uploadOnSend || sending || it.compressing) }
+        if (failed > 0) Text(
+            if (failed == 1) "1 file failed to upload. Send will retry it, or you can remove it."
+            else "$failed files failed to upload. Send will retry them, or you can remove them.",
+            Modifier.fillMaxWidth().padding(bottom = 8.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp,
+        )
+        if (active > 0) Text(
+            "Uploading $active file${if (active == 1) "" else "s"}… Your message won’t send until every file is ready.",
+            Modifier.fillMaxWidth().padding(bottom = 8.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp,
+        )
+        BoxWithConstraints(Modifier.fillMaxWidth().padding(bottom = 8.dp).semantics { contentDescription = "Files to send" }) {
+            val columns = ((maxWidth.value + 8f) / 98f).toInt().coerceIn(1, 4)
+            val tileSize = minOf(104.dp, (maxWidth - 8.dp * (columns - 1)) / columns)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), maxItemsInEachRow = columns) {
+                // Keyed, so each tile arrives once and keeps its own progress animation.
+                drafts.forEach { draft -> key(draft.key) {
+                    var menuOpen by remember { mutableStateOf(false) }
+                    LaunchedEffect(enabled) { if (!enabled) menuOpen = false }
+                    Surface(Modifier.entrance(MOTION_BASE).size(tileSize), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {
+                        Box(Modifier.fillMaxSize()) {
+                            val url = draft.pickedUri ?: draft.attachment?.url
+                            val busy = draft.attachment == null && draft.error == null && (!uploadOnSend || sending || draft.compressing)
+                            val status = when {
+                                draft.error != null -> "Failed"
+                                !busy -> null
+                                draft.compressing -> if (draft.progress > 0f) "Prep ${(draft.progress * 100).toInt()}%" else "Preparing…"
+                                else -> "Uploading ${(draft.progress * 100).toInt()}%"
                             }
-                        }
-                        Column(Modifier.fillMaxSize()) {
-                            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                                if (draft.kind == "video") {
-                                    Box(Modifier.size(32.dp).background(Blackout.copy(alpha = 0.32f), CircleShape), contentAlignment = Alignment.Center) {
-                                        Icon(painterResource(R.drawable.lucide_play), "Video", Modifier.size(16.dp), tint = Text.copy(alpha = 0.72f))
-                                    }
+                            Box(Modifier.fillMaxSize().combinedClickable(
+                                enabled = url != null || enabled, role = Role.Button, onClickLabel = "Preview ${draft.name}",
+                                onClick = { url?.let(open) },
+                                onLongClickLabel = "Attachment options",
+                                onLongClick = if (enabled) ({ menuOpen = true }) else null,
+                            ).semantics { contentDescription = listOfNotNull(draft.name, draft.error ?: status).joinToString(", ") }, contentAlignment = Alignment.Center) {
+                                val thumbnail = draft.thumbnail
+                                if (thumbnail != null) AsyncImage(
+                                    model = remember(thumbnail) { AttachmentImages.request(context, thumbnail, "draft:${draft.key}") },
+                                    contentDescription = null, imageLoader = AttachmentImages.loader(context), modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
+                                ) else if (draft.kind != "video") Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Icon(painterResource(if (draft.kind == "audio") R.drawable.lucide_play else R.drawable.lucide_file_text), null, Modifier.size(18.dp), tint = TextMuted)
+                                    Text(when (draft.kind) { "image" -> "Image"; "audio" -> "Audio"; else -> "File" }, color = TextMuted, fontSize = 11.sp)
                                 }
                             }
-                            if (status != null) Column(Modifier.fillMaxWidth().background(Blackout.copy(alpha = 0.9f)).padding(horizontal = 4.dp, vertical = if (draft.error != null && retry != null) 0.dp else 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                if (draft.error != null && retry != null) {
-                                    TextButton({ retry(draft.key) }, Modifier.heightIn(min = 36.dp).semantics { contentDescription = "${draft.error}. Retry uploading ${draft.name}" }, enabled = enabled, contentPadding = PaddingValues(horizontal = 4.dp)) {
-                                        Text("Failed · Retry", color = Text, fontSize = 10.sp)
+                            Column(Modifier.fillMaxSize()) {
+                                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                    if (draft.kind == "video") {
+                                        Box(Modifier.size(32.dp).background(Blackout.copy(alpha = 0.32f), CircleShape), contentAlignment = Alignment.Center) {
+                                            Icon(painterResource(R.drawable.lucide_play), "Video", Modifier.size(16.dp), tint = Text.copy(alpha = 0.72f))
+                                        }
                                     }
-                                } else Text(status, color = Text, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                // Progress glides between updates instead of jumping.
-                                val progress by animateFloatAsState(draft.progress.coerceIn(0f, 1f),
-                                    if (still) snap() else tween(MOTION_BASE, easing = LinearEasing), label = "upload")
-                                if (busy) LinearProgressIndicator(
-                                    progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
-                                    color = Terracotta, trackColor = Border,
-                                )
-                            }
-                        }
-                        Box(Modifier.align(Alignment.TopEnd)) {
-                            Box(Modifier.size(48.dp).clip(MaterialTheme.shapes.small).clickable(enabled = enabled, role = Role.Button, onClick = { if (enabled) remove(draft.key) }).semantics { contentDescription = "Remove ${draft.name}" }) {
-                                Box(Modifier.align(Alignment.TopEnd).padding(4.dp).size(24.dp).background(Blackout.copy(alpha = 0.9f), CircleShape), contentAlignment = Alignment.Center) {
-                                    Icon(painterResource(R.drawable.lucide_x), null, Modifier.size(14.dp), tint = Text)
+                                }
+                                if (status != null) Column(Modifier.fillMaxWidth().background(Blackout.copy(alpha = 0.9f)).padding(horizontal = 4.dp, vertical = if (draft.error != null && retry != null) 0.dp else 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    if (draft.error != null && retry != null) {
+                                        Button({ retry(draft.key) }, Modifier.heightIn(min = 44.dp).semantics { contentDescription = "Retry uploading ${draft.name}" }, enabled = enabled,
+                                            colors = ButtonDefaults.buttonColors(containerColor = Action, contentColor = OnAction),
+                                            shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                                            Text("Retry upload", fontSize = 10.sp)
+                                        }
+                                    } else Text(status, color = Text, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    // Progress glides between updates instead of jumping.
+                                    val progress by animateFloatAsState(draft.progress.coerceIn(0f, 1f),
+                                        if (still) snap() else tween(MOTION_BASE, easing = LinearEasing), label = "upload")
+                                    if (busy) LinearProgressIndicator(
+                                        progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
+                                        color = Terracotta, trackColor = Border,
+                                    )
                                 }
                             }
-                            DropdownMenu(menuOpen && enabled, { menuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                                DropdownMenuItem(
-                                    text = { Text("Remove attachment", fontSize = 13.sp) },
-                                    onClick = { menuOpen = false; if (enabled) remove(draft.key) }, enabled = enabled,
-                                )
+                            Box(Modifier.align(Alignment.TopEnd)) {
+                                Box(Modifier.size(48.dp).clip(MaterialTheme.shapes.small).clickable(enabled = enabled, role = Role.Button, onClick = { if (enabled) remove(draft.key) }).semantics { contentDescription = "Remove ${draft.name}" }) {
+                                    Box(Modifier.align(Alignment.TopEnd).padding(4.dp).size(24.dp).background(Blackout.copy(alpha = 0.9f), CircleShape), contentAlignment = Alignment.Center) {
+                                        Icon(painterResource(R.drawable.lucide_x), null, Modifier.size(14.dp), tint = Text)
+                                    }
+                                }
+                                DropdownMenu(menuOpen && enabled, { menuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                                    DropdownMenuItem(
+                                        text = { Text("Remove attachment", fontSize = 13.sp) },
+                                        onClick = { menuOpen = false; if (enabled) remove(draft.key) }, enabled = enabled,
+                                    )
+                                }
                             }
                         }
                     }
-                }
-            } }
+                } }
+            }
         }
     }
 }

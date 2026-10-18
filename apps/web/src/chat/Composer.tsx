@@ -1,5 +1,6 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
-import { Plus, Send } from "lucide-react";
+import { Send } from "lucide-react";
+import AttachmentPicker from "./AttachmentPicker.tsx";
 import { DraftAttachments, type DraftAttachment } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
@@ -85,7 +86,6 @@ export default function Composer({
   const [draft, setDraft] = useState(() => (draftKey ? readDraft(draftKey) : ""));
   const [validationError, setValidationError] = useState<string>();
   const composerRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const people = useMemo(() => mentionMembers?.filter((member) => member.id !== authorId), [mentionMembers, authorId]);
   const suggestions = useComposerSuggestions({
     id: "chat",
@@ -213,36 +213,17 @@ export default function Composer({
         }}
       >
         {attachments && (
-          <>
-            <button
-              type="button"
-              className="chat-attach"
-              aria-label="Attach files"
-              title={
-                !canAttach
-                  ? (attachments.disabledReason ?? "Checking file uploads…")
-                  : attachments.drafts.length >= MAX_ATTACHMENTS
-                    ? `You can attach up to ${MAX_ATTACHMENTS} files.`
-                    : "Attach files"
-              }
-              disabled={!canAttach || disabled || attachments.drafts.length >= MAX_ATTACHMENTS}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Plus size={18} aria-hidden="true" />
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              hidden
-              disabled={!canAttach || disabled}
-              onChange={(event) => {
-                if (!canAttach || disabled) return;
-                attachments.onAdd([...(event.target.files ?? [])]);
-                event.target.value = "";
-              }}
-            />
-          </>
+          <AttachmentPicker
+            title={
+              !canAttach
+                ? (attachments.disabledReason ?? "Checking file uploads…")
+                : attachments.drafts.length >= MAX_ATTACHMENTS
+                  ? `You can attach up to ${MAX_ATTACHMENTS} files.`
+                  : "Attach files"
+            }
+            disabled={!canAttach || disabled || attachments.drafts.length >= MAX_ATTACHMENTS}
+            onAdd={attachments.onAdd}
+          />
         )}
         <label className="sr-only" htmlFor="chat-message">
           Message {channelName}

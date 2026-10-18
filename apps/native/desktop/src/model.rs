@@ -250,6 +250,8 @@ pub struct Inviter {
 pub struct UnreadChannel {
     pub id: String,
     pub last_seq: String,
+    #[serde(default)]
+    pub read_seq: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

@@ -519,8 +519,8 @@ public enum AttachmentPreparer {
                 AttachmentStaging.remove(output.url)
             }
         }
-        // Location and other user metadata never upload: an export is patched
-        // in place, an unchanged original is replaced by a patched copy.
+        // Remove common tags locally: patch an export or replace an unchanged
+        // original with a patched copy. The server cleans remaining container metadata.
         if prepared.fileURL != file.url {
             AttachmentMetadata.patchQuickTimeMetadata(at: prepared.fileURL)
         } else if let stripped = AttachmentMetadata.strippedQuickTimeCopy(of: file.url, name: file.name) {

@@ -1,9 +1,11 @@
 package chat.caper.android
 
 import chat.caper.android.data.groupBlocked
+import chat.caper.android.data.channelNewMessagesId
 import chat.caper.android.model.ChatAuthor
 import chat.caper.android.model.ChatContent
 import chat.caper.android.model.ChatMessage
+import chat.caper.android.model.UnreadChannel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -16,6 +18,7 @@ class TimelineGroupingTest {
         ChatMessage(id, "channel00001", id.takeLast(1), author, ChatContent(1, "text", id), "2026-10-06T19:00:0${id.last()}Z", "client-$id")
 
     private val messages = listOf(message("m1", maya), message("m2", blocked), message("m3", blocked), message("m4", maya), message("m5", maya))
+    private fun entry(read: String = "1", last: String = "5") = UnreadChannel("channel00001", last, read)
 
     private fun above(revealed: Set<String>) = timelineRows(groupBlocked(messages, setOf(blocked.id), maya.id, revealed))
         .filterIsInstance<TimelineRow.Message>().associate { it.message.id to it.above?.id }
@@ -33,5 +36,27 @@ class TimelineGroupingTest {
         assertNull("the Hide row sits above the run's first message", rows["m2"])
         assertEquals("m2", rows["m3"])
         assertEquals("m3", rows["m4"])
+    }
+
+    @Test fun `new messages skip self and blocked authors even when revealed`() {
+        assertEquals("m4", channelNewMessagesId(messages, entry(), false, setOf(blocked.id), "self"))
+        assertNull(channelNewMessagesId(messages, entry(), false, setOf(blocked.id), maya.id))
+    }
+
+    @Test fun `read or old-server visits never gain a divider from live arrivals`() {
+        assertNull(channelNewMessagesId(messages, null, false, emptySet(), "self"))
+        assertNull(channelNewMessagesId(messages.takeLast(1), entry(last = "4"), false, emptySet(), "self"))
+    }
+
+    @Test fun `older paging discovers the boundary rather than marking the latest page start`() {
+        assertNull(channelNewMessagesId(messages.drop(3), entry(), true, emptySet(), "self"))
+        assertEquals("m2", channelNewMessagesId(messages, entry(), true, emptySet(), "self"))
+        assertEquals("m2", channelNewMessagesId(messages.drop(1), entry(), true, emptySet(), "self"))
+        assertEquals("m4", channelNewMessagesId(messages.drop(3), entry(), false, emptySet(), "self"))
+    }
+
+    @Test fun `sequence comparison supports values larger than signed long`() {
+        val large = messages.take(1).map { it.copy(seq = "18446744073709551615") }
+        assertEquals("m1", channelNewMessagesId(large, entry("18446744073709551614", "18446744073709551615"), true, emptySet(), "self"))
     }
 }

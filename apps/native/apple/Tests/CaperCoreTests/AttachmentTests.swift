@@ -1505,6 +1505,7 @@ final class AttachmentTests: XCTestCase {
         }
         XCTAssertFalse(AttachmentURLProtocol.requests.contains { $0.url.path.hasSuffix("/complete") })
         XCTAssertEqual(AttachmentPolicy.uploadErrorMessage(APIError(status: 429, message: "x")), "Uploading too quickly. Try again shortly.")
+        XCTAssertEqual(AttachmentPolicy.uploadErrorMessage(APIError(status: 422, message: "Cannot clean this media safely.", code: "media_metadata")), "Cannot clean this media safely.")
     }
 
     private func composerHandler(uniqueAssets: Bool = false) -> (URLRequest, Data?) throws -> (Int, Data) {
@@ -1549,6 +1550,71 @@ final class AttachmentTests: XCTestCase {
                 return (200, try JSONSerialization.data(withJSONObject: response))
             default: throw URLError(.badURL)
             }
+        }
+    }
+
+    @MainActor
+    func testSendRetriesFailedUploadsWithoutSendingSubsetOrLosingDraft() async throws {
+        for outcome in ["success", "failure", "changed", "thread", "removed", "channel", "account"] {
+            AttachmentURLProtocol.reset()
+            let base = composerHandler(uniqueAssets: true)
+            var puts = 0
+            AttachmentURLProtocol.handler = { request, body in
+                if request.httpMethod == "PUT" {
+                    puts += 1
+                    if puts == 1 || outcome == "failure" { return (503, Data()) }
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+                return try base(request, body)
+            }
+            let chat = ChatModel(api: client())
+            await chat.open(channelID: channelID, displayName: "Me")
+            await chat.checkUploadAvailability()
+            await chat.openThread("Root00000001")
+            chat.threadDraft = "keep this text"
+            chat.addAttachments([
+                try AttachmentStaging.stage(data: Data("one".utf8), filename: "one.txt"),
+                try AttachmentStaging.stage(data: Data("two".utf8), filename: "two.txt"),
+            ], inThread: true)
+            await waitUntil("initial uploads settle") {
+                chat.threadAttachmentDrafts.count == 2 && chat.threadAttachmentDrafts.allSatisfy { $0.error != nil || $0.attachment != nil }
+            }
+            XCTAssertTrue(chat.canSubmit(inThread: true))
+            let ids = chat.threadAttachmentDrafts.map(\.id)
+            let send = Task { await chat.send(inThread: true) }
+            if outcome == "success" {
+                await waitUntil("retry starts") { chat.threadAttachmentDrafts.allSatisfy { $0.error == nil } }
+                await chat.send(inThread: true)
+            }
+            if !["success", "failure"].contains(outcome) {
+                await waitUntil("retry starts") { chat.threadAttachmentDrafts.allSatisfy { $0.error == nil } }
+                switch outcome {
+                case "changed": chat.threadDraft = "edited text"
+                case "thread": await chat.openThread("Root00000002")
+                case "removed": chat.removeAttachmentDraft(id: ids[0])
+                case "channel": await chat.open(channelID: "Channel00002", displayName: "Me")
+                default: await chat.stop(discardingDrafts: true)
+                }
+            }
+            await send.value
+            let sends = AttachmentURLProtocol.requests.filter { $0.method == "POST" && $0.url.path.hasSuffix("/messages") }
+            XCTAssertEqual(sends.count, outcome == "success" ? 1 : 0, outcome)
+            if outcome == "success" {
+                XCTAssertEqual((json(sends[0].body)?["attachmentIds"] as? [String])?.count, 2)
+                XCTAssertTrue(chat.threadAttachmentDrafts.isEmpty)
+            } else if outcome == "failure" {
+                XCTAssertEqual(chat.threadDraft, "keep this text")
+                XCTAssertEqual(chat.threadAttachmentDrafts.map(\.id), ids)
+                XCTAssertTrue(chat.threadAttachmentDrafts.contains { $0.error != nil })
+                XCTAssertNil(chat.pendingMessage)
+                XCTAssertTrue(chat.canSubmit(inThread: true))
+                await chat.send(inThread: true)
+                XCTAssertEqual(chat.threadDraft, "keep this text")
+                XCTAssertEqual(chat.threadAttachmentDrafts.map(\.id), ids)
+                XCTAssertTrue(chat.threadAttachmentDrafts.allSatisfy { $0.error != nil })
+                XCTAssertFalse(AttachmentURLProtocol.requests.contains { $0.method == "POST" && $0.url.path.hasSuffix("/messages") })
+            }
+            await chat.stop(discardingDrafts: true)
         }
     }
 
@@ -1728,7 +1794,7 @@ final class AttachmentTests: XCTestCase {
             chat.addAttachments([file], inThread: true)
             if refusal == 409 {
                 await waitUntil("failed initial upload") { chat.threadAttachmentDrafts.first?.error != nil }
-                XCTAssertFalse(chat.canSubmit(inThread: true))
+                XCTAssertTrue(chat.canSubmit(inThread: true))
                 chat.retryAttachmentDraft(id: try XCTUnwrap(chat.threadAttachmentDrafts.first?.id))
             }
             await waitUntil("original upload") { chat.threadAttachmentDrafts.first?.attachment != nil }

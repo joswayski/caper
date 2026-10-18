@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn account_menu_check_reports_progress_success_and_retryable_failure_in_settings() {
+    fn account_menu_check_reports_progress_success_and_retryable_failure_in_place() {
         let context = egui::Context::default();
         context.enable_accesskit();
         let mut app = crate::CaperApp::new(
@@ -464,6 +464,8 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-desktop"),
         );
+        app.updates = Updates::preview(release("0.1.98"));
+        app.updates.dismiss();
         let (sender, receiver) = mpsc::channel();
         app.updates.requests = Some(sender);
         let frame = |app: &mut crate::CaperApp, events| {
@@ -543,18 +545,12 @@ mod tests {
         receiver
             .try_recv()
             .expect("the button wakes the update worker");
-        assert!(
-            matches!(app.dialog, Some(crate::Dialog::Settings)),
-            "check feedback is visible"
-        );
+        assert!(app.dialog.is_none(), "checking must not open Settings");
         let checking = frame(&mut app, vec![]);
-        let installed = match option_env!("CAPER_BUILD_NUMBER") {
-            Some(build) => format!("Installed: Caper 0.1.{build} (build {build})"),
-            None => "Installed: Development build".into(),
-        };
-        assert!(checking.shapes.iter().any(|shape| matches!(
-            &shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with(&installed)
-        )), "the installed version is visible while checking for updates");
+        assert!(
+            egui::Popup::is_any_open(&context),
+            "keep the account menu open"
+        );
         let button = checking
             .platform_output
             .accesskit_update
@@ -573,7 +569,12 @@ mod tests {
             ),
         ] {
             app.updates.state.lock().unwrap().finish(result);
+            frame(&mut app, vec![]);
             let output = frame(&mut app, vec![]);
+            assert!(
+                egui::Popup::is_any_open(&context),
+                "removing an outdated update notice must not close the menu"
+            );
             assert!(
                 output.shapes.iter().any(|shape| matches!(
                     &shape.shape, egui::Shape::Text(text) if text.galley.job.text == expected
@@ -593,7 +594,41 @@ mod tests {
                 !button.1.is_disabled(),
                 "success and failure allow another check"
             );
+            let bounds = button.1.bounds().unwrap();
+            let pos = egui::pos2(
+                ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                ((bounds.y0 + bounds.y1) / 2.0) as f32,
+            );
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            receiver.try_recv().expect("retry wakes the update worker");
+            assert!(app.dialog.is_none());
+            assert!(egui::Popup::is_any_open(&context));
         }
+        app.updates
+            .state
+            .lock()
+            .unwrap()
+            .finish(Ok(Some(release("0.1.99"))));
+        frame(&mut app, vec![]);
+        assert_eq!(app.updates.available().unwrap().version, "0.1.99");
+        assert!(
+            !egui::Popup::is_any_open(&context),
+            "only a found update leaves the menu for review"
+        );
+        assert!(app.dialog.is_none());
     }
 
     #[test]

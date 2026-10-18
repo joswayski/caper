@@ -92,6 +92,8 @@ final class ProfileMessageDraft {
         let local: LocalAttachmentFile
         var prepared: PreparedAttachment?
         var attachment: ChatAttachment?
+        var uploadError: String?
+        var progress: Double?
     }
 
     var text = ""
@@ -149,10 +151,30 @@ final class ProfileMessageDraft {
                 }
                 files[index].prepared = prepared
             }
-            progress = "Uploading \(file.name)…"
-            let attachment = try await AttachmentUploader.upload(files[index].prepared!, channelID: channelID, api: api) { _ in }
+            let remaining = files.filter { $0.attachment == nil }.count
+            progress = "Uploading \(remaining) \(remaining == 1 ? "file" : "files")… Your message won’t send until every file is ready."
+            files[index].uploadError = nil
+            files[index].progress = 0
+            let id = files[index].id
+            let attachment: ChatAttachment
+            do {
+                attachment = try await AttachmentUploader.upload(files[index].prepared!, channelID: channelID, api: api) { fraction in
+                    Task { @MainActor [weak self] in
+                        guard let self, !self.discarded,
+                              let current = self.files.firstIndex(where: { $0.id == id }), self.files[current].progress != nil else { return }
+                        self.files[current].progress = fraction
+                    }
+                }
+            } catch {
+                if !discarded, let current = files.firstIndex(where: { $0.id == id }) {
+                    files[current].progress = nil
+                    if !(error is CancellationError) { files[current].uploadError = "Failed to upload." }
+                }
+                throw error
+            }
             try checkActive()
             files[index].attachment = attachment
+            files[index].progress = nil
         }
         return files.compactMap(\.attachment)
     }

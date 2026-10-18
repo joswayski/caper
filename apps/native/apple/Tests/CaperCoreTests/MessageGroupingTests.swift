@@ -22,6 +22,34 @@ final class MessageGroupingTests: XCTestCase {
         return message
     }
 
+    func testChannelUnreadBoundaryAndGrouping() throws {
+        func row(_ seq: String, _ author: ChatAuthor) -> ChatMessage {
+            ChatMessage(id: seq, channelId: "chan00000001", seq: seq, author: author,
+                        content: ChatContent(version: 1, type: "text", text: "hi"),
+                        createdAt: "2026-10-07T10:00:00Z", clientMessageId: seq)
+        }
+        let rows = [row("10", maya), row("11", maya), row("12", alex), row("13", maya)]
+        func divider(_ messages: [ChatMessage], more: Bool = true, read: String = "10", last: String = "13") -> String? {
+            ChannelUnreadDivider.messageID(messages: messages, readSeq: read, lastSeq: last,
+                hasMore: more, viewerID: alex.id, blocked: [])
+        }
+        XCTAssertEqual(divider(rows), "11")
+        XCTAssertEqual(divider(Array(rows.dropFirst())), "11", "the exact successor proves the boundary is loaded")
+        XCTAssertNil(divider(Array(rows.dropFirst(2))), "do not invent a boundary at the loaded window edge")
+        XCTAssertEqual(divider(Array(rows.dropFirst()), more: false), "11")
+        XCTAssertNil(divider(rows, read: "13"), "a read entry never gains a live divider")
+        XCTAssertNil(divider([row("14", maya)], more: false), "live messages are outside the entry snapshot")
+        XCTAssertEqual(ChannelUnreadDivider.messageID(messages: rows, readSeq: "10", lastSeq: "13",
+            hasMore: true, viewerID: alex.id, blocked: [maya.id]), nil)
+        let layout = MessageGrouping.layout(rows.map(TimelineEntry.message), inThread: false, breakBeforeID: "11")
+        XCTAssertFalse(layout.grouped.contains("11"))
+        XCTAssertFalse(layout.continued.contains("10"))
+        let old = try JSONDecoder().decode(UnreadChannel.self, from: Data(#"{"id":"channel","lastSeq":"13"}"#.utf8))
+        XCTAssertNil(old.readSeq)
+        let current = try JSONDecoder().decode(UnreadChannel.self, from: Data(#"{"id":"channel","lastSeq":"13","readSeq":"10"}"#.utf8))
+        XCTAssertEqual(current.readSeq, "10")
+    }
+
     func testSameAuthorWithinFiveMinutesGroups() {
         let first = message("m1", maya, at: "2026-10-07T10:00:00Z")
         XCTAssertTrue(MessageGrouping.isGrouped(message("m2", maya, at: "2026-10-07T10:04:59Z"), after: first, inThread: false, calendar: utc))

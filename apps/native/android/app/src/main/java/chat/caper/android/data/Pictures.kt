@@ -118,8 +118,8 @@ fun pictureError(error: Throwable, target: PictureTarget): String = when (error)
  */
 class PictureUploader(
     private val api: CaperApi,
-    /** Waits between `/complete` attempts while storage reports the upload has not arrived (409). */
-    private val completeRetryDelaysMs: List<Long> = listOf(500, 1_000, 2_000, 4_000),
+    /** Allow ten queued files to finish metadata processing (409 while queued). */
+    private val completeRetryDelaysMs: List<Long> = List(240) { 5_000L },
 ) {
     suspend fun upload(token: String, target: PictureTarget, picture: PreparedPicture): PictureCompletion {
         val size = picture.bytes.size.toLong()

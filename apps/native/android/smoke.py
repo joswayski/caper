@@ -425,23 +425,30 @@ def main() -> None:
     menu = find(desktop, description="general channel menu")
     assert general is not None and menu is not None, "General must expose its channel menu"
     assert abs(center(general)[1] - center(menu)[1]) <= 4, "Channel name and menu must share the top row"
-    # Live now (design H) leads the sidebar: the fixture's #design occupants get a room card with
-    # Join above the Channels heading. Joining never changes the chat being read.
+    # Voice lives in the channel list (design H, revised): the fixture's #design occupants grow
+    # #design's own row into a room card (who is there, the room's timer and Join) in its place
+    # under the Channels heading. Nothing sits above the channels and nothing says "Live now".
+    # Joining never changes the chat being read.
     wait_for(description="Join voice in #design")
     live = wait_for(description="Join voice in #general")
-    live_heading = find(live, text="Live now")
     channels_heading = find(live, text="Channels")
-    assert live_heading is not None and channels_heading is not None, "Live now shows while a room is live"
-    assert center(live_heading)[1] < center(channels_heading)[1], "Live now sits above the Channels heading"
-    assert find(live, text="TEST FIXTURE Maya and TEST FIXTURE Alex") is not None, "The room card names who is in voice"
+    design_row = find(live, text="design")
+    room_names = find(live, text="TEST FIXTURE Maya and TEST FIXTURE Alex")
     room_join = find(live, description="Join voice in #design")
-    assert center(room_join)[1] < center(channels_heading)[1], "A live room's Join is on its Live now card"
+    assert channels_heading is not None and design_row is not None, "The sidebar lists #design under Channels"
+    assert room_names is not None and room_join is not None, "#design's card names who is in voice and offers Join"
+    assert find(live, text="Live now") is None, "No Live now heading"
+    assert center(channels_heading)[1] < center(design_row)[1] < center(room_names)[1], (
+        "#design's room card grows from its own row, under the Channels heading"
+    )
+    assert abs(center(room_names)[1] - center(room_join)[1]) <= 8, "Join sits in the card's body, beside the names"
+    assert find(live, description="Voice session duration") is not None, "The room card keeps its timer"
     # Live rows end with a waveform and count instead of a roster; quiet rows keep a one-tap
     # headphones join, always shown on touch.
     assert find(live, contains="2 in voice") is not None, "#design's row counts who is in voice"
     assert find(live, contains="Show who is in voice") is None, "Channel rows no longer expand a roster"
     assert sum(1 for node in nodes(live) if node.get("content-desc") == "Join voice in #design") == 1, (
-        "A live row leaves Join to its Live now card"
+        "A live row leaves Join to its card's body"
     )
     general_row = find(live, text="general")
     row_join = find(live, description="Join voice in #general")
@@ -470,10 +477,13 @@ def main() -> None:
     collapsed = capture("caper-android-channels-collapsed", "Expand channels")
     for hidden in ("general", "planning"):
         assert find(collapsed, text=hidden) is None
-    assert find(collapsed, description="design channel menu") is None
     assert find(collapsed, description="Join voice in #general") is None, "Collapsed rows take their joins with them"
-    # Live now is its own section: collapsing Channels keeps #design's room card.
-    assert find(collapsed, text="Live now") is not None, "Collapsing Channels must keep Live now"
+    # Collapsing hides quiet rows only: #design's room card stays listed, with its row and menu.
+    assert find(collapsed, text="TEST FIXTURE Maya and TEST FIXTURE Alex") is not None, (
+        "Collapsing Channels must keep live rooms"
+    )
+    assert find(collapsed, description="design channel menu") is not None, "A live room keeps its row's menu"
+    assert find(collapsed, description="Join voice in #design") is not None
     assert find(collapsed, contains="Message #design") is not None
     assert find(collapsed, text="Create channel") is None, "The action must close its menu"
     tap(description="Channel options")
@@ -482,7 +492,7 @@ def main() -> None:
     tap(description="Collapse channels")
     wait_for(description="Expand channels")
     tap(description="Expand channels")
-    wait_for(description="design channel menu")
+    wait_for(text="general")
     tap(text="general")
     wait_for(contains="Message #general")
 
@@ -722,11 +732,19 @@ def main() -> None:
     wait_for(text=names)
     # Join reads "Checking voice availability…" until the channel's media status answers.
     live_browse = capture("caper-android-voice-live-now", "Join voice in #design")
-    assert find(live_browse, text=names) is not None, "The room card names who is in voice"
-    # Live now leads Browse: #design's card names who is there and offers Join (40dp on phones).
-    assert find(live_browse, text="Live now") is not None
+    room_names = find(live_browse, text=names)
+    assert room_names is not None, "The room card names who is in voice"
+    # In Browse, #design's own row grows its card (who is there and Join, 40dp on phones) under
+    # the Channels heading, with no "Live now" heading above.
+    assert find(live_browse, text="Live now") is None
+    channels_heading = find(live_browse, text="Channels")
+    design_row = find(live_browse, text="design")
+    assert channels_heading is not None and design_row is not None
+    assert center(channels_heading)[1] < center(design_row)[1] < center(room_names)[1], (
+        "#design's card sits in its row's place"
+    )
     card_join = find(live_browse, description="Join voice in #design")
-    assert card_join is not None, "A live room offers Join on its Live now card"
+    assert card_join is not None, "A live room offers Join on its card"
     left, top, right, bottom = bounds(card_join)
     assert bottom - top >= 80, "A room card's Join must be at least 40dp tall on phones"
     assert find(live_browse, contains="4 in voice") is not None, "#design's row counts who is in voice"
@@ -744,9 +762,9 @@ def main() -> None:
     assert right - left >= 88 and bottom - top >= 88, "The row join must have a 44dp touch target"
     assert sum(1 for node in nodes(live_browse) if node.get("content-desc") == "Join voice in #design") == 1
     assert find(live_browse, contains="Message #general") is None  # conversation is behind narrow navigation
-    # The card's channel name opens its chat. Phones then show who is talking, with Join, in a
-    # strip under the header; the title's subtitle still counts who is in voice.
-    tap(text="design")
+    # A tap anywhere on the card but Join opens its chat (here, the names). Phones then show who is
+    # talking, with Join, in a strip under the header; the title's subtitle still counts who is in voice.
+    tap(text=names)
     wait_for(contains="Message #design")
     wait_for(text="4 talking")
     occupied = capture("caper-android-voice-strip-occupied", "Join voice in #design")
@@ -780,7 +798,9 @@ def main() -> None:
                 break
             time.sleep(0.2)
         assert find(gone, contains="Fixture Voice 1") is None, "Revoked spectators remained visible"
-        assert find(gone, text="Live now") is None, "Live now leaves once no room is live"
+        assert find(gone, text=names) is None and find(gone, contains="4 in voice") is None, (
+            "#design's card turns back into a quiet row once no one is in voice"
+        )
     finally:
         fixture({"mediaAccessDenied": {"channelId": "chan00000002", "denied": False}})
     tap(description="Close navigation")
@@ -847,12 +867,16 @@ def main() -> None:
     assert general_row is not None and abs(center(general_row)[1] - center(action)[1]) <= 4, (
         "The headphones join belongs to #general's row"
     )
-    assert find(voice_ready, text="Live now") is None, "Live now stays away while no room is live"
+    # A live count reads "2 in voice", a call "You’re in · 2" ("Join voice in #x" is a join, not a count).
+    live = re.compile(r"\d+ in voice|You’re in")
+    assert not any(live.search(node.get("text", "") + node.get("content-desc", "")) for node in nodes(voice_ready)), (
+        "No room is live: no voice cards or counts"
+    )
     # Web's mute and deafen work before joining, without starting a call.
     tap(description="Mute microphone")
     muted = wait_for(description="Unmute microphone")
     assert find(muted, description="Leave voice") is None, "Pre-join mute must not start voice"
-    assert find(muted, text="Live now") is None, "Pre-join mute must not start voice"
+    assert find(muted, contains="You’re in") is None, "Pre-join mute must not start voice"
     tap(description="Deafen audio")
     wait_for(description="Undeafen audio")
     tap(description="Undeafen audio")
@@ -875,7 +899,9 @@ def main() -> None:
     failed = capture("caper-android-voice-fixture-error", "TEST FIXTURE: no real media engine or SFU is connected.")
     assert find(failed, description=join) is not None and find(failed, description="Leave voice") is None
     assert find(failed, contains="Microphone permission is required") is None
-    assert find(failed, text="Live now") is None, "A failed join leaves no call card"
+    assert find(failed, contains="You’re in") is None and find(failed, description="Cancel joining voice") is None, (
+        "A failed join leaves no call card"
+    )
     # Browse keeps voice errors in the sidebar panel above the account bar, with a dismiss.
     assert find(failed, description="Dismiss voice error") is not None, "Browse can dismiss the voice error"
     # Phones also show the error in the conversation, above the composer, with its own dismiss.

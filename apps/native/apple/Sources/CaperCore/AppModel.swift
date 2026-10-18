@@ -24,7 +24,39 @@ public final class AppModel {
         set { detailSnapshot = newValue }
     }
     public var selectedSpaceID: String?
-    public var selectedChannelID: String? { didSet { if selectedChannelID != oldValue { removeShownNotifications() } } }
+    public var selectedChannelID: String? { didSet { if selectedChannelID != oldValue {
+        removeShownNotifications()
+        beginChannelUnreadVisit()
+    } } }
+    private var unreadVisitToken = UUID()
+    private var unreadVisitReady = false
+    private var unreadVisit: UnreadChannel?
+
+    /// Resolve the entry snapshot before any automatic acknowledgement can advance it.
+    private func beginChannelUnreadVisit() {
+        let token = UUID(), attempt = generation
+        unreadVisitToken = token
+        unreadVisitReady = false
+        unreadVisit = nil
+        guard let id = selectedChannelID, account != nil else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let snapshot = try? await api.unreadSpaces()
+            guard generation == attempt, unreadVisitToken == token, selectedChannelID == id else { return }
+            unreadVisit = snapshot?.flatMap(\.channels).first { $0.id == id }
+            // A failed/old-server snapshot deliberately yields no divider, not a guessed boundary.
+            unreadVisitReady = true
+            markSelectedChannelRead()
+        }
+    }
+
+    public func channelNewMessagesDividerID() -> String? {
+        guard selectedDirectMessageID == nil, visit == nil, selectedChannelID == chat.channelID,
+              let unreadVisit, let boundary = unreadVisit.readSeq else { return nil }
+        return ChannelUnreadDivider.messageID(messages: chat.channelMessages, readSeq: boundary,
+            lastSeq: unreadVisit.lastSeq, hasMore: chat.hasMore, viewerID: account?.id,
+            blocked: chat.blockedAuthorIDs)
+    }
     private var directMessageSnapshots: [DirectMessageConversation] = []
     public var directMessages: [DirectMessageConversation] {
         get {
@@ -861,7 +893,9 @@ public final class AppModel {
                 guard generation == attempt, navigationGeneration == navigation + 1 else { return false }
             }
             guard chat.channelID == source.message.channelId else { return false }
-            return await chat.goToMessage(source.message)
+            guard await chat.goToMessage(source.message) else { return false }
+            if source.message.threadRootId == nil { await chat.openThread(source.message.id) }
+            return true
         } catch is CancellationError { return false }
         catch {
             if generation == attempt, navigationGeneration == navigation { navigationError = "Couldn’t open the conversation. Try again." }
@@ -1077,7 +1111,7 @@ public final class AppModel {
     }
 
     private func markSelectedChannelRead() {
-        guard foreground, !browseCoversConversation, account != nil, selectedDirectMessageID == nil,
+        guard unreadVisitReady, foreground, !browseCoversConversation, account != nil, selectedDirectMessageID == nil,
               let spaceID = detail?.space.id, !spaceID.isEmpty, let id = selectedChannelID,
               let history = chat.currentSnapshot(), history.channel?.id == id, history.hasNewer != true,
               (try? Sequence.compare(history.cursor, channelReads[id] ?? "0")) == .orderedDescending else { return }
@@ -2196,6 +2230,7 @@ extension AppModel {
 
     private func clearNotificationState() {
         unreadSpaces = []; channelReads = [:]; unreadRevision += 1
+        unreadVisitToken = UUID(); unreadVisit = nil; unreadVisitReady = false
         #if os(macOS)
         desktopNotifications.stop()
         #endif
@@ -2481,7 +2516,9 @@ public final class ChatModel {
     public var displayedPins: [ChatMessage] { profiled(mutations.pinned(messages: messages, confirmed: pinnedMessages)) }
     public var channelName = "general"
     public var spaceName = "Caper"
-    public var draft = ""
+    public var draft = "" { didSet { if oldValue != draft { composerRevision += 1 } } }
+    private var composerRevision = 0
+    private var uploadSubmission: UUID?
     public var loading = false
     public var loadingOlder = false
     public var olderError: String?
@@ -2529,21 +2566,21 @@ public final class ChatModel {
     public var attachUnavailableReason: String {
         (uploadsChecked && !uploadsEnabled) || isPreview || channelID == nil || loadFailed ? "File uploads are unavailable" : "Checking file uploads…"
     }
-    /// The send control's enabled state: text or uploaded files, nothing still uploading.
+    /// Failed files may be retried by Send; initial uploads must settle first.
     public var canSubmit: Bool { canSubmit(inThread: false) }
     public func canSubmit(inThread: Bool) -> Bool {
-        if sending || delivery.rejected { return false }
+        if sending || uploadSubmission != nil || delivery.rejected { return false }
         let root = inThread ? threadRootID : nil
         if inThread && root == nil { return false }
         if let pending = delivery.pending { return pending.threadRootId == root }
         let files = attachmentFiles(inThread: inThread)
-        return files.allSatisfy { $0.attachment != nil }
+        return files.allSatisfy { $0.attachment != nil || $0.error != nil }
             && MessageValidation.error(for: inThread ? threadDraft : draft, attachmentCount: files.count) == nil
     }
     public var pinErrors: [String: String] = [:]
     public var pendingPins: Set<String> = []
     public var threadRootID: String? {
-        didSet { if oldValue != threadRootID { visibleThreadReply = nil } }
+        didSet { if oldValue != threadRootID { visibleThreadReply = nil; composerRevision += 1; uploadSubmission = nil } }
     }
     public private(set) var unreadThreads: [String: String] = [:]
     private var unreadThreadChannel: String?
@@ -2630,7 +2667,12 @@ public final class ChatModel {
     }
     public var threadDraft: String {
         get { threadRootID.flatMap { threadDrafts[$0] } ?? "" }
-        set { if let threadRootID { threadDrafts[threadRootID] = newValue } }
+        set {
+            if let threadRootID {
+                if threadDrafts[threadRootID] != newValue { composerRevision += 1 }
+                threadDrafts[threadRootID] = newValue
+            }
+        }
     }
     public var threadBroadcast: Bool {
         get { threadRootID.flatMap { threadBroadcasts[$0] } ?? false }
@@ -3211,7 +3253,7 @@ public final class ChatModel {
     }
 
     public func send(inThread: Bool = false, retryPending: Bool = false) async {
-        guard !sending, !delivery.rejected else { return }
+        guard !sending, uploadSubmission == nil, !delivery.rejected else { return }
         guard !retryPending || delivery.pending != nil else { return }
         guard let channelID, let session else { error = "Messaging session is unavailable."; return }
         let rootID = inThread ? (retryPending ? delivery.pending?.threadRootId : threadRootID) : nil
@@ -3219,13 +3261,31 @@ public final class ChatModel {
         if let pending = delivery.pending, pending.threadRootId != rootID { return }
         let text = inThread ? threadDraft : draft
         let target = composerTarget(inThread: inThread)
-        let files = attachmentFiles(inThread: inThread)
+        var files = attachmentFiles(inThread: inThread)
         if delivery.pending == nil {
-            if files.contains(where: { $0.attachment == nil }) {
-                for file in files where file.error != nil { retryAttachmentDraft(id: file.id) }
-                return
-            }
             if let validation = MessageValidation.error(for: text, attachmentCount: files.count) { error = validation; return }
+            if files.contains(where: { $0.attachment == nil }) {
+                let submission = UUID()
+                let expectedGeneration = generation
+                let expectedUploads = uploadGeneration
+                let revision = composerRevision
+                let broadcast = threadBroadcast
+                let reply = replyTargets[rootID ?? "channel"]?.id
+                let ids = files.map(\.id)
+                uploadSubmission = submission
+                defer { if uploadSubmission == submission { uploadSubmission = nil } }
+                for file in files where file.error != nil { retryAttachmentDraft(id: file.id) }
+                let tasks = files.compactMap { uploadTasks[$0.id] }
+                for task in tasks { await task.value }
+                guard !Task.isCancelled, uploadSubmission == submission, generation == expectedGeneration, uploadGeneration == expectedUploads,
+                      self.channelID == channelID, self.session?.token == session.token,
+                      composerTarget(inThread: inThread) == target, composerRevision == revision,
+                      !inThread || (threadRootID == rootID && threadBroadcast == broadcast),
+                      replyTargets[rootID ?? "channel"]?.id == reply,
+                      delivery.pending == nil else { return }
+                files = attachmentFiles(inThread: inThread)
+                guard files.map(\.id) == ids, files.allSatisfy({ $0.attachment != nil }) else { return }
+            }
         }
         let newSubmission = delivery.pending == nil
         // The pending row previews the local originals (which this device can
@@ -3762,6 +3822,7 @@ public final class ChatModel {
     }
 
     private func clearLocal(preservingPending: Bool = false) {
+        uploadSubmission = nil
         unreadThreads = [:]; unreadThreadChannel = nil; visibleThreadReply = nil
         stashDraft()
         typingTask?.cancel(); typingIdleTask?.cancel(); typingExpiryTask?.cancel()
@@ -4012,6 +4073,7 @@ public final class ChatModel {
             files.forEach { AttachmentStaging.remove($0.url) }
             return
         }
+        composerRevision += 1
         setAttachmentNotice(files.count > room ? "Only \(room) more file\(room == 1 ? "" : "s") can be attached." : nil, target: target)
         files.dropFirst(room).forEach { AttachmentStaging.remove($0.url) }
         if error == "Write a message first." || error == "Wait for files to finish uploading." { error = nil }

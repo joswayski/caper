@@ -36,7 +36,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 )
 @Serializable data class SpaceList(val spaces: List<Space>, val invitations: List<Space> = emptyList(), val limits: SpaceLimits)
 @Serializable data class SpaceLimits(val ownedSpaces: Int, val totalSpaces: Int, val channelsPerSpace: Int)
-@Serializable data class UnreadChannel(val id: String, val lastSeq: String)
+@Serializable data class UnreadChannel(val id: String, val lastSeq: String, val readSeq: String? = null)
 @Serializable data class UnreadSpace(val id: String, val channels: List<UnreadChannel>)
 @Serializable data class UnreadSpaces(val spaces: List<UnreadSpace>)
 @Serializable data class Channel(
@@ -561,6 +561,8 @@ data class AppUiState(
     /** Failed notification saves by setting key (see `data/Notifications.kt`), shown beside that control. */
     val notificationErrors: Map<String, String> = emptyMap(),
     val selectedDirectId: String? = null,
+    /** Immutable unread boundary captured before this channel visit acknowledges history. */
+    val channelVisitUnread: UnreadChannel? = null,
     val messages: List<ChatMessage> = emptyList(),
     val thread: ThreadUi? = null,
     val threadOnlyRows: Set<String> = emptySet(),

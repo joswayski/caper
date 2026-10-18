@@ -76,8 +76,35 @@ const history = (channel) =>
     headers: { authorization: "Bearer fixture-owner-token", connection: "close" },
   }).then((response) => response.json());
 
+const chooseUpload = (scope, label) => {
+  browser("click", `${scope} [aria-label="Attach files"]`);
+  wait('!!document.querySelector(".chat-profile-menu")');
+  assert.deepEqual(
+    evaluate('return [...document.querySelectorAll(".chat-profile-menu button")].map(button => button.textContent)'),
+    ["Photos and videos", "Files"],
+  );
+  // Mock only the OS dialog: headless Chrome cancels it before upload can supply files.
+  evaluate(`window.pickedAccept = null;
+    for (const input of document.querySelectorAll('${scope} input[type="file"]')) {
+      input.addEventListener('click', event => { event.preventDefault(); window.pickedAccept = input.accept; }, {once:true});
+    }`);
+  browser("find", "role", "menuitem", "click", "--name", label, "--exact");
+  assert.equal(evaluate("return window.pickedAccept"), label === "Photos and videos" ? "image/*,video/*" : "");
+};
+const uploadFile = (scope) => {
+  chooseUpload(scope, "Files");
+  browser("upload", `${scope} input[type="file"]:not([accept])`, file);
+};
+
 try {
   await control({ reset: true, uploadsEnabled: true });
+  const ownedResponse = await fetch(`${api}/api/spaces`, {
+    method: "POST",
+    headers: { authorization: "Bearer fixture-owner-token", "content-type": "application/json" },
+    body: JSON.stringify({ name: "Profile invitations" }),
+  });
+  assert.equal(ownedResponse.status, 201);
+  const ownedSpace = await ownedResponse.json();
   browser("open", web);
   browser("cookies", "set", "caper_fixture", "owner");
   browser("open", `${web}/spaces`);
@@ -90,7 +117,7 @@ try {
       return realFetch(input, options);
     };`);
   wait("!document.querySelector('.chat-composer [aria-label=\"Attach files\"]').disabled");
-  browser("upload", '.chat-composer input[type="file"]', file);
+  uploadFile(".chat-composer");
   wait(
     '!!document.querySelector(\'.chat-drafts [aria-label="Open review-notes.txt"]\') && !document.querySelector(".chat-drafts progress")',
   );
@@ -103,20 +130,70 @@ try {
   assert.equal(evaluate("return document.activeElement.id"), "profile-message");
   assert.equal(evaluate('return document.querySelector(".chat-mention-card").textContent.includes("Block")'), false);
   assert.equal(
+    evaluate('return document.querySelector(".chat-mention-card").textContent.includes("Invite to space")'),
+    false,
+  );
+  assert.equal(
     evaluate("return !!document.querySelector('.chat-profile-composer [aria-label=\"Attach files\"]')"),
     true,
   );
   capture("profile-desktop-empty");
   browser("click", '.chat-mention-card [aria-label="More profile actions"]');
   wait('!!document.querySelector(".chat-profile-menu")');
-  assert.equal(evaluate('return document.querySelector(".chat-profile-menu button").textContent'), "Block");
+  assert.deepEqual(
+    evaluate('return [...document.querySelectorAll(".chat-profile-menu button")].map(button => button.textContent)'),
+    ["Invite to space", "Block"],
+  );
   if (artifacts) browser("screenshot", `${artifacts}/profile-desktop-menu.png`);
   browser("press", "Escape");
   wait('!document.querySelector(".chat-profile-menu")');
   assert.equal(value(), "", "Escape closes only the child menu");
   browser("click", '.chat-mention-card [aria-label="More profile actions"]');
   wait('!!document.querySelector(".chat-profile-menu")');
-  browser("click", ".chat-profile-menu button");
+  // The first menu action also works from the keyboard and closes only the menu.
+  browser("press", "Enter");
+  wait('!!document.querySelector(".chat-profile-spaces") && !document.querySelector(".chat-profile-menu")');
+  assert.deepEqual(
+    evaluate(
+      'return [...document.querySelectorAll(".chat-profile-spaces button > span")].map(span => span.textContent)',
+    ),
+    ["Profile invitations"],
+    "only eligible owned spaces appear; Maya already belongs to the open space",
+  );
+  assert.equal(value(), "", "Choosing Invite does not replace the composer");
+  await control({
+    failure: {
+      path: `/api/spaces/${ownedSpace.id}/members`,
+      method: "POST",
+      status: 429,
+      error: "TEST FIXTURE invitation limit",
+    },
+  });
+  browser("click", ".chat-profile-spaces button");
+  wait('document.querySelector(".chat-mention-card > [role=alert]")?.textContent.includes("invitation limit")');
+  browser("click", ".chat-profile-spaces button");
+  wait('document.querySelector(".chat-profile-status")?.textContent === "Invitation sent to Profile invitations."');
+  assert.equal(evaluate('return document.querySelector(".chat-profile-spaces button").disabled'), true);
+  capture("profile-desktop-invited");
+  for (const [suffix, expected] of [
+    ["invitations", true],
+    ["members", false],
+  ]) {
+    const response = await fetch(`${api}/api/spaces/${ownedSpace.id}/${suffix}`, {
+      headers: { authorization: "Bearer fixture-owner-token" },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(
+      (await response.json()).members.some((member) => member.username === "maya"),
+      expected,
+    );
+  }
+  assert.equal(evaluate('return document.querySelector("#chat-message").value'), "Existing channel draft");
+  close();
+  open("Maya");
+  browser("click", '.chat-mention-card [aria-label="More profile actions"]');
+  wait('!!document.querySelector(".chat-profile-menu")');
+  browser("click", ".chat-profile-menu button:last-child");
   wait('document.querySelector("dialog[open] h2")?.textContent === "Block Maya?"');
   assert.equal(evaluate('return !!document.querySelector(".chat-mention-card")'), false);
   browser("click", "dialog[open] [data-initial-focus]");
@@ -124,7 +201,10 @@ try {
   browser("fill", "#profile-message", "Hello suffix");
   evaluate('document.querySelector("#profile-message").setSelectionRange(6, 6)');
   // Cancelling a chooser keeps both the draft and the selected caret.
-  evaluate('document.querySelector(\'.chat-profile-composer input[type="file"]\').dispatchEvent(new Event("cancel"))');
+  chooseUpload(".chat-profile-composer", "Photos and videos");
+  evaluate(
+    'document.querySelector(\'.chat-profile-composer input[accept="image/*,video/*"]\').dispatchEvent(new Event("cancel"))',
+  );
   wait('document.activeElement.id === "profile-message"');
   assert.equal(value(), "Hello suffix");
   assert.equal(evaluate('return document.querySelector("#profile-message").selectionStart'), 6);
@@ -136,7 +216,7 @@ try {
   assert.equal(evaluate("return document.activeElement.id"), "profile-message");
   // Browser-supported file upload, then a file-bearing paste event.
   wait(`!document.querySelector('.chat-profile-composer [aria-label="Attach files"]').disabled`);
-  browser("upload", '.chat-profile-composer input[type="file"]', file);
+  uploadFile(".chat-profile-composer");
   evaluate(`const transfer = new DataTransfer();
     transfer.items.add(new File(['TEST FIXTURE pasted bytes'], 'pasted.txt', {type:'text/plain'}));
     document.querySelector('#profile-message').dispatchEvent(new ClipboardEvent('paste', {clipboardData:transfer, bubbles:true, cancelable:true}));`);
@@ -153,6 +233,24 @@ try {
   open("Maya");
   assert.equal(value(), "Hello 😀suffix");
   assert.equal(evaluate('return document.querySelectorAll(".chat-profile-composer .chat-drafts li").length'), 2);
+  await control({ failure: { path: "/api/assets", method: "POST", status: 503, persistent: true } });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    browser("click", '.chat-profile-composer button[type="submit"]');
+    wait(
+      '!!document.querySelector(".chat-profile-composer .chat-draft-notice[data-error]") && !document.querySelector("#profile-message").disabled',
+    );
+    assert.equal(value(), "Hello 😀suffix");
+    assert.equal(evaluate('return document.querySelectorAll(".chat-profile-composer .chat-drafts li").length'), 2);
+    assert.equal(
+      evaluate('return document.querySelectorAll(".chat-profile-composer .chat-drafts li[data-error]").length'),
+      1,
+      "only the attempted file is marked failed, not the queued file",
+    );
+    const blockedDM = (await directs()).find((conversation) => conversation.peer.username === "maya");
+    assert.equal((await history(blockedDM.id)).messages.length, 0, "upload failure prevents message delivery");
+  }
+  capture("profile-upload-failed");
+  await control({ clearFailures: true });
   // Lose the HTTP acknowledgement after the fixture has accepted the message.
   evaluate(`const realFetch = window.fetch.bind(window); window.profileCommands = [];
     window.dropProfileAck = true;
@@ -224,12 +322,16 @@ try {
   browser("set", "viewport", "390", "844", "2");
   open("Maya");
   assert.equal(value(), "Rejected draft");
+  assert.equal(
+    evaluate('return document.querySelector(".chat-mention-card").textContent.includes("Invite to space")'),
+    false,
+  );
   browser("fill", "#profile-message", "");
   capture("profile-narrow-empty");
   browser("fill", "#profile-message", "Rejected draft");
   // Each card checks upload settings when it opens; files wait for that.
   wait(`!document.querySelector('.chat-profile-composer [aria-label="Attach files"]').disabled`);
-  browser("upload", '.chat-profile-composer input[type="file"]', file);
+  uploadFile(".chat-profile-composer");
   wait('document.querySelectorAll(".chat-profile-composer .chat-drafts li").length === 1');
   capture("profile-narrow-files");
   assert.equal(evaluate('return !!document.querySelector(".chat-mention-card-drawer")'), true);
@@ -241,8 +343,10 @@ try {
   browser("click", '.chat-mention-card [aria-label="More profile actions"]');
   wait('!!document.querySelector(".chat-profile-menu")');
   if (artifacts) browser("screenshot", `${artifacts}/profile-narrow-menu.png`);
-  browser("press", "Escape");
-  wait('!document.querySelector(".chat-profile-menu")');
+  browser("click", ".chat-profile-menu button:first-child");
+  wait('!!document.querySelector(".chat-profile-spaces") && !document.querySelector(".chat-profile-menu")');
+  assert.equal(value(), "Rejected draft");
+  capture("profile-narrow-invite");
   // A backdrop press closes a drafted sheet; reopening restores text and files.
   browser("mouse", "move", "195", "80");
   browser("mouse", "down", "left");
@@ -303,7 +407,7 @@ try {
     "Open conversation must not silently accept a request",
   );
   console.log(
-    "PASS: secondary Block menu/confirmation, profile text/emoji/files and file-only sends, caret/chooser cancellation, outside dismissal with retained drafts, active-send protection, person-keyed drafts, uncertain idempotent retry, rejection, retained channel text/files, request acceptance isolation, desktop/narrow layouts.",
+    "PASS: secondary Invite/Block menu, keyboard invitation picker, eligible spaces, invitation failure/retry without membership or navigation, photo-first upload menus and media/file filters (mock OS dialog), Block confirmation, profile text/emoji/files and file-only sends, caret/chooser cancellation, outside dismissal with retained drafts, active-send protection, person-keyed drafts, uncertain idempotent retry, rejection, retained channel text/files, request acceptance isolation, desktop/narrow layouts.",
   );
 } catch (error) {
   // Preserve the original failure even if the browser itself stopped responding.

@@ -424,7 +424,7 @@ function NameField({
           maxLength={channel ? 80 : undefined}
           autoComplete="off"
           spellCheck={!channel}
-          placeholder={channel ? "project-updates" : "Studio"}
+          placeholder={channel ? "project-updates" : "Gaming nights"}
           onChange={(event) => {
             const input = event.currentTarget;
             if (!channel) return onChange(Array.from(input.value).slice(0, 80).join(""));
@@ -3296,7 +3296,7 @@ export default function Spaces({
         </header>
       )}
       {notificationAlert(`space:${detail.space.id}`)}
-      {/* Where people are talking now, and your call, above the channels. */}
+      {/* Voice without a row below: your call in another space, or a visited room. */}
       {liveNow}
       {!!detail.space.id && !detail.space.demo && (
         <div className="channel-section-heading">
@@ -3373,102 +3373,111 @@ export default function Spaces({
           const voice = voiceFor(item.id);
           const itemNotifications = overrideFor(notifications, { spaceId: detail.space.id, channelId: item.id });
           const itemMuted = isMuted(itemNotifications?.mutedUntil);
-          return (
-            <li key={item.id} data-voice={voice ? "" : undefined} data-muted={itemMuted || spaceMuted ? "" : undefined}>
-              <div className="channel-line">
-                <button
-                  className="channel-select"
-                  type="button"
-                  aria-current={item.id === channel?.id ? "page" : undefined}
-                  aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
-                  onMouseEnter={() => prefetch(detail.space.id, item.id)}
-                  onFocus={() => prefetch(detail.space.id, item.id)}
-                  onClick={() => choose(detail.space.id, item.id)}
+          const line = (
+            <div className="channel-line">
+              <button
+                className="channel-select"
+                type="button"
+                aria-current={item.id === channel?.id ? "page" : undefined}
+                aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
+                onMouseEnter={() => prefetch(detail.space.id, item.id)}
+                onFocus={() => prefetch(detail.space.id, item.id)}
+                onClick={() => choose(detail.space.id, item.id)}
+              >
+                {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
+                <span>{item.name}</span>
+                {unreadSpaces.some((space) => space.channels.some((entry) => entry.id === item.id)) && (
+                  <>
+                    <i className="channel-unread" aria-hidden="true" />
+                    <span className="sr-only">, unread activity</span>
+                  </>
+                )}
+                {itemMuted && (
+                  <>
+                    <BellOff className="muted-icon" aria-hidden="true" />
+                    <span className="sr-only">, muted</span>
+                  </>
+                )}
+                {voice?.live}
+              </button>
+              {voice?.join}
+              {!detail.space.demo && (
+                <details
+                  className="channel-menu"
+                  onToggle={(event) => trackMenu(event.currentTarget)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape" && event.currentTarget.open) {
+                      // Handled here, so an open thread does not also close.
+                      event.preventDefault();
+                      event.currentTarget.open = false;
+                      event.currentTarget.querySelector("summary")?.focus();
+                    }
+                  }}
+                  onBlur={leaveMenu}
                 >
-                  {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
-                  <span>{item.name}</span>
-                  {unreadSpaces.some((space) => space.channels.some((entry) => entry.id === item.id)) && (
-                    <>
-                      <i className="channel-unread" aria-hidden="true" />
-                      <span className="sr-only">, unread activity</span>
-                    </>
-                  )}
-                  {itemMuted && (
-                    <>
-                      <BellOff className="muted-icon" aria-hidden="true" />
-                      <span className="sr-only">, muted</span>
-                    </>
-                  )}
-                  {voice?.live}
-                </button>
-                {voice?.join}
-                {!detail.space.demo && (
-                  <details
-                    className="channel-menu"
-                    onToggle={(event) => trackMenu(event.currentTarget)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape" && event.currentTarget.open) {
-                        // Handled here, so an open thread does not also close.
-                        event.preventDefault();
-                        event.currentTarget.open = false;
-                        event.currentTarget.querySelector("summary")?.focus();
-                      }
-                    }}
-                    onBlur={leaveMenu}
+                  <summary
+                    className="channel-manage"
+                    aria-label={`Manage ${item.name}`}
+                    title={`Channel actions for ${item.name}`}
                   >
-                    <summary
-                      className="channel-manage"
-                      aria-label={`Manage ${item.name}`}
-                      title={`Channel actions for ${item.name}`}
-                    >
-                      <MoreHorizontal aria-hidden="true" />
-                    </summary>
-                    <div className="space-actions">
-                      <LevelNotificationItems
-                        noun="channel"
-                        loaded={notifications.loaded}
-                        level={itemNotifications?.level ?? null}
-                        inherited={inheritedLevel(notifications, { spaceId: detail.space.id, channelId: item.id })}
-                        mutedUntil={itemNotifications?.mutedUntil ?? null}
-                        mutedWithSpace={spaceMuted}
-                        onChange={(change) => {
-                          const spaceId = detail.space.id;
-                          saveNotifications(`channel:${item.id}`, () =>
-                            changeChannelNotifications(spaceId, item.id, change),
-                          );
-                        }}
-                      />
-                      {owner && (
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            const menu = event.currentTarget.closest("details")!;
-                            menu.open = false;
-                            menu.querySelector("summary")?.focus();
-                            setManageChannel(item);
-                          }}
-                        >
-                          <Settings aria-hidden="true" />
-                          Channel settings
-                        </button>
-                      )}
+                    <MoreHorizontal aria-hidden="true" />
+                  </summary>
+                  <div className="space-actions">
+                    <LevelNotificationItems
+                      noun="channel"
+                      loaded={notifications.loaded}
+                      level={itemNotifications?.level ?? null}
+                      inherited={inheritedLevel(notifications, { spaceId: detail.space.id, channelId: item.id })}
+                      mutedUntil={itemNotifications?.mutedUntil ?? null}
+                      mutedWithSpace={spaceMuted}
+                      onChange={(change) => {
+                        const spaceId = detail.space.id;
+                        saveNotifications(`channel:${item.id}`, () =>
+                          changeChannelNotifications(spaceId, item.id, change),
+                        );
+                      }}
+                    />
+                    {owner && (
                       <button
                         type="button"
-                        disabled={membershipPending}
                         onClick={(event) => {
                           const menu = event.currentTarget.closest("details")!;
                           menu.open = false;
                           menu.querySelector("summary")?.focus();
-                          setLeavingChannel(item);
+                          setManageChannel(item);
                         }}
                       >
-                        <LogOut aria-hidden="true" />
-                        Leave channel
+                        <Settings aria-hidden="true" />
+                        Channel settings
                       </button>
-                    </div>
-                  </details>
-                )}
-              </div>
+                    )}
+                    <button
+                      type="button"
+                      disabled={membershipPending}
+                      onClick={(event) => {
+                        const menu = event.currentTarget.closest("details")!;
+                        menu.open = false;
+                        menu.querySelector("summary")?.focus();
+                        setLeavingChannel(item);
+                      }}
+                    >
+                      <LogOut aria-hidden="true" />
+                      Leave channel
+                    </button>
+                  </div>
+                </details>
+              )}
+            </div>
+          );
+          return (
+            <li
+              key={item.id}
+              data-voice={voice ? "" : undefined}
+              data-live={voice?.card ? "" : undefined}
+              data-muted={itemMuted || spaceMuted ? "" : undefined}
+            >
+              {/* A live channel's row grows into its card: your call, or a room to join. */}
+              {voice ? voice.frame(line) : line}
               {notificationAlert(`channel:${item.id}`)}
             </li>
           );
@@ -3698,7 +3707,8 @@ export default function Spaces({
           return true;
         }}
         focusMessage={focusMessage}
-        focusThread={!!visitView}
+        // Both report visits and forwarded conversations open the source thread.
+        focusThread
         // A reply from the team answers the report in the inbox.
         onSent={visitView ? () => void refreshFeedback() : undefined}
         onHistoryChange={(history) => {

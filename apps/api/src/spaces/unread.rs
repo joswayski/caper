@@ -11,7 +11,7 @@ pub(super) async fn list(
     // channels and non-broadcast thread replies count only direct @mentions.
     // Only channels whose stream moved past the read position are checked:
     // joined channels take their newest qualifying message by index.
-    let rows: Vec<(String, String, i64)> = sqlx::query_as(
+    let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
         "WITH visible AS (
           SELECT s.external_id AS space,c.id,c.external_id AS channel,COALESCE(r.seq,0) AS read_seq,
                  EXISTS(SELECT 1 FROM public.channel_joins cj
@@ -40,7 +40,7 @@ pub(super) async fn list(
                  WHERE b.blocker_id=$1 AND b.blocked_id=cs.user_id AND b.deleted_at IS NULL)
           GROUP BY v.id
         )
-        SELECT v.space,v.channel,GREATEST(latest.seq,mention.seq)
+        SELECT v.space,v.channel,GREATEST(latest.seq,mention.seq),v.read_seq
         FROM visible v
         LEFT JOIN LATERAL (
           SELECT m.channel_seq AS seq FROM public.messages m
@@ -62,11 +62,11 @@ pub(super) async fn list(
     .await
     .map_err(database_error)?;
     let mut spaces: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    for (space, channel, seq) in rows {
+    for (space, channel, seq, read_seq) in rows {
         spaces
             .entry(space)
             .or_default()
-            .push(json!({"id":channel,"lastSeq":seq.to_string()}));
+            .push(json!({"id":channel,"lastSeq":seq.to_string(),"readSeq":read_seq.to_string()}));
     }
     Ok(Json(
         json!({"spaces":spaces.into_iter().map(|(id,channels)|json!({"id":id,"channels":channels})).collect::<Vec<_>>()}),

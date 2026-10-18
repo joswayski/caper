@@ -311,26 +311,30 @@ Check these states on every native release, not only a wide populated screenshot
 - A fresh install, expired session, or logout shows email sign-in with no Guest
   account, conversation composer, or retired public General fallback. A valid
   saved account still opens its spaces.
-- Voice follows design H ("Live now") on every client. Channels stay text and
-  voice together; the conversation header carries no voice controls (phones
-  keep "N members · M in voice" under the channel name and open Pins and Members
-  from it). Live now sits above Channels while you are in voice or the space has
-  a live room: your call card (channel, "You're in · N" or Connecting…, timer,
-  faces you first in at most two rows with "+N" past ten, who is speaking, Mute,
-  Deafen and Leave, or Cancel while joining; faces open the full list with
-  per-person volume, beside the sidebar on wide layouts and a sheet on phones),
-  then up to two other room cards with Join or Switch, the rest folded into "N
-  more live". Every channel row is one line; live rows end with a green
-  waveform and count. Quiet rows other than your call's keep a headphones join:
-  revealed on hover on Mac and Rust desktop without shifting the name or `⋯`,
-  shown dimmed with a 44-point target on touch (Android, iPhone, iPad) and in
-  Rust desktop windows 760px or narrower. Phones
-  add a 56-point strip under the chat header: your call with Mute (tapping it
-  opens Browse), or, out of a call, who is talking there with Join. Check the
-  minimum desktop sidebar width, long names, more than ten people in a call,
-  three or more live rooms, a call in another space, and the phone strip; Rust
-  desktop's `parity-voice-crowded`, `-list`, `-strip-narrow` and `-join-narrow`
-  fixtures show them.
+- Voice follows design H, revised October 17, 2026, on every client. Channels
+  stay text and voice together; the conversation header carries no voice
+  controls (phones keep "N members · M in voice" under the channel name and open
+  Pins and Members from it). There is no "Live now" heading: a live channel's
+  own row grows into a card in its place, and pressing the card (except its
+  controls and `⋯`) opens that chat. Your call's card: the row line with "You're
+  in · N" or Connecting…, timer, faces you first in at most two rows with "+N"
+  past ten (no "is speaking" line), Mute, Deafen and Leave, or Cancel while
+  joining. Right-click, long press or the accessibility action on a face or
+  "+N" opens the full list with per-person volume, beside the sidebar on wide
+  layouts and a sheet on phones. Other live rooms add faces, names, timer and
+  Join or Switch beneath their row. Only voice with no row in the listed space
+  (your call elsewhere, a visited feedback channel) sits above Channels.
+  Collapsing Channels keeps live cards. Quiet rows are one line; live rows end
+  with a green waveform and count. Rows other than your call's keep a headphones
+  join: revealed on hover on Mac and Rust desktop without shifting the name or
+  `⋯`, shown dimmed with a 44-point target on quiet rows on touch (Android,
+  iPhone, iPad) and in Rust desktop windows 760px or narrower. Phones add a
+  56-point strip under the chat header: your call with the card's faces in the
+  card's order (up to five, or four and "+N"), no speaker's name, and Mute
+  (tapping it opens Browse), or, out of a call, who is talking there with Join.
+  Check the minimum desktop sidebar width, long names, more than ten people in a
+  call, three or more live rooms, a call in another space, a collapsed list, and
+  the phone strip; Rust desktop's `parity-voice-*` fixtures show them.
 - Members stay on the right: a column when chat has enough room, an overlay below
   the chat header otherwise. The toggle must stay accessible. Never stack members
   underneath the composer. Check 840px desktop windows as well as 1440px and mobile.
