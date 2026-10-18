@@ -1531,7 +1531,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     // A 1:1 DM (not your notes) offers Block / Unblock; a request does so in its own bar.
     val direct = state.selectedDirect?.takeIf { channel.direct && it.peer.id != state.account?.id && !it.incoming }
     var confirmBlock by remember(channel.id) { mutableStateOf(false) }
-    if (confirmBlock && direct != null) BlockConfirmDialog(BlockedAccount(direct.peer.id, direct.peer.username, direct.peer.displayName, direct.peer.avatarId, direct.peer.avatarAsset, direct.peer.avatarUrl), viewModel, { confirmBlock = false })
+    if (confirmBlock && direct != null) BlockConfirmDialog(BlockedAccount(direct.peer.id, direct.peer.username, direct.peer.displayName, direct.peer.avatarId, direct.peer.avatarAsset, direct.peer.avatarUrl, direct.peer.admin, direct.peer.team), viewModel, { confirmBlock = false })
     fun toggleBlock() { if (direct == null) return; if (direct.blocked) viewModel.unblock(direct.peer.id) else confirmBlock = true }
     // Files dragged in from another app (split screen, freeform windows, desktop mode, ChromeOS).
     val canAttach = joined && state.uploadsEnabled && state.chatAuthorId != null && !state.messagesLoading && state.messagesError == null && state.sessionError == null
@@ -1599,7 +1599,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
                             Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
                     }
-                    if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
+                    if (!narrow && direct != null && (direct.blocked || direct.peer.canBlock)) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
                         Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                     if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Join channel") }
@@ -1620,7 +1620,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         onClick = { channelMenuOpen = false; toggleMembers() },
                     )
                     // A 1:1 DM keeps Block / Unblock here on phones.
-                    if (direct != null) DropdownMenuItem(
+                    if (direct != null && (direct.blocked || direct.peer.canBlock)) DropdownMenuItem(
                         text = { Text(if (direct.blocked) "Unblock" else "Block", fontSize = 14.sp, color = if (direct.blocked) Text else ErrorText) },
                         leadingIcon = { Spacer(Modifier.size(18.dp)) },
                         onClick = { channelMenuOpen = false; toggleBlock() },
@@ -2220,7 +2220,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },
             onViewReactions = { presented.reactions.firstOrNull()?.let { reactorsTarget = presented.id to it.emoji }; actionTarget = null },
-            blockLabel = presented.author.takeIf { state.account != null && !it.isGuest && it.id != selfId }?.let { author ->
+            blockLabel = presented.author.takeIf { state.account != null && !it.isGuest && it.id != selfId && (it.id in blocked || viewModel.blockTarget(it).canBlock) }?.let { author ->
                 val target = viewModel.blockTarget(author)
                 val name = if (target.username.isNotBlank()) "@${target.username}" else target.displayName
                 if (author.id in blocked) "Unblock $name" else "Block $name"

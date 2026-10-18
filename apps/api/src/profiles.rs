@@ -34,13 +34,13 @@ pub(crate) fn space_changed(state: &AppState, space: i64) {
     });
 }
 
-type Person = (String, String, String, i16, Option<String>);
+type Person = (String, String, String, i16, Option<String>, bool);
 
 pub(crate) async fn publish_account(state: &AppState, user: i64) -> Result<(), ()> {
     let pool = state.database.as_ref().ok_or(())?;
-    let Some((id, username, display_name, avatar_id, avatar_asset)) =
+    let Some((id, username, display_name, avatar_id, avatar_asset, admin)) =
         sqlx::query_as::<_, Person>(
-            "SELECT external_id,username,display_name,avatar_id,avatar_asset FROM public.users
+            "SELECT external_id,username,display_name,avatar_id,avatar_asset,EXISTS(SELECT 1 FROM public.feedback_team f WHERE f.user_id=users.id AND f.deleted_at IS NULL) FROM public.users
              WHERE id=$1 AND deleted_at IS NULL AND username IS NOT NULL AND display_name IS NOT NULL",
         )
         .bind(user)
@@ -51,8 +51,7 @@ pub(crate) async fn publish_account(state: &AppState, user: i64) -> Result<(), (
         return Ok(());
     };
     refresh_calls(state, user, &display_name, avatar_asset.as_deref()).await;
-    let mut person =
-        json!({"id":id,"username":username,"displayName":display_name,"avatarId":avatar_id});
+    let mut person = json!({"id":id,"username":username,"displayName":display_name,"avatarId":avatar_id,"admin":admin});
     if let Some(asset) = avatar_asset {
         person["avatarAsset"] = json!(asset);
     }

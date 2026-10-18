@@ -90,14 +90,14 @@ import kotlinx.coroutines.launch
             )
             shown.subtitle?.let { Text(it, color = TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
         }
-        if (!card.self && viewModel != null && (canInvite || (id != null && account != null))) Box {
+        if (!card.self && viewModel != null && (canInvite || (id != null && account != null && (blocked || shown.canBlock)))) Box {
             ProfileIconButton(R.drawable.lucide_ellipsis, "More profile actions", idle) { profileMenu = true }
             DropdownMenu(profileMenu, { profileMenu = false }, containerColor = SurfaceRaised) {
                 if (canInvite) DropdownMenuItem(text = { Text("Invite to space") }, enabled = idle, onClick = {
                     profileMenu = false
                     choosingSpace = !choosingSpace
                 })
-                if (id != null && account != null) DropdownMenuItem(text = {
+                if (id != null && account != null && (blocked || shown.canBlock)) DropdownMenuItem(text = {
                     Text(if (pending == "unblock") "Unblocking…" else if (blocked) "Unblock" else "Block")
                 }, enabled = idle, onClick = {
                     profileMenu = false
@@ -159,7 +159,7 @@ import kotlinx.coroutines.launch
         }
     }
     if (confirmBlock && id != null && viewModel != null) BlockConfirmDialog(
-        BlockedAccount(id, card.username.orEmpty(), card.displayName ?: card.title, card.avatarId, card.avatarAsset, card.avatarUrl),
+        BlockedAccount(id, shown.username.orEmpty(), shown.displayName ?: shown.title, shown.avatarId, shown.avatarAsset, shown.avatarUrl, shown.admin, shown.team),
         viewModel, onDismiss,
     )
     // Replace the bottom sheet with the existing editor, including picture controls.

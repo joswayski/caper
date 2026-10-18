@@ -65,7 +65,7 @@ public final class AppModel {
                 guard let account, conversation.peer.id == account.id, let username = account.username, let name = account.displayName else { return conversation }
                 let picture = account.ownPicture(asset: conversation.peer.avatarAsset, url: conversation.peer.avatarUrl)
                 return DirectMessageConversation(id: conversation.id,
-                    peer: DirectMessagePeer(id: conversation.peer.id, username: username, displayName: name, avatarId: conversation.peer.avatarId,
+                    peer: DirectMessagePeer(admin: conversation.peer.admin, id: conversation.peer.id, username: username, displayName: name, avatarId: conversation.peer.avatarId, team: conversation.peer.team,
                                             avatarAsset: picture.asset, avatarUrl: picture.url),
                     lastSeq: conversation.lastSeq, readSeq: conversation.readSeq, status: conversation.status, blocked: conversation.blocked)
             }
@@ -949,6 +949,7 @@ public final class AppModel {
     /// declined server-side, so it leaves the requests list too.
     public func block(_ target: BlockTarget) async throws {
         guard let account else { return }
+        guard target.canBlock else { throw UserFacingError(message: "Caper admins and the Caper team can't be blocked.") }
         guard target.id != account.id else { throw UserFacingError(message: "You can't block yourself.") }
         let attempt = generation
         try await api.block(accountID: target.id)

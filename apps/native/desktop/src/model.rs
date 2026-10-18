@@ -42,6 +42,7 @@ impl Space {
 /// (it was removed); the saved mascot only changes when one is sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersonUpdate {
+    pub admin: Option<bool>,
     pub id: String,
     pub username: Option<String>,
     pub display_name: Option<String>,
@@ -53,6 +54,7 @@ pub struct PersonUpdate {
 impl From<&Account> for PersonUpdate {
     fn from(account: &Account) -> Self {
         Self {
+            admin: Some(account.feedback_team),
             id: account.id.clone(),
             username: account.username.clone(),
             display_name: account.display_name.clone(),
@@ -66,6 +68,7 @@ impl From<&Account> for PersonUpdate {
 impl From<&Person> for PersonUpdate {
     fn from(person: &Person) -> Self {
         Self {
+            admin: Some(person.admin),
             id: person.id.clone(),
             username: Some(person.username.clone()),
             display_name: Some(person.display_name.clone()),
@@ -111,6 +114,9 @@ macro_rules! updatable {
         impl $kind {
             /// This person's saved name and picture, when the update is theirs.
             pub fn apply_person(&mut self, update: &PersonUpdate) -> bool {
+                if self.id == update.id && let Some(admin) = update.admin {
+                    self.admin = admin;
+                }
                 update.apply(
                     &self.id,
                     Some(&mut self.username),
@@ -124,11 +130,29 @@ macro_rules! updatable {
     )*};
 }
 
-updatable!(DirectPeer, BlockedAccount, Member, Person);
+updatable!(DirectPeer, Member, Person);
+
+impl BlockedAccount {
+    pub fn apply_person(&mut self, update: &PersonUpdate) -> bool {
+        update.apply(
+            &self.id,
+            Some(&mut self.username),
+            &mut self.display_name,
+            &mut self.avatar_id,
+            &mut self.avatar_asset,
+            &mut self.avatar_url,
+        )
+    }
+}
 
 impl Author {
     /// This person's saved name and picture on a message identity.
     pub fn apply_person(&mut self, update: &PersonUpdate) -> bool {
+        if self.id == update.id
+            && let Some(admin) = update.admin
+        {
+            self.admin = admin;
+        }
         update.apply(
             &self.id,
             None,
@@ -310,6 +334,8 @@ pub struct ChannelInvitation {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectPeer {
+    #[serde(default)]
+    pub admin: bool,
     pub id: String,
     pub username: String,
     pub display_name: String,
@@ -476,6 +502,8 @@ pub struct VoiceOccupant {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Member {
+    #[serde(default)]
+    pub admin: bool,
     pub id: String,
     #[serde(default)]
     pub avatar_id: Option<i32>,
@@ -496,6 +524,8 @@ pub struct Member {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Person {
+    #[serde(default)]
+    pub admin: bool,
     pub id: String,
     pub username: String,
     pub display_name: String,
@@ -2387,6 +2417,7 @@ mod tests {
     #[test]
     fn person_updates_apply_by_id_keep_missing_names_and_clear_removed_pictures() {
         let update = PersonUpdate::from(&Person {
+            admin: false,
             id: "u1".into(),
             username: "maya_r".into(),
             display_name: "Maya R".into(),
@@ -2395,6 +2426,7 @@ mod tests {
             avatar_url: Some("https://cdn.caper.chat/assets/pic1?exp=1&sig=x".into()),
         });
         let mut member = Member {
+            admin: false,
             id: "u1".into(),
             avatar_id: Some(3),
             avatar_asset: None,
@@ -2433,6 +2465,7 @@ mod tests {
         assert_eq!(reactor.avatar_asset.as_deref(), Some("pic1"));
         // An update without names keeps them; a removed picture clears it.
         let removed = PersonUpdate {
+            admin: None,
             id: "u1".into(),
             username: None,
             display_name: None,
@@ -2454,6 +2487,7 @@ mod tests {
         assert_eq!(author.avatar_id, Some(3), "no mascot sent: kept");
         assert_eq!(author.picture(), None);
         let mut peer = DirectPeer {
+            admin: false,
             id: "u1".into(),
             username: "maya".into(),
             display_name: "Maya".into(),
@@ -2485,6 +2519,7 @@ mod tests {
     #[test]
     fn person_updates_reach_nested_message_identities_without_touching_text() {
         let update = PersonUpdate {
+            admin: Some(true),
             id: "author".into(),
             username: Some("ana".into()),
             display_name: Some("Ana".into()),
@@ -2511,12 +2546,17 @@ mod tests {
         });
         wrapper.apply_person(&update);
         assert_eq!(wrapper.author.name, "A", "someone else's message");
+        assert!(!wrapper.author.admin);
         assert_eq!(wrapper.reply_to.as_ref().unwrap().author.name, "Ana");
+        assert!(wrapper.reply_to.as_ref().unwrap().author.admin);
         let forwarded = wrapper.forward.as_ref().unwrap().message.as_ref().unwrap();
+        assert!(forwarded.author.admin);
         assert_eq!(forwarded.author.picture().unwrap().asset, "pic");
         assert_eq!(forwarded.pin.as_ref().unwrap().author.name, "Ana");
+        assert!(forwarded.pin.as_ref().unwrap().author.admin);
         assert_eq!(forwarded.content.text, "original");
         let participants = &wrapper.thread.as_ref().unwrap().participants;
+        assert!(participants[0].admin && !participants[1].admin);
         assert_eq!(
             (participants[0].name.as_str(), participants[1].name.as_str()),
             ("Ana", "A")
@@ -3729,6 +3769,7 @@ mod tests {
         assert_eq!(
             people.people[0],
             Person {
+                admin: false,
                 id: "user00000001".into(),
                 username: "alex".into(),
                 display_name: "Alex".into(),
@@ -3739,6 +3780,15 @@ mod tests {
         );
         assert_eq!(people.people[1].avatar_id, None);
         assert_eq!(people.people[2].avatar_id, None);
+        assert!(
+            !people.people[0].admin,
+            "old servers default to regular accounts"
+        );
+        let admin: Person = serde_json::from_value(serde_json::json!({
+            "id": "admin", "username": "staff", "displayName": "Staff", "admin": true
+        }))
+        .unwrap();
+        assert!(admin.admin);
     }
 
     #[test]
@@ -3812,13 +3862,15 @@ mod tests {
         );
         assert!(!direct.blocked, "old servers omit blocked");
         assert!(!direct.peer.team, "old servers omit team");
+        assert!(!direct.peer.admin, "old servers omit admin");
         let caper: DirectConversations = serde_json::from_value(serde_json::json!({
             "conversations": [{"id": "dm0000000009", "lastSeq": "0", "readSeq": "0",
                 "status": "accepted",
-                "peer": {"id": "team", "username": "caper", "displayName": "Caper", "team": true}}]
+                "peer": {"id": "team", "username": "caper", "displayName": "Caper", "team": true, "admin": true}}]
         }))
         .unwrap();
         assert!(caper.conversations[0].peer.team);
+        assert!(caper.conversations[0].peer.admin);
         assert_eq!(direct.peer.avatar_id, None);
     }
 

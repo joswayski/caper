@@ -1442,9 +1442,11 @@ function RequestBar({
         <button type="button" className="secondary" disabled={!!pending} onClick={() => run("decline", onDecline)}>
           {pending === "decline" ? "Declining…" : "Decline"}
         </button>
-        <button type="button" className="danger-outline" disabled={!!pending} onClick={onBlock}>
-          Block
-        </button>
+        {!conversation.peer.admin && !conversation.peer.team && (
+          <button type="button" className="danger-outline" disabled={!!pending} onClick={onBlock}>
+            Block
+          </button>
+        )}
       </div>
       {error && <p role="alert">{error}</p>}
     </div>
@@ -2580,6 +2582,7 @@ export default function Spaces({
     ? (directs.find((conversation) => conversation.id === directView.conversation.id) ?? directView.conversation)
     : undefined;
   const directBlocked = !!currentDirect && blockedIds.has(currentDirect.peer.id);
+  const directCanBlock = !!currentDirect && !currentDirect.peer.admin && !currentDirect.peer.team;
   const directLocked = !!currentDirect && (directBlocked || directStatus(currentDirect) === "incoming");
   const acceptRequest = async (request: DirectConversation) => {
     const accepted = await acceptDirectRequest(request.id);
@@ -2595,6 +2598,7 @@ export default function Spaces({
     currentDirect &&
     currentDirect.peer.id !== account?.id &&
     !directBlocked &&
+    directCanBlock &&
     directStatus(currentDirect) !== "incoming" ? (
       <button type="button" aria-haspopup="dialog" onClick={() => setBlockTarget(directPeer(currentDirect))}>
         <Ban aria-hidden="true" />
@@ -2612,7 +2616,7 @@ export default function Spaces({
         onDecline={() => declineRequest(currentDirect)}
         onBlock={() => setBlockTarget(directPeer(currentDirect))}
       />
-    ) : (
+    ) : directCanBlock ? (
       <Tooltip content={`Block @${currentDirect.peer.username}`}>
         <button
           type="button"
@@ -2623,7 +2627,7 @@ export default function Spaces({
           <Ban aria-hidden="true" />
         </button>
       </Tooltip>
-    );
+    ) : undefined;
   const visitHistory = visitView?.history;
   const channel = visitView
     ? {
@@ -3580,6 +3584,7 @@ export default function Spaces({
     openDirect(conversation);
   };
   const blockAuthor = (author: ChatAuthor) =>
+    !author.admin &&
     setBlockTarget({
       id: author.id,
       username: "",

@@ -1014,14 +1014,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Who a message's author is, for blocking: the best name this client already has. */
     fun blockTarget(author: ChatAuthor): BlockedAccount {
-        val state = mutable.value
-        state.selectedSpace?.members?.firstOrNull { it.id == author.id }?.let { return BlockedAccount(it.id, it.username, it.displayName, it.avatarId, it.avatarAsset, it.avatarUrl) }
-        state.directConversations.firstOrNull { it.peer.id == author.id }?.peer?.let { return BlockedAccount(it.id, it.username, it.displayName, it.avatarId, it.avatarAsset, it.avatarUrl) }
-        return BlockedAccount(author.id, "", author.name, author.avatarId, author.avatarAsset, author.avatarUrl)
+        val card = authorCard(author, mutable.value)
+        return BlockedAccount(author.id, card.username.orEmpty(), card.displayName ?: author.name,
+            card.avatarId, card.avatarAsset, card.avatarUrl, card.admin, card.team)
     }
 
     /** Blocks [account] everywhere you share; a pending request from them is declined too. */
     fun block(account: BlockedAccount, done: () -> Unit, failed: (String) -> Unit) = accountRequest(failed) { token, request ->
+        require(account.canBlock) { "Caper admins and the Caper team can't be blocked." }
         api.block(token, account.id)
         if (request != accountGeneration) return@accountRequest
         val current = mutable.value
