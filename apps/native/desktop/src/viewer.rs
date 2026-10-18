@@ -199,6 +199,8 @@ pub struct Viewer {
     /// Where the video's control bar starts on the layer, so swipes move
     /// only the picture.
     controls_mark: Option<usize>,
+    /// Original message-local, ephemeral spoiler reveal state (not draft previews).
+    reveal_scope: Option<egui::Id>,
 }
 
 impl Viewer {
@@ -220,6 +222,20 @@ impl Viewer {
             returning: None,
             paged: None,
             controls_mark: None,
+            reveal_scope: None,
+        }
+    }
+
+    pub fn with_reveal_scope(mut self, scope: egui::Id) -> Self {
+        self.reveal_scope = Some(scope);
+        self
+    }
+
+    fn hide_spoiler(&self, context: &egui::Context, current: &Attachment) {
+        if let Some(scope) = self.reveal_scope {
+            context.data_mut(|data| {
+                data.insert_temp(scope.with(("attachment-spoiler", &current.id)), false)
+            });
         }
     }
 
@@ -560,6 +576,18 @@ impl Viewer {
             && !saving
         {
             self.save(current, media);
+        }
+        if current.spoiler && self.reveal_scope.is_some() {
+            // Keep the label out of the filename and toolbar, including narrow windows.
+            let bounds = egui::Rect::from_min_max(
+                top.left_bottom(),
+                egui::pos2(top.right() - 12.0, top.bottom() + 38.0),
+            );
+            if crate::spoiler_hide_button(ui, bounds, ui.id().with("viewer-hide-spoiler")).clicked()
+            {
+                self.hide_spoiler(ui.ctx(), current);
+                return true;
+            }
         }
 
         // The media itself, carried by a finger or sliding in after a page turn.

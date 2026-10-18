@@ -2676,7 +2676,9 @@ a.chat-draft-preview {
 }
 /* The gallery, not an image's natural-size inline style, owns these bounds. */
 .chat-gallery-tile > .chat-media,
-.chat-gallery-tile > .chat-file {
+.chat-gallery-tile > .chat-file,
+.chat-gallery-tile > .chat-spoiler-revealed,
+.chat-gallery-tile > .chat-spoiler-revealed > :is(.chat-media, .chat-file) {
   position: absolute;
   inset: 0;
   width: 100% !important;
@@ -2726,6 +2728,7 @@ a.chat-draft-preview {
 }
 .chat-spoiler {
   position: relative;
+  container: spoiler / size;
   display: grid;
   place-items: center;
   min-width: min(160px, 100%);
@@ -2740,29 +2743,145 @@ a.chat-draft-preview {
   filter: blur(72px);
   pointer-events: none;
 }
+.chat-spoiler::after,
+.chat-drafts li[data-spoiler] .chat-draft-preview::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(135deg, rgb(255 255 255 / 3%) 0 2px, transparent 2px 12px), rgb(12 13 15 / 35%);
+  pointer-events: none;
+}
 .chat-spoiler-label {
   position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  max-width: calc(100% - 12px);
+  padding: 10px 14px;
+  font-size: 0.7rem;
+  line-height: 1.3;
+}
+.chat-spoiler-label strong {
+  font-size: 0.95rem;
+}
+.chat-spoiler-label > svg {
+  margin-bottom: 2px;
+}
+.chat-spoiler-label .chat-spoiler-tap {
+  display: none;
 }
 .chat-spoiler-label,
 .chat-draft-spoiler-label {
-  padding: 6px 12px;
-  border-radius: 999px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   background: var(--blackout);
   color: var(--text);
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
 }
 .chat-drafts li[data-spoiler] .chat-draft-preview > * {
   filter: blur(28px);
 }
 .chat-draft-spoiler-label {
   position: absolute;
-  inset: 50% auto auto 50%;
+  inset: calc(50% + 10px) auto auto 50%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
   transform: translate(-50%, -50%);
-  padding: 4px 8px;
-  font-size: 0.625rem;
+  padding: 6px;
+  font-size: 0.7rem;
+  font-weight: 700;
   pointer-events: none;
+}
+.chat-spoiler-revealed {
+  position: relative;
+  max-width: 100%;
+  min-width: 0;
+}
+.chat-spoiler-revealed > :is(.chat-media, .chat-file, .chat-audio) {
+  max-width: 100%;
+}
+.chat-spoiler-hide {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  max-width: calc(100% - 8px);
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--blackout);
+  color: var(--text);
+  font-size: 0.7rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.chat-spoiler-hide > svg {
+  flex: none;
+}
+.chat-spoiler-revealed > .chat-spoiler-hide {
+  margin: 4px 0 0 auto;
+}
+.chat-spoiler-revealed[data-visual] > .chat-spoiler-hide {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  margin: 0;
+}
+/* Keep the viewer control separate from a video's persistent spoiler action. */
+.chat-spoiler-revealed .chat-media-expand {
+  right: auto;
+  left: 8px;
+}
+.chat-spoiler-hide:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+}
+@media (hover: hover) {
+  .chat-spoiler:hover .chat-spoiler-label,
+  .chat-spoiler-hide:hover {
+    border-color: var(--text-muted);
+    background: var(--surface-raised);
+  }
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-spoiler-label .chat-spoiler-click {
+    display: none;
+  }
+  .chat-spoiler-label .chat-spoiler-tap {
+    display: block;
+  }
+  .chat-spoiler-label {
+    padding: 6px 8px;
+    gap: 3px;
+  }
+  .chat-spoiler-hide {
+    min-height: 44px;
+  }
+}
+/* A small gallery cell still names the action; never clip the reveal hint. */
+@container spoiler (max-width: 140px) or (max-height: 110px) {
+  .chat-spoiler-label {
+    grid-template-columns: auto auto;
+    align-items: center;
+    gap: 3px;
+    max-width: calc(100% - 8px);
+    padding: 5px;
+    font-size: 0.625rem;
+  }
+  .chat-spoiler-label strong {
+    font-size: 0.75rem;
+  }
+  .chat-spoiler-label > svg {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+  }
+  .chat-spoiler-label > span {
+    grid-column: 1 / -1;
+    white-space: nowrap;
+  }
 }
 .chat-gif {
   display: block;
@@ -3407,6 +3526,12 @@ a.chat-draft-preview {
   flex-direction: column;
   color: var(--text);
   outline: none;
+}
+.chat-viewer-spoiler {
+  position: absolute;
+  top: calc(max(8px, env(safe-area-inset-top)) + 52px);
+  right: 12px;
+  z-index: 1;
 }
 .chat-viewer-bar {
   display: flex;

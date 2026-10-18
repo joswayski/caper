@@ -502,8 +502,8 @@ export default function Chat({
   const closeViewer = useCallback(() => setViewerTarget(undefined), []);
   const viewFile =
     (messageId: string, forwarded = false) =>
-    (attachmentId: string, anchor: HTMLElement) =>
-      setViewerTarget({ messageId, attachmentId, anchor, forwarded });
+    (attachmentId: string, anchor: HTMLElement, onHideSpoiler?: ViewerTarget["onHideSpoiler"]) =>
+      setViewerTarget({ messageId, attachmentId, anchor, forwarded, onHideSpoiler });
   const openEdit = (messageId: string) => {
     if (findMessage(messageId)?.forward) return;
     setActionTarget(undefined);
@@ -1902,6 +1902,7 @@ export default function Chat({
       sentAt={viewerSource.createdAt}
       onClose={closeViewer}
       onExpired={viewerTarget.forwarded ? undefined : refreshUrls}
+      onHideSpoiler={viewerTarget.onHideSpoiler}
     />
   );
 

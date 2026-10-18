@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactElement,
@@ -23,7 +24,7 @@ import {
 } from "@floating-ui/react";
 import { Eye, EyeOff, FileText, FileWarning, Maximize2, Pencil, Play, X } from "lucide-react";
 import GifImage from "./GifImage.tsx";
-import MediaViewer, { type ViewerEditing } from "./MediaViewer.tsx";
+import MediaViewer, { type ViewAttachment, type ViewerEditing } from "./MediaViewer.tsx";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
 import type { AttachmentEdit, EditTool } from "./edit.ts";
 import { attachmentView, type ChatAttachment } from "./types.ts";
@@ -288,11 +289,29 @@ export function MessageAttachments({
   localPreviews?: Record<string, LocalPreview>;
   onExpired?: (ids: string[]) => void;
   /** Opens a sent image or video in the viewer; pending rows leave it unset. */
-  onView?: (attachmentId: string, anchor: HTMLElement) => void;
+  onView?: ViewAttachment;
 }) {
   // Ask for fresh URLs once per attachment if a long-open tab outlives them.
   const reported = useRef(new Set<string>());
   const [revealed, setRevealed] = useState<ReadonlySet<string>>(() => new Set());
+  const root = useRef<HTMLDivElement>(null);
+  const focusSpoiler = useRef<string>(undefined);
+  useLayoutEffect(() => {
+    const id = focusSpoiler.current;
+    if (!id) return;
+    root.current?.querySelector<HTMLElement>(`[data-spoiler-id="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
+    focusSpoiler.current = undefined;
+  }, [revealed]);
+  const hideSpoiler = (id: string) => {
+    focusSpoiler.current = id;
+    setRevealed((current) => {
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
+  };
+  const viewAttachment = (attachment: ChatAttachment, anchor: HTMLElement) =>
+    onView?.(attachment.id, anchor, attachment.spoiler ? hideSpoiler : undefined);
   // Some originals (e.g. HEIC) cannot be decoded here, even though the server
   // can convert them. Do not keep a broken local copy over a usable result.
   const [failedLocalPreviews, setFailedLocalPreviews] = useState(() => new Set<string>());
@@ -302,39 +321,9 @@ export function MessageAttachments({
     reported.current.add(attachment.id);
     onExpired?.([attachment.id]);
   };
-  const renderAttachment = (attachment: ChatAttachment) => {
+  const renderVisibleAttachment = (attachment: ChatAttachment) => {
     const size = frame(attachment);
     const view = attachmentView(attachment);
-    if (attachment.spoiler && !revealed.has(attachment.id)) {
-      const hiddenSize = size ?? DEFAULT_FRAME;
-      const local = localPreviews[attachment.id];
-      const visual = attachment.kind === "image" || attachment.kind === "video";
-      const thumbnail =
-        visual && !attachment.unavailable && attachment.status !== "failed"
-          ? (attachment.previewUrl ??
-            (local && !local.video ? local.url : undefined) ??
-            (attachment.kind === "image" ? attachment.url : undefined))
-          : undefined;
-      return (
-        <button
-          key={attachment.id}
-          type="button"
-          className="chat-media chat-spoiler"
-          style={{ width: hiddenSize.width, aspectRatio: hiddenSize.width / hiddenSize.height }}
-          aria-label="Reveal spoiler attachment"
-          onClick={() => setRevealed((current) => new Set([...current, attachment.id]))}
-        >
-          {thumbnail && (
-            <span className="chat-spoiler-preview" aria-hidden="true">
-              <MediaPreviewContext value={true}>
-                <GifImage src={thumbnail} alt="" onError={() => expired(attachment)} />
-              </MediaPreviewContext>
-            </span>
-          )}
-          <span className="chat-spoiler-label">Spoiler</span>
-        </button>
-      );
-    }
     const local = failedLocalPreviews.has(attachment.id) ? undefined : localPreviews[attachment.id];
     const processing = view === "processing";
     if (processing && !(attachment.kind === "image" || (local && !local.video)))
@@ -390,7 +379,7 @@ export function MessageAttachments({
             )
               return;
             event.preventDefault();
-            onView(attachment.id, event.currentTarget);
+            viewAttachment(attachment, event.currentTarget);
           }}
         >
           {src && (
@@ -423,7 +412,7 @@ export function MessageAttachments({
           attachment={attachment}
           size={size}
           onError={() => expired(attachment)}
-          onView={onView && ((anchor) => onView(attachment.id, anchor))}
+          onView={onView && ((anchor) => viewAttachment(attachment, anchor))}
         />
       );
     if (view === "video") {
@@ -448,7 +437,7 @@ export function MessageAttachments({
               onClick={(anchor) => {
                 // The viewer plays its own copy; don't play both.
                 anchor.parentElement?.querySelector("video")?.pause();
-                onView(attachment.id, anchor);
+                viewAttachment(attachment, anchor);
               }}
             />
           )}
@@ -465,11 +454,72 @@ export function MessageAttachments({
     }
     return <FileCard key={attachment.id} attachment={attachment} />;
   };
+  const renderAttachment = (attachment: ChatAttachment) => {
+    if (!attachment.spoiler) return renderVisibleAttachment(attachment);
+    const size = frame(attachment) ?? DEFAULT_FRAME;
+    const visual = attachment.kind === "image" || attachment.kind === "video";
+    if (revealed.has(attachment.id)) {
+      return (
+        <div
+          key={attachment.id}
+          className="chat-spoiler-revealed"
+          data-visual={visual || undefined}
+          style={visual ? { width: size.width } : undefined}
+        >
+          {renderVisibleAttachment(attachment)}
+          <button
+            type="button"
+            className="chat-spoiler-hide"
+            data-spoiler-id={attachment.id}
+            onClick={() => hideSpoiler(attachment.id)}
+          >
+            <EyeOff size={16} aria-hidden="true" />
+            Hide spoiler
+          </button>
+        </div>
+      );
+    }
+    const local = localPreviews[attachment.id];
+    const thumbnail =
+      visual && !attachment.unavailable && attachment.status !== "failed"
+        ? (attachment.previewUrl ??
+          (local && !local.video ? local.url : undefined) ??
+          (attachment.kind === "image" ? attachment.url : undefined))
+        : undefined;
+    return (
+      <button
+        key={attachment.id}
+        type="button"
+        className="chat-media chat-spoiler"
+        style={{ width: size.width, aspectRatio: size.width / size.height }}
+        aria-label="Reveal spoiler attachment"
+        data-spoiler-id={attachment.id}
+        onClick={() => {
+          focusSpoiler.current = attachment.id;
+          setRevealed((current) => new Set([...current, attachment.id]));
+        }}
+      >
+        {thumbnail && (
+          <span className="chat-spoiler-preview" aria-hidden="true">
+            <MediaPreviewContext value={true}>
+              <GifImage src={thumbnail} alt="" onError={() => expired(attachment)} />
+            </MediaPreviewContext>
+          </span>
+        )}
+        <span className="chat-spoiler-label" aria-hidden="true">
+          <EyeOff size={24} />
+          <strong>Spoiler</strong>
+          <span className="chat-spoiler-click">Click to reveal</span>
+          <span className="chat-spoiler-tap">Tap to reveal</span>
+        </span>
+      </button>
+    );
+  };
   // Keep files/audio readable instead of squeezing their controls into photo cells.
   const visuals = attachments.filter((attachment) => attachment.kind === "image" || attachment.kind === "video");
   const files = attachments.filter((attachment) => attachment.kind !== "image" && attachment.kind !== "video");
   return (
-    <div className="chat-attachments">
+    <div ref={root} className="chat-attachments">
       {visuals.length > 1 ? <AttachmentGallery items={visuals.map(renderAttachment)} /> : visuals.map(renderAttachment)}
       {files.length > 0 && <div className="chat-attachment-files">{files.map(renderAttachment)}</div>}
     </div>
@@ -838,7 +888,12 @@ export function DraftAttachments({
                   Retry upload
                 </button>
               )}
-              {draft.spoiler && <span className="chat-draft-spoiler-label">Spoiler</span>}
+              {draft.spoiler && (
+                <span className="chat-draft-spoiler-label">
+                  <EyeOff size={18} aria-hidden="true" />
+                  Spoiler
+                </span>
+              )}
               {(onToggleSpoiler || onRemove) && (
                 // One bar in the corner, like Discord's: Spoiler, Edit (when the editor can open the file), then Remove.
                 <div className="chat-draft-actions">
