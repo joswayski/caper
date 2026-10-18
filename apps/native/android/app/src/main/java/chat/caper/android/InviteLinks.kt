@@ -244,7 +244,12 @@ import kotlinx.coroutines.delay
                         Avatar(shown.inviter.displayName, 16.dp, avatarId = shown.inviter.avatarId,
                             avatarAsset = shown.inviter.avatarAsset, avatarUrl = shown.inviter.avatarUrl)
                         Spacer(Modifier.width(6.dp))
-                        Text("Invited by ${shown.inviter.displayName}", color = TextMuted, fontSize = 12.sp)
+                        Text("Invited by ${shown.inviter.displayName}", modifier = Modifier.weight(1f, fill = false),
+                            color = TextMuted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (shown.inviter.admin) {
+                            Spacer(Modifier.width(6.dp))
+                            AdminBadge()
+                        }
                     }
                     Text(listOfNotNull(inviteMemberCount(shown.memberCount), shown.channel?.let { "Opens in #${it.name}" }).joinToString(" · "),
                         color = TextMuted, fontSize = 12.sp)

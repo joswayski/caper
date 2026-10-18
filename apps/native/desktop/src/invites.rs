@@ -373,6 +373,7 @@ mod tests {
                 name: "feedback".into(),
             }),
             created_by: Inviter {
+                admin: false,
                 avatar_id: None,
                 avatar_asset: None,
                 avatar_url: None,

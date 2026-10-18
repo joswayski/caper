@@ -2156,6 +2156,7 @@ impl CaperApp {
                         owner_id: "fixture-inviter".into(),
                         demo: false,
                         inviter: Some(model::Inviter {
+                            admin: false,
                             avatar_id: None,
                             avatar_asset: None,
                             avatar_url: None,
@@ -2180,6 +2181,7 @@ impl CaperApp {
                     detail.channel_invitations.push(model::ChannelInvitation {
                         channel: private,
                         inviter: model::Inviter {
+                            admin: false,
                             avatar_id: None,
                             avatar_asset: None,
                             avatar_url: None,
@@ -2254,6 +2256,7 @@ impl CaperApp {
                                 name: "feedback".into(),
                             }),
                             inviter: model::Inviter {
+                                admin: true,
                                 avatar_id: Some(3),
                                 avatar_asset: None,
                                 avatar_url: None,
@@ -2982,6 +2985,7 @@ impl CaperApp {
     /// created on a server.
     fn fixture_invite_links(&self) -> Vec<invites::InviteLink> {
         let owner = model::Inviter {
+            admin: false,
             avatar_id: None,
             avatar_asset: None,
             avatar_url: None,
@@ -21726,6 +21730,9 @@ impl CaperApp {
                                 .size(12.8)
                                 .color(MUTED),
                         );
+                        if inviter.admin {
+                            admin_badge(ui);
+                        }
                     });
                     for line in [
                         preview
