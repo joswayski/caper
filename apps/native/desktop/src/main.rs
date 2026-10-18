@@ -15713,7 +15713,12 @@ impl CaperApp {
                     })
                     .show(ui, |ui| {
                         let response = ui.add(
-                            egui::Button::new(
+                            egui::Button::image_and_text(
+                                egui::Image::new(egui::include_image!(
+                                    "../resources/icons/pin.svg"
+                                ))
+                                .fit_to_exact_size(egui::vec2(12.0, 12.0))
+                                .tint(MUTED),
                                 RichText::new(format!("Pinned by {pinner}"))
                                     .size(11.0)
                                     .color(MUTED),
@@ -15969,6 +15974,9 @@ impl CaperApp {
                     .max_rect(actions_rect.shrink(3.0)),
             );
             actions_ui.spacing_mut().item_spacing.x = 0.0;
+            // Keep the 24px controls centered in the 30px surface, rather
+            // than inheriting the app's 36px horizontal interaction height.
+            actions_ui.spacing_mut().interact_size.y = 24.0;
             actions_ui.horizontal(|ui| {
                 let reply = if in_thread {
                     None
@@ -26772,10 +26780,47 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
             render(&mut app, &context, vec![]);
         }
+        let hovered = render(&mut app, &context, vec![]);
+        let attribution = node_bounds(&hovered, "Open profile for Fixture Pinner").unwrap();
+        let pin_visible = hovered.shapes.iter().any(|shape| {
+            let rect = match &shape.shape {
+                egui::Shape::Rect(rect) if rect.brush.is_some() => rect.rect,
+                egui::Shape::Mesh(mesh) => mesh.calc_bounds(),
+                _ => return false,
+            };
+            attribution.contains_rect(rect)
+                && rect.right() < text_position(&hovered, "Pinned by Fixture Pinner").x
+        });
+        let toolbar = hovered
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == super::SURFACE
+                        && rect.rect.height() == 30.0
+                        && rect.rect.x_range().contains(action_rect.center().x) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("hover actions surface");
+        let aligned = [
+            "Reply in thread",
+            "Reply",
+            "Add reaction",
+            "Message actions",
+        ]
+        .into_iter()
+        .all(|label| {
+            let button = node_bounds(&hovered, label).unwrap();
+            toolbar.contains_rect(button) && (toolbar.center().y - button.center().y).abs() < 0.5
+        });
         assert!(
-            painted(&render(&mut app, &context, vec![])),
-            "hover reveals compact actions"
+            pin_visible && aligned,
+            "pinned attribution has an icon: {pin_visible}; all actions center inside their surface: {aligned}"
         );
+        assert!(painted(&hovered), "hover reveals compact actions");
         click(
             &mut app,
             &context,
