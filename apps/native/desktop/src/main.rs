@@ -456,6 +456,7 @@ enum NavIcon {
     RotateLeft,
     Eye,
     EyeOff,
+    Trash,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1191,6 +1192,7 @@ struct CaperApp {
     showing_pins: bool,
     message_editor: Option<edits::Editor>,
     edit_history: Option<edits::History>,
+    message_delete: Option<edits::Deletion>,
     edit_request: u64,
     typers: BTreeMap<String, Typer>,
     typing_sent: bool,
@@ -1522,6 +1524,7 @@ impl CaperApp {
             showing_pins: false,
             message_editor: None,
             edit_history: None,
+            message_delete: None,
             edit_request: 0,
             typers: BTreeMap::new(),
             typing_sent: false,
@@ -3028,6 +3031,7 @@ impl CaperApp {
                 revision: 1,
                 edited_at: None,
                 edit_seq: None,
+                deleted_at: None,
             })
             .collect();
         self.timeline.reset(messages, "4").expect("valid fixture");
@@ -4071,6 +4075,21 @@ impl CaperApp {
                 ) =>
                 {
                     self.accept_versions(request, &message, result);
+                }
+                Event::Deleted {
+                    generation,
+                    request,
+                    channel,
+                    message,
+                    result,
+                } if current(
+                    generation,
+                    self.generation,
+                    Some(&channel),
+                    self.selected_channel.as_deref(),
+                ) =>
+                {
+                    self.accept_delete(request, &message, result);
                 }
                 Event::MediaStatus {
                     generation,
@@ -7311,6 +7330,7 @@ impl CaperApp {
         self.showing_pins = false;
         self.message_editor = None;
         self.edit_history = None;
+        self.message_delete = None;
         self.draft.clear();
         self.typers.clear();
         self.live = "Offline".into();
@@ -7697,6 +7717,7 @@ impl CaperApp {
             || self.showing_pins
             || self.message_editor.is_some()
             || self.edit_history.is_some()
+            || self.message_delete.is_some()
             || self.viewer.is_some()
             || self.attachment_editor.is_some()
             || self.draft_preview.is_some()
@@ -9113,6 +9134,7 @@ impl CaperApp {
             && !self.showing_pins
             && self.message_editor.is_none()
             && self.edit_history.is_none()
+            && self.message_delete.is_none()
             && self.reactors_view.is_none()
             && self.reaction_picker.is_none()
             && self.mention_card.is_none()
@@ -10134,6 +10156,7 @@ impl CaperApp {
             || self.viewer.is_some()
             || self.message_editor.is_some()
             || self.edit_history.is_some()
+            || self.message_delete.is_some()
             || self.forwarding.is_open()
             || self.mention_card.is_some()
             || self.reactors_view.is_some()
@@ -15011,6 +15034,7 @@ impl CaperApp {
             && self.dialog.is_none()
             && self.message_editor.is_none()
             && self.edit_history.is_none()
+            && self.message_delete.is_none()
             && !self.forwarding.is_open()
             && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
@@ -16272,7 +16296,15 @@ impl CaperApp {
                             .clicked()
                         });
                         let mut open = heading.inner;
-                        if !blocked {
+                        if !blocked && reference.deleted {
+                            // The heading still opens the tombstone in place.
+                            ui.label(
+                                RichText::new("Original message was deleted.")
+                                    .size(12.0)
+                                    .italics()
+                                    .color(MUTED),
+                            );
+                        } else if !blocked {
                             let text = reference.full_text.as_deref().unwrap_or(&reference.text);
                             let text = if text.is_empty() {
                                 if reference.has_attachments {
@@ -16547,6 +16579,8 @@ impl CaperApp {
     ) {
         let projected = self.mutations.project(message);
         let message = projected.as_ref();
+        // A tombstone keeps its header, place and thread; nothing else.
+        let deleted = message.is_deleted();
         let grouped = grouped && message.reply_to.is_none();
         let plain_time = if in_pins {
             DateTime::parse_from_rfc3339(&message.created_at).map_or_else(
@@ -16560,7 +16594,7 @@ impl CaperApp {
         } else {
             display_time(&message.created_at)
         };
-        let edited = message.revision > 1;
+        let edited = message.revision > 1 && !deleted;
         // Grouped rows show the marker after their text instead.
         let time = if edited && !grouped {
             format!("{plain_time} (edited)")
@@ -16568,15 +16602,20 @@ impl CaperApp {
             plain_time
         };
         let short = grouped.then(|| short_time(&message.created_at));
-        let can_react = self.selected_is_joined() && self.session.is_some();
+        let can_react = self.selected_is_joined() && self.session.is_some() && !deleted;
         // As on web, a forward whose original is unavailable cannot be forwarded.
-        let forwardable = message
-            .forward
-            .as_ref()
-            .is_none_or(|forward| forward.message.is_some());
+        let forwardable = !deleted
+            && message
+                .forward
+                .as_ref()
+                .is_none_or(|forward| forward.message.is_some());
+        // A deleted message's thread stays reachable once it has one.
+        let thread_action = !in_thread
+            && (!deleted || message.thread.is_some() || message.thread_root_id.is_some());
         // Web's hover actions: Reply in thread (outside threads), Reply for
         // members, then Add reaction (disabled in read-only previews) and ⋯.
-        let action_count = 2 + usize::from(!in_thread) + usize::from(can_react);
+        let action_count =
+            1 + usize::from(thread_action) + usize::from(can_react) + usize::from(!deleted);
         let action_width = action_count as f32 * 24.0 + 6.0;
         let mentioned = mentions::mentions_me(
             &message.content.mentions,
@@ -16585,7 +16624,7 @@ impl CaperApp {
         );
         // Reserved beneath the row so the tint can be sized after drawing.
         let tint = ui.painter().add(egui::Shape::Noop);
-        let pinned = message.pin.as_ref();
+        let pinned = message.pin.as_ref().filter(|_| !deleted);
         let pinned_by_viewer = self.pinned_by_viewer(message);
         let mut view_thread = None;
         let mut actions_y = None;
@@ -16605,10 +16644,14 @@ impl CaperApp {
         };
         let shown = egui::Frame::new().fill(fill).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            let quote = message.reply_to.as_ref().map(|reference| {
-                let source = self.reply_context(ui, reference, &message.id);
-                (source, !self.is_blocked(&reference.author.id))
-            });
+            let quote = message
+                .reply_to
+                .as_ref()
+                .filter(|_| !deleted)
+                .map(|reference| {
+                    let source = self.reply_context(ui, reference, &message.id);
+                    (source, !self.is_blocked(&reference.author.id))
+                });
             if let Some(pin) = pinned {
                 let pinner = if pinned_by_viewer {
                     "you"
@@ -16696,6 +16739,15 @@ impl CaperApp {
                     {
                         view_thread = Some(root.clone());
                     }
+                    if deleted {
+                        ui.label(
+                            RichText::new("This message was deleted.")
+                                .size(14.0)
+                                .italics()
+                                .color(MUTED),
+                        );
+                        return Body::default();
+                    }
                     message_body(
                         ui,
                         &message.id,
@@ -16757,12 +16809,16 @@ impl CaperApp {
             .session
             .as_ref()
             .map(|session| session.author.id.clone());
-        let reactions = projected_reactions(
-            &message.reactions,
-            &message.id,
-            author.as_deref(),
-            &self.pending_reactions,
-        );
+        let reactions = if deleted {
+            Vec::new()
+        } else {
+            projected_reactions(
+                &message.reactions,
+                &message.id,
+                author.as_deref(),
+                &self.pending_reactions,
+            )
+        };
         if let Some(token) = self.token.clone() {
             // Hover only: sensing clicks here, above the row, would swallow
             // clicks inside it (the edited marker). Right-clicks still open it,
@@ -16779,12 +16835,13 @@ impl CaperApp {
                 .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
                 .at_pointer_fixed()
                 .show(|ui| {
-                    if ui
-                        .add_enabled(
-                            can_react && self.pending.is_none(),
-                            egui::Button::new("Reply"),
-                        )
-                        .clicked()
+                    if !deleted
+                        && ui
+                            .add_enabled(
+                                can_react && self.pending.is_none(),
+                                egui::Button::new("Reply"),
+                            )
+                            .clicked()
                     {
                         self.select_reply(ui.ctx(), message, in_thread);
                         ui.close();
@@ -16803,17 +16860,21 @@ impl CaperApp {
                         ui.close();
                     }
                     copy_items(ui, message);
+                    if self.can_delete(message) && ui.button("Delete message").clicked() {
+                        self.open_delete(message);
+                        ui.close();
+                    }
                 });
         }
         // Files follow the forward context target so their own clicks (open
         // in the browser or player) stay on top of it.
-        if !message.content.attachments.is_empty() {
+        if !deleted && !message.content.attachments.is_empty() {
             egui::Frame::new().fill(fill).show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 self.attachment_list(ui, &message.content.attachments, false);
             });
         }
-        if let Some(forward) = &message.forward {
+        if let Some(forward) = message.forward.as_ref().filter(|_| !deleted) {
             egui::Frame::new()
                 .inner_margin(egui::Margin {
                     left: 62,
@@ -16889,7 +16950,7 @@ impl CaperApp {
             // than inheriting the app's 36px horizontal interaction height.
             actions_ui.spacing_mut().interact_size.y = 24.0;
             actions_ui.horizontal(|ui| {
-                let reply = if in_thread {
+                let reply = if !thread_action {
                     None
                 } else {
                     let rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
@@ -16912,7 +16973,7 @@ impl CaperApp {
                         },
                     )
                 });
-                let emoji = Some({
+                let emoji = (!deleted).then(|| {
                     let rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
                     ui.interact(
                         rect,
@@ -17163,7 +17224,7 @@ impl CaperApp {
                             ui.close();
                         }
                         // Web's menu also offers the thread, not only the hover bar.
-                        if !in_thread
+                        if thread_action
                             && message_menu_item(ui, NavIcon::Thread, "Reply in thread", true)
                                 .clicked()
                         {
@@ -17196,7 +17257,7 @@ impl CaperApp {
                             ui.close();
                         }
                         if message.forward.is_none()
-                            && message.revision > 1
+                            && edited
                             && message_menu_item(ui, NavIcon::History, "Message history", true)
                                 .clicked()
                         {
@@ -17234,7 +17295,13 @@ impl CaperApp {
                             ui.close();
                         }
                         copy_items(ui, message);
-                        if let Some(account) = self.blockable_author(&message.author) {
+                        if self.can_delete(message)
+                            && danger_menu_item(ui, NavIcon::Trash, "Delete message").clicked()
+                        {
+                            self.open_delete(message);
+                            ui.close();
+                        }
+                        if !deleted && let Some(account) = self.blockable_author(&message.author) {
                             let name = if account.username.is_empty() {
                                 account.display_name.clone()
                             } else {
@@ -24305,6 +24372,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::RotateLeft => egui::include_image!("../resources/icons/rotate-ccw.svg"),
         NavIcon::Eye => egui::include_image!("../resources/icons/eye.svg"),
         NavIcon::EyeOff => egui::include_image!("../resources/icons/eye-off.svg"),
+        NavIcon::Trash => egui::include_image!("../resources/icons/trash-2.svg"),
     };
     let image = egui::Image::new(source).tint(color);
     if let Ok(egui::load::TexturePoll::Ready { texture }) =
@@ -26307,6 +26375,21 @@ fn message_menu_item(
     label: &str,
     enabled: bool,
 ) -> egui::Response {
+    message_menu_item_in(ui, icon, label, enabled, TEXT)
+}
+
+/// Web's `.message-action-danger` row: a destructive action in danger text.
+fn danger_menu_item(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Response {
+    message_menu_item_in(ui, icon, label, true, Color32::from_rgb(255, 140, 154))
+}
+
+fn message_menu_item_in(
+    ui: &mut egui::Ui,
+    icon: NavIcon,
+    label: &str,
+    enabled: bool,
+    color: Color32,
+) -> egui::Response {
     ui.add_enabled_ui(enabled, |ui| {
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::click());
@@ -26328,19 +26411,19 @@ fn message_menu_item(
                 egui::vec2(16.0, 16.0),
             ),
             icon,
-            TEXT,
+            color,
         );
         let galley = truncated_galley(
             ui,
             label,
             egui::FontId::proportional(12.48),
-            TEXT,
+            color,
             rect.width() - 40.0,
         );
         ui.painter().galley(
             egui::pos2(rect.left() + 32.0, rect.center().y - galley.size().y / 2.0),
             galley,
-            TEXT,
+            color,
         );
         response
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
@@ -47030,6 +47113,7 @@ mod tests {
             revision: 1,
             edited_at: None,
             edit_seq: None,
+            deleted_at: None,
         };
         assert!(pending.confirmed_by(&message, "author"));
         assert!(!pending.confirmed_by(&message, "another-author"));
@@ -47150,6 +47234,7 @@ mod tests {
                 revision: 1,
                 edited_at: None,
                 edit_seq: None,
+                deleted_at: None,
             }),
         });
         assert!(!app.typers.get("other").unwrap().typing);
@@ -48064,6 +48149,94 @@ mod tests {
             app.message_editor.is_none(),
             "Author/account loss closes the obsolete editor"
         );
+    }
+
+    #[test]
+    fn deleting_a_message_confirms_merges_the_tombstone_and_leaves_placeholders() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-edits-editor"),
+        );
+        let shows = |output: &egui::FullOutput, needle: &str| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains(needle))
+            })
+        };
+        let original = app.message_editor.as_ref().unwrap().original.clone();
+        let cursor = app.timeline.cursor();
+        assert!(app.can_delete(&original));
+        app.open_delete(&original);
+        assert!(app.message_editor.is_none(), "one dialog at a time");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Delete message?"));
+        assert!(shows(
+            &output,
+            "This removes the message for everyone. This can’t be undone."
+        ));
+        // Failures stay in the dialog, like an edit's.
+        app.message_delete.as_mut().unwrap().request = 41;
+        app.message_delete.as_mut().unwrap().busy = true;
+        app.accept_delete(
+            41,
+            &original.id,
+            Err("Deleting too quickly. Try again shortly.".into()),
+        );
+        let deletion = app.message_delete.as_ref().unwrap();
+        assert!(!deletion.busy);
+        assert_eq!(
+            deletion.error.as_deref(),
+            Some("Deleting too quickly. Try again shortly.")
+        );
+        let mut tombstone = original.clone();
+        tombstone.content.text.clear();
+        tombstone.content.mentions.clear();
+        tombstone.revision = original.revision + 1;
+        tombstone.edited_at = Some("2026-10-18T09:00:00Z".into());
+        tombstone.edit_seq = Some("6".into());
+        tombstone.attachments_seq = Some("6".into());
+        tombstone.deleted_at = Some("2026-10-18T09:00:00Z".into());
+        app.message_delete.as_mut().unwrap().request = 42;
+        app.accept_delete(42, &original.id, Ok(Box::new(tombstone.clone())));
+        assert!(app.message_delete.is_none());
+        assert_eq!(
+            app.timeline.cursor(),
+            cursor,
+            "HTTP answers are cursor-neutral"
+        );
+        let loaded = app
+            .timeline
+            .messages()
+            .find(|message| message.id == original.id)
+            .unwrap()
+            .clone();
+        assert!(loaded.is_deleted());
+        assert!(!app.can_delete(&loaded) && !app.can_edit(&loaded));
+        // A reply quoting it shows that the original is gone.
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        let last = messages.len() - 1;
+        assert_ne!(messages[last].id, original.id);
+        messages[last].reply_to = Some(model::MessageReply::from_message(&loaded));
+        app.timeline.reset(messages, &cursor).unwrap();
+        // An editor opened from a stale copy closes once the tombstone is loaded.
+        app.message_editor = Some(crate::edits::Editor {
+            original: original.clone(),
+            draft: original.content.text.clone(),
+            busy: false,
+            error: None,
+            request: 0,
+            focus: false,
+            caret_end: false,
+        });
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(app.message_editor.is_none());
+        assert!(shows(&output, "This message was deleted."));
+        assert!(shows(&output, "Original message was deleted."));
+        assert!(!shows(&output, &original.content.text));
+        assert!(!shows(&output, "(edited)"));
     }
 
     #[test]

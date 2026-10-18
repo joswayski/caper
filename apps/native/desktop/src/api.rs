@@ -1169,6 +1169,28 @@ impl Api {
         Self::edit_snapshot(message, &original.channel_id, &original.id)
     }
 
+    /// Delete the author's own message, authorized like `edit_message`. The
+    /// answer is the tombstone, which merges like an edit snapshot.
+    pub fn delete_message(
+        &self,
+        token: Option<&str>,
+        chat_token: &str,
+        channel: &str,
+        message: &str,
+    ) -> Result<Message, ApiError> {
+        let tombstone: Message = self.request(
+            Method::DELETE,
+            &format!("api/chat/channels/{channel}/messages/{message}"),
+            token,
+            Some(chat_token),
+            None,
+        )?;
+        if tombstone.deleted_at.is_none() {
+            return Err(invalid("Caper returned an invalid message snapshot."));
+        }
+        Self::edit_snapshot(tombstone, channel, message)
+    }
+
     pub fn load_message(
         &self,
         token: Option<&str>,
@@ -2162,5 +2184,73 @@ mod tests {
         let bodies = worker.join().unwrap();
         assert_eq!(bodies[0], r#"{"username":"jordan"}"#);
         assert_eq!(bodies[8], r#"{"directMessages":"nobody"}"#);
+    }
+
+    #[test]
+    fn delete_message_sends_chat_and_account_auth_and_returns_the_tombstone() {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let tombstone = r#"{"id":"m1","channelId":"c1","seq":"3","createdAt":"2026-10-18T09:00:00Z","clientMessageId":"k","author":{"id":"u","name":"User","isGuest":false},"content":{"version":1,"type":"text","text":""},"revision":2,"editedAt":"2026-10-18T09:05:00Z","editSeq":"9","attachmentsSeq":"9","deletedAt":"2026-10-18T09:05:00Z"}"#;
+        let worker = std::thread::spawn(move || {
+            for (status, body) in [
+                ("200 OK", tombstone.to_owned()),
+                (
+                    "403 Forbidden",
+                    r#"{"error":"only the author can delete this message"}"#.into(),
+                ),
+                (
+                    "200 OK",
+                    tombstone.replace(r#","deletedAt":"2026-10-18T09:05:00Z""#, ""),
+                ),
+            ] {
+                let (stream, _) = server.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert_eq!(
+                    request,
+                    "DELETE /api/chat/channels/c1/messages/m1 HTTP/1.1\r\n"
+                );
+                let (mut chat, mut account, mut length) = (false, false, 0);
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    chat |= lower == "x-caper-chat-token: chat\r\n";
+                    account |= lower == "authorization: bearer account\r\n";
+                    if let Some(value) = lower.strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                assert!(chat && account, "authorized exactly like an edit");
+                assert_eq!(length, 0, "no body");
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        let deleted = api
+            .delete_message(Some("account"), "chat", "c1", "m1")
+            .unwrap();
+        assert!(deleted.is_deleted());
+        assert_eq!(deleted.revision, 2);
+        assert!(deleted.content.text.is_empty());
+        let refused = api
+            .delete_message(Some("account"), "chat", "c1", "m1")
+            .unwrap_err();
+        assert_eq!(refused.status.map(|status| status.as_u16()), Some(403));
+        assert_eq!(refused.message, "Only the author can delete this message.");
+        assert!(
+            api.delete_message(Some("account"), "chat", "c1", "m1")
+                .is_err(),
+            "a snapshot that is not a tombstone is refused"
+        );
+        worker.join().unwrap();
     }
 }

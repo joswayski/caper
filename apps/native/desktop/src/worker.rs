@@ -292,6 +292,14 @@ pub enum Command {
         original: Box<Message>,
         text: String,
     },
+    DeleteMessage {
+        generation: u64,
+        request: u64,
+        token: Option<String>,
+        chat_token: String,
+        channel: String,
+        message: String,
+    },
     ReloadMessage {
         generation: u64,
         request: u64,
@@ -831,6 +839,14 @@ pub enum Event {
         channel: String,
         message: String,
         result: Result<crate::model::MessageVersions, String>,
+    },
+    /// The tombstone from a successful delete, or why it failed.
+    Deleted {
+        generation: u64,
+        request: u64,
+        channel: String,
+        message: String,
+        result: Result<Box<Message>, String>,
     },
     Credential {
         generation: u64,
@@ -2049,6 +2065,23 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             reloaded: false,
             result: api
                 .edit_message(token.as_deref(), &chat_token, &original, &text)
+                .map(Box::new)
+                .map_err(|error| error.to_string()),
+        },
+        Command::DeleteMessage {
+            generation,
+            request,
+            token,
+            chat_token,
+            channel,
+            message,
+        } => Event::Deleted {
+            generation,
+            request,
+            channel: channel.clone(),
+            message: message.clone(),
+            result: api
+                .delete_message(token.as_deref(), &chat_token, &channel, &message)
                 .map(Box::new)
                 .map_err(|error| error.to_string()),
         },

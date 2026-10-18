@@ -1,4 +1,5 @@
-//! Author editing and retained history. HTTP snapshots are cursor-neutral.
+//! Author editing, deletion and retained history. HTTP snapshots are
+//! cursor-neutral.
 use crate::{
     BORDER, CAPER, CaperApp, ERROR, MUTED, RAISED, SURFACE, TERRACOTTA, TEXT, egui, model,
     worker::Command,
@@ -30,6 +31,14 @@ pub struct History {
     pub requested_revision: u32,
 }
 
+/// The open **Delete message?** confirmation.
+pub struct Deletion {
+    pub message: Message,
+    pub busy: bool,
+    pub error: Option<String>,
+    pub request: u64,
+}
+
 pub fn valid_text(text: &str) -> bool {
     !text.trim().is_empty()
         && text.chars().count() <= 4000
@@ -59,7 +68,13 @@ pub fn diff(before: &str, after: &str) -> (DiffTokens, DiffTokens) {
 
 impl CaperApp {
     pub(crate) fn can_edit(&self, message: &Message) -> bool {
-        message.forward.is_none()
+        message.forward.is_none() && self.can_delete(message)
+    }
+
+    /// The signed-in, non-guest author in a conversation they can write to.
+    /// Unlike editing, this includes their forwards.
+    pub(crate) fn can_delete(&self, message: &Message) -> bool {
+        !message.is_deleted()
             && self.selected_channel.as_deref() == Some(&message.channel_id)
             && self.selected_is_joined()
             && self.session.as_ref().is_some_and(|session| {
@@ -84,8 +99,137 @@ impl CaperApp {
         });
     }
 
+    pub(crate) fn open_delete(&mut self, message: &Message) {
+        if !self.can_delete(message) {
+            return;
+        }
+        self.message_editor = None;
+        self.edit_history = None;
+        self.message_delete = Some(Deletion {
+            message: message.clone(),
+            busy: false,
+            error: None,
+            request: 0,
+        });
+    }
+
+    fn submit_delete(&mut self) {
+        let (Some(deletion), Some(session)) = (&mut self.message_delete, &self.session) else {
+            return;
+        };
+        if deletion.busy {
+            return;
+        }
+        self.edit_request += 1;
+        deletion.request = self.edit_request;
+        deletion.busy = true;
+        deletion.error = None;
+        self.worker.send(Command::DeleteMessage {
+            generation: self.generation,
+            request: deletion.request,
+            token: self.token.clone(),
+            chat_token: session.token.clone(),
+            channel: deletion.message.channel_id.clone(),
+            message: deletion.message.id.clone(),
+        });
+    }
+
+    /// A tombstone merges like an edit acknowledgement, even if its
+    /// confirmation has since closed; failures stay in the open dialog.
+    pub(crate) fn accept_delete(
+        &mut self,
+        request: u64,
+        message: &str,
+        result: Result<Box<Message>, String>,
+    ) {
+        let pending = self
+            .message_delete
+            .as_mut()
+            .filter(|deletion| deletion.request == request && deletion.message.id == message);
+        match result {
+            Ok(snapshot) => {
+                if pending.is_some() {
+                    self.message_delete = None;
+                }
+                if self.timeline.merge_edit_ack(*snapshot).is_err() {
+                    self.reload_channel();
+                }
+            }
+            Err(error) => {
+                if let Some(deletion) = pending {
+                    deletion.busy = false;
+                    deletion.error = Some(if error.trim().is_empty() {
+                        "Couldn’t delete the message. Try again.".into()
+                    } else {
+                        error
+                    });
+                }
+            }
+        }
+    }
+
+    /// Whether the loaded copy of a message is now a tombstone.
+    fn deleted(&self, id: &str) -> bool {
+        self.timeline
+            .messages()
+            .chain(self.timeline.pinned_messages())
+            .any(|message| message.id == id && message.is_deleted())
+    }
+
+    fn message_delete_dialog(&mut self, context: &egui::Context) {
+        let Some(deletion) = self.message_delete.take() else {
+            return;
+        };
+        if !deletion.busy
+            && (self.deleted(&deletion.message.id) || !self.can_delete(&deletion.message))
+        {
+            return;
+        }
+        let mut close = false;
+        let mut confirm = false;
+        let modal = egui::Modal::new(egui::Id::new("message-delete"))
+            .frame(dialog_frame(context))
+            .show(context, |ui| {
+                ui.set_width(420.0_f32.min(context.content_rect().width() - 48.0));
+                ui.label(crate::bold("Delete message?").size(18.4));
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "This removes the message for everyone. This can’t be undone.",
+                    )
+                    .color(MUTED),
+                );
+                if let Some(error) = &deletion.error {
+                    ui.add_space(8.0);
+                    ui.colored_label(ERROR, error);
+                }
+                let (cancel, delete) = crate::dialog_buttons(
+                    ui,
+                    "Cancel",
+                    if deletion.busy {
+                        "Deleting…"
+                    } else {
+                        "Delete"
+                    },
+                    crate::DANGER_TONE,
+                    !deletion.busy,
+                    !deletion.busy,
+                );
+                close = cancel.clicked();
+                confirm = delete.clicked();
+            });
+        crate::motion::modal(context, modal.response.layer_id);
+        if close || (modal.should_close() && !deletion.busy) {
+            return;
+        }
+        self.message_delete = Some(deletion);
+        if confirm {
+            self.submit_delete();
+        }
+    }
+
     pub(crate) fn open_edit_history(&mut self, message: &Message) {
-        if message.forward.is_some() {
+        if message.forward.is_some() || message.is_deleted() {
             return;
         }
         self.message_editor = None;
@@ -245,6 +389,24 @@ impl CaperApp {
     }
 
     pub(crate) fn message_edit_dialogs(&mut self, context: &egui::Context) {
+        self.message_delete_dialog(context);
+        // A message deleted elsewhere closes its editor and history.
+        if let Some(id) = self
+            .message_editor
+            .as_ref()
+            .map(|editor| editor.original.id.clone())
+            .filter(|id| self.deleted(id))
+        {
+            self.mutations.edits.remove(&id);
+            self.message_editor = None;
+        }
+        if self
+            .edit_history
+            .as_ref()
+            .is_some_and(|history| self.deleted(&history.message.id))
+        {
+            self.edit_history = None;
+        }
         if let Some(mut editor) = self.message_editor.take() {
             if !self.can_edit(&editor.original) {
                 return;

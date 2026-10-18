@@ -1093,6 +1093,10 @@ pub struct Message {
     pub edited_at: Option<String>,
     #[serde(default)]
     pub edit_seq: Option<String>,
+    /// When the author deleted it: the message is then a tombstone with
+    /// empty content, delivered as an edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -1106,6 +1110,9 @@ pub struct MessageReply {
     pub has_attachments: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_root_id: Option<String>,
+    /// The quoted message was deleted; `text` is then empty.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deleted: bool,
 }
 
 impl MessageReply {
@@ -1122,6 +1129,7 @@ impl MessageReply {
                 .then(|| message.content.text.clone()),
             has_attachments: !message.content.attachments.is_empty(),
             thread_root_id: message.thread_root_id.clone(),
+            deleted: message.deleted_at.is_some(),
         }
     }
 }
@@ -1259,6 +1267,10 @@ impl Message {
         }
     }
 
+    pub fn is_deleted(&self) -> bool {
+        self.deleted_at.is_some()
+    }
+
     pub fn is_channel_message(&self) -> bool {
         self.thread_root_id.is_none() || self.broadcast
     }
@@ -1304,6 +1316,10 @@ impl Message {
             if sequence(edit_seq)? <= sequence(&self.seq)? {
                 return Err("invalid edit sequence".into());
             }
+        }
+        if let Some(deleted_at) = &self.deleted_at {
+            chrono::DateTime::parse_from_rfc3339(deleted_at)
+                .map_err(|_| "invalid deletion timestamp")?;
         }
         if self.broadcast && self.thread_root_id.is_none() {
             return Err("invalid broadcast reply".into());
@@ -1368,6 +1384,7 @@ impl Message {
             self.revision = incoming.revision;
             self.edited_at.clone_from(&incoming.edited_at);
             self.edit_seq.clone_from(&incoming.edit_seq);
+            self.deleted_at.clone_from(&incoming.deleted_at);
         }
     }
 }
@@ -2626,6 +2643,7 @@ mod tests {
             revision: 1,
             edited_at: None,
             edit_seq: None,
+            deleted_at: None,
         }
     }
 
@@ -4095,5 +4113,108 @@ mod tests {
         assert_eq!(edited.attachments_seq.as_deref(), Some("3"));
         assert_eq!(status_of(&timeline, "one"), AttachmentStatus::Ready);
         assert_eq!(pinned_status(&timeline), AttachmentStatus::Ready);
+    }
+
+    /// The API's tombstone: empty text, no files, the bumped revision and the
+    /// deletion's sequence as edit and attachments sequence.
+    fn tombstone(mut message: Message, seq: u64, revision: u32) -> EditUpdate {
+        message.content.text.clear();
+        message.content.attachments.clear();
+        message.content.mentions.clear();
+        message.revision = revision;
+        message.edited_at = Some("2026-10-18T00:00:00Z".into());
+        message.edit_seq = Some(seq.to_string());
+        message.attachments_seq = Some(seq.to_string());
+        message.deleted_at = Some("2026-10-18T00:00:00Z".into());
+        EditUpdate {
+            kind: "message.edited".into(),
+            schema_version: 1,
+            channel_id: message.channel_id.clone(),
+            seq: seq.to_string(),
+            message,
+        }
+    }
+
+    #[test]
+    fn deletion_fields_parse_and_absent_means_not_deleted() {
+        let value = serde_json::to_value(message("one", 3)).unwrap();
+        assert!(value.get("deletedAt").is_none());
+        let plain: Message = serde_json::from_value(value.clone()).unwrap();
+        assert!(!plain.is_deleted());
+        let mut deleted = value;
+        deleted["revision"] = 2.into();
+        deleted["editedAt"] = "2026-10-18T00:00:00Z".into();
+        deleted["editSeq"] = "4".into();
+        deleted["attachmentsSeq"] = "4".into();
+        deleted["deletedAt"] = "2026-10-18T00:00:00Z".into();
+        deleted["content"]["text"] = "".into();
+        deleted["replyTo"] = serde_json::json!({
+            "id":"quoted", "author":{"id":"author","name":"A","isGuest":false},
+            "text":"", "hasAttachments":false, "deleted":true
+        });
+        let deleted: Message = serde_json::from_value(deleted).unwrap();
+        assert!(deleted.is_deleted());
+        assert!(deleted.reply_to.as_ref().unwrap().deleted);
+        assert!(deleted.validate().is_ok());
+        let mut invalid = deleted.clone();
+        invalid.deleted_at = Some("yesterday".into());
+        assert!(invalid.validate().is_err());
+        let reply: MessageReply = serde_json::from_value(serde_json::json!({
+            "id":"quoted", "author":{"id":"author","name":"A","isGuest":false},
+            "text":"kept", "hasAttachments":false
+        }))
+        .unwrap();
+        assert!(!reply.deleted, "replyTo.deleted defaults to false");
+        assert!(
+            serde_json::to_value(&reply)
+                .unwrap()
+                .get("deleted")
+                .is_none()
+        );
+        assert!(MessageReply::from_message(&deleted).deleted);
+    }
+
+    #[test]
+    fn tombstone_edit_replaces_text_drops_files_and_reaches_pins() {
+        let mut timeline = Timeline::default();
+        let ready = with_files("one", 1, "ready", Some("2"));
+        timeline.reset(vec![ready.clone()], "2").unwrap();
+        timeline.reset_pins(Vec::new()).unwrap();
+        assert_eq!(
+            timeline.apply_pin(pin_update(ready.clone(), 3, true)),
+            Ok(Apply::Applied)
+        );
+        assert_eq!(
+            timeline.apply_edit(tombstone(ready.clone(), 4, 2)),
+            Ok(Apply::Applied)
+        );
+        for message in [
+            timeline.messages().next().unwrap(),
+            timeline.pinned_messages().next().unwrap(),
+        ] {
+            assert!(message.is_deleted());
+            assert!(message.content.text.is_empty());
+            assert!(message.content.attachments.is_empty());
+            assert_eq!(message.attachments_seq.as_deref(), Some("4"));
+            assert_eq!(message.revision, 2);
+        }
+        assert_eq!(timeline.cursor(), "4");
+        // A stale history page cannot bring the text back.
+        timeline.prepend(vec![ready]).unwrap();
+        assert!(timeline.messages().next().unwrap().is_deleted());
+    }
+
+    #[test]
+    fn delete_acknowledgement_is_cursor_neutral_and_idempotent() {
+        let original = message("one", 1);
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![original.clone()], "1").unwrap();
+        let deleted = tombstone(original, 2, 2).message;
+        timeline.merge_edit_ack(deleted.clone()).unwrap();
+        timeline.merge_edit_ack(deleted).unwrap();
+        let loaded = timeline.messages().next().unwrap();
+        assert!(loaded.is_deleted());
+        assert_eq!(loaded.content.text, "");
+        assert_eq!(timeline.cursor(), "1");
     }
 }

@@ -3691,8 +3691,11 @@ Validation: the ignored Postgres/Valkey test
 `chat::deletion::tests::deletion_keeps_the_row_scrubs_content_and_only_lets_the_author_delete`,
 web unit tests, the fixture test, and a Chromium check against
 `native-parity-fixture.mjs` at 1440px and 390px (menu, confirmation, tombstone).
-Android, Apple and desktop builds are covered by their unit tests where the
-toolchain was available; device checks remain open.
+Rust desktop unit tests, fmt and clippy pass on Linux (not launched; Windows and
+macOS unbuilt). Android and Apple add unit tests mirroring the edit tests but were
+not compiled here (no Android SDK or Swift toolchain); CI and the native release
+are their first build. Device and live-API checks remain open on every native
+client.
 
 No infrastructure, secret or configuration change is needed. The migration is
 additive and Ship rolls the API out before the gateway and web as usual.

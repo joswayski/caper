@@ -468,6 +468,14 @@ pub fn original(ui: &mut egui::Ui, message: &Message, textures: &mut crate::emoj
             crate::admin_badge(ui);
         }
     });
+    if message.is_deleted() {
+        ui.label(
+            RichText::new("This message was deleted.")
+                .italics()
+                .color(crate::MUTED),
+        );
+        return;
+    }
     crate::linked_text(ui, &message.id, &message.content.text);
     if message.edited_at.is_some() {
         ui.label(RichText::new("edited").size(10.0).color(crate::MUTED));
