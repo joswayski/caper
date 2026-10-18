@@ -465,6 +465,13 @@
   height: 1px;
   background: var(--border);
 }
+.chat-new-messages {
+  color: var(--terracotta);
+}
+.chat-new-messages::before,
+.chat-new-messages::after {
+  background: currentColor;
+}
 .chat-state {
   min-height: 120px;
   display: grid;

@@ -24,7 +24,39 @@ public final class AppModel {
         set { detailSnapshot = newValue }
     }
     public var selectedSpaceID: String?
-    public var selectedChannelID: String? { didSet { if selectedChannelID != oldValue { removeShownNotifications() } } }
+    public var selectedChannelID: String? { didSet { if selectedChannelID != oldValue {
+        removeShownNotifications()
+        beginChannelUnreadVisit()
+    } } }
+    private var unreadVisitToken = UUID()
+    private var unreadVisitReady = false
+    private var unreadVisit: UnreadChannel?
+
+    /// Resolve the entry snapshot before any automatic acknowledgement can advance it.
+    private func beginChannelUnreadVisit() {
+        let token = UUID(), attempt = generation
+        unreadVisitToken = token
+        unreadVisitReady = false
+        unreadVisit = nil
+        guard let id = selectedChannelID, account != nil else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let snapshot = try? await api.unreadSpaces()
+            guard generation == attempt, unreadVisitToken == token, selectedChannelID == id else { return }
+            unreadVisit = snapshot?.flatMap(\.channels).first { $0.id == id }
+            // A failed/old-server snapshot deliberately yields no divider, not a guessed boundary.
+            unreadVisitReady = true
+            markSelectedChannelRead()
+        }
+    }
+
+    public func channelNewMessagesDividerID() -> String? {
+        guard selectedDirectMessageID == nil, visit == nil, selectedChannelID == chat.channelID,
+              let unreadVisit, let boundary = unreadVisit.readSeq else { return nil }
+        return ChannelUnreadDivider.messageID(messages: chat.channelMessages, readSeq: boundary,
+            lastSeq: unreadVisit.lastSeq, hasMore: chat.hasMore, viewerID: account?.id,
+            blocked: chat.blockedAuthorIDs)
+    }
     private var directMessageSnapshots: [DirectMessageConversation] = []
     public var directMessages: [DirectMessageConversation] {
         get {
@@ -1079,7 +1111,7 @@ public final class AppModel {
     }
 
     private func markSelectedChannelRead() {
-        guard foreground, !browseCoversConversation, account != nil, selectedDirectMessageID == nil,
+        guard unreadVisitReady, foreground, !browseCoversConversation, account != nil, selectedDirectMessageID == nil,
               let spaceID = detail?.space.id, !spaceID.isEmpty, let id = selectedChannelID,
               let history = chat.currentSnapshot(), history.channel?.id == id, history.hasNewer != true,
               (try? Sequence.compare(history.cursor, channelReads[id] ?? "0")) == .orderedDescending else { return }
@@ -2198,6 +2230,7 @@ extension AppModel {
 
     private func clearNotificationState() {
         unreadSpaces = []; channelReads = [:]; unreadRevision += 1
+        unreadVisitToken = UUID(); unreadVisit = nil; unreadVisitReady = false
         #if os(macOS)
         desktopNotifications.stop()
         #endif

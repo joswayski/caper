@@ -7408,11 +7408,33 @@ DM behavior is unchanged. This is message activity, not a new invitation alert,
 mention counter or notification inbox.
 
 `GET /api/spaces/unread` returns only unread spaces/channels, with decimal-string
-`lastSeq` values. Joined channels count other unblocked, active authors' main
+`lastSeq` and `readSeq` values. Joined channels count other unblocked, active authors' main
 messages and broadcast replies. Accessible unjoined channels and non-broadcast
 thread replies count direct personal mentions only; forwarded mention metadata
 does not notify. Space membership, private grants and soft removals constrain
 every result. Edits, reactions and pins alone do not create unread messages.
+
+Channel visits capture this snapshot before acknowledging history. Web,
+Android, iOS/macOS and Rust desktop place a terracotta **New messages** divider
+before the first incoming, nonblocked channel message after that saved read
+position. The divider breaks author grouping and remains for the visit even
+after badges clear; switching away and returning captures a new boundary.
+Live arrivals on an already-read visit do not introduce a divider. DMs, thread
+panels and feedback visits are unchanged. If older unloaded history may contain
+the boundary, the divider waits for that history rather than labeling the start
+of the latest page; this does not change initial scroll position. Old servers
+without `readSeq` show no divider.
+
+Divider validation (October 18, 2026): web build/typecheck/lint and 659 JS tests
+pass; labelled Chromium desktop/narrow fixtures exercise the read boundary and
+grouping break, including returning after new arrivals and revisiting after
+reading. API workspace tests, Clippy and the unread/read route regression against
+disposable loopback Postgres pass; no migration is needed. Rust desktop passes
+557 tests (12 device/audio tests ignored) and Clippy, with inspected
+desktop/narrow fixture renders. Android SDK and Apple toolchains are unavailable
+here, so their compile, native render
+and device checks remain outstanding. These fixtures are not live-account or
+cross-device acceptance.
 
 `POST /api/spaces/{space}/channels/{channel}/read` accepts `{"seq":"42"}`.
 Read positions are saved per account/channel, advance monotonically, and are

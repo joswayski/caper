@@ -3824,7 +3824,8 @@ private struct ChatView: View {
                     let firstID = channelMessages.first?.id
                     // The channel's own pending message; a thread reply's shows in the thread.
                     let pending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == nil ? $0 : nil }
-                    let grouping = MessageGrouping.layout(entries, inThread: false, pending: pending, author: chat.currentAuthor)
+                    let newMessagesID = model.channelNewMessagesDividerID()
+                    let grouping = MessageGrouping.layout(entries, inThread: false, pending: pending, author: chat.currentAuthor, breakBeforeID: newMessagesID)
                     // Before any row is built, so rows see this render's arrivals.
                     let _ = arrivals.observe("channel", key: chat.channelID ?? "",
                                              ids: channelMessages.map(\.clientMessageId) + (pending.map { [$0.id] } ?? []),
@@ -3852,7 +3853,18 @@ private struct ChatView: View {
                                         ChatDateDivider(createdAt: entry.firstCreatedAt)
                                     }
                                     switch entry {
-                                    case let .message(message): channelRow(message, grouping: grouping)
+                                    case let .message(message):
+                                        if message.id == newMessagesID {
+                                            HStack(spacing: 8) {
+                                                Rectangle().frame(height: 1)
+                                                Text("New messages").font(CaperTheme.font(11, weight: .medium)).fixedSize()
+                                                Rectangle().frame(height: 1)
+                                            }
+                                            .foregroundStyle(CaperTheme.terracotta)
+                                            .padding(.horizontal, 16).padding(.vertical, 8)
+                                            .accessibilityIdentifier("channel-new-messages")
+                                        }
+                                        channelRow(message, grouping: grouping)
                                     case let .blocked(run):
                                         VStack(spacing: 0) {
                                             BlockedRunRow(run: run) { revealedBlocked = BlockedMessages.toggling(run, in: revealedBlocked) }

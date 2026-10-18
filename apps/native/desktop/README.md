@@ -433,6 +433,8 @@ For deterministic visual inspection without live accounts, launch
 `caper-desktop --fixture login` or `--fixture parity-channel`. These are
 explicitly labeled static previews; the chat fixture at loopback port 3001
 does not provide live SFU media. Use normal `--api-url` for networked chat tests.
+`parity-new-messages` previews a retained channel unread boundary between two
+messages by the same author, including the divider's grouping break.
 `parity-voice-joining` and `parity-voice-connected` preview your call's card in
 #general's place in the list (Cancel/Leave) and the audio bar without starting a
 media transport; `parity-voice-speaking` adds fixed speaking rings for you and

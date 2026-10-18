@@ -568,7 +568,7 @@ async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_re
         (
             StatusCode::OK,
             snapshot(json!([
-                {"id":"first1234567","lastSeq":"1"},{"id":"other1234567","lastSeq":"6"},{"id":"quiet1234567","lastSeq":"7"}
+                {"id":"first1234567","lastSeq":"1","readSeq":"0"},{"id":"other1234567","lastSeq":"6","readSeq":"0"},{"id":"quiet1234567","lastSeq":"7","readSeq":"0"}
             ]))
         )
     );
@@ -582,9 +582,23 @@ async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_re
     assert_eq!(
         call(&app, "GET", "/api/spaces/unread", Value::Null).await.1,
         snapshot(json!([
-            {"id":"other1234567","lastSeq":"6"},{"id":"quiet1234567","lastSeq":"7"}
+            {"id":"other1234567","lastSeq":"6","readSeq":"0"},{"id":"quiet1234567","lastSeq":"7","readSeq":"0"}
         ])),
         "reading one channel must preserve the space's other unread channels"
+    );
+    let other_read = "/api/spaces/space1234567/channels/other1234567/read";
+    for seq in ["2", "1"] {
+        assert_eq!(
+            call(&app, "POST", other_read, json!({"seq":seq})).await.0,
+            StatusCode::NO_CONTENT
+        );
+    }
+    assert_eq!(
+        call(&app, "GET", "/api/spaces/unread", Value::Null).await.1,
+        snapshot(json!([
+            {"id":"other1234567","lastSeq":"6","readSeq":"2"},{"id":"quiet1234567","lastSeq":"7","readSeq":"0"}
+        ])),
+        "returning clients receive the saved read boundary, not the newest message"
     );
     for (path, status) in [
         (
@@ -607,7 +621,7 @@ async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_re
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT seq FROM channel_reads")
+        sqlx::query_scalar::<_, i64>("SELECT r.seq FROM channel_reads r JOIN channels c ON c.id=r.channel_id WHERE c.external_id='first1234567'")
             .fetch_one(&pool)
             .await
             .unwrap(),

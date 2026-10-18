@@ -1012,6 +1012,9 @@ struct CaperApp {
     directs: Vec<model::DirectConversation>,
     unread_spaces: Vec<model::UnreadSpace>,
     unread_revision: u64,
+    unread_visit: Option<String>,
+    unread_visit_pending: bool,
+    unread_boundary: Option<(u64, u64)>,
     channel_reads: BTreeMap<String, String>,
     /// `GET /api/people` for DM `@` suggestions and the space invite and new
     /// DM username fields; kept while it refreshes.
@@ -1346,6 +1349,9 @@ impl CaperApp {
             directs: Vec::new(),
             unread_spaces: Vec::new(),
             unread_revision: 0,
+            unread_visit: None,
+            unread_visit_pending: false,
+            unread_boundary: None,
             channel_reads: BTreeMap::new(),
             people: None,
             account_epoch: 0,
@@ -1560,7 +1566,10 @@ impl CaperApp {
             Some("login") => app.dialog = Some(Dialog::SignIn),
             Some(name) if name.starts_with("parity") => {
                 app.install_fixture();
-                if name.starts_with("parity-whats-new") {
+                if name == "parity-new-messages" {
+                    app.unread_visit = app.selected_channel.clone();
+                    app.unread_boundary = Some((2, 99));
+                } else if name.starts_with("parity-whats-new") {
                     app.install_whats_new_fixture(name);
                 } else if name.starts_with("parity-pins") {
                     let author = app.timeline.messages().next().unwrap().author.clone();
@@ -3442,9 +3451,31 @@ impl CaperApp {
                 Event::UnreadLoaded {
                     epoch,
                     revision,
-                    result: Ok(spaces),
-                } if epoch == self.account_epoch && revision == self.unread_revision => {
-                    self.unread_spaces = spaces;
+                    visit,
+                    result,
+                } if epoch == self.account_epoch => {
+                    if visit == Some(self.navigation)
+                        && self.unread_visit_pending
+                        && let Ok(spaces) = &result
+                    {
+                        // This entry snapshot is independent of badge refresh revisions.
+                        // No automatic acknowledgement can race ahead of it.
+                        self.unread_boundary = spaces
+                            .iter()
+                            .flat_map(|space| &space.channels)
+                            .find(|channel| Some(&channel.id) == self.unread_visit.as_ref())
+                            .and_then(|channel| {
+                                let read = model::sequence(channel.read_seq.as_deref()?).ok()?;
+                                let last = model::sequence(&channel.last_seq).ok()?;
+                                (read < last).then_some((read, last))
+                            });
+                        self.unread_visit_pending = false;
+                    }
+                    if revision == self.unread_revision
+                        && let Ok(spaces) = result
+                    {
+                        self.unread_spaces = spaces;
+                    }
                     self.mark_selected_channel_read();
                 }
                 Event::ChannelRead {
@@ -4248,6 +4279,7 @@ impl CaperApp {
             self.worker.send(Command::LoadUnread {
                 epoch: self.account_epoch,
                 revision: self.unread_revision,
+                visit: self.unread_visit_pending.then_some(self.navigation),
                 token,
             });
         }
@@ -4278,6 +4310,9 @@ impl CaperApp {
         self.composer_emoji = None;
         self.profile_navigation = None;
         self.unread_spaces.clear();
+        self.unread_visit = None;
+        self.unread_visit_pending = false;
+        self.unread_boundary = None;
         self.channel_reads.clear();
         self.unread_revision += 1;
         self.membership_refreshing = false;
@@ -5330,6 +5365,9 @@ impl CaperApp {
             self.restore_conversation_drafts(&history.channel.id);
         }
         self.selected_channel = Some(history.channel.id.clone());
+        if self.unread_visit.as_ref() != self.selected_channel.as_ref() {
+            self.begin_unread_visit();
+        }
         if general {
             let demo = model::Space {
                 icon_asset: None,
@@ -5403,8 +5441,27 @@ impl CaperApp {
         }
     }
 
+    fn begin_unread_visit(&mut self) {
+        self.unread_visit = self.selected_channel.clone();
+        self.unread_boundary = None;
+        self.unread_visit_pending = false;
+        if self.selected_direct.is_none()
+            && self.selected_space.is_some()
+            && let Some(token) = self.token.clone()
+        {
+            self.unread_visit_pending = true;
+            self.worker.send(Command::LoadUnread {
+                epoch: self.account_epoch,
+                revision: self.unread_revision,
+                visit: Some(self.navigation),
+                token,
+            });
+        }
+    }
+
     fn mark_selected_channel_read(&mut self) {
         if !self.foreground
+            || self.unread_visit_pending
             || self.browse_covers_conversation()
             || self.loading
             || self.has_newer
@@ -6063,6 +6120,9 @@ impl CaperApp {
         self.generation += 1;
         self.stash_draft();
         self.selected_channel = Some(id.clone());
+        if self.unread_visit.as_ref() != Some(&id) || self.unread_visit_pending {
+            self.begin_unread_visit();
+        }
         self.session = None;
         self.session_error = None;
         self.loading_older = false;
@@ -6773,6 +6833,9 @@ impl CaperApp {
         self.unavailable_rosters.clear();
         self.stash_draft();
         self.selected_channel = None;
+        self.unread_visit = None;
+        self.unread_visit_pending = false;
+        self.unread_boundary = None;
         self.session = None;
         self.session_error = None;
         self.loading_older = false;
@@ -15122,6 +15185,18 @@ impl CaperApp {
                     let mut last_date = None;
                     let messages: Vec<_> = timeline.messages().filter(|message| message.is_channel_message() && !self.thread_only_rows.contains(&message.id) && self.context_window.is_none_or(|window| window.contains(message))).collect();
                     let me = self.account.as_ref().map(|account| account.id.clone());
+                    let blocked_ids = self.blocked_ids();
+                    let unread_row = self.unread_boundary.filter(|(boundary, _)| {
+                        self.selected_direct.is_none() && self.visiting().is_none()
+                            && !self.showing_pins && self.context_window.is_none()
+                            && (!self.has_more || timeline.messages().next().is_some_and(|message| {
+                                model::sequence(&message.seq).is_ok_and(|seq| seq <= boundary.saturating_add(1))
+                            }))
+                    }).and_then(|(boundary, last)| messages.iter().find(|message| {
+                        model::sequence(&message.seq).is_ok_and(|seq| seq > boundary && seq <= last)
+                            && me.as_deref() != Some(message.author.id.as_str())
+                            && !blocked_ids.contains(&message.author.id)
+                    })).map(|message| message.id.clone());
                     // The row above for grouping; dividers and placeholders clear it.
                     let mut previous: Option<grouping::Row> = None;
                     for row in blocking::rows(&messages, &self.blocked_ids(), me.as_deref()) {
@@ -15150,6 +15225,10 @@ impl CaperApp {
                                 previous = None;
                             }
                             // A "Replied to a thread" broadcast keeps its header.
+                            if unread_row.as_deref() == Some(message.id.as_str()) {
+                                new_messages_divider(ui);
+                                previous = None;
+                            }
                             let current = grouping::Row::new(&message.author.id, &message.created_at, message.thread_root_id.is_some() || message.reply_to.is_some());
                             let grouped = grouping::grouped(previous.as_ref(), &current);
                             // Nothing groups under a highlighted jump target.
@@ -24759,6 +24838,21 @@ fn people_field(
     response
 }
 
+fn new_messages_divider(ui: &mut egui::Ui) {
+    ui.horizontal(|ui| {
+        ui.add_space(18.0);
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2((ui.available_width() - 110.0).max(0.0), 1.0),
+            egui::Sense::hover(),
+        );
+        ui.painter().line_segment(
+            [rect.left_center(), rect.right_center()],
+            Stroke::new(1.0, TERRACOTTA),
+        );
+        ui.label(RichText::new("New messages").size(10.0).color(TERRACOTTA));
+    });
+}
+
 fn date_divider(ui: &mut egui::Ui, label: &str) {
     ui.horizontal(|ui| {
         ui.add_space(18.0);
@@ -26494,6 +26588,138 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn channel_new_messages_divider_survives_badge_clear_and_waits_for_older_history() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-channel"),
+        );
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        for (index, message) in messages.iter_mut().enumerate() {
+            message.seq = (index + 10).to_string();
+            message.author.id = "incoming-person".into();
+        }
+        app.timeline.reset(messages, "99").unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        app.unread_visit = app.selected_channel.clone();
+        app.unread_visit_pending = true;
+        let spaces = serde_json::from_value(serde_json::json!([{
+            "id": app.selected_space,
+            "channels": [{"id": app.selected_channel, "lastSeq": "99", "readSeq": "5"}]
+        }]))
+        .unwrap();
+        sender
+            .send(crate::worker::Event::UnreadLoaded {
+                epoch: app.account_epoch,
+                revision: app.unread_revision.wrapping_sub(1),
+                visit: Some(app.navigation),
+                result: Ok(spaces),
+            })
+            .unwrap();
+        app.receive();
+        assert_eq!(
+            app.unread_boundary,
+            Some((5, 99)),
+            "entry snapshot survives overlapping badge refresh"
+        );
+        assert!(!app.unread_visit_pending);
+        let legacy: model::UnreadChannel =
+            serde_json::from_str(r#"{"id":"legacy","lastSeq":"9"}"#).unwrap();
+        assert!(legacy.read_seq.is_none());
+        let draw = |app: &mut CaperApp| {
+            let output = context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 1200.0),
+                    )),
+                    ..Default::default()
+                },
+                |context| app.page(context),
+            );
+            output
+                .shapes
+                .iter()
+                .filter(|shape| {
+                    matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == "New messages")
+                })
+                .count()
+        };
+        app.has_more = true;
+        assert_eq!(draw(&mut app), 0, "boundary is in unloaded history");
+        let mut older = app.timeline.messages().next().unwrap().clone();
+        older.id = "older-row".into();
+        older.seq = "5".into();
+        app.timeline.prepend(vec![older]).unwrap();
+        assert_eq!(
+            draw(&mut app),
+            1,
+            "older history discovered the first unread row"
+        );
+        app.has_more = false;
+        app.unread_spaces.clear();
+        assert_eq!(
+            draw(&mut app),
+            1,
+            "acknowledgements must not erase the visit boundary"
+        );
+        app.selected_direct = app.selected_channel.clone();
+        assert_eq!(draw(&mut app), 0, "direct messages do not use this divider");
+        app.selected_direct = None;
+        app.blocks = Some(vec![
+            serde_json::from_value(serde_json::json!({
+                "id": "incoming-person", "username": "incoming", "displayName": "Incoming"
+            }))
+            .unwrap(),
+        ]);
+        assert_eq!(draw(&mut app), 0, "blocked runs never acquire the marker");
+        app.blocks = None;
+        let own_id = app.account.as_ref().unwrap().id.clone();
+        let mut own_messages: Vec<_> = app.timeline.messages().cloned().collect();
+        for message in &mut own_messages {
+            message.author.id = own_id.clone();
+        }
+        app.timeline.reset(own_messages, "99").unwrap();
+        assert_eq!(
+            draw(&mut app),
+            0,
+            "own messages are not incoming unread rows"
+        );
+        app.unread_boundary = None;
+        let mut live = app.timeline.messages().next().unwrap().clone();
+        live.id = "live-incoming".into();
+        live.seq = "100".into();
+        live.author.id = "incoming-person".into();
+        app.timeline.prepend(vec![live]).unwrap();
+        assert_eq!(
+            draw(&mut app),
+            0,
+            "read-on-entry visits stay without a divider"
+        );
+        app.unread_boundary = Some((5, 99));
+        assert_eq!(
+            draw(&mut app),
+            0,
+            "live rows are outside the entry snapshot"
+        );
+        app.reload_selected_channel(app.selected_channel.clone().unwrap(), false);
+        assert_eq!(
+            app.unread_boundary,
+            Some((5, 99)),
+            "refresh stays in the same visit"
+        );
+        app.reload_selected_channel("different-channel".into(), false);
+        assert!(app.unread_boundary.is_none(), "switch starts another visit");
+        app.unread_boundary = Some((5, 99));
+        app.clear_channel_state();
+        assert!(app.unread_boundary.is_none());
+        assert!(app.unread_visit.is_none());
     }
 
     #[test]

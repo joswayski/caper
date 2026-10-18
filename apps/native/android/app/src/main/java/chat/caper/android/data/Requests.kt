@@ -2,6 +2,7 @@ package chat.caper.android.data
 
 import chat.caper.android.model.ChatMessage
 import chat.caper.android.model.DirectConversation
+import chat.caper.android.model.UnreadChannel
 import java.math.BigInteger
 
 /** The main "Direct messages" list: accepted and outgoing conversations, never incoming requests. */
@@ -17,6 +18,18 @@ internal fun directUnread(conversation: DirectConversation): Boolean = !conversa
 /** Account ids whose messages collapse for you: never yourself or a guest. */
 internal fun collapsesFor(message: ChatMessage, blocked: Set<String>, selfId: String?): Boolean =
     !message.author.isGuest && message.author.id != selfId && message.author.id in blocked
+
+/** Do not invent a boundary at a truncated latest page. Older paging can reveal it later. */
+internal fun channelNewMessagesId(messages: List<ChatMessage>, entry: UnreadChannel?, hasOlder: Boolean, blocked: Set<String>, selfId: String?): String? {
+    val read = entry?.readSeq?.toBigIntegerOrNull() ?: return null
+    val last = entry.lastSeq.toBigIntegerOrNull() ?: return null
+    val first = messages.firstOrNull()?.seq?.toBigIntegerOrNull() ?: return null
+    if (hasOlder && first > read + BigInteger.ONE) return null
+    return messages.firstOrNull {
+        val seq = it.seq.toBigIntegerOrNull() ?: read
+        seq > read && seq <= last && it.author.id != selfId && !collapsesFor(it, blocked, selfId)
+    }?.id
+}
 
 /** One timeline row: a visible message, or a run of consecutive blocked messages. */
 internal sealed interface TimelineEntry {

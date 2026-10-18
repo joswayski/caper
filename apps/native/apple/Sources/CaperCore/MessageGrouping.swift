@@ -37,10 +37,11 @@ enum MessageGrouping {
     /// placeholder row: nothing groups across it. A revealed run's messages
     /// sit under its Hide bar, so its first message keeps its header.
     static func layout(_ entries: [TimelineEntry], inThread: Bool, pending: PendingMessage? = nil,
-                       author: ChatAuthor? = nil, calendar: Calendar = .current) -> Layout {
+                       author: ChatAuthor? = nil, calendar: Calendar = .current, breakBeforeID: String? = nil) -> Layout {
         var result = Layout()
         var previous: (id: String, authorID: String, date: Date?)?
         func visit(_ message: ChatMessage) {
+            if message.id == breakBeforeID { previous = nil }
             let date = ChatTimestamp.date(message.createdAt)
             if let previous, message.replyTo == nil, inThread || message.threadRootId == nil,
                follows(authorID: message.author.id, at: date, previousAuthorID: previous.authorID,
@@ -73,5 +74,23 @@ enum MessageGrouping {
         guard let authorID, !authorID.isEmpty, authorID == previousAuthorID,
               let date, let previousDate else { return false }
         return abs(date.timeIntervalSince(previousDate)) <= window && calendar.isDate(date, inSameDayAs: previousDate)
+    }
+}
+
+/// Do not relocate a boundary into a truncated latest window. Older paging
+/// must first reach the read side (or the beginning) before choosing a row.
+enum ChannelUnreadDivider {
+    static func messageID(messages: [ChatMessage], readSeq: String, lastSeq: String,
+                          hasMore: Bool, viewerID: String?, blocked: Set<String>) -> String? {
+        guard (try? Sequence.compare(lastSeq, readSeq)) == .orderedDescending,
+              !hasMore || messages.contains(where: {
+                  (try? Sequence.compare($0.seq, readSeq)).map { $0 != .orderedDescending } == true
+                      || Sequence.isSuccessor($0.seq, of: readSeq)
+              }) else { return nil }
+        return messages.first {
+            $0.isChannelMessage && $0.author.id != viewerID && !blocked.contains($0.author.id)
+                && (try? Sequence.compare($0.seq, readSeq)) == .orderedDescending
+                && (try? Sequence.compare($0.seq, lastSeq)).map { $0 != .orderedDescending } == true
+        }?.id
     }
 }
