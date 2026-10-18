@@ -898,9 +898,18 @@ impl DraftUpload {
     }
 }
 
+type PictureDownload = std::sync::mpsc::Receiver<Result<std::sync::Arc<uploads::Scratch>, String>>;
+
 /// Changing a profile picture or space icon from settings.
 #[derive(Default)]
 struct PictureEdit {
+    downloading: Option<(u64, pictures::Target, PictureDownload)>,
+    choice: Option<(
+        pictures::Target,
+        std::path::PathBuf,
+        Option<std::sync::Arc<uploads::Scratch>>,
+        bool,
+    )>,
     /// The image picker is open for this target.
     picking: Option<(
         pictures::Target,
@@ -2336,6 +2345,24 @@ impl CaperApp {
                     }
                 } else if name.starts_with("parity-pictures") {
                     app.install_pictures_fixture(name);
+                    if name == "parity-pictures-editor" {
+                        app.dialog = Some(Dialog::Profile);
+                        app.token = Some("fixture-token".into());
+                        let scratch = std::sync::Arc::new(uploads::Scratch::new("picture"));
+                        let image = image::RgbImage::from_fn(800, 600, |x, y| {
+                            image::Rgb([(x * 255 / 800) as u8, (y * 255 / 600) as u8, 120])
+                        });
+                        let file = std::fs::File::create(scratch.path()).unwrap();
+                        image::DynamicImage::ImageRgb8(image)
+                            .write_to(&mut std::io::BufWriter::new(file), image::ImageFormat::Png)
+                            .unwrap();
+                        app.open_picture_editor(
+                            context,
+                            pictures::Target::Avatar,
+                            scratch.path().to_owned(),
+                            Some(scratch),
+                        );
+                    }
                 } else if name == "parity-channel" {
                     app.form_name = "planning".into();
                     app.form_private = true;
@@ -18366,6 +18393,7 @@ impl CaperApp {
             attachment_editor::PreviewOutcome::Edit(tool) => tool,
         };
         match preview.target {
+            attachment_editor::Target::Picture { .. } => (),
             attachment_editor::Target::Draft(key) => self.edit_draft(context, key, tool),
             attachment_editor::Target::Profile {
                 person,
@@ -18389,6 +18417,7 @@ impl CaperApp {
     fn draft_to_send(&self, target: &attachment_editor::Target) -> attachment_editor::ToSend {
         use attachment_editor::ToSend;
         match target {
+            attachment_editor::Target::Picture { .. } => ToSend::Original,
             attachment_editor::Target::Draft(key) => {
                 let Some(draft) = self
                     .draft_files
@@ -18494,6 +18523,13 @@ impl CaperApp {
         let Some(mut editor) = self.attachment_editor.take() else {
             return;
         };
+        if let attachment_editor::Target::Picture {
+            epoch, destination, ..
+        } = &editor.target
+            && (*epoch != self.account_epoch || !self.picture_target_valid(destination))
+        {
+            return;
+        }
         let edit = match editor.show(context) {
             attachment_editor::Outcome::Open => {
                 self.attachment_editor = Some(editor);
@@ -18504,6 +18540,28 @@ impl CaperApp {
         };
         let preview = editor.preview(edit.as_ref());
         match editor.target {
+            attachment_editor::Target::Picture {
+                destination,
+                epoch,
+                path,
+                scratch,
+            } => {
+                if epoch == self.account_epoch
+                    && self.picture_target_valid(&destination)
+                    && let Some(token) = self.token.clone()
+                {
+                    self.picture_edit.busy = Some((destination.clone(), false));
+                    self.worker.send(Command::Picture {
+                        epoch,
+                        token,
+                        target: destination,
+                        path: Some(path),
+                        animate: !motion::reduced(),
+                        edit,
+                        scratch,
+                    });
+                }
+            }
             attachment_editor::Target::Draft(key) => self.save_draft_edit(key, edit, preview),
             attachment_editor::Target::Profile {
                 person,
@@ -20722,6 +20780,11 @@ impl CaperApp {
     }
 
     fn dialogs(&mut self, context: &egui::Context, dialog_was_open: bool) {
+        // A picture editor owns the screen; keep its settings destination alive
+        // without drawing another modal over it or letting it consume input.
+        if self.attachment_editor_shown || self.picture_edit.choice.is_some() {
+            return;
+        }
         let Some(dialog) = self.dialog.clone() else {
             self.dialog_shown = None;
             return;
@@ -21667,15 +21730,213 @@ impl CaperApp {
         }
     }
 
+    fn picture_target_valid(&self, target: &pictures::Target) -> bool {
+        self.token.is_some()
+            && self.account.as_ref().is_some_and(|account| match target {
+                pictures::Target::Avatar => matches!(self.dialog, Some(Dialog::Profile)),
+                pictures::Target::SpaceIcon(id) => {
+                    matches!(self.dialog, Some(Dialog::ManageSpace))
+                        && self
+                            .detail
+                            .as_ref()
+                            .is_some_and(|detail| detail.space.id == *id)
+                        && self
+                            .spaces
+                            .iter()
+                            .any(|space| space.id == *id && space.owner_id == account.id)
+                }
+            })
+    }
+
+    fn open_picture_editor(
+        &mut self,
+        context: &egui::Context,
+        destination: pictures::Target,
+        path: std::path::PathBuf,
+        scratch: Option<std::sync::Arc<uploads::Scratch>>,
+    ) {
+        if !self.picture_target_valid(&destination) {
+            return;
+        }
+        self.attachment_editor = Some(attachment_editor::Editor::open(
+            context,
+            attachment_editor::Target::Picture {
+                destination,
+                epoch: self.account_epoch,
+                path: path.clone(),
+                scratch,
+            },
+            attachment_edit::Kind::Image,
+            "Picture".into(),
+            &path,
+            None,
+            attachment_editor::Tool::Crop,
+        ));
+    }
+
+    fn stage_picture(
+        &mut self,
+        context: &egui::Context,
+        target: pictures::Target,
+        path: std::path::PathBuf,
+        scratch: Option<std::sync::Arc<uploads::Scratch>>,
+    ) {
+        use std::io::Read;
+        if !self.picture_target_valid(&target) {
+            return;
+        }
+        let head = std::fs::File::open(&path).and_then(|file| {
+            if file.metadata()?.len() > pictures::MAX_SOURCE_BYTES {
+                return Err(std::io::Error::other("too large"));
+            }
+            let mut head = Vec::new();
+            file.take(64 * 1024).read_to_end(&mut head)?;
+            Ok(head)
+        });
+        match head {
+            Ok(head)
+                if pictures::is_gif(&head)
+                    || (compress::sniff("image/png", &head)
+                        && compress::png_is_animated(&head))
+                    || (compress::sniff("image/webp", &head)
+                        && head.get(12..16) == Some(b"VP8X")
+                        && head.get(20).is_some_and(|flags| flags & 0x02 != 0)) =>
+            {
+                self.picture_edit.choice = Some((target, path, scratch, pictures::is_gif(&head)))
+            }
+            Ok(_) => self.open_picture_editor(context, target, path, scratch),
+            Err(_) => {
+                self.picture_edit.error = Some((
+                    target,
+                    "Could not read that picture, or it is too large.".into(),
+                ))
+            }
+        }
+    }
+
+    fn download_picture(&mut self, context: &egui::Context, target: pictures::Target) {
+        let url = match &target {
+            pictures::Target::Avatar => self
+                .account
+                .as_ref()
+                .and_then(|account| account.avatar_url.clone()),
+            pictures::Target::SpaceIcon(id) => self
+                .spaces
+                .iter()
+                .find(|space| space.id == *id)
+                .and_then(|space| space.icon_url.clone()),
+        };
+        let Some(url) = url else {
+            return;
+        };
+        let Ok(api) = api::Api::new(self.api_base.as_str()) else {
+            return;
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let repaint = context.clone();
+        std::thread::spawn(move || {
+            let result = api
+                .fetch_media(&url)
+                .map_err(|_| "Could not download that picture. Try again.".to_string())
+                .and_then(|bytes| {
+                    let scratch = std::sync::Arc::new(uploads::Scratch::new("picture"));
+                    std::fs::write(scratch.path(), bytes)
+                        .map_err(|_| "Could not save that picture.".to_string())?;
+                    Ok(scratch)
+                });
+            let _ = sender.send(result);
+            repaint.request_repaint();
+        });
+        self.picture_edit.downloading = Some((self.account_epoch, target, receiver));
+    }
+
     /// Picker results, local previews of uploaded pictures, and picture loads.
     fn picture_housekeeping(&mut self, context: &egui::Context) {
+        if self
+            .picture_edit
+            .picking
+            .as_ref()
+            .is_some_and(|(target, _)| !self.picture_target_valid(target))
+        {
+            self.picture_edit.picking = None;
+        }
+        if self
+            .picture_edit
+            .choice
+            .as_ref()
+            .is_some_and(|(target, _, _, _)| !self.picture_target_valid(target))
+        {
+            self.picture_edit.choice = None;
+        }
+        if self
+            .picture_edit
+            .downloading
+            .as_ref()
+            .is_some_and(|(_, target, _)| !self.picture_target_valid(target))
+        {
+            self.picture_edit.downloading = None;
+        }
+        if let Some((epoch, target, receiver)) = self.picture_edit.downloading.take() {
+            match receiver.try_recv() {
+                Ok(result) if epoch == self.account_epoch && self.picture_target_valid(&target) => {
+                    match result {
+                        Ok(scratch) => self.stage_picture(
+                            context,
+                            target,
+                            scratch.path().to_owned(),
+                            Some(scratch),
+                        ),
+                        Err(error) => self.picture_edit.error = Some((target, error)),
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.picture_edit.downloading = Some((epoch, target, receiver))
+                }
+                _ => {}
+            }
+        }
+        if let Some((target, path, scratch, gif)) = self.picture_edit.choice.take() {
+            let mut action = 0;
+            let modal = egui::Modal::new(egui::Id::new("picture-animation-choice")).show(context, |ui| {
+                ui.set_max_width(420.0);
+                ui.heading("Animated picture");
+                ui.label("Editing saves a still frame and removes animation. Original animation upload is available for GIFs only.");
+                if ui.add_enabled(gif, egui::Button::new("Keep original animation")).clicked() { action = 1; }
+                if ui.button("Edit still image").clicked() { action = 2; }
+                if ui.button("Cancel").clicked() { action = 3; }
+            });
+            if modal.should_close() {
+                action = 3;
+            }
+            match action {
+                1 => {
+                    if self.picture_target_valid(&target)
+                        && let Some(token) = self.token.clone()
+                    {
+                        self.picture_edit.busy = Some((target.clone(), false));
+                        self.worker.send(Command::Picture {
+                            epoch: self.account_epoch,
+                            token,
+                            target,
+                            path: Some(path),
+                            animate: !motion::reduced(),
+                            edit: None,
+                            scratch,
+                        });
+                    }
+                }
+                2 => self.open_picture_editor(context, target, path, scratch),
+                3 => {}
+                _ => self.picture_edit.choice = Some((target, path, scratch, gif)),
+            }
+        }
         if let Some((target, receiver)) = &self.picture_edit.picking {
             match receiver.try_recv() {
                 Ok(path) => {
                     let target = target.clone();
                     self.picture_edit.picking = None;
                     if let Some(path) = path {
-                        self.change_picture(target, Some(path));
+                        self.stage_picture(context, target, path, None);
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -21727,6 +21988,8 @@ impl CaperApp {
             target,
             path,
             animate: !motion::reduced(),
+            edit: None,
+            scratch: None,
         });
     }
 
@@ -21790,7 +22053,12 @@ impl CaperApp {
             .as_ref()
             .filter(|(busy, _)| *busy == target)
             .map(|(_, removing)| *removing);
-        let idle = edit.busy.is_none() && edit.picking.is_none() && self.token.is_some();
+        let idle = edit.busy.is_none()
+            && edit.picking.is_none()
+            && edit.downloading.is_none()
+            && edit.choice.is_none()
+            && self.attachment_editor.is_none()
+            && self.token.is_some();
         let error = edit
             .error
             .as_ref()
@@ -21886,9 +22154,16 @@ impl CaperApp {
                 ui,
                 egui::Rect::from_center_size(badge.center(), egui::vec2(15.0, 15.0)),
             );
-        let (mut change, mut remove) = (false, false);
+        let (mut change, mut remove, mut adjust) = (false, false, false);
         if custom {
             egui::Popup::menu(&response).show(|ui| {
+                if ui
+                    .add_enabled(!unavailable, egui::Button::new(format!("Edit {noun}…")))
+                    .clicked()
+                {
+                    adjust = true;
+                    ui.close();
+                }
                 if ui
                     .add_enabled(
                         !unavailable,
@@ -21927,7 +22202,9 @@ impl CaperApp {
             ui.label(RichText::new(pictures::UNAVAILABLE).size(12.0).color(MUTED));
         }
         if let Some(path) = dropped {
-            self.change_picture(target, Some(path));
+            self.stage_picture(ui.ctx(), target, path, None);
+        } else if adjust {
+            self.download_picture(ui.ctx(), target);
         } else if change {
             self.pick_picture(ui.ctx(), target);
         } else if remove {
@@ -38757,6 +39034,24 @@ mod tests {
         app.profile_event(ProfileEvent::Space(space("space-unknown", Some("x"))));
         assert_eq!(app.spaces, before);
         assert_eq!(app.spaces.len(), 2);
+    }
+
+    #[test]
+    fn picture_editor_covers_settings_and_cancel_returns_without_uploading() {
+        let (context, mut app) = fixture("parity-pictures-editor");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Done"));
+        assert!(
+            !shows(&output, "Save profile"),
+            "settings must not cover the editor"
+        );
+        render(&mut app, &context, press(egui::Key::Escape));
+        // The settings area measures its first frame before painting.
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Save profile"), "{:?}", texts(&output));
+        assert!(app.picture_edit.busy.is_none(), "Cancel must not upload");
     }
 
     #[test]

@@ -153,6 +153,7 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
     source: String, kind: String, name: String, initial: AttachmentEdit?,
     cancel: () -> Unit, save: (AttachmentEdit?, Bitmap?) -> Unit,
     initialTool: EditTool = EditTool.DRAW,
+    pictureMode: Boolean = false,
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -162,8 +163,13 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
     var picture by remember { mutableStateOf<Bitmap?>(null) }
     var failed by remember { mutableStateOf(false) }
     LaunchedEffect(source, kind) {
-        val loaded = preparer.editorPicture(Uri.parse(source), kind)
+        val loaded = if (pictureMode) chat.caper.android.data.PicturePreparer.editorPicture(java.io.File(requireNotNull(Uri.parse(source).path)))
+            else preparer.editorPicture(Uri.parse(source), kind)
         if (loaded == null) failed = true else picture = loaded
+    }
+    if (pictureMode) DisposableEffect(picture) {
+        val owned = picture
+        onDispose { owned?.recycle() }
     }
     var history by remember { mutableStateOf(EditHistory(initial ?: AttachmentEdit.NONE)) }
     var tool by remember { mutableStateOf(initialTool) }
@@ -184,7 +190,15 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
     val current = history.current
     val ready = picture != null
 
-    fun commit(next: AttachmentEdit) { history = history.commit(next) }
+    fun square(edit: AttachmentEdit): AttachmentEdit {
+        val bitmap = picture ?: return edit
+        val (w, h) = AttachmentEdits.rotatedSize(bitmap.width, bitmap.height, edit.rotation)
+        return edit.copy(crop = AttachmentEdits.pictureCrop(edit.crop, w, h))
+    }
+    LaunchedEffect(picture) {
+        if (pictureMode && picture != null) history = EditHistory(square(initial ?: AttachmentEdit.NONE))
+    }
+    fun commit(next: AttachmentEdit) { history = history.commit(if (pictureMode) square(next) else next) }
     fun withField(edit: AttachmentEdit, open: OpenText?): AttachmentEdit {
         val layout = stage ?: return edit
         open ?: return edit
@@ -206,7 +220,7 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
     fun done() {
         if (saving) return
         val final = withField(history.current, field)
-        if (AttachmentEdits.same(final, initial)) return cancel()
+        if (!pictureMode && AttachmentEdits.same(final, initial)) return cancel()
         val result = final.takeIf { AttachmentEdits.isEdited(it) }
         saving = true
         val shown = picture
@@ -272,6 +286,8 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                 Button(::done, enabled = ready && !saving, shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
                     contentPadding = PaddingValues(horizontal = 14.dp)) { Text("Done", fontWeight = FontWeight.Bold) }
             }
+            if (pictureMode) Text("The square is what will be saved. Drag inside to reposition; drag its corners to resize.",
+                Modifier.padding(horizontal = 16.dp, vertical = 4.dp), color = TextMuted, fontSize = 12.sp)
             BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().clipToBounds(), contentAlignment = Alignment.Center) {
                 val bitmap = picture
                 when {
@@ -343,6 +359,7 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                                                 drag(down.id) { change ->
                                                     liveCrop = AttachmentEdits.dragCrop(crop, handle, ((change.position.x - down.position.x) / start.width).toDouble(),
                                                         ((change.position.y - down.position.y) / start.height).toDouble(), minWidth, minHeight)
+                                                    if (pictureMode) liveCrop = square(history.current.copy(crop = liveCrop!!)).crop
                                                     change.consume()
                                                 }
                                                 liveCrop?.let { commit(history.current.copy(crop = AttachmentEdits.clampCrop(it))) }

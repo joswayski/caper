@@ -1,6 +1,7 @@
 // Preparing and uploading a profile picture or space icon: the same three
 // steps as attachments (reserve, presigned PUT, complete) with a `purpose`.
 // The server applies the picture when the upload completes.
+import { cropPixels, loadEditFont, paintEdit, type AttachmentEdit } from "../chat/edit.ts";
 import { encode, surface, type Context2D, type Surface } from "../chat/prepare.ts";
 import {
   browserTransport,
@@ -130,9 +131,9 @@ function shrinkGifOffPage(bytes: Uint8Array): Promise<{ bytes: Uint8Array; edge:
  * scaled to at most 512 px and re-encoded as WebP, which also drops metadata
  * such as location.
  */
-export async function preparePicture(file: Blob): Promise<PreparedPicture> {
+export async function preparePicture(file: Blob, edit?: AttachmentEdit): Promise<PreparedPicture> {
   const gif = gifSize(new Uint8Array(await file.slice(0, 10).arrayBuffer()));
-  if (gif) {
+  if (gif && !edit) {
     if (gifUploadsUnchanged(file.size, gif)) return { blob: file, contentType: "image/gif", ...gif };
     const shrunk = await shrinkGifOffPage(new Uint8Array(await file.arrayBuffer()));
     if (!shrunk) throw new PictureError(pictureMessages.gifUnreadable);
@@ -142,12 +143,26 @@ export async function preparePicture(file: Blob): Promise<PreparedPicture> {
   const image = await decode(file);
   try {
     const crop = squareCrop(image.width, image.height);
-    const edge = pictureEdge(image.width, image.height);
+    const region = edit ? cropPixels(edit, image.width, image.height) : undefined;
+    const edge = pictureEdge(region?.width ?? image.width, region?.height ?? image.height);
     const canvas = surface(edge, edge);
     const context = canvas.getContext("2d") as Context2D | null;
     if (!context) throw new PictureError(pictureMessages.undecodable);
     context.imageSmoothingQuality = "high";
-    context.drawImage(image.source, crop.x, crop.y, crop.side, crop.side, 0, 0, edge, edge);
+    if (edit && region) {
+      await loadEditFont(edit);
+      // Normalized square crops can round one pixel differently on each axis.
+      const side = Math.min(region.width, region.height);
+      paintEdit(
+        context,
+        image.source,
+        image.width,
+        image.height,
+        edit,
+        { ...region, width: side, height: side },
+        edge / side,
+      );
+    } else context.drawImage(image.source, crop.x, crop.y, crop.side, crop.side, 0, 0, edge, edge);
     const blob = (await encode(canvas, "image/webp", PICTURE_QUALITY)) ?? (await fallback(canvas));
     if (!blob) throw new PictureError(pictureMessages.undecodable);
     if (blob.size > MAX_PICTURE_BYTES) throw new PictureError(pictureMessages.tooLarge);
@@ -218,8 +233,13 @@ export async function uploadPicture(
 }
 
 /** Uploads a new profile picture and updates the account everywhere in this client. */
-export async function uploadAvatar(file: Blob, progress: (fraction: number) => void, transport?: UploadTransport) {
-  const body = await uploadPicture(await preparePicture(file), { purpose: "avatar" }, progress, transport);
+export async function uploadAvatar(
+  file: Blob,
+  progress: (fraction: number) => void,
+  transport?: UploadTransport,
+  edit?: AttachmentEdit,
+) {
+  const body = await uploadPicture(await preparePicture(file, edit), { purpose: "avatar" }, progress, transport);
   const account = body.account as Account | undefined;
   if (!account || typeof account.id !== "string") throw new PictureError(pictureMessages.failed);
   return rememberSavedAccount(account);
@@ -231,8 +251,14 @@ export async function uploadSpaceIcon(
   file: Blob,
   progress: (fraction: number) => void,
   transport?: UploadTransport,
+  edit?: AttachmentEdit,
 ) {
-  const body = await uploadPicture(await preparePicture(file), { purpose: "spaceIcon", spaceId }, progress, transport);
+  const body = await uploadPicture(
+    await preparePicture(file, edit),
+    { purpose: "spaceIcon", spaceId },
+    progress,
+    transport,
+  );
   const space = body.space as Space | undefined;
   if (!space || typeof space.id !== "string" || typeof space.name !== "string")
     throw new PictureError(pictureMessages.failed);

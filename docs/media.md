@@ -8921,8 +8921,10 @@ frame (each lasting as long as the ones it replaces). Web
 pure decoder/encoder that gives each frame a palette of only the pixels that
 changed and leaves unchanged pixels showing; Apple uses ImageIO and the Rust
 desktop the `image` crate's GIF codec. The server's 5 MiB GIF ceiling stays: it
-is also what older clients will download. Anything else the platform decodes is turned upright, center-cropped to a
-square, scaled to at most 512 px and re-encoded as WebP (PNG or JPEG where WebP
+is also what older clients will download. Still pictures open in the attachment
+editor with a square crop: reposition, resize, rotate, draw or add text before
+confirming **Done**. The selected region is scaled to at most 512 px and
+re-encoded as WebP (PNG or JPEG where WebP
 encoding is unavailable), which also drops location metadata. Pictures show
 aspect-filled in a rounded square (corner radius 30% of the side, the
 `--radius-avatar` token; squares show more of a picture than circles), and
@@ -8931,9 +8933,14 @@ tile. The mascot or initial underneath stays visible while loading or if a URL
 fails. Decoded pictures are cached by asset
 ID, since URLs re-sign daily. Edit profile and **Manage space** (owners
 only) show the picture or icon in a frame with an edit badge on its corner: the
-frame picks a picture, or, while a custom one is set, opens a menu to choose
-another or remove it. Dropping a file onto the frame uploads it directly using
-the same image preparation and limits. The frame highlights the drop target;
+frame picks a picture, or, while a custom one is set, opens a menu to edit it,
+choose another or remove it. Editing the current picture downloads its saved
+pixels; it cannot recover parts cropped out of an earlier upload (choose the
+original file again for those). Dropping a file onto the frame opens the same
+editor. Cancel leaves the saved picture unchanged and makes no upload reservation.
+GIFs offer **Keep original animation** or an explicitly acknowledged still-frame
+edit; cropping animation is not supported. Animated PNG/WebP require confirmation
+before becoming stills. The frame highlights the drop target;
 only the first file is used, and busy or unavailable editors refuse drops.
 This is implemented in the web, Android, Apple and Rust desktop editors.
 Without a custom profile picture, the saved mascot holds
@@ -8941,6 +8948,31 @@ up a "change me!" sign (`assets/avatars/change-me.svg`, one vector drawn over
 any mascot); a successful change updates the signed-in client everywhere through the
 existing own-profile refresh path.
 
+### Picture editing validation (October 18, 2026)
+
+- Web: `npm run check` and all 678 Vitest tests pass. `scripts/test-pictures.mjs`
+  passes with explicitly mocked API/storage/CDN at 1280px and 390px touch Chromium:
+  selected crop verified in encoded upload pixels, square zoom/rotation, existing
+  picture editing, cancel without reservation, drops, original GIF animation and
+  explicitly flattened GIFs. Screenshots and pointer recording inspected. One
+  existing live-reply assertion failed under concurrent native builds; the full
+  browser run passed on rerun. No Safari, physical phone or live-storage test.
+- Android: `assembleDebug testDebugUnitTest lintDebug` passes; 479 unit tests.
+  One existing timing-sensitive WebSocket test failed during the first concurrent build; the
+  full rerun passed unchanged. APK built, but no device/emulator rendering or
+  live upload was exercised.
+- Rust desktop: build, formatting, application Clippy (`--no-deps`, `-D warnings`),
+  and 615 tests pass (15 existing ignored). Decoded output tests distinguish
+  left/right crops from automatic centering. The `parity-pictures-editor` fixture
+  was rendered under Xvfb and its crop resized/repositioned; the regression test
+  checks settings do not cover the editor and cancellation does not upload.
+  No Windows/macOS or live-storage test. Dependency Clippy remains blocked by
+  existing `webrtc-sys` missing-safety-documentation errors.
+- Apple: implementation and two pixel-output regression tests added for iOS/macOS,
+  but not compiled or executed: no Swift/Xcode or connected Apple runner in this
+  orb. SwiftUI rendering, lifecycle, picker and upload verification remain required.
+- Docker daemon unavailable; the web image's build stage was validated directly
+  with `npm run check`, not an image build. No API or storage schema changes.
 
 ### Validation (October 14, 2026)
 

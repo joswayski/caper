@@ -8402,14 +8402,18 @@ private struct ProfileSheet: View {
         if let account = model.account {
             let name = account.displayName ?? account.username ?? "You"
             let side = PictureEditor<EmptyView>.side
-            PictureEditor(purpose: .avatar, hasPicture: account.avatarAsset != nil,
-                          upload: { try await model.changeAvatar($0) }, remove: { try await model.removeAvatar() }) {
+            PictureEditor(purpose: .avatar, hasPicture: account.avatarAsset != nil, currentURL: account.avatarPicture?.url,
+                          upload: {
+                              guard model.account?.id == account.id else { throw CancellationError() }
+                              try await model.changeAvatar($0)
+                          }, remove: { try await model.removeAvatar() }) {
                 if account.avatarAsset == nil {
                     ChangeMeMascot(name: name, avatarID: account.avatarId, size: side)
                 } else {
                     Avatar(name: name, size: side, avatarID: account.avatarId, picture: account.avatarPicture)
                 }
             }
+            .id(account.id)
             Divider().overlay(CaperTheme.border)
         }
     }
@@ -9113,10 +9117,14 @@ private struct SpaceEditor: View {
         if model.isOwner, let space = model.detail?.space, space.demo != true {
             Divider().overlay(CaperTheme.border)
             let side = PictureEditor<EmptyView>.side
-            PictureEditor(purpose: .spaceIcon, hasPicture: space.iconAsset != nil,
-                          upload: { try await model.changeSpaceIcon($0) }, remove: { try await model.removeSpaceIcon() }) {
+            PictureEditor(purpose: .spaceIcon, hasPicture: space.iconAsset != nil, currentURL: space.iconPicture?.url,
+                          upload: {
+                              guard model.detail?.space.id == space.id, model.account?.id == space.ownerId else { throw CancellationError() }
+                              try await model.changeSpaceIcon($0)
+                          }, remove: { try await model.removeSpaceIcon() }) {
                 SpaceIconTile(name: space.name, picture: space.iconPicture, size: side, fontSize: 34, corner: 0)
             }
+            .id(space.id)
         }
     }
 

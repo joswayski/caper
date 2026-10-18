@@ -381,7 +381,7 @@ async function context(browser, options) {
           status: 200,
           body: file.body,
           contentType: file.type,
-          headers: { "cache-control": "max-age=3600" },
+          headers: { "cache-control": "max-age=3600", "access-control-allow-origin": "*" },
         })
       : route.fulfill({ status: 404, body: "TEST FIXTURE: missing picture" });
   });
@@ -452,7 +452,7 @@ async function checkFaces(target, scope) {
   for (const [asset, ...face] of faces) assert.deepEqual(face, ["30%", "hidden", true, false], `${scope}: ${asset}`);
 }
 
-const browser = await chromium.launch();
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
 try {
   // ---- Desktop: rendering everywhere ----
   const desktop = await context(browser, { viewport: { width: 1280, height: 900 } });
@@ -524,6 +524,15 @@ try {
     mimeType: "image/png",
     buffer: landscape,
   });
+  const editor = page.getByRole("dialog", { name: "Adjust picture" });
+  await editor.getByRole("button", { name: "Done", exact: true }).waitFor();
+  await page.waitForFunction(() => !!document.querySelector(".chat-editor-crop"));
+  assert.equal(await page.evaluate(() => window.pictureFixture.reservations.length), 0, "choosing does not upload");
+  const cropFrame = editor.getByRole("group", { name: "Crop frame" });
+  await cropFrame.focus();
+  for (let i = 0; i < 20; i++) await page.keyboard.press("ArrowLeft");
+  await shot(page, "pictures-crop-desktop.png");
+  await editor.getByRole("button", { name: "Done", exact: true }).click();
   await dialog.getByText("Profile picture updated.").waitFor();
   const still = await page.evaluate(() => window.pictureFixture.reservations.at(-1));
   assert.equal(still.purpose, "avatar");
@@ -532,6 +541,18 @@ try {
   assert.equal(still.width, 512);
   assert.equal(still.height, 512);
   assert.ok(still.byteSize > 0 && still.byteSize <= 1024 * 1024);
+  const sampled = await page.evaluate(async (base64) => {
+    const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    const image = await createImageBitmap(new Blob([bytes], { type: "image/webp" }));
+    const canvas = new OffscreenCanvas(image.width, image.height);
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0);
+    return [context.getImageData(4, 256, 1, 1).data[0], context.getImageData(507, 256, 1, 1).data[0]];
+  }, stored.get("upload000001").body.toString("base64"));
+  assert.ok(
+    sampled[0] < 10 && sampled[1] > 180 && sampled[1] < 200,
+    `saved crop must contain the left 600px, not the centered 600px: ${sampled}`,
+  );
   // Your own picture updates everywhere without a reload.
   await page.waitForFunction(
     `[...document.querySelectorAll(${JSON.stringify(ownAvatars)})].length >= 3 && [...document.querySelectorAll(${JSON.stringify(ownAvatars)})].every((element) => element.dataset.avatarAsset === "upload000001" && element.querySelector(".caper-picture")?.dataset.state !== "loading")`,
@@ -543,6 +564,18 @@ try {
   await editPicture.click();
   await dialog.getByRole("menuitem", { name: "Remove picture" }).waitFor();
   await shot(dialog, "pictures-profile-uploaded.png");
+  await dialog.getByRole("menuitem", { name: "Edit picture", exact: true }).click();
+  await editor.getByRole("slider", { name: "Crop size" }).waitFor();
+  await editor.getByRole("slider", { name: "Crop size" }).focus();
+  await page.keyboard.press("Home");
+  await editor.getByRole("button", { name: "Rotate left" }).click();
+  await editor.getByRole("button", { name: "Cancel editing" }).click();
+  assert.equal(
+    await page.evaluate(() => window.pictureFixture.reservations.length),
+    1,
+    "cancel current-picture editing never uploads",
+  );
+  await editPicture.click();
   await page.keyboard.press("Escape");
   await dialog.getByRole("menu").waitFor({ state: "detached" });
   assert.ok(await dialog.isVisible(), "Escape closes the menu, not the dialog");
@@ -551,6 +584,8 @@ try {
     mimeType: "image/gif",
     buffer: animatedAvatar,
   });
+  await shot(dialog, "pictures-animation-choice.png");
+  await dialog.getByRole("button", { name: "Keep original animation" }).click();
   await page.waitForFunction(() => window.pictureFixture.completes === 2);
   const animated = await page.evaluate(() => window.pictureFixture.reservations.at(-1));
   assert.deepEqual(
@@ -565,6 +600,7 @@ try {
     buffer: oversizedGif,
   });
   assert.ok(oversizedGif.length > 5 * 1024 * 1024);
+  await dialog.getByRole("button", { name: "Keep original animation" }).click();
   await page.waitForFunction(() => window.pictureFixture.completes === 3, undefined, { timeout: 60_000 });
   const shrunk = await page.evaluate(() => window.pictureFixture.reservations.at(-1));
   assert.deepEqual(
@@ -589,7 +625,8 @@ try {
     mimeType: "image/heic",
     buffer: Buffer.from("not a picture this browser can decode"),
   });
-  await dialog.getByText("This browser can’t open that picture. Try a PNG, JPEG, WebP or GIF.").waitFor();
+  await editor.getByText("This file can’t be edited here.").waitFor();
+  await editor.getByRole("button", { name: "Cancel editing" }).click();
   await page.evaluate(() => {
     window.pictureFixture.failNext = { status: 429, body: { error: "too many", code: "picture_rate_limited" } };
   });
@@ -598,6 +635,7 @@ try {
     mimeType: "image/gif",
     buffer: animatedAvatar,
   });
+  await dialog.getByRole("button", { name: "Keep original animation" }).click();
   await dialog.getByText("You’ve changed pictures too many times today. Try again tomorrow.").waitFor();
   await shot(dialog, "pictures-profile-error.png");
   await editPicture.click();
@@ -623,7 +661,7 @@ try {
   await page.waitForFunction(
     '!document.querySelector(".space-rail-item:first-child .caper-picture") && document.querySelector(".space-rail-item:first-child button > span").textContent === "T"',
   );
-  const iconButton = manage.getByRole("button", { name: "Change space icon" });
+  const iconButton = manage.locator(".picture-settings-edit");
   const drop = await page.evaluateHandle(
     (bytes) => {
       const data = new DataTransfer();
@@ -637,6 +675,7 @@ try {
   await iconButton.dispatchEvent("dragover", { dataTransfer: drop });
   await shot(manage.locator(".space-icon-section"), "pictures-space-drop-target.png");
   await iconButton.dispatchEvent("drop", { dataTransfer: drop });
+  await editor.getByRole("button", { name: "Done", exact: true }).click();
   await manage.getByText("Space icon updated.").waitFor();
   const iconReservation = await page.evaluate(() => window.pictureFixture.reservations.at(-1));
   assert.deepEqual(
@@ -657,6 +696,7 @@ try {
   await iconButton.dispatchEvent("drop", { dataTransfer: drop });
   await manage.locator('.picture-settings[aria-busy="true"]').waitFor();
   await iconButton.dispatchEvent("drop", { dataTransfer: drop });
+  await editor.getByRole("button", { name: "Done", exact: true }).click();
   releaseUpload();
   await manage.getByText("Space icon updated.").waitFor();
   await page.unroute("https://r2.test/put/**");
@@ -673,7 +713,8 @@ try {
     return data;
   });
   await iconButton.dispatchEvent("drop", { dataTransfer: invalid });
-  await manage.locator(".picture-settings-error").waitFor();
+  await editor.getByText("This file can’t be edited here.").waitFor();
+  await editor.getByRole("button", { name: "Cancel editing" }).click();
   assert.equal(await page.evaluate(() => window.pictureFixture.reservations.length), reservations);
   await page.waitForFunction(loaded(".space-rail-item:first-child button"));
   await drop.dispose();
@@ -786,6 +827,45 @@ try {
   await profile.goto(new URL("/profile", origin).href);
   await profile.getByRole("button", { name: "Change profile picture" }).waitFor();
   await shot(profile, "pictures-profile-page-narrow.png");
+  assert.equal(await profile.evaluate(() => matchMedia("(pointer: coarse)").matches), true);
+  await profile
+    .locator('.picture-settings input[type="file"]')
+    .setInputFiles({ name: "crop.png", mimeType: "image/png", buffer: landscape });
+  const narrowEditor = profile.getByRole("dialog", { name: "Adjust picture" });
+  const size = narrowEditor.getByRole("slider", { name: "Crop size" });
+  await size.focus();
+  await profile.keyboard.press("Home");
+  for (let i = 0; i < 40; i++) await profile.keyboard.press("ArrowRight");
+  const frame = await narrowEditor.getByRole("group", { name: "Crop frame" }).boundingBox();
+  assert.ok(Math.abs(frame.width - frame.height) < 1, "zoom keeps a square frame");
+  await narrowEditor.getByRole("button", { name: "Rotate left" }).tap();
+  await shot(profile, "pictures-crop-narrow.png");
+  await narrowEditor.getByRole("button", { name: "Done", exact: true }).tap();
+  await profile.getByText("Profile picture updated.").waitFor();
+  assert.deepEqual(
+    await profile.evaluate(() => {
+      const saved = window.pictureFixture.reservations.at(-1);
+      return [saved.width, saved.height];
+    }),
+    [300, 300],
+  );
+  // A GIF can be explicitly edited as a still rather than silently flattened.
+  await profile
+    .locator('.picture-settings input[type="file"]')
+    .setInputFiles({ name: "still.gif", mimeType: "image/gif", buffer: animatedAvatar });
+  await profile.getByRole("button", { name: "Edit still frame" }).tap();
+  await narrowEditor.getByRole("button", { name: "Done", exact: true }).tap();
+  await profile.waitForFunction(() => window.pictureFixture.completes === 2);
+  assert.equal(await profile.evaluate(() => window.pictureFixture.reservations.at(-1).contentType), "image/webp");
+  await profile.getByRole("button", { name: "Change profile picture" }).tap();
+  await profile.getByRole("menuitem", { name: "Edit picture", exact: true }).tap();
+  await narrowEditor.getByRole("button", { name: "Done", exact: true }).tap();
+  await profile.waitForFunction(() => window.pictureFixture.completes === 3);
+  assert.equal(
+    await profile.evaluate(() => window.pictureFixture.reservations.at(-1).width),
+    64,
+    "current saved picture can be confirmed without choosing another file",
+  );
   await profile.goto(new URL("/invite/FIXTURE123", origin).href);
   await profile.waitForFunction(loaded("main [data-avatar-asset]"));
   await profile.waitForFunction(

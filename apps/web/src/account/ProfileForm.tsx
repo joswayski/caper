@@ -37,7 +37,7 @@ export default function ProfileForm({
 
   return (
     <>
-      {/* Pictures save as soon as one is chosen; the form below saves names. */}
+      {/* Pictures save on the editor's Done action; the form below saves names. */}
       {account.username && (
         <div className="mt-6">
           <ProfilePictureSettings account={account} />

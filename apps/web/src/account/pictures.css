@@ -170,3 +170,31 @@
 .picture-settings-error {
   color: var(--error-text);
 }
+.picture-settings-animation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 360px;
+  font-size: 0.85rem;
+}
+.picture-settings-animation p {
+  margin: 0 0 4px;
+  color: var(--text-muted);
+}
+.picture-settings-animation button {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.picture-settings-animation button:first-of-type {
+  background: var(--action);
+  color: var(--blackout);
+}
+.picture-settings-animation button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}

@@ -1,12 +1,16 @@
 import { ImageUp, Pencil, Trash2 } from "lucide-react";
-import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import AttachmentEditor from "../chat/AttachmentEditor";
+import type { AttachmentEdit } from "../chat/edit";
+import { pngIsAnimated, webpInfo } from "../chat/prepare";
+import "../chat/chat.css";
 import Avatar from "../components/Avatar";
 import SpaceIcon from "../components/SpaceIcon";
 import { removeSpaceIcon, SpacesApiError, type Space } from "../spaces/client";
 import { avatarUrl } from "./avatar";
 import { AccountApiError, getRememberedAccount, removeAvatar, subscribeAccount, type Account } from "./client";
 import { PictureError, uploadAvatar, uploadSpaceIcon } from "./picture-upload";
-import { pictureErrorMessage, pictureMessages } from "./pictures";
+import { gifSize, pictureErrorMessage, pictureMessages } from "./pictures";
 import "./pictures.css";
 
 type Phase = { kind: "idle" } | { kind: "preparing" } | { kind: "uploading"; progress: number } | { kind: "removing" };
@@ -23,6 +27,7 @@ function PictureEditor({
   preview,
   noun,
   removable,
+  currentUrl,
   removeFailed,
   onUpload,
   onRemove,
@@ -32,8 +37,9 @@ function PictureEditor({
   /** "picture" or "icon", for the menu and labels. */
   noun: string;
   removable: boolean;
+  currentUrl?: string | null;
   removeFailed: (error: unknown) => string;
-  onUpload: (file: File, progress: (fraction: number) => void) => Promise<void>;
+  onUpload: (file: Blob, progress: (fraction: number) => void, edit?: AttachmentEdit) => Promise<void>;
   onRemove: () => Promise<void>;
 }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
@@ -41,12 +47,20 @@ function PictureEditor({
   const [done, setDone] = useState<string>();
   const [menu, setMenu] = useState(false);
   const [dropping, setDropping] = useState(false);
+  const [draft, setDraft] = useState<{ file: Blob; animation: boolean; gif: boolean }>();
+  const active = useRef(true);
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+    };
+  }, []);
   // Uploads are optional server configuration (503): the picker steps back once the server says so.
   const [unavailable, setUnavailable] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const frame = useRef<HTMLDivElement>(null);
   const menuId = useId();
-  const busy = phase.kind !== "idle";
+  const busy = phase.kind !== "idle" || !!draft;
   // The edit button is disabled while a request runs and the menu item that
   // started it is gone, so focus falls to the page. Keyboard users continue
   // from the edit button instead of the top of the page or dialog.
@@ -69,7 +83,8 @@ function PictureEditor({
     return () => document.removeEventListener("pointerdown", outside);
   }, [menu]);
 
-  const choose = async (file: File) => {
+  const cancelEdit = useCallback(() => setDraft(undefined), []);
+  const choose = async (source: Blob | string) => {
     if (busy || unavailable) return;
     setMenu(false);
     refocus.current = true;
@@ -77,7 +92,31 @@ function PictureEditor({
     setDone(undefined);
     setPhase({ kind: "preparing" });
     try {
-      await onUpload(file, (fraction) => setPhase({ kind: "uploading", progress: fraction }));
+      let file: Blob;
+      if (typeof source === "string") {
+        const response = await fetch(source, {
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!response.ok) throw new PictureError("Couldn’t open this picture. Choose the original file again.");
+        file = await response.blob();
+      } else file = source;
+      if (file.size > 64 * 1024 * 1024) throw new PictureError(pictureMessages.tooLarge);
+      const head = new Uint8Array(await file.slice(0, 65536).arrayBuffer());
+      const gif = !!gifSize(head);
+      if (active.current) setDraft({ file, gif, animation: gif || pngIsAnimated(head) || !!webpInfo(head)?.animated });
+    } catch (reason) {
+      if (active.current) setError(uploadError(reason));
+    } finally {
+      if (active.current) setPhase({ kind: "idle" });
+    }
+  };
+  const upload = async (file: Blob, edit?: AttachmentEdit) => {
+    setDraft(undefined);
+    setPhase({ kind: "preparing" });
+    try {
+      await onUpload(file, (fraction) => setPhase({ kind: "uploading", progress: fraction }), edit);
       setDone(`${title} updated.`);
     } catch (reason) {
       if (reason instanceof PictureError && reason.status === 503) setUnavailable(true);
@@ -184,6 +223,17 @@ function PictureEditor({
               type="button"
               role="menuitem"
               autoFocus
+              disabled={unavailable || !currentUrl}
+              onClick={() => {
+                if (currentUrl) void choose(currentUrl);
+              }}
+            >
+              <Pencil size={16} aria-hidden="true" />
+              Edit {noun}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
               disabled={unavailable}
               onClick={() => {
                 setMenu(false);
@@ -221,6 +271,38 @@ function PictureEditor({
           if (file) void choose(file);
         }}
       />
+      {draft?.animation ? (
+        <div className="picture-settings-animation" role="group" aria-label="Animated picture">
+          <p>
+            Editing saves a still frame and removes animation.
+            {!draft.gif && " To keep animation, choose a GIF instead."}
+          </p>
+          {draft.gif && (
+            <button type="button" onClick={() => void upload(draft.file)}>
+              Keep original animation
+            </button>
+          )}
+          <button type="button" onClick={() => setDraft({ ...draft, animation: false })}>
+            Edit still frame
+          </button>
+          <button type="button" onClick={cancelEdit}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        draft && (
+          <AttachmentEditor
+            file={draft.file}
+            kind="image"
+            name={title}
+            tool="crop"
+            pictureMode
+            anchor={frame.current?.querySelector<HTMLButtonElement>(".picture-settings-edit") ?? undefined}
+            onCancel={cancelEdit}
+            onSave={(edit) => void upload(draft.file, edit)}
+          />
+        )
+      )}
       {error ? (
         <p className="picture-settings-error" role="alert">
           {error}
@@ -261,6 +343,7 @@ export function ProfilePictureSettings({ account: initial }: { account: Account 
   const name = account.displayName ?? account.username ?? "You";
   return (
     <PictureEditor
+      key={account.id}
       title="Profile picture"
       noun="picture"
       preview={
@@ -271,9 +354,10 @@ export function ProfilePictureSettings({ account: initial }: { account: Account 
         )
       }
       removable={!!account.avatarAsset}
+      currentUrl={account.avatarUrl}
       removeFailed={(error) => removalError(error, "avatar", "Your picture couldn’t be removed. Try again.")}
-      onUpload={async (file, progress) => {
-        await uploadAvatar(file, progress);
+      onUpload={async (file, progress, edit) => {
+        await uploadAvatar(file, progress, undefined, edit);
       }}
       onRemove={async () => {
         await removeAvatar();
@@ -286,6 +370,7 @@ export function ProfilePictureSettings({ account: initial }: { account: Account 
 export function SpaceIconSettings({ space, onChanged }: { space: Space; onChanged: (space: Space) => void }) {
   return (
     <PictureEditor
+      key={space.id}
       title="Space icon"
       noun="icon"
       preview={
@@ -294,8 +379,11 @@ export function SpaceIconSettings({ space, onChanged }: { space: Space; onChange
         </span>
       }
       removable={!!space.iconAsset}
+      currentUrl={space.iconUrl}
       removeFailed={(error) => removalError(error, "spaceIcon", "The icon couldn’t be removed. Try again.")}
-      onUpload={async (file, progress) => onChanged(await uploadSpaceIcon(space.id, file, progress))}
+      onUpload={async (file, progress, edit) =>
+        onChanged(await uploadSpaceIcon(space.id, file, progress, undefined, edit))
+      }
       onRemove={async () => onChanged(await removeSpaceIcon(space.id))}
     />
   );

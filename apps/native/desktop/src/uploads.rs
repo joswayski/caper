@@ -60,7 +60,7 @@ pub enum Body {
 }
 
 /// A file this app wrote and owns; deleted on drop.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Scratch(PathBuf);
 
 impl Scratch {

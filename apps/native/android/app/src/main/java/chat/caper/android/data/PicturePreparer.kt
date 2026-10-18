@@ -25,14 +25,17 @@ import kotlinx.coroutines.withContext
  * and location metadata. AVIF and HEIC never upload as themselves.
  */
 object PicturePreparer {
-    suspend fun prepare(file: File): PreparedPicture = withContext(Dispatchers.Default) {
+    /** The editor and encoder decode identically, including EXIF mirroring and sampling. */
+    internal suspend fun editorPicture(file: File): Bitmap? = withContext(Dispatchers.IO) { decode(file) }
+
+    suspend fun prepare(file: File, edit: AttachmentEdit? = null, typeface: android.graphics.Typeface = android.graphics.Typeface.DEFAULT_BOLD): PreparedPicture = withContext(Dispatchers.Default) {
         val header = file.inputStream().use { stream ->
             val bytes = ByteArray(16)
             var read = 0
             while (read < bytes.size) { val count = stream.read(bytes, read, bytes.size - read); if (count < 0) break; read += count }
             bytes.copyOf(read)
         }
-        gifSize(header)?.let { (width, height) ->
+        gifSize(header)?.takeIf { edit == null }?.let { (width, height) ->
             if (gifUploadsUnchanged(file.length(), width, height)) {
                 return@withContext PreparedPicture(file.readBytes(), "image/gif", width, height)
             }
@@ -47,7 +50,10 @@ object PicturePreparer {
         }
         val decoded = decode(file) ?: throw PictureException(PicturePolicy.UNUSABLE)
         currentCoroutineContext().ensureActive()
-        val square = square(decoded) ?: throw PictureException(PicturePolicy.UNUSABLE)
+        val square = if (edit == null) square(decoded) else try {
+            EditPainter.preview(decoded, edit, 512, typeface)
+        } finally { decoded.recycle() }
+        if (square == null) throw PictureException(PicturePolicy.UNUSABLE)
         try {
             currentCoroutineContext().ensureActive()
             encode(square) ?: throw PictureException(PicturePolicy.UNUSABLE)

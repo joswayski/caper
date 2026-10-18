@@ -2877,8 +2877,37 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
      * prepared on the device (GIFs unchanged, anything else a WebP square), uploaded, and applied
      * by the server. Runs on with its dialog closed; the state shows progress and the error.
      */
-    fun changePicture(uri: Uri, spaceId: String? = null, epoch: Long = accountGeneration) {
-        if (epoch != accountGeneration) return
+    internal suspend fun copyPictureForEditor(uri: Uri, directory: File): File {
+        if (uri.scheme != "https" && uri.scheme != "http") return preparer.copy(uri, directory).source
+        // Picture URLs are signed delivery URLs, just like attachment downloads. Never send the
+        // account bearer to storage, and never follow redirects to another origin.
+        return withContext(Dispatchers.IO) {
+            directory.mkdirs()
+            val file = File(directory, "source")
+            api.client.newBuilder().followRedirects(false).followSslRedirects(false).build()
+                .newCall(okhttp3.Request.Builder().url(uri.toString()).build()).awaitDecoded { response ->
+                    if (!response.isSuccessful) throw IOException("Couldn’t download the current picture.")
+                    response.body.byteStream().use { input -> file.outputStream().use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            total += count
+                            if (total > 64L * 1024 * 1024) throw IOException("That picture is too large.")
+                            output.write(buffer, 0, count)
+                        }
+                    } }
+                }
+            file
+        }
+    }
+
+    fun changePicture(uri: Uri, spaceId: String? = null, epoch: Long = accountGeneration, edit: AttachmentEdit? = null, editorDirectory: File? = null) {
+        if (epoch != accountGeneration || accountToken == null || mutable.value.pictureSaves[spaceId ?: PROFILE_PICTURE_KEY]?.busy == true) {
+            editorDirectory?.deleteRecursively()
+            return
+        }
         val key = spaceId ?: PROFILE_PICTURE_KEY
         if (mutable.value.pictureSaves[key]?.busy == true) return
         val token = accountToken ?: return
@@ -2889,7 +2918,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             val directory = File(uploadSession, "picture-${UUID.randomUUID()}")
             try {
                 val picked = preparer.copy(uri, directory)
-                val picture = PicturePreparer.prepare(picked.source)
+                val picture = PicturePreparer.prepare(picked.source, edit, EditPainter.typeface(getApplication()))
                 val result = pictureUploader.upload(token, target, picture)
                 if (request != accountGeneration) return@launch
                 result.account?.takeIf { spaceId == null }?.let(::applyOwnAccount)
@@ -2900,7 +2929,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Throwable) {
                 if (request == accountGeneration) setPictureSave(key, PictureSaveUi(error = pictureError(error, target)))
             } finally {
-                viewModelScope.launch(Dispatchers.IO) { directory.deleteRecursively() }
+                withContext(NonCancellable + Dispatchers.IO) {
+                    directory.deleteRecursively()
+                    editorDirectory?.deleteRecursively()
+                }
             }
         }
     }

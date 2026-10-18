@@ -43,6 +43,15 @@ enum class CropHandle(val left: Boolean = false, val top: Boolean = false, val r
 }
 
 object AttachmentEdits {
+    /** Square in physical image pixels, centred on the requested crop and bounded by the image. */
+    fun pictureCrop(crop: EditRect, width: Int, height: Int): EditRect {
+        val side = round(min(crop.width * width, crop.height * height)).coerceIn(1, min(width, height)).toDouble()
+        val w = side / width
+        val h = side / height
+        return EditRect(round((crop.x + crop.width / 2 - w / 2) * width).toDouble().coerceIn(0.0, width - side) / width,
+            round((crop.y + crop.height / 2 - h / 2) * height).toDouble().coerceIn(0.0, height - side) / height, w, h)
+    }
+
     /** Uploads fail rather than send the unedited original: people crop to hide things. */
     const val FAILED = "Couldn’t apply your edits."
     /** Markup colours offered before the custom picker; the first is the default. */
