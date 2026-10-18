@@ -1574,9 +1574,9 @@ export default function Call({
     const self = people.filter((person) => person.id === state.selfId);
     return { people: [...self, ...people.filter((person) => person.id !== state.selfId)], ...rest };
   };
-  const callStatusText = (count: number) =>
+  const callStatusText = () =>
     connected
-      ? `You’re in · ${count}`
+      ? null
       : state.phase === "joining"
         ? "Connecting…"
         : state.phase === "reconnecting"
@@ -1584,10 +1584,10 @@ export default function Call({
           : "Leaving…";
   /** Your call's status and running time, on its row or its card's heading. */
   const callStatus = () => {
-    const { people, startedAt } = callPeople();
+    const { startedAt } = callPeople();
     return (
       <span className="live-call-status">
-        <span className="live-status">{callStatusText(people.length)}</span>
+        {!connected && <span className="live-status">{callStatusText()}</span>}
         {startedAt != null && <VoiceSessionTimer startedAt={startedAt} />}
       </span>
     );
@@ -1671,7 +1671,7 @@ export default function Call({
               <span>{name}</span>
               {elsewhere && voiceSpaceName && <small>{voiceSpaceName}</small>}
             </button>
-            <span className="live-status">{callStatusText(people.length)}</span>
+            {!connected && <span className="live-status">{callStatusText()}</span>}
             {startedAt != null && <VoiceSessionTimer startedAt={startedAt} />}
           </div>
         )}
@@ -1721,6 +1721,9 @@ export default function Call({
             )}
           </ul>
         )}
+        <span className="live-people-count">
+          {people.length} {people.length === 1 ? "person" : "people"}
+        </span>
         <div className="live-controls">
           {muteToggle}
           {deafenToggle}

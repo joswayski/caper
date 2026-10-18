@@ -1955,8 +1955,8 @@
 .live-card {
   --live-card: #18231f;
   --live-card-border: #28362f;
-  --live-call: #1a2a22;
-  --live-call-border: #3a6b4b;
+  --live-call: #22382c;
+  --live-call-border: #4b8a60;
   --live-ring: var(--voice-session-green);
 }
 .live-now {
@@ -2142,6 +2142,10 @@
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
+}
+.live-people-count {
+  color: var(--text-muted);
+  font-size: 11px;
 }
 .live-face,
 .live-more {

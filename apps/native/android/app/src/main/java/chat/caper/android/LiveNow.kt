@@ -69,8 +69,8 @@ import kotlinx.coroutines.isActive
 // no voice, and nothing says who is speaking except the green rings on faces.
 
 /** Your call card's green-tinted surface and border. */
-internal val LiveCallSurface = Color(0xFF1A2A22)
-internal val LiveCallBorder = Color(0xFF3A6B4B)
+internal val LiveCallSurface = Color(0xFF22382C)
+internal val LiveCallBorder = Color(0xFF4B8A60)
 /** Another live room's card. */
 internal val LiveRoomSurface = Color(0xFF18231F)
 internal val LiveRoomBorder = Color(0xFF28362F)
@@ -176,11 +176,11 @@ internal fun peopleCount(count: Int): String = "$count ${if (count == 1) "person
 /** The full list's title: "In #design · 12 people". */
 internal fun voiceListTitle(channelName: String, count: Int): String = "In #$channelName · ${peopleCount(count)}"
 
-/** Your call's status: "You’re in · N" once connected, otherwise how far the connection is. */
-internal fun callStatusLabel(voice: VoiceState): String = when (voice.phase) {
+/** Connection progress; the joined call's participant count belongs with its faces. */
+internal fun callStatusLabel(voice: VoiceState): String? = when (voice.phase) {
     VoiceState.Phase.CONNECTING -> "Connecting…"
     VoiceState.Phase.RECONNECTING -> "Reconnecting…"
-    else -> "You’re in · ${voice.participants.size}"
+    else -> null
 }
 
 /** What the full list says about someone, the most telling first. */
@@ -463,11 +463,13 @@ private fun Modifier.keepsTaps(): Modifier = pointerInput(Unit) { detectTapGestu
 /** Opens the full list, with [openId]'s audio controls already open. */
 private class VoiceListRequest(val openId: String?)
 
-/** Your call's status ([callStatusLabel]): green once connected, amber until then, and its timer once connected. */
+/** Amber connection progress and the call's timer, without a participant count. */
 @Composable internal fun CallStatus(voice: VoiceState, sessionStartedAt: Long?, modifier: Modifier = Modifier) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Text(callStatusLabel(voice), color = if (voice.phase == VoiceState.Phase.CONNECTED) VoiceSessionGreen else VoiceAmber, fontSize = 11.sp,
-            fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, style = TabularNumbers)
+        callStatusLabel(voice)?.let {
+            Text(it, color = VoiceAmber, fontSize = 11.sp,
+                fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, style = TabularNumbers)
+        }
         if (voice.phase != VoiceState.Phase.CONNECTING) sessionStartedAt?.let { VoiceSessionTimer(it, Modifier.padding(start = 6.dp)) }
     }
 }
@@ -554,6 +556,7 @@ private class VoiceListRequest(val openId: String?)
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 if (people.isNotEmpty()) CallFaces(people, voice, account, open) { list = VoiceListRequest(it) }
+                Text(peopleCount(people.size), color = TextMuted, fontSize = 11.sp)
                 Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     CallMuteToggle(voice) { CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) }
                     CallToggle(

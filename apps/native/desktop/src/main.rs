@@ -11902,16 +11902,29 @@ impl CaperApp {
                         ui.spacing_mut().item_spacing.y = 10.0;
                         let head = match row {
                             Some(row) => {
-                                let mark = self.call_mark(ui, &call, people.len());
+                                let mark = self.call_mark(ui, &call);
                                 self.channel_row(ui, row, Some(mark))
                             }
-                            None => self.call_card_title(ui, &call, people.len()),
+                            None => self.call_card_title(ui, &call),
                         };
                         let faces = if people.is_empty() {
                             FacePick::None
                         } else {
                             self.call_faces(ui, &people, &speaking, touch)
                         };
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} {}",
+                                people.len(),
+                                if people.len() == 1 {
+                                    "person"
+                                } else {
+                                    "people"
+                                }
+                            ))
+                            .size(11.0)
+                            .color(MUTED),
+                        );
                         self.call_card_controls(ui, joining, touch);
                         (head, faces)
                     })
@@ -11961,23 +11974,18 @@ impl CaperApp {
         }
     }
 
-    /// Your call's state: "You're in · N" (and its short "In · N") in green
-    /// once connected, else amber "Connecting…" or "Reconnecting…".
-    fn call_status(&self, count: usize) -> (String, String, Color32) {
+    /// Connection progress only; the participant count belongs with the faces.
+    fn call_status(&self) -> (String, String, Color32) {
         match &self.voice.state.phase {
-            Phase::Connected(_) => (
-                format!("You're in · {count}"),
-                format!("In · {count}"),
-                VOICE_SESSION_GREEN,
-            ),
+            Phase::Connected(_) => (String::new(), String::new(), VOICE_SESSION_GREEN),
             Phase::Joining(_) => ("Connecting…".into(), "Connecting…".into(), VOICE_AMBER),
             _ => ("Reconnecting…".into(), "Reconnecting…".into(), VOICE_AMBER),
         }
     }
 
     /// Your call's state and session timer, for its row or heading.
-    fn call_mark(&self, ui: &egui::Ui, call: &CallContext, count: usize) -> CallMark {
-        let (status, short, tone) = self.call_status(count);
+    fn call_mark(&self, ui: &egui::Ui, call: &CallContext) -> CallMark {
+        let (status, short, tone) = self.call_status();
         CallMark {
             status,
             short,
@@ -11990,13 +11998,8 @@ impl CaperApp {
 
     /// The heading of a call card above the channels: a waveform, the
     /// call's channel (opening its chat; another space's name follows it),
-    /// how many are in, and the session's timer. Returns the channel's link.
-    fn call_card_title(
-        &mut self,
-        ui: &mut egui::Ui,
-        call: &CallContext,
-        count: usize,
-    ) -> egui::Response {
+    /// connection progress and the session's timer. Returns the channel's link.
+    fn call_card_title(&mut self, ui: &mut egui::Ui, call: &CallContext) -> egui::Response {
         let (row, _) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
         let icon = egui::Rect::from_center_size(
@@ -12006,7 +12009,7 @@ impl CaperApp {
         paint_icon(ui.painter(), icon, NavIcon::AudioLines, VOICE_SESSION_GREEN);
         let left = icon.right() + 8.0;
         let font = egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into()));
-        let mark = self.call_mark(ui, call, count);
+        let mark = self.call_mark(ui, call);
         let title = egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into()));
         let name = ui
             .painter()
@@ -12877,7 +12880,7 @@ impl CaperApp {
         }
         let font = egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Medium".into()));
         let status = (!matches!(self.voice.state.phase, Phase::Connected(_))).then(|| {
-            let (status, _, tone) = self.call_status(people.len());
+            let (status, _, tone) = self.call_status();
             let width = ui
                 .painter()
                 .layout_no_wrap(status.clone(), font.clone(), tone)
@@ -22506,8 +22509,8 @@ fn voice_session_duration(started_at: u64, now: u64) -> String {
 
 /// Design H's voice colors: your call's green-tinted card, other live
 /// rooms' quieter cards, and phones' strip under the chat header.
-const LIVE_CARD: Color32 = Color32::from_rgb(0x1a, 0x2a, 0x22);
-const LIVE_CARD_BORDER: Color32 = Color32::from_rgb(0x3a, 0x6b, 0x4b);
+const LIVE_CARD: Color32 = Color32::from_rgb(0x22, 0x38, 0x2c);
+const LIVE_CARD_BORDER: Color32 = Color32::from_rgb(0x4b, 0x8a, 0x60);
 const ROOM_CARD: Color32 = Color32::from_rgb(0x18, 0x23, 0x1f);
 const ROOM_CARD_BORDER: Color32 = Color32::from_rgb(0x28, 0x36, 0x2f);
 const VOICE_STRIP: Color32 = Color32::from_rgb(0x1a, 0x26, 0x22);
@@ -22555,7 +22558,7 @@ enum FacePick {
     List(Option<String>),
 }
 
-/// Your call's row ends with its state ("You're in · 3", or `short` when
+/// Your call's row ends with connection progress (or `short` when
 /// the name needs the room) in `tone`, then the session's timer, where a
 /// live row counts who is there.
 #[derive(Clone, Debug)]
@@ -29930,7 +29933,7 @@ mod tests {
         }
         assert_eq!(faces[0].size(), egui::vec2(36.0, 36.0));
         assert!(faces[2].right() <= 327.0, "faces stay inside the card");
-        assert!(texts(&output).contains(&"You're in · 3"));
+        assert!(texts(&output).contains(&"3 people"));
         assert!(!texts(&output).contains(&"User volume"));
         // A face is no button of its own: a click opens the call's chat,
         // as the rest of the card does.
@@ -39515,13 +39518,9 @@ mod tests {
                 general.top() - card.top() < 16.0,
                 "the row is the card's top line"
             );
-            let status = if sidebar < 280.0 {
-                "In · 12"
-            } else {
-                "You're in · 12"
-            };
-            assert!(shown.contains(&status), "{sidebar}: {status}: {shown:?}");
-            assert!(general.contains(text_position(&output, status)));
+            let count = "12 people";
+            assert!(shown.contains(&count), "{sidebar}: {count}: {shown:?}");
+            assert!(text_position(&output, count).y > general.bottom());
             assert!(node_bounds(&output, "12 in voice").is_none());
             // You, then the others as they joined; faces in two rows at most.
             let names = [
@@ -39755,7 +39754,7 @@ mod tests {
         let link = node_bounds(&output, "Open #lounge in TEST FIXTURE Night Shift")
             .expect("the call's heading");
         assert!(card.contains_rect(link));
-        assert!(shown.contains(&"#lounge") && shown.contains(&"You're in · 3"));
+        assert!(shown.contains(&"#lounge") && shown.contains(&"3 people"));
         // The list's rows stay plain rows.
         for name in ["general", "design", "planning"] {
             assert!(
