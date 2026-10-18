@@ -16,12 +16,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
@@ -141,55 +143,99 @@ internal fun durationLabel(durationMs: Long?): String? {
             if (host != null) host.open = pages?.let { OpenViewer(it, caption) } else viewer = pages
         })
     }
-    Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        attachments.forEach { attachment ->
-            val url = attachment.url
-            when {
-                attachment.spoiler && attachment.id !in revealed -> Surface(
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(
-                        role = Role.Button, onClickLabel = "Reveal spoiler attachment",
-                    ) { revealed = revealed + attachment.id },
-                    color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
-                ) {
-                    val visual = attachment.kind == "image" || attachment.kind == "video"
-                    val source = if (visual && !attachment.unavailable && attachment.state != AttachmentState.FAILED) {
-                        attachment.previewUrl ?: if (attachment.kind == "image") attachment.url else null
-                    } else null
-                    Box(Modifier.fillMaxWidth().height(if (visual) 180.dp else 64.dp), contentAlignment = Alignment.Center) {
-                        SpoilerThumbnail(source, "${attachment.id}:spoiler") { onLoadFailed(attachment, it.httpStatus()) }
-                        Text("SPOILER · Tap to reveal", Modifier.background(Blackout.copy(alpha = 0.8f), MaterialTheme.shapes.small).padding(12.dp), color = Text, fontSize = 12.sp)
-                    }
+    @Composable fun RenderAttachment(attachment: ChatAttachment, modifier: Modifier, shape: Shape) {
+        val url = attachment.url
+        val visual = attachment.kind == "image" || attachment.kind == "video"
+        val status = when {
+            attachment.unavailable -> "File removed"
+            attachment.state == AttachmentState.FAILED -> "Processing failed"
+            attachment.state != AttachmentState.PROCESSING && url == null -> "File unavailable"
+            else -> null
+        }
+        when {
+            attachment.spoiler && attachment.id !in revealed -> Surface(
+                modifier = modifier.then(if (modifier == Modifier) Modifier.fillMaxWidth().height(if (visual) 180.dp else 64.dp) else Modifier)
+                    .clip(shape).clickable(role = Role.Button, onClickLabel = "Reveal spoiler attachment") {
+                        revealed = revealed + attachment.id
+                    },
+                color = Surface, shape = shape, border = BorderStroke(1.dp, Border),
+            ) {
+                val source = if (visual && !attachment.unavailable && attachment.state != AttachmentState.FAILED) {
+                    attachment.previewUrl ?: if (attachment.kind == "image") attachment.url else null
+                } else null
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    SpoilerThumbnail(source, "${attachment.id}:spoiler") { onLoadFailed(attachment, it.httpStatus()) }
+                    Text("SPOILER · Tap to reveal", Modifier.background(Blackout.copy(alpha = 0.8f), MaterialTheme.shapes.small).padding(12.dp), color = Text, fontSize = 12.sp)
                 }
-                attachment.unavailable -> FileCard(attachment, null)
-                attachment.state == AttachmentState.FAILED -> FileCard(attachment, null, detail = "Couldn’t process this file", error = true)
-                attachment.state == AttachmentState.PROCESSING -> ProcessingAttachment(
-                    attachment, attachment.previewUrl ?: localPreviews[attachment.id], progress[attachment.id], onLoadFailed,
+            }
+            visual && status != null -> MediaFrame(attachment, null, description = "${attachment.name}, $status", modifier = modifier, shape = shape) {
+                Column(Modifier.align(Alignment.Center).padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(attachment.name, color = TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(status, color = if (attachment.state == AttachmentState.FAILED) ErrorText else TextMuted, fontSize = 11.sp)
+                }
+            }
+            attachment.unavailable -> FileCard(attachment, null)
+            attachment.state == AttachmentState.FAILED -> FileCard(attachment, null, detail = "Couldn’t process this file", error = true)
+            attachment.state == AttachmentState.PROCESSING -> ProcessingAttachment(
+                attachment, attachment.previewUrl ?: localPreviews[attachment.id], progress[attachment.id], onLoadFailed, modifier, shape,
+            )
+            url == null -> FileCard(attachment, null)
+            attachment.kind == "image" -> MediaFrame(attachment, view(attachment), modifier = modifier, shape = shape) {
+                val gif = attachment.contentType == "image/gif"
+                AttachmentImage(
+                    attachment, if (gif) url else attachment.previewUrl ?: url,
+                    if (gif) "gif" else "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed,
+                    animate = gif && !still,
                 )
-                url == null -> FileCard(attachment, null)
-                attachment.kind == "image" -> MediaFrame(attachment, view(attachment)) {
-                    val gif = attachment.contentType == "image/gif"
-                    AttachmentImage(
-                        attachment, if (gif) url else attachment.previewUrl ?: url,
-                        if (gif) "gif" else "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed,
-                        animate = gif && !still,
+            }
+            // Stored GIFs and animated images: muted, looping, inline, no controls.
+            attachment.kind == "video" && attachment.animated -> MediaFrame(attachment, view(attachment), modifier = modifier, shape = shape) {
+                attachment.previewUrl?.let { AttachmentImage(attachment, it, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed) }
+                if (!pending) AnimatedVideo(attachment, url, onLoadFailed)
+            }
+            attachment.kind == "video" -> MediaFrame(attachment, view(attachment), modifier = modifier, shape = shape) {
+                attachment.previewUrl?.let { AttachmentImage(attachment, it, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed) }
+                Surface(Modifier.align(Alignment.Center).size(44.dp), shape = CircleShape, color = Blackout.copy(alpha = 0.72f)) {
+                    Icon(painterResource(R.drawable.lucide_play), null, Modifier.padding(12.dp), tint = Text)
+                }
+                durationLabel(attachment.durationMs)?.let {
+                    Text(it, Modifier.align(Alignment.BottomEnd).padding(6.dp).background(Blackout.copy(alpha = 0.72f), MaterialTheme.shapes.extraSmall).padding(horizontal = 5.dp, vertical = 2.dp), color = Text, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            attachment.kind == "audio" -> FileCard(attachment, if (pending) null else ({ playing = attachment.id }), R.drawable.lucide_play)
+            else -> FileCard(attachment, if (pending) null else ({ open(url) }))
+        }
+    }
+    val (visuals, files) = attachments.partition { it.kind == "image" || it.kind == "video" }
+    Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (visuals.size == 1) RenderAttachment(visuals.single(), Modifier, MaterialTheme.shapes.small)
+        else if (visuals.isNotEmpty()) BoxWithConstraints(Modifier.widthIn(max = 480.dp).fillMaxWidth()) {
+            val cells = attachmentGalleryCells(visuals.size, maxWidth.value)
+            val height = cells.maxOf { it.y + it.height }
+            Box(Modifier.fillMaxWidth().height(height.dp)) {
+                visuals.forEachIndexed { index, attachment -> key(attachment.id) {
+                    val cell = cells[index]
+                    val shape = RoundedCornerShape(
+                        topStart = if (cell.left && cell.top) 12.dp else 1.dp,
+                        topEnd = if (cell.right && cell.top) 12.dp else 1.dp,
+                        bottomEnd = if (cell.right && cell.bottom) 12.dp else 1.dp,
+                        bottomStart = if (cell.left && cell.bottom) 12.dp else 1.dp,
                     )
-                }
-                // Stored GIFs and animated images: muted, looping, inline, no controls.
-                attachment.kind == "video" && attachment.animated -> MediaFrame(attachment, view(attachment)) {
-                    attachment.previewUrl?.let { AttachmentImage(attachment, it, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed) }
-                    if (!pending) AnimatedVideo(attachment, url, onLoadFailed)
-                }
-                attachment.kind == "video" -> MediaFrame(attachment, view(attachment)) {
-                    attachment.previewUrl?.let { AttachmentImage(attachment, it, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed) }
-                    Surface(Modifier.align(Alignment.Center).size(44.dp), shape = CircleShape, color = Blackout.copy(alpha = 0.72f)) {
-                        Icon(painterResource(R.drawable.lucide_play), null, Modifier.padding(12.dp), tint = Text)
+                    RenderAttachment(attachment, Modifier.offset(cell.x.dp, cell.y.dp).size(cell.width.dp, cell.height.dp), shape)
+                } }
+            }
+        }
+        if (files.isNotEmpty()) BoxWithConstraints(Modifier.widthIn(max = 480.dp).fillMaxWidth()) {
+            // Keep two readable cards only when each has at least 220 dp of room.
+            val columns = if (maxWidth >= 446.dp) 2 else 1
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                files.chunked(columns).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        row.forEach { attachment -> key(attachment.id) {
+                            Box(Modifier.width((maxWidth - 6.dp * (columns - 1)) / columns)) { RenderAttachment(attachment, Modifier, MaterialTheme.shapes.small) }
+                        } }
                     }
-                    durationLabel(attachment.durationMs)?.let {
-                        Text(it, Modifier.align(Alignment.BottomEnd).padding(6.dp).background(Blackout.copy(alpha = 0.72f), MaterialTheme.shapes.extraSmall).padding(horizontal = 5.dp, vertical = 2.dp), color = Text, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    }
                 }
-                attachment.kind == "audio" -> FileCard(attachment, if (pending) null else ({ playing = attachment.id }), R.drawable.lucide_play)
-                else -> FileCard(attachment, if (pending) null else ({ open(url) }))
             }
         }
     }
@@ -200,14 +246,14 @@ internal fun durationLabel(durationMs: Long?): String? {
 }
 
 /** Placeholder while the media worker compresses the file: preview (if any), spinner and percent. */
-@Composable private fun ProcessingAttachment(attachment: ChatAttachment, preview: String?, percent: Int?, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
+@Composable private fun ProcessingAttachment(attachment: ChatAttachment, preview: String?, percent: Int?, onLoadFailed: (ChatAttachment, Int?) -> Unit, modifier: Modifier = Modifier, shape: Shape = MaterialTheme.shapes.small) {
     val label = if (percent != null) "Processing… $percent%" else "Processing…"
-    val visual = attachment.kind == "image" || attachment.kind == "video" || attachmentFrame(attachment.width, attachment.height) != null
+    val visual = attachment.kind == "image" || attachment.kind == "video"
     if (!visual) {
         FileCard(attachment, null, detail = label, busy = percent ?: -1)
         return
     }
-    MediaFrame(attachment, null, description = "${attachment.name}, $label") {
+    MediaFrame(attachment, null, description = "${attachment.name}, $label", modifier = modifier, shape = shape) {
         if (preview != null) AttachmentImage(attachment, preview, "processing", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed)
         Box(Modifier.fillMaxSize().background(Blackout.copy(alpha = if (preview != null) 0.45f else 0f)))
         Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -265,14 +311,15 @@ internal fun durationLabel(durationMs: Long?): String? {
 }
 
 @Composable private fun MediaFrame(
-    attachment: ChatAttachment, onClick: (() -> Unit)?, description: String = attachment.name, content: @Composable BoxScope.() -> Unit,
+    attachment: ChatAttachment, onClick: (() -> Unit)?, description: String = attachment.name,
+    modifier: Modifier = Modifier, shape: Shape = MaterialTheme.shapes.small, content: @Composable BoxScope.() -> Unit,
 ) {
     val frame = attachmentFrame(attachment.width, attachment.height)
     val width: Dp = (frame?.first ?: 240).dp
     val ratio = frame?.let { it.first.toFloat() / it.second } ?: (4f / 3f)
     Box(
-        Modifier.widthIn(max = width).fillMaxWidth().aspectRatio(ratio)
-            .clip(MaterialTheme.shapes.small).background(Surface).border(1.dp, Border, MaterialTheme.shapes.small)
+        modifier.then(if (modifier == Modifier) Modifier.widthIn(max = width).fillMaxWidth().aspectRatio(ratio) else Modifier)
+            .clip(shape).background(Surface).border(1.dp, Border, shape)
             .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClickLabel = "Open ${attachment.name}", onClick = onClick) else Modifier)
             .semantics { contentDescription = description },
         content = content,

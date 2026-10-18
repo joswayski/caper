@@ -246,41 +246,73 @@ struct MessageAttachmentsView: View {
     @Environment(\.mediaViewer) private var mediaViewer
     @State private var revealed: Set<String> = []
 
+    private var visuals: [ChatAttachment] { attachments.filter { $0.kind == .image || $0.kind == .video } }
+    private var files: [ChatAttachment] { attachments.filter { $0.kind != .image && $0.kind != .video } }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(attachments) { attachment in
-                if attachment.spoiler && !revealed.contains(attachment.id) {
-                    Button { revealed.insert(attachment.id) } label: {
-                        AttachmentSpoilerView(attachment: attachment, chat: chat)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Reveal spoiler attachment")
-                    .accessibilityHint("Shows the hidden file")
-                } else if attachment.unavailable {
-                    AttachmentFileCard(attachment: attachment, action: nil)
-                } else if attachment.status == .failed {
-                    AttachmentFailedCard(attachment: attachment)
-                } else if attachment.status == .processing {
-                    AttachmentProcessingView(attachment: attachment, chat: chat)
-                } else if attachment.url == nil {
-                    AttachmentFileCard(attachment: attachment, action: nil)
-                } else {
-                    switch attachment.kind {
-                    case .image: AttachmentImageView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
-                    case .video:
-                        if attachment.animated {
-                            AttachmentAnimationView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
-                        } else {
-                            AttachmentVideoView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
+            if visuals.count > 1 {
+                SentGalleryLayout {
+                    ForEach(Array(visuals.enumerated()), id: \.element.id) { index, attachment in
+                        GeometryReader { geometry in
+                            let frames = SentGalleryGeometry.frames(count: visuals.count, width: 480)
+                            let cell = frames[index]
+                            let height = frames.map(\.maxY).max() ?? 0
+                            let right = abs(cell.maxX - 480) < 0.01
+                            let bottom = abs(cell.maxY - height) < 0.01
+                            let shape = UnevenRoundedRectangle(
+                                topLeadingRadius: cell.minX == 0 && cell.minY == 0 ? 12 : 1,
+                                bottomLeadingRadius: cell.minX == 0 && bottom ? 12 : 1,
+                                bottomTrailingRadius: right && bottom ? 12 : 1,
+                                topTrailingRadius: right && cell.minY == 0 ? 12 : 1)
+                            attachmentView(attachment)
+                                .environment(\.sentGalleryCell, true)
+                                .frame(width: geometry.size.width, height: geometry.size.height)
+                                .background(CaperTheme.surface)
+                                .clipShape(shape)
                         }
-                    case .audio: AttachmentAudioView(attachment: attachment, chat: chat)
-                    case .file: AttachmentOpenCard(attachment: attachment, chat: chat)
                     }
                 }
+            } else if let attachment = visuals.first {
+                attachmentView(attachment)
+            }
+            SentFileLayout {
+                ForEach(files) { attachment in attachmentView(attachment) }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private func attachmentView(_ attachment: ChatAttachment) -> some View {
+        if attachment.spoiler && !revealed.contains(attachment.id) {
+            Button { revealed.insert(attachment.id) } label: {
+                AttachmentSpoilerView(attachment: attachment, chat: chat)
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Reveal spoiler attachment")
+            .accessibilityHint("Shows the hidden file")
+        } else if attachment.unavailable {
+            SentAttachmentPlaceholder(attachment: attachment, label: "File removed")
+        } else if attachment.status == .failed {
+            SentAttachmentPlaceholder(attachment: attachment, label: "Processing failed")
+        } else if attachment.status == .processing {
+            AttachmentProcessingView(attachment: attachment, chat: chat)
+        } else if attachment.url == nil {
+            SentAttachmentPlaceholder(attachment: attachment, label: "File unavailable")
+        } else {
+            switch attachment.kind {
+            case .image: AttachmentImageView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
+            case .video:
+                if attachment.animated {
+                    AttachmentAnimationView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
+                } else {
+                    AttachmentVideoView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
+                }
+            case .audio: AttachmentAudioView(attachment: attachment, chat: chat)
+            case .file: AttachmentOpenCard(attachment: attachment, chat: chat)
+            }
+        }
     }
 
     /// Opens this message's images and videos at `attachment`; nil keeps the
@@ -290,6 +322,120 @@ struct MessageAttachmentsView: View {
         let items = MediaViewerPolicy.items(attachments, revealedSpoilerIDs: revealed)
         guard let start = items.firstIndex(where: { $0.id == attachment.id }) else { return nil }
         return { mediaViewer(MediaViewerRequest(items: items, start: start, chat: chat)) }
+    }
+}
+
+private struct SentGalleryCellKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private extension EnvironmentValues {
+    var sentGalleryCell: Bool {
+        get { self[SentGalleryCellKey.self] }
+        set { self[SentGalleryCellKey.self] = newValue }
+    }
+}
+
+/// Geometry depends only on count, never readiness or downloaded dimensions.
+enum SentGalleryGeometry {
+    static func frames(count: Int, width: CGFloat) -> [CGRect] {
+        guard count > 1 else { return [] }
+        let width = max(0, min(480, width))
+        let height = width * 2 / 3
+        if count == 2 {
+            let side = max(0, (width - 4) / 2)
+            return [CGRect(x: 0, y: 0, width: side, height: height),
+                    CGRect(x: side + 4, y: 0, width: side, height: height)]
+        }
+        if count == 3 {
+            let left = max(0, (width - 4) * 2 / 3)
+            let right = max(0, (width - 4) / 3)
+            let half = max(0, (height - 4) / 2)
+            return [CGRect(x: 0, y: 0, width: left, height: height),
+                    CGRect(x: left + 4, y: 0, width: right, height: half),
+                    CGRect(x: left + 4, y: half + 4, width: right, height: half)]
+        }
+        let rows = (count + 2) / 3
+        let shortRows = rows * 3 - count
+        let rowHeight = max(0, count == 4 ? (width - 4) / 2 : (width - 8) / 3)
+        return (0..<rows).flatMap { row -> [CGRect] in
+            let columns = row < shortRows ? 2 : 3
+            let cellWidth = max(0, (width - CGFloat(columns - 1) * 4) / CGFloat(columns))
+            return (0..<columns).map { column in
+                CGRect(x: CGFloat(column) * (cellWidth + 4), y: CGFloat(row) * (rowHeight + 4), width: cellWidth, height: rowHeight)
+            }
+        }
+    }
+}
+
+private struct SentGalleryLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = max(0, min(480, proposal.width ?? 480))
+        let frames = SentGalleryGeometry.frames(count: subviews.count, width: width)
+        return CGSize(width: width, height: frames.map(\.maxY).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (index, frame) in SentGalleryGeometry.frames(count: subviews.count, width: bounds.width).enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                                  anchor: .topLeading, proposal: ProposedViewSize(frame.size))
+        }
+    }
+}
+
+/// Keep cards readable; wrap rather than shrinking filenames and audio controls.
+private struct SentFileLayout: Layout {
+    private func layout(width: CGFloat, subviews: Subviews) -> [CGRect] {
+        let columns = max(1, Int((width + 6) / 226))
+        let cardWidth = min(360, max(0, (width - CGFloat(columns - 1) * 6) / CGFloat(columns)))
+        var frames: [CGRect] = []
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for (index, subview) in subviews.enumerated() {
+            if index > 0, index % columns == 0 { y += rowHeight + 6; rowHeight = 0 }
+            let size = subview.sizeThatFits(ProposedViewSize(width: cardWidth, height: nil))
+            frames.append(CGRect(x: CGFloat(index % columns) * (cardWidth + 6), y: y, width: cardWidth, height: size.height))
+            rowHeight = max(rowHeight, size.height)
+        }
+        return frames
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? 360
+        let frames = layout(width: width, subviews: subviews)
+        return CGSize(width: width, height: frames.map(\.maxY).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (index, frame) in layout(width: bounds.width, subviews: subviews).enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                                  anchor: .topLeading, proposal: ProposedViewSize(frame.size))
+        }
+    }
+}
+
+private struct SentAttachmentPlaceholder: View {
+    let attachment: ChatAttachment
+    let label: String
+    @Environment(\.sentGalleryCell) private var galleryCell
+
+    var body: some View {
+        if galleryCell {
+            VStack(spacing: 4) {
+                Text(attachment.name).lineLimit(1).truncationMode(.middle)
+                Text(label).lineLimit(2)
+            }
+            .font(CaperTheme.font(11))
+            .foregroundStyle(CaperTheme.muted)
+            .padding(8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityElement(children: .combine)
+        } else if attachment.status == .failed && !attachment.unavailable {
+            AttachmentFailedCard(attachment: attachment)
+        } else {
+            AttachmentFileCard(attachment: attachment, action: nil)
+        }
     }
 }
 
@@ -305,17 +451,22 @@ private func openAttachment(_ attachment: ChatAttachment, chat: ChatModel?, open
 private struct AttachmentFrame: ViewModifier {
     let attachment: ChatAttachment
     let fallback: (width: Double, height: Double)
+    @Environment(\.sentGalleryCell) private var galleryCell
 
-    func body(content: Content) -> some View {
+    @ViewBuilder func body(content: Content) -> some View {
         let size = AttachmentPolicy.displaySize(width: attachment.width, height: attachment.height) ?? fallback
         // Reserve the final aspect ratio before anything loads.
-        return Color.clear
+        if galleryCell {
+            Color.clear.overlay { content }.clipped()
+        } else {
+            Color.clear
             .aspectRatio(CGSize(width: size.width, height: size.height), contentMode: .fit)
             .overlay { content }
             .background(CaperTheme.surface)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
             .frame(maxWidth: size.width, alignment: .leading)
+        }
     }
 }
 
@@ -323,6 +474,7 @@ private struct AttachmentFrame: ViewModifier {
 private struct AttachmentSpoilerView: View {
     let attachment: ChatAttachment
     let chat: ChatModel?
+    @Environment(\.sentGalleryCell) private var galleryCell
     @State private var image: CGImage?
 
     private var visual: Bool {
@@ -332,7 +484,7 @@ private struct AttachmentSpoilerView: View {
 
     var body: some View {
         Group {
-            if visual {
+            if galleryCell || visual {
                 SpoilerThumbnail(image: image)
                     .modifier(AttachmentFrame(attachment: attachment, fallback: (240, 180)))
             } else {

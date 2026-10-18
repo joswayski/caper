@@ -17344,20 +17344,11 @@ impl CaperApp {
                 if !pending {
                     self.media.visible(&attachment, unix_now, now);
                 }
-                if hidden(&attachment, ui) {
-                    return (attachment, true);
-                }
                 let media = matches!(
                     attachment.kind,
                     model::AttachmentKind::Image | model::AttachmentKind::Video
                 );
-                let inline = !attachment.unavailable
-                    && media
-                    && match attachment.status {
-                        model::AttachmentStatus::Processing => true,
-                        model::AttachmentStatus::Ready => pending || attachment.url.is_some(),
-                        model::AttachmentStatus::Failed => false,
-                    };
+                let inline = media;
                 (attachment, inline)
             })
             .collect();
@@ -17370,6 +17361,14 @@ impl CaperApp {
             })
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                let count = resolved.iter().filter(|(_, media)| *media).count();
+                let layout = attachments::gallery_rects(count, ui.available_width());
+                let gallery = layout.last().map(|last| {
+                    egui::Rect::from_min_size(
+                        ui.next_widget_position(),
+                        egui::vec2(ui.available_width().min(480.0), last.bottom()),
+                    )
+                });
                 // Media tiles first, then cards, so rows of different
                 // heights never share a wrapped line.
                 for tiles in [true, false] {
@@ -17377,24 +17376,71 @@ impl CaperApp {
                         continue;
                     }
                     ui.horizontal_wrapped(|ui| {
-                        for (attachment, _) in
-                            resolved.iter().filter(|(_, inline)| *inline == tiles)
+                        if tiles && let Some(bounds) = gallery {
+                            ui.advance_cursor_after_rect(bounds);
+                        }
+                        for (index, (attachment, _)) in resolved
+                            .iter()
+                            .filter(|(_, inline)| *inline == tiles)
+                            .enumerate()
                         {
+                            let placed = if tiles {
+                                gallery
+                                    .map(|bounds| {
+                                        let rect = layout[index].translate(bounds.min.to_vec2());
+                                        let left = rect.left() == bounds.left();
+                                        let right = (rect.right() - bounds.right()).abs() < 0.1;
+                                        let top = rect.top() == bounds.top();
+                                        let bottom = (rect.bottom() - bounds.bottom()).abs() < 0.1;
+                                        (
+                                            rect,
+                                            CornerRadius {
+                                                nw: if left && top { 12 } else { 1 },
+                                                ne: if right && top { 12 } else { 1 },
+                                                sw: if left && bottom { 12 } else { 1 },
+                                                se: if right && bottom { 12 } else { 1 },
+                                            },
+                                        )
+                                    })
+                                    .or_else(|| {
+                                        let frame = attachments::frame_size(attachment);
+                                        let size = frame
+                                            * (ui.max_rect().width() / frame.x).clamp(0.1, 1.0);
+                                        let (rect, _) =
+                                            ui.allocate_exact_size(size, egui::Sense::hover());
+                                        Some((rect, CornerRadius::same(8)))
+                                    })
+                            } else {
+                                None
+                            };
                             if hidden(attachment, ui) {
-                                let (rect, response) = ui.allocate_exact_size(
-                                    egui::vec2(180.0, 100.0),
-                                    egui::Sense::click(),
-                                );
-                                ui.painter().rect_filled(rect, 8.0, SURFACE);
+                                let radius =
+                                    placed.map_or(CornerRadius::same(8), |(_, radius)| radius);
+                                let (rect, response) = if let Some((rect, _)) = placed {
+                                    (
+                                        rect,
+                                        ui.interact(
+                                            rect,
+                                            ui.id().with(&attachment.id),
+                                            egui::Sense::click(),
+                                        ),
+                                    )
+                                } else {
+                                    ui.allocate_exact_size(
+                                        egui::vec2(180.0, 100.0),
+                                        egui::Sense::click(),
+                                    )
+                                };
+                                ui.painter().rect_filled(rect, radius, SURFACE);
                                 if let attachments::ImageState::Ready(texture) =
                                     self.media.spoiler(attachment)
                                 {
                                     egui::Image::new((texture, rect.size()))
-                                        .corner_radius(8)
+                                        .corner_radius(radius)
                                         .paint_at(ui, rect);
                                     ui.painter().rect_filled(
                                         rect,
-                                        8.0,
+                                        radius,
                                         Color32::from_black_alpha(70),
                                     );
                                 }
@@ -17428,7 +17474,7 @@ impl CaperApp {
                             }
                             let progress = self.attachment_progress.get(&attachment.id).copied();
                             let clicked = if tiles {
-                                self.media_tile(ui, attachment, pending, progress)
+                                self.media_tile(ui, attachment, pending, progress, placed)
                             } else {
                                 file_card(ui, attachment, pending, progress)
                             };
@@ -17466,24 +17512,33 @@ impl CaperApp {
         attachment: &model::Attachment,
         pending: bool,
         progress: Option<u8>,
+        placed: Option<(egui::Rect, CornerRadius)>,
     ) -> bool {
         let processing = attachment.status == model::AttachmentStatus::Processing;
         let video = attachment.kind == model::AttachmentKind::Video;
-        let clickable = !pending && !processing && attachment.url.is_some();
+        let removed = attachment.unavailable;
+        let failed = attachment.status == model::AttachmentStatus::Failed;
+        let clickable = !pending && !processing && !removed && !failed && attachment.url.is_some();
         // Narrow conversations shrink the frame, keeping its aspect ratio.
         let frame = attachments::frame_size(attachment);
         let size = frame * (ui.max_rect().width() / frame.x).clamp(0.1, 1.0);
-        let (rect, response) = ui.allocate_exact_size(
-            size,
-            if clickable {
-                egui::Sense::click()
-            } else {
-                egui::Sense::hover()
-            },
-        );
+        let sense = if clickable {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        };
+        let radius = placed.map_or(CornerRadius::same(8), |(_, radius)| radius);
+        let (rect, response) = if let Some((rect, _)) = placed {
+            (rect, ui.interact(rect, ui.id().with(&attachment.id), sense))
+        } else {
+            ui.allocate_exact_size(size, sense)
+        };
+        let size = rect.size();
         // A ready GIF uses its original frames, not a cached local/poster still.
         let gif = !pending && !processing && attachment.content_type == "image/gif";
-        let state = if gif && ui.is_rect_visible(rect) {
+        let state = if removed || failed {
+            attachments::ImageState::Loading
+        } else if gif && ui.is_rect_visible(rect) {
             let playing = reply_motion_enabled() && pictures::playing(ui);
             self.media.gif(
                 ui.ctx(),
@@ -17499,18 +17554,49 @@ impl CaperApp {
                 .image(&attachment.id, attachments::inline_source(attachment))
         };
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 8.0, SURFACE);
+        painter.rect_filled(rect, radius, SURFACE);
         let shown = if let attachments::ImageState::Ready(texture) = state {
+            let source = ui
+                .ctx()
+                .tex_manager()
+                .read()
+                .meta(texture)
+                .map(|meta| meta.size)
+                .unwrap_or([1, 1]);
+            let aspect = source[0] as f32 / source[1].max(1) as f32;
+            let target = size.x / size.y;
+            let uv_size = if aspect > target {
+                egui::vec2(target / aspect, 1.0)
+            } else {
+                egui::vec2(1.0, aspect / target)
+            };
             egui::Image::new((texture, size))
-                .corner_radius(8)
+                .uv(egui::Rect::from_center_size(egui::pos2(0.5, 0.5), uv_size))
+                .corner_radius(radius)
                 .paint_at(ui, rect);
             true
         } else {
             false
         };
-        if processing {
+        if removed || failed {
+            painter.rect_filled(rect, radius, SURFACE);
+            let text = ui.fonts_mut(|fonts| {
+                fonts.layout(
+                    if removed {
+                        "File removed"
+                    } else {
+                        "Processing failed"
+                    }
+                    .into(),
+                    egui::FontId::proportional(11.5),
+                    MUTED,
+                    (size.x - 12.0).max(1.0),
+                )
+            });
+            painter.galley(rect.center() - text.size() / 2.0, text, MUTED);
+        } else if processing {
             if shown {
-                painter.rect_filled(rect, 8.0, Color32::from_black_alpha(140));
+                painter.rect_filled(rect, radius, Color32::from_black_alpha(140));
             }
             let center = rect.center();
             egui::Spinner::new().size(22.0).color(TEXT).paint_at(
@@ -17520,13 +17606,15 @@ impl CaperApp {
                     egui::vec2(22.0, 22.0),
                 ),
             );
-            painter.text(
-                center + egui::vec2(0.0, 16.0),
-                egui::Align2::CENTER_CENTER,
-                processing_label(progress),
-                egui::FontId::proportional(11.5),
-                TEXT,
-            );
+            let text = ui.fonts_mut(|fonts| {
+                fonts.layout(
+                    processing_label(progress),
+                    egui::FontId::proportional(11.5),
+                    TEXT,
+                    (size.x - 12.0).max(1.0),
+                )
+            });
+            painter.galley(center + egui::vec2(-text.size().x / 2.0, 5.0), text, TEXT);
         } else if !shown && !matches!(state, attachments::ImageState::Loading) && !video {
             painter.text(
                 rect.center(),
@@ -17542,7 +17630,7 @@ impl CaperApp {
                 MUTED,
             );
         }
-        if !processing && video && attachment.animated {
+        if !processing && !removed && !failed && video && attachment.animated {
             // Looping MP4s from GIFs: the browser autoplays them.
             let badge =
                 egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(34.0, 20.0));
@@ -17554,7 +17642,7 @@ impl CaperApp {
                 egui::FontId::new(11.0, egui::FontFamily::Name("Satoshi Bold".into())),
                 TEXT,
             );
-        } else if !processing && video {
+        } else if !processing && !removed && !failed && video {
             let center = rect.center();
             painter.circle_filled(center, 22.0, Color32::from_black_alpha(170));
             paint_icon(
@@ -17566,7 +17654,7 @@ impl CaperApp {
         }
         painter.rect_stroke(
             rect,
-            8.0,
+            radius,
             Stroke::new(
                 1.0,
                 if response.hovered() && clickable {
@@ -17577,7 +17665,11 @@ impl CaperApp {
             ),
             egui::StrokeKind::Inside,
         );
-        let label = if processing {
+        let label = if removed {
+            format!("{}, File removed", attachment.name)
+        } else if failed {
+            format!("{}, Couldn't process this file", attachment.name)
+        } else if processing {
             format!("{}, {}", attachment.name, processing_label(progress))
         } else if video && attachment.animated {
             format!("Play animation {}", attachment.name)
@@ -41742,6 +41834,176 @@ mod tests {
     }
 
     #[test]
+    fn sent_gallery_keeps_status_slots_and_opens_the_selected_visual() {
+        fn accessible_bounds(output: &egui::FullOutput, text: &str) -> egui::Rect {
+            let rect = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find_map(|(_, node)| {
+                    (node.label() == Some(text) || node.value() == Some(text))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .unwrap_or_else(|| panic!("missing {text}"));
+            egui::Rect::from_min_max(
+                egui::pos2(rect.x0 as f32, rect.y0 as f32),
+                egui::pos2(rect.x1 as f32, rect.y1 as f32),
+            )
+        }
+        fn draw(
+            app: &mut CaperApp,
+            context: &egui::Context,
+            files: &[crate::model::Attachment],
+            width: f32,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            context.enable_accesskit();
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width + 16.0, 1800.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |context| {
+                    egui::CentralPanel::default().show(context, |ui| {
+                        app.attachment_list_inset(ui, files, false, 0);
+                        ui.label("After gallery");
+                    });
+                },
+            )
+        }
+        for width in [298.0, 498.0, 698.0] {
+            for count in 1..=10 {
+                let (context, mut app) = fixture("parity-attachments");
+                let base = app
+                    .timeline
+                    .messages()
+                    .flat_map(|message| &message.content.attachments)
+                    .find(|file| file.id == "fixture-image")
+                    .unwrap()
+                    .clone();
+                let mut files: Vec<_> = (0..count)
+                    .map(|index| {
+                        let mut file = base.clone();
+                        file.id = format!("gallery-{index}");
+                        file.name = format!("visual-{index}");
+                        if index % 2 == 1 {
+                            file.kind = crate::model::AttachmentKind::Video;
+                        }
+                        (file.width, file.height) = if index % 2 == 0 {
+                            (Some(2000), Some(100))
+                        } else {
+                            (Some(100), Some(2000))
+                        };
+                        if index == 1 {
+                            file.status = crate::model::AttachmentStatus::Processing;
+                        }
+                        if index == 2 {
+                            file.status = crate::model::AttachmentStatus::Failed;
+                        }
+                        if index == 3 {
+                            file.unavailable = true;
+                        }
+                        file
+                    })
+                    .collect();
+                // The final ready visual is always clickable, even after unavailable slots.
+                files[count - 1].status = crate::model::AttachmentStatus::Ready;
+                files[count - 1].unavailable = false;
+                for file in &files {
+                    let size = if file.width > file.height {
+                        [200, 10]
+                    } else {
+                        [10, 200]
+                    };
+                    app.media.insert_local(
+                        &context,
+                        &file.id,
+                        egui::ColorImage::filled(size, super::TEXT),
+                    );
+                }
+                draw(&mut app, &context, &files, width, vec![]);
+                let output = draw(&mut app, &context, &files, width, vec![]);
+                let bounds: Vec<_> = (0..count)
+                    .map(|index| {
+                        let file = &files[index];
+                        let label = if file.unavailable {
+                            format!("visual-{index}, File removed")
+                        } else if file.status == crate::model::AttachmentStatus::Processing {
+                            format!("visual-{index}, Processing…")
+                        } else if file.status == crate::model::AttachmentStatus::Failed {
+                            format!("visual-{index}, Couldn't process this file")
+                        } else {
+                            format!(
+                                "{} visual-{index}",
+                                if index % 2 == 0 { "View" } else { "Play" }
+                            )
+                        };
+                        accessible_bounds(&output, &label)
+                    })
+                    .collect();
+                let gallery = bounds.iter().copied().reduce(|a, b| a.union(b)).unwrap();
+                let expected_width = (width - 18.0).min(480.0);
+                assert!(accessible_bounds(&output, "After gallery").top() >= gallery.bottom());
+                if count == 1 {
+                    let natural = crate::attachments::frame_size(&files[0]);
+                    let expected = natural * ((width - 18.0) / natural.x).min(1.0);
+                    assert!((gallery.size() - expected).length() < 0.1);
+                } else {
+                    assert!((gallery.width() - expected_width).abs() < 0.1);
+                }
+                if (2..=3).contains(&count) {
+                    assert!((gallery.height() - expected_width * 2.0 / 3.0).abs() < 0.1);
+                } else if count >= 4 {
+                    let rows = count.div_ceil(3);
+                    let height = if count == 4 {
+                        (expected_width - 4.0) / 2.0
+                    } else {
+                        (expected_width - 8.0) / 3.0
+                    };
+                    assert!((gallery.height() - (rows as f32 * (height + 4.0) - 4.0)).abs() < 0.1);
+                    for rect in &bounds {
+                        assert!((rect.height() - height).abs() < 0.1);
+                    }
+                }
+                for (index, rect) in bounds.iter().enumerate() {
+                    assert!(gallery.contains_rect(*rect));
+                    for other in &bounds[index + 1..] {
+                        assert!(!rect.intersects(*other));
+                    }
+                }
+                let position = bounds[count - 1].center();
+                for pressed in [true, false] {
+                    draw(
+                        &mut app,
+                        &context,
+                        &files,
+                        width,
+                        vec![
+                            egui::Event::PointerMoved(position),
+                            egui::Event::PointerButton {
+                                pos: position,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                    );
+                }
+                let viewer = app.viewer.take().expect("selected gallery tile opens");
+                assert_eq!(viewer.index(), viewer.len() - 1);
+            }
+        }
+    }
+
+    #[test]
     fn attachment_spoilers_survive_retry_and_restore_and_fence_send_intents() {
         let (_, mut app) = fixture("parity-attachments");
         app.session = Some(session());
@@ -41773,70 +42035,134 @@ mod tests {
 
     #[test]
     fn attachment_spoilers_require_reveal_and_are_excluded_from_gallery() {
-        let (context, mut app) = fixture("parity-attachments");
-        context.enable_accesskit();
-        let mut files: Vec<_> = app
-            .timeline
-            .messages()
-            .flat_map(|message| message.content.attachments.clone())
-            .filter(crate::viewer::viewable)
-            .take(2)
-            .collect();
-        assert_eq!(files.len(), 2);
-        files[0].spoiler = true;
-        let draw = |app: &mut CaperApp, events| {
-            context.run(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(1440.0, 900.0),
-                    )),
-                    events,
-                    ..Default::default()
-                },
-                |context| {
-                    egui::CentralPanel::default().show(context, |ui| {
-                        app.attachment_list(ui, &files, false);
-                    });
-                },
-            )
-        };
-        let output = draw(&mut app, vec![]);
-        let reveal = node_bounds(&output, "Reveal spoiler attachment")
-            .unwrap()
-            .center();
-        assert!(node_bounds(&output, &format!("View {}", files[0].name)).is_none());
-        let visible = node_bounds(&output, &format!("Play animation {}", files[1].name))
-            .unwrap()
-            .center();
-        let click = |app: &mut CaperApp, pos| {
-            for pressed in [true, false] {
-                draw(
-                    app,
-                    vec![
-                        egui::Event::PointerMoved(pos),
-                        egui::Event::PointerButton {
-                            pos,
-                            button: egui::PointerButton::Primary,
-                            pressed,
-                            modifiers: egui::Modifiers::NONE,
-                        },
-                    ],
+        for visual_count in [1, 2] {
+            let (context, mut app) = fixture("parity-attachments");
+            context.enable_accesskit();
+            let mut files: Vec<_> = app
+                .timeline
+                .messages()
+                .flat_map(|message| message.content.attachments.clone())
+                .filter(crate::viewer::viewable)
+                .take(2)
+                .collect();
+            assert_eq!(files.len(), 2);
+            files.truncate(visual_count);
+            files[0].spoiler = true;
+            for kind in [
+                crate::model::AttachmentKind::Audio,
+                crate::model::AttachmentKind::File,
+            ] {
+                let mut file = files[0].clone();
+                file.id = format!("hidden-{kind:?}");
+                file.kind = kind;
+                files.insert(0, file);
+            }
+            // File order must not affect visual slot order or gallery counts.
+            let visual = 2;
+            let draw = |app: &mut CaperApp, events| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440.0, 900.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| {
+                            app.attachment_list(ui, &files, false);
+                        });
+                    },
+                )
+            };
+            draw(&mut app, vec![]);
+            let output = draw(&mut app, vec![]);
+            let covers: Vec<_> = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    (node.label() == Some("Reveal spoiler attachment"))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .map(|rect| {
+                    egui::Rect::from_min_max(
+                        egui::pos2(rect.x0 as f32, rect.y0 as f32),
+                        egui::pos2(rect.x1 as f32, rect.y1 as f32),
+                    )
+                })
+                .collect();
+            assert_eq!(covers.len(), 3);
+            let cover = covers
+                .iter()
+                .copied()
+                .min_by(|a, b| a.top().total_cmp(&b.top()))
+                .unwrap();
+            for card in covers.iter().filter(|rect| **rect != cover) {
+                assert!(
+                    card.top() >= cover.bottom(),
+                    "hidden audio/files stay below media"
                 );
             }
-        };
-        click(&mut app, visible);
-        assert_eq!(app.viewer.take().unwrap().len(), 1);
-        click(&mut app, reveal);
-        assert!(app.viewer.is_none(), "reveal is not an open action");
-        let output = draw(&mut app, vec![]);
-        assert!(node_bounds(&output, "Reveal spoiler attachment").is_none());
-        assert!(node_bounds(&output, &format!("View {}", files[0].name)).is_some());
-        let visible = node_bounds(&output, &format!("Play animation {}", files[1].name))
-            .unwrap()
-            .center();
-        click(&mut app, visible);
-        assert_eq!(app.viewer.take().unwrap().len(), 2);
+            assert!(node_bounds(&output, &format!("View {}", files[visual].name)).is_none());
+            let visible_before = if visual_count == 2 {
+                let rect = node_bounds(
+                    &output,
+                    &format!("Play animation {}", files[visual + 1].name),
+                )
+                .unwrap();
+                assert!((rect.top() - cover.top()).abs() < 0.1);
+                assert!((rect.left() - cover.right() - 4.0).abs() < 0.1);
+                Some(rect)
+            } else {
+                None
+            };
+            let click = |app: &mut CaperApp, pos| {
+                for pressed in [true, false] {
+                    draw(
+                        app,
+                        vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                    );
+                }
+            };
+            if let Some(rect) = visible_before {
+                click(&mut app, rect.center());
+                assert_eq!(app.viewer.take().unwrap().len(), 1);
+            }
+            click(&mut app, cover.center());
+            assert!(app.viewer.is_none(), "reveal is not an open action");
+            let output = draw(&mut app, vec![]);
+            let revealed = node_bounds(&output, &format!("View {}", files[visual].name)).unwrap();
+            assert_eq!(
+                revealed, cover,
+                "reveal preserves the natural/gallery frame"
+            );
+            if let Some(rect) = visible_before {
+                assert_eq!(
+                    node_bounds(
+                        &output,
+                        &format!("Play animation {}", files[visual + 1].name)
+                    )
+                    .unwrap(),
+                    rect
+                );
+            }
+            click(&mut app, revealed.center());
+            assert_eq!(app.viewer.take().unwrap().len(), visual_count);
+        }
     }
 
     #[test]
@@ -41857,7 +42183,7 @@ mod tests {
             "TEST FIXTURE archive.zip",
             "File removed",
             "Audio · 1.2 MB",
-            "Couldn't process this file",
+            "Processing failed",
             "Processing… 45%",
             "Processing…",
             "GIF",
@@ -41886,7 +42212,7 @@ mod tests {
         // Removed, failed and processing files are not links.
         for label in [
             "File removed",
-            "Couldn't process this file",
+            "Processing failed",
             "Processing… 45%",
             "Processing…",
         ] {

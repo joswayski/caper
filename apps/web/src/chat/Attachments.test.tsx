@@ -128,6 +128,32 @@ test("a video with a stored size reserves its shape without fixing the responsiv
   expect(Number(ratio)).toBeCloseTo(9 / 16, 2);
 });
 
+test("the media group keeps processing, failed and removed slots without grouping audio or file controls", () => {
+  const attachments = [
+    files[0],
+    files[4],
+    { ...files[1], status: "processing" as const },
+    file("failed", "failed.webp", { status: "failed" }),
+    files[3],
+    file("removed", "removed.webp", { unavailable: true }),
+  ];
+  const markup = renderToStaticMarkup(<MessageAttachments attachments={attachments} />);
+  expect(markup).toContain('role="group" aria-label="4 attachments"');
+  expect(markup).toContain('aria-label="clip.mp4: Processing…"');
+  expect(markup).toContain("Processing failed");
+  expect(markup).toContain("File removed");
+  expect(markup).not.toContain('href="https://cdn.test/original/removed"');
+  expect(markup.indexOf("removed.webp")).toBeLessThan(markup.indexOf("notes.pdf"));
+  expect(markup.indexOf("notes.pdf")).toBeLessThan(markup.indexOf("voice.m4a"));
+  const ready = renderToStaticMarkup(
+    <MessageAttachments
+      attachments={attachments.map((attachment) => ({ ...attachment, status: "ready", unavailable: false }))}
+    />,
+  );
+  expect(ready).toContain('role="group" aria-label="4 attachments"');
+  expect(ready).toContain('href="https://cdn.test/original/removed"');
+});
+
 test("draft files can be previewed before uploading finishes, with removal separate from preview", () => {
   const drafts: DraftAttachment[] = [
     { key: "preparing", name: "photo.jpg", localUrl: "blob:photo", localKind: "image", sourceSize: 14000, progress: 0 },
