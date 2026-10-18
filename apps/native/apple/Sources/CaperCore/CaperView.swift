@@ -5447,6 +5447,10 @@ private struct MentionCardView: View {
                     HStack(spacing: 2) {
                         if !person.isSelf {
                             Menu {
+                                if !blocked, person.username != nil, !ownedSpaces.isEmpty {
+                                    Button("Invite to space") { choosingSpace.toggle() }
+                                        .accessibilityIdentifier("mention-card-invite")
+                                }
                                 Button(blocked ? "Unblock" : "Block") {
                                     if blocked { Task { await unblock() } }
                                     else { blockRequested = true; close() }
@@ -5487,11 +5491,6 @@ private struct MentionCardView: View {
                             .accessibilityIdentifier("mention-card-edit-profile")
                     }
                 } else {
-                    if !blocked, person.username != nil, !ownedSpaces.isEmpty {
-                        Button("Invite to space") { choosingSpace.toggle() }
-                            .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil || draft.sending)
-                            .accessibilityIdentifier("mention-card-invite")
-                    }
                     if choosingSpace, !blocked, person.username != nil {
                         VStack(spacing: 6) {
                             ForEach(ownedSpaces) { space in

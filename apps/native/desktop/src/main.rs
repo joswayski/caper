@@ -18542,6 +18542,11 @@ impl CaperApp {
             })
             .cloned()
             .collect();
+        let can_invite = !profile.me
+            && !blocked
+            && profile.username.is_some()
+            && card.pill.entry.id.is_some()
+            && !owned_spaces.is_empty();
         let sending = self.profile_sending();
         let busy = sending
             || self.profile_navigation.is_some()
@@ -18674,6 +18679,17 @@ impl CaperApp {
                                         .width(144.0);
                                     menu_open = popup.is_open();
                                     popup.show(|ui| {
+                                        if can_invite
+                                            && ui
+                                                .add_enabled(
+                                                    !busy,
+                                                    egui::Button::new("Invite to space"),
+                                                )
+                                                .clicked()
+                                        {
+                                            toggle_spaces = true;
+                                            ui.close();
+                                        }
                                         if ui
                                             .button(if blocked { "Unblock" } else { "Block" })
                                             .clicked()
@@ -18703,20 +18719,7 @@ impl CaperApp {
                                         .clicked();
                                     return;
                                 }
-                                let invite = !blocked
-                                    && profile.username.is_some()
-                                    && card.pill.entry.id.is_some()
-                                    && !owned_spaces.is_empty();
-                                if invite {
-                                    toggle_spaces = ui
-                                        .add_enabled(
-                                            !busy,
-                                            egui::Button::new("Invite to space")
-                                                .min_size(egui::vec2(286.0, 36.0)),
-                                        )
-                                        .clicked();
-                                }
-                                if invite && card.choosing_space {
+                                if can_invite && card.choosing_space {
                                     ui.vertical(|ui| {
                                         ui.spacing_mut().item_spacing.y = 6.0;
                                         for space in &owned_spaces {
@@ -36236,12 +36239,21 @@ mod tests {
             pill_center(&output, ALEX_MESSAGE, "@alex"),
         );
         let output = render(&mut app, &context, vec![]);
+        assert!(!shows(&output, "Invite to space"));
+        click_at(
+            &mut app,
+            &context,
+            text_center(&output, "More profile actions"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Invite to space") && shows(&output, "Block"));
         click_at(
             &mut app,
             &context,
             last_text_position(&output, "Invite to space"),
         );
         let output = render(&mut app, &context, vec![]);
+        assert!(!shows(&output, "Invite to space") && !shows(&output, "Block"));
         // The rail also contains space names: constrain this assertion to the card.
         let card = context
             .memory(|memory| memory.area_rect(egui::Id::new("mention-card")))
@@ -36411,6 +36423,12 @@ mod tests {
             &mut app,
             &context,
             pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            text_center(&output, "More profile actions"),
         );
         let output = render(&mut app, &context, vec![]);
         click_at(

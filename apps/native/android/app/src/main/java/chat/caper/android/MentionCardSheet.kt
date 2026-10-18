@@ -66,6 +66,7 @@ import kotlinx.coroutines.launch
     val ownedSpaces = state?.spaces.orEmpty().filter { space ->
         accountId != null && space.ownerId == accountId && !space.demo && space.id != openSpace
     }
+    val canInvite = !card.self && !blocked && card.username != null && ownedSpaces.isNotEmpty() && viewModel != null
     val scope = rememberCoroutineScope()
     val direct = state?.directConversations?.firstOrNull {
         if (card.id != null) it.peer.id == card.id else it.peer.username.equals(card.username, ignoreCase = true)
@@ -89,10 +90,14 @@ import kotlinx.coroutines.launch
             )
             shown.subtitle?.let { Text(it, color = TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
         }
-        if (!card.self && id != null && viewModel != null && state?.account != null) Box {
+        if (!card.self && viewModel != null && (canInvite || (id != null && account != null))) Box {
             ProfileIconButton(R.drawable.lucide_ellipsis, "More profile actions", idle) { profileMenu = true }
             DropdownMenu(profileMenu, { profileMenu = false }, containerColor = SurfaceRaised) {
-                DropdownMenuItem(text = {
+                if (canInvite) DropdownMenuItem(text = { Text("Invite to space") }, enabled = idle, onClick = {
+                    profileMenu = false
+                    choosingSpace = !choosingSpace
+                })
+                if (id != null && account != null) DropdownMenuItem(text = {
                     Text(if (pending == "unblock") "Unblocking…" else if (blocked) "Unblock" else "Block")
                 }, enabled = idle, onClick = {
                     profileMenu = false
@@ -117,10 +122,7 @@ import kotlinx.coroutines.launch
                 shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
             ) { Text("Edit profile") }
         } else {
-            val invite = !blocked && card.username != null && ownedSpaces.isNotEmpty() && viewModel != null
-            if (invite) OutlinedButton({ choosingSpace = !choosingSpace }, Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                enabled = idle, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors()) { Text("Invite to space", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-            if (invite && choosingSpace && card.username != null && viewModel != null) Column(
+            if (canInvite && choosingSpace && card.username != null && viewModel != null) Column(
                 Modifier.fillMaxWidth().heightIn(max = 240.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
