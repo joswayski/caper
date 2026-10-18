@@ -24,8 +24,8 @@ pub const EXPIRY_UNITS: [(ExpiryUnit, &str); 4] = [
     (ExpiryUnit::Days, "days"),
     (ExpiryUnit::Never, "Never"),
 ];
-/// Seven days, like web.
-pub const DEFAULT_EXPIRY: (&str, ExpiryUnit) = ("7", ExpiryUnit::Days);
+/// Thirty days from creation.
+pub const DEFAULT_EXPIRY: (&str, ExpiryUnit) = ("30", ExpiryUnit::Days);
 /// The API's bounds: one minute to a year, and at most 10,000 uses.
 const MAX_AGE_SECONDS: std::ops::RangeInclusive<u64> = 60..=31_536_000;
 const MAX_USES: std::ops::RangeInclusive<u64> = 1..=10_000;
@@ -183,7 +183,7 @@ pub fn invite_url(base: &Url, code: &str) -> String {
     format!("{}/invite/{code}", base.origin().ascii_serialization())
 }
 
-/// "#feedback · 3 of 10 uses · Expires in 6 days", or "2 uses · Never expires".
+/// "#feedback · 7 of 10 joins remaining · Expires in 6 days", or "2 uses · Never expires".
 pub fn link_meta(link: &InviteLink, now: DateTime<Utc>) -> String {
     let mut parts = Vec::new();
     if let Some(channel) = &link.channel {
@@ -191,9 +191,9 @@ pub fn link_meta(link: &InviteLink, now: DateTime<Utc>) -> String {
     }
     parts.push(match link.max_uses {
         Some(max) => format!(
-            "{} of {}",
-            grouped(u64::from(link.uses)),
-            plural(u64::from(max), "use")
+            "{} of {} remaining",
+            grouped(u64::from(max.saturating_sub(link.uses))),
+            plural(u64::from(max), "join")
         ),
         None => plural(u64::from(link.uses), "use"),
     });
@@ -387,8 +387,10 @@ mod tests {
         };
         assert_eq!(
             link_meta(&link, now),
-            "#feedback · 3 of 10 uses · Expires in 6 days"
+            "#feedback · 7 of 10 joins remaining · Expires in 6 days"
         );
+        link.uses = 11;
+        assert!(link_meta(&link, now).contains("0 of 10 joins remaining"));
         link.channel = None;
         link.max_uses = None;
         link.uses = 2;
@@ -411,7 +413,7 @@ mod tests {
     fn expiry_and_max_uses_are_free_form_within_the_api_bounds() {
         assert_eq!(
             expiry_seconds(DEFAULT_EXPIRY.0, DEFAULT_EXPIRY.1),
-            Ok(Some(604_800))
+            Ok(Some(2_592_000))
         );
         assert_eq!(expiry_seconds(" 90 ", ExpiryUnit::Minutes), Ok(Some(5_400)));
         assert_eq!(expiry_seconds("1", ExpiryUnit::Minutes), Ok(Some(60)));

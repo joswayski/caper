@@ -1712,10 +1712,26 @@ public final class AppModel {
         return links
     }
 
+    public func defaultInviteLink(channelID: String? = nil) async throws -> InviteLink {
+        guard let id = detail?.space.id, isOwner else { throw CancellationError() }
+        let attempt = generation
+        let link = try await api.defaultInviteLink(spaceID: id, channelID: channelID)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        return link
+    }
+
     public func createInviteLink(channelID: String?, maxAge: Int?, maxUses: Int?) async throws -> InviteLink {
         guard let id = detail?.space.id, isOwner else { throw CancellationError() }
         let attempt = generation
         let link = try await api.createInviteLink(spaceID: id, channelID: channelID, maxAge: maxAge, maxUses: maxUses)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        return link
+    }
+
+    public func regenerateInviteLink(_ current: InviteLink) async throws -> InviteLink {
+        guard let id = detail?.space.id, isOwner else { throw CancellationError() }
+        let attempt = generation
+        let link = try await api.regenerateInviteLink(spaceID: id, code: current.code)
         guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
         return link
     }
@@ -4088,12 +4104,6 @@ public final class ChatModel {
 
     func attachmentFiles(inThread: Bool = false) -> [AttachmentDraft] {
         composerTarget(inThread: inThread).flatMap { stagedFiles[$0] } ?? []
-    }
-
-    func attachmentCount(target: AttachmentTarget) -> Int { stagedFiles[target]?.count ?? 0 }
-
-    func attachmentTargetIsValid(_ target: AttachmentTarget) -> Bool {
-        attachmentAccessIDs[target.channelID] == target.accessID
     }
 
     func setAttachmentNotice(_ notice: String?, target: AttachmentTarget) {

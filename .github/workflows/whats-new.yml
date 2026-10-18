@@ -15,6 +15,10 @@ on:
         description: Exact successfully shipped source revision
         required: true
         type: string
+      native_version:
+        description: Actual native app version (leave empty for web or legacy reruns)
+        required: false
+        type: string
   workflow_call:
     inputs:
       audience:
@@ -22,6 +26,9 @@ on:
         type: string
       git_sha:
         required: true
+        type: string
+      native_version:
+        required: false
         type: string
     secrets:
       ANTHROPIC_API_KEY:
@@ -69,9 +76,12 @@ jobs:
           ANTHROPIC_EFFORT: ${{ vars.CAPER_RELEASE_NOTES_EFFORT }}
           RELEASE_SHA: ${{ inputs.git_sha }}
           AUDIENCE: ${{ inputs.audience }}
+          NATIVE_VERSION: ${{ inputs.native_version }}
         run: |
+          version_args=()
+          if [[ -n "$NATIVE_VERSION" ]]; then version_args=(--native-version "$NATIVE_VERSION"); fi
           python scripts/whats_new.py --revision "$RELEASE_SHA" --audience "$AUDIENCE" \
-            --output-dir "$RUNNER_TEMP/whats-new" --publish
+            --output-dir "$RUNNER_TEMP/whats-new" --publish "${version_args[@]}"
       - name: Record the notes outcome
         if: always()
         env:

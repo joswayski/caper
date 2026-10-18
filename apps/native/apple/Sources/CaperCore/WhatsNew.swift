@@ -10,6 +10,12 @@ public struct PlatformRelease: Codable, Equatable, Sendable {
     public let revision: String
     public let publishedAt: String
     public let highlights: [ReleaseHighlight]
+    public let version: String?
+
+    public init(sequence: Int64, revision: String, publishedAt: String, highlights: [ReleaseHighlight], version: String? = nil) {
+        self.sequence = sequence; self.revision = revision; self.publishedAt = publishedAt
+        self.highlights = highlights; self.version = version
+    }
 }
 
 public struct WhatsNewSnapshot: Codable, Equatable, Sendable {
@@ -41,6 +47,7 @@ public struct WhatsNewSnapshot: Codable, Equatable, Sendable {
         for release in releases {
             try require((1...Self.maximumSequence).contains(release.sequence) && release.sequence > previousSequence)
             try require(Self.validRevision(release.revision) && revisions.insert(release.revision).inserted)
+            try require(release.version.map { Self.validText($0, limit: 64) } ?? true)
             try require(release.publishedAt.utf8.count <= 40 && release.publishedAt.hasSuffix("Z"))
             guard let date = dates.date(from: release.publishedAt) ?? fractionalDates.date(from: release.publishedAt) else {
                 throw APIError(status: 502, message: "Caper returned invalid release dates.")

@@ -1,4 +1,4 @@
-//! The update notice and decorative SVG layers used in its review.
+//! The update notice's decorative button edge.
 
 use eframe::egui;
 
@@ -110,21 +110,6 @@ fn shine(ui: &egui::Ui, response: &egui::Response) {
     ui.painter().add(mesh);
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_millis(33));
-}
-
-pub fn paint(ui: &egui::Ui, rect: egui::Rect) {
-    egui::Image::new(egui::include_image!(
-        "../../../../assets/update-caper/feet.svg"
-    ))
-    .paint_at(ui, rect);
-    egui::Image::new(egui::include_image!(
-        "../../../../assets/update-caper/wave.svg"
-    ))
-    .paint_at(ui, rect);
-    egui::Image::new(egui::include_image!(
-        "../../../../assets/update-caper/body.svg"
-    ))
-    .paint_at(ui, rect);
 }
 
 /// A labelled, always-visible review action, separate from profile/audio controls.

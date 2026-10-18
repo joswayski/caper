@@ -13,6 +13,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.LinearEasing
@@ -429,8 +430,8 @@ internal data class VoiceJoinIntent(
             { viewModel.declineInvitation(shown.space) { overlay = null } })
         Overlay.ManageSpace -> state.selectedSpace?.let { detail -> ManageSpaceDialog(state, detail, viewModel, { overlay = null }) }
         is Overlay.InvitePeople -> state.selectedSpace?.takeIf { state.account != null && it.space.ownerId == state.account.id }?.let { detail ->
-            CaperDialog("Invite people to ${detail.space.name}", { overlay = null }, wide = true, busy = state.busy) {
-                InviteLinkSection(state, detail, viewModel, initialChannelId = shown.initialChannelId)
+            key(detail.space.id, shown.initialChannelId) {
+                InvitePeopleDialog(state, detail, viewModel, shown.initialChannelId, { overlay = null })
             }
         }
         Overlay.CreateChannel -> state.selectedSpace?.let { detail -> CreateChannelDialog(detail, state.busy, state.error, viewModel::clearError, { overlay = null }) { name, private ->
@@ -508,35 +509,18 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     var pickingChannel by rememberSaveable { mutableStateOf<String?>(null) }
     var pickingThread by rememberSaveable { mutableStateOf<String?>(null) }
     var pickingEpoch by rememberSaveable { mutableLongStateOf(0L) }
-    var galleryOpen by rememberSaveable { mutableStateOf(false) }
     fun picked(uris: List<android.net.Uri>) {
         pickingChannel?.let { viewModel.addAttachments(uris, AttachmentDraftTarget(it, pickingThread), pickingEpoch) }
         pickingChannel = null; pickingThread = null
     }
+    val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS), ::picked)
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments(), ::picked)
     fun pickFiles(target: AttachmentDraftTarget, photos: Boolean) {
         pickingChannel = target.channelId; pickingThread = target.threadRootId; pickingEpoch = viewModel.accountEpoch
         runCatching {
-            if (photos) galleryOpen = true
+            if (photos) media.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
             else documents.launch(arrayOf("*/*"))
         }.onFailure { pickingChannel = null; pickingThread = null }
-    }
-    LaunchedEffect(viewModel.accountEpoch) {
-        if (pickingEpoch != viewModel.accountEpoch) { galleryOpen = false; pickingChannel = null; pickingThread = null }
-    }
-    if (galleryOpen && pickingEpoch == viewModel.accountEpoch) {
-        pickingChannel?.let { channel ->
-            val target = AttachmentDraftTarget(channel, pickingThread)
-            AttachmentGallery(
-                remaining = (AttachmentPolicy.MAX_ATTACHMENTS - state.attachmentDrafts[target].orEmpty().size).coerceAtLeast(0),
-                dismiss = { galleryOpen = false; pickingChannel = null; pickingThread = null },
-                files = {
-                    galleryOpen = false
-                    runCatching { documents.launch(arrayOf("*/*")) }.onFailure { pickingChannel = null; pickingThread = null }
-                },
-                add = ::picked,
-            )
-        }
     }
     val context = LocalContext.current
     val latestState by rememberUpdatedState(state)
@@ -1377,7 +1361,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
             // Filled before the insets, so the bar and keyboard areas aren't left showing the dimmed scrim.
             ThreadConversation(state, viewModel, pickFiles, Modifier.swipeCancelsPresses().entrance(MOTION_BASE, dx = 12.dp).fillMaxSize()
-                .background(SurfaceConversation).systemBarsPadding().imePadding())
+                .background(SurfaceConversation).systemBarsPadding().imePadding(), swipeToClose = true)
         }
     }
 }
@@ -1410,6 +1394,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 
 @Composable private fun ThreadConversation(
     state: AppUiState, viewModel: CaperViewModel, pickFiles: (AttachmentDraftTarget, Boolean) -> Unit, modifier: Modifier,
+    swipeToClose: Boolean = false,
 ) {
     val thread = state.thread ?: return
     val channel = state.selectedChannel ?: return
@@ -1439,36 +1424,40 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
     Box(modifier.attachmentDrop(canAttach, target, viewModel, dropping)) {
         Column(Modifier.fillMaxSize().background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
-            Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Thread · $conversation", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                TextButton(viewModel::closeThread, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text(if (direct) "Back to conversation" else "Back to channel") }
-            }
-            HorizontalDivider(color = Border)
-            thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread(older = thread.failedOlder, newer = thread.failedNewer) }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
-            if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
-            // Remembered: every keystroke in the reply draft recomposes this panel.
-            val rows = remember(state.messages, thread.rootId, thread.windowStart, thread.windowEnd) {
-                state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
-                    (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
-                    (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
-            }
-            MessageTimeline(state.copy(messages = rows, pendingMessage = pending, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
-                pending?.error?.let { error ->
-                    Text(error, color = ErrorText)
-                    if (pending.rejected) Row {
-                        TextButton({
-                            viewModel.discardPending(restoreFiles = true)?.let {
-                                draft = TextFieldValue(it, TextRange(it.length)); broadcast = pending.broadcast
-                            }
-                        }, enabled = canEditRejectedMessage(draft.text, pending.text), shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Edit") }
-                        TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Dismiss") }
-                    } else TextButton(::send, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry send") }
+            Column(Modifier.weight(1f).fillMaxWidth().threadBackSwipe(swipeToClose, viewModel::closeThread)) {
+                Row(Modifier.fillMaxWidth().height(53.dp).padding(start = 4.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(viewModel::closeThread, Modifier.size(48.dp)) {
+                        Icon(painterResource(R.drawable.lucide_chevron_left), if (direct) "Back to conversation" else "Back to channel", Modifier.size(20.dp), tint = TextMuted)
+                    }
+                    Text("Thread · $conversation", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
+                HorizontalDivider(color = Border)
+                thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread(older = thread.failedOlder, newer = thread.failedNewer) }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
+                if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
+                // Remembered: every keystroke in the reply draft recomposes this panel.
+                val rows = remember(state.messages, thread.rootId, thread.windowStart, thread.windowEnd) {
+                    state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
+                        (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
+                        (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
+                }
+                MessageTimeline(state.copy(messages = rows, pendingMessage = pending, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
+                    pending?.error?.let { error ->
+                        Text(error, color = ErrorText)
+                        if (pending.rejected) Row {
+                            TextButton({
+                                viewModel.discardPending(restoreFiles = true)?.let {
+                                    draft = TextFieldValue(it, TextRange(it.length)); broadcast = pending.broadcast
+                                }
+                            }, enabled = canEditRejectedMessage(draft.text, pending.text), shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Edit") }
+                            TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Dismiss") }
+                        } else TextButton(::send, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry send") }
+                    }
+                }
+                if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
+                // A failed load shows its error and Retry instead (web).
+                if (!thread.loading && thread.error == null && rows.none { it.threadRootId == thread.rootId })
+                    Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
             }
-            if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
-            // A failed load shows its error and Retry instead (web).
-            if (!thread.loading && thread.error == null && rows.none { it.threadRootId == thread.rootId })
-                Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
             if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) {
                 state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
                 state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
@@ -3098,25 +3087,17 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
     paste: (() -> Unit)? = null,
     /** Conversation launchers live outside transient thread panels and retain their original target. */
     pick: ((Boolean) -> Unit)? = null,
-    remaining: Int = 0,
 ) {
     val enabled = disabledReason == null
     var open by remember { mutableStateOf(false) }
     var picking by rememberSaveable { mutableStateOf(false) }
-    var galleryOpen by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(open, picking, galleryOpen) { interaction(open || picking || galleryOpen) }
+    LaunchedEffect(picking) { interaction(open || picking) }
+    val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS)) {
+        add(it); picking = false; interaction(open)
+    }
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
         add(it); picking = false; interaction(open)
     }
-    if (galleryOpen) AttachmentGallery(
-        remaining = remaining,
-        dismiss = { galleryOpen = false; picking = false; interaction(false) },
-        files = {
-            galleryOpen = false; picking = true
-            runCatching { documents.launch(arrayOf("*/*")) }.onFailure { picking = false; interaction(false) }
-        },
-        add = add,
-    )
     Box {
         IconButton({ open = true; interaction(true) }, Modifier.size(48.dp).semantics {
             contentDescription = "Attach files"
@@ -3124,10 +3105,12 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
         }, enabled = enabled) {
             Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
         }
-        DropdownMenu(open, { open = false; interaction(picking || galleryOpen) }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
+        DropdownMenu(open, { open = false; interaction(picking) }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
             DropdownMenuItem(text = { Text("Photos and videos", fontSize = 13.sp) }, onClick = {
                 if (pick != null) { open = false; pick(true); return@DropdownMenuItem }
-                open = false; galleryOpen = true
+                open = false; picking = true
+                runCatching { media.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }
+                    .onFailure { picking = false; interaction(false) }
             })
             DropdownMenuItem(text = { Text("Files", fontSize = 13.sp) }, onClick = {
                 if (pick != null) { open = false; pick(false); return@DropdownMenuItem }
@@ -3537,6 +3520,18 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
+@Composable private fun InvitePeopleDialog(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, initialChannelId: String?, close: () -> Unit) {
+    LaunchedEffect(detail.space.id) { viewModel.loadSpaceInvitations(); viewModel.refreshPeople() }
+    CaperDialog("Invite people to ${detail.space.name}", close, wide = true, busy = state.busy) {
+        state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        DefaultInviteLinkSection(state, detail, viewModel, initialChannelId)
+        HorizontalDivider(color = Border)
+        InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
+            {}, viewModel::cancelSpaceInvitation, channel = false,
+            suggestions = spaceInviteCandidates(state.people, detail.members, state.pendingSpaceInvitations), inviteOnly = true)
+    }
+}
+
 @Composable private fun ManageSpaceDialog(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, close: () -> Unit) {
     var name by remember(detail.space.id) { mutableStateOf(detail.space.name) }
     var nameError by remember(detail.space.id) { mutableStateOf<String?>(null) }
@@ -3556,7 +3551,7 @@ internal fun counterTone(count: Int): Color = when {
         nameError?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         Button(::rename, enabled = canRename, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Save name") }
         HorizontalDivider(color = Border)
-        InviteLinkSection(state, detail, viewModel)
+        InviteLinkSettingsDisclosure(state, detail, viewModel)
         HorizontalDivider(color = Border)
         InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
             { removing = it }, viewModel::cancelSpaceInvitation, channel = false,
@@ -3593,9 +3588,10 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
-@Composable private fun InviteManager(
+@Composable internal fun InviteManager(
     members: List<Member>, pending: List<Member>, busy: Boolean, add: (String, () -> Unit, (String) -> Unit) -> Unit,
     remove: (Member) -> Unit, cancel: (Member) -> Unit, channel: Boolean, suggestions: List<MentionCandidate>,
+    inviteOnly: Boolean = false,
 ) {
     Text("Invite", fontSize = 13.sp, fontWeight = FontWeight.Bold)
     Text("Pending invitations", fontSize = 13.sp, fontWeight = FontWeight.Bold)
@@ -3610,7 +3606,7 @@ internal fun counterTone(count: Int): Color = when {
             TextButton({ cancel(member) }, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Cancel", color = ErrorText) }
         }
     }
-    MemberManager(members, pending, busy, add, remove, channel, suggestions, heading = "Members", action = "Invite")
+    MemberManager(members, pending, busy, add, remove, channel, suggestions, heading = "Members", action = "Invite", inviteOnly = inviteOnly)
 }
 
 @Composable private fun ManageChannelDialog(state: AppUiState, channel: Channel, viewModel: CaperViewModel, close: () -> Unit) {
@@ -3658,11 +3654,12 @@ internal fun counterTone(count: Int): Color = when {
 @Composable private fun MemberManager(
     members: List<Member>, invitations: List<Member>, busy: Boolean, add: (String, () -> Unit, (String) -> Unit) -> Unit, remove: (Member) -> Unit,
     channel: Boolean, suggestions: List<MentionCandidate>, heading: String = "Members", action: String = "Add",
+    inviteOnly: Boolean = false,
 ) {
     var username by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var success by remember { mutableStateOf<String?>(null) }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    if (!inviteOnly) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(heading, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         Surface(color = SurfaceRaised, shape = CircleShape) { Text(members.size.toString(), Modifier.padding(horizontal = 6.dp, vertical = 2.dp), color = TextMuted, fontSize = 10.sp) }
     }
@@ -3682,7 +3679,7 @@ internal fun counterTone(count: Int): Color = when {
     }
     success?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp) }
     error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
-    members.forEach { member ->
+    if (!inviteOnly) members.forEach { member ->
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
             Avatar(member.displayName, 30.dp, avatarId = member.avatarId, avatarAsset = member.avatarAsset, avatarUrl = member.avatarUrl); Spacer(Modifier.width(9.dp))
             Column(Modifier.weight(1f)) {
@@ -3707,7 +3704,7 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     Icon(painterResource(R.drawable.lucide_lock_keyhole), null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, { CaperEffects.toggle(it); changed(it) }, colors = caperSwitchColors())
 }
 
-@Composable private fun ConfirmDialog(
+@Composable internal fun ConfirmDialog(
     title: String, body: String, action: String, busy: Boolean, close: () -> Unit, warn: Boolean = false,
     pendingLabel: String = if (action.startsWith("Delete")) "Deleting…" else "Saving…",
     /** The app-wide error, shown once this action has run. */

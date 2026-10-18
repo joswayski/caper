@@ -41,6 +41,20 @@ final class WhatsNewTests: XCTestCase {
         XCTAssertEqual(history.unread.map(\.sequence), [4])
     }
 
+    func testNativeVersionMetadataDecodesAlongsideLegacyHistory() throws {
+        let raw = """
+        {"schema":1,"platform":"ios","revision":"\(revision(2))","sequence":2,"releases":[
+          {"sequence":1,"revision":"\(revision(1))","publishedAt":"2026-10-11T12:00:00Z","highlights":[]},
+          {"sequence":2,"revision":"\(revision(2))","publishedAt":"2026-10-11T19:00:00Z","version":"0.1.112","highlights":[]}
+        ]}
+        """
+        let value = try JSONDecoder().decode(WhatsNewSnapshot.self, from: Data(raw.utf8))
+            .validated(platform: "ios", revision: revision(2))
+        XCTAssertNil(value.releases[0].version)
+        XCTAssertEqual(value.releases[1].version, "0.1.112")
+        XCTAssertEqual(value.releases[1].revision, revision(2))
+    }
+
     func testInvalidRevisionPlatformOrderingAndSequenceNeverAcknowledge() throws {
         var ack: Int64?
         let history = WhatsNewHistory(read: { ack }, write: { ack = $0 })

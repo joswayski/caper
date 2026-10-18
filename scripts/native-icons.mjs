@@ -88,17 +88,20 @@ for (const [file, name] of Object.entries(names)) {
     ],
   );
 }
-// Custom update mascot layers are original artwork, not Lucide icons. Rust
-// includes the canonical SVGs directly; Apple needs asset-catalog exports.
-for (const part of ["body", "wave", "feet"]) {
-  const svg = readFileSync(`assets/update-caper/${part}.svg`, "utf8");
-  const image = resolve(`apps/native/apple/Sources/CaperCore/CaperAvatars.xcassets/caper-update-${part}.imageset`);
+// Original brand artwork: Rust includes the canonical SVGs directly; Apple
+// needs asset-catalog exports. Keep legacy layers reproducible for old views.
+for (const [name, source, file] of [
+  ["caper-face", "apps/web/public/caper-face.svg", "face.svg"],
+  ...["body", "wave", "feet"].map((part) => [`caper-update-${part}`, `assets/update-caper/${part}.svg`, `${part}.svg`]),
+]) {
+  const svg = readFileSync(source, "utf8");
+  const image = resolve(`apps/native/apple/Sources/CaperCore/CaperAvatars.xcassets/${name}.imageset`);
   files.push(
-    [`${image}/${part}.svg`, svg],
+    [`${image}/${file}`, svg],
     [
       `${image}/Contents.json`,
       json({
-        images: [{ filename: `${part}.svg`, idiom: "universal" }],
+        images: [{ filename: file, idiom: "universal" }],
         info,
         properties: { "preserves-vector-representation": true, "template-rendering-intent": "original" },
       }),

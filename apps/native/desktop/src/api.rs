@@ -829,6 +829,38 @@ impl Api {
         .map(|value| value.links)
     }
 
+    pub fn default_invite_link(
+        &self,
+        token: &str,
+        space: &str,
+        channel: Option<&str>,
+    ) -> Result<InviteLink, ApiError> {
+        let mut path = format!("api/spaces/{space}/invite-links/default");
+        if let Some(channel) = channel {
+            path.push_str("?channelId=");
+            path.extend(url::form_urlencoded::byte_serialize(channel.as_bytes()));
+        }
+        self.request(Method::POST, &path, Some(token), None, None)
+    }
+
+    pub fn regenerate_invite_link(
+        &self,
+        token: &str,
+        space: &str,
+        code: &str,
+    ) -> Result<InviteLink, ApiError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "api/spaces/{space}/invite-links/{}/regenerate",
+                invite_path(code)?
+            ),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
     /// `max_age` in seconds (1 minute to 365 days) and `max_uses` (1 to 10,000);
     /// `None` never expires or allows unlimited joins.
     pub fn create_invite_link(
@@ -1705,6 +1737,27 @@ mod tests {
         let link = r#"{"code":"AbC123xYz9","channel":{"id":"chan00000002","name":"feedback"},"createdBy":{"username":"owner","displayName":"Owner","avatarId":3},"uses":0,"maxUses":10,"expiresAt":"2026-10-18T12:00:00Z","createdAt":"2026-10-11T12:00:00Z"}"#;
         let exchanges = [
             (
+                "POST /api/spaces/space0000001/invite-links/AbC123xYz9/regenerate",
+                None,
+                true,
+                "201 Created",
+                link.to_owned(),
+            ),
+            (
+                "POST /api/spaces/space0000001/invite-links/default",
+                None,
+                true,
+                "200 OK",
+                link.to_owned(),
+            ),
+            (
+                "POST /api/spaces/space0000001/invite-links/default?channelId=chan00000002",
+                None,
+                true,
+                "200 OK",
+                link.to_owned(),
+            ),
+            (
                 "POST /api/spaces/space0000001/invite-links",
                 Some(r#"{"channelId":"chan00000002","maxAge":604800,"maxUses":10}"#),
                 true,
@@ -1789,6 +1842,8 @@ mod tests {
                         serde_json::from_slice::<serde_json::Value>(&sent).unwrap(),
                         serde_json::from_str::<serde_json::Value>(expected).unwrap()
                     );
+                } else {
+                    assert!(sent.is_empty(), "{path} must be bodyless");
                 }
                 write!(
                     reader.get_mut(),
@@ -1798,6 +1853,26 @@ mod tests {
                 .unwrap();
             }
         });
+        assert_eq!(
+            api.regenerate_invite_link("account", "space0000001", "AbC123xYz9")
+                .unwrap()
+                .code,
+            "AbC123xYz9"
+        );
+        assert_eq!(
+            api.default_invite_link("account", "space0000001", None)
+                .unwrap()
+                .code,
+            "AbC123xYz9"
+        );
+        assert_eq!(
+            api.default_invite_link("account", "space0000001", Some("chan00000002"))
+                .unwrap()
+                .channel
+                .unwrap()
+                .id,
+            "chan00000002"
+        );
         let created = api
             .create_invite_link(
                 "account",

@@ -984,10 +984,47 @@ paths check membership and channel visibility, including replay and live deliver
 
 Owners create Discord-style shareable links at `/invite/<code>`. Codes are 10
 random alphanumeric characters (about 59 bits), so the unauthenticated preview
-cannot be enumerated. Owners type the expiry as a number of minutes, hours or days (the API accepts
-any `maxAge` from 60 to 31,536,000 seconds; clients default to 7 days) or choose
-Never, and optionally type max uses (1 to 10,000; empty is unlimited, the default;
-spaces have no member cap). A link can also land joiners in a public channel; a landing channel deleted or made private later
+cannot be enumerated. **Invite people** opens an invitation-only dialog on web,
+Android, Apple and Rust desktop; renaming, icons, member removal and deletion
+remain in **Manage space**. Opening prepares a ready-to-copy link for **100 total
+joins within 30 days of creation**, initially selecting the oldest public channel.
+Under the space lock, the server reuses the newest link with those settings and
+that landing channel only if it is still live,
+so reopening or opening on multiple devices does not reset its use count or expiry. Expired,
+exhausted or deactivated links are not reused. Deactivating stops new joins, not
+existing memberships; it leaves the dialog without a prepared link until the owner
+creates another or reopens Invite people. No QR code is generated.
+
+The main dialog shows a ready-to-copy link without a destination picker. The server
+chooses the oldest public channel, with no special preference for a channel named
+`general` and no space-wide destination setting. With no public channels, space-only
+invitations remain usable. Owners can choose a different public destination when
+creating a separate link under **Custom links**; previously shared links keep their
+destinations. The API returns the actual destination, which appears in link metadata.
+
+**More invite options** sits beside the primary Copy action. **Regenerate link**
+revokes the displayed code and creates a new code for the same public channel,
+with 30 full days and 100 available joins in one transaction. If the old destination
+became private or was deleted, regeneration and joining fall back to the oldest
+public channel. Regeneration and deactivation (including list revocation) require
+confirmation on every client. Cancel leaves the shared URL working; the warning
+explains that the previous URL stops new joins and regeneration resets the limits.
+Failures leave the previous link intact;
+simultaneous regenerations of the same code mint only one replacement (the stale
+request returns 404). Other links and existing memberships are untouched. The
+newest matching link for each selected channel is used, so it cannot revert to an older
+compatible link after regeneration, exhaustion or deactivation. Separate links
+created with exactly these settings are also eligible for selection. The UI shows remaining joins
+and remaining time, rather than presenting the initial lifetime as time left.
+
+**Custom links** in the options menu creates and manages separate links,
+not settings for the primary shared URL. Existing links keep their settings.
+Owners type the expiry as a number of minutes, hours or days (the API accepts
+any `maxAge` from 60 to 31,536,000 seconds) or choose Never, and optionally type max
+uses (1 to 10,000; empty is unlimited; spaces have no member cap). Custom forms
+also start at 30 days and 100 joins. The existing custom-create API still treats
+omitted/null limits as unlimited for compatibility. A link can also land joiners
+in a public channel; a landing channel deleted or made private later
 falls back to the starter channel and is no longer named in previews. Links are
 retained in `space_invite_links` (`revoked_at`, never deleted) and each join is
 recorded in `space_invite_link_uses`.
@@ -995,13 +1032,35 @@ recorded in `space_invite_link_uses`.
 | Operation | Route | Result |
 | --- | --- | --- |
 | Owner lists live links | `GET /api/spaces/{space}/invite-links` | `{links: [...]}` |
+| Owner prepares/reuses a link | `POST /api/spaces/{space}/invite-links/default?channelId=...` (no body; omit query for oldest public channel) | 200 link |
+| Owner regenerates the displayed link | `POST /api/spaces/{space}/invite-links/{code}/regenerate` (no body) | 201 replacement link |
 | Owner creates a link | `POST /api/spaces/{space}/invite-links` with `{channelId?, maxAge?, maxUses?}` | 201 link |
 | Owner revokes a link | `DELETE /api/spaces/{space}/invite-links/{code}` | 204 |
 | Anyone previews | `GET /api/invites/{code}` (optional account session) | space name, landing channel, inviter, member count, expiry, `alreadyMember` |
 | Signed-in account joins | `POST /api/invites/{code}/join` | `{space, channelId, joined}` |
 
 Creating links shares the owner's invitation attempt budget below; a space can
-have at most 100 live links. Joining checks the membership quota under the same
+have at most 100 live links. Reusing the default link does not consume that
+budget. Deploy the API before these clients; no database migration is required.
+The browser regression scenario runs with the disposable native parity fixture
+and Vite: `node scripts/test-invite-people.mjs <loopback-web-url>`. It checks
+invitation-only controls, copy, reuse, keyboard options, regeneration, custom links,
+deactivation, username invitations, narrow-layout scrolling and failed-request retry.
+This is mock-backed UI validation, not live join validation; the Rust invite-link Postgres integration
+test covers the server lifecycle, concurrent opens/regenerations and rollback.
+
+Invite-people native validation follow-up: with SDK 36 installed, Android main and
+instrumentation sources compile (`compileDebugKotlin`, `compileDebugAndroidTestKotlin`)
+and all 411 JVM tests pass, including 17 invitation parsing/default/route tests.
+`lintDebug` passes with one worker and a 768 MB Gradle heap; the initial concurrent
+lint invocation was killed with exit 137. The report has zero errors, 1,684
+warnings and two hints; warnings have not been suppressed or resolved here.
+Instrumentation was compiled, not executed: no Android emulator or device is
+available in the orb. APK/native-media assembly and rendered Compose acceptance
+remain unverified. Apple compilation, XCTest and rendering still require Xcode;
+no Mac runner is connected. This follow-up does not change invite defaults or UI.
+
+Joining checks the membership quota under the same
 space lock as invitation acceptance, consumes one use, joins the landing channel,
 and fulfils any pending username invitation. Existing members get the space back
 without consuming a use, so a link doubles as a shortcut. Leaving does not block
@@ -1880,50 +1939,9 @@ npx wrangler deploy --env staging
 | Platform | Send files | Show files |
 | --- | --- | --- |
 | Web (desktop and mobile layouts) | Yes: picker, clipboard files/images, and drag and drop with an overlay | Images, video, audio, file cards; images and videos open in the in-app viewer |
-| Apple (iOS and macOS) | Yes: Caper photo/video gallery on iOS (awaiting Apple build/device validation), system Photos picker on macOS, file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
-| Android | Yes: Caper photo/video gallery (awaiting device validation) and document picker, clipboard content URIs, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Apple (iOS and macOS) | Yes: Photos picker, file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
+| Android | Yes: system photo picker and document picker, clipboard content URIs, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
 | Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux), clipboard files/images, and drag and drop with an overlay, up to 10. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
-
-#### Mobile attachment gallery
-
-The iOS and Android attachment **Photos and videos** actions use Caper's own
-three-column gallery, including channel, DM, thread and profile-message drafts.
-Numbered selection badges preserve tap order. The remaining count includes files
-already in the original draft; at ten total, other tiles dim and cannot be selected,
-while chosen tiles remain removable. If the draft grows while picking, Add is blocked
-until the selection fits instead of silently dropping selected items. **Add N** hands
-media to the existing attachment pipeline; it does not send the message. Files and
-single-image profile/space-icon pickers are unchanged. The mobile web app still uses
-the browser's system picker: websites cannot enumerate a phone's photo library.
-
-Unlike the system attachment picker, this gallery needs photo-library permission.
-It asks only after an explicit action inside the sheet and supports limited access;
-it never requires the full library. iOS uses PhotoKit read/write authorization (no
-library edits are made); Android uses version-appropriate read-media permissions,
-including Android 14's selected-photo permission. Both expose access management and
-a Files fallback. Revocation and library changes refresh accessible media and remove
-inaccessible selections. Browsing stays local; only Add imports selected originals.
-iOS may download selected iCloud resources and cancels that request on dismissal.
-No library list, unselected originals or photo identifiers are sent to Caper servers.
-
-Before a Google Play release, submit the new `READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO`
-declaration and obtain approval under the
-[photo/video permissions policy](https://support.google.com/googleplay/android-developer/answer/16935362).
-Google requires justification for why system pickers cannot provide the app's core
-functionality; a custom appearance alone does not establish eligibility. Approval
-has not been checked or obtained for this change. Do not assume automated release
-can publish this permission change; if rejected, Android must retain the system
-media picker (or limit the custom gallery to user-imported files).
-
-Native UI acceptance remains outstanding: render portrait/landscape and large-text
-states, exercise 0/8/10 existing files, select to capacity then replace one, select
-across more than 60 library items, use mixed photos/videos, cancel, deny/restrict/
-limit access, grant more photos, revoke access while backgrounded, switch accounts,
-and verify the original channel/thread/profile draft receives only confirmed media.
-On iOS also exercise edited assets, iCloud offline/error/cancellation and nested
-profile-sheet dismissal. Check VoiceOver/TalkBack selected/disabled announcements.
-These require Apple SDK/device and Android device execution; web tests do not prove
-the native galleries render or that OS permission flows work.
 
 #### File drop overlay
 
@@ -2520,8 +2538,9 @@ belong to the space. These are fixed policies, not new secrets/configuration.
 
 Migration `202610010001_channel_joining.sql` joins existing members to all their
 currently accessible non-demo channels, preserving conversations during rollout.
-New space acceptance joins only one public starter, preferring `general`, if
-available. Creating a channel joins its creator, not every space member. Space
+Accepting a username invitation joins one public starter, preferring `general`,
+if available. Invite links use their selected public channel, falling back to the
+oldest public channel. Creating a channel joins its creator, not every space member. Space
 removal clears participation and revokes channel invitations. No Valkey/SFU
 schema change or data reset is needed.
 
@@ -3263,7 +3282,11 @@ CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
 
 For Android source/unit validation, use JDK 17 and set `ANDROID_HOME` to an SDK
 with platform/build-tools 36 (the repository's native build also needs its pinned
-NDK/CMake). The smaller Gradle heap below fits a 4 GB orb:
+NDK/CMake). `.agents/setup` now provisions these SDK components on x86_64 orbs,
+using the app's Gradle version pins, and exposes the SDK in new login shells
+inside this checkout. Native asset preparation remains in the Android build
+scripts; setup does not install an emulator. The smaller Gradle heap below fits
+a 4 GB orb:
 
 ```sh
 apps/native/android/prepare-fonts.sh
@@ -8205,6 +8228,16 @@ saved sequence. Preferences are installation/API-origin/platform-local, not
 account-synced. Automatic presentation waits for the signed-in workspace and
 defers during calls or another modal. Missing publication retries at most once
 per minute while foregrounded; Settings offers immediate retry.
+
+History groups releases under one UTC publication date. Each native release has
+one full version link above its highlights; web releases and legacy native entries
+without recorded versions use a short commit link instead. Links open that exact
+source revision on GitHub. The header identifies the installed native version and
+commit (the deployed commit on web), independently of the history being viewed.
+The native release workflow supplies its actual `0.1.<build>` as optional `version`
+metadata in schema-1 snapshots; the API preserves it and older clients ignore it.
+Previously published snapshots remain immutable: missing versions are never guessed
+from feed sequences or dates.
 
 Mac/Windows/Linux expose **Check for updates** in the account menu and Settings.
 Automatic checks advertise a known update through a persistent **Update available**

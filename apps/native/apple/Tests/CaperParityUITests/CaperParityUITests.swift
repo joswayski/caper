@@ -45,6 +45,53 @@ final class CaperParityUITests: XCTestCase {
         return app
     }
 
+    func testInvitePeopleOpensInviteOnlyInsteadOfSpaceManagement() {
+        let app = launch()
+        let spaceMenu = app.descendants(matching: .any)["selected-space-name"]
+        if !spaceMenu.isHittable {
+            let navigation = app.buttons["Back to Browse"]
+            if navigation.waitForExistence(timeout: 10) { navigation.tap() }
+        }
+        XCTAssertTrue(spaceMenu.waitForExistence(timeout: 10))
+        spaceMenu.tap()
+        let invite = app.descendants(matching: .any)["Invite people…"].firstMatch
+        XCTAssertTrue(invite.waitForExistence(timeout: 10))
+        invite.tap()
+        XCTAssertTrue(app.staticTexts["Invite by username"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textFields["Exact username"].exists)
+        XCTAssertFalse(app.textFields["Space name"].exists)
+        XCTAssertFalse(app.buttons["Save name"].exists)
+        XCTAssertFalse(app.buttons["Delete space"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["space-members-heading"].exists)
+        let copy = app.buttons["default-invite-link-copy"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.descendants(matching: .any)["invite-link-channel"].exists)
+        XCTAssertFalse(app.staticTexts["Opens in"].exists)
+        XCTAssertFalse(app.staticTexts["Default channel"].exists)
+        let options = app.descendants(matching: .any)["default-invite-link-options"].firstMatch
+        XCTAssertTrue(options.exists)
+        XCTAssertEqual(options.label, "More invite options")
+        XCTAssertGreaterThanOrEqual(options.frame.minX, copy.frame.maxX)
+        options.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["Regenerate link"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["Custom links"].firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["Deactivate link"].firstMatch.exists)
+        app.descendants(matching: .any)["Regenerate link"].firstMatch.tap()
+        let regenerateAlert = app.alerts["Regenerate link?"]
+        XCTAssertTrue(regenerateAlert.waitForExistence(timeout: 5))
+        XCTAssertTrue(regenerateAlert.staticTexts["The previous URL stops admitting new members. The new link resets to 30 days and 100 joins."].exists)
+        regenerateAlert.buttons["Cancel"].tap()
+        XCTAssertTrue(copy.exists)
+        XCTAssertFalse(regenerateAlert.exists)
+        options.tap()
+        app.descendants(matching: .any)["Deactivate link"].firstMatch.tap()
+        let deactivateAlert = app.alerts["Deactivate link?"]
+        XCTAssertTrue(deactivateAlert.waitForExistence(timeout: 5))
+        deactivateAlert.buttons["Cancel"].tap()
+        XCTAssertTrue(copy.exists)
+        XCTAssertFalse(app.buttons["default-invite-link-create"].exists)
+    }
+
     #if os(iOS)
     /// On a freshly booted simulator the automation session can report an
     /// empty accessibility tree for about a minute while the app is already on
@@ -704,7 +751,10 @@ final class CaperParityUITests: XCTestCase {
         let rowActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
                                      "Missing message actions")
         try require(rowActions.buttons["Reply in thread"], timeout: 5, "Missing thread action").tap()
-        try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
+        let back = try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
+        let title = try require(app.staticTexts["Thread"], timeout: 5, "Missing thread title")
+        XCTAssertLessThanOrEqual(back.frame.maxX, title.frame.minX, "Back arrow must lead the thread title")
+        XCTAssertGreaterThanOrEqual(back.frame.width, 44)
         try require(app.staticTexts["No replies yet. Start the thread."], timeout: 5, "Missing empty thread state")
         XCTAssertFalse(app.staticTexts["0 replies"].exists, "Empty threads must not repeat the zero reply count")
         // By label: the channel's composer is still in the tree too.
@@ -736,6 +786,23 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [scrollDismissed], timeout: 5), .completed,
                        "Dragging thread history must dismiss the keyboard, even without replies")
         XCTAssertEqual(composer.value as? String, "Short reply", "Scrolling must keep the reply draft")
+        XCTAssertTrue(back.isHittable, "Vertical scrolling must not close the thread")
+        timeline.swipeLeft()
+        XCTAssertTrue(back.isHittable, "A left swipe must not close the thread")
+        let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.7))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 35, dy: 0)))
+        XCTAssertTrue(back.isHittable, "A short right drag must not close the thread")
+        timeline.swipeRight()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: back)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed,
+                       "A right swipe must return to the channel")
+        // Reopening the same root must retain the unsent draft.
+        hold(row)
+        let reopenActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
+                                        "Missing root actions after returning to channel")
+        try require(reopenActions.buttons["Reply in thread"], timeout: 5, "Missing reopen action").tap()
+        try require(back, timeout: 5, "Thread did not reopen")
+        XCTAssertEqual(composer.value as? String, "Short reply", "Swipe navigation must keep the reply draft")
         XCTAssertTrue(focus(composer))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
 
@@ -1358,16 +1425,22 @@ final class CaperParityUITests: XCTestCase {
         app.buttons["Close"].firstMatch.tap()
         app.descendants(matching: .any)["selected-space-name"].tap()
         try require(app.descendants(matching: .any)["Invite people…"].firstMatch, timeout: 5, "The owner space menu offers invitations").tap()
-        assertStaticText("Invite people to Fixture Studio", in: app, timeout: 5)
-        XCTAssertEqual(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Opens in")).firstMatch.value as? String, "Default channel")
+        assertStaticText("Invite by username", in: app, timeout: 5)
+        _ = try require(app.buttons["default-invite-link-copy"], timeout: 10, "The primary link is ready to copy")
+        let defaultSummary = try require(app.staticTexts["default-invite-link-summary"], timeout: 5, "The returned link reports its default landing channel")
+        XCTAssertTrue(defaultSummary.label.hasPrefix("#general · 100 of 100 joins remaining · Expires in 30 days"))
+        XCTAssertFalse(app.staticTexts["Opens in"].exists)
         app.buttons["Close"].firstMatch.tap()
         #if os(macOS)
         app.buttons["channel-chan00000002"].hover()
         #endif
         try require(app.descendants(matching: .any)["channel-options-chan00000002"], timeout: 10, "Open the unselected design channel's menu").tap()
         try require(app.descendants(matching: .any)["Invite people…"].firstMatch, timeout: 5, "Public channel offers invitations").tap()
-        assertStaticText("Invite people to Fixture Studio", in: app, timeout: 5)
-        XCTAssertEqual(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Opens in")).firstMatch.value as? String, "#design")
+        assertStaticText("Invite by username", in: app, timeout: 5)
+        _ = try require(app.buttons["default-invite-link-copy"], timeout: 10, "The clicked channel's primary link is ready to copy")
+        let channelSummary = try require(app.staticTexts["default-invite-link-summary"], timeout: 5, "The returned link reports the clicked channel, not the selected channel")
+        XCTAssertTrue(channelSummary.label.hasPrefix("#design · 100 of 100 joins remaining · Expires in 30 days"))
+        XCTAssertFalse(app.staticTexts["Opens in"].exists)
         app.buttons["Close"].firstMatch.tap()
         #if os(iOS)
         app.buttons["Close navigation"].tap()

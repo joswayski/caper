@@ -2565,8 +2565,7 @@ a.chat-draft-preview {
 .chat-draft-spoiler {
   right: auto;
   left: 0;
-  place-items: center;
-  padding: 0;
+  place-items: start;
 }
 .chat-draft-remove > svg,
 .chat-draft-spoiler > svg {
@@ -3685,6 +3684,10 @@ a.chat-draft-preview {
   }
   .chat-thread-heading {
     padding: 4px 12px;
+  }
+  .chat-thread-heading,
+  .chat-thread-messages {
+    touch-action: pan-y pinch-zoom;
   }
   /* Keep the reply count, status and skeleton rows on the messages' 14px inset. */
   .chat-thread-divider,

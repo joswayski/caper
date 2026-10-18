@@ -130,8 +130,8 @@ def parse_json(data):
         raise GenerationError("invalid JSON") from None
 
 
-def keys(value, required):
-    if not isinstance(value, dict) or set(value) != set(required):
+def keys(value, required, optional=()):
+    if not isinstance(value, dict) or not set(required) <= set(value) <= set(required) | set(optional):
         raise GenerationError("invalid object schema")
 
 
@@ -172,7 +172,11 @@ def validate_snapshot(data, platform, revision=None):
         raise GenerationError("invalid snapshot header")
     sequence = 0
     for release in snapshot["releases"]:
-        keys(release, ("sequence", "revision", "publishedAt", "highlights"))
+        keys(release, ("sequence", "revision", "publishedAt", "highlights"), ("version",))
+        if "version" in release:
+            version = release["version"]
+            if not isinstance(version, str) or len(version) > 64 or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+                raise GenerationError("invalid release version")
         if not positive(release["sequence"]) or release["sequence"] <= sequence or not revision_id(release["revision"]):
             raise GenerationError("invalid release sequence or revision")
         date = release["publishedAt"]
@@ -610,9 +614,11 @@ def read_feed(github, platform, revision):
     }
 
 
-def new_snapshot(platform, revision, previous, highlights, date):
+def new_snapshot(platform, revision, previous, highlights, date, version=None):
     sequence = previous["sequence"] + 1 if previous else 1
     release = {"sequence": sequence, "revision": revision, "publishedAt": date, "highlights": highlights}
+    if version is not None:
+        release["version"] = version
     history = [*(previous["releases"] if previous else []), release][-30:]
     snapshot = {"schema": 1, "platform": platform, "revision": revision, "sequence": sequence, "releases": history}
     while len(encode(snapshot)) > MAX_SNAPSHOT_BYTES and len(history) > 1:
@@ -622,10 +628,14 @@ def new_snapshot(platform, revision, previous, highlights, date):
     return raw
 
 
-def generate(revision, audience, output_dir, *, repo=Path("."), github=None, publish=False):
+def generate(revision, audience, output_dir, *, repo=Path("."), github=None, publish=False, native_version=None):
     """Prepare every snapshot before any remote mutation; return requested snapshots."""
     if not revision_id(revision) or audience not in ("web", "native"):
         raise GenerationError("revision must be 40 lowercase hex characters; audience must be web or native")
+    if native_version is not None and (
+        audience != "native" or len(native_version) > 64 or not re.fullmatch(r"\d+\.\d+\.\d+", native_version)
+    ):
+        raise GenerationError("native version must be a full numeric app version for a native release")
     if git(repo, "rev-parse", f"{revision}^{{commit}}") != revision:
         raise GenerationError("revision must identify a commit, not a tag")
     github = github if github is not None else GitHub()
@@ -655,6 +665,7 @@ def generate(revision, audience, output_dir, *, repo=Path("."), github=None, pub
                     if platform in item["platforms"]
                 ],
                 date,
+                native_version,
             )
         )
         snapshot = validate_snapshot(raw, platform, revision)
@@ -686,9 +697,12 @@ def main(argv=None):
     parser.add_argument("--audience", choices=("web", "native"), required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--native-version", help="Actual native app version, supplied by the release workflow")
     args = parser.parse_args(argv)
     try:
-        snapshots = generate(args.revision, args.audience, args.output_dir, publish=args.publish)
+        snapshots = generate(
+            args.revision, args.audience, args.output_dir, publish=args.publish, native_version=args.native_version
+        )
     except (GenerationError, OSError, subprocess.SubprocessError):
         error = sys.exception()
         print(

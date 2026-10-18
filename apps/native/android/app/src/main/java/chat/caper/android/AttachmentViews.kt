@@ -228,11 +228,12 @@ internal fun durationLabel(durationMs: Long?): String? {
         if (files.isNotEmpty()) BoxWithConstraints(Modifier.widthIn(max = 480.dp).fillMaxWidth()) {
             // Keep two readable cards only when each has at least 220 dp of room.
             val columns = if (maxWidth >= 446.dp) 2 else 1
+            val cardWidth = (maxWidth - 6.dp * (columns - 1)) / columns
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 files.chunked(columns).forEach { row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         row.forEach { attachment -> key(attachment.id) {
-                            Box(Modifier.width((maxWidth - 6.dp * (columns - 1)) / columns)) { RenderAttachment(attachment, Modifier, MaterialTheme.shapes.small) }
+                            Box(Modifier.width(cardWidth)) { RenderAttachment(attachment, Modifier, MaterialTheme.shapes.small) }
                         } }
                     }
                 }

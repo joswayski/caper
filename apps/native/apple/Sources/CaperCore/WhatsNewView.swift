@@ -15,7 +15,7 @@ struct WhatsNewDisplay: Identifiable {
 
 @MainActor @Observable public final class WhatsNewModel {
     private let api: APIClient
-    private let revision: String
+    fileprivate let revision: String
     private let platform: String
     private let history: WhatsNewHistory
     private(set) var loading = false
@@ -131,6 +131,9 @@ struct WhatsNewDisplay: Identifiable {
     }
 
     private func close() { notes.dismiss(display) }
+    private var installedVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development build"
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -138,6 +141,15 @@ struct WhatsNewDisplay: Identifiable {
                     Text("What’s new").font(CaperTheme.font(20, weight: .bold)).accessibilityAddTraits(.isHeader)
                     Text("Updates to Caper on \(platformName).")
                         .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    HStack(spacing: 4) {
+                        Text("Installed: \(installedVersion)")
+                        if WhatsNewSnapshot.validRevision(notes.revision),
+                           let url = URL(string: "https://github.com/joswayski/caper/commit/\(notes.revision)") {
+                            Text("·")
+                            Link(String(notes.revision.prefix(7)), destination: url)
+                                .accessibilityLabel("View installed commit \(notes.revision.prefix(7)) on GitHub")
+                        }
+                    }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).tint(CaperTheme.muted)
                 }
                 Spacer()
                 Button("Close", action: close).accessibilityLabel("Close What’s new")
@@ -149,11 +161,21 @@ struct WhatsNewDisplay: Identifiable {
                         if releases.isEmpty {
                             Text("No release highlights for this version yet.").foregroundStyle(CaperTheme.muted)
                         }
-                        ForEach(releases, id: \.sequence) { release in
-                            Text(String(release.publishedAt.prefix(10))).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                            ForEach(Array(release.highlights.enumerated()), id: \.offset) { _, highlight in
-                                Text(highlight.title).font(CaperTheme.font(16, weight: .bold))
-                                Text(highlight.body).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                        let days = Dictionary(grouping: releases) { String($0.publishedAt.prefix(10)) }
+                        ForEach(days.keys.sorted(by: >), id: \.self) { date in
+                            Text(date).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                            ForEach(days[date] ?? [], id: \.sequence) { release in
+                                VStack(alignment: .leading, spacing: 12) {
+                                    if let url = URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)") {
+                                        Link(release.version.map { "Version \($0)" } ?? "Commit \(release.revision.prefix(7))", destination: url)
+                                            .font(CaperTheme.font(12)).tint(CaperTheme.muted)
+                                            .accessibilityHint("View this release on GitHub")
+                                    }
+                                    ForEach(Array(release.highlights.enumerated()), id: \.offset) { _, highlight in
+                                        Text(highlight.title).font(CaperTheme.font(16, weight: .bold))
+                                        Text(highlight.body).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                                    }
+                                }
                             }
                             Divider().overlay(CaperTheme.border)
                         }

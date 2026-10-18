@@ -15,7 +15,8 @@ const INVALID: &str = "Caper returned invalid release highlights. Please try aga
 #[serde(rename_all = "camelCase")]
 pub struct Release {
     pub sequence: u64,
-    revision: String,
+    pub revision: String,
+    pub version: Option<String>,
     pub published_at: String,
     pub highlights: Vec<Highlight>,
 }
@@ -63,6 +64,10 @@ impl Snapshot {
                     && release.sequence <= MAX_SEQUENCE
                     && sha(&release.revision)
                     && revisions.insert(&release.revision)
+                    && release
+                        .version
+                        .as_ref()
+                        .is_none_or(|version| text(version, 64))
                     && chrono::DateTime::parse_from_rfc3339(&release.published_at).is_ok()
                     && release.highlights.len() <= 5
                     && release

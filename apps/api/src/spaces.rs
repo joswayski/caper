@@ -322,8 +322,16 @@ pub(crate) fn routes() -> Router<AppState> {
             get(invite_links::list_links).post(invite_links::create_link),
         )
         .route(
+            "/api/spaces/{space}/invite-links/default",
+            post(invite_links::default_link),
+        )
+        .route(
             "/api/spaces/{space}/invite-links/{code}",
             delete(invite_links::revoke_link),
+        )
+        .route(
+            "/api/spaces/{space}/invite-links/{code}/regenerate",
+            post(invite_links::regenerate_link),
         )
         .route("/api/invites/{code}/join", post(accept_invite_link))
         .route("/api/spaces/{space}/invitations", get(list_invitations))
@@ -821,7 +829,10 @@ async fn add_space_member(
     ))
 }
 
-async fn invite_rate_limit(pool: &PgPool, user: i64) -> Result<(), ApiError> {
+async fn invite_rate_limit<'a>(
+    executor: impl sqlx::Executor<'a, Database = Postgres>,
+    user: i64,
+) -> Result<(), ApiError> {
     let attempts: i32 = sqlx::query_scalar(
         "INSERT INTO public.space_invite_limits(user_id) VALUES($1)
          ON CONFLICT(user_id) DO UPDATE SET
@@ -830,7 +841,7 @@ async fn invite_rate_limit(pool: &PgPool, user: i64) -> Result<(), ApiError> {
            window_start=CASE WHEN space_invite_limits.window_start <= now()-interval '10 minutes' THEN now()
                              ELSE space_invite_limits.window_start END
          RETURNING attempts",
-    ).bind(user).fetch_one(pool).await.map_err(database_error)?;
+    ).bind(user).fetch_one(executor).await.map_err(database_error)?;
     if attempts > 20 {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,

@@ -4343,6 +4343,52 @@ private struct ThreadBroadcastToggleStyle: ToggleStyle {
     }
 }
 
+#if os(iOS)
+/// Deliberately not a drawer: only a completed rightward drag navigates.
+/// Gesture state resets on cancellation; vertical/left starts stay rejected.
+private struct ThreadBackSwipe: ViewModifier {
+    let enabled: Bool
+    let close: () -> Void
+    @GestureState private var direction = 0
+
+    /// Leave text selection, controls and nested horizontal scrollers alone.
+    private func reservedStart(_ point: CGPoint) -> Bool {
+        let window = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first(where: \.isKeyWindow)
+        var view = window?.hitTest(point, with: nil)
+        while let current = view {
+            if current is UIControl || current is UITextView { return true }
+            if let scroll = current as? UIScrollView,
+               scroll.contentSize.width > scroll.bounds.width + 1 { return true }
+            view = current.superview
+        }
+        return false
+    }
+
+    func body(content: Content) -> some View {
+        content.contentShape(Rectangle()).simultaneousGesture(
+            DragGesture(minimumDistance: 16, coordinateSpace: .global)
+                .updating($direction) { value, direction, _ in
+                    if direction == 0 {
+                        direction = enabled && !reservedStart(value.startLocation) &&
+                            value.translation.width > abs(value.translation.height) * 1.5 ? 1 : -1
+                    }
+                }
+                .onChanged { _ in
+                    if direction == 1 { SwipeTapGuard.follow() }
+                }
+                .onEnded { value in
+                    guard direction == 1 else { return }
+                    SwipeTapGuard.release()
+                    guard enabled, value.translation.width >= 72,
+                          value.translation.width > abs(value.translation.height) * 1.5 else { return }
+                    close()
+                }
+        )
+    }
+}
+#endif
+
 private struct NativeThreadView: View {
     @Bindable var chat: ChatModel
     /// For the mention card: names from loaded members/people/DMs, and Message.
@@ -4457,22 +4503,36 @@ private struct NativeThreadView: View {
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
         }
     }
+    #if os(iOS)
+    private var canSwipeBack: Bool {
+        reactionMessage == nil && !showingEmojiPicker && reactorsTarget == nil && mentionCard == nil &&
+        blockTarget == nil && forwardMessage == nil && !fileDropTargeted
+    }
+    #endif
     var body: some View {
         VStack(spacing: 0) {
             HStack {
+                #if os(iOS)
+                Button(action: SwipeTapGuard.unlessSwiping { chat.closeThread() }) {
+                    CaperIcon(name: "arrow-left", size: 20)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .accessibilityLabel(direct ? "Back to conversation" : "Back to channel")
+                #endif
                 VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text(direct ? "with \(chat.channelName)" : "in #\(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1) }
                 Spacer()
+                #if os(macOS)
                 Button { chat.closeThread() } label: {
                     Text(direct ? "Back to conversation" : "Back to channel")
-                        #if os(iOS)
-                        .frame(minHeight: 44)
-                        #else
                         .frame(minHeight: 28)
-                        #endif
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).font(CaperTheme.font(12)).modifier(ControlHover())
+                #endif
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                #if os(iOS)
+                .modifier(ThreadBackSwipe(enabled: canSwipeBack, close: { chat.closeThread() }))
+                #endif
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
                     // Read once per render, never per scroll frame in the geometry below.
@@ -4531,6 +4591,7 @@ private struct NativeThreadView: View {
                 }
                 #if os(iOS)
                 .scrollDismissesKeyboard(.immediately)
+                .modifier(ThreadBackSwipe(enabled: canSwipeBack, close: { chat.closeThread() }))
                 #endif
                 #if os(macOS)
                 .accessibilityIdentifier("thread-timeline")
@@ -5430,7 +5491,6 @@ private struct MentionCardView: View {
     @State private var showingPhotos = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var photoLoading: Task<Void, Never>?
-    @State private var filesAfterPhotos = false
     @State private var uploadsAvailable = false
     @State private var previewFile: URL?
     @State private var pending: String?
@@ -5584,18 +5644,6 @@ private struct MentionCardView: View {
         })
         #endif
         .interactiveDismissDisabled(draft.preventsImplicitDismissal)
-        #if os(iOS)
-        .sheet(isPresented: $showingPhotos, onDismiss: {
-            if filesAfterPhotos { filesAfterPhotos = false; showingFiles = true }
-            updateDialogState()
-        }) {
-            MobileAttachmentGallery(existingCount: { draft.files.count },
-                                    valid: { draft.editable && !draft.discarded },
-                                    useFiles: { filesAfterPhotos = true }) { files in
-                draft.add(files)
-            }
-        }
-        #else
         .photosPicker(isPresented: $showingPhotos, selection: $photoItems,
                       maxSelectionCount: max(1, AttachmentPolicy.maxAttachments - draft.files.count),
                       matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
@@ -5621,7 +5669,6 @@ private struct MentionCardView: View {
             }
             updateDialogState()
         }
-        #endif
         .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             defer { draft.presentingDialog = false }
             switch result {
@@ -5696,11 +5743,17 @@ private struct MentionCardView: View {
                             .overlay(alignment: .topLeading) {
                                 Button { draft.toggleSpoiler(id: file.id) } label: {
                                     Image(systemName: file.spoiler ? "eye.slash.fill" : "eye")
-                                        .frame(minWidth: 44, minHeight: 44)
-                                        .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                                        .font(.system(size: 14))
+                                        .frame(width: 24, height: 24)
+                                        .background(.black.opacity(0.8), in: Circle())
+                                        .padding(4)
+                                        #if os(iOS)
+                                        .frame(width: 44, height: 44, alignment: .topLeading)
+                                        #endif
+                                        .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
-                                .foregroundStyle(CaperTheme.text)
+                                .foregroundStyle(.white)
                                 .disabled(!draft.editable)
                                 .accessibilityLabel(file.spoiler ? "Remove spoiler from \(file.local.name)" : "Mark \(file.local.name) as spoiler")
                                 .accessibilityValue(file.spoiler ? "Spoiler" : "Not a spoiler")
@@ -7237,7 +7290,13 @@ private struct WorkspaceSheetView: View {
             case .createChannel: ChannelEditor(model: model, channel: nil, close: close)
             case .newDirectMessage: NewDirectMessageSheet(model: model, close: close)
             case .invitePeople(let spaceID, let channelID):
-                InvitePeopleSheet(model: model, spaceID: spaceID, initialChannelID: channelID, close: close)
+                Group {
+                    if model.isOwner, model.detail?.space.id == spaceID {
+                        SpaceEditor(model: model, close: close, managing: true, inviteOnly: true, inviteChannelID: channelID)
+                    }
+                }
+                .onChange(of: model.selectedSpaceID) { _, _ in close() }
+                .onChange(of: model.isOwner) { _, owner in if !owner { close() } }
             case .manageSpace: SpaceEditor(model: model, close: close, managing: true)
             case .manageChannel(let channel): ChannelEditor(model: model, channel: channel, close: close)
             case .invitation(let space): InvitationSheet(model: model, invitation: space, close: close)
@@ -8482,35 +8541,157 @@ private struct InvitePreviewCard: View {
     }
 }
 
-private struct InvitePeopleSheet: View {
+/// Opening prepares (or reuses) a link, but never touches the clipboard.
+private struct DefaultInviteLinkSection: View {
     @Bindable var model: AppModel
-    let spaceID: String
-    let initialChannelID: String?
-    let close: () -> Void
+    let channelID: String?
+    @State private var link: InviteLink?
+    @State private var pending = false
+    @State private var deactivated = false
+    @State private var copied = false
+    @State private var error: String?
+    @State private var settingsRevision = 0
+    @State private var settingsExpanded = false
+    @State private var customPending = false
+    @State private var confirmation: InviteLink?
+    @State private var confirmingRegenerate = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            SheetHeader(title: "Invite people to \(model.detail?.space.name ?? "space")", close: close)
-            ScrollView {
-                if model.isOwner, model.detail?.space.id == spaceID {
-                    InviteLinksSection(model: model, initialChannelID: initialChannelID)
-                        .padding(22)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Invite link").font(CaperTheme.font(14, weight: .bold))
+            Text("Anyone with this link can join. Up to 100 total joins, valid for 30 days from creation.")
+                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            if let link {
+                Text(model.inviteLinkURL(link.code)).font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                TimelineView(.everyMinute) { context in
+                    Text(InviteLinks.meta(for: link, now: context.date)).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                        .accessibilityIdentifier("default-invite-link-summary")
                 }
+                HStack {
+                    Button(copied ? "Copied" : "Copy link") { copy(link) }.buttonStyle(CaperPrimaryButton())
+                        .accessibilityIdentifier("default-invite-link-copy")
+                    Menu {
+                        Button("Regenerate link") { confirmingRegenerate = true; confirmation = link }
+                            .accessibilityIdentifier("default-invite-link-regenerate")
+                        Text("The previous link stops working. The new link allows 100 joins for 30 days.")
+                        Button("Custom links") { settingsExpanded = true }
+                        Button("Deactivate link", role: .destructive) { confirmingRegenerate = false; confirmation = link }
+                            .accessibilityIdentifier("default-invite-link-deactivate")
+                    } label: {
+                        CaperIcon(name: "ellipsis", size: 16)
+                            .foregroundStyle(CaperTheme.muted)
+                            .frame(width: 32, height: 32).contentShape(Rectangle())
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("More invite options")
+                    }
+                    .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+                    .fixedSize().accessibilityLabel("More invite options")
+                    .accessibilityIdentifier("default-invite-link-options")
+                }.disabled(pending || customPending)
+            } else if pending {
+                ProgressView("Preparing invite link…")
+            } else {
+                if deactivated {
+                    Text("This link is deactivated. Opening Invite people again prepares a new link, or you can create another now.")
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                }
+                Button(deactivated ? "Create another link" : "Prepare link") { Task { await prepare() } }
+                    .buttonStyle(CaperPrimaryButton()).accessibilityIdentifier("default-invite-link-create")
+                    .disabled(customPending)
+            }
+            if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
+            if settingsExpanded || link == nil {
+                DisclosureGroup("Custom links", isExpanded: $settingsExpanded) {
+                    Text("Create a separate custom link. These settings do not edit existing links.")
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    InviteLinksSection(model: model, mutationPending: $customPending, onRevoked: { code in
+                        if link?.code == code { link = nil; copied = false; deactivated = true }
+                    }).id(settingsRevision).disabled(pending)
+                }.font(CaperTheme.font(12))
             }
         }
-        .onChange(of: model.selectedSpaceID) { _, _ in close() }
-        .onChange(of: model.isOwner) { _, owner in if !owner { close() } }
-        .accessibilityIdentifier("invite-people-sheet")
+        .task(id: model.detail?.space.id) {
+            link = nil; deactivated = false
+            await prepare()
+        }
+        .alert(confirmingRegenerate ? "Regenerate link?" : "Deactivate link?", isPresented: Binding(
+            get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }
+        ), presenting: confirmation) { target in
+            Button("Cancel", role: .cancel) { confirmation = nil }
+            Button(confirmingRegenerate ? "Regenerate link" : "Deactivate link", role: .destructive) {
+                confirmation = nil
+                if confirmingRegenerate { regenerate(target) } else { deactivate(target) }
+            }
+        } message: { _ in
+            Text("The previous URL stops admitting new members." +
+                 (confirmingRegenerate ? " The new link resets to 30 days and 100 joins." : ""))
+        }
+    }
+
+    private func prepare() async {
+        guard !pending, !customPending else { return }
+        pending = true; error = nil; copied = false
+        defer { pending = false }
+        do {
+            link = try await model.defaultInviteLink(channelID: channelID)
+            deactivated = false; settingsRevision += 1
+        }
+        catch is CancellationError {}
+        catch { self.error = FriendlyError.message(for: error) }
+    }
+
+    private func regenerate(_ current: InviteLink) {
+        guard !pending, !customPending else { return }
+        pending = true; error = nil
+        Task {
+            defer { pending = false }
+            do {
+                let replacement = try await model.regenerateInviteLink(current)
+                guard link?.code == current.code else { return }
+                link = replacement
+                copied = false; deactivated = false; settingsRevision += 1
+            } catch is CancellationError {}
+            catch { self.error = FriendlyError.message(for: error) }
+        }
+    }
+
+    private func deactivate(_ current: InviteLink) {
+        guard !pending, !customPending else { return }
+        pending = true; error = nil
+        Task {
+            do {
+                try await model.revokeInviteLink(current)
+                link = nil; copied = false; deactivated = true; settingsRevision += 1
+            } catch let failure as APIError where failure.status == 404 {
+                link = nil; copied = false; deactivated = true; settingsRevision += 1
+            } catch is CancellationError {}
+            catch { self.error = FriendlyError.message(for: error) }
+            pending = false
+        }
+    }
+
+    private func copy(_ current: InviteLink) {
+        let url = model.inviteLinkURL(current.code)
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        guard NSPasteboard.general.setString(url, forType: .string) else { error = "Copy failed; try again."; return }
+        #else
+        UIPasteboard.general.string = url
+        #endif
+        copied = true
     }
 }
 
-/// Owners create, copy and revoke shareable links in settings or the invite sheet.
+/// Manage space's "Invite link": owners create, copy and revoke shareable links.
 private struct InviteLinksSection: View {
     @Bindable var model: AppModel
+    @Binding var mutationPending: Bool
+    var onRevoked: ((String) -> Void)? = nil
     @State private var expiryNumber = InviteLinks.defaultExpiryNumber
     @State private var expiryUnit = InviteLinks.defaultExpiryUnit
     /// Empty is No limit.
-    @State private var maxUses = ""
+    @State private var maxUses = InviteLinks.defaultMaxUses
     @State private var expiryError: String?
     @State private var maxUsesError: String?
     @State private var channelID: String?
@@ -8522,33 +8703,31 @@ private struct InviteLinksSection: View {
     /// The link whose Copy button reads "Copied".
     @State private var copied: String?
     @State private var copiedReset: Task<Void, Never>?
-
-    init(model: AppModel, initialChannelID: String?) {
-        self.model = model
-        _channelID = State(initialValue: initialChannelID)
-    }
+    @State private var revokeTarget: InviteLink?
 
     private var publicChannels: [Channel] { (model.detail?.channels ?? []).filter { !$0.private } }
     private var unitOptions: [InviteOption<InviteExpiryUnit>] {
         InviteExpiryUnit.allCases.map { InviteOption(label: $0.label, value: $0) }
     }
     private var channelOptions: [InviteOption<String?>] {
-        [InviteOption<String?>(label: "Default channel", value: nil)]
-            + publicChannels.map { InviteOption<String?>(label: "#\($0.name)", value: $0.id) }
+        publicChannels.isEmpty
+            ? [InviteOption<String?>(label: "No public channels", value: nil)]
+            : publicChannels.map { InviteOption<String?>(label: "#\($0.name)", value: $0.id) }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Invite link").font(CaperTheme.font(14, weight: .bold))
-                Text("Anyone with the link can join \(model.detail?.space.name ?? "this space") and start in the chosen channel, or the space’s default channel.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                Text("Create a custom link").font(CaperTheme.font(14, weight: .bold))
+                Text("Anyone with the link can join this space.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                Text("Create a separate link. Existing links keep their settings.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             }
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 10) { pickers }
                 VStack(alignment: .leading, spacing: 10) { pickers }
             }
             Button(pending == "create" ? "Creating…" : "Create link", action: create)
-                .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil)
+                .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil || loading)
                 .accessibilityIdentifier("invite-link-create")
             if let error {
                 Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
@@ -8557,14 +8736,26 @@ private struct InviteLinksSection: View {
             if loading && links.isEmpty { ProgressView("Loading invite links…").font(CaperTheme.font(12)) }
             ForEach(links) { link in row(link) }
         }
+        .onAppear {
+            channelID = publicChannels.first?.id
+        }
         .task(id: model.detail?.space.id) { await load() }
         .onDisappear { copiedReset?.cancel() }
+        .alert("Revoke link?", isPresented: Binding(
+            get: { revokeTarget != nil }, set: { if !$0 { revokeTarget = nil } }
+        ), presenting: revokeTarget) { target in
+            Button("Cancel", role: .cancel) { revokeTarget = nil }
+            Button("Revoke", role: .destructive) { revokeTarget = nil; revoke(target) }
+        } message: { _ in
+            Text("The previous URL stops admitting new members.")
+        }
     }
 
     @ViewBuilder private var pickers: some View {
         expiryField
         maxUsesField
         InviteOptionPicker(title: "Opens in", selection: $channelID, options: channelOptions)
+            .disabled(pending != nil || publicChannels.isEmpty)
     }
 
     /// A whole number and its unit; Never hides the number.
@@ -8573,7 +8764,7 @@ private struct InviteLinksSection: View {
             Text("Expire after").font(CaperTheme.font(12, weight: .bold))
             HStack(spacing: 8) {
                 if expiryUnit != .never {
-                    numberField("7", text: Binding(get: { expiryNumber }, set: { expiryNumber = $0; expiryError = nil }))
+                    numberField("30", text: Binding(get: { expiryNumber }, set: { expiryNumber = $0; expiryError = nil }))
                         .frame(width: 76)
                         .accessibilityLabel("Expire after")
                         .accessibilityIdentifier("invite-link-expiry-number")
@@ -8623,8 +8814,8 @@ private struct InviteLinksSection: View {
             Spacer(minLength: 8)
             Button(copied == link.code ? "Copied" : "Copy") { copy(link) }.buttonStyle(CaperSecondaryButton())
                 .accessibilityLabel(copied == link.code ? "Copied" : "Copy invite link")
-            Button(pending == link.code ? "Revoking…" : "Revoke", role: .destructive) { revoke(link) }
-                .buttonStyle(CaperSecondaryButton()).disabled(pending != nil)
+            Button(pending == link.code ? "Revoking…" : "Revoke", role: .destructive) { revokeTarget = link }
+                .buttonStyle(CaperSecondaryButton()).disabled(pending != nil || loading)
         }
         .padding(10).background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
@@ -8632,25 +8823,27 @@ private struct InviteLinksSection: View {
     }
 
     private func load() async {
-        loading = true; error = nil
+        guard !loading, pending == nil else { return }
+        loading = true; mutationPending = true; error = nil
+        defer { loading = false; mutationPending = false }
         do { links = try await model.loadInviteLinks() }
         catch is CancellationError {}
         catch { self.error = FriendlyError.message(for: error) }
-        loading = false
     }
 
     private func create() {
-        guard pending == nil else { return }
+        guard pending == nil, !loading else { return }
         // Out-of-range options show beside their fields and aren't sent.
         let expiry = InviteLinks.expirySeconds(expiryNumber, unit: expiryUnit)
         let uses = InviteLinks.maxUses(maxUses)
         if case .failure(let failure) = expiry { expiryError = failure.message } else { expiryError = nil }
         if case .failure(let failure) = uses { maxUsesError = failure.message } else { maxUsesError = nil }
         guard case .success(let maxAge) = expiry, case .success(let useLimit) = uses else { return }
-        // A channel made private since it was picked falls back to the default.
-        let channel = channelID.flatMap { id in publicChannels.contains { $0.id == id } ? id : nil }
-        pending = "create"; error = nil
+        // A channel made private since it was picked falls back to the oldest public channel.
+        let channel = channelID.flatMap { id in publicChannels.contains { $0.id == id } ? id : nil } ?? publicChannels.first?.id
+        pending = "create"; mutationPending = true; error = nil
         Task {
+            defer { mutationPending = false }
             do {
                 let link = try await model.createInviteLink(channelID: channel, maxAge: maxAge, maxUses: useLimit)
                 links.removeAll { $0.code == link.code }
@@ -8662,15 +8855,18 @@ private struct InviteLinksSection: View {
     }
 
     private func revoke(_ link: InviteLink) {
-        guard pending == nil else { return }
-        pending = link.code; error = nil
+        guard pending == nil, !loading else { return }
+        pending = link.code; mutationPending = true; error = nil
         Task {
+            defer { mutationPending = false }
             do {
                 try await model.revokeInviteLink(link)
                 links.removeAll { $0.code == link.code }
+                onRevoked?(link.code)
             } catch let failure as APIError where failure.status == 404 {
                 // Already expired, used up or revoked elsewhere.
                 links.removeAll { $0.code == link.code }
+                onRevoked?(link.code)
             } catch { self.error = FriendlyError.message(for: error) }
             pending = nil
         }
@@ -8730,6 +8926,8 @@ private struct InviteOptionPicker<Value: Hashable & Sendable>: View {
 
 private struct SpaceEditor: View {
     @Bindable var model: AppModel; let close: () -> Void; let managing: Bool
+    var inviteOnly = false
+    var inviteChannelID: String? = nil
     /// Create a space only: switches to "Join with invite link".
     var joinInvite: (() -> Void)? = nil
     @State private var name = ""; @State private var username = ""; @State private var error: String?; @State private var pending = false
@@ -8753,26 +8951,36 @@ private struct SpaceEditor: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            SheetHeader(title: managing ? "Manage space" : "Create a space", detail: managing ? "Only the owner can change this space and its membership." : nil, closeDisabled: creating, close: close)
+            SheetHeader(title: inviteOnly ? "Invite people" : managing ? "Manage space" : "Create a space", detail: inviteOnly ? model.detail?.space.name : managing ? "Only the owner can change this space and its membership." : nil, closeDisabled: creating, close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    CaperField(title: "Space name", text: $name, placeholder: "Gaming nights", focus: $nameFocused)
-                        .onChange(of: name) { _, _ in error = nil }
-                    Button(pending ? (managing ? "Saving…" : "Creating…") : managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton())
-                        .disabled(pending || (!managing && model.limits != nil && !model.canCreateSpace))
-                    if !managing { createFooter }
+                    if !inviteOnly {
+                        CaperField(title: "Space name", text: $name, placeholder: "Gaming nights", focus: $nameFocused)
+                            .onChange(of: name) { _, _ in error = nil }
+                        Button(pending ? (managing ? "Saving…" : "Creating…") : managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton())
+                            .disabled(pending || (!managing && model.limits != nil && !model.canCreateSpace))
+                        if !managing { createFooter }
+                    }
                     if managing {
-                        iconSection
-                        Divider().overlay(CaperTheme.border)
-                        InviteLinksSection(model: model, initialChannelID: model.selectedChannel.flatMap { $0.private ? nil : $0.id })
+                        if inviteOnly {
+                            DefaultInviteLinkSection(model: model, channelID: inviteChannelID).id(model.detail?.space.id)
+                        } else {
+                            iconSection
+                            Divider().overlay(CaperTheme.border)
+                            InviteLinksSection(model: model, mutationPending: .constant(false)).id(model.detail?.space.id)
+                        }
                         Divider().overlay(CaperTheme.border)
                         Text("Pending invitations  \(model.pendingMembers.count)").font(CaperTheme.font(14, weight: .bold))
                         ForEach(model.pendingMembers) { member in
                             HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)").foregroundStyle(CaperTheme.muted) }; Spacer(); Button("Cancel") { run { try await model.cancelSpaceInvitation(member) } } }.font(CaperTheme.font(12))
                         }
-                        Text("Members  \(model.detail?.members.count ?? 0)").font(CaperTheme.font(14, weight: .bold))
-                            .accessibilityLabel("Members \(model.detail?.members.count ?? 0)")
-                            .accessibilityIdentifier("space-members-heading")
+                        if !inviteOnly {
+                            Text("Members  \(model.detail?.members.count ?? 0)").font(CaperTheme.font(14, weight: .bold))
+                                .accessibilityLabel("Members \(model.detail?.members.count ?? 0)")
+                                .accessibilityIdentifier("space-members-heading")
+                        } else {
+                            Text("Invite by username").font(CaperTheme.font(14, weight: .bold))
+                        }
                         let choices = suggestions.choices(text: username, candidates: inviteCandidates, focused: memberFocused)
                         VStack(alignment: .leading, spacing: 6) {
                             // The field stays enabled during a request so it keeps focus; addMember ignores it until then.
@@ -8795,13 +9003,17 @@ private struct SpaceEditor: View {
                         }
                         if let memberStatus { Text(memberStatus).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
                         if let memberError { Text(memberError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
-                        ForEach(model.detail?.members ?? []) { member in
-                            HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)\(member.owner ? " · Owner" : "")").foregroundStyle(CaperTheme.muted) }; Spacer(); if !member.owner { Button("Remove") { removing = member }.disabled(pending) } }.font(CaperTheme.font(12))
+                        if !inviteOnly {
+                            ForEach(model.detail?.members ?? []) { member in
+                                HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)\(member.owner ? " · Owner" : "")").foregroundStyle(CaperTheme.muted) }; Spacer(); if !member.owner { Button("Remove") { removing = member }.disabled(pending) } }.font(CaperTheme.font(12))
+                            }
                         }
-                        Divider().overlay(CaperTheme.border)
-                        Text("Delete space").font(CaperTheme.font(14, weight: .bold))
-                        Text("Delete this space and all its channels for every member.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                        Button("Delete space", role: .destructive) { CaperEffects.shared.play(.warning); confirmDelete = true }.buttonStyle(CaperSecondaryButton()).disabled(pending)
+                        if !inviteOnly {
+                            Divider().overlay(CaperTheme.border)
+                            Text("Delete space").font(CaperTheme.font(14, weight: .bold))
+                            Text("Delete this space and all its channels for every member.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                            Button("Delete space", role: .destructive) { CaperEffects.shared.play(.warning); confirmDelete = true }.buttonStyle(CaperSecondaryButton()).disabled(pending)
+                        }
                     }
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
                 }.padding(22)
