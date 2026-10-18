@@ -4036,6 +4036,12 @@ public final class ChatModel {
         composerTarget(inThread: inThread).flatMap { stagedFiles[$0] } ?? []
     }
 
+    func attachmentCount(target: AttachmentTarget) -> Int { stagedFiles[target]?.count ?? 0 }
+
+    func attachmentTargetIsValid(_ target: AttachmentTarget) -> Bool {
+        attachmentAccessIDs[target.channelID] == target.accessID
+    }
+
     func setAttachmentNotice(_ notice: String?, target: AttachmentTarget) {
         guard attachmentAccessIDs[target.channelID] == target.accessID else { return }
         attachmentNotices[target] = notice

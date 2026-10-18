@@ -5398,6 +5398,7 @@ private struct MentionCardView: View {
     @State private var showingPhotos = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var photoLoading: Task<Void, Never>?
+    @State private var filesAfterPhotos = false
     @State private var uploadsAvailable = false
     @State private var previewFile: URL?
     @State private var pending: String?
@@ -5549,6 +5550,18 @@ private struct MentionCardView: View {
         })
         #endif
         .interactiveDismissDisabled(draft.preventsImplicitDismissal)
+        #if os(iOS)
+        .sheet(isPresented: $showingPhotos, onDismiss: {
+            if filesAfterPhotos { filesAfterPhotos = false; showingFiles = true }
+            updateDialogState()
+        }) {
+            MobileAttachmentGallery(existingCount: { draft.files.count },
+                                    valid: { draft.editable && !draft.discarded },
+                                    useFiles: { filesAfterPhotos = true }) { files in
+                draft.add(files)
+            }
+        }
+        #else
         .photosPicker(isPresented: $showingPhotos, selection: $photoItems,
                       maxSelectionCount: max(1, AttachmentPolicy.maxAttachments - draft.files.count),
                       matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
@@ -5574,6 +5587,7 @@ private struct MentionCardView: View {
             }
             updateDialogState()
         }
+        #endif
         .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             defer { draft.presentingDialog = false }
             switch result {
