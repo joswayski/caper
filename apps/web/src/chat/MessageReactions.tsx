@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { SmilePlus } from "lucide-react";
 import {
   autoUpdate,
   flip,
@@ -180,6 +181,8 @@ export default function MessageReactions({
   save,
   onReact,
   onShowReactors,
+  onAddReaction,
+  pickerOpen,
   onDismissError,
 }: {
   message: ChatMessage;
@@ -189,6 +192,8 @@ export default function MessageReactions({
   save?: ReactionSave;
   onReact: (messageId: string, emoji: string, active: boolean) => Promise<void>;
   onShowReactors: (emoji: string, anchor: HTMLElement) => void;
+  onAddReaction: (anchor: HTMLElement) => void;
+  pickerOpen: boolean;
   onDismissError: () => void;
 }) {
   const canReact = !!authorId && !readOnly;
@@ -209,6 +214,19 @@ export default function MessageReactions({
               onShowReactors={onShowReactors}
             />
           ))}
+          {canReact && (
+            <button
+              type="button"
+              className="chat-reaction chat-reaction-add"
+              aria-label="Add reaction"
+              title="Add reaction"
+              aria-haspopup="dialog"
+              aria-expanded={pickerOpen}
+              onClick={(event) => onAddReaction(event.currentTarget)}
+            >
+              <SmilePlus size={18} aria-hidden="true" />
+            </button>
+          )}
         </div>
       )}
       {save?.error && (

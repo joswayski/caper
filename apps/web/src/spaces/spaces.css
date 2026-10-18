@@ -1841,12 +1841,10 @@
   margin-top: 0;
 }
 .member-manager ul {
-  max-height: 238px;
   display: grid;
   gap: 2px;
   margin: 14px 0 0;
   padding: 0;
-  overflow-y: auto;
   list-style: none;
 }
 .member-manager ul + .dialog-section-heading {
