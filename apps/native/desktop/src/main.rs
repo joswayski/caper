@@ -1813,6 +1813,7 @@ impl CaperApp {
                 } else if name.starts_with("parity-feedback") {
                     // A feedback team member, with labelled sample reports as
                     // `GET /api/feedback` answers them.
+                    app.token = Some("fixture-account".into());
                     if let Some(account) = &mut app.account {
                         account.feedback_team = true;
                     }
@@ -3765,9 +3766,10 @@ impl CaperApp {
                     self.context_loading = false;
                     let main = root.is_none() && !newer;
                     self.accept_context(root, &anchor, newer, result);
-                    // A report lands in its thread once the history around it is in.
+                    // Only a reported reply needs its existing thread revealed.
                     if main
                         && self.selected_channel.is_some()
+                        && self.error.is_none()
                         && let Some((_, thread)) = self
                             .report_thread
                             .take_if(|(expected, _)| *expected == anchor)
@@ -3776,6 +3778,11 @@ impl CaperApp {
                             Some(reply) => self.load_context(Some(thread.root), reply, false),
                             None => self.open_thread(thread.root),
                         }
+                    }
+                    // Keep the inbox over the previous conversation until the
+                    // report (including a reported reply) can actually be shown.
+                    if !self.context_loading {
+                        self.feedback_open = false;
                     }
                 }
                 Event::ThreadLoaded {
@@ -4477,6 +4484,17 @@ impl CaperApp {
         if !self.feedback_team() {
             return;
         }
+        // Returning to the inbox cancels an in-flight report jump.
+        self.navigation += 1;
+        self.opening = false;
+        self.navigation_target = None;
+        self.navigation_prefetch = None;
+        self.visit_request = None;
+        self.report_focus = None;
+        self.history_request += 1;
+        self.context_loading = false;
+        self.loading_older = false;
+        self.report_thread = None;
         self.feedback_open = true;
         self.navigation_open = false;
         self.showing_pins = false;
@@ -4542,7 +4560,7 @@ impl CaperApp {
     }
 
     /// Opens a report's conversation by channel id, even one outside the
-    /// space and DM lists, at the report and in its thread.
+    /// space and DM lists, at the reported message.
     fn open_report(&mut self, target: feedback::VisitTarget, from_inbox: bool) {
         if self.token.is_none() {
             return;
@@ -4552,13 +4570,24 @@ impl CaperApp {
         } else {
             self.report_origin()
         };
-        self.feedback_open = false;
+        if !from_inbox {
+            self.feedback_open = false;
+        }
+        // A second report must supersede a context request still in flight.
+        self.history_request += 1;
+        self.context_loading = false;
+        self.loading_older = false;
+        self.report_thread = None;
         self.navigation_open = false;
-        if self.selected_channel.as_deref() == Some(target.channel.as_str())
-            && !self.opening
-            && self.navigation_error.is_none()
-        {
+        if self.selected_channel.as_deref() == Some(target.channel.as_str()) {
             // Already open, as a visit or as a member: land on the report.
+            self.navigation += 1;
+            self.opening = false;
+            self.navigation_target = None;
+            self.navigation_prefetch = None;
+            self.navigation_error = None;
+            self.visit_request = None;
+            self.report_focus = None;
             if self.visiting().is_some()
                 && let Some(visit) = &mut self.visit
             {
@@ -4578,7 +4607,7 @@ impl CaperApp {
         });
     }
 
-    /// History around the report, then its thread.
+    /// History around the report; only reported replies open a thread.
     fn focus_report(&mut self, target: &feedback::VisitTarget) {
         let (anchor, thread) = target.plan();
         self.report_thread = thread.map(|thread| (anchor.clone(), thread));
@@ -5768,9 +5797,15 @@ impl CaperApp {
         }
         // Before the cache fills in the space's remembered channel.
         let reveals = target.channel.is_some();
-        // Any conversation replaces the feedback inbox; only the visit's own
-        // navigation keeps its request.
-        self.feedback_open = false;
+        // A report keeps the inbox visible while preparing its conversation.
+        // Other navigation dismisses it immediately.
+        if self
+            .visit_request
+            .as_ref()
+            .is_none_or(|request| target.channel.as_ref() != Some(&request.target.channel))
+        {
+            self.feedback_open = false;
+        }
         // Like web, Browse channels belongs to the space it was opened in.
         if target
             .space
@@ -6029,7 +6064,9 @@ impl CaperApp {
                         channel: Some(history.channel.id.clone()),
                     };
                     let focus = request.target.clone();
+                    let inbox_open = self.feedback_open;
                     self.navigate(target);
+                    self.feedback_open = inbox_open;
                     self.report_focus = Some((self.navigation, focus));
                     return;
                 }
@@ -6135,6 +6172,7 @@ impl CaperApp {
                     self.clear_channel(&error.message);
                 }
                 self.navigation_error = Some(error.message);
+                self.feedback_open = false;
             }
         }
     }
@@ -14402,6 +14440,11 @@ impl CaperApp {
                                 self.navigation_open = true;
                             }
                             ui.label(RichText::new(title).size(13.76));
+                            if self.opening || self.context_loading {
+                                ui.label(
+                                    RichText::new("Opening message…").size(11.52).color(MUTED),
+                                );
+                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -14944,7 +14987,7 @@ impl CaperApp {
                             });
                     }
                 }
-                if let Some(error) = error {
+                if let Some(error) = &error {
                     ui.colored_label(ERROR, error);
                     // The page that failed, as on web: an older page again,
                     // not a reload of the latest replies.
@@ -14968,12 +15011,20 @@ impl CaperApp {
                 if loading && replies.is_empty() {
                     ui.allocate_ui(egui::vec2(ui.available_width(), 196.0), message_skeleton);
                 }
-                if replies.is_empty() && !loading {
-                    ui.label(if read_only {
-                        "No replies yet."
-                    } else {
-                        "No replies yet. Start the thread."
-                    });
+                if replies.is_empty() && !loading && error.is_none() {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(18, 12))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(if read_only {
+                                    "No replies yet."
+                                } else {
+                                    "No replies yet. Start the thread."
+                                })
+                                .size(12.0)
+                                .color(MUTED),
+                            );
+                        });
                 }
                 self.messages_or_blocked(ui, &replies);
                 // Pending replies belong in the scrolling history, not above
@@ -15412,7 +15463,7 @@ impl CaperApp {
                 return;
             }
             let empty = self.timeline.messages().next().is_none() && self.pending.is_none();
-            if self.loading && empty {
+            if (self.loading || self.context_loading) && empty {
                 message_skeleton(ui);
                 return;
             }
@@ -36614,20 +36665,63 @@ mod tests {
         assert!(app.browse_covers_conversation(), "no reads under the inbox");
         let report = app.feedback.reports[0].clone();
         click_at(&mut app, &context, text_position(&output, &report.text));
-        assert!(!app.feedback_open, "a report replaces the inbox");
-        // The fixture already shows that channel: land on the report and
-        // then open its own thread.
-        assert_eq!(
-            app.report_thread,
-            Some((
-                report.message_id.clone(),
-                crate::feedback::ThreadFocus {
-                    root: report.thread_root_id.clone(),
-                    anchor: None
-                }
-            ))
+        assert!(
+            app.feedback_open,
+            "retain the inbox until the report is ready"
+        );
+        assert!(
+            app.report_thread.is_none(),
+            "root reports stay in the conversation"
         );
         assert!(app.context_loading);
+        let rows = app.timeline.messages().cloned().collect();
+        app.timeline.reset(vec![], "4").unwrap();
+        let loading = render(&mut app, &context, vec![]);
+        assert!(!texts(&loading).contains(&"No messages yet."));
+        assert!(texts(&loading).contains(&"Opening message…"));
+        assert!(texts(&loading).contains(&"Waiting"));
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        events
+            .send(crate::worker::Event::ContextLoaded {
+                generation: app.generation,
+                request: app.history_request,
+                channel: report.channel.id.clone(),
+                root: None,
+                anchor: report.message_id.clone(),
+                newer: false,
+                result: Ok(model::MessageContext {
+                    messages: rows,
+                    root: None,
+                    has_more: false,
+                    has_newer: false,
+                }),
+            })
+            .unwrap();
+        app.receive();
+        assert!(
+            !app.feedback_open,
+            "show the report once its context is ready"
+        );
+        assert_eq!(
+            app.focused_message.as_deref(),
+            Some(report.message_id.as_str())
+        );
+        assert!(
+            app.thread_view.is_none(),
+            "opening a root report must not start a thread"
+        );
+        let opened = render(&mut app, &context, vec![]);
+        assert!(
+            texts(&opened)
+                .iter()
+                .any(|text| text.contains("uploads stall"))
+        );
+        app.open_thread(report.message_id.clone());
+        assert!(
+            app.thread_view.is_some(),
+            "explicit thread actions still work"
+        );
 
         // Another conversation opens by id as a visit request.
         let mut other = report.target();
@@ -36644,6 +36738,15 @@ mod tests {
         // Any other navigation drops it.
         app.select_channel("chan00000001".into(), false);
         assert!(app.visit_request.is_none());
+        app.open_feedback();
+        app.open_report(other, true);
+        app.open_report(report.target(), true);
+        assert!(
+            !app.opening,
+            "a report in the loaded chat supersedes pending navigation"
+        );
+        assert!(app.visit_request.is_none());
+        assert!(app.feedback_open && app.context_loading);
     }
 
     #[test]
@@ -38625,6 +38728,15 @@ mod tests {
                     .any(|(_, node)| node.label() == Some("Loading messages"))
             );
             let root = app.thread_view.as_ref().unwrap().root.clone();
+            app.thread_view.as_mut().unwrap().loading = false;
+            frame(&mut app);
+            let empty = frame(&mut app);
+            let note = text_position(&empty, "No replies yet. Start the thread.");
+            let heading = text_position(&empty, "Thread");
+            assert!(
+                note.x >= if size.x > 760.0 { heading.x } else { 12.0 },
+                "empty-thread text must stay inside the panel inset"
+            );
             let mut reply = app.timeline.messages().nth(1).unwrap().clone();
             reply.thread_root_id = Some(root);
             reply.content.text = "TEST FIXTURE — Visible reply".into();

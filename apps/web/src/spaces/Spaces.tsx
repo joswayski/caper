@@ -2129,7 +2129,7 @@ export default function Spaces({
       threadRootId: report.threadRootId,
       reporter: report.reporter,
     });
-    setNavigationOpen(false);
+    // On phones, keep the report list visible until its context is ready.
   };
 
   const openDirect = (conversation: DirectConversation) => {
@@ -2275,7 +2275,7 @@ export default function Spaces({
     return () => controller.abort();
   }, [selected.dmId, loading, directsLoading, directAccessible]);
 
-  // A visit loads the latest page, then focuses the report and opens its thread.
+  // Prepare the report's root context before replacing the visible conversation.
   const visit = selected.visit;
   useEffect(() => {
     if (!visit) {
@@ -2283,20 +2283,20 @@ export default function Spaces({
       return;
     }
     const controller = new AbortController();
-    setDirectView(undefined);
-    // The previous conversation stays on screen until this one is ready.
-    setVisitView((shown) => (shown?.target.channelId === visit.channelId ? { ...shown, target: visit } : shown));
-    if (visit.messageId)
-      setFocusMessage({
-        id: visit.messageId,
-        channelId: visit.channelId,
-        threadRootId: visit.threadRootId !== visit.messageId ? visit.threadRootId : undefined,
-      });
-    void loadChatHistory(visit.channelId, controller.signal)
+    // Keep the previous target and its messages together until context is ready.
+    void loadChatHistory(visit.channelId, controller.signal, visit.threadRootId ?? visit.messageId)
       .then((history) => {
         if (controller.signal.aborted) return;
-        setVisitView((shown) =>
-          shown?.target.channelId === visit.channelId && shown.history ? shown : { target: visit, history },
+        setDirectView(undefined);
+        setVisitView({ target: visit, history });
+        setFocusMessage(
+          visit.messageId
+            ? {
+                id: visit.messageId,
+                channelId: visit.channelId,
+                threadRootId: visit.threadRootId !== visit.messageId ? visit.threadRootId : undefined,
+              }
+            : undefined,
         );
         setNavigationOpen(false);
       })
@@ -2309,6 +2309,7 @@ export default function Spaces({
               ? "This conversation is no longer available."
               : errorMessage(reason),
         });
+        setNavigationOpen(false);
       });
     return () => controller.abort();
   }, [visit?.channelId, visit?.messageId, visit?.threadRootId]);
@@ -2475,8 +2476,13 @@ export default function Spaces({
       if (!selected.dmId) setDirectView(undefined);
       if (openConversation) setNavigationOpen(false);
     }
-    void navigation.current
-      .take(selected.spaceId, selected.channelId)
+    // A report prepares its own context; only the surrounding space metadata
+    // is needed here, never a competing latest-page conversation.
+    void (
+      selected.visit
+        ? getSpace(selected.spaceId).then((detail) => ({ detail }) as PreparedSpace)
+        : navigation.current.take(selected.spaceId, selected.channelId)
+    )
       .then((next) => {
         if (!current) return;
         // Commit the channel list and first history together. Until this point,
@@ -3766,8 +3772,9 @@ export default function Spaces({
           return true;
         }}
         focusMessage={focusMessage}
-        // Both report visits and forwarded conversations open the source thread.
-        focusThread
+        // Reports focus the conversation; actual replies still reveal their thread.
+        // Forwarded conversations retain their explicit source-thread behavior.
+        focusThread={!visit}
         // A reply from the team answers the report in the inbox.
         onSent={visitView ? () => void refreshFeedback() : undefined}
         onHistoryChange={(history) => {
