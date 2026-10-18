@@ -919,3 +919,93 @@ async fn profile_and_space_changes_reach_only_people_who_can_see_them(pool: sqlx
     );
     server.abort();
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn chat_replay_conceals_files_an_edit_replaced(pool: sqlx::PgPool) {
+    let external = crate::auth::random_id(12);
+    let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,'reader','Reader') RETURNING id")
+        .bind(&external).fetch_one(&pool).await.unwrap();
+    let hash = Sha256::digest(b"replay-reader").to_vec();
+    sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 hour')")
+        .bind(&hash).bind(user).execute(&pool).await.unwrap();
+    let space: i64 = sqlx::query_scalar(
+        "INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,'Space',$2) RETURNING id",
+    )
+    .bind(crate::auth::random_id(12))
+    .bind(user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+        .bind(space)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let channel = crate::auth::random_id(12);
+    let channel_id: i64 = sqlx::query_scalar("INSERT INTO public.channels(external_id,space_id,name,last_seq) VALUES($1,$2,'general',2) RETURNING id")
+        .bind(&channel).bind(space).fetch_one(&pool).await.unwrap();
+    let session: i64 = sqlx::query_scalar("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,name) VALUES($1,$2,$3,'Reader') RETURNING id")
+        .bind(crate::auth::random_id(12)).bind(Sha256::digest(b"replay-chat").to_vec()).bind(user).fetch_one(&pool).await.unwrap();
+    let message: i64 = sqlx::query_scalar("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload) VALUES('replayed',$1,$2,$3,$4,1,'{}') RETURNING id")
+        .bind(channel_id).bind(session).bind(Uuid::new_v4()).bind(vec![1u8]).fetch_one(&pool).await.unwrap();
+    for (id, retired) in [("first-sent", true), ("render", false)] {
+        sqlx::query("INSERT INTO public.assets(external_id,owner_id,purpose,channel_id,message_id,kind,content_type,filename,byte_size,uploaded_at,retired_at) VALUES($1,$2,'attachment',$3,$4,'image','image/avif','photo.avif',10,now(),CASE WHEN $5 THEN now() END)")
+            .bind(id).bind(user).bind(channel_id).bind(message).bind(retired).execute(&pool).await.unwrap();
+    }
+    let file = |id: &str| json!({"id":id,"kind":"image","contentType":"image/avif","name":"photo.avif","size":10});
+    for (seq, kind, files) in [
+        (1, "message.created", vec![file("first-sent")]),
+        (2, "message.edited", vec![file("render")]),
+    ] {
+        let message = json!({"id":"replayed","channelId":channel,"seq":"1","content":{"version":1,"type":"text","text":"","attachments":files},
+            "forward":{"message":{"content":{"attachments":[file("first-sent")]}},"seq":"1"}});
+        sqlx::query("INSERT INTO public.channel_events(channel_id,seq,payload) VALUES($1,$2,$3)")
+            .bind(channel_id).bind(seq as i64)
+            .bind(json!({"type":kind,"schemaVersion":1,"channelId":channel,"seq":seq.to_string(),"message":message}))
+            .execute(&pool).await.unwrap();
+    }
+    let mut chat = Chat::new(
+        pool.clone(),
+        redis::Client::open("redis://127.0.0.1:1").unwrap(),
+    );
+    chat.cdn = Some(Arc::new(crate::assets::CdnSigner::new(
+        "https://cdn.test".into(),
+        vec![3; 32],
+    )));
+    let gateway = Gateway::new(chat);
+    let identity = Identity {
+        headers: HeaderMap::new(),
+        hash: Some(hash),
+        user: Some(user),
+        external_id: Some(external),
+    };
+    let sub: Subscribe =
+        serde_json::from_value(json!({"id":"chat","kind":"chat","channelId":channel,"after":"0"}))
+            .unwrap();
+    let (out, mut frames) = mpsc::channel(8);
+    let mut after = 0;
+    replay(&gateway, &identity, &sub, &out, &mut after)
+        .await
+        .unwrap();
+    assert_eq!(after, 2);
+    let created = frames.recv().await.unwrap()["event"].clone();
+    let concealed = json!({"id":"first-sent","kind":"image","contentType":"image/avif","name":"Replaced file","size":0,"unavailable":true});
+    assert_eq!(created["message"]["content"]["attachments"][0], concealed);
+    assert_eq!(
+        created["message"]["forward"]["message"]["content"]["attachments"][0],
+        concealed
+    );
+    let edited = frames.recv().await.unwrap()["event"].clone();
+    assert!(
+        edited["message"]["content"]["attachments"][0]["url"]
+            .as_str()
+            .unwrap()
+            .contains("/assets/render?")
+    );
+    assert_eq!(
+        frames.recv().await.unwrap()["event"],
+        json!({"type":"ready","cursor":"2"})
+    );
+}

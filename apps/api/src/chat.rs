@@ -178,6 +178,10 @@ pub(crate) fn routes() -> Router<AppState> {
             get(editing::versions),
         )
         .route(
+            "/api/chat/channels/{channel}/messages/{message}/attachment-sources",
+            get(editing::attachment_sources),
+        )
+        .route(
             "/api/chat/channels/{channel}/messages/{message}/reactions",
             get(reactors).put(set_reaction),
         )
@@ -1660,6 +1664,11 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
         seqs.push(seq);
     }
     crate::pictures::enrich_people(&mut *tx, &mut events)
+        .await
+        .map_err(|_| ())?;
+    // An event committed before a later edit replaced its files never hands
+    // them out, including to gateways that do not conceal replays yet.
+    assets::conceal_retired(&mut *tx, &mut events)
         .await
         .map_err(|_| ())?;
     for event in events {

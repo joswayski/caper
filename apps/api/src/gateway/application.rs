@@ -736,6 +736,10 @@ async fn replay(
         crate::pictures::enrich_people(&state.chat.pool, &mut payloads)
             .await
             .map_err(|_| chat::unavailable())?;
+        // Stored events still name files a later edit replaced.
+        crate::assets::conceal_retired(&state.chat.pool, &mut payloads)
+            .await
+            .map_err(|_| chat::unavailable())?;
         for (seq, payload) in seqs.into_iter().zip(payloads) {
             if seq != *after + 1 {
                 event(out, &sub.id, json!({"type":"resync_required"})).await?;

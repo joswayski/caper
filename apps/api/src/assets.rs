@@ -1286,12 +1286,15 @@ async fn urls(
     if input.ids.is_empty() || input.ids.len() > 100 {
         return Err(invalid("request 1–100 files"));
     }
+    // A file replaced by an edit stays its author's alone.
     let rows: Vec<(String, String, bool)> = sqlx::query_as(
         "SELECT a.external_id, c.external_id, a.preview_content_type IS NOT NULL
          FROM public.assets a JOIN public.channels c ON c.id=a.channel_id
-         WHERE a.external_id = ANY($1) AND a.message_id IS NOT NULL AND a.deleted_at IS NULL",
+         WHERE a.external_id = ANY($1) AND a.message_id IS NOT NULL AND a.deleted_at IS NULL
+           AND (a.retired_at IS NULL OR a.owner_id=$2)",
     )
     .bind(&input.ids)
+    .bind(principal.user.id)
     .fetch_all(pool)
     .await
     .map_err(database_error)?;
@@ -1373,6 +1376,265 @@ pub(crate) async fn link(
     Ok(())
 }
 
+/// A file a message shows now, for planning an edit of its files.
+pub(crate) struct ShownFile {
+    pub id: String,
+    pub kind: String,
+    /// The first-sent file this one was rendered from, for an edited file.
+    pub source: Option<String>,
+    pub available: bool,
+}
+
+/// The message's files that an edit has not replaced.
+pub(crate) async fn shown_files(
+    tx: &mut sqlx::PgConnection,
+    message_id: i64,
+) -> Result<Vec<ShownFile>, ApiError> {
+    let rows: Vec<(String, String, Option<String>, bool)> = sqlx::query_as(
+        "SELECT a.external_id, a.kind, s.external_id, a.deleted_at IS NULL
+         FROM public.assets a LEFT JOIN public.assets s ON s.id=a.edit_source_id
+         WHERE a.message_id=$1 AND a.retired_at IS NULL",
+    )
+    .bind(message_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| crate::chat::unavailable())?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, kind, source, available)| ShownFile {
+            id,
+            kind,
+            source,
+            available,
+        })
+        .collect())
+}
+
+fn no_longer_editable() -> ApiError {
+    ApiError::new(StatusCode::CONFLICT, "this file can no longer be edited")
+}
+
+/// Locks the first-sent files an edit brings back ("undo all edits") and
+/// returns their descriptions in the requested order.
+pub(crate) async fn restorable(
+    tx: &mut sqlx::PgConnection,
+    ids: &[String],
+    message_id: i64,
+    owner: i64,
+) -> Result<Vec<Value>, ApiError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<Row> = sqlx::query_as(&format!(
+        "SELECT {COLUMNS} FROM public.assets
+         WHERE external_id = ANY($1) AND message_id=$2 AND owner_id=$3 AND purpose='attachment'
+           AND edit_source_id IS NULL AND deleted_at IS NULL
+         FOR UPDATE"
+    ))
+    .bind(ids)
+    .bind(message_id)
+    .bind(owner)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| crate::chat::unavailable())?;
+    ids.iter()
+        .map(|id| rows.iter().find(|row| row.external_id == *id).map(describe))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(no_longer_editable)
+}
+
+/// Where a replacement goes when an edit changes a message's files.
+pub(crate) enum Placement<'a> {
+    /// A new upload, rendered from `source` (the slot's first-sent file) as
+    /// `edit` describes.
+    Upload {
+        id: &'a str,
+        position: i16,
+        source: &'a str,
+        edit: Value,
+    },
+    /// The slot's first-sent file again.
+    Restore { id: &'a str, position: i16 },
+}
+
+/// Records an edit's file changes beside its revision. Replaced files keep
+/// their `message_id`, so they are never purged, still count toward their
+/// author's storage and can't be cancelled; `retired_at` takes them off the
+/// message for everyone but the author.
+pub(crate) async fn replace_files(
+    tx: &mut sqlx::PgConnection,
+    message_id: i64,
+    retired: &[String],
+    placements: &[Placement<'_>],
+) -> Result<(), ApiError> {
+    let failed = |_| crate::chat::unavailable();
+    sqlx::query(
+        "UPDATE public.assets SET retired_at=now()
+         WHERE message_id=$1 AND external_id=ANY($2) AND retired_at IS NULL",
+    )
+    .bind(message_id)
+    .bind(retired)
+    .execute(&mut *tx)
+    .await
+    .map_err(failed)?;
+    for placement in placements {
+        let updated = match placement {
+            Placement::Upload {
+                id,
+                position,
+                source,
+                edit,
+            } => sqlx::query(
+                "UPDATE public.assets a SET message_id=$1, position=$3, edit_source_id=s.id, edit=$5
+                 FROM public.assets s WHERE a.external_id=$2 AND s.external_id=$4 AND s.message_id=$1",
+            )
+            .bind(message_id)
+            .bind(id)
+            .bind(position)
+            .bind(source)
+            .bind(edit),
+            Placement::Restore { id, position } => sqlx::query(
+                "UPDATE public.assets SET retired_at=NULL, position=$3
+                 WHERE message_id=$1 AND external_id=$2",
+            )
+            .bind(message_id)
+            .bind(id)
+            .bind(position),
+        }
+        .execute(&mut *tx)
+        .await
+        .map_err(failed)?;
+        if updated.rows_affected() != 1 {
+            return Err(no_longer_editable());
+        }
+    }
+    Ok(())
+}
+
+/// Shown in place of a file an edit replaced. It keeps the slot (clients check
+/// file counts) and its kind, but not its name, size or URL.
+const REPLACED_NAME: &str = "Replaced file";
+
+fn replaced(file: &Map<String, Value>) -> Value {
+    let text = |name: &str, fallback: &str| {
+        file.get(name)
+            .filter(|value| value.is_string())
+            .cloned()
+            .unwrap_or_else(|| json!(fallback))
+    };
+    json!({
+        "id": file.get("id"),
+        "kind": text("kind", "file"),
+        "contentType": text("contentType", "application/octet-stream"),
+        "name": REPLACED_NAME,
+        "size": 0,
+        "unavailable": true,
+    })
+}
+
+/// Replaces the files `hidden` names with placeholders in messages, message
+/// versions (`{content: …}`) or events carrying a message, including a
+/// forward's snapshot of its source.
+pub(crate) fn conceal(payloads: &mut [Value], hidden: impl Fn(&str) -> bool) {
+    for payload in payloads {
+        for pointer in attachment_pointers(payload) {
+            let Some(files) = payload.pointer_mut(pointer).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for file in files.iter_mut() {
+                if let Some(object) = file.as_object()
+                    && object
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .is_some_and(&hidden)
+                {
+                    *file = replaced(object);
+                }
+            }
+        }
+    }
+}
+
+fn attachment_ids(payloads: &[Value]) -> Vec<String> {
+    payloads
+        .iter()
+        .flat_map(|payload| {
+            attachment_pointers(payload)
+                .iter()
+                .filter_map(|pointer| payload.pointer(pointer))
+        })
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(|file| file["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Replayed and published events are stored as they were sent. Files an edit
+/// has since replaced become placeholders for every viewer (one indexed query
+/// per batch); that edit's own event then delivers the current files.
+pub(crate) async fn conceal_retired<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    payloads: &mut [Value],
+) -> Result<(), sqlx::Error> {
+    let ids = attachment_ids(payloads);
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let retired: Vec<String> = sqlx::query_scalar(
+        "SELECT external_id FROM public.assets WHERE external_id = ANY($1) AND retired_at IS NOT NULL",
+    )
+    .bind(&ids)
+    .fetch_all(executor)
+    .await?;
+    if !retired.is_empty() {
+        conceal(payloads, |id| retired.iter().any(|r| r == id));
+    }
+    Ok(())
+}
+
+#[derive(sqlx::FromRow)]
+struct SourceRow {
+    attachment_id: String,
+    edit: Option<Value>,
+    #[sqlx(flatten)]
+    source: Row,
+}
+
+/// For the author's editor: each photo or video the message shows, with the
+/// first-sent file an edit starts from (signed) and the edit the shown file
+/// already has, in `shown` order.
+pub(crate) async fn edit_sources(
+    pool: &PgPool,
+    message_id: i64,
+    shown: &[&str],
+    signer: Option<&CdnSigner>,
+) -> Result<Vec<Value>, ApiError> {
+    let columns: Vec<String> = COLUMNS.split(',').map(|c| format!("s.{c}")).collect();
+    let rows: Vec<SourceRow> = sqlx::query_as(&format!(
+        "SELECT a.external_id AS attachment_id, a.edit, {}
+         FROM public.assets a JOIN public.assets s ON s.id=COALESCE(a.edit_source_id, a.id)
+         WHERE a.message_id=$1 AND a.retired_at IS NULL AND a.deleted_at IS NULL
+           AND s.deleted_at IS NULL AND a.kind IN ('image','video')",
+        columns.join(",")
+    ))
+    .bind(message_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| crate::chat::unavailable())?;
+    let now = Utc::now().timestamp();
+    Ok(shown
+        .iter()
+        .filter_map(|id| rows.iter().find(|row| row.attachment_id == *id))
+        .map(|row| {
+            let mut source = describe(&row.source);
+            if let (Some(signer), Some(object)) = (signer, source.as_object_mut()) {
+                sign_one(object, signer, now);
+            }
+            json!({"attachmentId": row.attachment_id, "source": source, "edit": row.edit})
+        })
+        .collect())
+}
+
 /// Marks history attachments whose files were deleted, so clients show a
 /// placeholder instead of a broken link before the objects are purged.
 pub(crate) async fn mark_deleted(pool: &PgPool, messages: &mut [Value]) -> Result<(), ApiError> {
@@ -1426,6 +1688,11 @@ pub(crate) async fn notification_content(
     messages: &mut [Value],
 ) -> Result<(), ApiError> {
     mark_deleted(pool, messages).await?;
+    // A message itself never shows a replaced file, but a forward's stored
+    // snapshot can until the publisher projects its source's edit.
+    conceal_retired(pool, messages)
+        .await
+        .map_err(database_error)?;
     let ids: Vec<String> = messages
         .iter()
         .flat_map(|message| {

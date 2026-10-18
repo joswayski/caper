@@ -316,17 +316,27 @@ async fn catch_up(
             write(socket, json!({"type":"resync_required"})).await?;
             return Err(());
         }
-        for (seq, payload, avatar_id, name) in rows {
+        let (seqs, mut payloads): (Vec<i64>, Vec<Value>) = rows
+            .into_iter()
+            .map(|(seq, payload, avatar_id, name)| {
+                (
+                    seq,
+                    crate::chat::enrich_author(payload, avatar_id, name.as_deref()),
+                )
+            })
+            .unzip();
+        // Stored events still name files a later edit replaced.
+        crate::assets::conceal_retired(&state.chat.pool, &mut payloads)
+            .await
+            .map_err(|_| ())?;
+        for (seq, payload) in seqs.into_iter().zip(payloads) {
             if seq != *after + 1 {
                 write(socket, json!({"type":"resync_required"})).await?;
                 return Err(());
             }
             write(
                 socket,
-                crate::assets::sign_attachments(
-                    crate::chat::enrich_author(payload, avatar_id, name.as_deref()),
-                    state.chat.cdn.as_deref(),
-                ),
+                crate::assets::sign_attachments(payload, state.chat.cdn.as_deref()),
             )
             .await?;
             *after = seq;
