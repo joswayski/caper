@@ -2153,6 +2153,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     ReactionMessageRow(
                         message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                         openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
+                        openPicker = { pickerTarget = it },
                         openMention = { mentionTarget = mentionCard(it.id, it.username, state) },
                         openAuthor = { mentionTarget = authorCard(it, state) },
                         openActions = { actionTarget = it },
@@ -2455,6 +2456,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     retryReaction: (String, String) -> Unit,
     dismissReactionError: (String, String) -> Unit,
     openReactors: (ChatMessage, String) -> Unit,
+    openPicker: (ChatMessage) -> Unit = {},
     retryPin: (String) -> Unit = {},
     dismissPinError: (String) -> Unit = {},
     openConversation: (ChatMessage) -> Unit = {},
@@ -2516,6 +2518,11 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
                     toggle = { setReaction(message.id, reaction.emoji, !selected) },
                     showReactors = { openReactors(message, reaction.emoji) },
                 )
+            }
+            if (message.reactions.isNotEmpty() && canReact) {
+                IconButton({ openPicker(message) }, modifier = Modifier.size(48.dp)) {
+                    Icon(painterResource(R.drawable.lucide_smile), "Add reaction", Modifier.size(18.dp), tint = TextMuted)
+                }
             }
         }
         saves.filter { it.error != null }.forEach { save ->
@@ -2659,6 +2666,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             Column(Modifier.clip(MaterialTheme.shapes.small).background(if (message.pin?.author?.id == (state.account?.id ?: state.chatAuthorId)) Terracotta.copy(alpha = 0.12f) else PinGoldWash)) {
                 ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
+                    openPicker = { pickerTarget = it },
                     inPins = true, openMessage = goToMessage,
                     openAuthor = { pinnerTarget = it },
                     openConversation = { target -> viewModel.openForwardedConversation(target, { conversationTarget = target }, close) }, openHistory = { historyTarget = it },

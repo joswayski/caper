@@ -1669,6 +1669,22 @@ export default function Chat({
                     save={reactionSaves[message.id]}
                     onReact={react}
                     onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
+                    pickerOpen={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
+                    onAddReaction={(anchor) => {
+                      preloadReactionPicker();
+                      setActionTarget(
+                        actionTarget?.messageId === message.id && actionTarget.mode === "emoji"
+                          ? undefined
+                          : {
+                              messageId: message.id,
+                              anchor,
+                              anchorRect: anchor.getBoundingClientRect(),
+                              mode: "emoji",
+                              drawer: isTouchLayout(),
+                              inThread,
+                            },
+                      );
+                    }}
                     onDismissError={() =>
                       setReactionSaves((current) => ({
                         ...current,

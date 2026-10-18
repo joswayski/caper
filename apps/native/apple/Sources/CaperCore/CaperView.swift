@@ -3604,7 +3604,12 @@ private struct ChatView: View {
     private func channelRow(_ message: ChatMessage, grouping: MessageGrouping.Layout) -> some View {
         MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactorContext, mentionCards: mentionCards,
                    grouped: grouping.grouped.contains(message.id), continued: grouping.continued.contains(message.id),
-                   requestBlock: { blockTarget = BlockTarget(author: $0) }) {
+                   requestBlock: { blockTarget = BlockTarget(author: $0) },
+                   addReaction: {
+                       guard chat.canInteract, reactorsTarget == nil, !SwipeTapGuard.swiping else { return }
+                       showingEmojiPicker = true
+                       reactionMessage = message
+                   }) {
             // Holding a chip opens who reacted, not message actions; a swipe
             // that paused before moving opens neither.
             guard reactorsTarget == nil, !SwipeTapGuard.swiping else { return }
@@ -4383,7 +4388,11 @@ private struct NativeThreadView: View {
     private func threadRow(_ message: ChatMessage, grouping: MessageGrouping.Layout) -> some View {
         MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactors, mentionCards: mentionCards, inThread: true,
                    grouped: grouping.grouped.contains(message.id), continued: grouping.continued.contains(message.id),
-                   requestBlock: { blockTarget = BlockTarget(author: $0) }) { reactionMessage = message }
+                   requestBlock: { blockTarget = BlockTarget(author: $0) },
+                   addReaction: {
+                       showingEmojiPicker = true
+                       reactionMessage = message
+                   }) { showingEmojiPicker = false; reactionMessage = message }
             .modifier(Entrance.message(arrivals.claim(message.clientMessageId)))
             .onGeometryChange(for: String?.self) { geometry in
                 // A later own or collapsed blocked reply must not hide a read acknowledgement.
@@ -4655,7 +4664,7 @@ private struct NativeThreadView: View {
             #if os(iOS)
             .sheet(item: $forwardMessage) { message in ForwardPickerView(chat: chat, message: message) }
             #endif
-            .onChange(of: reactionMessage?.id) { _, _ in showingEmojiPicker = false }
+            .onChange(of: reactionMessage?.id) { _, id in if id == nil { showingEmojiPicker = false } }
             .onChange(of: chat.editingContext) { _, _ in reactionMessage = nil; reactorsTarget = nil; forwardMessage = nil }
             .modifier(BlockConfirmation(target: $blockTarget) { await chat.block($0) })
             #if os(iOS)
@@ -4795,6 +4804,8 @@ private struct MessageRow: View {
     var forwardOpened: (() -> Void)? = nil
     /// Pins opt in; child links and controls keep their own interactions.
     var openMessage: (() -> Void)? = nil
+    /// The row shortcut bypasses iOS's long-press message actions.
+    let addReaction: () -> Void
     let showReactionPicker: () -> Void
     private var canBlockAuthor: Bool {
         requestBlock != nil && BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
@@ -4903,7 +4914,7 @@ private struct MessageRow: View {
                     guard !SwipeTapGuard.swiping else { return }
                     Task { if await chat.onOpenForward?(message) == true { forwardOpened?() } }
                 }
-                ReactionRow(message: message, chat: chat, reactors: reactors)
+                ReactionRow(message: message, chat: chat, reactors: reactors, showReactionPicker: addReaction)
                 if let error = chat.pinErrors[message.id] {
                     HStack(spacing: 8) {
                         Text(error)
@@ -5846,11 +5857,29 @@ private struct ReactionRow: View {
     let message: ChatMessage
     @Bindable var chat: ChatModel
     let reactors: ReactorContext
+    let showReactionPicker: () -> Void
 
     var body: some View {
         ReactionFlowLayout(spacing: 6) {
             ForEach(message.reactions ?? []) { reaction in
                 ReactionChip(message: message, reaction: reaction, chat: chat, reactors: reactors)
+            }
+            if !(message.reactions ?? []).isEmpty && chat.canInteract {
+                Button {
+                    guard !SwipeTapGuard.swiping else { return }
+                    showReactionPicker()
+                } label: {
+                    CaperIcon(name: "smile-plus", size: 18)
+                        .foregroundStyle(CaperTheme.muted)
+                        .frame(width: 28, height: 28)
+                        #if os(iOS)
+                        .frame(minWidth: 44, minHeight: 44)
+                        #endif
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).modifier(ControlHover())
+                .help("Add reaction").accessibilityLabel("Add reaction")
+                .accessibilityIdentifier("reaction-row-add-\(message.id)")
             }
         }
         // Preserve individual reaction-chip identifiers inside the flow layout.
@@ -6501,7 +6530,10 @@ private struct PinnedMessagesView: View {
                                 MessageRow(message: message, chat: chat, currentUserID: viewerID,
                                     reactors: ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { id, emoji in reactorsTarget = ReactorsTarget(messageID: id, emoji: emoji) },
                                     mentionCards: mentionCards, inThread: true, inPins: true, forwardOpened: close,
-                                    openMessage: { goToMessage(message) }) { actionTarget = message }
+                                    openMessage: { goToMessage(message) },
+                                    addReaction: { showingEmojiPicker = true; actionTarget = message }) {
+                                        showingEmojiPicker = false; actionTarget = message
+                                    }
                                 HStack {
                                     Spacer()
                                     Button { goToMessage(message) } label: {

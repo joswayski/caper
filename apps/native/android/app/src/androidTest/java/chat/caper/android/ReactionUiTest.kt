@@ -39,16 +39,19 @@ class ReactionUiTest {
             listOf(MessageReaction("👍", listOf("other"))), "2",
         )
         val enabled = mutableStateOf(false)
+        val showReactions = mutableStateOf(true)
         var jumps = 0
         var actions = 0
         var profiles = 0
         var reactions = 0
+        var pickers = 0
         compose.setContent {
             CaperTheme {
-                ReactionMessageRow(message, AppUiState(chatAuthorId = "self",
+                ReactionMessageRow(message.copy(reactions = if (showReactions.value) message.reactions else emptyList()), AppUiState(chatAuthorId = "self",
                     selectedChannel = Channel("channel00001", "space0000001", "general", private = false, joined = true)),
                     { _, _, _ -> reactions++ }, { _, _ -> }, { _, _ -> },
                     openReactors = { _, _ -> }, openAuthor = { profiles++ },
+                    openPicker = { pickers++ },
                     openMessage = if (enabled.value) ({ jumps++ }) else null,
                     openActions = { actions++ })
             }
@@ -60,12 +63,16 @@ class ReactionUiTest {
         compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
         compose.onNodeWithText("Fixture Author").performTouchInput { click() }
         compose.onNodeWithContentDescription("👍 reaction, 1").performTouchInput { click() }
+        compose.onNodeWithContentDescription("Add reaction").performClick()
         compose.runOnIdle {
             assertEquals(1, jumps)
             assertEquals(1, actions)
             assertEquals(1, profiles)
             assertEquals(1, reactions)
+            assertEquals(1, pickers)
+            showReactions.value = false
         }
+        compose.onNodeWithContentDescription("Add reaction").assertDoesNotExist()
     }
 
     @Test fun longPressQuickReactionsClipboardAndRestrictions() {
@@ -89,7 +96,7 @@ class ReactionUiTest {
                         Text("Reaction UI test fixture")
                         ReactionMessageRow(message, state.value,
                             { id, emoji, active -> submitted = Triple(id, emoji, active) }, { _, _ -> }, { _, _ -> },
-                            openReactors = { _, _ -> }) { target.value = it }
+                            openReactors = { _, _ -> }, openPicker = { picker.value = true }) { target.value = it }
                     }
                 }
                 target.value?.let {
@@ -113,7 +120,7 @@ class ReactionUiTest {
         compose.onNodeWithContentDescription("React with 👍").assertIsSelected().performClick()
         compose.runOnIdle { assertEquals(Triple(message.id, "👍", false), submitted) }
 
-        compose.onNodeWithText(message.content.text).performTouchInput { longClick() }
+        // The row shortcut opens the same full picker without holding the message.
         compose.onNodeWithContentDescription("Add reaction").performClick()
         compose.onNodeWithContentDescription("Smileys & people").assertIsSelected()
         compose.onNodeWithContentDescription("grinning-face").assertIsDisplayed()
@@ -154,6 +161,7 @@ class ReactionUiTest {
         // Public previews retain readable reaction ownership, but only expose copy actions.
         compose.runOnIdle { state.value = state.value.copy(selectedChannel = joined.copy(joined = false)) }
         compose.onNodeWithContentDescription("👍 reaction, 2").assertIsSelected().assertHasNoClickAction()
+        compose.onNodeWithContentDescription("Add reaction").assertDoesNotExist()
         compose.onNodeWithText("2").assertIsDisplayed()
         compose.onNodeWithText("Retry").assertIsNotEnabled()
         compose.onNodeWithText("Dismiss").assertIsEnabled()
