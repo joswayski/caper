@@ -21079,6 +21079,7 @@ impl CaperApp {
                                                             .margin(egui::Margin::symmetric(8, 4))
                                                             .hint_text(RichText::new("Username").color(MUTED.gamma_multiply(0.65))),
                                                     );
+                                                    *value = normalize_username(value);
                                                     focus_frame(ui, &field);
                                                     field
                                                 });
@@ -21094,7 +21095,7 @@ impl CaperApp {
                                                     if self.loading { "Opening…" } else { "Open conversation" },
                                                     PRIMARY_TONE,
                                                     !self.loading,
-                                                    !self.loading && !self.member_username.trim().is_empty(),
+                                                    !self.loading && self.member_username.len() >= 3,
                                                 );
                                                 if cancel.clicked() { close = true; }
                                                 if open.clicked()

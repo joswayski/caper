@@ -8023,7 +8023,7 @@ private struct NewDirectMessageSheet: View {
             SheetHeader(title: "New direct message", detail: "Enter an account’s exact username.", closeDisabled: pending, close: close)
             let choices = suggestions.choices(text: username, candidates: candidates, focused: usernameFocused && !pending)
             VStack(alignment: .leading, spacing: 6) {
-                TextField("Exact username", text: Binding(get: { username }, set: { if !pending { username = $0 } })).textFieldStyle(.roundedBorder)
+                TextField("Exact username", text: Binding(get: { username }, set: { if !pending { username = ProfileValidation.normalizeUsername($0) } })).textFieldStyle(.roundedBorder)
                     #if os(iOS)
                     .textInputAutocapitalization(.never)
                     #endif
@@ -8053,9 +8053,9 @@ private struct NewDirectMessageSheet: View {
                 Button(action: start) {
                     Text("Start conversation").hidden().overlay { Text(pending ? "Opening…" : "Start conversation") }
                 }
-                // The primary action, as on the other clients: neutral until a username is entered.
+                // The primary action stays neutral until a valid username is entered.
                 .buttonStyle(CaperPrimaryButton()).frame(width: 180)
-                .disabled(pending || username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(pending || username.count < 3)
                 .accessibilityLabel(pending ? "Opening…" : "Start conversation")
                 .accessibilityIdentifier("dm-create-submit")
             }
@@ -8076,7 +8076,7 @@ private struct NewDirectMessageSheet: View {
         suggestions.close(for: username)
     }
     private func start() {
-        guard !pending else { return }
+        guard !pending, username.count >= 3 else { return }
         let submitted = username
         pending = true; error = nil
         Task {

@@ -951,6 +951,10 @@ public enum Sequence: Error, Equatable {
 }
 
 public enum ProfileValidation {
+    public static func normalizeUsername(_ value: String) -> String {
+        String(value.lowercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }.prefix(32))
+    }
+
     public static func error(username: String, displayName: String) -> String? {
         let username = username.trimmingCharacters(in: .whitespacesAndNewlines)
         if !(3...32).contains(username.utf8.count) || !username.utf8.allSatisfy({
