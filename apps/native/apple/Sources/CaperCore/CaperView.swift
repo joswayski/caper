@@ -7009,13 +7009,24 @@ private struct ProfileView: View {
 public struct DesktopUpdateControls {
     public let isChecking: Bool
     public let canApply: Bool
+    public let lastSuccessfulCheck: Date?
+    public let installedVersion: String
+    public let sourceRevision: String?
+    public var commitURL: URL? {
+        sourceRevision.flatMap { WhatsNewSnapshot.validRevision($0) ? URL(string: "https://github.com/joswayski/caper/commit/\($0)") : nil }
+    }
     public let check: (@MainActor () -> Void)?
     public let review: (@MainActor () -> Void)?
 
     public init(isChecking: Bool = false, canApply: Bool = false,
+                lastSuccessfulCheck: Date? = nil, installedVersion: String = "Installed: Development build",
+                sourceRevision: String? = nil,
                 check: (@MainActor () -> Void)? = nil, review: (@MainActor () -> Void)? = nil) {
         self.isChecking = isChecking
         self.canApply = canApply
+        self.lastSuccessfulCheck = lastSuccessfulCheck
+        self.installedVersion = installedVersion
+        self.sourceRevision = sourceRevision
         self.check = check
         self.review = review
     }
@@ -7078,7 +7089,20 @@ extension EnvironmentValues {
                 Rectangle().fill(CaperTheme.border).frame(height: 1)
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Updates").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                    Button(updates.isChecking ? "Checking…" : "Check for updates") { updates.check?() }
+                    HStack(spacing: 4) {
+                        Text(updates.installedVersion).foregroundStyle(CaperTheme.muted)
+                        if let revision = updates.sourceRevision, let url = updates.commitURL {
+                            Text("·").foregroundStyle(CaperTheme.muted)
+                            Link(String(revision.prefix(7)), destination: url)
+                        }
+                    }.font(CaperTheme.font(12))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(updates.isChecking ? "Checking for updates…" : updates.review != nil ? "An update is available." : updates.lastSuccessfulCheck != nil ? "Caper is up to date." : "Not checked yet.")
+                        TimelineView(.periodic(from: .now, by: 10)) { context in
+                            Text(lastCheckedText(now: context.date))
+                        }
+                    }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    Button("Check for updates") { updates.check?() }
                         .disabled(updates.check == nil || updates.isChecking)
                         .accessibilityIdentifier("check-for-updates")
                     Text(updates.check == nil
@@ -7102,6 +7126,14 @@ extension EnvironmentValues {
             WhatsNewSheet(notes: notes, display: notes.presentation ?? display)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in loginItem.refresh() }
+    }
+
+    private func lastCheckedText(now: Date) -> String {
+        guard let date = updates.lastSuccessfulCheck else { return "Last checked: Never" }
+        if now.timeIntervalSince(date) < 10 { return "Last checked: a few seconds ago" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return "Last checked: \(formatter.localizedString(for: date, relativeTo: now))"
     }
 }
 #endif

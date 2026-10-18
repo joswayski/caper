@@ -783,6 +783,31 @@ public final class AppModel {
         }
     }
 
+    /// Whether `sendUpdateReport` can post: signed in with a username.
+    public var canSendUpdateReport: Bool { account?.username != nil }
+
+    /// Posts a failed update's error as `@feedback` in the account's notes, where
+    /// the Caper team can read it and reply. Never navigates. Returns a message
+    /// to show on failure, or nil once the message is sent.
+    public func sendUpdateReport(error report: String, installed: String, target: String) async -> String? {
+        guard let account, let username = account.username else { return "Sign in to send this to the Caper team." }
+        do {
+            let conversation: DirectMessageConversation
+            if let known = directMessages.first(where: { $0.peer.id == account.id }) { conversation = known }
+            else { conversation = try await api.createDirectMessage(username: username) }
+            guard conversation.peer.id == account.id else { return "Couldn’t open your notes. Try again." }
+            replaceDirectMessage(conversation)
+            let session = try await api.chatSession(name: account.displayName ?? "")
+            let text = "@feedback My Caper update didn’t finish.\n\n\(report)\n\n\(installed) → Caper \(target) on macOS"
+            let message = try await api.send(channelID: conversation.id, sessionToken: session.token,
+                                             clientMessageID: UUID().uuidString.lowercased(), text: text)
+            chat.receiveProfileMessage(message)
+            return nil
+        } catch {
+            return FriendlyError.message(for: error)
+        }
+    }
+
     /// Opens the account's notes conversation, creating it through the normal DM
     /// endpoint only when the server has not returned one yet.
     public func openSelfDirectMessage() async {

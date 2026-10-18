@@ -2453,6 +2453,7 @@ final class APIClientTests: XCTestCase {
         draft.text = "Don't lose this"
         for code in ["dm_not_accepted", "dm_blocked"] {
             MockURLProtocol.handler = { request in
+                // Selecting the retained channel reads its unread entry snapshot, independently of Send.
                 if request.httpMethod == "GET", request.url?.path == "/api/spaces/unread" {
                     return (200, Data(#"{"spaces":[],"feedbackWaiting":0}"#.utf8))
                 }
@@ -2502,7 +2503,8 @@ final class APIClientTests: XCTestCase {
             model.directMessages = loaded ? [incoming] : []
             MockURLProtocol.handler = { request in
                 XCTAssertEqual(request.httpMethod, "GET", "must not create, accept, upload or send")
-                if request.httpMethod == "GET", request.url?.path == "/api/spaces/unread" {
+                // The retained channel's unread snapshot is also read-only; no writes are permitted.
+                if request.url?.path == "/api/spaces/unread" {
                     return (200, Data(#"{"spaces":[],"feedbackWaiting":0}"#.utf8))
                 }
                 XCTAssertEqual(request.url?.path, "/api/dms")

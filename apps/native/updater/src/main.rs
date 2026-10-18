@@ -62,7 +62,12 @@ fn run(args: &[OsString]) -> Result<()> {
     };
     let options = Options::parse(&args[1..])?;
     match command {
-        "check" => check(&options),
+        "check" => match check(&options) {
+            Err(error) if error.is::<RateLimited>() => {
+                print_json(&serde_json::json!({"update": false, "deferred": true}))
+            }
+            result => result,
+        },
         "apply" => apply(&options, args),
         "sign" => sign(&options),
         "public-key" => public_key(&options),
@@ -148,6 +153,13 @@ struct CheckResult<'a> {
     /// version number.
     #[serde(skip_serializing_if = "Option::is_none")]
     released: Option<&'a str>,
+    /// The update's source commit, so the app can link its version to GitHub.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revision: Option<&'a str>,
+    /// The update's highlights snapshot sequence. Installing from the review
+    /// marks it read, so the new build does not show the same highlights again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sequence: Option<u64>,
     /// False when the install cannot be replaced without admin rights, for
     /// example a Linux .deb under /usr; the app offers a download link instead.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -167,6 +179,8 @@ fn check(options: &Options) -> Result<()> {
             history_complete: None,
             highlights: None,
             released: None,
+            revision: None,
+            sequence: None,
             can_apply: None,
         });
     };
@@ -199,6 +213,7 @@ fn check(options: &Options) -> Result<()> {
                 complete: false,
                 items: None,
                 released: None,
+                sequence: None,
             })
         })
     } else {
@@ -236,6 +251,10 @@ fn check(options: &Options) -> Result<()> {
             released: highlights
                 .as_ref()
                 .and_then(|highlights| highlights.released.as_deref()),
+            revision: Some(&manifest.commit),
+            sequence: highlights
+                .as_ref()
+                .and_then(|highlights| highlights.sequence),
             can_apply,
         }),
         None => print_json(&CheckResult {
@@ -248,6 +267,8 @@ fn check(options: &Options) -> Result<()> {
             history_complete: None,
             highlights: None,
             released: None,
+            revision: None,
+            sequence: None,
             can_apply: None,
         }),
     }
@@ -503,6 +524,8 @@ struct ReleaseHighlights {
     /// `None` when the highlights could not be read.
     items: Option<Vec<Highlight>>,
     released: Option<String>,
+    /// The target snapshot's sequence.
+    sequence: Option<u64>,
 }
 
 fn release_highlights_from(
@@ -615,6 +638,7 @@ fn release_highlights_from(
         complete,
         items: Some(items),
         released,
+        sequence: Some(target.sequence),
     })
 }
 
@@ -650,11 +674,20 @@ fn fetch_manifest_from(
 }
 
 fn fetch_limited(client: &reqwest::blocking::Client, url: &str, limit: u64) -> Result<Vec<u8>> {
-    let response = client
-        .get(url)
-        .timeout(Duration::from_secs(15))
-        .send()?
-        .error_for_status()?;
+    let response = client.get(url).timeout(Duration::from_secs(15)).send()?;
+    // GitHub uses 403 for some throttles, but a plain forbidden response is
+    // still an error. Never hide authentication or signature failures.
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (response.status() == reqwest::StatusCode::FORBIDDEN
+            && (response.headers().contains_key("retry-after")
+                || response
+                    .headers()
+                    .get("x-ratelimit-remaining")
+                    .is_some_and(|value| value == "0")))
+    {
+        return Err(Box::new(RateLimited));
+    }
+    let response = response.error_for_status()?;
     let mut bytes = Vec::new();
     response.take(limit + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > limit {
@@ -662,6 +695,17 @@ fn fetch_limited(client: &reqwest::blocking::Client, url: &str, limit: u64) -> R
     }
     Ok(bytes)
 }
+
+#[derive(Debug)]
+struct RateLimited;
+
+impl std::fmt::Display for RateLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("update check deferred by rate limiting")
+    }
+}
+
+impl std::error::Error for RateLimited {}
 
 fn download(url: &str, size: u64, target: &Path) -> Result<()> {
     if size > MAX_ARCHIVE_BYTES {
@@ -905,6 +949,7 @@ mod tests {
                 complete: false,
                 items: Some(Vec::new()),
                 released: None,
+                sequence: Some(4),
             }
         );
         server.join().unwrap();
@@ -968,6 +1013,39 @@ mod tests {
             ]
         );
         assert_eq!(result.released.as_deref(), Some("2026-10-14"));
+        assert_eq!(result.sequence, Some(3));
+    }
+
+    #[test]
+    fn only_confirmed_http_throttles_defer_checks() {
+        let client = reqwest::blocking::Client::new();
+        for (status, headers, deferred) in [
+            (429, "", true),
+            (403, "Retry-After: 120\r\n", true),
+            (403, "X-RateLimit-Remaining: 0\r\n", true),
+            (403, "X-RateLimit-Remaining: 10\r\n", false),
+            (403, "", false),
+            (500, "Retry-After: 120\r\n", false),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                write!(stream, "HTTP/1.1 {status} Test\r\n{headers}Content-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            });
+            let error = fetch_limited(&client, &url, 1024).unwrap_err();
+            assert_eq!(error.is::<RateLimited>(), deferred, "{status} {headers}");
+            server.join().unwrap();
+        }
     }
 
     #[test]
@@ -990,6 +1068,7 @@ mod tests {
         for (status, cached, fallback) in [
             (200, valid, false),
             (502, b"unavailable".to_vec(), true),
+            (429, b"rate limited".to_vec(), true),
             (200, b"{}".to_vec(), true),
             (200, mixed, true),
             (200, oversized, true),

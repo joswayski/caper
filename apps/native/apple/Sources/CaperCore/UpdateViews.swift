@@ -26,13 +26,26 @@ public struct DesktopUpdate: Equatable, Sendable {
     public let highlights: [Highlight]?
     /// The newest highlighted release's date (YYYY-MM-DD).
     public let released: String?
+    /// The update's source commit, linked from its version.
+    public let revision: String?
+    /// The update's highlights sequence, marked read when it is installed.
+    public let sequence: Int64?
 
     public init(version: String, notes: String, changelog: [ChangelogEntry],
                 historyComplete: Bool, canApply: Bool, lastError: String?,
-                highlights: [Highlight]? = nil, released: String? = nil) {
+                highlights: [Highlight]? = nil, released: String? = nil,
+                revision: String? = nil, sequence: Int64? = nil) {
         self.version = version; self.notes = notes; self.changelog = changelog
         self.historyComplete = historyComplete; self.canApply = canApply; self.lastError = lastError
         self.highlights = highlights; self.released = released
+        self.revision = revision; self.sequence = sequence
+    }
+
+    /// This version's commit on GitHub, only for a full source SHA.
+    public var commitURL: URL? {
+        guard let revision, revision.count == 40,
+              revision.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else { return nil }
+        return URL(string: "https://github.com/joswayski/caper/commit/\(revision)")
     }
 
     /// People know when they updated, not which build: "October 18, 2026".
@@ -129,12 +142,18 @@ private struct UpdateButtonSweep: View, Animatable {
     public let close: () -> Void
     public let restart: () -> Void
     public let download: () -> Void
+    /// Sends the error to the Caper team; returns a failure message or nil.
+    public let report: ((String) async -> String?)?
     @FocusState private var focused: Bool
+    @State private var reportState: ReportState?
+
+    enum ReportState: Equatable { case sending, sent, failed(String) }
 
     public init(update: DesktopUpdate, inCall: Bool, close: @escaping () -> Void,
-                restart: @escaping () -> Void, download: @escaping () -> Void) {
+                restart: @escaping () -> Void, download: @escaping () -> Void,
+                report: ((String) async -> String?)? = nil) {
         self.update = update; self.inCall = inCall; self.close = close
-        self.restart = restart; self.download = download
+        self.restart = restart; self.download = download; self.report = report
     }
 
     public var body: some View {
@@ -148,9 +167,16 @@ private struct UpdateButtonSweep: View, Animatable {
                         UpdateCharacter().frame(width: 40, height: 40).accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 5) {
                             Text("A fresh Caper is ready").font(CaperTheme.font(20, weight: .bold))
-                            if let date = update.releasedLabel {
-                                Text(date).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
-                            }
+                            // "Version 0.1.82 · October 18, 2026"; the version opens its commit.
+                            HStack(spacing: 0) {
+                                if let url = update.commitURL {
+                                    Link("Version \(update.version)", destination: url)
+                                        .help("View this version on GitHub")
+                                } else {
+                                    Text("Version \(update.version)")
+                                }
+                                if let date = update.releasedLabel { Text(" · \(date)") }
+                            }.font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).tint(CaperTheme.muted)
                         }
                         Spacer(minLength: 0)
                         Button(action: close) { CaperIcon(name: "x", size: 18) }
@@ -166,8 +192,35 @@ private struct UpdateButtonSweep: View, Animatable {
                             if let error = update.lastError {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text("The last update didn’t finish").font(CaperTheme.font(14, weight: .bold))
-                                    Text(error).textSelection(.enabled)
-                                }.foregroundStyle(CaperTheme.error)
+                                        .foregroundStyle(CaperTheme.error)
+                                    // The installer link sits in the sentence; no separate footer link.
+                                    // Literals, not a ternary: only a literal Text parses the markdown link.
+                                    Group {
+                                        if update.canApply {
+                                            Text("Try again using the button below, or [use the installer](caper-update:installer).")
+                                        } else {
+                                            Text("Download the installer with the button below.")
+                                        }
+                                    }.tint(CaperTheme.text).foregroundStyle(CaperTheme.muted)
+                                        .environment(\.openURL, OpenURLAction { _ in download(); return .handled })
+                                    Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                                        .textSelection(.enabled)
+                                    if let report {
+                                        // One click posts this error to the Caper team from your notes.
+                                        switch reportState {
+                                        case .sent?:
+                                            Text("Sent. The Caper team will reply in your notes.")
+                                                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                        case .sending?:
+                                            Button("Sending to the Caper team…") {}.buttonStyle(CaperSecondaryButton()).disabled(true)
+                                        case .failed(let message)?:
+                                            Text(message).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                                            reportButton(report, error: error)
+                                        case nil:
+                                            reportButton(report, error: error)
+                                        }
+                                    }
+                                }
                             }
                             if !update.historyComplete {
                                 Text("Earlier release notes aren’t available.")
@@ -204,15 +257,6 @@ private struct UpdateButtonSweep: View, Animatable {
                                action: update.canApply ? restart : download).buttonStyle(CaperPrimaryButton())
                             .accessibilityIdentifier("desktop-update-install")
                     }
-                    if update.canApply {
-                        // A quiet escape hatch, not a second call to action.
-                        Button("Having issues? Download installer instead", action: download)
-                            .buttonStyle(.plain).font(CaperTheme.font(12))
-                            .foregroundStyle(CaperTheme.muted.opacity(0.7))
-                            .onHover { inside in
-                                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-                            }
-                    }
                 }
                 .padding(20).frame(width: min(560, max(0, geometry.size.width - 32)),
                                    height: min(660, max(0, geometry.size.height - 32)))
@@ -245,6 +289,17 @@ private struct UpdateHighlightRow: View {
                 Text(text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).lineSpacing(3)
             }.textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         }.accessibilityElement(children: .combine)
+    }
+}
+
+extension DesktopUpdateReview {
+    fileprivate func reportButton(_ report: @escaping (String) async -> String?, error: String) -> some View {
+        Button("Send this to the Caper team") {
+            reportState = .sending
+            Task { @MainActor in
+                reportState = await report(error).map { .failed($0) } ?? .sent
+            }
+        }.buttonStyle(CaperSecondaryButton()).accessibilityIdentifier("desktop-update-report")
     }
 }
 
