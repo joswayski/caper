@@ -97,11 +97,11 @@ import kotlinx.coroutines.launch
             Button({ working = true; error = null; viewModel.acceptRequest(request) { failed(it) } }, Modifier.heightIn(min = 48.dp), enabled = !working, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Accept") }
             OutlinedButton({ working = true; error = null; viewModel.declineRequest(request, left) { failed(it) } }, Modifier.heightIn(min = 48.dp), enabled = !working,
                 shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) { Text("Decline", color = Text) }
-            TextButton({ confirmBlock = true }, Modifier.heightIn(min = 48.dp), enabled = !working, shape = MaterialTheme.shapes.small) { Text("Block", color = ErrorText) }
+            if (peer.canBlock) TextButton({ confirmBlock = true }, Modifier.heightIn(min = 48.dp), enabled = !working, shape = MaterialTheme.shapes.small) { Text("Block", color = ErrorText) }
         }
         error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
     }
-    if (confirmBlock) BlockConfirmDialog(BlockedAccount(peer.id, peer.username, peer.displayName, peer.avatarId, peer.avatarAsset, peer.avatarUrl), viewModel, { confirmBlock = false }) { left() }
+    if (confirmBlock) BlockConfirmDialog(BlockedAccount(peer.id, peer.username, peer.displayName, peer.avatarId, peer.avatarAsset, peer.avatarUrl, peer.admin, peer.team), viewModel, { confirmBlock = false }) { left() }
 }
 
 /** Replaces the composer in a DM whose peer you blocked. */

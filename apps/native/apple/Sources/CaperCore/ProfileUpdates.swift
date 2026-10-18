@@ -137,13 +137,13 @@ public struct ProfileDirectory: Equatable, Sendable {
 extension Member {
     /// This member's current profile, as a list endpoint returned it.
     var profile: Person {
-        Person(id: id, username: username, displayName: displayName, avatarId: avatarId, avatarAsset: avatarAsset, avatarUrl: avatarUrl)
+        Person(admin: admin, id: id, username: username, displayName: displayName, avatarId: avatarId, avatarAsset: avatarAsset, avatarUrl: avatarUrl)
     }
 }
 
 extension DirectMessagePeer {
     var profile: Person {
-        Person(id: id, username: username, displayName: displayName, avatarId: avatarId, avatarAsset: avatarAsset, avatarUrl: avatarUrl)
+        Person(admin: admin, id: id, username: username, displayName: displayName, avatarId: avatarId, avatarAsset: avatarAsset, avatarUrl: avatarUrl)
     }
 }
 
@@ -180,7 +180,7 @@ extension ChatAuthor {
     func applying(_ person: Person) -> ChatAuthor {
         guard id == person.id, !isGuest else { return self }
         let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
-        return ChatAuthor(id: id, name: person.displayName, isGuest: false, avatarId: person.avatarId ?? avatarId, admin: admin,
+        return ChatAuthor(id: id, name: person.displayName, isGuest: false, avatarId: person.avatarId ?? avatarId, admin: person.admin ?? admin,
                           avatarAsset: picture.asset, avatarUrl: picture.url)
     }
 }
@@ -209,7 +209,7 @@ extension Member {
     func applying(_ person: Person) -> Member {
         guard id == person.id else { return self }
         let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
-        return Member(id: id, username: person.username, displayName: person.displayName, owner: owner, avatarId: person.avatarId ?? avatarId,
+        return Member(admin: person.admin ?? admin, id: id, username: person.username, displayName: person.displayName, owner: owner, avatarId: person.avatarId ?? avatarId,
                       avatarAsset: picture.asset, avatarUrl: picture.url)
     }
 }
@@ -218,7 +218,7 @@ extension Person {
     func applying(_ person: Person) -> Person {
         guard id == person.id else { return self }
         let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
-        return Person(id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId ?? avatarId,
+        return Person(admin: person.admin ?? admin, id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId ?? avatarId,
                       avatarAsset: picture.asset, avatarUrl: picture.url)
     }
 }
@@ -228,7 +228,7 @@ extension DirectMessagePeer {
     func applying(_ person: Person) -> DirectMessagePeer {
         guard id == person.id else { return self }
         let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
-        return DirectMessagePeer(id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId ?? avatarId,
+        return DirectMessagePeer(admin: person.admin ?? admin, id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId ?? avatarId,
                                  team: team, avatarAsset: picture.asset, avatarUrl: picture.url)
     }
 }

@@ -872,7 +872,7 @@ async fn profile_and_space_changes_reach_only_people_who_can_see_them(pool: sqlx
     assert_eq!(
         update,
         json!({"type":"profile.updated","person":{"id":users[0].1,"username":"changer",
-            "displayName":"Renamed","avatarId":317,"avatarAsset":picture,"avatarUrl":signed}})
+            "displayName":"Renamed","avatarId":317,"avatarAsset":picture,"avatarUrl":signed,"admin":false}})
     );
     crate::profiles::publish_space(&state, space).await.unwrap();
     let space_update = next(&mut watcher, "event", Some("profiles")).await["event"].clone();

@@ -52,7 +52,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class DirectPeer(
     val id: String, val username: String, val displayName: String, val avatarId: Int? = null, val team: Boolean = false,
     val avatarAsset: String? = null, val avatarUrl: String? = null,
-)
+    val admin: Boolean = false,
+) { val canBlock: Boolean get() = !admin && !team }
 /**
  * A DM. [status] is `accepted`, `outgoing` (you asked, they haven't accepted) or
  * `incoming` (a message request to you); old servers omit it, which means
@@ -72,7 +73,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class BlockedAccount(
     val id: String, val username: String, val displayName: String, val avatarId: Int? = null,
     val avatarAsset: String? = null, val avatarUrl: String? = null,
-)
+    val admin: Boolean = false, val team: Boolean = false,
+) { val canBlock: Boolean get() = !admin && !team }
 @Serializable data class BlockList(val blocks: List<BlockedAccount>)
 /** `GET/PUT /api/account/privacy`: `anyone`, `spaces` or `nobody`. */
 @Serializable data class DirectPrivacy(val directMessages: String)
@@ -81,6 +83,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class Person(
     val id: String, val username: String, val displayName: String, val avatarId: Int? = null,
     val avatarAsset: String? = null, val avatarUrl: String? = null,
+    val admin: Boolean = false,
 )
 @Serializable data class PeopleList(val people: List<Person>)
 @Serializable data class PushConfig(val platforms: List<String>)
@@ -140,6 +143,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class Member(
     val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null,
     val avatarAsset: String? = null, val avatarUrl: String? = null,
+    val admin: Boolean = false,
 )
 @Serializable data class SpaceDetail(
     val space: Space,

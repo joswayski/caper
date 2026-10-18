@@ -906,6 +906,7 @@ mod tests {
 
     fn known(id: &str, username: &str) -> KnownPerson {
         KnownPerson {
+            admin: false,
             id: id.into(),
             username: username.into(),
             display_name: username.to_uppercase(),
@@ -917,6 +918,7 @@ mod tests {
 
     fn member(id: &str, username: &str) -> Member {
         Member {
+            admin: false,
             id: id.into(),
             avatar_id: Some(5),
             avatar_asset: None,
@@ -1123,6 +1125,7 @@ mod tests {
     #[test]
     fn profiles_resolve_members_then_people_then_dm_peers_then_unknown() {
         let member = |id: &str, username: &str, display_name: &str| Member {
+            admin: false,
             id: id.into(),
             avatar_id: Some(3),
             avatar_asset: None,
@@ -1132,6 +1135,7 @@ mod tests {
             owner: false,
         };
         let known = |id: &str, username: &str, display_name: &str| KnownPerson {
+            admin: false,
             id: id.into(),
             username: username.into(),
             display_name: display_name.into(),
@@ -1142,6 +1146,7 @@ mod tests {
         let direct = |id: &str, username: &str, display_name: &str| DirectConversation {
             id: format!("dm-{id}"),
             peer: crate::model::DirectPeer {
+                admin: false,
                 id: id.into(),
                 username: username.into(),
                 display_name: display_name.into(),
@@ -1214,6 +1219,7 @@ mod tests {
     #[test]
     fn suggestions_and_profile_cards_carry_custom_pictures() {
         let member = Member {
+            admin: false,
             id: "u1".into(),
             avatar_id: Some(3),
             avatar_asset: Some("member-picture".into()),
@@ -1225,6 +1231,7 @@ mod tests {
         let direct = DirectConversation {
             id: "dm".into(),
             peer: crate::model::DirectPeer {
+                admin: false,
                 id: "u2".into(),
                 username: "sam".into(),
                 display_name: "Sam".into(),
@@ -1265,6 +1272,7 @@ mod tests {
         };
         let members = [
             Member {
+                admin: false,
                 id: "writer".into(),
                 username: "wrong_person".into(),
                 display_name: "Same Name".into(),
@@ -1274,6 +1282,7 @@ mod tests {
                 owner: false,
             },
             Member {
+                admin: false,
                 id: "pinner".into(),
                 username: "renamed_pinner".into(),
                 display_name: "Current Name".into(),

@@ -77,6 +77,7 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
   const [composerState, setComposerState] = useState({ picking: false, sending: false });
   const canMessage = !person.self && !blocked && !!onMessage && !!person.username;
   const canInvite = !person.self && !blocked && !!person.username && spaces.length > 0;
+  const canBlock = !!onBlock && (blocked || (!person.admin && !person.team));
   const returnFocus = useRef(anchor);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const nodeId = useFloatingNodeId();
@@ -170,13 +171,13 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
             {person.displayName && person.username && <span>@{person.username}</span>}
           </div>
           <div className="chat-profile-header-actions">
-            {!person.self && (onBlock || canInvite) && (
+            {!person.self && (canBlock || canInvite) && (
               <ProfileMenu
                 disabled={!!pending || composerState.sending}
                 label={pending === "unblock" ? "Unblocking…" : blocked ? "Unblock" : "Block"}
                 onInvite={canInvite ? () => setChoosingSpace(!choosingSpace) : undefined}
                 onAction={
-                  onBlock
+                  canBlock && onBlock
                     ? () => {
                         if (blocked) void unblockPerson();
                         else
@@ -187,6 +188,7 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
                             avatarAsset: person.avatarAsset,
                             avatarUrl: person.avatarUrl,
                             isGuest: false,
+                            admin: person.admin,
                           });
                       }
                     : undefined
