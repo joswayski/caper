@@ -12240,7 +12240,7 @@ impl CaperApp {
                 .is_some_and(|detail| !detail.members.is_empty())
     }
 
-    /// Join channel for a preview, or Block for a 1:1 DM.
+    /// Join channel for a preview, or return from a visit.
     fn header_channel_actions(&mut self, ui: &mut egui::Ui) {
         // A visit has no join, leave or settings: only the way back.
         if let Some(origin) = self.visiting().map(|visit| visit.origin.clone()) {
@@ -12253,46 +12253,18 @@ impl CaperApp {
             }
             return;
         }
-        if self.selected_direct.is_none() {
-            if let (Some(space), Some(channel)) =
+        if self.selected_direct.is_none()
+            && let (Some(space), Some(channel)) =
                 (self.selected_space.clone(), self.selected_channel.clone())
-                && let Some(entry) = self
-                    .detail
-                    .as_ref()
-                    .and_then(|detail| detail.channels.iter().find(|item| item.id == channel))
-                    .cloned()
-                && !entry.joined
-                && secondary_button(ui, "Join channel", true).clicked()
-            {
-                self.admin(AdminOperation::JoinChannel { space, channel });
-            }
-        } else if let Some(direct) = self.selected_direct_conversation().cloned()
-            && (direct.blocked
-                || self.is_blocked(&direct.peer.id)
-                || !self.protected_account(&direct.peer.id))
-            && self
-                .account
+            && let Some(entry) = self
+                .detail
                 .as_ref()
-                .is_some_and(|account| account.id != direct.peer.id)
+                .and_then(|detail| detail.channels.iter().find(|item| item.id == channel))
+                .cloned()
+            && !entry.joined
+            && secondary_button(ui, "Join channel", true).clicked()
         {
-            // 1:1 DMs only; personal notes have no peer to block.
-            let blocked = direct.blocked || self.is_blocked(&direct.peer.id);
-            let account = Self::peer_account(&direct.peer);
-            if secondary_button(
-                ui,
-                if blocked { "Unblock" } else { "Block" },
-                !self.block_busy,
-            )
-            .clicked()
-            {
-                if blocked {
-                    self.unblock(account);
-                } else {
-                    let request =
-                        (direct.status == model::DirectStatus::Incoming).then(|| direct.id.clone());
-                    self.confirm_block(account, request);
-                }
-            }
+            self.admin(AdminOperation::JoinChannel { space, channel });
         }
     }
 
@@ -34053,6 +34025,10 @@ mod tests {
         assert!(texts.contains(&"No messages yet."));
         assert!(!texts.contains(&"Message #general"));
         assert!(!texts.contains(&"Members"));
+        assert!(
+            !texts.contains(&"Block"),
+            "blocking belongs in the profile menu"
+        );
 
         // The same display name is not enough: only the peer's account ID changes.
         app.directs[0].peer.id = app.account.as_ref().unwrap().id.clone();
