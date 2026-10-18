@@ -806,6 +806,38 @@ function MemberManager({
   });
   return (
     <section className="member-manager">
+      {!!invitations?.length && (
+        <>
+          <div className="dialog-section-heading">
+            <h3>Pending invitations</h3>
+            <span>{invitations.length}</span>
+          </div>
+          <ul>
+            {invitations.map((member) => (
+              <li key={member.id}>
+                <span className="member-avatar" aria-hidden="true">
+                  <Avatar person={member} name={member.displayName} />
+                </span>
+                <span>
+                  <strong>{member.displayName}</strong>
+                  <small>@{member.username} · Invited</small>
+                </span>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => {
+                    // This row (and its button) goes; continue in the username field.
+                    refocus.current = true;
+                    void onCancel?.(member).catch((reason) => setError(errorMessage(reason)));
+                  }}
+                >
+                  Cancel invite
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       <div className="dialog-section-heading">
         <h3>Members</h3>
         {!loading && <span>{members.length}</span>}
@@ -917,38 +949,6 @@ function MemberManager({
             refocus.current = true;
           }}
         />
-      )}
-      {!!invitations?.length && (
-        <>
-          <div className="dialog-section-heading">
-            <h3>Pending invitations</h3>
-            <span>{invitations.length}</span>
-          </div>
-          <ul>
-            {invitations.map((member) => (
-              <li key={member.id}>
-                <span className="member-avatar" aria-hidden="true">
-                  <Avatar person={member} name={member.displayName} />
-                </span>
-                <span>
-                  <strong>{member.displayName}</strong>
-                  <small>@{member.username} · Invited</small>
-                </span>
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() => {
-                    // This row (and its button) goes; continue in the username field.
-                    refocus.current = true;
-                    void onCancel?.(member).catch((reason) => setError(errorMessage(reason)));
-                  }}
-                >
-                  Cancel invite
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
       )}
     </section>
   );
