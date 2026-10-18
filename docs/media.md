@@ -3027,8 +3027,10 @@ and is marked **Caper team has been notified 🫡** for everyone there.
   a pending request nor is affected by the participants' blocks. Removing someone
   from the team (`deleted_at`) ends their access everywhere at once.
 - **Answering.** Team members' messages carry `author.admin`, stamped by the server
-  at send time and badged **ADMIN** on every client. Clients open a report in
-  its thread, so answers default there. Thread participants see them, and an
+  at send time and badged **ADMIN** on every client. Top-level reports open at
+  the message in its conversation, without opening a thread. Reports made in
+  a thread reveal that existing thread so the reported reply is visible. The
+  team can explicitly start a thread; its participants see replies, and an
   @mention reaches the reporter as usual.
 - **Notifications.** Kind `feedback`, title `Sender · Feedback`, for every team
   member, ignoring mutes. See [notifications](notifications.md#who-gets-a-notification).
