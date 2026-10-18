@@ -27902,17 +27902,24 @@ fn main() -> eframe::Result {
             renderer: eframe::Renderer::Wgpu,
             // Saved minimized-window geometry can be tiny on Windows and
             // overrides the builder's maximized flag. Stop saving geometry;
-            // existing saves are overridden after creation below. Account and
-            // settings persistence remain independent.
+            // account and settings persistence remain independent.
             persist_window: false,
+            // This hook runs AFTER eframe restores old geometry, even when
+            // persist_window is false. On Windows, winit maximizes a hidden
+            // window with SW_MAXIMIZE then SW_HIDE, flashing it before paint.
+            // Start windowed and let the first-frame command below maximize it.
+            #[cfg(target_os = "windows")]
+            window_builder: Some(Box::new(|builder| {
+                builder.with_fullscreen(false).with_maximized(false)
+            })),
             viewport,
             ..Default::default()
         },
         Box::new(move |creation| {
             if fixture.is_none() {
-                // eframe still loads old geometry with persist_window=false,
-                // and initial maximization can be lost while mapping a hidden
-                // window. Apply once after creation, never on every repaint.
+                // eframe applies these commands after painting and showing the
+                // first frame. Keep Windows hidden until then, and override
+                // restored geometry elsewhere. Never maximize on every repaint.
                 creation
                     .egui_ctx
                     .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
