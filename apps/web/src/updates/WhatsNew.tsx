@@ -177,22 +177,28 @@ export default function WhatsNew({
         close();
       }}
     >
-      <header className="audio-dialog-heading">
-        <h2 id={titleId}>What’s new</h2>
+      {/* Like the native update review: the face, the title, then the build right under it. */}
+      <header className="audio-dialog-heading whats-new-heading">
+        <div className="whats-new-title">
+          <img className="whats-new-face" src="/caper-face.svg" alt="" width={36} height={36} />
+          <h2 id={titleId}>What’s new</h2>
+          {sourceRevisionValid(revision) && (
+            <a
+              className="whats-new-build"
+              href={`https://github.com/joswayski/caper/commit/${revision}`}
+              target="_blank"
+              rel="noreferrer"
+              title="View this version on GitHub"
+            >
+              Web build {revision.slice(0, 7)}
+            </a>
+          )}
+        </div>
         <button type="button" className="voice-icon-button" aria-label="Close What’s new" onClick={close}>
           <X aria-hidden="true" />
         </button>
       </header>
       <div className="audio-dialog-body">
-        {sourceRevisionValid(revision) && (
-          <p className="whats-new-build">
-            Web build ·{" "}
-            <a href={`https://github.com/joswayski/caper/commit/${revision}`} target="_blank" rel="noreferrer">
-              {revision.slice(0, 7)}
-            </a>
-          </p>
-        )}
-        <p className="whats-new-intro">A few things worth knowing about your Caper update.</p>
         {loading && !feed && <p role="status">Loading release highlights…</p>}
         {!sourceRevisionValid(revision) && <p>Release highlights are available in published builds.</p>}
         {error && (
@@ -204,7 +210,7 @@ export default function WhatsNew({
           </div>
         )}
         {!loading && !error && feed && !releases.length && (
-          <p className="whats-new-empty">No user-facing updates to show. Maintenance releases stay quiet.</p>
+          <p className="whats-new-empty">No release highlights for this version yet.</p>
         )}
         {releaseHighlightDays(releases).map(({ date, releases: dayReleases }) => (
           <section className="whats-new-release" key={date}>
@@ -223,6 +229,7 @@ export default function WhatsNew({
                   href={`https://github.com/joswayski/caper/commit/${release.revision}`}
                   target="_blank"
                   rel="noreferrer"
+                  title="View this version on GitHub"
                 >
                   Commit {release.revision.slice(0, 7)}
                 </a>

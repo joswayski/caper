@@ -41,6 +41,29 @@ final class ProfileUpdatesTests: XCTestCase {
         XCTAssertNil(ProfileFeedEvent.parse(["type": "subscription.error", "status": 400]))
     }
 
+    func testNotificationRetractionsParseFromTheProfilesFeed() {
+        XCTAssertEqual(ProfileFeedEvent.parse(["type": "notification.retracted", "messageId": "dm0000000001m01",
+                                               "conversationId": "dm0000000001"]),
+                       .notificationRetracted(messageID: "dm0000000001m01"))
+        XCTAssertEqual(ProfileFeedEvent.parse(["type": "notification.retracted", "messageId": "chan00000002m05",
+                                               "spaceId": "space0000001", "channelId": "chan00000002"]),
+                       .notificationRetracted(messageID: "chan00000002m05"))
+        XCTAssertNil(ProfileFeedEvent.parse(["type": "notification.retracted", "conversationId": "dm0000000001"]))
+        XCTAssertNil(ProfileFeedEvent.parse(["type": "notification.retracted", "messageId": ""]))
+        XCTAssertNil(ProfileFeedEvent.parse(["type": "notification.retracted", "messageId": 5]))
+    }
+
+    @MainActor
+    func testRetractionsReachTheNotificationOwnerAndUnknownEventsStayIgnored() {
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        model.account = Account(id: "self", username: "me", displayName: "Me")
+        var retracted: [String] = []
+        model.retractNotification = { retracted.append($0) }
+        model.receiveProfileFeed(["type": "notification.retracted", "messageId": "dm0000000001m01", "conversationId": "dm0000000001"])
+        model.receiveProfileFeed(["type": "notification.expired", "messageId": "dm0000000001m02"])
+        XCTAssertEqual(retracted, ["dm0000000001m01"])
+    }
+
     // MARK: People
 
     func testAnUpdateReachesEveryRetainedCopyOfThatPersonOnly() {

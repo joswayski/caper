@@ -175,4 +175,47 @@ class PushPayloadTest {
             assertEquals("Are you around?", payload.body)
         }
     }
+
+    @Test fun `a retraction names the deleted message and its conversation, never a message to show`() {
+        val dm = mapOf("kind" to "message.deleted", "deletedMessageId" to "message00000001", "conversationId" to "direct000001")
+        assertEquals(PushRetraction("message00000001", "direct000001", null, null), PushRetraction.parse(dm))
+        assertEquals("direct000001", PushRetraction.parse(dm)?.tag)
+        val inChannel = mapOf("kind" to "message.deleted", "deletedMessageId" to "message00000002", "spaceId" to "space0000001", "channelId" to "channel00001")
+        assertEquals("channel00001", PushRetraction.parse(inChannel)?.tag)
+        // Even with a stray messageId, a retraction never posts a notification of its own.
+        assertNull(PushPayload.parse(dm + ("messageId" to "message00000001")))
+        assertNull(PushPayload.parse(inChannel + direct.filterKeys { it != "kind" && it != "conversationId" } + ("messageId" to "message00000002")))
+        assertNull(PushRetraction.parse(direct))
+        for (bad in listOf(
+            dm - "deletedMessageId", dm + ("deletedMessageId" to "short"), dm + ("kind" to "direct.message"),
+            dm + ("conversationId" to "bad"), dm + ("spaceId" to "space0000001"),
+            inChannel - "channelId", inChannel - "spaceId", inChannel + ("channelId" to "../channel01"),
+        )) assertNull(bad.toString(), PushRetraction.parse(bad))
+    }
+
+    @Test fun `a retraction removes exactly the line that shows its message`() {
+        // Lines posted by this version carry their message ID.
+        assertEquals(1, retractedLine(listOf("message00000001", "message00000002"), listOf("message00000001", "message00000002"), "message00000002"))
+        assertEquals(0, retractedLine(listOf("message00000001"), emptyList(), "message00000001"))
+        assertNull(retractedLine(listOf("message00000001"), listOf("message00000001"), "message00000009"))
+        // Older lines fall back to the notification's ID list when it lines up one to one.
+        assertEquals(0, retractedLine(listOf(null, null), listOf("message00000001", "message00000002"), "message00000001"))
+        assertEquals(0, retractedLine(listOf(null, "message00000002"), listOf("message00000001", "message00000002"), "message00000001"))
+        assertNull("counts differ", retractedLine(listOf(null), listOf("message00000001", "message00000002"), "message00000001"))
+        assertNull("order differs", retractedLine(listOf(null, "message00000001"), listOf("message00000001", "message00000002"), "message00000002"))
+        assertNull(retractedLine(emptyList(), emptyList(), "message00000001"))
+    }
+
+    @Test fun `retracted ids are remembered briefly so a late original is never shown`() {
+        var now = 0L
+        val recent = RecentRetractions(nowMs = { now }, ttlMs = 1_000, max = 2)
+        recent.add("message00000001")
+        assertTrue("message00000001" in recent)
+        assertFalse("message00000002" in recent)
+        now = 1_001
+        assertFalse("forgotten after a while", "message00000001" in recent)
+        recent.add("message00000001"); recent.add("message00000002"); recent.add("message00000003")
+        assertFalse("bounded", "message00000001" in recent)
+        assertTrue("message00000002" in recent && "message00000003" in recent)
+    }
 }

@@ -1198,7 +1198,7 @@ fn manage(
                         {
                             let events = events.clone();
                             let context = context.clone();
-                            move |alert, stopped| {
+                            move |alert, lifetime| {
                                 send(&events, &context, Event::NotificationActivity { epoch });
                                 // A focused UI publishes a short lease. If minimized
                                 // windows stop repainting, stale focus cannot suppress alerts.
@@ -1220,7 +1220,7 @@ fn manage(
                                     let repaint = context.clone();
                                     if let Err(error) = crate::os_notifications::show(
                                         alert,
-                                        stopped,
+                                        lifetime,
                                         || {
                                             visible.lock().unwrap().as_ref().is_some_and(
                                                 |(id, at)| {

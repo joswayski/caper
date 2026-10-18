@@ -326,6 +326,17 @@ async fn record(workers: &Workers, claimed: &Claimed, result: Attempt) {
             .bind(claimed.id)
             .execute(pool)
             .await;
+            // Deleted while this was in flight: take it back like the rest.
+            let _ = sqlx::query(
+                "INSERT INTO public.notification_retractions(notification_id,device_id)
+                 SELECT d.notification_id,d.device_id FROM public.notification_deliveries d
+                 JOIN public.notifications n ON n.id=d.notification_id
+                 JOIN public.messages m ON m.id=n.message_id
+                 WHERE d.id=$1 AND m.deleted_at IS NOT NULL ON CONFLICT DO NOTHING",
+            )
+            .bind(claimed.id)
+            .execute(pool)
+            .await;
             tracing::info!(
                 event_name = "push_delivered",
                 transport = claimed.transport,
@@ -413,6 +424,14 @@ pub(super) async fn prune(pool: &sqlx::PgPool) -> u64 {
                  WHERE (delivered_at IS NOT NULL OR abandoned_at IS NOT NULL)
                    AND LEAST(delivered_at, abandoned_at) < now() - interval '7 days'
                  ORDER BY LEAST(delivered_at, abandoned_at) LIMIT $1))",
+        ),
+        (
+            "notification_retractions",
+            "DELETE FROM public.notification_retractions WHERE id = ANY(ARRAY(
+                 SELECT id FROM public.notification_retractions
+                 WHERE (sent_at IS NOT NULL OR abandoned_at IS NOT NULL)
+                   AND LEAST(sent_at, abandoned_at) < now() - interval '7 days'
+                 ORDER BY LEAST(sent_at, abandoned_at) LIMIT $1))",
         ),
         (
             "notification_jobs",

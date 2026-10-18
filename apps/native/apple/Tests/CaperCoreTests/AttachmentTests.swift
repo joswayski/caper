@@ -182,7 +182,11 @@ final class AttachmentTests: XCTestCase {
         func url(_ exp: Int) -> String { "https://cdn.caper.chat/original/A?exp=\(exp)&sig=x" }
         XCTAssertEqual(AttachmentURLPolicy.expiry(of: url(1_800_000_123)), Date(timeIntervalSince1970: 1_800_000_123))
         XCTAssertTrue(AttachmentURLPolicy.needsRefresh(url(1_799_999_000), now: now), "past expiry")
-        XCTAssertTrue(AttachmentURLPolicy.needsRefresh(url(1_800_001_800), now: now), "expires within the hour")
+        XCTAssertEqual(AttachmentURLPolicy.refreshMargin, 10 * 60)
+        XCTAssertTrue(AttachmentURLPolicy.needsRefresh(url(1_800_000_300), now: now), "expires within 10 minutes")
+        XCTAssertTrue(AttachmentURLPolicy.needsRefresh(url(1_800_000_600), now: now), "exactly 10 minutes left")
+        XCTAssertFalse(AttachmentURLPolicy.needsRefresh(url(1_800_000_900), now: now), "15 minutes left")
+        XCTAssertFalse(AttachmentURLPolicy.needsRefresh(url(1_800_003_600), now: now), "a fresh 1–2 hour link")
         XCTAssertFalse(AttachmentURLPolicy.needsRefresh(url(1_800_007_200), now: now), "two hours left")
         XCTAssertFalse(AttachmentURLPolicy.needsRefresh("https://cdn.caper.chat/original/A?sig=x", now: now), "no exp")
         XCTAssertFalse(AttachmentURLPolicy.needsRefresh("https://cdn.caper.chat/original/A?exp=soon", now: now))

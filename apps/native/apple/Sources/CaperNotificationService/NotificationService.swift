@@ -12,6 +12,16 @@ final class NotificationService: UNNotificationServiceExtension {
 
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         lock.lock(); handler = contentHandler; original = request.content; lock.unlock()
+        // A deleted message's retraction replaces the original by its collapse
+        // id; originals delivered before collapse ids are removed by
+        // `messageId`. Its passive "This message was deleted." goes out plain.
+        if let deleted = NotificationRetraction.deletedMessageID(request.content.userInfo) {
+            download = Task { [self] in
+                await NotificationRetraction.remove(messageID: deleted)
+                finish(request.content)
+            }
+            return
+        }
         download = Task { [self] in
             let attachment = await NotificationAttachment.load(request.content.userInfo)
             guard !Task.isCancelled, let content = request.content.mutableCopy() as? UNMutableNotificationContent else {

@@ -186,6 +186,43 @@ final class NotificationSettingsTests: XCTestCase {
             .isOpen(spaceID: nil, channelID: nil, directMessageID: "dm0000000002"))
     }
 
+    func testDeletedMessageRetractionsNameTheirOriginal() {
+        let original: [AnyHashable: Any] = ["aps": ["alert": ["title": "Maya", "body": "Hi"]], "kind": "direct.message",
+                                            "messageId": "dm0000000001m01", "conversationId": "dm0000000001"]
+        let retraction: [AnyHashable: Any] = ["aps": ["alert": ["title": "Maya", "body": "This message was deleted."],
+                                                      "interruption-level": "passive", "mutable-content": 1] as [String: Any],
+                                              "kind": "message.deleted", "deletedMessageId": "dm0000000001m01",
+                                              "conversationId": "dm0000000001", "sender": "Maya", "senderId": "maya0000001", "senderAvatarId": 31]
+        let channel: [AnyHashable: Any] = ["kind": "message.deleted", "deletedMessageId": "chan00000002m05",
+                                           "spaceId": "space0000001", "channelId": "chan00000002"]
+        XCTAssertEqual(NotificationRetraction.deletedMessageID(retraction), "dm0000000001m01")
+        XCTAssertEqual(NotificationRetraction.deletedMessageID(channel), "chan00000002m05")
+        XCTAssertNil(NotificationRetraction.deletedMessageID(original), "an ordinary message push")
+        XCTAssertNil(NotificationRetraction.deletedMessageID(["kind": "message.deleted"]))
+        XCTAssertNil(NotificationRetraction.deletedMessageID(["kind": "message.deleted", "deletedMessageId": ""]))
+        XCTAssertNil(NotificationRetraction.deletedMessageID(["kind": "direct.message", "deletedMessageId": "dm0000000001m01"]))
+
+        XCTAssertTrue(NotificationRetraction.matches(original, messageID: "dm0000000001m01"))
+        XCTAssertFalse(NotificationRetraction.matches(original, messageID: "dm0000000001m02"))
+        XCTAssertFalse(NotificationRetraction.matches(retraction, messageID: "dm0000000001m01"), "the retraction itself never matches")
+        XCTAssertFalse(NotificationRetraction.matches(["kind": "space.invitation", "notificationId": "91"], messageID: ""))
+        // Retractions keep routing to their conversation when tapped.
+        XCTAssertEqual(NotificationRoute(userInfo: retraction), .direct(conversationID: "dm0000000001"))
+    }
+
+    #if os(macOS)
+    func testDesktopRetractionsRememberTheNewestMessages() {
+        var list = DesktopNotifications.remembering("a", in: [])
+        list = DesktopNotifications.remembering("b", in: list)
+        list = DesktopNotifications.remembering("a", in: list)
+        XCTAssertEqual(list, ["b", "a"], "a repeat moves to the end once")
+        for index in 0..<(DesktopNotifications.retractedLimit + 5) { list = DesktopNotifications.remembering("m\(index)", in: list) }
+        XCTAssertEqual(list.count, DesktopNotifications.retractedLimit)
+        XCTAssertEqual(list.last, "m\(DesktopNotifications.retractedLimit + 4)")
+        XCTAssertFalse(list.contains("a"), "the oldest are forgotten")
+    }
+    #endif
+
     func testInvitationsOpenReviewRatherThanAnInaccessibleConversation() {
         let space: [AnyHashable: Any] = ["kind": "space.invitation", "notificationId": "91", "spaceId": "space0000001"]
         let channel: [AnyHashable: Any] = ["kind": "channel.invitation", "notificationId": "92",

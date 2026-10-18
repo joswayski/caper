@@ -37,7 +37,7 @@ public enum AttachmentStatus: String, Codable, Equatable, Sendable {
 }
 
 /// A file on a message. Signed URLs are added per response and expire after
-/// 24–48 hours; `ChatModel` refreshes them for long-open windows. A
+/// 1–2 hours; `ChatModel` refreshes them for long-open windows. A
 /// `processing` file (parked server pipeline only) has no `url` yet.
 public struct ChatAttachment: Codable, Equatable, Identifiable, Sendable {
     public let id: String
@@ -274,9 +274,12 @@ public struct AttachmentURLs: Decodable, Equatable, Sendable {
 struct AttachmentURLsResponse: Decodable { let urls: [String: AttachmentURLs] }
 
 /// When a signed delivery URL must be replaced. URLs carry `exp` in Unix
-/// seconds; refresh when it is past or within an hour, or after a 403/404.
+/// seconds; refresh when it is past or within 10 minutes, or after a 403/404.
+/// Message files live 1–2 hours, so a wider margin would mark every link as
+/// expiring. Images stay cached by attachment id, so a refresh never reloads
+/// what is on screen; files and media check again when opened or played.
 public enum AttachmentURLPolicy {
-    public static let refreshMargin: TimeInterval = 60 * 60
+    public static let refreshMargin: TimeInterval = 10 * 60
 
     public static func expiry(of url: String?) -> Date? {
         guard let url, let components = URLComponents(string: url),

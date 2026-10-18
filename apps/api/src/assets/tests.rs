@@ -93,6 +93,30 @@ fn delivery_urls_are_stable_for_a_day_and_expire_within_two() {
 }
 
 #[test]
+fn message_file_urls_are_stable_for_an_hour_and_expire_within_two() {
+    let signer = CdnSigner::new("https://cdn.caper.chat".into(), vec![7; 32]);
+    let hour = 60 * 60;
+    let start = 1_790_000_000 - 1_790_000_000 % hour + 30;
+    let url = signer.attachment_url("original/abc", start);
+    assert_eq!(
+        url,
+        signer.attachment_url("original/abc", start + hour - 60)
+    );
+    assert_ne!(url, signer.attachment_url("original/abc", start + hour));
+    let expires: i64 = url
+        .split("exp=")
+        .nth(1)
+        .unwrap()
+        .split('&')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(expires - start > hour && expires - start <= 2 * hour);
+    assert_eq!(expires % hour, 0);
+}
+
+#[test]
 fn messages_gain_urls_only_when_signed_and_available() {
     let signer = CdnSigner::new("https://cdn.test".into(), vec![1; 32]);
     let message = json!({"content":{"version":1,"type":"text","text":"","attachments":[

@@ -4,8 +4,9 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
+    collections::{HashMap, VecDeque},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -122,6 +123,74 @@ pub enum Route {
     Visit(crate::feedback::VisitTarget),
 }
 
+/// How long one shown notification stays up: until the account feed stops
+/// (logout, account switch) or its message is deleted and the notification
+/// taken back (`notification.retracted`).
+#[derive(Clone)]
+pub struct Lifetime {
+    pub stopped: Arc<AtomicBool>,
+    retracted: Arc<AtomicBool>,
+}
+impl Lifetime {
+    pub fn ended(&self) -> bool {
+        self.stopped.load(Ordering::Relaxed) || self.retracted.load(Ordering::Relaxed)
+    }
+}
+
+/// How long a retracted id is remembered, so an original arriving after its
+/// retraction (another socket, a resumed cursor) is never shown. Alerts older
+/// than this are not shown anyway (see [`Alert::fresh`]).
+const RETRACTED_MEMORY: Duration = Duration::from_secs(180);
+
+/// The notifications shown or being prepared, by message id, and recently
+/// retracted ids. Owned by the account feed's thread.
+#[derive(Default)]
+struct Retractions {
+    shown: HashMap<String, Weak<AtomicBool>>,
+    recent: VecDeque<(String, Instant)>,
+}
+impl Retractions {
+    /// The lifetime for a new alert; already ended if its message was
+    /// retracted first.
+    fn lifetime(&mut self, alert: &Alert, stopped: &Arc<AtomicBool>, now: Instant) -> Lifetime {
+        self.forget(now);
+        let retracted = Arc::new(AtomicBool::new(false));
+        if let Some(id) = &alert.message_id {
+            if self.recent.iter().any(|(old, _)| old == id) {
+                retracted.store(true, Ordering::Relaxed);
+            }
+            // Finished notifications drop their lifetimes.
+            self.shown.retain(|_, flag| flag.strong_count() > 0);
+            self.shown.insert(id.clone(), Arc::downgrade(&retracted));
+        }
+        Lifetime {
+            stopped: stopped.clone(),
+            retracted,
+        }
+    }
+
+    /// Close (or cancel before showing) the notification for `message`.
+    fn retract(&mut self, message: &str, now: Instant) {
+        self.forget(now);
+        if let Some(flag) = self.shown.remove(message).and_then(|flag| flag.upgrade()) {
+            flag.store(true, Ordering::Relaxed);
+        }
+        if !self.recent.iter().any(|(old, _)| old == message) {
+            self.recent.push_back((message.to_owned(), now));
+        }
+    }
+
+    fn forget(&mut self, now: Instant) {
+        while self
+            .recent
+            .front()
+            .is_some_and(|(_, at)| now.duration_since(*at) >= RETRACTED_MEMORY)
+        {
+            self.recent.pop_front();
+        }
+    }
+}
+
 pub struct Control {
     stop: Arc<AtomicBool>,
     activity: Arc<Mutex<Instant>>,
@@ -144,10 +213,12 @@ impl Drop for Control {
 
 /// The account feed: notifications, and the `profiles` subscription's live
 /// profile and space changes (`profiles`), on one socket for the sign-in.
+/// The feed itself handles `notification.retracted`: the notification shown
+/// (or still being prepared) for that message ends, so it closes.
 pub fn watch(
     base: &url::Url,
     token: String,
-    receive: impl Fn(Alert, Arc<AtomicBool>) + Send + 'static,
+    receive: impl Fn(Alert, Lifetime) + Send + 'static,
     profiles: impl Fn(crate::gateway::ProfileEvent) + Send + 'static,
 ) -> Control {
     let stop = Arc::new(AtomicBool::new(false));
@@ -166,6 +237,8 @@ pub fn watch(
     std::thread::spawn(move || {
         let mut cursor: Option<u64> = None;
         let mut attempt = 0_u32;
+        // Across sockets: a retraction may arrive on a different one.
+        let mut retractions = Retractions::default();
         while !stop.load(Ordering::Relaxed) {
             let mut proven = false;
             let result = (|| {
@@ -187,8 +260,12 @@ pub fn watch(
                             connection.send(crate::gateway::profiles_subscription())?;
                         }
                         Some("event") if frame["id"] == crate::gateway::PROFILES => {
-                            if let Some(event) = crate::gateway::profiles_event(&frame) {
-                                profiles(event);
+                            match crate::gateway::profiles_event(&frame) {
+                                Some(crate::gateway::ProfileEvent::NotificationRetracted(
+                                    message,
+                                )) => retractions.retract(&message, Instant::now()),
+                                Some(event) => profiles(event),
+                                None => {}
                             }
                         }
                         // An older gateway without `profiles`: live updates are
@@ -207,9 +284,10 @@ pub fn watch(
                                 && cursor.is_none_or(|old| next > old)
                                 && event["type"] == "notification.created"
                             {
-                                let alert = serde_json::from_value(event.clone())
+                                let alert: Alert = serde_json::from_value(event.clone())
                                     .map_err(|_| Failure::Retry("invalid notification".into()))?;
-                                receive(alert, stop.clone());
+                                let lifetime = retractions.lifetime(&alert, &stop, Instant::now());
+                                receive(alert, lifetime);
                             }
                             cursor = Some(cursor.unwrap_or(0).max(next));
                         }
@@ -346,11 +424,11 @@ fn attachment(alert: &Alert, directory: &std::path::Path) -> Option<std::path::P
 
 pub fn show(
     alert: Alert,
-    stopped: Arc<AtomicBool>,
+    lifetime: Lifetime,
     suppressed: impl Fn() -> bool,
     clicked: impl Fn() + Send + 'static,
 ) -> Result<(), String> {
-    if stopped.load(Ordering::Relaxed) || suppressed() {
+    if lifetime.ended() || suppressed() {
         return Ok(());
     }
     let directory =
@@ -365,10 +443,17 @@ pub fn show(
     created.map_err(|_| "Couldn’t prepare a notification.".to_owned())?;
     let image = avatar(alert.sender_avatar_id, &directory);
     let media = attachment(&alert, &directory);
-    let result = if stopped.load(Ordering::Relaxed) || suppressed() {
+    // Retracted while its artwork downloaded: never shown.
+    let result = if lifetime.ended() || suppressed() {
         Ok(())
     } else {
-        platform_show(&alert, image.as_deref(), media.as_deref(), stopped, clicked)
+        platform_show(
+            &alert,
+            image.as_deref(),
+            media.as_deref(),
+            lifetime,
+            clicked,
+        )
     };
     // Keep artwork and activation handlers until dismissal, expiry or logout.
     let _ = std::fs::remove_dir_all(directory);
@@ -380,7 +465,7 @@ fn platform_show(
     alert: &Alert,
     image: Option<&std::path::Path>,
     media: Option<&std::path::Path>,
-    stopped: Arc<AtomicBool>,
+    lifetime: Lifetime,
     clicked: impl Fn() + Send + 'static,
 ) -> Result<(), String> {
     let mut notification = notify_rust::Notification::new();
@@ -412,11 +497,11 @@ fn platform_show(
         })?;
         tokio::select! {
             _ = handle.wait_for_action_async(|action| {
-                if action.is_default_action() && !stopped.load(Ordering::Relaxed) { clicked(); }
+                if action.is_default_action() && !lifetime.ended() { clicked(); }
             }) => {},
             _ = async {
                 let start = Instant::now();
-                while !stopped.load(Ordering::Relaxed) && start.elapsed() < Duration::from_secs(86_400) {
+                while !lifetime.ended() && start.elapsed() < Duration::from_secs(86_400) {
                     tokio::time::sleep(Duration::from_millis(200)).await;
                 }
             } => {},
@@ -431,7 +516,7 @@ fn platform_show(
     alert: &Alert,
     image: Option<&std::path::Path>,
     media: Option<&std::path::Path>,
-    stopped: Arc<AtomicBool>,
+    lifetime: Lifetime,
     clicked: impl Fn() + Send + 'static,
 ) -> Result<(), String> {
     use winrt_toast_reborn::{
@@ -467,10 +552,10 @@ fn platform_show(
     }
     let activated = Arc::new(AtomicBool::new(false));
     let done = activated.clone();
-    let cancelled = stopped.clone();
+    let cancelled = lifetime.clone();
     let manager = ToastManager::new(APP_ID).on_activated(None, move |_| {
         done.store(true, Ordering::Relaxed);
-        if !cancelled.load(Ordering::Relaxed) {
+        if !cancelled.ended() {
             clicked();
         }
     });
@@ -478,7 +563,8 @@ fn platform_show(
         "Couldn’t show desktop notification. Check Windows notification settings.".to_owned()
     })?;
     let start = Instant::now();
-    while !stopped.load(Ordering::Relaxed)
+    // Removing the toast by tag also clears it from Action Center.
+    while !lifetime.ended()
         && !activated.load(Ordering::Relaxed)
         && start.elapsed() < Duration::from_secs(86_400)
     {
@@ -493,7 +579,7 @@ fn platform_show(
     _: &Alert,
     _: Option<&std::path::Path>,
     _: Option<&std::path::Path>,
-    _: Arc<AtomicBool>,
+    _: Lifetime,
     _: impl Fn() + Send + 'static,
 ) -> Result<(), String> {
     Err("Use the native Mac app for desktop notifications.".into())
@@ -611,6 +697,124 @@ mod tests {
     }
 
     #[test]
+    fn retractions_end_shown_and_pending_notifications_and_block_late_originals() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let mut retractions = Retractions::default();
+        let start = Instant::now();
+        let message = |id: &str| alert(json!({"messageId": id}));
+        let shown = retractions.lifetime(&message("msg000000000001"), &stopped, start);
+        let other = retractions.lifetime(&message("msg000000000002"), &stopped, start);
+        assert!(!shown.ended() && !other.ended());
+        retractions.retract("msg000000000001", start);
+        assert!(shown.ended(), "the shown notification closes");
+        assert!(!other.ended(), "only that message's");
+        // Retracted before its original arrived: never shown.
+        retractions.retract("msg000000000003", start);
+        let late = retractions.lifetime(&message("msg000000000003"), &stopped, start);
+        assert!(late.ended());
+        // Unknown ids and repeats are harmless.
+        retractions.retract("msg000000000009", start);
+        retractions.retract("msg000000000003", start);
+        // Remembered only briefly; finished notifications are released.
+        drop((shown, late));
+        let later = start + RETRACTED_MEMORY;
+        let again = retractions.lifetime(&message("msg000000000003"), &stopped, later);
+        assert!(!again.ended());
+        assert!(retractions.recent.is_empty());
+        assert_eq!(retractions.shown.len(), 2, "{:?}", retractions.shown.keys());
+        // Invitations have no message id and are never tracked.
+        let invitation = retractions.lifetime(
+            &alert(json!({"kind": "space.invitation", "messageId": null})),
+            &stopped,
+            later,
+        );
+        assert_eq!(retractions.shown.len(), 2);
+        stopped.store(true, Ordering::Relaxed);
+        assert!(invitation.ended() && other.ended(), "logout ends them all");
+    }
+
+    #[test]
+    fn account_feed_retracts_notifications_from_the_profiles_feed() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (proceed, proceeded) = mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            let mut send = |value: serde_json::Value| {
+                socket
+                    .send(Message::Text(value.to_string().into()))
+                    .unwrap();
+            };
+            send(json!({"type":"hello","serverTime":0}));
+            let mut frames = Vec::new();
+            for _ in 0..2 {
+                let frame: serde_json::Value =
+                    serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+                frames.push(frame);
+            }
+            let id = frames[0]["id"].clone();
+            let mut send = |value: serde_json::Value| {
+                socket
+                    .send(Message::Text(value.to_string().into()))
+                    .unwrap();
+            };
+            let created = |seq: &str, message: &str| {
+                json!({"type":"event","id":id,"event":{
+                    "type":"notification.created","seq":seq,"messageId":message,
+                    "title":"Test sender","body":message,
+                    "createdAt":Utc::now().to_rfc3339(),"conversationId":"dm0000000001"}})
+            };
+            let retracted = |message: &str| {
+                json!({"type":"event","id":"profiles","event":{
+                    "type":"notification.retracted","messageId":message,
+                    "conversationId":"dm0000000001"}})
+            };
+            send(json!({"type":"event","id":id,"event":{"type":"ready","cursor":"1"}}));
+            send(created("2", "message00000001"));
+            proceeded.recv_timeout(Duration::from_secs(5)).unwrap();
+            // Unknown profiles events stay ignored.
+            send(json!({"type":"event","id":"profiles","event":{"type":"profile.renamed"}}));
+            send(retracted("message00000001"));
+            send(retracted("message00000002"));
+            send(created("3", "message00000002"));
+            let _ = socket.read();
+        });
+        let (alerts, received) = mpsc::channel();
+        let (profiles, received_profiles) = mpsc::channel();
+        let control = watch(
+            &url::Url::parse(&format!("http://{address}/")).unwrap(),
+            "test-account".into(),
+            move |alert, lifetime| alerts.send((alert, lifetime)).unwrap(),
+            move |event| profiles.send(event).unwrap(),
+        );
+        let (first, shown) = received.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(first.message_id.as_deref(), Some("message00000001"));
+        assert!(!shown.ended(), "shown until retracted");
+        proceed.send(()).unwrap();
+        let (second, late) = received.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(second.message_id.as_deref(), Some("message00000002"));
+        assert!(shown.ended(), "the shown notification closes");
+        assert!(
+            late.ended(),
+            "an original after its retraction is never shown"
+        );
+        assert!(
+            !shown.stopped.load(Ordering::Relaxed),
+            "the feed carries on"
+        );
+        assert!(
+            received_profiles.try_recv().is_err(),
+            "retractions are not profile changes"
+        );
+        control.stop();
+        server.join().unwrap();
+    }
+
+    #[test]
     fn invitation_is_not_a_message_or_a_focused_conversation() {
         let alert: Alert = serde_json::from_value(json!({
             "kind":"channel.invitation", "notificationId":"91", "title":"You’re invited!",
@@ -709,8 +913,8 @@ mod tests {
         let control = watch(
             &url::Url::parse(&format!("http://{address}/")).unwrap(),
             "test-account".into(),
-            move |alert, stop| {
-                stop.store(true, Ordering::Relaxed);
+            move |alert, lifetime| {
+                lifetime.stopped.store(true, Ordering::Relaxed);
                 alerts.send(alert).unwrap();
             },
             move |event| profiles.send(event).unwrap(),
@@ -806,9 +1010,9 @@ mod tests {
         let control = watch(
             &url::Url::parse(&format!("http://{address}/")).unwrap(),
             "test-account".into(),
-            move |alert, stop| {
+            move |alert, lifetime| {
                 if alert.body == "second" {
-                    stop.store(true, Ordering::Relaxed);
+                    lifetime.stopped.store(true, Ordering::Relaxed);
                 }
                 send.send(alert).unwrap();
             },

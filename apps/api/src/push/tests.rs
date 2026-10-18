@@ -6,6 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::{TimeDelta, Utc};
+use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
@@ -3622,4 +3623,108 @@ async fn messaging_caper_sends_each_new_message_to_the_team(pool: PgPool) {
         2,
         "the team's message is no report"
     );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn deleting_a_message_takes_back_its_delivered_pushes(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let carol = person(&pool, "carol").await;
+    let (space_id, space_external) = space(&pool, &alice, &[&bob, &carol]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &bob, &carol]).await;
+    register(&h, &bob, &bob.token, "apns", APNS_TOKEN).await;
+    register(&h, &carol, &carol.token, "fcm", "fcm:carol").await;
+    let remove = |message: String| {
+        let app = h.app.clone();
+        let chat = alice.chat.clone();
+        let path = format!("/api/chat/channels/{general}/messages/{message}");
+        async move {
+            let (status, body) = call(&app, "DELETE", &path, None, Some(&chat), Value::Null).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+    };
+    let retract = || async { while retraction::retract_pending(&h.workers).await.unwrap() {} };
+
+    let shown = send(&h, &alice, &general, "Wrong channel, sorry", None).await;
+    expand(&h).await;
+    deliver(&h).await;
+    let original = h.apns.take();
+    assert_eq!(original.len(), 1);
+    assert_eq!(original[0].headers["apns-collapse-id"], shown.as_str());
+    assert_eq!(h.fcm.take().len(), 1);
+
+    let mut profiles = redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap())
+        .unwrap()
+        .get_async_pubsub()
+        .await
+        .unwrap();
+    profiles
+        .subscribe(crate::chat::PROFILE_TOPIC)
+        .await
+        .unwrap();
+    remove(shown.clone()).await;
+    // Running clients of everyone notified close what they showed.
+    let published: Value = loop {
+        let message = tokio::time::timeout(Duration::from_secs(5), profiles.on_message().next())
+            .await
+            .unwrap()
+            .unwrap();
+        let update: Value =
+            serde_json::from_str(&message.get_payload::<String>().unwrap()).unwrap();
+        if update["event"]["type"] == "notification.retracted" {
+            break update;
+        }
+    };
+    assert_eq!(
+        published["event"],
+        json!({"type":"notification.retracted","messageId":shown,"spaceId":space_external,"channelId":general})
+    );
+    let mut audience: Vec<i64> = published["audience"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_i64)
+        .collect();
+    audience.sort_unstable();
+    let mut expected = vec![bob.id, carol.id];
+    expected.sort_unstable();
+    assert_eq!(audience, expected);
+    retract().await;
+    let apns = h.apns.take();
+    assert_eq!(apns.len(), 1);
+    assert_eq!(apns[0].path, format!("/3/device/{APNS_TOKEN}"));
+    assert_eq!(apns[0].headers["apns-collapse-id"], shown.as_str());
+    let body = &apns[0].body;
+    assert_eq!(body["aps"]["alert"]["title"], "Alice · #general (Studio)");
+    assert_eq!(body["aps"]["alert"]["body"], RETRACTED_BODY);
+    assert_eq!(body["aps"]["interruption-level"], "passive");
+    assert!(body["aps"].get("sound").is_none());
+    assert_eq!(body["kind"], "message.deleted");
+    assert_eq!(body["deletedMessageId"], shown.as_str());
+    assert!(body.get("messageId").is_none());
+    let fcm = h.fcm.take();
+    assert_eq!(fcm.len(), 1);
+    assert_eq!(
+        fcm[0].body["message"]["data"],
+        json!({"kind":"message.deleted","deletedMessageId":shown,"spaceId":space_external,"channelId":general})
+    );
+    assert!(
+        fcm[0].body["message"]["android"]
+            .get("collapse_key")
+            .is_none()
+    );
+    // Sent once: repeating the deletion or the worker sends nothing more.
+    remove(shown.clone()).await;
+    retract().await;
+    assert!(h.apns.take().is_empty() && h.fcm.take().is_empty());
+
+    // Deleted before its push went out: nothing to send, nothing to take back.
+    let unsent = send(&h, &alice, &general, "Never mind", None).await;
+    expand(&h).await;
+    remove(unsent).await;
+    deliver(&h).await;
+    retract().await;
+    assert!(h.apns.take().is_empty() && h.fcm.take().is_empty());
 }

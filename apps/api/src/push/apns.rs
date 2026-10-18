@@ -84,7 +84,7 @@ impl Apns {
         let Ok(bearer) = self.bearer() else {
             return Outcome::Abandon("apns signing failed".into());
         };
-        let response = self
+        let mut request = self
             .client
             .post(format!("{}/3/device/{token}", self.base))
             .header("authorization", format!("bearer {bearer}"))
@@ -95,9 +95,11 @@ impl Apns {
                 "apns-expiration",
                 (chrono::Utc::now().timestamp() + EXPIRATION_SECONDS).to_string(),
             )
-            .json(&payload(alert))
-            .send()
-            .await;
+            .json(&payload(alert));
+        if let Some(id) = alert.collapse_id() {
+            request = request.header("apns-collapse-id", id);
+        }
+        let response = request.send().await;
         let response = match response {
             Ok(response) => response,
             Err(_) => {
@@ -150,7 +152,15 @@ pub(super) fn payload(alert: &Alert) -> Value {
     if let Some(root) = &alert.thread_root_id {
         payload["threadRootId"] = json!(root);
     }
-    if let Some(id) = &alert.notification_id {
+    if alert.retracts {
+        // Silently replaces the original (same `apns-collapse-id`). Without
+        // `messageId`, releases that predate retraction treat it as text.
+        let aps = payload["aps"].as_object_mut().expect("aps object");
+        aps.remove("sound");
+        aps.insert("interruption-level".into(), json!("passive"));
+        payload["kind"] = json!("message.deleted");
+        payload["deletedMessageId"] = json!(alert.message_id);
+    } else if let Some(id) = &alert.notification_id {
         payload["notificationId"] = json!(id);
     } else {
         payload["messageId"] = json!(alert.message_id);

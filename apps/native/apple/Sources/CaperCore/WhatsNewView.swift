@@ -121,6 +121,61 @@ struct WhatsNewDisplay: Identifiable {
     }
 }
 
+/// A muted release-source link with pointer, press, and keyboard feedback.
+/// Used wherever a version is shown.
+struct ReleaseLink: View {
+    let label: String
+    let url: URL
+    var size: CGFloat = 13
+
+    var body: some View {
+        Link(destination: url) {
+            Text(label).font(CaperTheme.font(size))
+        }
+        .buttonStyle(ReleaseLinkStyle())
+        .help("View this version on GitHub")
+        .accessibilityHint("View this version on GitHub")
+    }
+}
+
+/// Keep commit links quiet at rest without inheriting the sheet's filled button style.
+private struct ReleaseLinkStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.underline()
+            .modifier(ReleaseLinkFeedback(pressed: configuration.isPressed))
+    }
+}
+
+private struct ReleaseLinkFeedback: ViewModifier {
+    let pressed: Bool
+    @Environment(\.isFocused) private var focused
+    @State private var hovered = false
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(pressed ? CaperTheme.terracottaBright : hovered ? CaperTheme.actionHover : CaperTheme.muted)
+            .background(CaperTheme.terracotta.opacity(pressed ? 0.24 : hovered ? 0.12 : 0))
+            .overlay {
+                RoundedRectangle(cornerRadius: 2)
+                    .stroke(CaperTheme.terracotta, lineWidth: 2).padding(-3)
+                    .opacity(focused ? 1 : 0).allowsHitTesting(false)
+            }
+            .focusEffectDisabled()
+            .onHover { hovered = $0 }
+            .modifier(ControlPointer())
+    }
+}
+
+/// "October 18, 2026" for a release's UTC publication day ("2026-10-18").
+func releaseDayLabel(_ day: String) -> String {
+    let parser = DateFormatter()
+    parser.locale = Locale(identifier: "en_US_POSIX")
+    parser.timeZone = TimeZone(identifier: "UTC")
+    parser.dateFormat = "yyyy-MM-dd"
+    guard let date = parser.date(from: day) else { return day }
+    parser.dateFormat = "MMMM d, yyyy"
+    return parser.string(from: date)
+}
+
 @MainActor struct WhatsNewSheet: View {
     @Bindable var notes: WhatsNewModel
     @State private var display: WhatsNewDisplay
@@ -132,25 +187,26 @@ struct WhatsNewDisplay: Identifiable {
 
     private func close() { notes.dismiss(display) }
     private var installedVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Development build"
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
+            .map { "Version \($0)" } ?? "Development build"
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 6) {
+            // Like the update review: the face, the title, then the installed
+            // version right under it, linked to its commit.
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Image("caper-face", bundle: caperResourceBundle).renderingMode(.original).resizable()
+                        .scaledToFit().frame(width: 36, height: 36).accessibilityHidden(true)
+                        .padding(.bottom, 10)
                     Text("What’s new").font(CaperTheme.font(20, weight: .bold)).accessibilityAddTraits(.isHeader)
-                    Text("Updates to Caper on \(platformName).")
-                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                    HStack(spacing: 4) {
-                        Text("Installed: \(installedVersion)")
-                        if WhatsNewSnapshot.validRevision(notes.revision),
-                           let url = URL(string: "https://github.com/joswayski/caper/commit/\(notes.revision)") {
-                            Text("·")
-                            Link(String(notes.revision.prefix(7)), destination: url)
-                                .buttonStyle(ReleaseLinkStyle())
-                                .accessibilityLabel("View installed commit \(notes.revision.prefix(7)) on GitHub")
-                        }
-                    }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).tint(CaperTheme.muted)
+                        .padding(.bottom, 2)
+                    if WhatsNewSnapshot.validRevision(notes.revision),
+                       let url = URL(string: "https://github.com/joswayski/caper/commit/\(notes.revision)") {
+                        ReleaseLink(label: installedVersion, url: url)
+                    } else {
+                        Text(installedVersion).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                    }
                 }
                 Spacer()
                 Button("Close", action: close).accessibilityLabel("Close What’s new")
@@ -164,13 +220,14 @@ struct WhatsNewDisplay: Identifiable {
                         }
                         let days = Dictionary(grouping: releases) { String($0.publishedAt.prefix(10)) }
                         ForEach(days.keys.sorted(by: >), id: \.self) { date in
-                            Text(date).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                            Text(releaseDayLabel(date)).font(CaperTheme.font(12, weight: .bold))
+                                .foregroundStyle(CaperTheme.muted)
                             ForEach(days[date] ?? [], id: \.sequence) { release in
                                 VStack(alignment: .leading, spacing: 12) {
                                     if let url = URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)") {
-                                        Link(release.version.map { "Version \($0)" } ?? "Commit \(release.revision.prefix(7))", destination: url)
-                                            .font(CaperTheme.font(12)).buttonStyle(ReleaseLinkStyle())
-                                            .accessibilityHint("View this release on GitHub")
+                                        ReleaseLink(
+                                            label: release.version.map { "Version \($0)" } ?? "Commit \(release.revision.prefix(7))",
+                                            url: url, size: 12)
                                     }
                                     ForEach(Array(release.highlights.enumerated()), id: \.offset) { _, highlight in
                                         Text(highlight.title).font(CaperTheme.font(16, weight: .bold))
@@ -181,8 +238,8 @@ struct WhatsNewDisplay: Identifiable {
                             Divider().overlay(CaperTheme.border)
                         }
                     } else if notes.loading {
-                        ProgressView().accessibilityLabel("Loading release notes")
-                        Text("Loading release notes…").foregroundStyle(CaperTheme.muted)
+                        ProgressView().accessibilityLabel("Loading release highlights")
+                        Text("Loading release highlights…").foregroundStyle(CaperTheme.muted)
                     } else if let error = notes.error {
                         Text(error).foregroundStyle(CaperTheme.error)
                         Button("Retry") { Task { await notes.refresh() } }
@@ -208,39 +265,5 @@ struct WhatsNewDisplay: Identifiable {
         #else
         .presentationDetents([.large]).presentationDragIndicator(.visible)
         #endif
-    }
-    private var platformName: String {
-        #if os(iOS)
-        "iOS"
-        #else
-        "macOS"
-        #endif
-    }
-}
-
-/// Keep commit links quiet at rest without inheriting the sheet's filled button style.
-struct ReleaseLinkStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.underline()
-            .modifier(ReleaseLinkFeedback(pressed: configuration.isPressed))
-    }
-}
-
-private struct ReleaseLinkFeedback: ViewModifier {
-    let pressed: Bool
-    @Environment(\.isFocused) private var focused
-    @State private var hovered = false
-
-    func body(content: Content) -> some View {
-        content.foregroundStyle(pressed ? CaperTheme.terracottaBright : hovered ? CaperTheme.actionHover : CaperTheme.muted)
-            .background(CaperTheme.terracotta.opacity(pressed ? 0.24 : hovered ? 0.12 : 0))
-            .overlay {
-                RoundedRectangle(cornerRadius: 2)
-                    .stroke(CaperTheme.terracotta, lineWidth: 2).padding(-3)
-                    .opacity(focused ? 1 : 0).allowsHitTesting(false)
-            }
-            .focusEffectDisabled()
-            .onHover { hovered = $0 }
-            .modifier(ControlPointer())
     }
 }

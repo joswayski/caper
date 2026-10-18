@@ -119,6 +119,9 @@ public final class AppModel {
     /// Removes a conversation's delivered pushes, by its channel or DM id (the
     /// APNs `thread-id`), once it is on screen in the foreground.
     @ObservationIgnored public var removeDeliveredNotifications: ((String) -> Void)?
+    /// Removes the notification shown for a deleted message (`messageId`),
+    /// from the `profiles` feed's `notification.retracted`.
+    @ObservationIgnored public var retractNotification: ((String) -> Void)?
     /// `GET /api/notifications/settings`; nil until the first load, so menus
     /// never show a guessed level.
     public private(set) var notificationSettings: NotificationSettings?
@@ -483,6 +486,7 @@ public final class AppModel {
         switch event {
         case .person(let person): applyProfileUpdate(person)
         case .space(let space): applySpaceUpdate(space)
+        case .notificationRetracted(let messageID): retractNotification?(messageID)
         }
     }
 

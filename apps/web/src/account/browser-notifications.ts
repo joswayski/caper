@@ -97,6 +97,9 @@ export function watchBrowserNotifications(
   let active = true;
   const downloads = new AbortController();
   const displayed = new Map<Notification, string | undefined>();
+  const identities = new WeakMap<Notification, string>();
+  // Messages deleted after they notified: closed if shown, never shown if late.
+  const retracted = new Set<string>();
   const visibleKey = `caper.notificationVisible.${accountId}`;
   const tab = crypto.randomUUID();
   // A background tab must also suppress the conversation visible in another tab.
@@ -140,7 +143,8 @@ export function watchBrowserNotifications(
       event.type !== "notification.created" ||
       typeof identity !== "string" ||
       typeof event.title !== "string" ||
-      typeof event.body !== "string"
+      typeof event.body !== "string" ||
+      retracted.has(identity)
     )
       return;
     activity();
@@ -184,7 +188,7 @@ export function watchBrowserNotifications(
       : claim();
     if (!claimed) return;
     const image = event.attachmentUrl ? await notificationImage(event, downloads.signal) : undefined;
-    if (!allowed() || !fresh() || reading()) {
+    if (!allowed() || !fresh() || reading() || retracted.has(identity)) {
       if (image) URL.revokeObjectURL(image);
       return;
     }
@@ -197,6 +201,7 @@ export function watchBrowserNotifications(
       };
       const notification = new Notification(event.title, options);
       displayed.set(notification, image);
+      identities.set(notification, identity);
       notification.onclose = () => {
         displayed.delete(notification);
         if (image) URL.revokeObjectURL(image);
@@ -221,8 +226,25 @@ export function watchBrowserNotifications(
     },
   );
   void subscription.ready.catch(() => undefined);
+  // `notification.retracted` arrives on the profiles feed; other tabs close their own.
+  const retractions = appGateway().subscribe(
+    { kind: "profiles" },
+    {
+      event: (value) => {
+        const event = value as { type?: unknown; messageId?: unknown };
+        if (event?.type !== "notification.retracted" || typeof event.messageId !== "string" || !event.messageId) return;
+        retracted.add(event.messageId);
+        if (retracted.size > 256) retracted.delete(retracted.values().next().value!);
+        for (const notification of displayed.keys())
+          if (identities.get(notification) === event.messageId) notification.close();
+      },
+      error: () => undefined,
+    },
+  );
+  void retractions.ready.catch(() => undefined);
   return () => {
     active = false;
+    retractions.unsubscribe();
     clearTimeout(activityTimer);
     downloads.abort();
     subscription.unsubscribe();

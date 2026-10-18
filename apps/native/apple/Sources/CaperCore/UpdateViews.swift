@@ -163,22 +163,23 @@ private struct UpdateButtonSweep: View, Animatable {
                     .onTapGesture(perform: close).accessibilityHidden(true)
                     .modifier(Entrance.scrim)
                 VStack(alignment: .leading, spacing: 16) {
-                    HStack(spacing: 14) {
-                        Image("caper-face", bundle: caperResourceBundle).renderingMode(.original).resizable()
-                            .scaledToFit().frame(width: 40, height: 40).accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 5) {
+                    // The face, the title, then "Version 0.1.82 · October 18, 2026" right
+                    // under it, as in What's new; the version opens its commit.
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            Image("caper-face", bundle: caperResourceBundle).renderingMode(.original).resizable()
+                                .scaledToFit().frame(width: 36, height: 36).accessibilityHidden(true)
+                                .padding(.bottom, 10)
                             Text("A fresh Caper is ready").font(CaperTheme.font(20, weight: .bold))
-                            // "Version 0.1.82 · October 18, 2026"; the version opens its commit.
+                                .padding(.bottom, 2)
                             HStack(spacing: 0) {
                                 if let url = update.commitURL {
-                                    Link("Version \(update.version)", destination: url)
-                                        .buttonStyle(ReleaseLinkStyle())
-                                        .help("View this version on GitHub")
+                                    ReleaseLink(label: "Version \(update.version)", url: url)
                                 } else {
                                     Text("Version \(update.version)")
                                 }
                                 if let date = update.releasedLabel { Text(" · \(date)") }
-                            }.font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).tint(CaperTheme.muted)
+                            }.font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
                         }
                         Spacer(minLength: 0)
                         Button(action: close) { CaperIcon(name: "x", size: 18) }

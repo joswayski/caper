@@ -2,7 +2,8 @@ import Foundation
 
 // Live profile and space updates (the gateway's `profiles` subscription):
 // `profile.updated` and `space.updated` events, and the pure functions that
-// apply them over every retained copy of a person or space.
+// apply them over every retained copy of a person or space. The same feed
+// carries `notification.retracted` for deleted messages.
 
 /// One event from the `profiles` subscription.
 public enum ProfileFeedEvent: Equatable, Sendable {
@@ -11,6 +12,8 @@ public enum ProfileFeedEvent: Equatable, Sendable {
     case person(Person)
     /// A space was renamed or its icon changed. Absent icon fields mean it was removed.
     case space(Space)
+    /// A message was deleted: close the notification this app showed for it.
+    case notificationRetracted(messageID: String)
 
     /// The event, or nil for other or malformed frames (newer servers may add types).
     public static func parse(_ event: [String: Any]) -> ProfileFeedEvent? {
@@ -21,6 +24,9 @@ public enum ProfileFeedEvent: Equatable, Sendable {
         case "space.updated":
             guard let space: Space = decode(event["space"]), !space.id.isEmpty else { return nil }
             return .space(space)
+        case "notification.retracted":
+            guard let id = event["messageId"] as? String, !id.isEmpty else { return nil }
+            return .notificationRetracted(messageID: id)
         default:
             return nil
         }

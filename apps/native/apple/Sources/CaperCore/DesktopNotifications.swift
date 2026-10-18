@@ -9,6 +9,10 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
     private var gateway: Gateway?
     private var accountID: String?
     private var epoch = 0
+    /// Deleted messages (`notification.retracted`, from the `profiles` feed),
+    /// so an original still downloading or arriving late is never shown.
+    private var retracted: [String] = []
+    nonisolated static let retractedLimit = 200
 
     init(model: AppModel) { self.model = model }
 
@@ -29,6 +33,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
                 center.removeDeliveredNotifications(withIdentifiers: notifications.filter { $0.request.content.threadIdentifier == id }.map(\.request.identifier))
             }
         }
+        model.retractNotification = { [weak self] messageID in self?.retract(messageID) }
         Task { [weak self] in
             _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
             guard self?.accountID == account.id, self?.epoch == epoch else { return }
@@ -42,6 +47,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
     func stop() {
         epoch += 1
         accountID = nil
+        retracted = []
         let previous = gateway; gateway = nil
         Task { await previous?.stop() }
         // Logout reaches this in unit tests, whose xctest host is not an app
@@ -49,6 +55,24 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+    }
+
+    /// Closes the notification shown for a deleted message and drops one
+    /// that is still being prepared.
+    private func retract(_ messageID: String) {
+        guard accountID != nil, !messageID.isEmpty else { return }
+        retracted = Self.remembering(messageID, in: retracted)
+        Task { await NotificationRetraction.remove(messageID: messageID) }
+    }
+
+    /// The newest retracted ids, oldest first, at most `retractedLimit`.
+    nonisolated static func remembering(_ messageID: String, in list: [String]) -> [String] {
+        Array((list.filter { $0 != messageID } + [messageID]).suffix(retractedLimit))
+    }
+
+    private func isRetracted(_ event: [String: Any]) -> Bool {
+        guard let id = event["messageId"] as? String else { return false }
+        return retracted.contains(id)
     }
 
     private func receive(_ event: [String: Any]) {
@@ -64,7 +88,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: timestamp) ?? ISO8601DateFormatter().date(from: timestamp)
-        guard let date, (-30...120).contains(Date().timeIntervalSince(date)) else { return }
+        guard let date, (-30...120).contains(Date().timeIntervalSince(date)), !isRetracted(event) else { return }
         if NSApp.isActive && !model.navigationOpen && model.isShowing(route) { return }
         let content = UNMutableNotificationContent()
         content.title = title; content.body = body; content.sound = .default; content.userInfo = event
@@ -84,7 +108,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
         let senderTemporary = temporary
         Task { [weak self] in
             let media = await NotificationAttachment.load(event)
-            guard let self, self.accountID == account, self.epoch == generation,
+            guard let self, self.accountID == account, self.epoch == generation, !self.isRetracted(event),
                   !(NSApp.isActive && !model.navigationOpen && model.isShowing(route)) else {
                 if let media { try? FileManager.default.removeItem(at: media.url) }
                 if let senderTemporary { try? FileManager.default.removeItem(at: senderTemporary) }
