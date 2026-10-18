@@ -1289,6 +1289,21 @@ struct CaperApp {
     /// A member's own space channel reopens the normal way; this navigation
     /// then lands on the report.
     report_focus: Option<(u64, feedback::VisitTarget)>,
+    /// A failed update's error, sent to the Caper team from the update review.
+    update_report: Option<UpdateReport>,
+}
+
+/// The failed-update error posted as `@feedback` in your personal notes.
+struct UpdateReport {
+    error: String,
+    client_id: String,
+    state: ReportState,
+}
+
+enum ReportState {
+    Sending,
+    Sent,
+    Failed(String),
 }
 
 impl CaperApp {
@@ -1541,6 +1556,7 @@ impl CaperApp {
             visit: None,
             report_thread: None,
             report_focus: None,
+            update_report: None,
         };
         if let Some(name) = fixture.filter(|name| name.starts_with("parity-update")) {
             app.updates = updates::Updates::preview(updates::Available {
@@ -3276,6 +3292,29 @@ impl CaperApp {
                 } if epoch == self.account_epoch => {
                     if let Some(draft) = self.profile_drafts.get_mut(&person) {
                         draft.status = Some(status);
+                    }
+                }
+                // The update review's report: stays in the dialog, no navigation.
+                Event::ProfileSent {
+                    epoch,
+                    send,
+                    result,
+                    ..
+                } if epoch == self.account_epoch
+                    && self
+                        .update_report
+                        .as_ref()
+                        .is_some_and(|report| report.client_id == send.client_id) =>
+                {
+                    if let Some(direct) = result.as_ref().ok().or(send.direct.as_ref()) {
+                        self.directs.retain(|item| item.id != direct.id);
+                        self.directs.push(direct.clone());
+                    }
+                    if let Some(report) = &mut self.update_report {
+                        report.state = match result {
+                            Ok(_) => ReportState::Sent,
+                            Err(error) => ReportState::Failed(error.message),
+                        };
                     }
                 }
                 Event::ProfileSent {
@@ -8816,6 +8855,7 @@ impl CaperApp {
                     );
                 }
                 ui.add_space(12.0);
+                let mut report_request = None;
                 let error = self.updates.error.as_ref().or(update.last_error.as_ref());
                 if let Some(error) = error {
                     ui.label(bold("The last update didn’t finish").color(ERROR));
@@ -8864,7 +8904,46 @@ impl CaperApp {
                         .show(ui, |ui| {
                             ui.label(RichText::new(error).color(MUTED).size(12.0));
                         });
+                    // One click posts this error to the Caper team from your notes.
+                    if self.token.is_some()
+                        && self
+                            .account
+                            .as_ref()
+                            .is_some_and(|account| account.username.is_some())
+                    {
+                        ui.add_space(6.0);
+                        let state = self
+                            .update_report
+                            .as_ref()
+                            .filter(|report| report.error == *error)
+                            .map(|report| &report.state);
+                        match state {
+                            Some(ReportState::Sent) => {
+                                ui.label(
+                                    RichText::new("Sent. The Caper team will reply in your notes.")
+                                        .color(MUTED)
+                                        .size(12.0),
+                                );
+                            }
+                            Some(ReportState::Sending) => {
+                                secondary_button(ui, "Sending to the Caper team…", false);
+                            }
+                            failed => {
+                                if let Some(ReportState::Failed(message)) = failed {
+                                    ui.label(RichText::new(message).color(ERROR).size(12.0));
+                                }
+                                if secondary_button(ui, "Send this to the Caper team", true)
+                                    .clicked()
+                                {
+                                    report_request = Some(error.clone());
+                                }
+                            }
+                        }
+                    }
                     ui.add_space(8.0);
+                }
+                if let Some(error) = report_request.take() {
+                    self.send_update_report(error, &update.version);
                 }
                 ui.horizontal(|ui| {
                     ui.label(
@@ -19490,6 +19569,54 @@ impl CaperApp {
     }
 
     /// Only explicit Send/Open resolves the canonical DM; Open never writes a message.
+    /// Posts a failed update's error as `@feedback` in your personal notes,
+    /// where the Caper team can read it and reply.
+    fn send_update_report(&mut self, error: String, target_version: &str) {
+        let (Some(token), Some(account)) = (self.token.clone(), self.account.as_ref()) else {
+            return;
+        };
+        let Some(username) = account.username.clone() else {
+            return;
+        };
+        let (person, name) = (
+            account.id.clone(),
+            account.display_name.clone().unwrap_or_default(),
+        );
+        let platform = match std::env::consts::OS {
+            "windows" => "Windows",
+            "macos" => "macOS",
+            _ => "Linux",
+        };
+        let text = format!(
+            "@feedback My Caper update didn’t finish.\n\n{error}\n\n{} → Caper {target_version} on {platform}",
+            updates::installed_version().trim_start_matches("Installed: "),
+        );
+        let client_id = uuid::Uuid::new_v4().to_string();
+        self.update_report = Some(UpdateReport {
+            error,
+            client_id: client_id.clone(),
+            state: ReportState::Sending,
+        });
+        self.worker.send(Command::SendProfile {
+            epoch: self.account_epoch,
+            person: person.clone(),
+            token,
+            send: Box::new(profile_dm::Send {
+                person,
+                username,
+                name,
+                client_id,
+                text,
+                files: Vec::new(),
+                settings: self.uploads.clone(),
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                retrying: false,
+                open_only: false,
+                direct: None,
+            }),
+        });
+    }
+
     fn profile_action(&mut self, person: &str, username: &str, open_only: bool) {
         if self.profile_sending() || self.profile_picker.is_some() || self.is_blocked(person) {
             return;
@@ -28080,6 +28207,130 @@ mod tests {
             assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
                 egui::Shape::Text(text) if text.galley.job.text == "A fresh Caper is ready")));
         }
+    }
+
+    #[test]
+    fn failed_update_error_is_sent_to_the_caper_team_from_your_notes() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-update-error"),
+        );
+        // Fixtures never sign in; the report needs a session like the real app.
+        app.token = Some("fixture-token".into());
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        let frame = |app: &mut CaperApp, events| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |context| app.update_notice(context),
+            )
+        };
+        let shows = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label)
+            })
+        };
+        for _ in 0..5 {
+            frame(&mut app, vec![]);
+        }
+        let output = frame(&mut app, vec![]);
+        let button = text_position(&output, "Send this to the Caper team");
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(button),
+                    egui::Event::PointerButton {
+                        pos: button,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        let report = app.update_report.as_ref().expect("report started");
+        assert!(matches!(report.state, crate::ReportState::Sending));
+        let client_id = report.client_id.clone();
+        let own = app.account.as_ref().unwrap().id.clone();
+        assert!(shows(
+            &frame(&mut app, vec![]),
+            "Sending to the Caper team…"
+        ));
+
+        let send = |client_id: &str| {
+            Box::new(crate::profile_dm::Send {
+                person: own.clone(),
+                username: "owner".into(),
+                name: "Owner".into(),
+                client_id: client_id.into(),
+                text: String::new(),
+                files: Vec::new(),
+                settings: None,
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                retrying: false,
+                open_only: false,
+                direct: None,
+            })
+        };
+        events
+            .send(crate::worker::Event::ProfileSent {
+                epoch: app.account_epoch,
+                person: own.clone(),
+                send: send(&client_id),
+                result: Err(crate::profile_dm::Failure {
+                    message: "Local test refusal".into(),
+                    uncertain: false,
+                }),
+            })
+            .unwrap();
+        app.receive();
+        let output = frame(&mut app, vec![]);
+        assert!(shows(&output, "Local test refusal"));
+        assert!(shows(&output, "Send this to the Caper team"), "can retry");
+        assert!(
+            app.profile_drafts.is_empty(),
+            "no profile draft side effects"
+        );
+
+        app.send_update_report(
+            "Could not replace the installed app: Access denied (os error 5)".into(),
+            "0.1.42",
+        );
+        let client_id = app.update_report.as_ref().unwrap().client_id.clone();
+        let notes: crate::model::DirectConversation = serde_json::from_value(serde_json::json!({
+            "id": "dm-notes", "peer": {"id": own, "username": "owner", "displayName": "Owner"},
+            "lastSeq": "1", "readSeq": "1", "status": "accepted"
+        }))
+        .unwrap();
+        events
+            .send(crate::worker::Event::ProfileSent {
+                epoch: app.account_epoch,
+                person: own.clone(),
+                send: send(&client_id),
+                result: Ok(notes),
+            })
+            .unwrap();
+        app.receive();
+        assert!(shows(
+            &frame(&mut app, vec![]),
+            "Sent. The Caper team will reply in your notes."
+        ));
+        assert!(app.updates.available().is_some(), "the review stays open");
+        assert!(
+            app.selected_direct.is_none(),
+            "no navigation behind the dialog"
+        );
+        assert!(app.directs.iter().any(|direct| direct.id == "dm-notes"));
     }
 
     #[test]

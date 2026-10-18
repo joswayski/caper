@@ -129,12 +129,18 @@ private struct UpdateButtonSweep: View, Animatable {
     public let close: () -> Void
     public let restart: () -> Void
     public let download: () -> Void
+    /// Sends the error to the Caper team; returns a failure message or nil.
+    public let report: ((String) async -> String?)?
     @FocusState private var focused: Bool
+    @State private var reportState: ReportState?
+
+    enum ReportState: Equatable { case sending, sent, failed(String) }
 
     public init(update: DesktopUpdate, inCall: Bool, close: @escaping () -> Void,
-                restart: @escaping () -> Void, download: @escaping () -> Void) {
+                restart: @escaping () -> Void, download: @escaping () -> Void,
+                report: ((String) async -> String?)? = nil) {
         self.update = update; self.inCall = inCall; self.close = close
-        self.restart = restart; self.download = download
+        self.restart = restart; self.download = download; self.report = report
     }
 
     public var body: some View {
@@ -179,6 +185,21 @@ private struct UpdateButtonSweep: View, Animatable {
                                         .environment(\.openURL, OpenURLAction { _ in download(); return .handled })
                                     Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                                         .textSelection(.enabled)
+                                    if let report {
+                                        // One click posts this error to the Caper team from your notes.
+                                        switch reportState {
+                                        case .sent?:
+                                            Text("Sent. The Caper team will reply in your notes.")
+                                                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                                        case .sending?:
+                                            Button("Sending to the Caper team…") {}.buttonStyle(CaperSecondaryButton()).disabled(true)
+                                        case .failed(let message)?:
+                                            Text(message).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                                            reportButton(report, error: error)
+                                        case nil:
+                                            reportButton(report, error: error)
+                                        }
+                                    }
                                 }
                             }
                             if !update.historyComplete {
@@ -248,6 +269,17 @@ private struct UpdateHighlightRow: View {
                 Text(text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).lineSpacing(3)
             }.textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
         }.accessibilityElement(children: .combine)
+    }
+}
+
+extension DesktopUpdateReview {
+    fileprivate func reportButton(_ report: @escaping (String) async -> String?, error: String) -> some View {
+        Button("Send this to the Caper team") {
+            reportState = .sending
+            Task { @MainActor in
+                reportState = await report(error).map { .failed($0) } ?? .sent
+            }
+        }.buttonStyle(CaperSecondaryButton()).accessibilityIdentifier("desktop-update-report")
     }
 }
 

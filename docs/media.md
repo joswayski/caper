@@ -8150,7 +8150,9 @@ releases. The updater returns them as one stacked list (newest first, repeated
 titles dropped) with the newest release's date, so the review shows a date
 instead of version numbers, bold titles over short descriptions and a close
 button. After a failed update, the error's "use the installer" links straight to
-the installer; there is no separate footer link. Missing editorial metadata never blocks installing the signed update.
+the installer; there is no separate footer link. Signed in, **Send this to the
+Caper team** posts the error, installed build and target version as `@feedback`
+in your personal notes (no navigation); the team reads and replies there. Missing editorial metadata never blocks installing the signed update.
 Older clients keep their signed commit-title changelog until updated once. Linux
 fixture rendering and modal regressions cover narrow screens, errors, history gaps,
 call warnings and installer fallback; physical Mac/Windows focus, scrolling, motion
