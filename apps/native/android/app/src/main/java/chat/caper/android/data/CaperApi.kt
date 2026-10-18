@@ -187,14 +187,17 @@ class CaperApi(
         threadRootId: String? = null,
         broadcast: Boolean = false,
         replyToId: String? = null,
+        spoilerAttachmentIds: List<String> = emptyList(),
     ): ChatMessage {
         require(attachmentIds.size <= AttachmentPolicy.MAX_ATTACHMENTS) { "Attach up to 10 files." }
+        require(attachmentIds.containsAll(spoilerAttachmentIds)) { "Spoilers must be attached files." }
         val message: ChatMessage = post(
             "/api/chat/channels/${channel.pathId()}/messages",
             buildJsonObject {
                 put("clientMessageId", clientMessageId.toString()); put("text", text)
                 // Only when non-empty: text-only requests keep their original idempotency hash.
                 if (attachmentIds.isNotEmpty()) putJsonArray("attachmentIds") { attachmentIds.forEach { add(it.assetPathId()) } }
+                if (spoilerAttachmentIds.isNotEmpty()) putJsonArray("spoilerAttachmentIds") { spoilerAttachmentIds.forEach { add(it.assetPathId()) } }
                 if (threadRootId != null) { put("threadRootId", threadRootId); put("broadcast", broadcast) }
                 if (replyToId != null) put("replyToId", replyToId)
             },

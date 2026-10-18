@@ -98,9 +98,9 @@ internal data class ViewerPages(val ids: List<String>, val start: Int)
  * What tapping [clicked] opens: that message's viewable images and videos in message order,
  * starting at [clicked]. Null when [clicked] is not viewable.
  */
-internal fun viewerPages(attachments: List<ChatAttachment>, clicked: String): ViewerPages? {
+internal fun viewerPages(attachments: List<ChatAttachment>, clicked: String, revealed: Set<String> = emptySet()): ViewerPages? {
     // Pager keys must be unique; a repeated ID (which the API never sends) keeps its first place.
-    val ids = attachments.filter { it.viewable() }.map { it.id }.distinct()
+    val ids = attachments.filter { it.viewable() && (!it.spoiler || it.id in revealed) }.map { it.id }.distinct()
     val start = ids.indexOf(clicked)
     return if (start < 0) null else ViewerPages(ids, start)
 }

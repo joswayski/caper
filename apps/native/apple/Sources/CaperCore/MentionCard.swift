@@ -99,6 +99,7 @@ final class ProfileMessageDraft {
         let local: LocalAttachmentFile
         var prepared: PreparedAttachment?
         var attachment: ChatAttachment?
+        var spoiler = false
         var uploadError: String?
         var progress: Double?
     }
@@ -141,9 +142,22 @@ final class ProfileMessageDraft {
         if discarded { throw CancellationError() }
     }
 
+    func toggleSpoiler(id: String) {
+        guard editable, let index = files.firstIndex(where: { $0.id == id }) else { return }
+        files[index].spoiler.toggle()
+    }
+
+    private var attachmentsToSend: [ChatAttachment] {
+        files.compactMap { file in
+            guard var attachment = file.attachment else { return nil }
+            attachment.spoiler = file.spoiler
+            return attachment
+        }
+    }
+
     func upload(channelID: String, api: APIClient) async throws -> [ChatAttachment] {
         guard !files.isEmpty else { return [] }
-        if files.allSatisfy({ $0.attachment != nil }) { return files.compactMap(\.attachment) }
+        if files.allSatisfy({ $0.attachment != nil }) { return attachmentsToSend }
         let usage = try await api.assetUsage()
         try checkActive()
         for index in files.indices {
@@ -183,7 +197,7 @@ final class ProfileMessageDraft {
             files[index].attachment = attachment
             files[index].progress = nil
         }
-        return files.compactMap(\.attachment)
+        return attachmentsToSend
     }
 
     func clear() {

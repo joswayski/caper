@@ -29,6 +29,8 @@ export interface ChatAttachment {
   status?: ChatAttachmentStatus;
   /** A GIF or animated image stored as a silent looping video. */
   animated?: boolean;
+  /** Hidden until the reader explicitly reveals it. */
+  spoiler?: boolean;
   /** Present only when ready. */
   url?: string;
   previewUrl?: string;

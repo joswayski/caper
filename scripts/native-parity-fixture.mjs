@@ -1294,7 +1294,12 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               text: body.text,
               ...(mentions.length ? { mentions } : {}),
               ...(attachmentIds.length
-                ? { attachments: attachmentIds.map((id) => state.assets.get(id).attachment) }
+                ? {
+                    attachments: attachmentIds.map((id) => ({
+                      ...state.assets.get(id).attachment,
+                      ...(body.spoilerAttachmentIds?.includes(id) ? { spoiler: true } : {}),
+                    })),
+                  }
                 : {}),
             },
             createdAt: new Date().toISOString(),

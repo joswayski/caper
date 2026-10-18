@@ -65,6 +65,7 @@ export async function prepareSpaceLanding(
       const urls = new Set<string>();
       for (const message of initialView.history?.messages.slice(-8) ?? []) {
         for (const attachment of attachmentsOf(message)) {
+          if (attachment.spoiler) continue;
           const view = attachmentView(attachment);
           const url =
             view === "image"

@@ -341,7 +341,7 @@ function ViewerItem({
  * Escape, the close button, the dark area, swiping down and (on phones) Back close it.
  */
 export default function MediaViewer({
-  attachments,
+  attachments: allAttachments,
   attachmentId,
   anchor,
   author,
@@ -359,6 +359,8 @@ export default function MediaViewer({
   onClose: () => void;
   onExpired?: (ids: string[]) => void;
 }) {
+  // Opening one file must not reveal another spoiler by paging through it.
+  const attachments = allAttachments.filter((attachment) => !attachment.spoiler || attachment.id === attachmentId);
   const [currentId, setCurrentId] = useState(attachmentId);
   /** Which way the last page turn went, so the next file arrives from that side. */
   const [entering, setEntering] = useState<1 | -1>();

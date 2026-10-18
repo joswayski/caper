@@ -96,13 +96,14 @@ fn delivery_urls_are_stable_for_a_day_and_expire_within_two() {
 fn messages_gain_urls_only_when_signed_and_available() {
     let signer = CdnSigner::new("https://cdn.test".into(), vec![1; 32]);
     let message = json!({"content":{"version":1,"type":"text","text":"","attachments":[
-        {"id":"one","kind":"image","preview":{}},
+        {"id":"one","kind":"image","preview":{},"spoiler":true},
         {"id":"two","kind":"file"},
         {"id":"three","kind":"image","unavailable":true}
     ]}});
     assert_eq!(sign_attachments(message.clone(), None), message);
     let signed = sign_attachments(message, Some(&signer));
     let attachments = signed["content"]["attachments"].as_array().unwrap();
+    assert_eq!(attachments[0]["spoiler"], true);
     assert!(
         attachments[0]["url"]
             .as_str()
@@ -603,13 +604,14 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     let _ = complete_as(&owner, &doc_id).await.unwrap();
     assert_eq!(store.lock().unwrap()[&original_key(&doc_id)], notes);
     let client_message_id = Uuid::new_v4();
-    let message = crate::chat::send_message(
+    let message = crate::chat::send_message_with_spoilers(
         &pool,
         &channel,
         "owner-chat",
         client_message_id,
         "",
         &[shot_id.clone(), doc_id.clone()],
+        std::slice::from_ref(&shot_id),
         None,
         false,
         None,
@@ -619,6 +621,8 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     let attachments = &message["content"]["attachments"];
     assert_eq!(attachments[0]["id"], shot_id.as_str());
     assert_eq!(attachments[1]["kind"], "file");
+    assert_eq!(attachments[0]["spoiler"], true);
+    assert!(attachments[1].get("spoiler").is_none());
     assert!(
         attachments[0].get("url").is_none(),
         "stored payloads never contain URLs"
@@ -632,13 +636,14 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     .execute(&pool)
     .await
     .unwrap();
-    let retry = crate::chat::send_message(
+    let retry = crate::chat::send_message_with_spoilers(
         &pool,
         &channel,
         "owner-chat",
         client_message_id,
         "",
         &[shot_id.clone(), doc_id.clone()],
+        std::slice::from_ref(&shot_id),
         None,
         false,
         None,
@@ -646,6 +651,31 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     .await
     .unwrap();
     assert_eq!(retry, message);
+    for (spoilers, expected) in [
+        (vec![], StatusCode::CONFLICT),
+        (vec![doc_id.clone()], StatusCode::CONFLICT),
+        (
+            vec![shot_id.clone(), shot_id.clone()],
+            StatusCode::BAD_REQUEST,
+        ),
+        (vec!["not-attached".into()], StatusCode::BAD_REQUEST),
+    ] {
+        let error = crate::chat::send_message_with_spoilers(
+            &pool,
+            &channel,
+            "owner-chat",
+            client_message_id,
+            "",
+            &[shot_id.clone(), doc_id.clone()],
+            &spoilers,
+            None,
+            false,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.status, expected);
+    }
     assert_eq!(
         crate::chat::send_message(
             &pool,
@@ -685,6 +715,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
             .await
             .unwrap();
     let listed = &history["messages"][0]["content"]["attachments"];
+    assert_eq!(listed[0]["spoiler"], true);
     assert!(
         listed[0]["previewUrl"]
             .as_str()
@@ -720,6 +751,28 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         }
     };
     let message_id = message["id"].as_str().unwrap();
+    for (spoilers, expected) in [
+        (json!([shot_id]), StatusCode::OK),
+        (json!([]), StatusCode::CONFLICT),
+    ] {
+        let (status, response) = chat_request(
+            "POST",
+            format!("/api/chat/channels/{channel}/messages"),
+            json!({"clientMessageId":client_message_id,"attachmentIds":[shot_id,doc_id],"spoilerAttachmentIds":spoilers}),
+        ).await;
+        assert_eq!(status, expected, "{response}");
+        if status == StatusCode::OK {
+            assert_eq!(response["content"]["attachments"][0]["spoiler"], true);
+        }
+    }
+    let (status, edited) = chat_request(
+        "PUT",
+        format!("/api/chat/channels/{channel}/messages/{message_id}"),
+        json!({"text":"edited files", "expectedRevision":1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+    assert_eq!(edited["content"]["attachments"][0]["spoiler"], true);
     let (status, pinned) = chat_request(
         "PUT",
         format!("/api/chat/channels/{channel}/messages/{message_id}/pin"),
@@ -741,6 +794,10 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{forwarded}");
+    assert_eq!(
+        forwarded["forward"]["message"]["content"]["attachments"][0]["spoiler"],
+        true
+    );
     assert!(
         forwarded["forward"]["message"]["content"]["attachments"][1]["url"]
             .as_str()
@@ -759,6 +816,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     .await;
     assert_eq!(status, StatusCode::OK, "{conversation}");
     for shown in [&conversation["root"], &conversation["source"]["message"]] {
+        assert_eq!(shown["content"]["attachments"][0]["spoiler"], true);
         assert!(
             shown["content"]["attachments"][0]["previewUrl"]
                 .as_str()
@@ -857,6 +915,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
             .unwrap();
     let listed = &history["messages"][0]["content"]["attachments"];
     assert_eq!(listed[1]["unavailable"], true);
+    assert_eq!(listed[0]["spoiler"], true);
     assert!(listed[1].get("url").is_none());
     assert_eq!(purge(&assets).await.unwrap(), 0);
     sqlx::query(
