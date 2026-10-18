@@ -1011,6 +1011,7 @@ struct CaperApp {
     spaces: Vec<model::Space>,
     directs: Vec<model::DirectConversation>,
     unread_spaces: Vec<model::UnreadSpace>,
+    feedback_waiting: u64,
     unread_revision: u64,
     unread_visit: Option<String>,
     unread_visit_pending: bool,
@@ -1348,6 +1349,7 @@ impl CaperApp {
             spaces: Vec::new(),
             directs: Vec::new(),
             unread_spaces: Vec::new(),
+            feedback_waiting: 0,
             unread_revision: 0,
             unread_visit: None,
             unread_visit_pending: false,
@@ -1775,6 +1777,11 @@ impl CaperApp {
                     if let Some(account) = &mut app.account {
                         account.feedback_team = true;
                     }
+                    app.feedback_waiting = if name == "parity-feedback-zero" {
+                        0
+                    } else {
+                        12
+                    };
                     let channel = app.selected_channel.clone().expect("fixture channel");
                     let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
                     messages[1].content.text =
@@ -3456,11 +3463,12 @@ impl CaperApp {
                 } if epoch == self.account_epoch => {
                     if visit == Some(self.navigation)
                         && self.unread_visit_pending
-                        && let Ok(spaces) = &result
+                        && let Ok(unread) = &result
                     {
                         // This entry snapshot is independent of badge refresh revisions.
                         // No automatic acknowledgement can race ahead of it.
-                        self.unread_boundary = spaces
+                        self.unread_boundary = unread
+                            .spaces
                             .iter()
                             .flat_map(|space| &space.channels)
                             .find(|channel| Some(&channel.id) == self.unread_visit.as_ref())
@@ -3472,9 +3480,10 @@ impl CaperApp {
                         self.unread_visit_pending = false;
                     }
                     if revision == self.unread_revision
-                        && let Ok(spaces) = result
+                        && let Ok(unread) = result
                     {
-                        self.unread_spaces = spaces;
+                        self.unread_spaces = unread.spaces;
+                        self.feedback_waiting = unread.feedback_waiting;
                     }
                     self.mark_selected_channel_read();
                 }
@@ -4313,6 +4322,7 @@ impl CaperApp {
         self.unread_visit = None;
         self.unread_visit_pending = false;
         self.unread_boundary = None;
+        self.feedback_waiting = 0;
         self.channel_reads.clear();
         self.unread_revision += 1;
         self.membership_refreshing = false;
@@ -10875,7 +10885,10 @@ impl CaperApp {
                         "Feedback",
                         Some(NavIcon::Speech),
                         active,
-                        RowExtras::default(),
+                        RowExtras {
+                            feedback_waiting: self.feedback_waiting,
+                            ..Default::default()
+                        },
                     );
                     if response.clicked() {
                         self.open_feedback();
@@ -10996,6 +11009,7 @@ impl CaperApp {
                         None,
                         active,
                         RowExtras {
+                            feedback_waiting: 0,
                             muted,
                             unread,
                             direct: true,
@@ -23022,6 +23036,8 @@ struct RowMenu<'a> {
 /// What a sidebar row shows besides its name and icon.
 #[derive(Default)]
 struct RowExtras<'a> {
+    /// Team reply backlog, independent of unread activity.
+    feedback_waiting: u64,
     /// Muted rows are dimmed with a bell-slash; this is its tooltip, like
     /// "Muted until 5:00 PM".
     muted: Option<String>,
@@ -23074,7 +23090,12 @@ fn channel_button(
             egui::WidgetType::SelectableLabel,
             ui.is_enabled(),
             active,
-            if extras.unread {
+            if extras.feedback_waiting > 0 {
+                format!(
+                    "{name}, {} feedback conversations waiting for a reply",
+                    extras.feedback_waiting
+                )
+            } else if extras.unread {
                 format!("{name}, unread activity")
             } else {
                 name.to_owned()
@@ -23127,6 +23148,25 @@ fn channel_button(
     // A live row ends with a small green waveform and how many are there.
     // It steps aside while the row's own shortcut and menu show.
     let mut live_left = rect.right();
+    if extras.feedback_waiting > 0 {
+        let text = extras.feedback_waiting.to_string();
+        let font = egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Medium".into()));
+        let (galley, width) = tabular_galley(ui, &text, &font, TEXT);
+        let badge = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 8.0 - (width + 12.0) / 2.0, rect.center().y),
+            egui::vec2(width + 12.0, 18.0),
+        );
+        ui.painter().rect_filled(badge, 8.0, TERRACOTTA);
+        ui.painter().galley(
+            egui::pos2(
+                badge.center().x - width / 2.0,
+                badge.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            TEXT,
+        );
+        live_left = badge.left() - 9.0;
+    }
     if let Some(count) = extras.live {
         let text = count.to_string();
         let font = egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Medium".into()));
@@ -26674,7 +26714,10 @@ mod tests {
                 epoch: app.account_epoch,
                 revision: app.unread_revision.wrapping_sub(1),
                 visit: Some(app.navigation),
-                result: Ok(spaces),
+                result: Ok(model::UnreadSpaces {
+                    spaces,
+                    feedback_waiting: 0,
+                }),
             })
             .unwrap();
         app.receive();
@@ -35518,6 +35561,7 @@ mod tests {
 
     #[test]
     fn feedback_sidebar_selection_replaces_the_underlying_conversation() {
+        let feedback_label = "Feedback, 12 feedback conversations waiting for a reply";
         for kind in ["self", "direct", "request", "channel"] {
             let (context, mut app) = fixture("parity-feedback");
             app.feedback_open = false;
@@ -35579,13 +35623,13 @@ mod tests {
             render(&mut app, &context, vec![]);
             let output = render(&mut app, &context, vec![]);
             assert!(selected(&output, &label), "{kind} starts selected");
-            assert!(!selected(&output, "Feedback"));
+            assert!(!selected(&output, feedback_label));
             let conversation = app.selected_channel.clone();
             let draft = app.draft.clone();
-            let feedback_row = labelled_center(&output, "Feedback").unwrap();
+            let feedback_row = labelled_center(&output, feedback_label).unwrap();
             click_at(&mut app, &context, feedback_row);
             let output = render(&mut app, &context, vec![]);
-            assert!(selected(&output, "Feedback"));
+            assert!(selected(&output, feedback_label));
             assert!(!selected(&output, &label), "{kind} is behind the inbox");
             assert_eq!(app.selected_channel, conversation);
             assert_eq!(app.draft, draft, "opening the inbox preserves the draft");
@@ -35597,7 +35641,7 @@ mod tests {
             );
             let output = render(&mut app, &context, vec![]);
             assert!(selected(&output, &label), "returning selects {kind}");
-            assert!(!selected(&output, "Feedback"));
+            assert!(!selected(&output, feedback_label));
             assert_eq!(app.draft, draft);
 
             if kind != "channel" {
@@ -35620,7 +35664,7 @@ mod tests {
                 origin: crate::feedback::Origin::Inbox,
             });
             let output = render(&mut app, &context, vec![]);
-            assert!(selected(&output, "Feedback"));
+            assert!(selected(&output, feedback_label));
             assert!(!selected(&output, "general"), "the report is a visit");
         }
     }
@@ -35679,6 +35723,100 @@ mod tests {
         // Any other navigation drops it.
         app.select_channel("chan00000001".into(), false);
         assert!(app.visit_request.is_none());
+    }
+
+    #[test]
+    fn feedback_waiting_badge_is_authoritative_and_not_cleared_by_opening() {
+        let (context, mut app) = fixture("parity-feedback-zero");
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        let send = |epoch, revision, result| {
+            events
+                .send(crate::worker::Event::UnreadLoaded {
+                    epoch,
+                    revision,
+                    visit: None,
+                    result,
+                })
+                .unwrap();
+        };
+        send(
+            app.account_epoch,
+            app.unread_revision,
+            Ok(crate::model::UnreadSpaces {
+                spaces: vec![],
+                feedback_waiting: 12,
+            }),
+        );
+        app.receive();
+        assert_eq!(app.feedback_waiting, 12);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label()
+                    == Some("Feedback, 12 feedback conversations waiting for a reply"))
+        );
+        assert!(texts(&output).contains(&"12"));
+        app.open_feedback();
+        assert_eq!(app.feedback_waiting, 12);
+        send(
+            app.account_epoch,
+            app.unread_revision,
+            Err("temporary outage".into()),
+        );
+        send(
+            app.account_epoch + 1,
+            app.unread_revision,
+            Ok(crate::model::UnreadSpaces {
+                spaces: vec![],
+                feedback_waiting: 99,
+            }),
+        );
+        send(
+            app.account_epoch,
+            app.unread_revision + 1,
+            Ok(crate::model::UnreadSpaces {
+                spaces: vec![],
+                feedback_waiting: 99,
+            }),
+        );
+        app.receive();
+        assert_eq!(
+            app.feedback_waiting, 12,
+            "failed and stale polls retain the count"
+        );
+        send(
+            app.account_epoch,
+            app.unread_revision,
+            Ok(crate::model::UnreadSpaces {
+                spaces: vec![],
+                feedback_waiting: 0,
+            }),
+        );
+        app.receive();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Feedback"))
+        );
+        assert!(!texts(&output).contains(&"12"));
+        app.feedback_waiting = 12;
+        app.reset_account_state();
+        assert_eq!(app.feedback_waiting, 0);
     }
 
     #[test]

@@ -123,6 +123,15 @@ public struct UnreadSpace: Codable, Equatable, Sendable {
 
 public struct UnreadSpacesResponse: Codable, Sendable {
     public let spaces: [UnreadSpace]
+    public let feedbackWaiting: Int
+
+    private enum CodingKeys: String, CodingKey { case spaces, feedbackWaiting }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        spaces = try values.decode([UnreadSpace].self, forKey: .spaces)
+        feedbackWaiting = try values.decodeIfPresent(Int.self, forKey: .feedbackWaiting) ?? 0
+    }
 }
 
 public struct DirectMessagePeer: Codable, Equatable, Sendable {

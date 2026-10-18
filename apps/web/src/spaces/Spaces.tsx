@@ -1783,6 +1783,7 @@ export default function Spaces({
   const [spaces, setSpaces] = useState<Space[]>(initialSpaceList?.spaces ?? []);
   const [invitations, setInvitations] = useState<Space[]>(initialSpaceList?.invitations ?? []);
   const [unreadSpaces, setUnreadSpaces] = useState<UnreadSpace[]>([]);
+  const [feedbackWaiting, setFeedbackWaiting] = useState(0);
   const unreadRevision = useRef(0);
   const channelReads = useRef(new Map<string, string>());
   const unreadAccount = useRef(account?.id);
@@ -1793,7 +1794,10 @@ export default function Spaces({
     const revision = ++unreadRevision.current;
     try {
       const result = await listUnreadSpaces();
-      if (unreadAccount.current === accountId && unreadRevision.current === revision) setUnreadSpaces(result.spaces);
+      if (unreadAccount.current === accountId && unreadRevision.current === revision) {
+        setUnreadSpaces(result.spaces);
+        setFeedbackWaiting(result.feedbackWaiting ?? 0);
+      }
     } catch {
       /* Keep the last known indicators during an outage. */
     }
@@ -1802,6 +1806,7 @@ export default function Spaces({
     unreadRevision.current++;
     channelReads.current.clear();
     setUnreadSpaces([]);
+    setFeedbackWaiting(0);
     const refresh = () => {
       if (!document.hidden) void refreshUnread();
     };
@@ -2731,10 +2736,14 @@ export default function Spaces({
     );
     void archiveFeedback(report.channel.id, report.threadRootId, archived)
       .catch((reason) => setFeedbackError(errorMessage(reason)))
-      .finally(() => void refreshFeedback());
+      .finally(() => {
+        void refreshFeedback();
+        void refreshUnread();
+      });
   };
   const feedbackNavigation = feedbackTeam && (
     <FeedbackInbox
+      waiting={feedbackWaiting}
       reports={(feedback?.reports ?? []).map((report) => ({
         ...report,
         reporter: withLatestProfile(report.reporter, account, profiles),

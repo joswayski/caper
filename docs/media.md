@@ -3062,6 +3062,14 @@ and is marked **Caper team has been notified 🫡** for everyone there.
   reports). Anyone but the team posting in the thread afterwards brings it back, and
   `?archived=true` lists archived threads. `GET /api/account/me` adds
   `feedbackTeam: true` for team members.
+- **Waiting badge.** `GET /api/spaces/unread` also returns `feedbackWaiting`:
+  the total unarchived conversations waiting for a team reply, grouped by
+  channel/thread using the newest report, independent of inbox pagination.
+  Non-team accounts receive zero. Web, Android, Apple and Rust desktop show a
+  terracotta count on Feedback through their existing unread refresh loop.
+  Opening, collapsing or viewing archived feedback does not clear it; replying
+  or archiving changes it on the next refresh. Failed refreshes retain the last
+  count; zero hides it. This is a shared team backlog, not a personal unread count.
 
 **Messaging Caper.** Any team name in **New message** opens an accepted DM with
 the Caper account (`users.team_account`, username `caper`, no email, so nobody
@@ -3104,6 +3112,7 @@ API image**: an older API keeps working against the new schema.
 | Rust desktop | `cargo fmt --check`, `cargo test` (422 passed) and Clippy with libwebrtc: decoding, pills, autocomplete, open order, inbox paging, notification routing, headless egui inbox/visit flows. No real window or live server |
 | Android | No Android SDK here. Models, `data/*`, push payloads and autocomplete compiled with standalone kotlinc and their JVM tests pass; Compose UI, view model and FCM taps unbuilt |
 | Apple | No Xcode here. Models, `AppModel`, autocomplete, notifications and API client type-checked with Swift 6 on Linux (stubbed Apple-only modules) and their XCTests pass; SwiftUI views, APNs taps and macOS notification clicks unbuilt |
+| Waiting badges (October 18) | Disposable Postgres HTTP regression covers 55 conversations beyond the first page, duplicate reports, team-only counts, archive/answer/reopen and removed channels. Web unit test and Chromium 1280px/390px mocked-response checks cover counts, collapse/archive views, outage retention and zero hiding. Linux desktop fixtures visually inspected; 13 feedback-related tests and the unread-divider integration test pass. Apple/Android decoding tests added but not run: Swift/Xcode and Android SDK unavailable in this orb; no physical-device checks |
 
 ## Message editing
 

@@ -175,13 +175,8 @@ async fn archive(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub(crate) async fn page(
-    pool: &PgPool,
-    before: Option<i64>,
-    archived: bool,
-) -> Result<Value, ApiError> {
-    let mut rows: Vec<(i64, Value)> = sqlx::query_as(
-        "SELECT r.id, jsonb_build_object(
+// Listing and navigation counts share visibility, archive and reply semantics.
+const REPORTS: &str = "SELECT r.id, jsonb_build_object(
                 'id', m.external_id, 'messageId', m.external_id, 'threadRootId', root.external_id,
                 'createdAt', r.created_at,
                 'text', left(COALESCE(m.payload->'content'->>'text', ''), 280),
@@ -217,7 +212,7 @@ pub(crate) async fn page(
                            AND a.channel_seq>m.channel_seq AND a.id>r.message_id
                          ORDER BY a.channel_seq DESC LIMIT 1)
                     ) a JOIN public.chat_sessions cs ON cs.id=a.session_id
-                    ORDER BY a.channel_seq DESC LIMIT 1), false))
+                    ORDER BY a.channel_seq DESC LIMIT 1), false)) AS report
          FROM public.feedback_reports r
          JOIN public.messages m ON m.id=r.message_id
          JOIN public.messages root ON root.id=r.thread_root_id
@@ -233,18 +228,49 @@ pub(crate) async fn page(
              WHERE a.channel_id=r.channel_id AND a.thread_root_id=r.thread_root_id AND a.created_at>r.archived_at
                AND NOT EXISTS(SELECT 1 FROM public.feedback_team t WHERE t.user_id=cs.user_id AND t.deleted_at IS NULL)
          ) AS archived) z
-         WHERE ($1::bigint IS NULL OR r.id<$1) AND z.archived = $3
+         WHERE ($1::bigint IS NULL OR r.id<$1) AND z.archived = $2
            AND c.deleted_at IS NULL AND u.deleted_at IS NULL
            AND (s.id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo))
-           AND (d.channel_id IS NULL OR (lo.deleted_at IS NULL AND hi.deleted_at IS NULL))
-         ORDER BY r.id DESC LIMIT $2",
+           AND (d.channel_id IS NULL OR (lo.deleted_at IS NULL AND hi.deleted_at IS NULL))";
+
+/// All waiting conversations, not just the first page of reports. Match the
+/// inbox's newest-report-per-thread grouping; only the team may see the count.
+pub(crate) async fn waiting_count(pool: &PgPool, user: i64) -> Result<i64, ApiError> {
+    if !team_member(
+        &mut *pool.acquire().await.map_err(|_| unavailable())?,
+        Some(user),
     )
-    .bind(before)
-    .bind(PAGE + 1)
-    .bind(archived)
-    .fetch_all(pool)
+    .await?
+    {
+        return Ok(0);
+    }
+    sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM (
+            SELECT DISTINCT ON (report->'channel'->>'id', report->>'threadRootId') report
+            FROM ({REPORTS}) reports
+            ORDER BY report->'channel'->>'id', report->>'threadRootId', id DESC
+         ) threads WHERE NOT (report->>'answered')::boolean"
+    ))
+    .bind(None::<i64>)
+    .bind(false)
+    .fetch_one(pool)
     .await
-    .map_err(|_| unavailable())?;
+    .map_err(|_| unavailable())
+}
+
+pub(crate) async fn page(
+    pool: &PgPool,
+    before: Option<i64>,
+    archived: bool,
+) -> Result<Value, ApiError> {
+    let mut rows: Vec<(i64, Value)> =
+        sqlx::query_as(&format!("{REPORTS} ORDER BY r.id DESC LIMIT $3"))
+            .bind(before)
+            .bind(archived)
+            .bind(PAGE + 1)
+            .fetch_all(pool)
+            .await
+            .map_err(|_| unavailable())?;
     let more = rows.len() > PAGE as usize;
     rows.truncate(PAGE as usize);
     let cursor = more
@@ -254,4 +280,131 @@ pub(crate) async fn page(
         "reports": rows.into_iter().map(|row| row.1).collect::<Vec<_>>(),
         "cursor": cursor,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "requires disposable Postgres DATABASE_URL"]
+    async fn waiting_navigation_count_is_team_only_and_not_page_or_read_limited(pool: PgPool) {
+        for name in ["team", "reporter"] {
+            let user: i64 = sqlx::query_scalar("INSERT INTO users(external_id,username,display_name) VALUES($1,$1,$1) RETURNING id")
+                .bind(name).fetch_one(&pool).await.unwrap();
+            let hash = Sha256::digest(name.as_bytes()).to_vec();
+            sqlx::query("INSERT INTO account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+                .bind(&hash).bind(user).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+                .bind(name).bind(hash).bind(user).execute(&pool).await.unwrap();
+        }
+        sqlx::raw_sql(
+            "INSERT INTO feedback_team(user_id) SELECT id FROM users WHERE external_id='team';
+             INSERT INTO spaces(external_id,name,owner_id) SELECT 'feedback-space','Feedback',id FROM users WHERE external_id='reporter';
+             INSERT INTO channels(external_id,name,space_id) SELECT 'feedback-channel','general',id FROM spaces WHERE external_id='feedback-space';
+             INSERT INTO messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload)
+             SELECT 'report-'||n,c.id,s.id,gen_random_uuid(),'x'::bytea,n,'{\"content\":{\"text\":\"@feedback help\"}}'::jsonb
+             FROM generate_series(1,56) n,channels c,chat_sessions s
+             WHERE c.external_id='feedback-channel' AND s.external_id='reporter';
+             UPDATE messages SET thread_root_id=(SELECT id FROM messages WHERE external_id='report-55') WHERE external_id='report-56';
+             INSERT INTO feedback_reports(message_id,channel_id,thread_root_id,reporter_id)
+             SELECT m.id,m.channel_id,COALESCE(m.thread_root_id,m.id),s.user_id FROM messages m
+             JOIN chat_sessions s ON s.id=m.session_id WHERE s.external_id='reporter' ORDER BY m.channel_seq;",
+        ).execute(&pool).await.unwrap();
+        let mut config = crate::Config::test(false);
+        config.auth_fixture = false;
+        let app = crate::app(AppState::with_database(
+            config,
+            Arc::new(crate::Cloudflare::new()),
+            Some(pool.clone()),
+        ));
+        let request =
+            |account: &'static str, method: &'static str, path: &'static str, body: Value| {
+                let app = app.clone();
+                async move {
+                    let response = app
+                        .oneshot(
+                            axum::http::Request::builder()
+                                .method(method)
+                                .uri(path)
+                                .header("authorization", format!("Bearer {account}"))
+                                .header("content-type", "application/json")
+                                .body(axum::body::Body::from(body.to_string()))
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    let status = response.status();
+                    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                        .await
+                        .unwrap();
+                    (
+                        status,
+                        serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+                    )
+                }
+            };
+        let count = || request("team", "GET", "/api/spaces/unread", Value::Null);
+        let initial = count().await;
+        assert_eq!(initial.0, StatusCode::OK);
+        assert_eq!(initial.1["feedbackWaiting"], 55);
+        assert_eq!(
+            request("reporter", "GET", "/api/spaces/unread", Value::Null)
+                .await
+                .1["feedbackWaiting"],
+            0
+        );
+        assert_eq!(
+            request("invalid", "GET", "/api/spaces/unread", Value::Null)
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        let inbox = request("team", "GET", "/api/feedback", Value::Null).await;
+        assert_eq!(inbox.0, StatusCode::OK);
+        assert_eq!(inbox.1["reports"].as_array().unwrap().len(), 50);
+        assert!(inbox.1["cursor"].is_string());
+        assert_eq!(
+            count().await.1["feedbackWaiting"],
+            55,
+            "opening the inbox does not acknowledge the backlog"
+        );
+        assert_eq!(
+            request(
+                "team",
+                "PUT",
+                "/api/feedback/archive",
+                json!({
+                    "channelId":"feedback-channel", "threadRootId":"report-1", "archived":true
+                })
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(count().await.1["feedbackWaiting"], 54);
+        let archived = request("team", "GET", "/api/feedback?archived=true", Value::Null).await;
+        assert_eq!(archived.1["reports"].as_array().unwrap().len(), 1);
+        // The team's answer removes one; a later reporter reply brings it
+        // back, including when the conversation had been archived.
+        for (seq, author, root, expected) in [
+            (57, "team", "report-2", 53),
+            (58, "reporter", "report-2", 54),
+            (59, "reporter", "report-1", 55),
+        ] {
+            sqlx::query("INSERT INTO messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,thread_root_id)
+                SELECT $1,c.id,s.id,gen_random_uuid(),'x'::bytea,$2,'{}'::jsonb,m.id FROM channels c,chat_sessions s,messages m
+                WHERE c.external_id='feedback-channel' AND s.external_id=$3 AND m.external_id=$4")
+                .bind(format!("reply-{seq}")).bind(seq as i64).bind(author).bind(root).execute(&pool).await.unwrap();
+            assert_eq!(count().await.1["feedbackWaiting"], expected);
+        }
+        sqlx::query("UPDATE channels SET deleted_at=now() WHERE external_id='feedback-channel'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count().await.1["feedbackWaiting"], 0);
+    }
 }

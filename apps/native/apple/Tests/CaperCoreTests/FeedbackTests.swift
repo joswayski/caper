@@ -41,6 +41,22 @@ private func feedbackBody(_ request: URLRequest) throws -> Data {
 }
 
 final class FeedbackTests: XCTestCase {
+    func testUnreadPollingIncludesExactWaitingCountAndSupportsOlderServers() async throws {
+        for (payload, expected) in [
+            (#"{"spaces":[],"feedbackWaiting":137}"#, 137),
+            (#"{"spaces":[],"feedbackWaiting":0}"#, 0),
+            (#"{"spaces":[]}"#, 0),
+        ] {
+            FeedbackMockURLProtocol.handler = { request in
+                XCTAssertEqual(request.url?.path, "/api/spaces/unread")
+                return (200, Data(payload.utf8))
+            }
+            let response = try await client().unreadSpaces()
+            XCTAssertTrue(response.spaces.isEmpty)
+            XCTAssertEqual(response.feedbackWaiting, expected)
+        }
+    }
+
     private let selfID = "Team00000001"
     private let channelID = "Chan00000001"
     private let rootID = "Root00000000001"
