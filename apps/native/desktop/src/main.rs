@@ -8790,7 +8790,8 @@ impl CaperApp {
                     .inner_margin(16),
             )
             .show(context, |ui| {
-                ui.set_width((viewport.width() - 48.0).min(420.0));
+                let content_width = (viewport.width() - 48.0).min(420.0);
+                ui.set_width(content_width);
                 let mut close = false;
                 ui.horizontal(|ui| {
                     let (mascot, _) =
@@ -8818,7 +8819,44 @@ impl CaperApp {
                 let error = self.updates.error.as_ref().or(update.last_error.as_ref());
                 if let Some(error) = error {
                     ui.label(bold("The last update didn’t finish").color(ERROR));
-                    ui.label(RichText::new("Try again, or use the installer below.").color(MUTED));
+                    if update.can_apply {
+                        // The installer link sits in the sentence; no separate footer link.
+                        // A measured single row instead of horizontal_wrapped, which settles
+                        // a frame late and makes the dialog jump as it opens.
+                        let lead = "Try again using the button below, or ";
+                        let font = egui::TextStyle::Body.resolve(ui.style());
+                        let width = ui
+                            .painter()
+                            .layout_no_wrap(format!("{lead}use the installer."), font, MUTED)
+                            .size()
+                            .x;
+                        let sentence = |ui: &mut egui::Ui, lead: &str| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.label(RichText::new(lead).color(MUTED));
+                            let installer = ui
+                                .add(egui::Link::new(
+                                    RichText::new("use the installer").color(TEXT).underline(),
+                                ))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if installer.clicked() {
+                                context.open_url(egui::OpenUrl::new_tab(updates::DOWNLOAD_URL));
+                            }
+                            ui.label(RichText::new(".").color(MUTED));
+                        };
+                        // The dialog's fixed width, not available_width(), which differs
+                        // during egui's first sizing pass.
+                        if width + 4.0 <= content_width {
+                            ui.horizontal(|ui| sentence(ui, lead));
+                        } else {
+                            ui.label(RichText::new(lead.trim_end()).color(MUTED));
+                            ui.horizontal(|ui| sentence(ui, ""));
+                        }
+                    } else {
+                        ui.label(
+                            RichText::new("Download the installer with the button below.")
+                                .color(MUTED),
+                        );
+                    }
                     // Long OS/network errors must not push the actions offscreen.
                     egui::ScrollArea::vertical()
                         .id_salt("update-error")
@@ -8921,20 +8959,6 @@ impl CaperApp {
                         }
                     });
                 });
-                if update.can_apply {
-                    ui.add_space(10.0);
-                    // A quiet escape hatch, not a second call to action.
-                    let installer = ui
-                        .add(egui::Link::new(
-                            RichText::new("Having issues? Download installer instead")
-                                .color(MUTED.gamma_multiply(0.7))
-                                .size(12.0),
-                        ))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    if installer.clicked() {
-                        context.open_url(egui::OpenUrl::new_tab(updates::DOWNLOAD_URL));
-                    }
-                }
                 if close {
                     self.updates.dismiss();
                 }
@@ -28106,10 +28130,7 @@ mod tests {
     fn update_download_button_opens_the_platform_installer() {
         for (fixture, label) in [
             ("parity-update-download", "Download"),
-            (
-                "parity-update-error",
-                "Having issues? Download installer instead",
-            ),
+            ("parity-update-error", "use the installer"),
         ] {
             let context = egui::Context::default();
             let mut app = CaperApp::new(
@@ -28210,7 +28231,8 @@ mod tests {
                         }
                     })
                 };
-                for _ in 0..3 {
+                // The modal and its two nested scroll areas take a few frames to size.
+                for _ in 0..5 {
                     frame(vec![]);
                 }
                 let initial = frame(vec![]);
@@ -28238,14 +28260,13 @@ mod tests {
                     "date replaces the version"
                 );
                 assert!(!visible(&initial, "0.1.42"), "no version numbers");
-                if fixture != "parity-update-download" {
-                    assert!(visible(
-                        &initial,
-                        "Having issues? Download installer instead"
-                    ));
-                }
+                assert!(
+                    !visible(&initial, "Having issues? Download installer instead"),
+                    "the installer lives in the error sentence only"
+                );
                 if fixture == "parity-update-error" {
                     assert!(visible(&initial, "The last update didn’t finish"));
+                    assert!(visible(&initial, "use the installer"));
                 }
                 let expanded = initial;
                 assert!(
@@ -28281,7 +28302,7 @@ mod tests {
                 assert_eq!(
                     text_position(&scrolled, action),
                     action_pos,
-                    "scroll moved the action footer"
+                    "{fixture} {size:?}: scroll moved the action footer"
                 );
                 let later = text_position(&scrolled, "Later");
                 for pressed in [true, false] {

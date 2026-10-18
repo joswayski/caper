@@ -166,8 +166,20 @@ private struct UpdateButtonSweep: View, Animatable {
                             if let error = update.lastError {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text("The last update didn’t finish").font(CaperTheme.font(14, weight: .bold))
-                                    Text(error).textSelection(.enabled)
-                                }.foregroundStyle(CaperTheme.error)
+                                        .foregroundStyle(CaperTheme.error)
+                                    // The installer link sits in the sentence; no separate footer link.
+                                    // Literals, not a ternary: only a literal Text parses the markdown link.
+                                    Group {
+                                        if update.canApply {
+                                            Text("Try again using the button below, or [use the installer](caper-update:installer).")
+                                        } else {
+                                            Text("Download the installer with the button below.")
+                                        }
+                                    }.tint(CaperTheme.text).foregroundStyle(CaperTheme.muted)
+                                        .environment(\.openURL, OpenURLAction { _ in download(); return .handled })
+                                    Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                                        .textSelection(.enabled)
+                                }
                             }
                             if !update.historyComplete {
                                 Text("Earlier release notes aren’t available.")
@@ -203,15 +215,6 @@ private struct UpdateButtonSweep: View, Animatable {
                         Button(update.canApply ? (inCall ? "Restart and leave call" : "Restart to update") : "Download",
                                action: update.canApply ? restart : download).buttonStyle(CaperPrimaryButton())
                             .accessibilityIdentifier("desktop-update-install")
-                    }
-                    if update.canApply {
-                        // A quiet escape hatch, not a second call to action.
-                        Button("Having issues? Download installer instead", action: download)
-                            .buttonStyle(.plain).font(CaperTheme.font(12))
-                            .foregroundStyle(CaperTheme.muted.opacity(0.7))
-                            .onHover { inside in
-                                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-                            }
                     }
                 }
                 .padding(20).frame(width: min(560, max(0, geometry.size.width - 32)),

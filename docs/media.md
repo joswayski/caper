@@ -8148,8 +8148,9 @@ Desktop clients pass their source revision to the bundled updater, which reads
 current/target exact snapshots and shows the same user-facing highlights for skipped
 releases. The updater returns them as one stacked list (newest first, repeated
 titles dropped) with the newest release's date, so the review shows a date
-instead of version numbers, bold titles over short descriptions, a close button
-and a quiet "Having issues? Download installer instead" link. Missing editorial metadata never blocks installing the signed update.
+instead of version numbers, bold titles over short descriptions and a close
+button. After a failed update, the error's "use the installer" links straight to
+the installer; there is no separate footer link. Missing editorial metadata never blocks installing the signed update.
 Older clients keep their signed commit-title changelog until updated once. Linux
 fixture rendering and modal regressions cover narrow screens, errors, history gaps,
 call warnings and installer fallback; physical Mac/Windows focus, scrolling, motion
