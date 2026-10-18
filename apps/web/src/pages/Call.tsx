@@ -1327,7 +1327,7 @@ export default function Call({
                 <Avatar person={voicePicture(participant)} name={participantName} />
               </span>
             </span>
-            <span className="participant-name">
+            <span className="participant-name" data-speaking={speaking ? "" : undefined}>
               <strong>
                 {participantName}
                 {self ? " (you)" : ""}

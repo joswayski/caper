@@ -771,7 +771,7 @@ private class VoiceListRequest(val openId: String?)
             Avatar(name, 34.dp, avatarId = person.avatarId, speaking = speaking, avatarAsset = asset, avatarUrl = url, voiceRing = true)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(if (self) "$name (you)" else name, color = Text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (self) "$name (you)" else name, color = if (speaking) Text else TextMuted, fontSize = 13.sp, fontWeight = if (speaking) FontWeight.Bold else FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 status?.let {
                     Text(voiceListStatusLabel(it, person.name), color = when (it) {
                         VoiceListStatus.Speaking -> VoiceSessionGreen

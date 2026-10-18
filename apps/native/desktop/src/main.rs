@@ -13387,26 +13387,36 @@ impl CaperApp {
                                     ui.spacing_mut().item_spacing.y = 1.0;
                                     // The name, and any status under it,
                                     // centered on the face.
+                                    let name_font = egui::FontId::new(
+                                        12.5,
+                                        egui::FontFamily::Name(
+                                            if speaking {
+                                                "Satoshi Bold"
+                                            } else {
+                                                "Satoshi Medium"
+                                            }
+                                            .into(),
+                                        ),
+                                    );
                                     let lines = ui.fonts_mut(|fonts| {
-                                        fonts.row_height(&egui::FontId::new(
-                                            12.5,
-                                            egui::FontFamily::Name("Satoshi Bold".into()),
-                                        )) + if status.is_some() {
-                                            1.0 + fonts
-                                                .row_height(&egui::FontId::proportional(11.0))
-                                        } else {
-                                            0.0
-                                        }
+                                        fonts.row_height(&name_font)
+                                            + if status.is_some() {
+                                                1.0 + fonts
+                                                    .row_height(&egui::FontId::proportional(11.0))
+                                            } else {
+                                                0.0
+                                            }
                                     });
                                     ui.add_space(((36.0 - lines) / 2.0).max(0.0));
                                     ui.add(
                                         egui::Label::new(
-                                            bold(if own {
+                                            RichText::new(if own {
                                                 format!("{} (you)", person.name)
                                             } else {
                                                 person.name.clone()
                                             })
-                                            .size(12.5),
+                                            .font(name_font)
+                                            .color(if speaking { TEXT } else { MUTED }),
                                         )
                                         .truncate()
                                         .selectable(false),
