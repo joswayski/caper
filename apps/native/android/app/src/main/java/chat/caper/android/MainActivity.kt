@@ -429,7 +429,7 @@ internal data class VoiceJoinIntent(
             { viewModel.acceptInvitation(shown.space) { overlay = null } },
             { viewModel.declineInvitation(shown.space) { overlay = null } })
         Overlay.ManageSpace -> state.selectedSpace?.let { detail -> ManageSpaceDialog(state, detail, viewModel, { overlay = null }) }
-        is Overlay.InvitePeople -> state.selectedSpace?.takeIf { state.account != null && it.space.ownerId == state.account.id }?.let { detail ->
+        is Overlay.InvitePeople -> state.selectedSpace?.takeIf { it.space.ownerId == state.account?.id }?.let { detail ->
             key(detail.space.id, shown.initialChannelId) {
                 InvitePeopleDialog(state, detail, viewModel, shown.initialChannelId, { overlay = null })
             }
