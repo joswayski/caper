@@ -197,7 +197,9 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   reloads, keeping any error). "Show archived" at the bottom lists archived
   threads (`?archived=true`) under "Archived feedback", without a status and
   with Restore ("Restore to the inbox"); "Back to feedback" returns. A report, or a `feedback` notification click,
-  opens the conversation by channel id at the message and in its thread.
+  opens the conversation by channel id at the message. Only a reported reply
+  opens its existing thread; top-level reports leave thread creation to you.
+  The inbox stays visible until the reported message is ready.
   Without membership (`visitor: true`) the team takes part like a member
   (replies, files, reactions, typing, pins, forwarding, and joining a visited
   space channel's live call from its card above the channels or the narrow strip), but there is no member list,

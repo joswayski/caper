@@ -876,6 +876,87 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
         StatusCode::NO_CONTENT
     );
     let alice = ids["alice"].clone();
+    // Admin status comes from active team membership, not space ownership.
+    sqlx::query("INSERT INTO feedback_team (user_id) VALUES ($1)")
+        .bind(users["alice"])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (code, error) = request(
+        &app,
+        "PUT",
+        &format!("/api/blocks/{alice}"),
+        Some("bob"),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(code, StatusCode::FORBIDDEN);
+    assert_eq!(error["code"], "admin_block_forbidden");
+    assert!(blocks(&pool, users["bob"]).await.unwrap().is_empty());
+    let (_, listed) = request(&app, "GET", "/api/dms", Some("bob"), None, Value::Null).await;
+    assert_eq!(
+        listed["conversations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["peer"]["id"] == alice)
+            .unwrap()["peer"]["admin"],
+        true
+    );
+    let (_, listed) = request(&app, "GET", "/api/people", Some("bob"), None, Value::Null).await;
+    assert_eq!(
+        listed["people"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == alice)
+            .unwrap()["admin"],
+        true
+    );
+    let space_external: String = sqlx::query_scalar("SELECT external_id FROM spaces WHERE id=$1")
+        .bind(space)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let (_, listed) = request(
+        &app,
+        "GET",
+        &format!("/api/spaces/{space_external}/members"),
+        Some("carol"),
+        None,
+        Value::Null,
+    )
+    .await;
+    let member = listed["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == alice)
+        .unwrap();
+    assert_eq!(member["admin"], true);
+    assert_eq!(member["owner"], true);
+    let team: String = sqlx::query_scalar("SELECT external_id FROM users WHERE team_account")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let (code, error) = request(
+        &app,
+        "PUT",
+        &format!("/api/blocks/{team}"),
+        Some("bob"),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(code, StatusCode::FORBIDDEN);
+    assert_eq!(error["code"], "admin_block_forbidden");
+    sqlx::query("UPDATE feedback_team SET deleted_at=now() WHERE user_id=$1")
+        .bind(users["alice"])
+        .execute(&pool)
+        .await
+        .unwrap();
+    // A former admin (still a space owner) can be blocked normally.
     for _ in 0..2 {
         assert_eq!(
             request(
@@ -974,6 +1055,12 @@ async fn message_requests_blocks_and_privacy(pool: PgPool) {
         .0,
         StatusCode::NOT_FOUND
     );
+    // Promotion must not prevent removing a pre-existing block.
+    sqlx::query("INSERT INTO feedback_team (user_id) VALUES ($1)")
+        .bind(users["alice"])
+        .execute(&pool)
+        .await
+        .unwrap();
     for _ in 0..2 {
         assert_eq!(
             request(

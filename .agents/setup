@@ -68,6 +68,42 @@ if ((${#missing_packages[@]} > 0)); then
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing_packages[@]}"
 fi
 
+step "installing Android build tools (no emulator)"
+android_sdk="$HOME/android-sdk"
+android_tools="$android_sdk/cmdline-tools/15859902"
+if [[ ! -x "$android_tools/bin/sdkmanager" ]]; then
+  android_archive="$(mktemp)"
+  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+    https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip \
+    --output "$android_archive"
+  printf '%s  %s\n' '4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583' "$android_archive" | sha256sum --check --status
+  mkdir -p "$android_tools"
+  unzip -oq "$android_archive" -d "$android_tools"
+  mv "$android_tools/cmdline-tools/"* "$android_tools/"
+  rmdir "$android_tools/cmdline-tools"
+  rm -f "$android_archive"
+fi
+android_packages=()
+for package in 'platforms;android-36' 'build-tools;36.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1'; do
+  if [[ ! -f "$android_sdk/${package/;/\/}/package.xml" ]]; then android_packages+=("$package"); fi
+done
+if ((${#android_packages[@]} > 0)); then
+  # yes exits with SIGPIPE when sdkmanager finishes; keep sdkmanager's status.
+  set +o pipefail
+  yes | "$android_tools/bin/sdkmanager" --sdk_root="$android_sdk" --licenses >/dev/null
+  set -o pipefail
+  "$android_tools/bin/sdkmanager" --sdk_root="$android_sdk" "${android_packages[@]}"
+fi
+# Gradle reads this ignored machine-local file even in non-interactive shells.
+if [[ ! -f apps/native/android/local.properties ]]; then
+  printf 'sdk.dir=%s\n' "$android_sdk" > apps/native/android/local.properties
+fi
+# Native preparation scripts use ANDROID_HOME; Amp's later login shells must
+# receive it too, not only this setup process.
+if ! grep -Fqx '# Caper Android SDK' "$HOME/.bash_profile" 2>/dev/null; then
+  printf '\n# Caper Android SDK\nexport ANDROID_HOME="$HOME/android-sdk"\n' >> "$HOME/.bash_profile"
+fi
+
 step "installing Valkey 9.1.2"
 valkey_version="9.1.2"
 case "$(uname -m)" in

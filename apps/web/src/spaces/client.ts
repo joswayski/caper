@@ -30,12 +30,20 @@ export interface Member extends PersonPicture {
   username: string;
   displayName: string;
   owner: boolean;
+  admin?: boolean;
 }
 
 export interface DirectConversation {
   id: string;
   /** `team`: the Caper account, whose DM goes to the feedback team. */
-  peer: PersonPicture & { id: string; username: string; displayName: string; avatarId?: number; team?: boolean };
+  peer: PersonPicture & {
+    id: string;
+    username: string;
+    displayName: string;
+    avatarId?: number;
+    team?: boolean;
+    admin?: boolean;
+  };
   lastSeq: string;
   readSeq: string;
   /** Older servers omit it: treat as accepted. */
@@ -60,6 +68,7 @@ export interface Person extends PersonPicture {
   username: string;
   displayName: string;
   avatarId?: number | null;
+  admin?: boolean;
 }
 
 /** People in a response refresh live profile updates they postdate: there is no

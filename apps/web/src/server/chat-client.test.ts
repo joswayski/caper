@@ -1769,6 +1769,39 @@ test("prefetch rejects a history payload containing another channel's messages",
   await assert.rejects(loadChatHistory("alphaChannel"), /another channel/);
 });
 
+test("report context preparation requests its root upfront and rejects a missing anchor", async () => {
+  const paths: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    paths.push(String(input));
+    return Response.json({
+      space: { id: "space", name: "Studio" },
+      channel: { id: "alphaChannel", name: "general" },
+      messages: [
+        {
+          id: "root",
+          channelId: "alphaChannel",
+          seq: "1",
+          author: { id: "peer", name: "Peer", isGuest: false },
+          content: { version: 1, type: "text", text: "Report root" },
+          createdAt: "2026-09-23T12:00:00Z",
+          clientMessageId: "command-one",
+        },
+      ],
+      cursor: "100",
+      hasMore: true,
+      hasNewer: true,
+    });
+  });
+  const history = await loadChatHistory("alphaChannel", undefined, "root");
+  assert.equal(history.hasNewer, true);
+  assert.equal(history.messages[0].id, "root");
+  await assert.rejects(loadChatHistory("alphaChannel", undefined, "missing"), /invalid message context/);
+  assert.deepEqual(paths, [
+    "/api/chat/channels/alphaChannel/messages?around=root",
+    "/api/chat/channels/alphaChannel/messages?around=missing",
+  ]);
+});
+
 test("a prepared history failure renders once and retries only when requested", async (t) => {
   const sockets = installBrowser(t);
   let requests = 0;

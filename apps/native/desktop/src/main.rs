@@ -1830,6 +1830,7 @@ impl CaperApp {
                 } else if name.starts_with("parity-feedback") {
                     // A feedback team member, with labelled sample reports as
                     // `GET /api/feedback` answers them.
+                    app.token = Some("fixture-account".into());
                     if let Some(account) = &mut app.account {
                         account.feedback_team = true;
                     }
@@ -1943,6 +1944,7 @@ impl CaperApp {
                     // Labelled previews of message requests and blocking.
                     let peer =
                         |id: &str, username: &str, name: &str, avatar: i32| model::DirectPeer {
+                            admin: false,
                             id: id.into(),
                             username: username.into(),
                             display_name: format!("TEST FIXTURE {name}"),
@@ -2042,6 +2044,7 @@ impl CaperApp {
                     app.directs = vec![model::DirectConversation {
                         id: id.clone(),
                         peer: model::DirectPeer {
+                            admin: false,
                             id: "fixture-maya".into(),
                             username: "maya".into(),
                             display_name: "TEST FIXTURE Maya".into(),
@@ -2069,6 +2072,7 @@ impl CaperApp {
                             .iter()
                             .filter(|member| member.id != "fixture-owner")
                             .map(|member| model::Person {
+                                admin: member.admin,
                                 id: member.id.clone(),
                                 username: member.username.clone(),
                                 display_name: member.display_name.clone(),
@@ -2104,6 +2108,7 @@ impl CaperApp {
                     let direct = |id: &str, peer: &str, name: &str| model::DirectConversation {
                         id: id.into(),
                         peer: model::DirectPeer {
+                            admin: false,
                             id: peer.into(),
                             username: name.to_lowercase(),
                             display_name: format!("TEST FIXTURE {name}"),
@@ -2198,6 +2203,7 @@ impl CaperApp {
                         .map_or_else(Vec::new, |detail| detail.members.clone());
                     if name == "parity-admin-invitations" {
                         app.managed_invitations.push(Member {
+                            admin: false,
                             id: "invited00001".into(),
                             avatar_id: None,
                             avatar_asset: None,
@@ -2219,6 +2225,7 @@ impl CaperApp {
                             ("invited00001", "fixture_invitee", "TEST FIXTURE invitee"),
                         ]
                         .map(|(id, username, display_name)| model::Person {
+                            admin: false,
                             id: id.into(),
                             username: username.into(),
                             display_name: display_name.into(),
@@ -2850,6 +2857,7 @@ impl CaperApp {
             channels,
             members: vec![
                 Member {
+                    admin: false,
                     id: "fixture-owner".into(),
                     avatar_id: Some(0),
                     avatar_asset: None,
@@ -2859,6 +2867,7 @@ impl CaperApp {
                     owner: true,
                 },
                 Member {
+                    admin: false,
                     id: "fixture-maya".into(),
                     avatar_id: Some(15),
                     avatar_asset: None,
@@ -2868,6 +2877,7 @@ impl CaperApp {
                     owner: false,
                 },
                 Member {
+                    admin: false,
                     id: "fixture-alex".into(),
                     avatar_id: Some(16),
                     avatar_asset: None,
@@ -3775,9 +3785,10 @@ impl CaperApp {
                     self.context_loading = false;
                     let main = root.is_none() && !newer;
                     self.accept_context(root, &anchor, newer, result);
-                    // A report lands in its thread once the history around it is in.
+                    // Only a reported reply needs its existing thread revealed.
                     if main
                         && self.selected_channel.is_some()
+                        && self.error.is_none()
                         && let Some((_, thread)) = self
                             .report_thread
                             .take_if(|(expected, _)| *expected == anchor)
@@ -3786,6 +3797,11 @@ impl CaperApp {
                             Some(reply) => self.load_context(Some(thread.root), reply, false),
                             None => self.open_thread(thread.root),
                         }
+                    }
+                    // Keep the inbox over the previous conversation until the
+                    // report (including a reported reply) can actually be shown.
+                    if !self.context_loading {
+                        self.feedback_open = false;
                     }
                 }
                 Event::ThreadLoaded {
@@ -4487,6 +4503,17 @@ impl CaperApp {
         if !self.feedback_team() {
             return;
         }
+        // Returning to the inbox cancels an in-flight report jump.
+        self.navigation += 1;
+        self.opening = false;
+        self.navigation_target = None;
+        self.navigation_prefetch = None;
+        self.visit_request = None;
+        self.report_focus = None;
+        self.history_request += 1;
+        self.context_loading = false;
+        self.loading_older = false;
+        self.report_thread = None;
         self.feedback_open = true;
         self.navigation_open = false;
         self.showing_pins = false;
@@ -4552,7 +4579,7 @@ impl CaperApp {
     }
 
     /// Opens a report's conversation by channel id, even one outside the
-    /// space and DM lists, at the report and in its thread.
+    /// space and DM lists, at the reported message.
     fn open_report(&mut self, target: feedback::VisitTarget, from_inbox: bool) {
         if self.token.is_none() {
             return;
@@ -4562,13 +4589,24 @@ impl CaperApp {
         } else {
             self.report_origin()
         };
-        self.feedback_open = false;
+        if !from_inbox {
+            self.feedback_open = false;
+        }
+        // A second report must supersede a context request still in flight.
+        self.history_request += 1;
+        self.context_loading = false;
+        self.loading_older = false;
+        self.report_thread = None;
         self.navigation_open = false;
-        if self.selected_channel.as_deref() == Some(target.channel.as_str())
-            && !self.opening
-            && self.navigation_error.is_none()
-        {
+        if self.selected_channel.as_deref() == Some(target.channel.as_str()) {
             // Already open, as a visit or as a member: land on the report.
+            self.navigation += 1;
+            self.opening = false;
+            self.navigation_target = None;
+            self.navigation_prefetch = None;
+            self.navigation_error = None;
+            self.visit_request = None;
+            self.report_focus = None;
             if self.visiting().is_some()
                 && let Some(visit) = &mut self.visit
             {
@@ -4588,7 +4626,7 @@ impl CaperApp {
         });
     }
 
-    /// History around the report, then its thread.
+    /// History around the report; only reported replies open a thread.
     fn focus_report(&mut self, target: &feedback::VisitTarget) {
         let (anchor, thread) = target.plan();
         self.report_thread = thread.map(|thread| (anchor.clone(), thread));
@@ -4652,10 +4690,32 @@ impl CaperApp {
             .collect()
     }
 
+    /// Server-stamped Caper identities, never space ownership or display names.
+    fn protected_account(&self, id: &str) -> bool {
+        self.directs
+            .iter()
+            .any(|direct| direct.peer.id == id && (direct.peer.admin || direct.peer.team))
+            || self
+                .people
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|person| person.id == id && person.admin)
+            || self
+                .detail
+                .iter()
+                .flat_map(|detail| &detail.members)
+                .any(|member| member.id == id && member.admin)
+    }
+
     /// Someone else's signed-in account behind a message, for Block/Unblock.
     fn blockable_author(&self, author: &Author) -> Option<model::BlockedAccount> {
         let me = self.account.as_ref().map(|account| account.id.as_str());
-        if author.is_guest || Some(author.id.as_str()) == me {
+        if author.is_guest
+            || Some(author.id.as_str()) == me
+            || (!self.is_blocked(&author.id)
+                && (author.admin || self.protected_account(&author.id)))
+        {
             return None;
         }
         let username = self
@@ -4694,6 +4754,9 @@ impl CaperApp {
 
     /// Blocking always confirms first; unblocking does not.
     fn confirm_block(&mut self, account: model::BlockedAccount, request: Option<String>) {
+        if self.protected_account(&account.id) {
+            return;
+        }
         self.block_error = None;
         self.dialog = Some(Dialog::Block { account, request });
     }
@@ -5753,9 +5816,15 @@ impl CaperApp {
         }
         // Before the cache fills in the space's remembered channel.
         let reveals = target.channel.is_some();
-        // Any conversation replaces the feedback inbox; only the visit's own
-        // navigation keeps its request.
-        self.feedback_open = false;
+        // A report keeps the inbox visible while preparing its conversation.
+        // Other navigation dismisses it immediately.
+        if self
+            .visit_request
+            .as_ref()
+            .is_none_or(|request| target.channel.as_ref() != Some(&request.target.channel))
+        {
+            self.feedback_open = false;
+        }
         // Like web, Browse channels belongs to the space it was opened in.
         if target
             .space
@@ -6014,7 +6083,9 @@ impl CaperApp {
                         channel: Some(history.channel.id.clone()),
                     };
                     let focus = request.target.clone();
+                    let inbox_open = self.feedback_open;
                     self.navigate(target);
+                    self.feedback_open = inbox_open;
                     self.report_focus = Some((self.navigation, focus));
                     return;
                 }
@@ -6120,6 +6191,7 @@ impl CaperApp {
                     self.clear_channel(&error.message);
                 }
                 self.navigation_error = Some(error.message);
+                self.feedback_open = false;
             }
         }
     }
@@ -11526,7 +11598,9 @@ impl CaperApp {
                 self.request_error = None;
                 self.account_op(AccountOperation::Decline(direct.id.clone()));
             }
-            if secondary_button(ui, "Block", !busy).clicked() {
+            if !self.protected_account(&direct.peer.id)
+                && secondary_button(ui, "Block", !busy).clicked()
+            {
                 self.confirm_block(Self::peer_account(&direct.peer), Some(direct.id.clone()));
             }
         });
@@ -11844,6 +11918,9 @@ impl CaperApp {
                 self.admin(AdminOperation::JoinChannel { space, channel });
             }
         } else if let Some(direct) = self.selected_direct_conversation().cloned()
+            && (direct.blocked
+                || self.is_blocked(&direct.peer.id)
+                || !self.protected_account(&direct.peer.id))
             && self
                 .account
                 .as_ref()
@@ -14240,7 +14317,7 @@ impl CaperApp {
                     ui.painter().set(tint, egui::Shape::rect_filled(response.rect, 8.0, SURFACE_HOVER));
                 }
                 if response.clicked() {
-                    self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, avatar_asset: member.avatar_asset, avatar_url: member.avatar_url, is_guest: false, admin: false }, &response, true);
+                    self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, avatar_asset: member.avatar_asset, avatar_url: member.avatar_url, is_guest: false, admin: member.admin }, &response, true);
                 }
 
             }
@@ -14406,6 +14483,11 @@ impl CaperApp {
                                 self.navigation_open = true;
                             }
                             ui.label(RichText::new(title).size(13.76));
+                            if self.opening || self.context_loading {
+                                ui.label(
+                                    RichText::new("Opening message…").size(11.52).color(MUTED),
+                                );
+                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -14948,7 +15030,7 @@ impl CaperApp {
                             });
                     }
                 }
-                if let Some(error) = error {
+                if let Some(error) = &error {
                     ui.colored_label(ERROR, error);
                     // The page that failed, as on web: an older page again,
                     // not a reload of the latest replies.
@@ -14972,12 +15054,20 @@ impl CaperApp {
                 if loading && replies.is_empty() {
                     ui.allocate_ui(egui::vec2(ui.available_width(), 196.0), message_skeleton);
                 }
-                if replies.is_empty() && !loading {
-                    ui.label(if read_only {
-                        "No replies yet."
-                    } else {
-                        "No replies yet. Start the thread."
-                    });
+                if replies.is_empty() && !loading && error.is_none() {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(18, 12))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(if read_only {
+                                    "No replies yet."
+                                } else {
+                                    "No replies yet. Start the thread."
+                                })
+                                .size(12.0)
+                                .color(MUTED),
+                            );
+                        });
                 }
                 self.messages_or_blocked(ui, &replies);
                 // Pending replies belong in the scrolling history, not above
@@ -15416,7 +15506,7 @@ impl CaperApp {
                 return;
             }
             let empty = self.timeline.messages().next().is_none() && self.pending.is_none();
-            if self.loading && empty {
+            if (self.loading || self.context_loading) && empty {
                 message_skeleton(ui);
                 return;
             }
@@ -18950,6 +19040,7 @@ impl CaperApp {
                 .map(|direct| &direct.peer)
                 .filter(|peer| !known.iter().any(|person| person.id == peer.id))
                 .map(|peer| model::Person {
+                    admin: peer.admin,
                     id: peer.id.clone(),
                     username: peer.username.clone(),
                     display_name: peer.display_name.clone(),
@@ -19083,6 +19174,13 @@ impl CaperApp {
             )
         };
         let mut message = false;
+        let protected = card.author.as_ref().is_some_and(|author| author.admin)
+            || card
+                .pill
+                .entry
+                .id
+                .as_deref()
+                .is_some_and(|id| self.protected_account(id));
         let blocked = card.pill.entry.id.as_deref().is_some_and(|id| {
             self.is_blocked(id)
                 || self
@@ -19177,7 +19275,8 @@ impl CaperApp {
                             ui.add_space(4.0);
                             let can_block = !profile.me
                                 && card.pill.entry.id.is_some()
-                                && self.account.is_some();
+                                && self.account.is_some()
+                                && (blocked || !protected || can_invite);
                             let actions = 30.0
                                 * (1 + usize::from(can_message) + usize::from(can_block)) as f32;
                             ui.allocate_ui_with_layout(
@@ -19261,9 +19360,10 @@ impl CaperApp {
                                             toggle_spaces = true;
                                             ui.close();
                                         }
-                                        if ui
-                                            .button(if blocked { "Unblock" } else { "Block" })
-                                            .clicked()
+                                        if (blocked || !protected)
+                                            && ui
+                                                .button(if blocked { "Unblock" } else { "Block" })
+                                                .clicked()
                                         {
                                             block_action = true;
                                             ui.close();
@@ -20273,7 +20373,8 @@ impl CaperApp {
                                             Dialog::ManageChannel(id) => self.channel_dialog(ui, Some(id)),
                                             Dialog::Block { account, request } => {
                                                 ui.label("You won't see their messages unless you choose to, and they can't send you DMs or requests.");
-                                                let (cancel, block) = dialog_buttons(ui, "Cancel", if self.block_busy { "Blocking…" } else { "Block" }, DANGER_TONE, !self.block_busy, !self.block_busy);
+                                                let allowed = !self.block_busy && !self.protected_account(&account.id);
+                                                let (cancel, block) = dialog_buttons(ui, "Cancel", if self.block_busy { "Blocking…" } else { "Block" }, DANGER_TONE, !self.block_busy, allowed);
                                                 if cancel.clicked() { close = true; }
                                                 if block.clicked() {
                                                     self.block_busy = true;
@@ -21022,6 +21123,27 @@ impl CaperApp {
         let rect = egui::Rect::from_min_size(outer.min, egui::vec2(side, side));
         let corner = picture_corner(side);
         let hovered = enabled && response.hovered();
+        let over_frame = ui.input(|input| {
+            input
+                .pointer
+                .latest_pos()
+                .is_some_and(|pos| outer.contains(pos))
+        });
+        let dropping = idle
+            && !unavailable
+            && over_frame
+            && ui.input(|input| !input.raw.hovered_files.is_empty());
+        let dropped = if idle && !unavailable && over_frame {
+            ui.input(|input| {
+                input
+                    .raw
+                    .dropped_files
+                    .first()
+                    .and_then(|file| file.path.clone())
+            })
+        } else {
+            None
+        };
         ui.painter().rect_filled(rect, corner, RAISED);
         face(ui, rect);
         if busy.is_some() {
@@ -21031,7 +21153,16 @@ impl CaperApp {
         ui.painter().rect_stroke(
             rect,
             corner,
-            Stroke::new(1.0, if hovered { MUTED } else { BORDER }),
+            Stroke::new(
+                if dropping { 2.0 } else { 1.0 },
+                if dropping {
+                    TERRACOTTA
+                } else if hovered {
+                    MUTED
+                } else {
+                    BORDER
+                },
+            ),
             egui::StrokeKind::Inside,
         );
         // The badge sits over the frame's corner, cut out by a ring of the dialog.
@@ -21093,7 +21224,9 @@ impl CaperApp {
         } else if unavailable {
             ui.label(RichText::new(pictures::UNAVAILABLE).size(12.0).color(MUTED));
         }
-        if change {
+        if let Some(path) = dropped {
+            self.change_picture(target, Some(path));
+        } else if change {
             self.pick_picture(ui.ctx(), target);
         } else if remove {
             self.change_picture(target, None);
@@ -29155,9 +29288,33 @@ mod tests {
         app.token = Some("account-token".into());
         app.directs[1].last_seq = "9".into();
         app.directs[1].read_seq = "0".into();
+        for (admin, team) in [(true, false), (false, true)] {
+            let peer = &mut app
+                .directs
+                .iter_mut()
+                .find(|direct| direct.id == "dm0000000003")
+                .unwrap()
+                .peer;
+            peer.admin = admin;
+            peer.team = team;
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let labels = texts(&output);
+            assert!(!labels.contains(&"Block"), "protected request: {labels:?}");
+            assert!(labels.contains(&"Accept") && labels.contains(&"Decline"));
+        }
+        let peer = &mut app
+            .directs
+            .iter_mut()
+            .find(|direct| direct.id == "dm0000000003")
+            .unwrap()
+            .peer;
+        peer.admin = false;
+        peer.team = false;
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let labels = texts(&output);
+        assert!(labels.contains(&"Block"), "regular request: {labels:?}");
         assert!(labels.contains(&"Message requests"), "{labels:?}");
         assert!(
             labels.contains(&"TEST FIXTURE Jordan @jordan"),
@@ -29219,6 +29376,7 @@ mod tests {
         app.directs.push(model::DirectConversation {
             id: "dm0000000005".into(),
             peer: model::DirectPeer {
+                admin: false,
                 id: "stranger0003".into(),
                 username: "kim".into(),
                 display_name: "TEST FIXTURE Kim".into(),
@@ -29326,6 +29484,18 @@ mod tests {
         let mut guest = messages[3].author.clone();
         guest.is_guest = true;
         assert!(app.blockable_author(&guest).is_none(), "guests");
+        let mut admin = messages[3].author.clone();
+        admin.is_guest = false;
+        admin.admin = false;
+        assert!(app.blockable_author(&admin).is_some(), "regular author");
+        admin.admin = true;
+        assert!(app.blockable_author(&admin).is_none(), "ADMIN author");
+        let mut admin = messages[1].author.clone();
+        admin.admin = true;
+        assert!(
+            app.blockable_author(&admin).is_some(),
+            "existing Unblock survives"
+        );
     }
 
     #[test]
@@ -29338,6 +29508,8 @@ mod tests {
             Some("parity-blocked-dm"),
         );
         app.token = Some("account-token".into());
+        app.directs[0].peer.admin = true;
+        app.directs[0].peer.team = true;
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let labels = texts(&output);
@@ -29353,6 +29525,7 @@ mod tests {
         assert!(app.selected_is_joined());
         let output = render(&mut app, &context, vec![]);
         assert!(texts(&output).contains(&"Message TEST FIXTURE Maya"));
+        assert!(!texts(&output).contains(&"Block"), "protected accepted DM");
         assert!(
             seen.lock()
                 .unwrap()
@@ -31391,6 +31564,7 @@ mod tests {
         );
         let count = owner.detail.as_ref().unwrap().members.len();
         owner.admin_result(crate::worker::AdminResult::InvitationCreated(Member {
+            admin: false,
             id: "invited00001".into(),
             avatar_id: None,
             avatar_asset: None,
@@ -32749,6 +32923,7 @@ mod tests {
         app.directs = vec![crate::model::DirectConversation {
             id: id.clone(),
             peer: crate::model::DirectPeer {
+                admin: false,
                 id: "fixture-maya".into(),
                 username: "maya".into(),
                 display_name: "TEST FIXTURE Maya".into(),
@@ -35356,6 +35531,7 @@ mod tests {
         let detail = app.detail.as_mut().unwrap();
         detail.members = (0..30)
             .map(|index| model::Member {
+                admin: false,
                 id: format!("member-{index}"),
                 avatar_id: Some(index),
                 avatar_asset: None,
@@ -35530,6 +35706,7 @@ mod tests {
             .send(crate::worker::Event::Admin {
                 generation: app.generation,
                 result: Ok(crate::worker::AdminResult::InvitationCreated(Member {
+                    admin: false,
                     id: "invited00002".into(),
                     avatar_id: None,
                     avatar_asset: None,
@@ -36128,6 +36305,7 @@ mod tests {
         );
 
         let person = |id: &str, username: &str| model::Person {
+            admin: false,
             id: id.into(),
             username: username.into(),
             display_name: username.to_uppercase(),
@@ -36165,6 +36343,7 @@ mod tests {
             "stale or failed refreshes keep the list"
         );
         app.directs[0].peer = model::DirectPeer {
+            admin: false,
             id: "fixture-new".into(),
             username: "newbie".into(),
             display_name: "Newbie".into(),
@@ -36509,6 +36688,7 @@ mod tests {
                 let mut direct = model::DirectConversation {
                     id: "dm0000000001".into(),
                     peer: model::DirectPeer {
+                        admin: false,
                         id: "fixture-maya".into(),
                         username: "maya".into(),
                         display_name: "TEST FIXTURE Maya".into(),
@@ -36629,20 +36809,63 @@ mod tests {
         assert!(app.browse_covers_conversation(), "no reads under the inbox");
         let report = app.feedback.reports[0].clone();
         click_at(&mut app, &context, text_position(&output, &report.text));
-        assert!(!app.feedback_open, "a report replaces the inbox");
-        // The fixture already shows that channel: land on the report and
-        // then open its own thread.
-        assert_eq!(
-            app.report_thread,
-            Some((
-                report.message_id.clone(),
-                crate::feedback::ThreadFocus {
-                    root: report.thread_root_id.clone(),
-                    anchor: None
-                }
-            ))
+        assert!(
+            app.feedback_open,
+            "retain the inbox until the report is ready"
+        );
+        assert!(
+            app.report_thread.is_none(),
+            "root reports stay in the conversation"
         );
         assert!(app.context_loading);
+        let rows = app.timeline.messages().cloned().collect();
+        app.timeline.reset(vec![], "4").unwrap();
+        let loading = render(&mut app, &context, vec![]);
+        assert!(!texts(&loading).contains(&"No messages yet."));
+        assert!(texts(&loading).contains(&"Opening message…"));
+        assert!(texts(&loading).contains(&"Waiting"));
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        events
+            .send(crate::worker::Event::ContextLoaded {
+                generation: app.generation,
+                request: app.history_request,
+                channel: report.channel.id.clone(),
+                root: None,
+                anchor: report.message_id.clone(),
+                newer: false,
+                result: Ok(model::MessageContext {
+                    messages: rows,
+                    root: None,
+                    has_more: false,
+                    has_newer: false,
+                }),
+            })
+            .unwrap();
+        app.receive();
+        assert!(
+            !app.feedback_open,
+            "show the report once its context is ready"
+        );
+        assert_eq!(
+            app.focused_message.as_deref(),
+            Some(report.message_id.as_str())
+        );
+        assert!(
+            app.thread_view.is_none(),
+            "opening a root report must not start a thread"
+        );
+        let opened = render(&mut app, &context, vec![]);
+        assert!(
+            texts(&opened)
+                .iter()
+                .any(|text| text.contains("uploads stall"))
+        );
+        app.open_thread(report.message_id.clone());
+        assert!(
+            app.thread_view.is_some(),
+            "explicit thread actions still work"
+        );
 
         // Another conversation opens by id as a visit request.
         let mut other = report.target();
@@ -36659,6 +36882,15 @@ mod tests {
         // Any other navigation drops it.
         app.select_channel("chan00000001".into(), false);
         assert!(app.visit_request.is_none());
+        app.open_feedback();
+        app.open_report(other, true);
+        app.open_report(report.target(), true);
+        assert!(
+            !app.opening,
+            "a report in the loaded chat supersedes pending navigation"
+        );
+        assert!(app.visit_request.is_none());
+        assert!(app.feedback_open && app.context_loading);
     }
 
     #[test]
@@ -37113,6 +37345,7 @@ mod tests {
         let (context, mut app) = fixture("parity-pictures");
         let url = "https://cdn.caper.chat/assets/maya-new?exp=1&sig=x".to_owned();
         let maya = |picture: Option<&str>| model::Person {
+            admin: false,
             id: "fixture-maya".into(),
             username: "maya_r".into(),
             display_name: "Maya R".into(),
@@ -37122,6 +37355,7 @@ mod tests {
         };
         // Copies of Maya the client already holds, beyond the fixture's.
         app.people = Some(vec![model::Person {
+            admin: false,
             id: "fixture-maya".into(),
             username: "maya".into(),
             display_name: "Maya".into(),
@@ -37203,6 +37437,7 @@ mod tests {
         );
         // Your own profile from another device updates the account first.
         app.profile_event(ProfileEvent::Person(model::Person {
+            admin: false,
             id: "fixture-owner".into(),
             username: "owner_two".into(),
             display_name: "Owner Two".into(),
@@ -37810,6 +38045,36 @@ mod tests {
             Some("parity-mentions"),
         );
         app.token = Some("account-token".into());
+        // A space owner is not a Caper admin. Only the server's admin flag
+        // suppresses the action; opening a profile preserves that distinction.
+        let alex = app
+            .detail
+            .as_mut()
+            .unwrap()
+            .members
+            .iter_mut()
+            .find(|member| member.id == "fixture-alex")
+            .unwrap();
+        alex.admin = true;
+        alex.owner = true;
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert!(!shows(&output, "Block") && !shows(&output, "More profile actions"));
+        app.mention_card = None;
+        app.detail
+            .as_mut()
+            .unwrap()
+            .members
+            .iter_mut()
+            .find(|member| member.id == "fixture-alex")
+            .unwrap()
+            .admin = false;
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let alex = pill_center(&output, ALEX_MESSAGE, "@alex");
@@ -37828,6 +38093,14 @@ mod tests {
         assert!(!app.is_blocked("fixture-alex"));
         click_at(&mut app, &context, last_text_position(&output, "Block"));
         receive_until(&mut app, |app| app.is_blocked("fixture-alex"));
+        app.detail
+            .as_mut()
+            .unwrap()
+            .members
+            .iter_mut()
+            .find(|member| member.id == "fixture-alex")
+            .unwrap()
+            .admin = true;
         let output = render(&mut app, &context, vec![]);
         click_at(
             &mut app,
@@ -38251,6 +38524,7 @@ mod tests {
         let existing = model::DirectConversation {
             id: "dm0000000009".into(),
             peer: model::DirectPeer {
+                admin: false,
                 id: "fixture-alex".into(),
                 username: "alex".into(),
                 display_name: "Alex".into(),
@@ -38600,6 +38874,15 @@ mod tests {
                     .any(|(_, node)| node.label() == Some("Loading messages"))
             );
             let root = app.thread_view.as_ref().unwrap().root.clone();
+            app.thread_view.as_mut().unwrap().loading = false;
+            frame(&mut app);
+            let empty = frame(&mut app);
+            let note = text_position(&empty, "No replies yet. Start the thread.");
+            let heading = text_position(&empty, "Thread");
+            assert!(
+                note.x >= if size.x > 760.0 { heading.x } else { 12.0 },
+                "empty-thread text must stay inside the panel inset"
+            );
             let mut reply = app.timeline.messages().nth(1).unwrap().clone();
             reply.thread_root_id = Some(root);
             reply.content.text = "TEST FIXTURE — Visible reply".into();
@@ -40489,6 +40772,7 @@ mod tests {
         let self_direct = model::DirectConversation {
             id: "self-notes".into(),
             peer: model::DirectPeer {
+                admin: false,
                 id: account.id,
                 username: account.username.unwrap(),
                 display_name: account.display_name.unwrap(),
@@ -40549,6 +40833,7 @@ mod tests {
         let notes = model::DirectConversation {
             id: "self-notes".into(),
             peer: model::DirectPeer {
+                admin: false,
                 id: account.id.clone(),
                 username: account.username.clone().unwrap(),
                 display_name: account.display_name.clone().unwrap(),
@@ -43450,6 +43735,7 @@ mod tests {
     fn member_presence_pages_use_current_web_page_size() {
         let members = (0..26)
             .map(|index| Member {
+                admin: false,
                 id: format!("member-{index}"),
                 avatar_id: Some(index),
                 avatar_asset: None,
@@ -44251,6 +44537,7 @@ mod tests {
         app.directs = vec![crate::model::DirectConversation {
             id: app.selected_channel.clone().unwrap(),
             peer: crate::model::DirectPeer {
+                admin: false,
                 id: "peer".into(),
                 username: "peer".into(),
                 display_name: "TEST FIXTURE peer".into(),

@@ -67,7 +67,7 @@ public final class AppModel {
                 guard let account, conversation.peer.id == account.id, let username = account.username, let name = account.displayName else { return conversation }
                 let picture = account.ownPicture(asset: conversation.peer.avatarAsset, url: conversation.peer.avatarUrl)
                 return DirectMessageConversation(id: conversation.id,
-                    peer: DirectMessagePeer(id: conversation.peer.id, username: username, displayName: name, avatarId: conversation.peer.avatarId,
+                    peer: DirectMessagePeer(admin: conversation.peer.admin, id: conversation.peer.id, username: username, displayName: name, avatarId: conversation.peer.avatarId, team: conversation.peer.team,
                                             avatarAsset: picture.asset, avatarUrl: picture.url),
                     lastSeq: conversation.lastSeq, readSeq: conversation.readSeq, status: conversation.status, blocked: conversation.blocked)
             }
@@ -824,10 +824,10 @@ public final class AppModel {
         }
     }
 
-    public func select(directMessage conversation: DirectMessageConversation) async {
+    public func select(directMessage conversation: DirectMessageConversation, contextHistory: ChatHistory? = nil) async {
         if openingDirectID == conversation.id { return }
         directHistoryTask?.cancel(); directHistoryTask = nil; openingDirectID = nil
-        if selectedDirectMessageID == conversation.id, !chat.loadFailed,
+        if contextHistory == nil, selectedDirectMessageID == conversation.id, !chat.loadFailed,
            chat.isPreview == (conversation.status == .incoming) {
             navigationGeneration += 1
             navigationTarget = nil; navigationError = nil
@@ -849,7 +849,8 @@ public final class AppModel {
         do {
             let key = navigationKey(spaceID: "", channelID: conversation.id)
             let prepared: PreparedNavigation
-            if let retained = visited[key] { prepared = retained }
+            if let contextHistory { prepared = PreparedNavigation(detail: nil, channelID: conversation.id, history: contextHistory) }
+            else if let retained = visited[key] { prepared = retained }
             else {
                 prefetch(directMessage: conversation)
                 let entry = prefetches[key]!
@@ -977,6 +978,7 @@ public final class AppModel {
     /// declined server-side, so it leaves the requests list too.
     public func block(_ target: BlockTarget) async throws {
         guard let account else { return }
+        guard target.canBlock else { throw UserFacingError(message: "Caper admins and the Caper team can't be blocked.") }
         guard target.id != account.id else { throw UserFacingError(message: "You can't block yourself.") }
         let attempt = generation
         try await api.block(accountID: target.id)
@@ -1348,7 +1350,7 @@ public final class AppModel {
         await navigate(space: target.space, channelID: target.channelID)
     }
 
-    private func navigate(space: Space, channelID: String?) async {
+    private func navigate(space: Space, channelID: String?, contextHistory: ChatHistory? = nil) async {
         directHistoryTask?.cancel(); directHistoryTask = nil; openingDirectID = nil
         rememberCurrentNavigation()
         navigationGeneration += 1
@@ -1367,7 +1369,7 @@ public final class AppModel {
         do {
             let key = navigationKey(spaceID: space.id, channelID: channelID)
             let prepared: PreparedNavigation?
-            if let entry = prefetches[key], entry.expires > Date(), entry.generation == generation {
+            if contextHistory == nil, let entry = prefetches[key], entry.expires > Date(), entry.generation == generation {
                 removePrefetch(key)
                 prepared = try await entry.task.value
                 guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
@@ -1388,7 +1390,8 @@ public final class AppModel {
             if channelID != nil && channel == nil { throw APIError(status: 404, message: "This channel is no longer accessible.") }
             let history: ChatHistory?
             if let channel {
-                if let retained = visitedNavigation(spaceID: space.id, channelID: channel.id)?.history { history = retained }
+                if let contextHistory { history = contextHistory }
+                else if let retained = visitedNavigation(spaceID: space.id, channelID: channel.id)?.history { history = retained }
                 else if prepared?.channelID == channel.id { history = prepared?.history }
                 else { history = try await api.history(channelID: channel.id) }
                 guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
@@ -2371,8 +2374,8 @@ extension AppModel {
         await openFeedback(report.target)
     }
 
-    /// Opens a reported conversation around the reported message, with its
-    /// thread open so replies land there by default. A conversation you
+    /// Opens a reported conversation around the reported message, opening a
+    /// thread only for a reported reply. A conversation you
     /// belong to (no `visitor` flag) that your lists hold opens the normal
     /// way; anything else opens as a visit, without joining.
     public func openFeedback(_ target: FeedbackTarget) async {
@@ -2394,13 +2397,13 @@ extension AppModel {
             let direct = history.channel?.direct == true || history.space?.id == ""
             if !history.visitor {
                 if direct, let conversation = directMessages.first(where: { $0.id == target.channelID }) {
-                    await select(directMessage: conversation)
+                    await select(directMessage: conversation, contextHistory: history)
                     guard generation == attempt, selectedDirectMessageID == target.channelID, chat.channelID == target.channelID else { return }
                     await focusFeedback(target)
                     return
                 }
                 if !direct, let spaceID = history.space?.id, let space = spaces.first(where: { $0.id == spaceID }) {
-                    await navigate(space: space, channelID: target.channelID)
+                    await navigate(space: space, channelID: target.channelID, contextHistory: history)
                     guard generation == attempt, selectedChannelID == target.channelID, chat.channelID == target.channelID else { return }
                     await focusFeedback(target)
                     return
@@ -2430,9 +2433,10 @@ extension AppModel {
         }
     }
 
-    /// Opens the report's thread (around the reply, if it is one) and marks the reported message.
+    /// Root reports stay in the loaded timeline; replies open their existing thread.
     private func focusFeedback(_ target: FeedbackTarget) async {
-        await chat.openThread(target.rootID, around: target.isReply ? target.messageID : nil)
+        if target.isReply { await chat.openThread(target.rootID, around: target.messageID) }
+        else { chat.closeThread() }
         guard chat.channelID == target.channelID else { return }
         chat.focusedMessageID = target.messageID
         chat.focusRevision += 1
@@ -2947,6 +2951,9 @@ public final class ChatModel {
         messages = history.messages.map { overlaySnapshots($0) }
         pinnedMessages = history.pinnedMessages.map { overlayPinned($0) }
         delivery.reset(cursor: history.cursor); hasMore = history.hasMore
+        hasNewer = history.hasNewer
+        windowStart = history.hasNewer ? history.messages.first?.seq : nil
+        windowEnd = history.hasNewer ? history.messages.last?.seq : nil
         channelName = history.channel?.name ?? "general"; spaceName = history.space?.name ?? "Caper"
         session = nil; loading = false; loadFailed = false; sessionError = nil
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
@@ -4081,6 +4088,12 @@ public final class ChatModel {
 
     func attachmentFiles(inThread: Bool = false) -> [AttachmentDraft] {
         composerTarget(inThread: inThread).flatMap { stagedFiles[$0] } ?? []
+    }
+
+    func attachmentCount(target: AttachmentTarget) -> Int { stagedFiles[target]?.count ?? 0 }
+
+    func attachmentTargetIsValid(_ target: AttachmentTarget) -> Bool {
+        attachmentAccessIDs[target.channelID] == target.accessID
     }
 
     func setAttachmentNotice(_ notice: String?, target: AttachmentTarget) {

@@ -3617,7 +3617,7 @@ private struct ChatView: View {
         if conversation.blocked || model.blockedIDs.contains(conversation.peer.id) {
             Button("Unblock @\(conversation.peer.username)") { unblock(conversation.peer.id) }
                 .accessibilityIdentifier("dm-unblock")
-        } else {
+        } else if conversation.peer.canBlock {
             Button("Block @\(conversation.peer.username)…", role: .destructive) { blockTarget = BlockTarget(peer: conversation.peer) }
                 .accessibilityIdentifier("dm-block")
         }
@@ -5410,6 +5410,7 @@ private struct MentionCardView: View {
     @State private var showingPhotos = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var photoLoading: Task<Void, Never>?
+    @State private var filesAfterPhotos = false
     @State private var uploadsAvailable = false
     @State private var previewFile: URL?
     @State private var pending: String?
@@ -5470,16 +5471,18 @@ private struct MentionCardView: View {
                     }
                     Spacer(minLength: 0)
                     HStack(spacing: 2) {
-                        if !person.isSelf {
+                        if !person.isSelf && (blocked || person.canBlock || (person.username != nil && !ownedSpaces.isEmpty)) {
                             Menu {
                                 if !blocked, person.username != nil, !ownedSpaces.isEmpty {
                                     Button("Invite to space") { choosingSpace.toggle() }
                                         .accessibilityIdentifier("mention-card-invite")
                                 }
-                                Button(blocked ? "Unblock" : "Block") {
-                                    if blocked { Task { await unblock() } }
-                                    else { blockRequested = true; close() }
-                                }.accessibilityIdentifier("mention-card-block")
+                                if blocked || person.canBlock {
+                                    Button(blocked ? "Unblock" : "Block") {
+                                        if blocked { Task { await unblock() } }
+                                        else { blockRequested = true; close() }
+                                    }.accessibilityIdentifier("mention-card-block")
+                                }
                             } label: {
                                 // The label must stay an accessibility element: with only
                                 // CaperIcon's hidden image, the menu leaves the tree entirely.
@@ -5561,6 +5564,18 @@ private struct MentionCardView: View {
         })
         #endif
         .interactiveDismissDisabled(draft.preventsImplicitDismissal)
+        #if os(iOS)
+        .sheet(isPresented: $showingPhotos, onDismiss: {
+            if filesAfterPhotos { filesAfterPhotos = false; showingFiles = true }
+            updateDialogState()
+        }) {
+            MobileAttachmentGallery(existingCount: { draft.files.count },
+                                    valid: { draft.editable && !draft.discarded },
+                                    useFiles: { filesAfterPhotos = true }) { files in
+                draft.add(files)
+            }
+        }
+        #else
         .photosPicker(isPresented: $showingPhotos, selection: $photoItems,
                       maxSelectionCount: max(1, AttachmentPolicy.maxAttachments - draft.files.count),
                       matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
@@ -5586,6 +5601,7 @@ private struct MentionCardView: View {
             }
             updateDialogState()
         }
+        #endif
         .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             defer { draft.presentingDialog = false }
             switch result {
@@ -5618,7 +5634,7 @@ private struct MentionCardView: View {
             draft.presentingDialog = false
             if blockRequested {
                 requestBlock(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId,
-                                         avatarAsset: person.picture?.asset, avatarUrl: person.picture?.url.absoluteString))
+                                         avatarAsset: person.picture?.asset, avatarUrl: person.picture?.url.absoluteString, admin: person.admin, team: person.team))
             }
         }
         // Contain, so this identifier does not replace each child's own.
@@ -7550,8 +7566,10 @@ private struct MessageRequestBar: View {
                 Button(pending == "decline" ? "Declining…" : "Decline") { run("decline") { try await model.declineRequest(conversation) } }
                     .buttonStyle(CaperSecondaryButton(minHeight: 42))
                     .accessibilityIdentifier("message-request-decline")
-                Button("Block", role: .destructive, action: block).buttonStyle(CaperSecondaryButton(minHeight: 42))
-                    .accessibilityIdentifier("message-request-block")
+                if conversation.peer.canBlock {
+                    Button("Block", role: .destructive, action: block).buttonStyle(CaperSecondaryButton(minHeight: 42))
+                        .accessibilityIdentifier("message-request-block")
+                }
                 Spacer(minLength: 0)
             }.disabled(pending != nil)
             if let error {

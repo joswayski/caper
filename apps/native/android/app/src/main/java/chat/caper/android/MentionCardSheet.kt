@@ -90,14 +90,14 @@ import kotlinx.coroutines.launch
             )
             shown.subtitle?.let { Text(it, color = TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
         }
-        if (!card.self && viewModel != null && (canInvite || (id != null && account != null))) Box {
+        if (!card.self && viewModel != null && (canInvite || (id != null && account != null && (blocked || shown.canBlock)))) Box {
             ProfileIconButton(R.drawable.lucide_ellipsis, "More profile actions", idle) { profileMenu = true }
             DropdownMenu(profileMenu, { profileMenu = false }, containerColor = SurfaceRaised) {
                 if (canInvite) DropdownMenuItem(text = { Text("Invite to space") }, enabled = idle, onClick = {
                     profileMenu = false
                     choosingSpace = !choosingSpace
                 })
-                if (id != null && account != null) DropdownMenuItem(text = {
+                if (id != null && account != null && (blocked || shown.canBlock)) DropdownMenuItem(text = {
                     Text(if (pending == "unblock") "Unblocking…" else if (blocked) "Unblock" else "Block")
                 }, enabled = idle, onClick = {
                     profileMenu = false
@@ -146,21 +146,24 @@ import kotlinx.coroutines.launch
                     if (direct?.incoming == true) "Open the conversation and accept this message request before replying."
                     else "Unblock this person to send a message.", color = TextMuted, fontSize = 12.sp,
                 )
-                ProfileMessageComposer(
-                    card.username!!, profileDraft, writable && pending == null, state?.uploadsEnabled == true,
-                    text = { viewModel.profileDrafts.text(person, it) },
-                    add = { viewModel.addProfileAttachments(person, it) },
-                    paste = { viewModel.pasteProfileAttachments(person) },
-                    remove = { viewModel.removeProfileAttachment(person, it) },
-                    toggleSpoiler = { viewModel.toggleProfileAttachmentSpoiler(person, it) },
-                    send = { viewModel.sendProfileMessage(person, card.id, card.username, onMessageSent ?: onDismiss) },
-                    pickerInteraction = { picking = it },
-                )
+                val pickerEpoch = viewModel.accountEpoch
+                key(person, pickerEpoch) {
+                    ProfileMessageComposer(
+                        card.username!!, profileDraft, writable && pending == null, state?.uploadsEnabled == true,
+                        text = { viewModel.profileDrafts.text(person, it) },
+                        add = { if (viewModel.accountEpoch == pickerEpoch) viewModel.addProfileAttachments(person, it) },
+                        paste = { viewModel.pasteProfileAttachments(person) },
+                        remove = { viewModel.removeProfileAttachment(person, it) },
+                        toggleSpoiler = { viewModel.toggleProfileAttachmentSpoiler(person, it) },
+                        send = { viewModel.sendProfileMessage(person, card.id, card.username, onMessageSent ?: onDismiss) },
+                        pickerInteraction = { picking = it },
+                    )
+                }
             }
         }
     }
     if (confirmBlock && id != null && viewModel != null) BlockConfirmDialog(
-        BlockedAccount(id, card.username.orEmpty(), card.displayName ?: card.title, card.avatarId, card.avatarAsset, card.avatarUrl),
+        BlockedAccount(id, shown.username.orEmpty(), shown.displayName ?: shown.title, shown.avatarId, shown.avatarAsset, shown.avatarUrl, shown.admin, shown.team),
         viewModel, onDismiss,
     )
     // Replace the bottom sheet with the existing editor, including picture controls.
@@ -246,6 +249,7 @@ import kotlinx.coroutines.launch
                         !editable -> "Sending…"
                         else -> null
                     }, add, interaction = { filePicker = it; pickerInteraction(it || emojiPicker) }, paste = paste,
+                    remaining = (chat.caper.android.data.AttachmentPolicy.MAX_ATTACHMENTS - draft.files.size).coerceAtLeast(0),
                 )
             },
             trailingIcon = {

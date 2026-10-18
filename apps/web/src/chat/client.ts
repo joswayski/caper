@@ -202,8 +202,14 @@ export class ChatHistoryError extends Error {
   }
 }
 
-export async function loadChatHistory(channelId?: string, signal?: AbortSignal): Promise<GeneralChatHistory> {
-  const path = channelId ? `/api/chat/channels/${encodeURIComponent(channelId)}/messages` : "/api/chat/general";
+export async function loadChatHistory(
+  channelId?: string,
+  signal?: AbortSignal,
+  around?: string,
+): Promise<GeneralChatHistory> {
+  const path = channelId
+    ? `/api/chat/channels/${encodeURIComponent(channelId)}/messages${around ? `?around=${encodeURIComponent(around)}` : ""}`
+    : "/api/chat/general";
   const response = await fetch(path, {
     cache: "no-store",
     signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10_000)]),
@@ -217,6 +223,8 @@ export async function loadChatHistory(channelId?: string, signal?: AbortSignal):
     throw new Error("The chat service returned messages from another channel.");
   if (history.pinnedMessages?.some((message) => message.channelId !== history.channel.id))
     throw new Error("The chat service returned pins from another channel.");
+  if (around && !history.messages.some((message) => message.id === around))
+    throw new Error("The chat service returned invalid message context.");
   return history;
 }
 

@@ -58,6 +58,9 @@ public struct PrivacySettings: Codable, Equatable, Sendable {
 /// The person a Block action targets: a DM peer, a request's sender or a
 /// message author (whose username the message does not carry).
 public struct BlockTarget: Equatable, Identifiable, Sendable {
+    public var admin: Bool = false
+    public var team: Bool = false
+    public var canBlock: Bool { !admin && !team }
     public let id: String
     public let username: String?
     public let displayName: String
@@ -65,17 +68,20 @@ public struct BlockTarget: Equatable, Identifiable, Sendable {
     public var avatarAsset: String? = nil
     public var avatarUrl: String? = nil
 
-    public init(id: String, username: String?, displayName: String, avatarId: Int? = nil, avatarAsset: String? = nil, avatarUrl: String? = nil) {
+    public init(id: String, username: String?, displayName: String, avatarId: Int? = nil, avatarAsset: String? = nil, avatarUrl: String? = nil, admin: Bool = false, team: Bool = false) {
+        self.admin = admin; self.team = team
         self.id = id; self.username = username; self.displayName = displayName; self.avatarId = avatarId
         self.avatarAsset = avatarAsset; self.avatarUrl = avatarUrl
     }
     public init(peer: DirectMessagePeer) {
         self.init(id: peer.id, username: peer.username, displayName: peer.displayName, avatarId: peer.avatarId,
                   avatarAsset: peer.avatarAsset, avatarUrl: peer.avatarUrl)
+        admin = peer.admin == true; team = peer.isTeam
     }
     public init(author: ChatAuthor) {
         self.init(id: author.id, username: nil, displayName: author.name, avatarId: author.avatarId,
                   avatarAsset: author.avatarAsset, avatarUrl: author.avatarUrl)
+        admin = author.isAdmin
     }
 
     public var confirmationTitle: String { "Block \(displayName)?" }
@@ -188,7 +194,7 @@ enum BlockedMessages {
     /// Whether message actions offer Block for this author.
     static func canBlock(_ author: ChatAuthor, viewerID: String?, blocked: Set<String>) -> Bool {
         guard let viewerID, !viewerID.isEmpty else { return false }
-        return !author.isGuest && author.id != viewerID && !blocked.contains(author.id)
+        return !author.isAdmin && !author.isGuest && author.id != viewerID && !blocked.contains(author.id)
     }
 
     /// Whether message actions offer Unblock: an author you already blocked,
