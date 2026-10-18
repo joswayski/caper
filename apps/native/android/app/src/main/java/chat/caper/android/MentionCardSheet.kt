@@ -249,7 +249,6 @@ import kotlinx.coroutines.launch
                         !editable -> "Sending…"
                         else -> null
                     }, add, interaction = { filePicker = it; pickerInteraction(it || emojiPicker) }, paste = paste,
-                    remaining = (chat.caper.android.data.AttachmentPolicy.MAX_ATTACHMENTS - draft.files.size).coerceAtLeast(0),
                 )
             },
             trailingIcon = {
