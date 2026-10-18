@@ -17015,6 +17015,20 @@ impl CaperApp {
                                 self.set_reaction(&message.id, &reaction.emoji, !owned);
                             }
                         }
+                        if can_react {
+                            let add = drawn_icon_button(ui, NavIcon::SmilePlus, "Add reaction");
+                            if add.hovered() || add.has_focus() {
+                                self.reaction_textures
+                                    .preload(ui.ctx(), emoji::CATEGORIES[0].0);
+                            }
+                            if add.clicked() {
+                                self.reaction_picker = Some(message.id.clone());
+                                self.composer_emoji = None;
+                                self.reaction_search.clear();
+                                self.reaction_category = 0;
+                                self.reaction_search_focus = true;
+                            }
+                        }
                     });
                 }
                 if let Some((active, error)) = self.pin_errors.get(&message.id).cloned() {
@@ -31733,6 +31747,59 @@ mod tests {
     }
 
     #[test]
+    fn reaction_row_shortcut_opens_picker_without_owning_a_reaction() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-reactions"),
+        );
+        let mut message = app.timeline.messages().nth(1).unwrap().clone();
+        for reaction in &mut message.reactions {
+            reaction.author_ids = vec!["someone-else".into()];
+        }
+        app.timeline.reset(vec![message.clone()], "7").unwrap();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        // The row's 28px shortcut, not the existing 24px hover-bar control.
+        let row_shortcut = |output: &egui::FullOutput| {
+            output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find_map(|(_, node)| {
+                    let bounds = node.bounds()?;
+                    (node.label() == Some("Add reaction") && bounds.x1 - bounds.x0 == 28.0).then(
+                        || {
+                            egui::pos2(
+                                ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                                ((bounds.y0 + bounds.y1) / 2.0) as f32,
+                            )
+                        },
+                    )
+                })
+        };
+        let add = row_shortcut(&output).expect("inline shortcut without hovering");
+        app.reaction_search = "stale search".into();
+        app.reaction_category = 2;
+        click(&mut app, &context, add);
+        assert_eq!(app.reaction_picker.as_deref(), Some(message.id.as_str()));
+        assert!(app.reaction_search.is_empty());
+        assert_eq!(app.reaction_category, 0);
+        assert!(app.pending_reactions.is_empty(), "opening does not react");
+
+        app.reaction_picker = None;
+        message.reactions.clear();
+        app.timeline.reset(vec![message], "8").unwrap();
+        render(&mut app, &context, vec![egui::Event::PointerGone]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(row_shortcut(&output).is_none(), "no empty-row shortcut");
+    }
+
+    #[test]
     fn unjoined_preview_shows_reactions_without_reaction_controls_or_mutations() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -31781,6 +31848,17 @@ mod tests {
         );
         assert!(!labels.contains(&"Add a reaction"), "{labels:?}");
         assert!(!labels.contains(&"Retry"), "{labels:?}");
+        assert!(
+            !output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Add reaction") && !node.is_disabled()),
+            "no read-only row shortcut"
+        );
         assert!(app.reaction_picker.is_none());
     }
 

@@ -789,9 +789,9 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(target.waitForExistence(timeout: 5))
         try hoverMessage(target)
         XCTAssertTrue(app.buttons["add-reaction-\(hoverTargetID)"].waitForExistence(timeout: 2), "Message controls appear on hover")
-        #else
-        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "label == %@", "Add reaction")).count, 0, "iPhone must not show an add-reaction button under each message")
         #endif
+        let rowShortcut = app.buttons["reaction-row-add-chan00000001m01"]
+        XCTAssertTrue(rowShortcut.exists, "Messages with reactions offer an inline add-reaction shortcut")
         capture("reaction-chips-wrapped-fixture", app: app)
         let targetID = "chan00000001m01"
         #if os(iOS)
@@ -810,9 +810,11 @@ final class CaperParityUITests: XCTestCase {
         dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.descendants(matching: .any)["message-actions-sheet"])
         XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed)
         #endif
-        try openReactionPicker(for: targetID, in: app)
+        rowShortcut.tap()
         let search = app.textFields["reaction-picker-search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.descendants(matching: .any)["message-actions-sheet"].exists,
+                       "The inline shortcut opens the full picker directly")
         let smileys = app.buttons["emoji-category-smileys_people"]
         let activities = app.buttons["emoji-category-activities"]
         XCTAssertTrue(smileys.isSelected)
