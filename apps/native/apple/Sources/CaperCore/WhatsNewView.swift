@@ -149,9 +149,11 @@ struct WhatsNewDisplay: Identifiable {
                         if releases.isEmpty {
                             Text("No release highlights for this version yet.").foregroundStyle(CaperTheme.muted)
                         }
-                        ForEach(releases, id: \.sequence) { release in
-                            Text(String(release.publishedAt.prefix(10))).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                            ForEach(Array(release.highlights.enumerated()), id: \.offset) { _, highlight in
+                        let days = Dictionary(grouping: releases) { String($0.publishedAt.prefix(10)) }
+                        ForEach(days.keys.sorted(by: >), id: \.self) { date in
+                            Text(date).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                            let highlights = (days[date] ?? []).flatMap(\.highlights)
+                            ForEach(Array(highlights.enumerated()), id: \.offset) { _, highlight in
                                 Text(highlight.title).font(CaperTheme.font(16, weight: .bold))
                                 Text(highlight.body).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                             }

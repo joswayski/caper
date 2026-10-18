@@ -30,6 +30,7 @@ class WhatsNewUiTest {
         val newer = compose.onNodeWithText("TEST FIXTURE — Update 4").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         val older = compose.onNodeWithText("TEST FIXTURE — Update 2").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         assertTrue(newer.top < older.top)
+        compose.onAllNodesWithText("2026-10-11").assertCountEquals(1)
         compose.onNodeWithText("Got it").performClick()
         compose.runOnIdle { assertEquals(4L, dismissed) }
     }

@@ -65,9 +65,9 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
         TextButton(retry, enabled = !state.loading) { Text("Retry") }
     } else if (releases.isEmpty()) {
         Text("No release highlights for this version yet.", color = TextMuted)
-    } else releases.forEach { release ->
-        Text(release.publishedAt.take(10), fontSize = 12.sp, color = TextMuted)
-        release.highlights.forEach { highlight ->
+    } else releases.groupBy { it.publishedAt.take(10) }.forEach { (date, dayReleases) ->
+        Text(date, fontSize = 12.sp, color = TextMuted)
+        dayReleases.flatMap { it.highlights }.forEach { highlight ->
             Text(highlight.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Text(highlight.body, fontSize = 14.sp, color = TextMuted)
         }

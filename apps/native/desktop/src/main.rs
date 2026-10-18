@@ -8971,7 +8971,7 @@ impl CaperApp {
             "schema": 1, "platform": whats_new::PLATFORM, "revision": whats_new::REVISION, "sequence": 3,
             "releases": [
                 {"sequence": 1, "revision": "1".repeat(40), "publishedAt": "2026-10-09T19:00:00Z", "highlights": []},
-                {"sequence": 2, "revision": "2".repeat(40), "publishedAt": "2026-10-10T19:00:00Z", "highlights": if name == "parity-whats-new-empty" { vec![] } else { vec![highlight("Find your conversations", "Move between your spaces and direct messages while keeping your drafts.")] }},
+                {"sequence": 2, "revision": "2".repeat(40), "publishedAt": "2026-10-11T00:01:00Z", "highlights": if name == "parity-whats-new-empty" { vec![] } else { vec![highlight("Find your conversations", "Move between your spaces and direct messages while keeping your drafts.")] }},
                 {"sequence": 3, "revision": whats_new::REVISION, "publishedAt": "2026-10-11T19:00:00Z", "highlights": if name == "parity-whats-new-empty" { vec![] } else { vec![highlight("Edit your messages", "Update a message and view its earlier versions."), highlight("Catch up after an update", "Read the highlights from shipped updates here, and reopen them from Settings.")] }}
             ]
         });
@@ -20778,14 +20778,20 @@ impl CaperApp {
                 ui.label(RichText::new("No release highlights for this version yet.").color(MUTED));
             } else {
                 ui.label(RichText::new("Highlights from shipped Caper updates.").color(MUTED));
+                let mut previous_day = None;
                 for release in releases {
-                    ui.add_space(20.0);
                     let published = DateTime::parse_from_rfc3339(&release.published_at)
                         .expect("validated publication date");
-                    let date = published.format("%B %-d, %Y");
-                    // The date alone, as on every other client; the feed's sequence
-                    // number means nothing to people.
-                    ui.label(bold(date.to_string()).size(12.0).color(MUTED));
+                    let day = published.date_naive();
+                    if previous_day != Some(day) {
+                        ui.add_space(20.0);
+                        ui.label(
+                            bold(day.format("%B %-d, %Y").to_string())
+                                .size(12.0)
+                                .color(MUTED),
+                        );
+                        previous_day = Some(day);
+                    }
                     for highlight in release.highlights {
                         ui.add_space(10.0);
                         ui.label(bold(highlight.title).size(16.0));
@@ -29435,6 +29441,13 @@ mod tests {
             assert!(
                 text_position(&output, "Edit your messages").y
                     < text_position(&output, "Find your conversations").y
+            );
+            assert_eq!(
+                output.shapes.iter().filter(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "October 11, 2026")
+                }).count(),
+                1,
+                "same-day releases share one heading"
             );
             match route {
                 "Escape" => {

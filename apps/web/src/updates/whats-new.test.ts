@@ -1,5 +1,10 @@
 import { test, expect, vi } from "vitest";
-import { loadReleaseHighlights, unreadReleaseHighlights, type ReleaseHighlights } from "./whats-new";
+import {
+  loadReleaseHighlights,
+  releaseHighlightDays,
+  unreadReleaseHighlights,
+  type ReleaseHighlights,
+} from "./whats-new";
 
 const revision = "a".repeat(40);
 const feed: ReleaseHighlights = {
@@ -39,6 +44,36 @@ test("release highlights quietly baseline new installs and catch up without repe
   expect(unreadReleaseHighlights(loaded, 4)).toEqual([]);
   expect(unreadReleaseHighlights(loaded, 7)).toEqual([]); // Rolled-back builds stay quiet.
   expect(loaded.releases[0].sequence).toBe(1); // Presentation never mutates chronological history.
+});
+
+test("release history bundles a publication day while preserving highlights, order, and unread boundaries", () => {
+  const history = structuredClone(feed);
+  history.releases[1].publishedAt = "2026-10-11T00:01:00Z";
+  history.releases[2].publishedAt = "2026-10-11T08:00:00Z";
+  history.releases[3].highlights.push({ title: "More pin details", body: "See who pinned a message." });
+  const before = structuredClone(history);
+  expect(releaseHighlightDays([...history.releases].reverse())).toEqual([
+    {
+      date: "2026-10-11",
+      highlights: [
+        { title: "Channel pins", body: "Find important messages together." },
+        { title: "More pin details", body: "See who pinned a message." },
+        { title: "Edit messages", body: "View earlier versions." },
+      ],
+    },
+    { date: "2026-10-08", highlights: [{ title: "Earlier update", body: "Already acknowledged." }] },
+  ]);
+  expect(releaseHighlightDays(unreadReleaseHighlights(history, 2))).toEqual([
+    {
+      date: "2026-10-11",
+      highlights: [
+        { title: "Channel pins", body: "Find important messages together." },
+        { title: "More pin details", body: "See who pinned a message." },
+      ],
+    },
+  ]);
+  expect(releaseHighlightDays([])).toEqual([]);
+  expect(history).toEqual(before);
 });
 
 test("release highlights fail closed on wrong platform/revision, inconsistent history, unsafe text, and unavailable publication", async () => {
