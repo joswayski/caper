@@ -214,7 +214,7 @@ pub fn classify(content_type: &str, bytes: &[u8]) -> StillClass {
 
 /// An `acTL` chunk before the image data marks an APNG; only its first frame
 /// would survive re-encoding.
-fn png_is_animated(bytes: &[u8]) -> bool {
+pub fn png_is_animated(bytes: &[u8]) -> bool {
     let mut offset = 8;
     while let Some(head) = bytes.get(offset..offset + 8) {
         let length = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
@@ -565,22 +565,116 @@ pub fn prepare_image(
             prepared.bytes = stripped;
         }
     }
+    add_previews(&mut prepared, &source, icc.as_deref(), settings);
+    prepared
+}
+
+/// The JPEG preview (for large or heavy images) and the local thumbnail,
+/// drawn from what is stored.
+fn add_previews(
+    prepared: &mut PreparedImage,
+    source: &DynamicImage,
+    icc: Option<&[u8]>,
+    settings: &Compression,
+) {
     let longest = source.width().max(source.height());
     if attachment_kind(&prepared.content_type) == AttachmentKind::Image
         && settings.preview_edge > 0
         && (longest > settings.preview_edge || prepared.bytes.len() > PREVIEW_MAX_BYTES)
     {
-        let preview = scaled(&source, settings.preview_edge).to_rgba8();
+        let preview = scaled(source, settings.preview_edge).to_rgba8();
         prepared.preview = encode_jpeg(
             &composite_onto_white(&preview),
             PREVIEW_QUALITY,
-            icc.as_deref().filter(|icc| rgb_profile(Some(icc))),
+            icc.filter(|icc| rgb_profile(Some(icc))),
         )
         .ok()
         .filter(|bytes| bytes.len() <= PREVIEW_MAX_BYTES);
     }
-    prepared.thumbnail = Some(scaled(&source, crate::attachments::THUMBNAIL_EDGE).to_rgba8());
-    prepared
+    prepared.thumbnail = Some(scaled(source, crate::attachments::THUMBNAIL_EDGE).to_rgba8());
+}
+
+/// A still with its edit applied (`attachment_edit::render`) at the
+/// original's native resolution, then encoded by the source's class like
+/// [`prepare_image`], except that the result is always used: the original is
+/// not an option. Photos are scaled to `imageMaxEdge`; lossless sources never
+/// are. PNG is the fallback when the preferred encoders fail. The output is
+/// upright and carries no EXIF.
+pub fn prepare_edited_image(
+    name: &str,
+    bytes: &[u8],
+    content_type: &str,
+    settings: &Compression,
+    edit: &crate::attachment_edit::Edit,
+) -> Result<PreparedImage, String> {
+    let failed = || crate::attachment_edit::FAILED.to_owned();
+    let class = classify(content_type, bytes);
+    if class == StillClass::Unchanged {
+        return Err(failed());
+    }
+    let Decoded { image, icc, .. } = decode(bytes).ok_or_else(failed)?;
+    let rendered = crate::attachment_edit::render(&image, edit).ok_or_else(failed)?;
+    drop(image);
+    // Pixels are written as RGB: a profile for another colour model is dropped.
+    let icc = icc.filter(|icc| rgb_profile(Some(icc)));
+    let source = match class {
+        StillClass::Photo => scaled(&rendered, settings.image_max_edge),
+        _ => rendered,
+    };
+    let candidate = match class {
+        StillClass::Lossless => lossless_candidate(&source, icc.as_deref(), settings),
+        _ => photo_candidate(&source, icc.as_deref(), settings),
+    };
+    let (bytes, encoded_type) = match candidate {
+        Some((bytes, encoded_type)) => (bytes, encoded_type),
+        None => (
+            encode_png(&source, icc.as_deref()).ok_or_else(failed)?,
+            "image/png",
+        ),
+    };
+    let mut prepared = PreparedImage {
+        bytes,
+        content_type: encoded_type.into(),
+        name: renamed(name, encoded_type),
+        width: Some(source.width()),
+        height: Some(source.height()),
+        preview: None,
+        thumbnail: None,
+    };
+    add_previews(&mut prepared, &source, icc.as_deref(), settings);
+    Ok(prepared)
+}
+
+/// Any decoded still as PNG, at its own bit depth, with its colour profile.
+fn encode_png(image: &DynamicImage, icc: Option<&[u8]>) -> Option<Vec<u8>> {
+    use image::ImageEncoder;
+    let mut bytes = Vec::new();
+    let mut encoder = image::codecs::png::PngEncoder::new(&mut bytes);
+    if let Some(icc) = icc {
+        let _ = encoder.set_icc_profile(icc.to_vec());
+    }
+    // PNG has no float samples.
+    let widened;
+    let image = match image.color() {
+        ColorType::Rgb32F => {
+            widened = DynamicImage::ImageRgb16(image.to_rgb16());
+            &widened
+        }
+        ColorType::Rgba32F => {
+            widened = DynamicImage::ImageRgba16(image.to_rgba16());
+            &widened
+        }
+        _ => image,
+    };
+    encoder
+        .write_image(
+            image.as_bytes(),
+            image.width(),
+            image.height(),
+            image.color().into(),
+        )
+        .ok()?;
+    Some(bytes)
 }
 
 // Adapted from joswayski/captures `crates/captures-image/src/encoding.rs`
@@ -1641,6 +1735,126 @@ mod tests {
         let (palette, indices) = exact_indexed_rgba(&image, 3).unwrap();
         assert_eq!(palette.len(), 3);
         assert_eq!(indices.len(), 12);
+    }
+
+    #[test]
+    fn edited_stills_are_always_re_encoded_by_their_source_class() {
+        use crate::attachment_edit::{Crop, Edit, Mark};
+        let crop = Edit {
+            crop: Crop {
+                x: 0.5,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0,
+            },
+            ..Edit::default()
+        };
+        // An EXIF-rotated photo is edited upright and keeps no EXIF. Noise
+        // never shrinks by 10%, but an edit has no original to fall back to.
+        let original = with_orientation(&jpeg(&noise(400, 200), 40), 6);
+        let prepared = prepare_edited_image(
+            "IMG_1.JPG",
+            &original,
+            "image/jpeg",
+            &Compression::default(),
+            &crop,
+        )
+        .unwrap();
+        assert_eq!(prepared.content_type, "image/webp");
+        assert_eq!(prepared.name, "IMG_1.webp");
+        assert_eq!((prepared.width, prepared.height), (Some(100), Some(400)));
+        assert!(!prepared.bytes.windows(4).any(|window| window == b"Exif"));
+        assert_eq!(
+            prepared.thumbnail.as_ref().unwrap().dimensions(),
+            (100, 400)
+        );
+        // Photos scale to the edge limit; lossless sources keep every pixel.
+        let scaled = prepare_edited_image(
+            "photo.jpg",
+            &jpeg(&photo(1600, 900), 90),
+            "image/jpeg",
+            &Compression {
+                image_max_edge: 400,
+                ..Compression::default()
+            },
+            &crop.rotate_left(),
+        )
+        .unwrap();
+        assert_eq!((scaled.width, scaled.height), (Some(400), Some(356)));
+        let screenshot = RgbaImage::from_fn(300, 200, |x, _| {
+            if x < 150 {
+                Rgba([255, 0, 0, 255])
+            } else {
+                Rgba([0, 0, 255, 255])
+            }
+        });
+        let marked = Edit {
+            marks: vec![Mark::Stroke {
+                color: [255, 255, 255],
+                width: 0.1,
+                points: vec![0.75, 0.5],
+            }],
+            ..crop.clone()
+        };
+        let lossless = prepare_edited_image(
+            "shot.png",
+            &png_bytes(&screenshot),
+            "image/png",
+            &Compression {
+                image_max_edge: 100,
+                ..Compression::default()
+            },
+            &marked,
+        )
+        .unwrap();
+        assert!(matches!(
+            lossless.content_type.as_str(),
+            "image/png" | "image/webp"
+        ));
+        let decoded = image::load_from_memory(&lossless.bytes).unwrap().to_rgba8();
+        assert_eq!(decoded.dimensions(), (150, 200));
+        assert_eq!(decoded.get_pixel(5, 5).0, [0, 0, 255, 255]);
+        assert_eq!(decoded.get_pixel(75, 100).0, [255, 255, 255, 255]);
+        // Quality 100 turns lossy encoding off: an edited photo becomes PNG.
+        let png = prepare_edited_image(
+            "photo.jpeg",
+            &jpeg(&photo(64, 32), 90),
+            "image/jpeg",
+            &Compression {
+                image_quality: 100,
+                ..Compression::default()
+            },
+            &crop,
+        )
+        .unwrap();
+        assert_eq!(
+            (png.content_type.as_str(), png.name.as_str()),
+            ("image/png", "photo.png")
+        );
+        // Animations and undecodable files cannot be edited: nothing uploads.
+        let gif = encoded(&photo(8, 8), image::ImageFormat::Gif);
+        assert_eq!(
+            prepare_edited_image(
+                "party.gif",
+                &gif,
+                "image/gif",
+                &Compression::default(),
+                &crop
+            )
+            .err()
+            .as_deref(),
+            Some(crate::attachment_edit::FAILED)
+        );
+        assert!(
+            prepare_edited_image(
+                "broken.jpg",
+                b"\xff\xd8\xffjunk",
+                "image/jpeg",
+                &Compression::default(),
+                &crop
+            )
+            .is_err()
+        );
     }
 
     fn mp4_box(kind: &[u8; 4], body: &[u8]) -> Vec<u8> {

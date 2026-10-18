@@ -180,8 +180,7 @@ struct Video {
 pub struct Viewer {
     items: Vec<Attachment>,
     index: usize,
-    zoom: f32,
-    pan: egui::Vec2,
+    zoom: Zoom,
     full: HashMap<String, Full>,
     sender: Sender<Loaded>,
     receiver: Receiver<Loaded>,
@@ -208,8 +207,7 @@ impl Viewer {
         Self {
             index: index.min(items.len().saturating_sub(1)),
             items,
-            zoom: 1.0,
-            pan: egui::Vec2::ZERO,
+            zoom: Zoom::default(),
             full: HashMap::new(),
             sender,
             receiver,
@@ -241,8 +239,7 @@ impl Viewer {
             self.swipe = None;
             self.returning = None;
             self.index = index;
-            self.zoom = 1.0;
-            self.pan = egui::Vec2::ZERO;
+            self.zoom = Zoom::default();
             self.scrub = None;
         }
     }
@@ -632,7 +629,7 @@ impl Viewer {
     fn track_swipe(&mut self, context: &egui::Context, stage: egui::Rect, now: f64) -> bool {
         let (events, pinching) =
             context.input(|input| (input.events.clone(), input.multi_touch().is_some()));
-        if pinching || self.zoom > 1.0 {
+        if pinching || self.zoom.zoomed() {
             self.cancel_swipe(now);
             return false;
         }
@@ -787,9 +784,8 @@ impl Viewer {
             }
         };
         let base = fit(natural, stage.size());
-        let shown = base * self.zoom;
-        self.pan = clamp_pan(self.pan, shown, stage.size());
-        let image_rect = egui::Rect::from_center_size(stage.center() + self.pan, shown);
+        let image_rect = self.zoom.place(stage, base);
+        let shown = image_rect.size();
         let response = ui.interact(
             image_rect.intersect(stage),
             ui.id().with(("viewer-image", &current.id)),
@@ -804,24 +800,7 @@ impl Viewer {
                 egui::Rect::from_center_size(stage.center(), egui::vec2(28.0, 28.0)),
             );
         }
-        // Zoom: double-click toggles, pinch / Ctrl+scroll scales, both about the pointer.
-        let pointer = response.hover_pos();
-        if response.double_clicked() {
-            let target = if self.zoom > 1.0 {
-                1.0
-            } else {
-                DOUBLE_CLICK_ZOOM
-            };
-            self.zoom_to(target, pointer, stage, base);
-        } else if response.hovered() {
-            let delta = ui.ctx().input(|input| input.zoom_delta());
-            if (delta - 1.0).abs() > f32::EPSILON {
-                self.zoom_to(self.zoom * delta, pointer, stage, base);
-            }
-        }
-        if response.dragged() && self.zoom > 1.0 {
-            self.pan += response.drag_delta();
-        }
+        self.zoom.interact(ui, &response, stage, base);
         response.widget_info(|| {
             egui::WidgetInfo::labeled(
                 egui::WidgetType::Image,
@@ -830,23 +809,6 @@ impl Viewer {
             )
         });
         response.hovered() || response.dragged()
-    }
-
-    fn zoom_to(
-        &mut self,
-        zoom: f32,
-        pointer: Option<egui::Pos2>,
-        stage: egui::Rect,
-        base: egui::Vec2,
-    ) {
-        let zoom = zoom.clamp(1.0, MAX_ZOOM);
-        // Keep the point under the pointer still.
-        if let Some(pointer) = pointer {
-            let from_center = pointer - stage.center() - self.pan;
-            self.pan -= from_center * (zoom / self.zoom - 1.0);
-        }
-        self.zoom = zoom;
-        self.pan = clamp_pan(self.pan, base * zoom, stage.size());
     }
 
     /// The video and its control bar. Returns whether the pointer is over them.
@@ -1266,6 +1228,81 @@ pub fn clamp_pan(pan: egui::Vec2, shown: egui::Vec2, stage: egui::Vec2) -> egui:
     egui::vec2(pan.x.clamp(-room.x, room.x), pan.y.clamp(-room.y, room.y))
 }
 
+/// How far a picture is zoomed past its fitted size, and moved from the
+/// stage's centre: the viewer's, and the draft preview's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Zoom {
+    pub scale: f32,
+    pub pan: egui::Vec2,
+}
+
+impl Default for Zoom {
+    fn default() -> Self {
+        Self {
+            scale: 1.0,
+            pan: egui::Vec2::ZERO,
+        }
+    }
+}
+
+impl Zoom {
+    pub fn zoomed(&self) -> bool {
+        self.scale > 1.0
+    }
+
+    /// Where a picture fitted at `base` is drawn on `stage`.
+    pub fn place(&mut self, stage: egui::Rect, base: egui::Vec2) -> egui::Rect {
+        let shown = base * self.scale;
+        self.pan = clamp_pan(self.pan, shown, stage.size());
+        egui::Rect::from_center_size(stage.center() + self.pan, shown)
+    }
+
+    /// Double-click toggles, pinch / Ctrl+scroll scales, both about the
+    /// pointer; dragging pans while zoomed. `response` senses clicks and drags.
+    pub fn interact(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        stage: egui::Rect,
+        base: egui::Vec2,
+    ) {
+        let pointer = response.hover_pos();
+        if response.double_clicked() {
+            let target = if self.zoomed() {
+                1.0
+            } else {
+                DOUBLE_CLICK_ZOOM
+            };
+            self.zoom_to(target, pointer, stage, base);
+        } else if response.hovered() {
+            let delta = ui.ctx().input(|input| input.zoom_delta());
+            if (delta - 1.0).abs() > f32::EPSILON {
+                self.zoom_to(self.scale * delta, pointer, stage, base);
+            }
+        }
+        if response.dragged() && self.zoomed() {
+            self.pan += response.drag_delta();
+        }
+    }
+
+    fn zoom_to(
+        &mut self,
+        scale: f32,
+        pointer: Option<egui::Pos2>,
+        stage: egui::Rect,
+        base: egui::Vec2,
+    ) {
+        let scale = scale.clamp(1.0, MAX_ZOOM);
+        // Keep the point under the pointer still.
+        if let Some(pointer) = pointer {
+            let from_center = pointer - stage.center() - self.pan;
+            self.pan -= from_center * (scale / self.scale - 1.0);
+        }
+        self.scale = scale;
+        self.pan = clamp_pan(self.pan, base * scale, stage.size());
+    }
+}
+
 /// Full-size frames: animated GIF/WebP with their delays, other stills once.
 /// Formats the `image` codecs cannot read (AVIF, HEIC) go through FFmpeg.
 fn decode_full(bytes: &[u8], content_type: &str) -> Option<Vec<(egui::ColorImage, Duration)>> {
@@ -1428,10 +1465,10 @@ mod tests {
         assert_eq!((viewer.index(), viewer.len()), (2, 3));
         viewer.go(3);
         assert_eq!(viewer.index(), 2);
-        viewer.zoom = 3.0;
+        viewer.zoom.scale = 3.0;
         viewer.go(0);
         assert_eq!(viewer.index(), 0);
-        assert_eq!(viewer.zoom, 1.0, "moving resets zoom");
+        assert_eq!(viewer.zoom, Zoom::default(), "moving resets zoom");
     }
 
     #[test]
@@ -1526,7 +1563,7 @@ mod tests {
         frame(&mut viewer, &[(Start, 2, center + egui::vec2(50.0, 0.0))]);
         frame(&mut viewer, &[(End, 1, center + egui::vec2(120.0, 0.0))]);
         assert_eq!(viewer.index(), 1);
-        viewer.zoom = 2.0;
+        viewer.zoom.scale = 2.0;
         frame(&mut viewer, &[(Start, 1, center)]);
         frame(&mut viewer, &[(End, 1, center + egui::vec2(120.0, 0.0))]);
         assert_eq!(viewer.index(), 1);
@@ -1551,6 +1588,28 @@ mod tests {
             clamp_pan(egui::vec2(50.0, 50.0), egui::vec2(400.0, 300.0), stage),
             egui::Vec2::ZERO
         );
+    }
+
+    #[test]
+    fn zoom_keeps_the_spot_under_the_pointer_between_fit_and_the_most() {
+        let stage = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let base = egui::vec2(800.0, 600.0);
+        let pointer = egui::pos2(600.0, 150.0);
+        let mut zoom = Zoom::default();
+        // Where the pointer is on the picture, in fractions of it.
+        let spot = |zoom: &mut Zoom| {
+            let rect = zoom.place(stage, base);
+            (pointer - rect.min) / rect.size()
+        };
+        let before = spot(&mut zoom);
+        zoom.zoom_to(2.0, Some(pointer), stage, base);
+        assert_eq!(zoom.scale, 2.0);
+        assert!((spot(&mut zoom) - before).length() < 1e-5);
+        zoom.zoom_to(100.0, Some(pointer), stage, base);
+        assert_eq!(zoom.scale, MAX_ZOOM);
+        // Back at fit it is centred again.
+        zoom.zoom_to(0.5, Some(pointer), stage, base);
+        assert_eq!(zoom, Zoom::default());
     }
 
     #[test]

@@ -126,7 +126,21 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   and no Caper credentials, confirms (retrying while storage has not seen it
   yet), and sends. Chips show the name, saving ("1.6 MB → 143 KB"), progress,
   errors such as storage full, and remove, with a local thumbnail the sent
-  message keeps. Channel, thread and profile composers attach copied files
+  message keeps. Each tile has one action bar: Spoiler (eye / eye-off), a
+  pencil on editable files, and Remove, inset in the top-right corner, or
+  across the tile's top edge with 44 px buttons in narrow layouts. The pencil
+  on JPEG, PNG, WebP, BMP and TIFF stills (not
+  animated) and, with FFmpeg, videos opens the editor (`attachment_editor.rs`):
+  crop, rotate left, draw and text with six colours, the egui colour picker
+  and a size slider, undo/redo (Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y). Saving cancels
+  the upload in flight and prepares the original again with the edit
+  (`attachment_edit.rs`): stills at native resolution, always re-encoded by
+  their source class with PNG as the fallback; videos always transcoded,
+  turned and cropped. Marks on videos need an FFmpeg with the `overlay` filter
+  and PNG input, which the bundled build lacks, so Draw and Text are
+  unavailable for videos there. An edit that cannot be applied fails with
+  "Couldn’t apply your edits." and nothing is uploaded. HEIC and AVIF are not
+  editable here (they do not decode). Channel, thread and profile composers attach copied files
   and images pasted with Ctrl+V; profile composers' Attach menu also has
   **Paste from clipboard**. Pasting works for native copied files
   and images on Windows and X11/XWayland, and on Wayland compositors with the
@@ -471,6 +485,9 @@ uploads.
 `parity-thread-attachments-rejected` previews a rejected reply with Edit/Dismiss.
 Append `-narrow` to these thread fixtures for a 390px-wide window. These are
 labelled local previews, not live storage or upload validation.
+`parity-attachment-editor` opens the attachment editor on a synthetic picture
+with a labelled line and text (`-crop` and `-text` open those tools, `-narrow`
+a 390px-wide window); `-chip` shows the composer file's Edit button.
 `parity-requests` previews an open incoming request and the requests list;
 `parity-requests-outgoing` an unaccepted request you sent; `parity-blocked`
 Maya's #general messages collapsed after blocking her; `parity-blocked-dm` the

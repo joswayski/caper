@@ -257,6 +257,8 @@ pub enum Reason {
     Codec,
     Container,
     Bitrate,
+    /// Cropped, turned or drawn on before sending: always re-encoded.
+    Edited,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -265,6 +267,18 @@ pub struct VideoPlan {
     pub width: u32,
     pub height: u32,
     pub kbps: u32,
+    /// The sender's edit, baked into the frames.
+    pub edit: Option<VideoEdit>,
+}
+
+/// An edit as FFmpeg applies it, in the display orientation (after the
+/// track's own rotation): clockwise quarter turns, then the crop in pixels of
+/// the turned frame, then (after scaling) the marks as a still PNG overlay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VideoEdit {
+    pub rotation: u16,
+    pub crop: crate::attachment_edit::PixelRect,
+    pub overlay: Option<PathBuf>,
 }
 
 /// `videoBitrateKbps` at 1080p30, scaled by pixel count and (above 30 fps,
@@ -340,15 +354,7 @@ pub fn video_plan(
     if !inline_container {
         reasons.push(Reason::Container);
     }
-    // The video's own rate; else the whole file less its audio.
-    let kbps = video.kbps.or_else(|| {
-        let audio = probe
-            .audio
-            .as_ref()
-            .and_then(|audio| audio.kbps)
-            .unwrap_or(0);
-        probe.total_kbps.map(|total| total.saturating_sub(audio))
-    });
+    let kbps = video_kbps(probe);
     let source_target = f64::from(target_kbps(video.width, video.height, video.fps, settings));
     if kbps.is_some_and(|kbps| f64::from(kbps) > source_target * BITRATE_SLACK) {
         reasons.push(Reason::Bitrate);
@@ -363,13 +369,77 @@ pub fn video_plan(
         reasons,
         width,
         height,
+        edit: None,
+    })
+}
+
+/// The video stream's own bitrate, else the whole file's less its audio.
+fn video_kbps(probe: &Probe) -> Option<u32> {
+    probe.video.as_ref()?.kbps.or_else(|| {
+        let audio = probe
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.kbps)
+            .unwrap_or(0);
+        probe.total_kbps.map(|total| total.saturating_sub(audio))
+    })
+}
+
+/// An edited video is always transcoded, whatever [`video_plan`] would say:
+/// the crop of the turned display frame (even pixels), its short edge capped
+/// at `videoMaxHeight` (0 = no cap), at the bitrate for that size. The
+/// overlay is added once it has been painted at the plan's size.
+pub fn edited_plan(
+    probe: &Probe,
+    edit: &crate::attachment_edit::Edit,
+    settings: &Compression,
+) -> Option<VideoPlan> {
+    let video = probe.video.as_ref()?;
+    if video.width < 2 || video.height < 2 {
+        return None;
+    }
+    let crop = edit.crop_pixels(video.width, video.height, true);
+    let (mut width, mut height) = (crop.width, crop.height);
+    let short = width.min(height);
+    if settings.video_max_height > 0 && short > settings.video_max_height {
+        let even = (settings.video_max_height / 2 * 2).max(2);
+        let scale = f64::from(even) / f64::from(short);
+        let other = |size: u32| ((f64::from(size) * scale / 2.0).round() as u32 * 2).max(2);
+        (width, height) = if width < height {
+            (even, other(height))
+        } else {
+            (other(width), even)
+        };
+    }
+    let mut reasons = vec![Reason::Edited];
+    if video.hdr {
+        reasons.push(Reason::Hdr);
+    }
+    Some(VideoPlan {
+        kbps: output_kbps(
+            target_kbps(width, height, video.fps, settings),
+            video_kbps(probe),
+            video.codec == "h264",
+            settings,
+        ),
+        reasons,
+        width,
+        height,
+        edit: Some(VideoEdit {
+            rotation: edit.rotation,
+            crop,
+            overlay: None,
+        }),
     })
 }
 
 /// A transcode for playability is always kept; one for HDR or resolution
 /// only when smaller; a bitrate-only one only when at least 10% smaller.
 pub fn keep_transcode(reasons: &[Reason], original: u64, output: u64) -> bool {
-    if reasons.contains(&Reason::Codec) || reasons.contains(&Reason::Container) {
+    if reasons.contains(&Reason::Codec)
+        || reasons.contains(&Reason::Container)
+        || reasons.contains(&Reason::Edited)
+    {
         return true;
     }
     if reasons.contains(&Reason::Resolution) || reasons.contains(&Reason::Hdr) {
@@ -383,6 +453,9 @@ pub fn keep_transcode(reasons: &[Reason], original: u64, output: u64) -> bool {
 /// plan's, the long edge keeps the aspect ratio (even), and nothing depends
 /// on how the probe read the rotation.
 pub fn transcode_filter(plan: &VideoPlan, hdr: bool) -> String {
+    if let Some(edit) = &plan.edit {
+        return edited_filter(plan, edit, hdr);
+    }
     let (width, height) = if plan.reasons.contains(&Reason::Resolution) {
         let short = plan.width.min(plan.height);
         (
@@ -399,6 +472,36 @@ pub fn transcode_filter(plan: &VideoPlan, hdr: bool) -> String {
 /// HDR goes through linear light to SDR BT.709 with Hable's curve, as on web.
 pub fn video_filter(plan: &VideoPlan, hdr: bool) -> String {
     sized_filter(&plan.width.to_string(), &plan.height.to_string(), hdr)
+}
+
+/// An edit in the display orientation: turned, then cropped, then scaled
+/// (and tone mapped) to the plan's exact size, then the marks laid over
+/// every frame from the second input (`[1:v]`). With marks this is a
+/// `-filter_complex` graph whose output is `[v]`, otherwise a `-vf` chain.
+fn edited_filter(plan: &VideoPlan, edit: &VideoEdit, hdr: bool) -> String {
+    let mut steps = Vec::new();
+    match edit.rotation {
+        90 => steps.push("transpose=clock".to_owned()),
+        180 => steps.push("hflip,vflip".to_owned()),
+        270 => steps.push("transpose=cclock".to_owned()),
+        _ => {}
+    }
+    let crop = edit.crop;
+    steps.push(format!(
+        "crop=w={}:h={}:x={}:y={}:exact=1",
+        crop.width, crop.height, crop.left, crop.top
+    ));
+    steps.push(sized_filter(
+        &plan.width.to_string(),
+        &plan.height.to_string(),
+        hdr,
+    ));
+    let chain = steps.join(",");
+    if edit.overlay.is_some() {
+        format!("[0:v:0]{chain}[base];[base][1:v]overlay=x=0:y=0:format=yuv420,format=yuv420p[v]")
+    } else {
+        chain
+    }
 }
 
 fn sized_filter(width: &str, height: &str, hdr: bool) -> String {
@@ -445,10 +548,21 @@ pub fn transcode_args(
         .map(Into::into)
         .collect();
     args.push(input.into());
+    let overlay = plan.edit.as_ref().and_then(|edit| edit.overlay.as_ref());
+    if let Some(overlay) = overlay {
+        // Read as one PNG, never as an image2 file-name pattern.
+        args.extend(["-f", "png_pipe", "-i"].map(Into::into));
+        args.push(overlay.into());
+    }
     let hdr = probe.video.as_ref().is_some_and(|video| video.hdr);
     let mut push = |values: &[&str]| args.extend(values.iter().map(Into::into));
-    push(&["-map", "0:v:0", "-map", "0:a:0?", "-vf"]);
-    push(&[&transcode_filter(plan, hdr)]);
+    if overlay.is_some() {
+        push(&["-filter_complex", &transcode_filter(plan, hdr)]);
+        push(&["-map", "[v]", "-map", "0:a:0?"]);
+    } else {
+        push(&["-map", "0:v:0", "-map", "0:a:0?", "-vf"]);
+        push(&[&transcode_filter(plan, hdr)]);
+    }
     match encoder {
         // H.264 High (100); Media Foundation otherwise picks Baseline, which
         // looks worse at the same bitrate.
@@ -616,6 +730,7 @@ pub fn poster(binary: &Path, input: &Path, probe: &Probe, edge: u32) -> Option<i
         width,
         height,
         kbps: 0,
+        edit: None,
     };
     // A frame a little in avoids black fade-ins; short clips use their middle.
     let at = probe
@@ -634,6 +749,42 @@ pub fn poster(binary: &Path, input: &Path, probe: &Probe, edge: u32) -> Option<i
     (output.status.success() && output.stdout.len() == expected)
         .then(|| image::RgbImage::from_raw(width, height, output.stdout))
         .flatten()
+}
+
+/// Whether this FFmpeg can lay a still PNG over every frame: the `overlay`
+/// filter, the PNG decoder and the `png_pipe` demuxer. Caper's trimmed build
+/// has none of them, so drawings and text on videos need another FFmpeg
+/// (`CAPER_FFMPEG`); crops and turns use only the bundled filters. Asked
+/// once per run, off the UI thread.
+pub fn overlays(binary: &Path) -> bool {
+    static OVERLAYS: OnceLock<bool> = OnceLock::new();
+    *OVERLAYS.get_or_init(|| {
+        let list = |what: &str| {
+            command(binary)
+                .arg(what)
+                .stderr(Stdio::null())
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+                .unwrap_or_default()
+        };
+        lists(&list("-filters"), "overlay")
+            && lists(&list("-decoders"), "png")
+            && lists(&list("-demuxers"), "png_pipe")
+    })
+}
+
+/// Whether an `ffmpeg -filters`/`-decoders`/`-demuxers` listing names
+/// `name`: each entry is flags, then its name (or comma-separated names).
+pub fn lists(listing: &str, name: &str) -> bool {
+    listing.lines().any(|line| {
+        let mut words = line.split_whitespace();
+        words.next().is_some()
+            && words
+                .next()
+                .is_some_and(|names| names.split(',').any(|listed| listed == name))
+    })
 }
 
 #[cfg(test)]
@@ -822,6 +973,138 @@ mod tests {
                 .contains("scale=w='trunc(iw/2)*2':h='trunc(ih/2)*2':flags=bicubic,format=yuv420p")
         );
         assert!(joined.contains("-c:a aac -b:a 128k -ac 2"));
+    }
+
+    fn joined(args: &[std::ffi::OsString]) -> String {
+        args.iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn edited_videos_are_always_transcoded_turned_and_cropped() {
+        use crate::attachment_edit::{Crop, Edit, Mark, PixelRect};
+        let settings = Compression::default();
+        // Already efficient: unedited, it would upload unchanged.
+        assert_eq!(video_plan(&parse_probe(EFFICIENT), true, &settings), None);
+        let full = edited_plan(&parse_probe(EFFICIENT), &Edit::default(), &settings).unwrap();
+        assert_eq!(full.reasons, [Reason::Edited]);
+        assert_eq!((full.width, full.height), (1280, 720));
+        assert!(keep_transcode(&full.reasons, 100, 200));
+        // The shared case: a landscape clip turned to portrait, cropped to its
+        // left half, at the bitrate for the cropped size.
+        let android = parse_probe(ANDROID);
+        let edit = Edit {
+            rotation: 270,
+            crop: Crop {
+                x: 0.1,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0,
+            },
+            marks: Vec::new(),
+        };
+        let plan = edited_plan(&android, &edit, &settings).unwrap();
+        assert_eq!((plan.width, plan.height, plan.kbps), (540, 1920, 4000));
+        assert_eq!(
+            plan.edit,
+            Some(VideoEdit {
+                rotation: 270,
+                crop: PixelRect {
+                    left: 108,
+                    top: 0,
+                    width: 540,
+                    height: 1920
+                },
+                overlay: None,
+            })
+        );
+        let args = joined(&transcode_args(
+            Path::new("in.mp4"),
+            Path::new("out.mp4"),
+            &android,
+            &plan,
+            &settings,
+            Encoder::X264,
+        ));
+        assert!(args.contains(
+            "-map 0:v:0 -map 0:a:0? -vf transpose=cclock,crop=w=540:h=1920:x=108:y=0:exact=1,\
+             scale=w=540:h=1920:flags=bicubic,format=yuv420p -c:v libx264"
+        ));
+        assert!(args.contains("-b:v 4000k") && args.contains("-c:a copy"));
+        assert!(!args.contains("png_pipe") && !args.contains("overlay"));
+        // HDR is still tone mapped, after the crop; the short edge is capped;
+        // marks come in as a second, PNG input laid over every frame.
+        let iphone = parse_probe(IPHONE_HDR);
+        let marked = Edit {
+            rotation: 180,
+            marks: vec![Mark::Stroke {
+                color: [255, 255, 255],
+                width: 0.01,
+                points: vec![0.5, 0.5],
+            }],
+            ..Edit::default()
+        };
+        let mut plan = edited_plan(&iphone, &marked, &settings).unwrap();
+        assert_eq!(plan.reasons, [Reason::Edited, Reason::Hdr]);
+        assert_eq!((plan.width, plan.height), (1440, 2560));
+        plan.edit.as_mut().unwrap().overlay = Some(PathBuf::from("marks.png"));
+        let args = joined(&transcode_args(
+            Path::new("in.mov"),
+            Path::new("out.mp4"),
+            &iphone,
+            &plan,
+            &settings,
+            Encoder::X264,
+        ));
+        assert!(
+            args.starts_with(
+                "-loglevel error -y -i in.mov -f png_pipe -i marks.png -filter_complex "
+            )
+        );
+        assert!(args.contains(
+            "[0:v:0]hflip,vflip,crop=w=2160:h=3840:x=0:y=0:exact=1,zscale=w=1440:h=2560:t=linear"
+        ));
+        assert!(args.contains(
+            "format=yuv420p[base];[base][1:v]overlay=x=0:y=0:format=yuv420,format=yuv420p[v] \
+             -map [v] -map 0:a:0? -c:v libx264"
+        ));
+        assert!(args.contains("-map_metadata -1") && args.ends_with("out.mp4"));
+        // No cap when the server turns compression off: edits still apply.
+        let uncapped = Compression {
+            video_max_height: 0,
+            ..Compression::default()
+        };
+        let plan = edited_plan(&iphone, &marked, &uncapped).unwrap();
+        assert_eq!((plan.width, plan.height), (2160, 3840));
+    }
+
+    #[test]
+    fn overlay_support_is_read_from_the_listings() {
+        // Caper's trimmed build, then a distribution FFmpeg.
+        let trimmed_filters = " .. crop              V->V       Crop the input video.
+ .S transpose         V->V       Transpose input video.";
+        let full_filters =
+            " TSC overlay           VV->V      Overlay a video source on top of the input.";
+        assert!(!lists(trimmed_filters, "overlay"));
+        assert!(lists(trimmed_filters, "transpose"));
+        assert!(lists(full_filters, "overlay"));
+        assert!(lists(
+            " VF...D png                  PNG (Portable Network Graphics) image",
+            "png"
+        ));
+        assert!(!lists(
+            " V....D mjpeg                MJPEG (Motion JPEG)",
+            "png"
+        ));
+        assert!(lists(" D  png_pipe        piped png sequence", "png_pipe"));
+        assert!(lists(" D   matroska,webm   Matroska / WebM", "webm"));
+        assert!(!lists(
+            " D   mov,mp4,m4a,3gp,3g2,mj2 QuickTime / MOV",
+            "png_pipe"
+        ));
+        assert!(!lists("", "overlay"));
     }
 
     /// End to end with a real FFmpeg (`CAPER_FFMPEG=/usr/bin/ffmpeg`), when one

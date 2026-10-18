@@ -258,6 +258,10 @@ pub enum Command {
         token: String,
         channel: String,
         path: PathBuf,
+        /// The original's name, which an edited upload keeps with the output's extension.
+        name: String,
+        /// Crop, turns and marks applied to the original before upload.
+        edit: Option<crate::attachment_edit::Edit>,
         source_scratch: Option<Arc<crate::uploads::Scratch>>,
         prepared: Option<Arc<crate::uploads::Prepared>>,
         settings: crate::compress::Compression,
@@ -1318,13 +1322,20 @@ fn advance_generation(current: &mut u64, candidate: u64) -> bool {
     true
 }
 
+/// One upload's original: its path, name and any edit to apply first.
+struct Source<'a> {
+    path: &'a std::path::Path,
+    name: &'a str,
+    edit: Option<&'a crate::attachment_edit::Edit>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn upload_file(
     api: &Api,
     key: u64,
     token: &str,
     channel: &str,
-    path: &std::path::Path,
+    source: Source,
     retained: Option<Arc<crate::uploads::Prepared>>,
     settings: &crate::compress::Compression,
     cancel: Arc<AtomicBool>,
@@ -1354,36 +1365,44 @@ fn upload_file(
             update(UploadUpdate::Compressing(fraction));
         }
     };
-    let prepared =
-        if let Some(prepared) = retained {
-            prepared
-        } else {
-            let mut prepared =
-                match crate::uploads::prepare_path_with(path, settings, &compressing, &cancel)
-                    .and_then(|mut prepared| {
-                        prepared.retain_file()?;
-                        Ok(prepared)
-                    }) {
-                    Ok(prepared) => prepared,
-                    Err(message) => {
-                        update(UploadUpdate::Finished(Err(
-                            crate::uploads::UploadError::new(message),
-                        )));
-                        return;
-                    }
-                };
-            if let Some(image) = prepared.thumbnail.take() {
-                update(UploadUpdate::Thumbnail(
-                    egui::ColorImage::from_rgba_unmultiplied(
-                        [image.width() as usize, image.height() as usize],
-                        image.as_raw(),
-                    ),
-                ));
-            }
-            let prepared = Arc::new(prepared);
-            update(UploadUpdate::Retained(prepared.clone()));
-            prepared
+    let prepared = if let Some(prepared) = retained {
+        prepared
+    } else {
+        let prepared = match source.edit {
+            Some(edit) => crate::uploads::prepare_edited_path(
+                source.path,
+                source.name,
+                edit,
+                settings,
+                &compressing,
+                &cancel,
+            ),
+            None => crate::uploads::prepare_path_with(source.path, settings, &compressing, &cancel),
         };
+        let mut prepared = match prepared.and_then(|mut prepared| {
+            prepared.retain_file()?;
+            Ok(prepared)
+        }) {
+            Ok(prepared) => prepared,
+            Err(message) => {
+                update(UploadUpdate::Finished(Err(
+                    crate::uploads::UploadError::new(message),
+                )));
+                return;
+            }
+        };
+        if let Some(image) = prepared.thumbnail.take() {
+            update(UploadUpdate::Thumbnail(
+                egui::ColorImage::from_rgba_unmultiplied(
+                    [image.width() as usize, image.height() as usize],
+                    image.as_raw(),
+                ),
+            ));
+        }
+        let prepared = Arc::new(prepared);
+        update(UploadUpdate::Retained(prepared.clone()));
+        prepared
+    };
     update(UploadUpdate::Prepared {
         name: prepared.name.clone(),
         kind: prepared.kind,
@@ -1478,13 +1497,20 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             token,
             channel,
             path,
+            name,
+            edit,
             source_scratch,
             prepared,
             settings,
             cancel,
         } => {
+            let source = Source {
+                path: &path,
+                name: &name,
+                edit: edit.as_ref(),
+            };
             upload_file(
-                api, key, &token, &channel, &path, prepared, &settings, cancel, events, context,
+                api, key, &token, &channel, source, prepared, &settings, cancel, events, context,
             );
             // Removal can drop the draft while this worker is still reading its source.
             drop(source_scratch);
