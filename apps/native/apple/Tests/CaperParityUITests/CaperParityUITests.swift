@@ -748,7 +748,10 @@ final class CaperParityUITests: XCTestCase {
         let rowActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
                                      "Missing message actions")
         try require(rowActions.buttons["Reply in thread"], timeout: 5, "Missing thread action").tap()
-        try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
+        let back = try require(app.buttons["Back to channel"], timeout: 5, "Thread did not open")
+        let title = try require(app.staticTexts["Thread"], timeout: 5, "Missing thread title")
+        XCTAssertLessThanOrEqual(back.frame.maxX, title.frame.minX, "Back arrow must lead the thread title")
+        XCTAssertGreaterThanOrEqual(back.frame.width, 44)
         try require(app.staticTexts["No replies yet. Start the thread."], timeout: 5, "Missing empty thread state")
         XCTAssertFalse(app.staticTexts["0 replies"].exists, "Empty threads must not repeat the zero reply count")
         // By label: the channel's composer is still in the tree too.
@@ -780,6 +783,23 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [scrollDismissed], timeout: 5), .completed,
                        "Dragging thread history must dismiss the keyboard, even without replies")
         XCTAssertEqual(composer.value as? String, "Short reply", "Scrolling must keep the reply draft")
+        XCTAssertTrue(back.isHittable, "Vertical scrolling must not close the thread")
+        timeline.swipeLeft()
+        XCTAssertTrue(back.isHittable, "A left swipe must not close the thread")
+        let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.7))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 35, dy: 0)))
+        XCTAssertTrue(back.isHittable, "A short right drag must not close the thread")
+        timeline.swipeRight()
+        let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: back)
+        XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed,
+                       "A right swipe must return to the channel")
+        // Reopening the same root must retain the unsent draft.
+        hold(row)
+        let reopenActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
+                                        "Missing root actions after returning to channel")
+        try require(reopenActions.buttons["Reply in thread"], timeout: 5, "Missing reopen action").tap()
+        try require(back, timeout: 5, "Thread did not reopen")
+        XCTAssertEqual(composer.value as? String, "Short reply", "Swipe navigation must keep the reply draft")
         XCTAssertTrue(focus(composer))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
 
