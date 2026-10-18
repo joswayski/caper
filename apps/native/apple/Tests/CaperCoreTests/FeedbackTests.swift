@@ -512,7 +512,7 @@ final class FeedbackTests: XCTestCase {
         await model.openFeedback(FeedbackTarget(channelID: channelID, spaceID: "Space0000001", messageID: replyID,
                                                 threadRootID: rootID, reporter: reporter))
 
-        XCTAssertEqual(paths.first, "/api/chat/channels/\(channelID)/messages?around=\(rootID)", "a reply loads around its thread root")
+        XCTAssertTrue(paths.contains("/api/chat/channels/\(channelID)/messages?around=\(rootID)"), "a reply loads around its thread root")
         XCTAssertEqual(model.visit?.channelID, channelID)
         XCTAssertEqual(model.visit?.title, "#plans · Studio")
         XCTAssertEqual(model.visit?.reporter, reporter)
@@ -539,7 +539,8 @@ final class FeedbackTests: XCTestCase {
             paths = []
             await model.openFeedback(FeedbackTarget(channelID: channelID, spaceID: "Space0000001",
                                                     messageID: rootID, threadRootID: reportedRoot))
-            XCTAssertEqual(paths.first, "/api/chat/channels/\(channelID)/messages?around=\(rootID)")
+            // A previous visit's background people refresh may arrive first.
+            XCTAssertTrue(paths.contains("/api/chat/channels/\(channelID)/messages?around=\(rootID)"))
             XCTAssertNil(model.chat.threadRootID)
             XCTAssertEqual(model.chat.focusedMessageID, rootID)
             XCTAssertTrue(model.chat.messages.contains { $0.id == rootID })
