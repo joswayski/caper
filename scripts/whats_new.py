@@ -104,7 +104,11 @@ standalone client feature. Each platform needs changed client/shared runtime
 paths in cited commits, and all citations must be within that platform's range.
 Group equivalent changes across platforms when the evidence permits. At most
 five highlights total; zero is valid. Omit maintenance, dependencies, tests,
-documentation, implementation details and repeated prior highlights. Never
+documentation, implementation details and repeated prior highlights. Readers
+are ordinary people, not the Caper team: omit changes that only feedback team
+members (admins) can see or use, such as the feedback inbox, archiving or
+restoring reports, and other team-only tools, and never imply readers can reach
+them. If a change also touches something everyone sees, describe only that. Never
 invent capabilities, benchmarks, availability, rollout success, or guarantees.
 Do not infer camera, screen sharing, invite links or custom roles from unrelated
 changes. Plain text only, no HTML, markup, control characters or numeric
