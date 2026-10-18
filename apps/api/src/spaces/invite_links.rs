@@ -48,6 +48,7 @@ struct LinkChannel {
 struct Person {
     username: String,
     display_name: String,
+    admin: bool,
     avatar_id: i16,
     #[serde(skip_serializing_if = "Option::is_none")]
     avatar_asset: Option<String>,
@@ -73,6 +74,7 @@ type LinkRow = (
     String,
     i16,
     Option<String>,
+    bool,
     i32,
     Option<i32>,
     Option<DateTime<Utc>>,
@@ -88,6 +90,7 @@ fn link(
         display_name,
         avatar_id,
         avatar_asset,
+        admin,
         uses,
         max_uses,
         expires_at,
@@ -104,6 +107,7 @@ fn link(
             display_name,
             avatar_id,
             avatar_asset,
+            admin,
         },
         uses,
         max_uses,
@@ -116,6 +120,7 @@ fn link(
 // starter channel, so a link never reveals a private channel's name.
 const LINK_SELECT: &str =
     "SELECT l.code,c.external_id,c.name,u.username,u.display_name,u.avatar_id,u.avatar_asset,
+        EXISTS(SELECT 1 FROM public.feedback_team f WHERE f.user_id=u.id AND f.deleted_at IS NULL),
         l.uses,l.max_uses,l.expires_at,l.created_at
      FROM public.space_invite_links l JOIN public.users u ON u.id=l.created_by
      LEFT JOIN public.channels c ON c.id=l.channel_id AND c.deleted_at IS NULL AND NOT c.private";
@@ -365,6 +370,7 @@ type PreviewRow = (
     String,
     i16,
     Option<String>,
+    bool,
     i64,
     Option<DateTime<Utc>>,
     bool,
@@ -395,6 +401,7 @@ pub(crate) async fn preview(
     let row: Option<PreviewRow> =
         sqlx::query_as(&format!(
             "SELECT s.name,s.icon_asset,c.name,u.username,u.display_name,u.avatar_id,u.avatar_asset,
+                EXISTS(SELECT 1 FROM public.feedback_team f WHERE f.user_id=u.id AND f.deleted_at IS NULL),
                 (SELECT count(*) FROM public.space_members sm JOIN public.users mu ON mu.id=sm.user_id
                  WHERE sm.space_id=s.id AND sm.deleted_at IS NULL AND mu.deleted_at IS NULL),
                 l.expires_at,sm.user_id IS NOT NULL
@@ -417,6 +424,7 @@ pub(crate) async fn preview(
         display_name,
         avatar_id,
         avatar_asset,
+        admin,
         members,
         expires_at,
         already_member,
@@ -429,7 +437,7 @@ pub(crate) async fn preview(
         "code": code,
         "space": space,
         "channel": channel.map(|name| json!({"name": name})),
-        "inviter": Person { username, display_name, avatar_id, avatar_asset },
+        "inviter": Person { username, display_name, avatar_id, avatar_asset, admin },
         "memberCount": members,
         "expiresAt": expires_at,
         "alreadyMember": already_member,

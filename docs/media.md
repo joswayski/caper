@@ -2038,6 +2038,25 @@ to a system preview app; Rust desktop opens the selected file in the system
 browser. Native format support depends on the installed system handlers.
 Remove remains a separate control and never opens a preview.
 
+Sent images and videos form a count-aware gallery on web, Apple, Android and
+Rust desktop: two side by side, three with a large left tile, four in a 2×2
+grid, and larger sets in rows of two or three. Galleries cap at 480 logical
+pixels, with 4px gaps, 12px outer corners and 1px interior corners. Thumbnails
+crop to fill; opening the viewer still shows the full media. A single image
+keeps its natural proportions. Processing, failed and removed media retain
+their slots. Audio and document cards follow the gallery, side by side where
+space permits; order within each group is preserved. The unsent composer tray
+is unchanged.
+
+Gallery validation (October 18, 2026): local-fixture Chromium checks cover
+counts 2–10 at 390, 760 and 1280px, plus mixed media and processing/error states;
+DOM checks verify row patterns, corner ownership, filled cells and no overlaps.
+Rust desktop has a headless egui layout/click regression and a rendered Linux
+attachment fixture. Android geometry JVM tests pass, but the Compose build is
+blocked by the missing Android SDK in this orb. Apple source and geometry tests
+await Xcode; iOS/macOS/Android rendering and physical-device checks remain
+unverified. These local fixtures do not validate live uploads or deployment.
+
 Draft tiles show video posters with a small translucent play indicator centred
 in the preview area, clear of any progress or retry footer. The whole tile still
 opens the preview; the indicator adds no separate hit target. Web and Apple

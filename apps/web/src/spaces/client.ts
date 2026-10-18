@@ -489,6 +489,7 @@ export function declineChannelInvitation(spaceId: string, channelId: string) {
 export interface InvitePerson extends PersonPicture {
   username: string;
   displayName: string;
+  admin?: boolean;
   avatarId?: number | null;
 }
 

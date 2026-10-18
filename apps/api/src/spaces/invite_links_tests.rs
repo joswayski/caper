@@ -221,6 +221,19 @@ async fn invite_links_join_preview_limits_and_exclusions() {
     assert_eq!(shown["space"], json!({"name":"Captures"}));
     assert_eq!(shown["channel"], json!({"name":"feedback"}));
     assert_eq!(shown["inviter"]["username"], "owner");
+    assert_eq!(shown["inviter"]["admin"], false);
+    sqlx::query("INSERT INTO public.feedback_team(user_id) VALUES($1)")
+        .bind(owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(view(&code).await.unwrap()["inviter"]["admin"], true);
+    sqlx::query("UPDATE public.feedback_team SET deleted_at=now() WHERE user_id=$1")
+        .bind(owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(view(&code).await.unwrap()["inviter"]["admin"], false);
     assert_eq!(shown["memberCount"], 2);
     assert_eq!(shown["alreadyMember"], false);
     for cookie in [false, true] {
