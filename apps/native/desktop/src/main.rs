@@ -13847,6 +13847,7 @@ impl CaperApp {
                     self.voice.refresh_devices();
                 }
                 egui::Popup::menu(&input)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .align(egui::RectAlign::TOP_START)
                     .width(232.0)
                     .show(|ui| self.device_options(ui, true));
@@ -13881,6 +13882,7 @@ impl CaperApp {
                     self.voice.refresh_devices();
                 }
                 egui::Popup::menu(&output)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .align(egui::RectAlign::TOP_START)
                     .width(232.0)
                     .show(|ui| self.device_options(ui, false));
@@ -13965,6 +13967,24 @@ impl CaperApp {
         );
     }
 
+    fn default_device_label(&self, input: bool) -> String {
+        let name = if input {
+            &self.voice.default_input
+        } else {
+            &self.voice.default_output
+        };
+        name.as_ref().map_or_else(
+            || {
+                if self.voice.refreshing_devices {
+                    "System default — finding device…".into()
+                } else {
+                    "System default — name unavailable".into()
+                }
+            },
+            |name| format!("System default — {name}"),
+        )
+    }
+
     fn device_options(&mut self, ui: &mut egui::Ui, input: bool) {
         if !matches!(self.voice.microphone, MicrophoneState::Idle) {
             ui.label("End the microphone test to change devices.");
@@ -13986,7 +14006,8 @@ impl CaperApp {
             &self.voice.preferences.output
         };
         if ui
-            .selectable_label(selected.is_none(), "System default")
+            .selectable_label(selected.is_none(), self.default_device_label(input))
+            .on_hover_text("Uses the default device in your system sound settings.")
             .clicked()
         {
             self.voice.command(if input {
@@ -14047,6 +14068,7 @@ impl CaperApp {
     }
 
     fn input_processing(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().interact_size.y = 32.0;
         let mut gain = self.voice.preferences.input_percent;
         let mut strength = self.voice.preferences.processing_strength;
         let gain_label = ui.label(bold("Input volume").size(13.0));
@@ -14083,6 +14105,7 @@ impl CaperApp {
         ui.add_space(6.0);
         let changed = ui
             .scope(|ui| {
+                ui.spacing_mut().interact_size.y = 32.0;
                 ui.spacing_mut().slider_width = ui.available_width();
                 ui.add(
                     egui::Slider::new(&mut gain, 0..=200)
@@ -14146,15 +14169,16 @@ impl CaperApp {
         } else {
             (&self.voice.preferences.output, &self.voice.outputs)
         };
-        let selected = preferred
-            .as_ref()
-            .map_or("System default", |id| {
+        let selected = preferred.as_ref().map_or_else(
+            || self.default_device_label(input),
+            |id| {
                 devices
                     .iter()
                     .find(|(guid, _)| guid == id)
                     .map_or("Saved device (unavailable)", |(_, name)| name.as_str())
-            })
-            .to_owned();
+                    .to_owned()
+            },
+        );
         let kind = if input { "Microphone" } else { "Speaker" };
         let label = ui.label(bold(kind).size(11.5).color(MUTED));
         ui.add_space(8.0);
@@ -14166,6 +14190,7 @@ impl CaperApp {
             .on_disabled_hover_text("End the microphone test to change devices.");
         let width = button.rect.width().max(232.0);
         egui::Popup::menu(&button)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .width(width)
             .show(|ui| self.device_options(ui, input));
         ui.add_space(16.0);
@@ -14290,6 +14315,7 @@ impl CaperApp {
                     .inner;
                 let changed = ui
                     .add_enabled_ui(recording.is_none(), |ui| {
+                        ui.spacing_mut().interact_size.y = 32.0;
                         ui.spacing_mut().slider_width = ui.available_width();
                         ui.add(
                             egui::Slider::new(&mut strength, 0..=100)
@@ -27189,6 +27215,7 @@ fn volume_slider(ui: &mut egui::Ui, name: &str, value: &mut u16) -> bool {
         .inner;
     ui.add_space(5.0);
     ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = 32.0;
         ui.spacing_mut().slider_width = ui.available_width();
         ui.add(
             egui::Slider::new(value, 0..=200)
@@ -28201,6 +28228,46 @@ mod tests {
             },
             |context| app.page(context),
         )
+    }
+
+    #[test]
+    fn audio_device_refresh_keeps_menu_open_and_shows_default_name() {
+        for (input, control) in [(true, "Input Options"), (false, "Output Options")] {
+            let (context, mut app) = fixture("parity-channel");
+            app.dialog = None;
+            click_label(&mut app, &context, control);
+            // Wait for the initial enumeration so Refresh is enabled.
+            for _ in 0..500 {
+                app.voice.receive();
+                render(&mut app, &context, vec![]);
+                if !app.voice.refreshing_devices {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(!app.voice.refreshing_devices);
+            app.voice.default_input = Some("Fixture microphone".into());
+            app.voice.default_output = Some("Fixture headphones".into());
+            let output = render(&mut app, &context, vec![]);
+            let label = if input {
+                "System default — Fixture microphone"
+            } else {
+                "System default — Fixture headphones"
+            };
+            assert!(node_bounds(&output, label).is_some());
+            click_label(&mut app, &context, "Refresh devices");
+            let output = render(&mut app, &context, vec![]);
+            assert!(
+                node_bounds(&output, "Refresh devices").is_some(),
+                "refresh must keep the menu open"
+            );
+            click(&mut app, &context, egui::pos2(1000.0, 100.0));
+            let output = render(&mut app, &context, vec![]);
+            assert!(
+                node_bounds(&output, "Refresh devices").is_none(),
+                "outside click must still close the menu"
+            );
+        }
     }
 
     #[test]
@@ -34520,7 +34587,7 @@ mod tests {
             .shapes
             .iter()
             .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.job.text == "System default" => {
+                egui::Shape::Text(text) if text.galley.job.text.starts_with("System default —") => {
                     Some(text.pos + egui::vec2(4.0, 4.0))
                 }
                 _ => None,
