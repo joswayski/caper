@@ -1878,9 +1878,9 @@ private struct SidebarIconButton: ButtonStyle {
 
 /// Design H's voice colours (the "Live now" spec), beside the shared tokens.
 private enum LiveNowPalette {
-    /// Your call's green-tinted card (#1a2a22, border #3a6b4b).
-    static let callFill = Color(red: 26/255, green: 42/255, blue: 34/255)
-    static let callBorder = Color(red: 58/255, green: 107/255, blue: 75/255)
+    /// Your call's green-tinted card (#22382c, border #4b8a60).
+    static let callFill = Color(red: 34/255, green: 56/255, blue: 44/255)
+    static let callBorder = Color(red: 75/255, green: 138/255, blue: 96/255)
     /// Other live rooms (#18231f, border #28362f).
     static let roomFill = Color(red: 24/255, green: 35/255, blue: 31/255)
     static let roomBorder = Color(red: 40/255, green: 54/255, blue: 47/255)
@@ -2039,7 +2039,7 @@ private struct LiveNowSection: View {
     }
 }
 
-/// Your call's state: "You’re in · N" (counting you) in voice green, or
+/// Your call's participant count (including you) in voice green, or
 /// Connecting… and Reconnecting… in amber. Not a control: a tap on it opens
 /// the chat like the rest of the card.
 private struct CallStatusText: View {
@@ -2047,7 +2047,7 @@ private struct CallStatusText: View {
     let count: Int
     var body: some View {
         let pending = callPending(voice)
-        Text(pending ?? "You’re in · \(count)").font(CaperTheme.font(12, weight: .bold))
+        Text(pending ?? "\(count)").font(CaperTheme.font(12, weight: .bold))
             .foregroundStyle(pending == nil ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
             .lineLimit(1).fixedSize()
             .allowsHitTesting(false)

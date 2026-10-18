@@ -69,8 +69,8 @@ import kotlinx.coroutines.isActive
 // no voice, and nothing says who is speaking except the green rings on faces.
 
 /** Your call card's green-tinted surface and border. */
-internal val LiveCallSurface = Color(0xFF1A2A22)
-internal val LiveCallBorder = Color(0xFF3A6B4B)
+internal val LiveCallSurface = Color(0xFF22382C)
+internal val LiveCallBorder = Color(0xFF4B8A60)
 /** Another live room's card. */
 internal val LiveRoomSurface = Color(0xFF18231F)
 internal val LiveRoomBorder = Color(0xFF28362F)
@@ -176,11 +176,11 @@ internal fun peopleCount(count: Int): String = "$count ${if (count == 1) "person
 /** The full list's title: "In #design · 12 people". */
 internal fun voiceListTitle(channelName: String, count: Int): String = "In #$channelName · ${peopleCount(count)}"
 
-/** Your call's status: "You’re in · N" once connected, otherwise how far the connection is. */
+/** Your call's participant count once connected, otherwise how far the connection is. */
 internal fun callStatusLabel(voice: VoiceState): String = when (voice.phase) {
     VoiceState.Phase.CONNECTING -> "Connecting…"
     VoiceState.Phase.RECONNECTING -> "Reconnecting…"
-    else -> "You’re in · ${voice.participants.size}"
+    else -> "${voice.participants.size}"
 }
 
 /** What the full list says about someone, the most telling first. */

@@ -437,7 +437,7 @@ export default function LiveWindow({ preloadSpace = false }: { preloadSpace?: bo
                           </div>
                           {inCall && (
                             <span className="live-call-status">
-                              <span className="live-status">You’re in · {voicePeople.length}</span>
+                              <span className="live-status">{voicePeople.length}</span>
                               {voiceTimer}
                             </span>
                           )}

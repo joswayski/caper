@@ -1576,7 +1576,7 @@ export default function Call({
   };
   const callStatusText = (count: number) =>
     connected
-      ? `You’re in · ${count}`
+      ? `${count}`
       : state.phase === "joining"
         ? "Connecting…"
         : state.phase === "reconnecting"

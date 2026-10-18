@@ -11822,15 +11822,11 @@ impl CaperApp {
         }
     }
 
-    /// Your call's state: "You're in · N" (and its short "In · N") in green
+    /// Your call's participant count in green
     /// once connected, else amber "Connecting…" or "Reconnecting…".
     fn call_status(&self, count: usize) -> (String, String, Color32) {
         match &self.voice.state.phase {
-            Phase::Connected(_) => (
-                format!("You're in · {count}"),
-                format!("In · {count}"),
-                VOICE_SESSION_GREEN,
-            ),
+            Phase::Connected(_) => (count.to_string(), count.to_string(), VOICE_SESSION_GREEN),
             Phase::Joining(_) => ("Connecting…".into(), "Connecting…".into(), VOICE_AMBER),
             _ => ("Reconnecting…".into(), "Reconnecting…".into(), VOICE_AMBER),
         }
@@ -22351,8 +22347,8 @@ fn voice_session_duration(started_at: u64, now: u64) -> String {
 
 /// Design H's voice colors: your call's green-tinted card, other live
 /// rooms' quieter cards, and phones' strip under the chat header.
-const LIVE_CARD: Color32 = Color32::from_rgb(0x1a, 0x2a, 0x22);
-const LIVE_CARD_BORDER: Color32 = Color32::from_rgb(0x3a, 0x6b, 0x4b);
+const LIVE_CARD: Color32 = Color32::from_rgb(0x22, 0x38, 0x2c);
+const LIVE_CARD_BORDER: Color32 = Color32::from_rgb(0x4b, 0x8a, 0x60);
 const ROOM_CARD: Color32 = Color32::from_rgb(0x18, 0x23, 0x1f);
 const ROOM_CARD_BORDER: Color32 = Color32::from_rgb(0x28, 0x36, 0x2f);
 const VOICE_STRIP: Color32 = Color32::from_rgb(0x1a, 0x26, 0x22);
@@ -22400,7 +22396,7 @@ enum FacePick {
     List(Option<String>),
 }
 
-/// Your call's row ends with its state ("You're in · 3", or `short` when
+/// Your call's row ends with its state (participant count, or `short` when
 /// the name needs the room) in `tone`, then the session's timer, where a
 /// live row counts who is there.
 #[derive(Clone, Debug)]
@@ -29628,7 +29624,7 @@ mod tests {
         }
         assert_eq!(faces[0].size(), egui::vec2(36.0, 36.0));
         assert!(faces[2].right() <= 327.0, "faces stay inside the card");
-        assert!(texts(&output).contains(&"You're in · 3"));
+        assert!(texts(&output).contains(&"3"));
         assert!(!texts(&output).contains(&"User volume"));
         // A face is no button of its own: a click opens the call's chat,
         // as the rest of the card does.
@@ -39114,11 +39110,7 @@ mod tests {
                 general.top() - card.top() < 16.0,
                 "the row is the card's top line"
             );
-            let status = if sidebar < 280.0 {
-                "In · 12"
-            } else {
-                "You're in · 12"
-            };
+            let status = "12";
             assert!(shown.contains(&status), "{sidebar}: {status}: {shown:?}");
             assert!(general.contains(text_position(&output, status)));
             assert!(node_bounds(&output, "12 in voice").is_none());
@@ -39354,7 +39346,7 @@ mod tests {
         let link = node_bounds(&output, "Open #lounge in TEST FIXTURE Night Shift")
             .expect("the call's heading");
         assert!(card.contains_rect(link));
-        assert!(shown.contains(&"#lounge") && shown.contains(&"You're in · 3"));
+        assert!(shown.contains(&"#lounge") && shown.contains(&"3"));
         // The list's rows stay plain rows.
         for name in ["general", "design", "planning"] {
             assert!(

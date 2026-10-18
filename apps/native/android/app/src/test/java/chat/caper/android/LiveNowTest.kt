@@ -119,7 +119,7 @@ class LiveNowTest {
 
     @Test fun `your call's status counts everyone once connected, and says how far the connection is until then`() {
         val two = listOf(person("me"), person("a"))
-        assertEquals("You’re in · 2", callStatusLabel(VoiceState(phase = VoiceState.Phase.CONNECTED, participants = two)))
+        assertEquals("2", callStatusLabel(VoiceState(phase = VoiceState.Phase.CONNECTED, participants = two)))
         assertEquals("Connecting…", callStatusLabel(VoiceState(phase = VoiceState.Phase.CONNECTING, participants = two)))
         assertEquals("Reconnecting…", callStatusLabel(VoiceState(phase = VoiceState.Phase.RECONNECTING, participants = two)))
     }

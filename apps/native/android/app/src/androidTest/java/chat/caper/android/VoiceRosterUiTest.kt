@@ -93,7 +93,7 @@ class VoiceRosterUiTest {
         showCard { voice.value }
 
         // You first, then join order; your mute shows pressed here as in the account bar.
-        compose.onNodeWithText("You’re in · 2").assertExists()
+        compose.onNodeWithText("2").assertExists()
         compose.onNodeWithContentDescription("Fixture Owner (you)").assertExists()
         compose.onNodeWithContentDescription("Remote Voice").assertExists()
         compose.onNodeWithContentDescription("Unmute microphone").assertExists()
@@ -242,10 +242,10 @@ class VoiceRosterUiTest {
         val face = compose.onNodeWithContentDescription("Maya").getUnclippedBoundsInRoot()
         val leave = compose.onNodeWithContentDescription("Leave voice").getUnclippedBoundsInRoot()
         assertTrue(row.bottom <= face.top && face.bottom <= leave.top)
-        compose.onNodeWithText("You’re in · 2", useUnmergedTree = true).assertExists()
+        compose.onNodeWithText("2", useUnmergedTree = true).assertExists()
 
         compose.onNodeWithText("design", useUnmergedTree = true).performClick()
-        compose.onNodeWithText("You’re in · 2", useUnmergedTree = true).performClick()
+        compose.onNodeWithText("2", useUnmergedTree = true).performClick()
         compose.onNodeWithContentDescription("Maya").performClick()
         compose.runOnIdle { assertEquals(3, opened) }
         // The menu, Leave and the Mute and Deafen the Audio test holds never open the chat.
