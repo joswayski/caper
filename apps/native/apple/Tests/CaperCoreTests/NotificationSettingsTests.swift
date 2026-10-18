@@ -203,12 +203,29 @@ final class NotificationSettingsTests: XCTestCase {
 // MARK: API and model
 
 private final class NotificationsMockURLProtocol: URLProtocol, @unchecked Sendable {
-    static var handler: ((URLRequest) throws -> (Int, Data))!
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var storedHandler: ((URLRequest) throws -> (Int, Data))?
+    nonisolated(unsafe) private static var current = 0
+    static let generationHeader = "X-Caper-Test-Generation"
+    static var generation: Int { lock.withLock { current } }
+    static var handler: ((URLRequest) throws -> (Int, Data))? {
+        get { lock.withLock { storedHandler } }
+        set { lock.withLock { storedHandler = newValue } }
+    }
+    static func reset() { lock.withLock { storedHandler = nil; current += 1 } }
+
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         do {
-            let (status, data) = try Self.handler(request)
+            // Channel selection starts an unread snapshot request that can outlive
+            // logout and teardown. Never send it to the next test's handler.
+            let handler = Self.lock.withLock {
+                request.value(forHTTPHeaderField: Self.generationHeader) == String(Self.current)
+                    ? Self.storedHandler : nil
+            }
+            guard let handler else { throw URLError(.cancelled) }
+            let (status, data) = try handler(request)
             let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil,
                                            headerFields: ["content-type": "application/json"])!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
@@ -246,13 +263,14 @@ private func requestJSON(_ request: URLRequest) throws -> NSDictionary? {
 @MainActor
 final class NotificationModelTests: XCTestCase {
     override func tearDown() {
-        NotificationsMockURLProtocol.handler = nil
+        NotificationsMockURLProtocol.reset()
         super.tearDown()
     }
 
     private func client() -> APIClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [NotificationsMockURLProtocol.self]
+        configuration.httpAdditionalHeaders = [NotificationsMockURLProtocol.generationHeader: String(NotificationsMockURLProtocol.generation)]
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration),
                          tokenStore: NotificationsTokenStore())
     }
