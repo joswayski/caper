@@ -8169,8 +8169,11 @@ at most 100/500 Unicode code points. Missing metadata fails closed.
    `fallbacks: "default"`, so a classifier decline retries on Anthropic's
    recommended model. Optional Caper Actions variables `CAPER_RELEASE_NOTES_MODEL`
    and `CAPER_RELEASE_NOTES_EFFORT` (`low`-`max`) override them. One request per
-   shipped release is roughly 10-40K input tokens, about $0.10-0.50 at Opus 5.5
-   rates. The native workflow uses its own `contents:write` token.
+   shipped release sends at most 400,000 characters (about 100K tokens, under
+   $0.50 at Opus 5.5 rates); a typical release is far smaller. When a long gap
+   between releases exceeds that, server-only diffs are dropped and client
+   diffs shortened evenly (`diffTruncated`); every commit's subject, body and
+   paths are always kept. The native workflow uses its own `contents:write` token.
    No AWS/Cloudflare secret, OpenTofu initialization/plan/apply or new capacity
    is required. No shared credentials were configured during development.
 3. Choose the merged Caper SHA and wait for its immutable web/API images to exist.
