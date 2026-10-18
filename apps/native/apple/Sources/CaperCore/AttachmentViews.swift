@@ -358,7 +358,7 @@ private struct SpoilerThumbnail: View {
                 if let image {
                     Image(decorative: image, scale: 1).resizable().scaledToFill()
                         .frame(width: geometry.size.width, height: geometry.size.height)
-                        .blur(radius: 24, opaque: true)
+                        .blur(radius: max(geometry.size.width, geometry.size.height) * 0.24, opaque: true)
                         .clipped()
                 }
                 Text("SPOILER")

@@ -219,7 +219,7 @@ pub fn blur_thumbnail(image: &egui::ColorImage) -> egui::ColorImage {
     let rgba = image::RgbaImage::from_raw(image.size[0] as u32, image.size[1] as u32, bytes)
         .expect("thumbnail dimensions");
     let small = image::imageops::thumbnail(&rgba, 32, 32);
-    let blurred = image::imageops::blur(&small, 3.0);
+    let blurred = image::imageops::blur(&small, 8.0);
     egui::ColorImage::from_rgba_unmultiplied(
         [blurred.width() as usize, blurred.height() as usize],
         blurred.as_raw(),

@@ -2597,8 +2597,8 @@ a.chat-draft-preview {
 }
 .chat-spoiler-preview {
   position: absolute;
-  inset: -16px;
-  filter: blur(24px);
+  inset: -32px;
+  filter: blur(72px);
   pointer-events: none;
 }
 .chat-spoiler-label {
@@ -2615,7 +2615,7 @@ a.chat-draft-preview {
   text-transform: uppercase;
 }
 .chat-drafts li[data-spoiler] .chat-draft-preview > * {
-  filter: blur(16px);
+  filter: blur(28px);
 }
 .chat-draft-spoiler-label {
   position: absolute;
