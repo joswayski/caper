@@ -19726,6 +19726,7 @@ impl CaperApp {
             Dialog::Settings
             | Dialog::Profile
             | Dialog::WhatsNew
+            | Dialog::CreateChannel
             | Dialog::StartDirect
             | Dialog::JoinInvite => true,
             Dialog::ManageSpace => self
@@ -29763,6 +29764,46 @@ mod tests {
             app.dialog.is_none(),
             "outside click did not dismiss direct-message dialog"
         );
+    }
+
+    #[test]
+    fn create_channel_backdrop_dismisses_unless_creation_is_pending() {
+        for name in ["", "project-updates"] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-create-channel"),
+            );
+            app.form_name = name.into();
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let bounds =
+                context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+            click(
+                &mut app,
+                &context,
+                bounds.left_top() + egui::vec2(10.0, 10.0),
+            );
+            assert!(
+                matches!(app.dialog, Some(Dialog::CreateChannel)),
+                "inside click dismissed create-channel dialog"
+            );
+            app.loading = true;
+            click(&mut app, &context, egui::pos2(5.0, 5.0));
+            assert!(
+                matches!(app.dialog, Some(Dialog::CreateChannel)),
+                "outside click dismissed pending creation"
+            );
+            app.loading = false;
+            click(&mut app, &context, egui::pos2(5.0, 5.0));
+            assert!(
+                app.dialog.is_none(),
+                "outside click did not dismiss create-channel dialog"
+            );
+            assert!(!app.loading, "dismissal must not create a channel");
+        }
     }
 
     #[test]
