@@ -83,14 +83,14 @@ export function unreadReleaseHighlights(feed: ReleaseHighlights, acknowledged?: 
 }
 
 /** Bundle the displayed releases by publication day, without changing read watermarks. */
-export function releaseHighlightDays(releases: Release[]): { date: string; highlights: Highlight[] }[] {
-  const days = new Map<string, Highlight[]>();
+export function releaseHighlightDays(releases: Release[]): { date: string; releases: Release[] }[] {
+  const days = new Map<string, Release[]>();
   for (const release of releases) {
     if (!release.highlights.length) continue;
     const date = new Date(release.publishedAt).toISOString().slice(0, 10);
-    const highlights = days.get(date) ?? [];
-    highlights.push(...release.highlights);
-    days.set(date, highlights);
+    const entries = days.get(date) ?? [];
+    entries.push(release);
+    days.set(date, entries);
   }
-  return Array.from(days, ([date, highlights]) => ({ date, highlights }));
+  return Array.from(days, ([date, releases]) => ({ date, releases }));
 }

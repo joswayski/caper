@@ -184,6 +184,14 @@ export default function WhatsNew({
         </button>
       </header>
       <div className="audio-dialog-body">
+        {sourceRevisionValid(revision) && (
+          <p className="whats-new-build">
+            Web build ·{" "}
+            <a href={`https://github.com/joswayski/caper/commit/${revision}`} target="_blank" rel="noreferrer">
+              {revision.slice(0, 7)}
+            </a>
+          </p>
+        )}
         <p className="whats-new-intro">A few things worth knowing about your Caper update.</p>
         {loading && !feed && <p role="status">Loading release highlights…</p>}
         {!sourceRevisionValid(revision) && <p>Release highlights are available in published builds.</p>}
@@ -198,7 +206,7 @@ export default function WhatsNew({
         {!loading && !error && feed && !releases.length && (
           <p className="whats-new-empty">No user-facing updates to show. Maintenance releases stay quiet.</p>
         )}
-        {releaseHighlightDays(releases).map(({ date, highlights }) => (
+        {releaseHighlightDays(releases).map(({ date, releases: dayReleases }) => (
           <section className="whats-new-release" key={date}>
             <time dateTime={date}>
               {new Date(date).toLocaleDateString(undefined, {
@@ -208,11 +216,23 @@ export default function WhatsNew({
                 year: "numeric",
               })}
             </time>
-            {highlights.map((highlight, index) => (
-              <article key={index}>
-                <h3>{highlight.title}</h3>
-                <p>{highlight.body}</p>
-              </article>
+            {dayReleases.map((release) => (
+              <div className="whats-new-entry" key={release.sequence}>
+                <a
+                  className="whats-new-source"
+                  href={`https://github.com/joswayski/caper/commit/${release.revision}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Commit {release.revision.slice(0, 7)}
+                </a>
+                {release.highlights.map((highlight, index) => (
+                  <article key={index}>
+                    <h3>{highlight.title}</h3>
+                    <p>{highlight.body}</p>
+                  </article>
+                ))}
+              </div>
             ))}
           </section>
         ))}

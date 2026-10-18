@@ -1,5 +1,6 @@
 package chat.caper.android.data
 
+import kotlinx.serialization.json.Json
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -61,6 +62,17 @@ class WhatsNewTest {
         assertThrows(IllegalArgumentException::class.java) { history.receive(snapshot(4), "android", revision(3)) }
         assertEquals(value, history.snapshot)
         assertEquals(3L, ack)
+    }
+
+    @Test fun `native versions decode alongside legacy history without inventing versions`() {
+        val raw = """{"schema":1,"platform":"android","revision":"${revision(2)}","sequence":2,"releases":[
+            {"sequence":1,"revision":"${revision(1)}","publishedAt":"2026-10-11T12:00:00Z","highlights":[]},
+            {"sequence":2,"revision":"${revision(2)}","publishedAt":"2026-10-11T19:00:00Z","version":"0.1.112","highlights":[]}
+        ]}"""
+        val value = Json.decodeFromString<WhatsNewSnapshot>(raw).validated("android", revision(2))
+        assertNull(value.releases[0].version)
+        assertEquals("0.1.112", value.releases[1].version)
+        assertEquals(revision(2), value.releases[1].revision)
     }
 
     @Test fun `highlight bounds count Unicode code points rather than UTF16 units`() {

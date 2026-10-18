@@ -168,7 +168,7 @@ class HighlightsTests(unittest.TestCase):
         }
         return io.BytesIO(message if isinstance(message, bytes) else encoded(message))
 
-    def generate(self, revision=None, audience="web", publish=True):
+    def generate(self, revision=None, audience="web", publish=True, native_version=None):
         return notes.generate(
             revision or self.git("rev-parse", "HEAD"),
             audience,
@@ -176,6 +176,7 @@ class HighlightsTests(unittest.TestCase):
             repo=self.repo,
             github=self.github,
             publish=publish,
+            native_version=native_version,
         )
 
     def seed(self, revision=None, platforms=("web",)):
@@ -483,6 +484,27 @@ class HighlightsTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 1)
         self.assertEqual(result["sequence"], 2)
         self.assertEqual(result["releases"][-1]["highlights"], [])
+
+    def test_native_versions_are_recorded_without_relabeling_legacy_or_immutable_releases(self):
+        self.seed(platforms=PLATFORMS[1:])
+        newest = self.commit("Improve native notes", {"shared/design.css": "new controls\n"})
+        self.response = {"highlights": [highlight([newest], PLATFORMS[1:])]}
+        result = self.generate(newest, "native", native_version="0.1.112")
+        for value in result.values():
+            self.assertNotIn("version", value["releases"][0])
+            self.assertEqual(value["releases"][1]["version"], "0.1.112")
+        self.github.events.clear()
+        self.assertEqual(self.generate(newest, "native", native_version="0.1.113"), result)
+        self.assertEqual(self.github.events, [])
+        later = self.commit("Another native update", {"shared/design.css": "next controls\n"})
+        self.response = {"highlights": [highlight([later], PLATFORMS[1:])]}
+        for value in self.generate(later, "native", native_version="0.1.114").values():
+            self.assertEqual([release.get("version") for release in value["releases"]], [None, "0.1.112", "0.1.114"])
+        with self.assertRaises(notes.GenerationError):
+            self.generate(later, "web", native_version="0.1.114")
+        for version in ["", "Release 2", "0.1.114\n", "0.1." + "1" * 64]:
+            with self.assertRaises(notes.GenerationError):
+                self.generate(later, "native", native_version=version)
 
     def test_exact_rerun_and_rollback_reuse_bytes_without_model_or_lowering_latest(self):
         self.seed()

@@ -8229,6 +8229,16 @@ account-synced. Automatic presentation waits for the signed-in workspace and
 defers during calls or another modal. Missing publication retries at most once
 per minute while foregrounded; Settings offers immediate retry.
 
+History groups releases under one UTC publication date. Each native release has
+one full version link above its highlights; web releases and legacy native entries
+without recorded versions use a short commit link instead. Links open that exact
+source revision on GitHub. The header identifies the installed native version and
+commit (the deployed commit on web), independently of the history being viewed.
+The native release workflow supplies its actual `0.1.<build>` as optional `version`
+metadata in schema-1 snapshots; the API preserves it and older clients ignore it.
+Previously published snapshots remain immutable: missing versions are never guessed
+from feed sequences or dates.
+
 Mac/Windows/Linux expose **Check for updates** in the account menu and Settings.
 Automatic checks advertise a known update through a persistent **Update available**
 button above the profile/audio controls; they do not take focus. The button has

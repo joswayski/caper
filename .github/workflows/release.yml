@@ -784,4 +784,5 @@ jobs:
     with:
       audience: native
       git_sha: ${{ needs.resolve.outputs.sha }}
+      native_version: 0.1.${{ github.run_number }}
     secrets: inherit

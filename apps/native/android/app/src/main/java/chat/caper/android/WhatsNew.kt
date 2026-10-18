@@ -5,7 +5,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.*
@@ -57,6 +61,11 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
     state: WhatsNewUi, displayed: WhatsNewSnapshot?, automatic: Boolean, retry: () -> Unit, close: () -> Unit,
 ) = CaperDialog("What’s new", close, description = "Updates to Caper on Android.") {
     val releases = displayed?.releases.orEmpty().filter { it.highlights.isNotEmpty() }.asReversed()
+    if (isReleaseRevision(BuildConfig.SOURCE_REVISION)) {
+        ReleaseCommitLink("Installed: ${BuildConfig.VERSION_NAME} · ${BuildConfig.SOURCE_REVISION.take(7)}", BuildConfig.SOURCE_REVISION)
+    } else {
+        Text("Installed: ${BuildConfig.VERSION_NAME}", fontSize = 12.sp, color = TextMuted)
+    }
     if (displayed == null && state.loading) {
         CircularProgressIndicator(color = Terracotta, modifier = Modifier.size(24.dp))
         Text("Loading release notes…", color = TextMuted)
@@ -67,13 +76,24 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
         Text("No release highlights for this version yet.", color = TextMuted)
     } else releases.groupBy { it.publishedAt.take(10) }.forEach { (date, dayReleases) ->
         Text(date, fontSize = 12.sp, color = TextMuted)
-        dayReleases.flatMap { it.highlights }.forEach { highlight ->
-            Text(highlight.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-            Text(highlight.body, fontSize = 14.sp, color = TextMuted)
+        dayReleases.forEach { release ->
+            ReleaseCommitLink(release.version?.let { "Version $it" } ?: "Commit ${release.revision.take(7)}", release.revision)
+            release.highlights.forEach { highlight ->
+                Text(highlight.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text(highlight.body, fontSize = 14.sp, color = TextMuted)
+            }
         }
         HorizontalDivider(color = Border)
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Button(close) { Text(if (automatic) "Got it" else "Done") }
     }
+}
+
+@Composable private fun ReleaseCommitLink(label: String, revision: String) {
+    val uriHandler = LocalUriHandler.current
+    val url = "https://github.com/joswayski/caper/commit/$revision"
+    Text(buildAnnotatedString {
+        withLink(LinkAnnotation.Url(url, MessageLink) { openExternalLink(uriHandler, url) }) { append(label) }
+    }, fontSize = 12.sp, color = TextMuted)
 }

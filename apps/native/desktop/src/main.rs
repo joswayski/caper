@@ -8972,7 +8972,7 @@ impl CaperApp {
             "releases": [
                 {"sequence": 1, "revision": "1".repeat(40), "publishedAt": "2026-10-09T19:00:00Z", "highlights": []},
                 {"sequence": 2, "revision": "2".repeat(40), "publishedAt": "2026-10-11T00:01:00Z", "highlights": if name == "parity-whats-new-empty" { vec![] } else { vec![highlight("Find your conversations", "Move between your spaces and direct messages while keeping your drafts.")] }},
-                {"sequence": 3, "revision": whats_new::REVISION, "publishedAt": "2026-10-11T19:00:00Z", "highlights": if name == "parity-whats-new-empty" { vec![] } else { vec![highlight("Edit your messages", "Update a message and view its earlier versions."), highlight("Catch up after an update", "Read the highlights from shipped updates here, and reopen them from Settings.")] }}
+                {"sequence": 3, "revision": whats_new::REVISION, "version": "0.1.112", "publishedAt": "2026-10-11T19:00:00Z", "highlights": if name == "parity-whats-new-empty" { vec![] } else { vec![highlight("Edit your messages", "Update a message and view its earlier versions."), highlight("Catch up after an update", "Read the highlights from shipped updates here, and reopen them from Settings.")] }}
             ]
         });
         let baseline = serde_json::json!({
@@ -9107,9 +9107,12 @@ impl CaperApp {
                 ui.set_width(content_width);
                 let mut close = false;
                 ui.horizontal(|ui| {
-                    let (mascot, _) =
-                        ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
-                    update_art::paint(ui, mascot);
+                    ui.add(
+                        egui::Image::new(egui::include_image!(
+                            "../../../web/public/caper-face.svg"
+                        ))
+                        .fit_to_exact_size(egui::vec2(36.0, 36.0)),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                         close =
                             drawn_icon_button(ui, NavIcon::Close, "Close update review").clicked();
@@ -20762,6 +20765,21 @@ impl CaperApp {
             );
             ui.add_space(10.0);
         }
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(updates::installed_version())
+                    .size(12.0)
+                    .color(MUTED),
+            );
+            ui.hyperlink_to(
+                RichText::new(&whats_new::REVISION[..7])
+                    .size(12.0)
+                    .color(MUTED)
+                    .underline(),
+                updates::commit_url(whats_new::REVISION).expect("compiled source revision"),
+            );
+        });
+        ui.add_space(10.0);
         if self.whats_new.loading {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -20792,6 +20810,15 @@ impl CaperApp {
                         );
                         previous_day = Some(day);
                     }
+                    ui.add_space(16.0);
+                    let label = release.version.as_ref().map_or_else(
+                        || format!("Commit {}", &release.revision[..7]),
+                        |version| format!("Version {version}"),
+                    );
+                    ui.hyperlink_to(
+                        RichText::new(label).size(12.0).color(MUTED).underline(),
+                        updates::commit_url(&release.revision).expect("validated release revision"),
+                    );
                     for highlight in release.highlights {
                         ui.add_space(10.0);
                         ui.label(bold(highlight.title).size(16.0));
@@ -27225,7 +27252,7 @@ mod tests {
         redundant_invitation, resend_countdown, resend_wait, short_time, take_date_divider,
         timestamp_parts, voice,
     };
-    use crate::{mentions, navigation};
+    use crate::{mentions, navigation, whats_new};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -29449,6 +29476,38 @@ mod tests {
                 1,
                 "same-day releases share one heading"
             );
+            if route == "Done" {
+                for (label, revision) in [
+                    ("Version 0.1.112", whats_new::REVISION.to_owned()),
+                    ("Commit 2222222", "2".repeat(40)),
+                    (&whats_new::REVISION[..7], whats_new::REVISION.to_owned()),
+                ] {
+                    let output = render(&mut app, &context, vec![]);
+                    let position = node_center(&output, label);
+                    for pressed in [true, false] {
+                        let output = render(
+                            &mut app,
+                            &context,
+                            vec![
+                                egui::Event::PointerMoved(position),
+                                egui::Event::PointerButton {
+                                    pos: position,
+                                    button: egui::PointerButton::Primary,
+                                    pressed,
+                                    modifiers: egui::Modifiers::NONE,
+                                },
+                            ],
+                        );
+                        if !pressed {
+                            assert!(output.platform_output.commands.iter().any(|command| matches!(command,
+                                egui::OutputCommand::OpenUrl(url)
+                                    if url.url == format!("https://github.com/joswayski/caper/commit/{revision}"))),
+                                "{label} at {position:?}: {:?}", output.platform_output.commands);
+                        }
+                    }
+                    assert!(matches!(app.dialog, Some(Dialog::WhatsNew)));
+                }
+            }
             match route {
                 "Escape" => {
                     render(&mut app, &context, press(egui::Key::Escape));

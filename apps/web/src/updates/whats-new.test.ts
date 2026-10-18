@@ -55,21 +55,14 @@ test("release history bundles a publication day while preserving highlights, ord
   expect(releaseHighlightDays([...history.releases].reverse())).toEqual([
     {
       date: "2026-10-11",
-      highlights: [
-        { title: "Channel pins", body: "Find important messages together." },
-        { title: "More pin details", body: "See who pinned a message." },
-        { title: "Edit messages", body: "View earlier versions." },
-      ],
+      releases: [history.releases[3], history.releases[1]],
     },
-    { date: "2026-10-08", highlights: [{ title: "Earlier update", body: "Already acknowledged." }] },
+    { date: "2026-10-08", releases: [history.releases[0]] },
   ]);
   expect(releaseHighlightDays(unreadReleaseHighlights(history, 2))).toEqual([
     {
       date: "2026-10-11",
-      highlights: [
-        { title: "Channel pins", body: "Find important messages together." },
-        { title: "More pin details", body: "See who pinned a message." },
-      ],
+      releases: [history.releases[3]],
     },
   ]);
   expect(releaseHighlightDays([])).toEqual([]);

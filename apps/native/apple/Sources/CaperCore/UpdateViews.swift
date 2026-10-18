@@ -164,7 +164,8 @@ private struct UpdateButtonSweep: View, Animatable {
                     .modifier(Entrance.scrim)
                 VStack(alignment: .leading, spacing: 16) {
                     HStack(spacing: 14) {
-                        UpdateCharacter().frame(width: 40, height: 40).accessibilityHidden(true)
+                        Image("caper-face", bundle: caperResourceBundle).renderingMode(.original).resizable()
+                            .scaledToFit().frame(width: 40, height: 40).accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 5) {
                             Text("A fresh Caper is ready").font(CaperTheme.font(20, weight: .bold))
                             // "Version 0.1.82 · October 18, 2026"; the version opens its commit.
@@ -300,23 +301,6 @@ extension DesktopUpdateReview {
                 reportState = await report(error).map { .failed($0) } ?? .sent
             }
         }.buttonStyle(CaperSecondaryButton()).accessibilityIdentifier("desktop-update-report")
-    }
-}
-
-private struct UpdateCharacter: View {
-    var wave: Double = 0
-    var bounce: Double = 0
-    var body: some View {
-        ZStack {
-            Image("caper-update-feet", bundle: caperResourceBundle).renderingMode(.original).resizable()
-                .rotationEffect(.radians(bounce * 0.06), anchor: UnitPoint(x: 0.5, y: 0.84))
-                .offset(y: bounce)
-            Image("caper-update-wave", bundle: caperResourceBundle).renderingMode(.original).resizable()
-                .rotationEffect(.radians(wave), anchor: UnitPoint(x: 0.8, y: 0.66))
-                .offset(y: bounce)
-            Image("caper-update-body", bundle: caperResourceBundle).renderingMode(.original).resizable()
-                .offset(y: bounce)
-        }.aspectRatio(1, contentMode: .fit)
     }
 }
 
