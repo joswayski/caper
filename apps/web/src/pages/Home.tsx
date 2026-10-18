@@ -12,7 +12,7 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import { Check, ChevronDown, Copy, X } from "lucide-react";
+import { Check, ChevronDown, Copy, ExternalLink, X } from "lucide-react";
 import AccountNav from "../account/AccountNav";
 import type { Account } from "../account/client";
 import LiveWindow from "../components/LiveWindow";
@@ -111,8 +111,18 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
             <span className="experimental-warning">
               Caper is a work in progress and may contain bugs or incomplete features.
             </span>{" "}
-            Have feedback? <a href="https://caper.chat/invite/uz3HFpD8jV">Share it in Caper chat</a> (preferred), or
-            reach out on <ContactLinks />
+            Have feedback?{" "}
+            <a
+              className="inline-flex items-center gap-1 underline"
+              href="https://caper.chat/invite/uz3HFpD8jV"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Share it in Caper chat
+              <ExternalLink size={12} aria-hidden="true" />
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
+            , or reach out on <ContactLinks />
           </p>
           <p className="made-by">
             Made by{" "}
