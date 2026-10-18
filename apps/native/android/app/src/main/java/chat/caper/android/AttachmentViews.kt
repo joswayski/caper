@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.graphics.drawable.toBitmap
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.media3.common.MediaItem
@@ -51,6 +52,8 @@ import chat.caper.android.model.ChatAttachment
 import chat.caper.android.model.DraftAttachmentUi
 import chat.caper.android.ui.*
 import coil3.ImageLoader
+import coil3.asDrawable
+import coil3.asImage
 import coil3.compose.AsyncImage
 import coil3.disk.DiskCache
 import coil3.gif.AnimatedImageDecoder
@@ -156,11 +159,11 @@ internal fun durationLabel(durationMs: Long?): String? {
                 }
                 // Stored GIFs and animated images: muted, looping, inline, no controls.
                 attachment.kind == "video" && attachment.animated -> MediaFrame(attachment, view(attachment)) {
-                    attachment.previewUrl?.let { AttachmentImage(attachment, it, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed) }
+                    AttachmentImage(attachment, attachment.previewUrl, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed)
                     if (!pending) AnimatedVideo(attachment, url, onLoadFailed)
                 }
                 attachment.kind == "video" -> MediaFrame(attachment, view(attachment)) {
-                    attachment.previewUrl?.let { AttachmentImage(attachment, it, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed) }
+                    AttachmentImage(attachment, attachment.previewUrl, "display", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed)
                     Surface(Modifier.align(Alignment.Center).size(44.dp), shape = CircleShape, color = Blackout.copy(alpha = 0.72f)) {
                         Icon(painterResource(R.drawable.lucide_play), null, Modifier.padding(12.dp), tint = Text)
                     }
@@ -188,7 +191,7 @@ internal fun durationLabel(durationMs: Long?): String? {
         return
     }
     MediaFrame(attachment, null, description = "${attachment.name}, $label") {
-        if (preview != null) AttachmentImage(attachment, preview, "processing", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed)
+        AttachmentImage(attachment, preview, "processing", Modifier.fillMaxSize(), ContentScale.Crop, onLoadFailed)
         Box(Modifier.fillMaxSize().background(Blackout.copy(alpha = if (preview != null) 0.45f else 0f)))
         Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Spinner(percent, Modifier.size(28.dp))
@@ -260,21 +263,34 @@ internal fun durationLabel(durationMs: Long?): String? {
 }
 
 @Composable internal fun AttachmentImage(
-    attachment: ChatAttachment, data: String, variant: String, modifier: Modifier, scale: ContentScale,
+    attachment: ChatAttachment, data: String?, variant: String, modifier: Modifier, scale: ContentScale,
     onLoadFailed: (ChatAttachment, Int?) -> Unit,
     animate: Boolean = false,
 ) {
     val context = LocalContext.current
+    val loader = AttachmentImages.loader(context)
+    val previewKey = remember(attachment.id) { MemoryCache.Key("preview:${attachment.id}") }
     val request = remember(data, attachment.id, variant, animate) {
-        val key = "${attachment.id}:$variant" + if (animate) ":animated" else ""
+        val local = data != null && data.toUri().scheme !in setOf("http", "https")
+        // Local pixels are a placeholder, never the cached result of a server request.
+        val key = "${attachment.id}:$variant" + (if (local) ":local" else "") + (if (animate) ":animated" else "")
         AttachmentImages.request(context, data, key).newBuilder().apply {
+            placeholderMemoryCacheKey(previewKey)
+            fallback { loader.memoryCache?.get(previewKey)?.image }
+            error { loader.memoryCache?.get(previewKey)?.image }
             if (animate) decoderFactory(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AnimatedImageDecoder.Factory() else GifDecoder.Factory())
         }.build()
     }
     AsyncImage(
-        model = request, contentDescription = attachment.name, imageLoader = AttachmentImages.loader(context),
+        model = request, contentDescription = attachment.name, imageLoader = loader,
         modifier = modifier, contentScale = scale,
-        onError = { error -> onLoadFailed(attachment, error.result.throwable.httpStatus()) },
+        onSuccess = { state ->
+            val image = state.result.image
+            // Retain only a still from an animated drawable, not its playback state.
+            val preview = if (image.shareable) image else image.asDrawable(context.resources).toBitmap().asImage()
+            loader.memoryCache?.set(previewKey, MemoryCache.Value(preview))
+        },
+        onError = { error -> if (data != null) onLoadFailed(attachment, error.result.throwable.httpStatus()) },
     )
 }
 

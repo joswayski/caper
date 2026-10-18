@@ -35,6 +35,13 @@ final class AttachmentImageLoader: @unchecked Sendable {
 
     func cached(_ key: String) -> CGImage? { cache.object(forKey: key as NSString)?.image }
 
+    /// A remounted message must paint its previous pixels before its task starts.
+    /// This fallback never satisfies a load of a different server variant.
+    func cachedPreview(for id: String) -> CGImage? {
+        cached("\(id):preview") ?? cached("\(id):full") ?? cached("local:\(id)")
+            ?? cached("\(id):inline-gif") ?? cached("poster:\(id):inline-gif")
+    }
+
     private func fetch(_ url: URL) async throws -> Data {
         if url.isFileURL { return try Data(contentsOf: url) }
         let (body, response) = try await session.data(from: url)
@@ -70,6 +77,10 @@ final class AttachmentImageLoader: @unchecked Sendable {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { throw AttachmentLoadError.undecodable }
         if let animation = try Self.decodeAnimation(source, maxPixelSize: maxPixelSize, maxFrames: Self.maxAnimationFrames,
                                                     byteLimit: animationByteLimit ?? Self.maxAnimationBytes) {
+            if let first = animation.images.first {
+                // Keep only a still for transitions; caching it as `key` would stop future playback.
+                cache.setObject(CachedAttachmentImage(first), forKey: "poster:\(key)" as NSString, cost: first.bytesPerRow * first.height)
+            }
             return animation
         }
         guard let image = Self.decodeStill(source, maxPixelSize: maxPixelSize) else { throw AttachmentLoadError.undecodable }
@@ -181,9 +192,9 @@ struct AttachmentOriginal: @unchecked Sendable {
 @MainActor
 private func loadAttachmentImage(_ attachment: ChatAttachment, preview: Bool, chat: ChatModel?, maxPixelSize: Int = 1200) async -> (image: CGImage?, failed: Bool) {
     let usePreview = preview && attachment.previewUrl != nil
-    let key = "\(attachment.id):\(usePreview ? "preview" : "full")"
-    if let cached = AttachmentImageLoader.shared.cached(key) { return (cached, false) }
     guard let raw = usePreview ? attachment.previewUrl : attachment.url, let url = URL(string: raw) else { return (nil, true) }
+    let key = url.isFileURL ? "local:\(attachment.id)" : "\(attachment.id):\(usePreview ? "preview" : "full")"
+    if let cached = AttachmentImageLoader.shared.cached(key) { return (cached, false) }
     if AttachmentURLPolicy.needsRefresh(raw) { chat?.requestFreshAttachmentURLs(ids: [attachment.id]) }
     do {
         let image = try await AttachmentImageLoader.shared.load(key: key, url: url, maxPixelSize: maxPixelSize)
@@ -325,7 +336,7 @@ private struct AttachmentImageView: View {
                             Image(decorative: original.images[index], scale: 1).resizable().scaledToFill()
                         }
                     }
-                } else if let image {
+                } else if let image = image ?? AttachmentImageLoader.shared.cachedPreview(for: attachment.id) {
                     Image(decorative: image, scale: 1).resizable().scaledToFill()
                 } else if failed {
                     VStack(spacing: 4) {
@@ -385,7 +396,9 @@ private struct AttachmentVideoView: View {
                     if let openViewer { openViewer() } else { start() }
                 } label: {
                     ZStack {
-                        if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
+                        if let poster = poster ?? AttachmentImageLoader.shared.cachedPreview(for: attachment.id) {
+                            Image(decorative: poster, scale: 1).resizable().scaledToFill()
+                        }
                         Image(systemName: "play.fill").font(.system(size: 18, weight: .bold)).foregroundStyle(.white)
                             .frame(width: 46, height: 46).background(Circle().fill(Color.black.opacity(0.6)))
                     }
@@ -552,6 +565,7 @@ private struct AttachmentProcessingView: View {
     }
 
     var body: some View {
+        let preview = self.preview ?? AttachmentImageLoader.shared.cachedPreview(for: attachment.id)
         Group {
             if visual {
                 ZStack {
@@ -588,11 +602,11 @@ private struct AttachmentProcessingView: View {
         .task(id: attachment.previewUrl ?? localCopy?.path) {
             guard visual else { return }
             if attachment.previewUrl != nil {
-                if let loaded = await loadAttachmentImage(attachment, preview: true, chat: chat).image { preview = loaded }
+                if let loaded = await loadAttachmentImage(attachment, preview: true, chat: chat).image { self.preview = loaded }
             } else if let localCopy, AttachmentKind.local(contentType: attachment.contentType) == .image {
                 // The sender sees its own original until the server's preview or result arrives.
                 if let loaded = try? await AttachmentImageLoader.shared.load(key: "local:\(attachment.id)", url: localCopy, maxPixelSize: 1200) {
-                    preview = loaded
+                    self.preview = loaded
                 }
             }
         }
@@ -739,7 +753,9 @@ private struct AttachmentAnimationView: View {
 
     var body: some View {
         ZStack {
-            if let poster { Image(decorative: poster, scale: 1).resizable().scaledToFill() }
+            if let poster = poster ?? AttachmentImageLoader.shared.cachedPreview(for: attachment.id) {
+                Image(decorative: poster, scale: 1).resizable().scaledToFill()
+            }
             if let playback { PlayerSurface(player: playback.player) }
             if !playing {
                 Image(systemName: "play.fill").font(.system(size: 14, weight: .bold)).foregroundStyle(.white)

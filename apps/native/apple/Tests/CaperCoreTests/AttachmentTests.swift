@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreMedia
 import ImageIO
+import SwiftUI
 import UniformTypeIdentifiers
 import XCTest
 @testable import CaperCore
@@ -897,6 +898,52 @@ final class AttachmentTests: XCTestCase {
         let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
         let pixels = try XCTUnwrap(AttachmentPreparer.rgbaPixels(image))
         return (image.width, image.height, pixels.straight)
+    }
+
+    @MainActor
+    func testConfirmedAttachmentsPaintPreviousPreviewBeforeLoading() async throws {
+        let id = UUID().uuidString
+        let local = FileManager.default.temporaryDirectory.appendingPathComponent("\(id).png")
+        defer { try? FileManager.default.removeItem(at: local) }
+        let red = rgbaImage(width: 240, height: 180) { _, _ in [255, 0, 0, 255] }
+        try encoded(red, type: .png).write(to: local)
+        _ = try await AttachmentImageLoader.shared.load(key: "local:\(id)", url: local, maxPixelSize: 1200)
+        try FileManager.default.removeItem(at: local)
+
+        func pixel(_ attachment: ChatAttachment) throws -> [UInt8] {
+            // A fresh view, before its asynchronous task can load the final URL.
+            let renderer = ImageRenderer(content: MessageAttachmentsView(attachments: [attachment], chat: nil)
+                .frame(width: 240, height: 180, alignment: .topLeading))
+            renderer.scale = 1
+            let image = try XCTUnwrap(renderer.cgImage)
+            let rgba = try XCTUnwrap(AttachmentPreparer.rgbaPixels(image)).straight
+            let offset = (20 * image.width + 20) * 4
+            return Array(rgba[offset..<offset + 4])
+        }
+
+        var attachment = ChatAttachment(id: id, kind: .image, contentType: "image/png", name: "photo.png", size: 1,
+                                        width: 240, height: 180, status: .processing)
+        XCTAssertEqual(try pixel(attachment), [255, 0, 0, 255], "processing without a URL keeps the sender's pixels")
+        attachment.status = .ready
+        attachment.url = "https://cdn.invalid/original/\(id)"
+        attachment.previewUrl = "https://cdn.invalid/preview/\(id)"
+        XCTAssertEqual(try pixel(attachment), [255, 0, 0, 255], "confirmation must not start with an empty image")
+        attachment.kind = .video
+        XCTAssertEqual(try pixel(attachment), [255, 0, 0, 255], "video posters use the same transition")
+        attachment.animated = true
+        XCTAssertEqual(try pixel(attachment), [255, 0, 0, 255], "converted animations keep their poster")
+
+        let blue = rgbaImage(width: 240, height: 180) { _, _ in [0, 0, 255, 255] }
+        try encoded(blue, type: .png).write(to: local)
+        _ = try await AttachmentImageLoader.shared.load(key: "\(id):preview", url: local, maxPixelSize: 1200)
+        attachment.kind = .image
+        attachment.animated = false
+        XCTAssertEqual(try pixel(attachment), [0, 0, 255, 255], "the final server preview wins over the local fallback")
+        attachment.unavailable = true
+        XCTAssertNotEqual(try pixel(attachment), [0, 0, 255, 255], "removed files never show cached pixels")
+        attachment.unavailable = false
+        attachment.status = .failed
+        XCTAssertNotEqual(try pixel(attachment), [0, 0, 255, 255], "failed processing still shows its failure card")
     }
 
     /// Opaque pixels exactly equal; alpha equal everywhere.
