@@ -106,6 +106,7 @@ pub enum Command {
     LoadUnread {
         epoch: u64,
         revision: u64,
+        visit: Option<u64>,
         token: String,
     },
     ThreadUnread {
@@ -617,6 +618,7 @@ pub enum Event {
     UnreadLoaded {
         epoch: u64,
         revision: u64,
+        visit: Option<u64>,
         result: Result<Vec<crate::model::UnreadSpace>, String>,
     },
     ThreadUnread {
@@ -1584,10 +1586,12 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
         Command::LoadUnread {
             epoch,
             revision,
+            visit,
             token,
         } => Event::UnreadLoaded {
             epoch,
             revision,
+            visit,
             result: api
                 .unread_spaces(&token)
                 .map(|value| value.spaces)

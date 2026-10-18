@@ -1997,6 +1997,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val selfId = state.chatAuthorId ?: state.account?.id
     val blocked = state.blockedIds
     val rows = remember(messages, blocked, selfId, revealedRuns) { timelineRows(groupBlocked(messages, blocked, selfId, revealedRuns)) }
+    val newMessagesId = if (!inThread && state.visit == null && !state.feedbackShown && state.selectedDirectId == null && state.selectedChannel?.direct == false)
+        chat.caper.android.data.channelNewMessagesId(messages, state.channelVisitUnread, state.hasMoreMessages, blocked, selfId) else null
     // Recheck while stationary too: foreground return and failed acknowledgements need no scroll.
     // The bottom of a real reply must be visible (also works for replies taller than the viewport).
     LaunchedEffect(inThread, state.selectedChannel?.id, state.thread, rows) {
@@ -2099,6 +2101,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }) {
                 if (divider && row !is TimelineRow.Blocked) DateDivider(message.createdAt)
+                if (row is TimelineRow.Message && message.id == newMessagesId) Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    HorizontalDivider(Modifier.weight(1f), color = Terracotta, thickness = 1.dp)
+                    Text("New messages", color = Terracotta, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    HorizontalDivider(Modifier.weight(1f), color = Terracotta, thickness = 1.dp)
+                }
                 if (row is TimelineRow.Blocked) {
                     BlockedRunRow(row.run.messages.size, row.run.revealed) {
                         revealedRuns = if (row.run.revealed) revealedRuns - row.run.key else revealedRuns + row.run.key
@@ -2124,7 +2135,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         retryPin = viewModel::retryPin,
                         dismissPinError = viewModel::dismissPinError,
                         onAttachmentFailed = viewModel::reportAttachmentFailure,
-                        grouped = row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
+                        grouped = message.id != newMessagesId && row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
                     )
                     if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
                         message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl) }

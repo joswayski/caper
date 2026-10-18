@@ -558,6 +558,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             mutable.value = mutable.value.copy(selectedChannel = channel, messagesLoading = true)
         conversationHistoryJob = viewModelScope.launch {
             try {
+                // Fetch before installing history or allowing any automatic read acknowledgement.
+                // A background badge refresh may already have replaced the cached unread snapshot.
+                val visitUnread = if (!channel.direct) runCatching {
+                    api.unreadSpaces(requireAccountToken()).spaces.flatMap { it.channels }
+                        .firstOrNull { it.id == channel.id }
+                }.getOrElse { if (it is CancellationException) throw it else null } else null
                 val history = conversationHistories[channel.id] ?: api.history(accountToken, channel.id)
                 if (request != generation || accountRequest != accountGeneration || navigation != conversationOpeningRevision) return@launch
                 require(history.channel?.id == channel.id && history.space?.id == channel.spaceId) { "Caper returned another conversation." }
@@ -567,7 +573,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val committed = ++generation
                 closeChannel(clearPending = true)
                 if (!channel.direct) lastChannelBySpace[channel.spaceId] = channel.id
-                mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = null)
+                mutable.value = mutable.value.copy(selectedChannel = channel, selectedDirectId = null, channelVisitUnread = visitUnread)
                 renewDraftUploads(channel.id)
                 installHistoryPins(history)
                 mutable.value = mutable.value.copy(messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore, busy = false, messagesLoading = false, restoring = false)
@@ -1218,6 +1224,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun markConversationRead(id: String, seq: String?) {
         if (seq == null) return
+        if (openingConversationId == id) return
         val current = mutable.value
         // A visit never marks anything read: the team member is not in the conversation.
         if (current.visit != null) return
@@ -2656,6 +2663,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         // Keep the conversation readable while it reloads, as the web does.
         mutable.value = mutable.value.copy(
             selectedChannel = channel, selectedDirectId = previous.selectedDirectId, visit = previous.visit,
+            channelVisitUnread = previous.channelVisitUnread,
             messages = previous.messages, hasMoreMessages = previous.hasMoreMessages,
             thread = previous.thread, threadOnlyRows = previous.threadOnlyRows,
             contextStart = previous.contextStart, contextEnd = previous.contextEnd,
@@ -3210,6 +3218,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         pinSnapshotCursor = null
         mutable.value = mutable.value.copy(
             selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
+            channelVisitUnread = null,
             visit = null, feedbackShown = false,
             thread = null, threadOnlyRows = emptySet(), replyTargets = emptyMap(),
             contextStart = null, contextEnd = null, hasNewerMessages = false, loadingNewer = false,
