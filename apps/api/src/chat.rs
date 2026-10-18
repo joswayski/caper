@@ -679,8 +679,8 @@ async fn reactor_list(
     user: Option<i64>,
 ) -> Result<Value, ApiError> {
     let access = crate::spaces::channel_access(pool, channel, user).await?;
-    let (message_id, reaction_seq): (i64, Option<String>) = sqlx::query_as(
-        "SELECT id,payload->>'reactionSeq' FROM public.messages WHERE channel_id=$1 AND external_id=$2",
+    let (message_id, payload): (i64, Value) = sqlx::query_as(
+        "SELECT id,payload FROM public.messages WHERE channel_id=$1 AND external_id=$2",
     )
     .bind(access.id)
     .bind(message)
@@ -712,8 +712,16 @@ async fn reactor_list(
             _ => reactions.push(json!({"emoji":emoji,"authors":[author]})),
         }
     }
+    if let Some(order) = payload["reactions"].as_array() {
+        reactions.sort_by_key(|reaction| {
+            order
+                .iter()
+                .position(|previous| previous["emoji"] == reaction["emoji"])
+                .unwrap_or(usize::MAX)
+        });
+    }
     Ok(
-        json!({"messageId":message,"reactionSeq":reaction_seq.unwrap_or_else(|| "0".into()),"reactions":reactions}),
+        json!({"messageId":message,"reactionSeq":payload["reactionSeq"].as_str().unwrap_or("0"),"reactions":reactions}),
     )
 }
 
@@ -1436,10 +1444,20 @@ async fn persist_reaction(
     let rows: Vec<(String, Vec<String>)> = sqlx::query_as(
         "SELECT r.emoji,array_agg(u.external_id ORDER BY u.external_id) FROM public.message_reactions r JOIN public.users u ON u.id=r.user_id AND u.deleted_at IS NULL WHERE r.message_id=$1 AND r.deleted_at IS NULL GROUP BY r.emoji ORDER BY r.emoji")
         .bind(message_id).fetch_all(&mut *tx).await.map_err(database_error)?;
-    let reactions: Vec<Value> = rows
+    let mut reactions: Vec<Value> = rows
         .into_iter()
         .map(|(emoji, author_ids)| json!({"emoji":emoji,"authorIds":author_ids}))
         .collect();
+    // Keep surviving groups in place; a newly introduced emoji goes at the end.
+    // Using the snapshot also avoids moving a group when its first reactor leaves.
+    if let Some(order) = payload["reactions"].as_array() {
+        reactions.sort_by_key(|reaction| {
+            order
+                .iter()
+                .position(|previous| previous["emoji"] == reaction["emoji"])
+                .unwrap_or(usize::MAX)
+        });
+    }
     let seq = if exists == active {
         payload
             .get("reactionSeq")

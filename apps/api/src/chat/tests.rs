@@ -1752,10 +1752,10 @@ async fn reactor_lists_name_people_in_reaction_order_for_readers_only(pool: PgPo
     persist_reaction(&pool, &channel, message, "bob", "👍", true)
         .await
         .unwrap();
-    persist_reaction(&pool, &channel, message, "alice", "👍", true)
+    persist_reaction(&pool, &channel, message, "alice", "🎉", true)
         .await
         .unwrap();
-    let snapshot = persist_reaction(&pool, &channel, message, "alice", "🎉", true)
+    let snapshot = persist_reaction(&pool, &channel, message, "alice", "👍", true)
         .await
         .unwrap();
 
@@ -1773,6 +1773,14 @@ async fn reactor_lists_name_people_in_reaction_order_for_readers_only(pool: PgPo
             .collect()
     };
     assert_eq!(emoji(&list["reactions"]), emoji(&snapshot["reactions"]));
+    assert_eq!(
+        emoji(&snapshot["reactions"]),
+        vec![json!("👍"), json!("🎉")]
+    );
+    let history = history_page(&pool, &channel, None, Some(users[2]))
+        .await
+        .unwrap();
+    assert_eq!(history["messages"][0]["reactions"], snapshot["reactions"]);
     let alice = json!({"id":"alice","username":"alice","displayName":"Alice A","avatarId":100});
     let bob = json!({"id":"bob","username":"bob","displayName":"Bob B","avatarId":101});
     let authors = |list: &Value, wanted: &str| -> Value {
@@ -1799,6 +1807,19 @@ async fn reactor_lists_name_people_in_reaction_order_for_readers_only(pool: PgPo
         .await
         .unwrap();
     assert_eq!(authors(&list, "👍"), json!([alice]));
+    assert_eq!(emoji(&list["reactions"]), vec![json!("👍"), json!("🎉")]);
+
+    // Once the whole group disappears, adding it again appends it as a new group.
+    persist_reaction(&pool, &channel, message, "alice", "👍", false)
+        .await
+        .unwrap();
+    let snapshot = persist_reaction(&pool, &channel, message, "bob", "👍", true)
+        .await
+        .unwrap();
+    assert_eq!(
+        emoji(&snapshot["reactions"]),
+        vec![json!("🎉"), json!("👍")]
+    );
 
     for reader in [Some(users[3]), None] {
         assert_eq!(
