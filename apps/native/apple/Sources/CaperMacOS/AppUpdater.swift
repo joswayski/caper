@@ -22,6 +22,7 @@ import Observation
     private var availableUpdate: Update?
     private(set) var offeredUpdate: Update?
     private(set) var reviewRequest = 0
+    private(set) var lastSuccessfulCheck: Date?
     private var manualCheck = false
 
     static let firstCheckDelay: TimeInterval = 20
@@ -59,8 +60,7 @@ import Observation
     /// Identify this app even when there is no newer published release.
     var installedVersion: String {
         let label = version.map { "Caper \($0) (build \(build))" } ?? "Development build"
-        let revision = sourceRevision.map { " · \($0.prefix(7))" } ?? ""
-        return "Installed: \(label)\(revision)"
+        return "Installed: \(label)"
     }
 
     var controls: DesktopUpdateControls {
@@ -70,6 +70,8 @@ import Observation
         var reviewNow: (@MainActor () -> Void)?
         if availableUpdate != nil { reviewNow = { self.review() } }
         return DesktopUpdateControls(isChecking: checking, canApply: availableUpdate?.canApply == true,
+                                     lastSuccessfulCheck: lastSuccessfulCheck, installedVersion: installedVersion,
+                                     sourceRevision: sourceRevision,
                                      check: checkNow, review: reviewNow)
     }
 
@@ -187,7 +189,24 @@ import Observation
         }
         switch result {
         case let .success(data):
-            availableUpdate = Self.parse(data)
+            struct Status: Decodable {
+                let update: Bool
+                let deferred: Bool?
+            }
+            guard let status = try? JSONDecoder().decode(Status.self, from: data) else {
+                if manual { inform("Update failed", UpdateCheckError().localizedDescription) }
+                return
+            }
+            // Rate limiting is not a successful check or evidence that an
+            // already discovered release has disappeared.
+            if status.deferred == true { return }
+            let parsed = Self.parse(data)
+            guard !status.update || parsed != nil else {
+                if manual { inform("Update failed", UpdateCheckError().localizedDescription) }
+                return
+            }
+            lastSuccessfulCheck = Date()
+            availableUpdate = parsed
             guard let update = availableUpdate else {
                 offeredUpdate = nil
                 if manual { inform("Caper is up to date", "\(installedVersion)\n\nNo newer published release is available.") }

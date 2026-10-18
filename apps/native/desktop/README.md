@@ -10,7 +10,10 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Packaged releases check for signed updates 20 seconds after launch and every
   minute. **User Settings → Check for updates** checks in that menu, with inline
   progress and success/failure feedback; it does not open Settings. The Updates
-  section in Settings keeps the same check action. A known release adds a persistent
+  section in Settings keeps the same check action, shows the last successful check
+  time, and links the installed source revision to GitHub. Confirmed rate limits
+  quietly defer to the next check without discarding known updates. Opening Settings
+  does not start another check. A known release adds a persistent
   **Update available** button above the profile/audio row, with a thin rainbow edge
   and occasional shine.
   The label never moves; Reduce Motion/background windows keep the edge still.
@@ -488,9 +491,10 @@ shared Rust layout, not Windows display scaling or a live send.
 retained history and a labelled fixture draft; `parity-opening-error` previews
 retry, and `parity-loading` previews the initial history skeleton.
 These previews do not start a navigation request or a media transport.
-`parity-settings`, `parity-settings-checking`, `parity-settings-current`, and
-`parity-settings-offline` preview the update control and check feedback. These
-are static states: their check buttons are disabled and no updater process runs.
+`parity-settings`, `parity-settings-checking`, `parity-settings-current`,
+`parity-settings-deferred`, and `parity-settings-offline` preview the update
+control and check feedback. These are static states: their check buttons are
+disabled and no updater process runs.
 `parity-update` and `parity-update-narrow` preview long, version-grouped release
 notes under **What’s new**, collapsed by default, with a fixed restart/Later footer.
 `parity-update-download` shows the

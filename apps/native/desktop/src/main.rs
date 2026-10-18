@@ -1624,6 +1624,7 @@ impl CaperApp {
                     app.updates = updates::Updates::preview_status(match name {
                         "parity-settings-checking" => updates::Status::Checking,
                         "parity-settings-current" => updates::Status::UpToDate,
+                        "parity-settings-deferred" => updates::Status::Deferred,
                         "parity-settings-offline" => {
                             updates::Status::Failed("Offline. Try again when connected.".into())
                         }
@@ -13270,11 +13271,7 @@ impl CaperApp {
                         if ui
                             .add_enabled(
                                 self.updates.can_check() && !checking,
-                                egui::Button::new(if checking {
-                                    "Checking…"
-                                } else {
-                                    "Check for updates"
-                                }),
+                                egui::Button::new("Check for updates"),
                             )
                             .on_hover_text(if self.updates.can_check() {
                                 "Check now without leaving this menu."
@@ -13286,23 +13283,7 @@ impl CaperApp {
                             self.updates.check_now();
                         }
                         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                            match self.updates.status() {
-                                updates::Status::UpToDate => {
-                                    ui.label(
-                                        RichText::new("No newer published release is available.")
-                                            .color(MUTED),
-                                    );
-                                }
-                                updates::Status::Failed(error) => {
-                                    ui.colored_label(
-                                        ERROR,
-                                        format!("Could not check for updates: {error}"),
-                                    );
-                                }
-                                updates::Status::Idle
-                                | updates::Status::Checking
-                                | updates::Status::Available => {}
-                            }
+                            self.update_check_status(ui);
                         });
                         if self.updates.available().is_some() {
                             ui.close();
@@ -20156,34 +20137,30 @@ impl CaperApp {
         ui.add_space(18.0);
         ui.label(bold("Updates").size(12.0).color(MUTED));
         ui.add_space(6.0);
-        ui.label(RichText::new(updates::installed_version()).color(MUTED));
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(updates::installed_version()).color(MUTED));
+            ui.hyperlink_to(
+                RichText::new(&whats_new::REVISION[..7])
+                    .color(TEXT)
+                    .underline(),
+                format!(
+                    "https://github.com/joswayski/caper/commit/{}",
+                    whats_new::REVISION
+                ),
+            );
+        });
         let status = self.updates.status();
         let checking = status == updates::Status::Checking;
-        let label = if checking {
-            "Checking…"
-        } else {
-            "Check for updates"
-        };
-        if secondary_button(ui, label, self.updates.can_check() && !checking).clicked() {
+        if secondary_button(
+            ui,
+            "Check for updates",
+            self.updates.can_check() && !checking,
+        )
+        .clicked()
+        {
             self.updates.check_now();
         }
-        match &status {
-            updates::Status::UpToDate => {
-                ui.label(RichText::new("No newer published release is available.").color(MUTED));
-            }
-            updates::Status::Available => {
-                ui.label(
-                    RichText::new(
-                        "Select Update available above your profile to review the update.",
-                    )
-                    .color(MUTED),
-                );
-            }
-            updates::Status::Failed(error) => {
-                ui.colored_label(ERROR, format!("Could not check for updates: {error}"));
-            }
-            updates::Status::Idle | updates::Status::Checking => {}
-        }
+        self.update_check_status(ui);
         ui.label(
             RichText::new(
                 if !self.updates.can_check() && status == updates::Status::Idle {
@@ -20215,6 +20192,34 @@ impl CaperApp {
             ui.add_space(14.0);
             delete_account_settings(ui);
         }
+    }
+
+    fn update_check_status(&self, ui: &mut egui::Ui) {
+        // Both Settings and the account menu keep their status rows mounted,
+        // so even a check that finishes within one frame cannot move controls.
+        let (message, color) = match self.updates.status() {
+            updates::Status::UpToDate => ("No newer published release is available.".into(), MUTED),
+            updates::Status::Available => ("An update is available to review.".into(), MUTED),
+            updates::Status::Deferred if self.updates.known_available().is_some() => {
+                ("An update is available to review.".into(), MUTED)
+            }
+            updates::Status::Deferred => {
+                ("No new updates. Will check again shortly.".into(), MUTED)
+            }
+            updates::Status::Failed(error) => {
+                (format!("Could not check for updates: {error}"), ERROR)
+            }
+            updates::Status::Checking => ("Checking for updates…".into(), MUTED),
+            updates::Status::Idle => ("Updates are checked automatically.".into(), MUTED),
+        };
+        ui.add(egui::Label::new(RichText::new(&message).color(color)).truncate())
+            .on_hover_text(message);
+        ui.label(
+            RichText::new(self.updates.last_checked())
+                .size(12.0)
+                .color(MUTED),
+        );
+        ui.ctx().request_repaint_after(Duration::from_secs(10));
     }
 
     /// "Notify me about", saved as soon as it changes and reverted with an
@@ -28380,8 +28385,8 @@ mod tests {
             for _ in 0..3 {
                 render(&mut app, &context, vec![]);
             }
-            let output = render(&mut app, &context, vec![]);
-            click(&mut app, &context, text_position(&output, "What’s new"));
+            let pos = scrolled_text_position(&mut app, &context, "What’s new");
+            click(&mut app, &context, pos);
             assert!(matches!(app.dialog, Some(Dialog::WhatsNew)));
             for _ in 0..3 {
                 render(&mut app, &context, vec![]);
@@ -35093,6 +35098,86 @@ mod tests {
         assert_eq!(app.member_username, "alex");
         assert!(!app.loading, "selecting never opens the conversation");
         assert!(matches!(app.dialog, Some(Dialog::StartDirect)));
+    }
+
+    #[test]
+    fn update_settings_keep_controls_still_and_link_the_installed_commit() {
+        use crate::{updates, whats_new};
+        for width in [440.0, 320.0] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-settings"),
+            );
+            app.account = None;
+            let frame = |app: &mut CaperApp, events| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 900.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| app.settings_dialog(ui));
+                    },
+                )
+            };
+            let mut positions = None;
+            for status in [
+                updates::Status::Checking,
+                updates::Status::UpToDate,
+                updates::Status::Deferred,
+                updates::Status::Failed("Offline. Try again when connected.".into()),
+            ] {
+                app.updates = updates::Updates::preview_status(status);
+                frame(&mut app, vec![]);
+                let output = frame(&mut app, vec![]);
+                let current = (
+                    text_position(&output, "Check for updates"),
+                    text_position(&output, "What’s new"),
+                );
+                if let Some(positions) = positions {
+                    assert_eq!(current, positions, "width {width}");
+                }
+                positions = Some(current);
+                assert!(
+                    texts(&output)
+                        .iter()
+                        .any(|text| text.starts_with("Last checked:"))
+                );
+            }
+            let output = frame(&mut app, vec![]);
+            let pos = node_center(&output, &whats_new::REVISION[..7]);
+            let mut opened = None;
+            for pressed in [true, false] {
+                let output = frame(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+                opened = opened.or_else(|| opened_url(&output).map(str::to_owned));
+            }
+            assert_eq!(
+                opened,
+                Some(format!(
+                    "https://github.com/joswayski/caper/commit/{}",
+                    whats_new::REVISION
+                )),
+                "width {width}"
+            );
+        }
     }
 
     #[test]
