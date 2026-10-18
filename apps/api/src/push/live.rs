@@ -18,6 +18,7 @@ struct Row {
     sender: String,
     sender_id: String,
     sender_avatar_id: Option<i16>,
+    sender_avatar_asset: Option<String>,
     channel_id: String,
     channel_name: String,
     space_id: Option<String>,
@@ -110,6 +111,11 @@ impl Row {
             "body": alert.body, "sender": alert.sender, "senderId": alert.sender_id,
             "senderAvatarId": alert.sender_avatar_id, "createdAt": self.created_at,
         });
+        if let (Some(asset), Some(cdn)) = (&self.sender_avatar_asset, cdn) {
+            event["senderAvatarUrl"] = json!(
+                cdn.notification_url(&crate::assets::original_key(asset), Utc::now().timestamp(),)
+            );
+        }
         if let Some(root) = &alert.thread_root_id {
             event["threadRootId"] = json!(root);
         }
@@ -162,7 +168,8 @@ pub(crate) async fn read(
         "SELECT n.id,n.kind,COALESCE(m.external_id,'') AS message_id,COALESCE(m.created_at,n.created_at) AS created_at,
                 COALESCE(m.payload,'{}'::jsonb) AS message,
                 COALESCE(author.display_name,'') AS sender,COALESCE(author.external_id,'') AS sender_id,
-                author.avatar_id AS sender_avatar_id,COALESCE(ch.external_id,'') AS channel_id,COALESCE(ch.name,'') AS channel_name,
+                author.avatar_id AS sender_avatar_id,author.avatar_asset AS sender_avatar_asset,
+                COALESCE(ch.external_id,'') AS channel_id,COALESCE(ch.name,'') AS channel_name,
                 s.external_id AS space_id,s.name AS space_name,
                 CASE WHEN n.kind='direct.request' THEN COALESCE(req.eligible,false) AND n.created_at > now()-interval '24 hours'
                 WHEN n.message_id IS NULL THEN COALESCE(inv.eligible,false) AND n.created_at > now()-interval '24 hours'
