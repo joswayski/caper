@@ -1304,7 +1304,10 @@ preview is a fixed derived object beside the original, not another row:
 | Preview (≤ 640 px, ≤ 512 KiB, WebP/JPEG/PNG) | `preview/{asset id}` |
 | Private upload sources (never a CDN route) | `staging/original/{asset id}`, `staging/preview/{asset id}` |
 
-`message_id`/`position` link a sent file to one message. Message content keeps
+`message_id`/`position` link a sent file to one message; a file an edit
+replaced stays linked with `retired_at` set (see
+[Editing attachments after sending](#editing-attachments-after-sending)).
+Message content keeps
 its version 1 `type:"text"` shape and gains an optional `attachments` array
 (`id, kind, contentType, name, size, width, height, durationMs, preview`).
 **Stored payloads never contain URLs.** Rows are never deleted (matching the
@@ -1339,7 +1342,8 @@ its R2 objects were removed.
 Attachment spoilers use optional `spoilerAttachmentIds` on that send request:
 distinct IDs from `attachmentIds`. Marked descriptions store `spoiler:true` in
 message JSON; missing means false. The choice is part of the retry hash and
-survives history, edits, forwards and URL refreshes. Each composer offers a
+survives history, text edits, forwards and URL refreshes; the author can change
+it later by editing the message's files. Each composer offers a
 per-file toggle. Updated clients conceal images and video posters with an
 on-device blur of a still thumbnail (the image original when no preview exists),
 without starting playback. Files without a usable visual preview use a neutral
@@ -1351,7 +1355,8 @@ not understand the flag. Text spoilers and slash commands are not implemented.
 
 `GET /api/assets/usage` returns `{used, limit}`. `POST /api/assets/urls`
 returns fresh URLs for visible attachments (like Discord's refresh endpoint)
-for tabs open longer than a URL's lifetime.
+for tabs open longer than a URL's lifetime; a file an edit replaced is
+refreshed only for its owner.
 
 ### Limits and quota
 
@@ -1361,7 +1366,8 @@ for tabs open longer than a URL's lifetime.
 - Quota counts what is **stored** (after client compression and metadata removal), and reservations
   count immediately so parallel uploads cannot overshoot.
 - Bytes stay counted until the purge loop successfully deletes the original and
-  preview. Late storage writes may briefly recreate uncharged bytes until the
+  preview. Files replaced by an edit stay stored, so they keep counting. Late
+  storage writes may briefly recreate uncharged bytes until the
   reconciliation sweep removes them; quota is accounting, not a strict ceiling
   on instantaneous R2 bytes. Reservation rate limits remain in place.
 - Single `PUT` uploads (R2 allows up to 5 GiB). Multipart/resumable uploads are
@@ -1563,8 +1569,9 @@ history of joswayski/caper#246 (contract `9d3709b`, API `5f23d15`, worker
 `08797de`, `72f8514`, `c5f57ea`) and joswayski/infrastructure#129 (`8ae9ace`) for when it
 is needed. Clients still accept the optional `status`
 (`processing|ready|failed`), `animated` and `attachmentsSeq` fields and the
-`message.attachments` / `attachment.progress` events it used; today's API
-never sends them, and an absent `status` means ready.
+`message.attachments` / `attachment.progress` events it used. Today's API
+sends only `attachmentsSeq`, on edits that change a message's files, and an
+absent `status` means ready.
 
 Follow-ups:
 
@@ -1582,8 +1589,11 @@ Follow-ups:
   already gives about 19% over WebP on photos. Revisit once Android and our
   native clients can display it.
 
-Editing a message changes its text only; its attachments are kept, and a
-message with files may be edited to empty text. A forward embeds a snapshot of
+A text edit keeps a message's attachments, and a message with files may be
+edited to empty text. Its author can also replace its photos and videos or
+change spoilers, but not add or remove files (see
+[Editing attachments after sending](#editing-attachments-after-sending)).
+A forward embeds a snapshot of
 its source message, including its attachments, whose URLs are signed with the
 forward; they refresh when the forward is reloaded, not through
 `POST /api/assets/urls`. Pinned messages and thread replies show their files.
@@ -1795,6 +1805,136 @@ merge: the macOS and iOS simulator builds compile and their core tests pass,
 Linux desktop builds, and Android tests, lint and the build pass; the UI steps
 fail only the tests `main`'s nightly fails the same way (one iOS invite test,
 eight macOS layout tests, and Android's reaction picker and What's New links).
+
+### Editing attachments after sending
+
+**API only so far:** the server accepts these edits, but no client offers them
+yet; the web, Android, Apple and Rust desktop editors follow. The author of a
+message can replace any of its photos and videos with an edited render, put
+back the file first sent in that slot, and turn any file's spoiler on or off.
+Files can't be added, removed or reordered after sending.
+
+**Request.** The text edit `PUT /api/chat/channels/{channel}/messages/{message}`
+takes an optional `attachments` list: the message's files in their current
+order, one entry each.
+
+```json
+{
+  "text": "Trip",
+  "expectedRevision": 3,
+  "attachments": [
+    { "id": "N1", "replaces": "B", "spoiler": true,
+      "edit": { "rotation": 90, "crop": { "x": 0.1, "y": 0, "width": 0.8, "height": 1 }, "marks": [] } },
+    { "id": "D", "spoiler": true },
+    { "id": "V", "replaces": "N0" }
+  ]
+}
+```
+
+- `{id}` keeps the current file. `spoiler` defaults to false, so every entry
+  states it.
+- `{id, replaces, edit}` replaces the photo or video `replaces` with a fresh
+  upload: the author's, completed in this channel within 24 hours and not
+  sent, of the same kind. `edit` says how it was rendered from the slot's
+  first-sent file, in the pre-send editor's model. Its rules and limits (quarter
+  turns, a crop inside the picture, at most 500 marks and 100,000 point
+  values, one line of 1–200 Unicode scalar values, `#RRGGBB`, 128 KiB of
+  JSON, fractions rounded to a millionth when saving) are the `wire` section
+  of `shared/messages/edit-cases.json`. The API tests every case; each client's
+  editor is to test them too.
+- `{id, replaces}` where `id` is the slot's first-sent file undoes every edit
+  of that file: no upload and no `edit`.
+- Without `attachments` the request behaves exactly as before; clients send it
+  only when files change (an older API refuses the field with 422). A spoiler
+  toggle alone is an edit, with a revision, the edited marker and a version.
+  Text may be empty while files remain.
+- The response and the `message.edited` event carry the new list, and
+  `attachmentsSeq` becomes the edit's `editSeq` whenever the files change, so
+  released clients, which keep a message's files unless `attachmentsSeq` is
+  newer, take them. Edits never notify.
+- Resending the same body after a lost response returns the stored message;
+  this is checked before any upload is linked. A different list at an old
+  revision is 409, like a stale text draft.
+
+| Refusal | Response |
+| --- | --- |
+| Unknown field in an entry (`remove`, …) | 422 |
+| More than 10 entries, or an ID or `replaces` twice | 400 `edit up to 10 different files` |
+| Not the current files in order (length, order, `replaces` not the slot's file) | 400 `list the message's files in their current order` |
+| `edit` on a kept file / missing on an upload / on a restored file | 400 `only a replacement file has an edit` / `a replacement file needs its edit` / `a restored file has no edit` |
+| Replacing audio or another file | 400 `only photos and videos can be replaced` |
+| A video for a photo, or the reverse | 400 `a replacement must be the same kind of file` |
+| A description breaking the rules / too many marks, points or bytes | 400 `invalid attachment edit` / 400 `attachment edit is too large`, code `edit_too_large` |
+| The upload is missing, cancelled, someone else's, another channel's, older than 24 hours or already sent | 409 `Failed to upload.`, code `attachment_unavailable`: upload again once, then retry |
+| The replaced or first-sent file was deleted | 409 `this file can no longer be edited` |
+| Not the author / no access, or a forward | 403 / 404 |
+
+**Who sees what.** Replaced files stay stored and linked to their message,
+marked `retired_at` (migration `202610180001_attachment_edits.sql`, additive);
+a render records its first-sent file (`edit_source_id`) and the description
+(`edit`).
+
+- Everyone sees the current files wherever the message appears: history,
+  threads, pins, single messages, forwards and notifications (a notification
+  queued before the edit shows the new file).
+- Only the author can still open replaced files: `POST /api/assets/urls`
+  refreshes them only for their owner, and `GET …/versions` signs every
+  version's files for the author, replaced ones included.
+- Others get versions without URLs, in which files no longer on the message
+  are placeholders: `{id, kind, contentType, name: "Replaced file", size: 0,
+  unavailable: true}`. Both views mark a revision whose `(id, spoiler)` list
+  differs from the one before with `filesChanged: true`.
+- Stored events (`message.created`, `message.edited`, pins and forward
+  snapshots) still name earlier files, so both gateway replay paths, the outbox
+  publisher and notification content turn replaced files into the same
+  placeholder for every viewer; the later `message.edited` brings the current
+  files.
+- The edit description appears only in the author's `attachment-sources`,
+  never in the message, its versions or its events.
+- Not taken back: URLs already issued work until they expire (24–48 hours; the
+  CDN checks only the signature), as do downloaded copies and notifications
+  already delivered.
+- Replaced files are never purged, still count toward the author's
+  `ASSET_QUOTA_BYTES`, and cancelling one returns 409.
+
+**Re-editing** starts from the first-sent file, so edits never compound.
+`GET /api/chat/channels/{channel}/messages/{message}/attachment-sources`
+(author only: 403 for others, 404 without access or for a forward) lists each
+current photo and video with the first-sent file to edit from, freshly signed,
+and the current file's edit (`null` when unedited):
+
+```json
+{
+  "messageId": "m",
+  "revision": 3,
+  "sources": [
+    { "attachmentId": "N1",
+      "source": { "id": "B", "kind": "image", "contentType": "image/avif", "name": "IMG_1.avif",
+                  "size": 812345, "width": 4032, "height": 3024, "preview": {},
+                  "url": "https://…/assets/B?…", "previewUrl": "https://…/preview/B?…" },
+      "edit": { "rotation": 90, "crop": { "x": 0.1, "y": 0, "width": 0.8, "height": 1 }, "marks": [] } },
+    { "attachmentId": "V", "source": { "id": "V", "kind": "video", "…": "…" }, "edit": null }
+  ]
+}
+```
+
+The first-sent file is the compressed upload, with any edit made before
+sending already in it, and it keeps its EXIF orientation, so editors decode it
+upright as they do before sending.
+
+**Rollout.** Ship rolls the API first (the migration runs at startup), then
+the gateway; until the gateway updates, its replays are not concealed, but no
+released client can make such an edit yet.
+
+Validation (October 18, 2026): fmt, Clippy and the 179 default workspace tests
+pass, including the planner and every shared `wire` case. With a disposable
+Postgres 16, cluster-mode Redis 7 and ExifTool, all ignored database tests
+pass, including new ones for replacing, restoring and chained edits, retries,
+409s and each refusal, URL refresh for the author and others, versions
+(placeholders, signing, `filesChanged`), `attachment-sources`, purge, quota and
+cancel, both gateway replays, the publisher, forward projection and
+notifications. The migration was also applied over existing rows. No client,
+live R2/CDN or multi-account check yet.
 
 ### Inline GIF playback
 
@@ -2015,8 +2155,9 @@ Staged files stay with their conversation across switches for the session
 No new lifetime-renewal endpoint or schema is introduced. Replacement uploads
 reserve quota normally; cancelled bytes remain charged until purge succeeds.
 
-History marks deleted attachments `unavailable` without URLs. No user-facing
-sent-message or sent-file delete exists yet; account deletion should set `deleted_at` on
+History marks deleted attachments `unavailable` without URLs. Files replaced by
+an edit keep their `message_id`, so the loop never deletes or purges them and
+cancelling one returns 409. No user-facing sent-message or sent-file delete exists yet; account deletion should set `deleted_at` on
 the owner's assets when that flow lands.
 
 #### Upload retry feedback validation (October 17, 2026)
@@ -3410,14 +3551,17 @@ automatic version purge or restore-to-version action.
 
 - `PUT /api/chat/channels/{channel}/messages/{message}` accepts the sending
   capability and `{text,expectedRevision}` and returns the current message.
+  An optional `attachments` list also changes its photos, videos and spoilers
+  ([Editing attachments after sending](#editing-attachments-after-sending)).
   Legacy messages implicitly have `revision:1`. Actual changes add `revision`,
   `editedAt` and decimal-string `editSeq`. Same-text saves are no-ops; an exact
   retry of the immediately preceding successful edit does not create another
   version/event. A stale draft returns 409. The limit is 30 actual edits per
   author/channel/minute; retries/no-ops do not consume it.
 - `GET` at that URL reloads the current snapshot. `GET .../versions?before={revision}`
-  returns `{messageId,versions:[{revision,content,createdAt}],hasMore}`, newest
-  first, 50 per page with exclusive `before`. Reads recheck current membership
+  returns `{messageId,versions:[{revision,content,createdAt,filesChanged?}],hasMore}`, newest
+  first, 50 per page with exclusive `before`. Only the author sees files an
+  edit replaced, with URLs; others get placeholders and no URLs. Reads recheck current membership
   and private grants; outsiders have no version-history access.
 - Migration `202610060003_message_edits.sql` follows threads. It adds append-only
   `message_versions`; the original published content is captured lazily on first
