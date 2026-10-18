@@ -52,6 +52,11 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Account spaces, private-channel grants, pagination, typing,
   paginated member presence, owner space/channel/member management, and confirmed
   non-owner leave-space with immediate call teardown and conversation clearing.
+- Resizable channel and Members sidebars in desktop layouts. Drag the divider
+  beside either pane, or click it and use Left/Right (10px), Home or End.
+  Double-click resets the width (280px channels, 220px Members). Widths save
+  locally; Members ranges from 220–440px, constrained to keep room for chat.
+  Narrow-window mobile-style drawers keep their existing sizing.
 - Invite links: owners create links in Manage space (expiry, use limit and an
   optional public landing channel; the new link is copied at once), then copy or
   revoke live ones. Anyone signed in can paste a link or bare code into **Join with

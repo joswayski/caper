@@ -1181,6 +1181,7 @@ struct CaperApp {
     /// The call's full list (design H's 1b), open beside the call card.
     call_list: Option<CallList>,
     sidebar_width: f32,
+    members_width: f32,
     /// A dialog opened from the User Settings menu is showing.
     settings_menu_dialog: bool,
     /// One pass after such a dialog closes from the keyboard, focus returns
@@ -1468,6 +1469,7 @@ impl CaperApp {
             call_order: Vec::new(),
             call_list: None,
             sidebar_width: 280.0,
+            members_width: 220.0,
             settings_menu_dialog: false,
             focus_user_settings: false,
             navigation_open: false,
@@ -8311,6 +8313,13 @@ impl CaperApp {
         {
             self.sidebar_width = width;
         }
+        if let Some(width) = storage
+            .get_string("members-width-v1")
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|width| (220.0..=440.0).contains(width))
+        {
+            self.members_width = width;
+        }
     }
 }
 
@@ -8363,6 +8372,7 @@ impl eframe::App for CaperApp {
         }
         if self.persist_preferences {
             storage.set_string("sidebar-width-v1", self.sidebar_width.to_string());
+            storage.set_string("members-width-v1", self.members_width.to_string());
             storage.set_string("sound-effects-v1", self.sound_effects.to_string());
             self.whats_new.save(storage);
         }
@@ -9744,12 +9754,17 @@ impl CaperApp {
                     // Reserve 320px for chat; otherwise show members as a right-side
                     // overlay below the header, never as a second row below chat.
                     let wide_members = stage_rect.width() >= 540.0;
+                    let members_max = (stage_rect.width()
+                        - if wide_members { 320.0 } else { 64.0 })
+                    .clamp(220.0, 440.0);
+                    // Window resizing clamps the visible width, not the saved preference.
+                    let members_width = self.members_width.min(members_max);
                     let members_visible = self.selected_direct.is_none()
                         && self.members_visible
                         && !self.no_accessible_channels();
                     let (conversation_rect, members_rect) = if members_visible && wide_members {
                         let members = egui::Rect::from_min_max(
-                            egui::pos2(stage_rect.right() - 220.0, stage_rect.top()),
+                            egui::pos2(stage_rect.right() - members_width, stage_rect.top()),
                             stage_rect.max,
                         );
                         (
@@ -9761,7 +9776,7 @@ impl CaperApp {
                         )
                     } else if members_visible {
                         let members = egui::Rect::from_min_max(
-                            egui::pos2(stage_rect.right() - 220.0, stage_rect.top() + 53.0),
+                            egui::pos2(stage_rect.right() - members_width, stage_rect.top() + 53.0),
                             stage_rect.max,
                         );
                         (stage_rect, Some(members))
@@ -9838,6 +9853,63 @@ impl CaperApp {
                         ui.scope_builder(egui::UiBuilder::new().max_rect(members_rect), |ui| {
                             self.member_presence(ui, false)
                         });
+                        let separator = ui
+                            .interact(
+                                egui::Rect::from_min_max(
+                                    members_rect.min - egui::vec2(3.0, 0.0),
+                                    egui::pos2(members_rect.left() + 4.0, members_rect.bottom()),
+                                ),
+                                egui::Id::new("members-resize"),
+                                egui::Sense::click_and_drag(),
+                            )
+                            .on_hover_text(
+                                "Drag to resize. Arrow keys to adjust. Double-click to reset.",
+                            );
+                        separator.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Slider,
+                                true,
+                                "Member list width",
+                            )
+                        });
+                        if separator.dragged() {
+                            self.members_width = (members_width - separator.drag_delta().x)
+                                .clamp(220.0, members_max);
+                        }
+                        if separator.double_clicked() {
+                            self.members_width = 220.0;
+                        }
+                        if separator.clicked() {
+                            separator.request_focus();
+                        }
+                        if separator.hovered() || separator.dragged() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                        }
+                        if separator.has_focus() {
+                            ui.memory_mut(|memory| {
+                                memory.set_focus_lock_filter(
+                                    separator.id,
+                                    egui::EventFilter {
+                                        horizontal_arrows: true,
+                                        ..Default::default()
+                                    },
+                                )
+                            });
+                            ui.input_mut(|input| {
+                                if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) {
+                                    self.members_width = (members_width + 10.0).min(members_max);
+                                }
+                                if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
+                                    self.members_width = (members_width - 10.0).max(220.0);
+                                }
+                                if input.consume_key(egui::Modifiers::NONE, egui::Key::Home) {
+                                    self.members_width = 220.0;
+                                }
+                                if input.consume_key(egui::Modifiers::NONE, egui::Key::End) {
+                                    self.members_width = members_max;
+                                }
+                            });
+                        }
                     }
                 }
             });
@@ -41021,6 +41093,130 @@ mod tests {
     }
 
     #[test]
+    fn members_resize_tracks_pointer_keyboard_and_window_without_losing_preference() {
+        let (context, mut app) = fixture("parity-desktop");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let start = labelled_center(&output, "Member list width").unwrap();
+        let output = render(&mut app, &context, vec![egui::Event::PointerMoved(start)]);
+        assert_eq!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::ResizeHorizontal
+        );
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        // Multiple frames catch both the wrong drag direction and accumulated deltas.
+        for (delta, width) in [
+            (-67.0, 287.0),
+            (-113.0, 333.0),
+            (-500.0, 440.0),
+            (400.0, 220.0),
+        ] {
+            render(
+                &mut app,
+                &context,
+                vec![egui::Event::PointerMoved(start + egui::vec2(delta, 0.0))],
+            );
+            let output = render(&mut app, &context, vec![]);
+            // The heading is inset 16px; text_position adds 4px for hit testing.
+            assert_eq!(text_position(&output, "Members").x, 1440.0 - width + 20.0);
+        }
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: start + egui::vec2(400.0, 0.0),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let output = render(&mut app, &context, vec![]);
+        click(
+            &mut app,
+            &context,
+            labelled_center(&output, "Member list width").unwrap(),
+        );
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, vec![]);
+        for (key, width) in [
+            (egui::Key::ArrowLeft, 230.0),
+            (egui::Key::ArrowRight, 220.0),
+            (egui::Key::ArrowRight, 220.0),
+            (egui::Key::End, 440.0),
+            (egui::Key::ArrowLeft, 440.0),
+            (egui::Key::Home, 220.0),
+            (egui::Key::End, 440.0),
+        ] {
+            for pressed in [true, false] {
+                render(
+                    &mut app,
+                    &context,
+                    vec![egui::Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }],
+                );
+            }
+            let output = render(&mut app, &context, vec![]);
+            assert_eq!(
+                text_position(&output, "Members").x,
+                1440.0 - width + 20.0,
+                "{key:?}"
+            );
+        }
+        // At 940px, 340px of navigation + 320px of chat leaves 280px for members.
+        // At 840px the list overlays chat, but leaves a 64px strip uncovered.
+        for (window, width) in [
+            (940.0, 280.0),
+            (880.0, 220.0),
+            (840.0, 436.0),
+            (1440.0, 440.0),
+        ] {
+            let mut frame = || {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(window, 900.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |context| app.page(context),
+                )
+            };
+            frame();
+            let output = frame();
+            assert_eq!(text_position(&output, "Members").x, window - width + 20.0);
+            assert_eq!(
+                app.members_width, 440.0,
+                "window resizing must retain the chosen width, even with the handle focused"
+            );
+        }
+        let output = render(&mut app, &context, vec![]);
+        let separator = labelled_center(&output, "Member list width").unwrap();
+        click(&mut app, &context, separator);
+        click(&mut app, &context, separator);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(
+            text_position(&output, "Members").x,
+            1240.0,
+            "double-click resets to 220px"
+        );
+    }
+
+    #[test]
     fn sidebar_keyboard_and_persistence_preserve_width_without_fixture_leaks() {
         #[derive(Default)]
         struct Storage(std::collections::BTreeMap<String, String>);
@@ -41082,12 +41278,15 @@ mod tests {
         );
         app.persist_preferences = true;
         app.sidebar_width = 337.0;
+        app.members_width = 313.0;
         app.sound_effects = false;
         eframe::App::save(&mut app, &mut storage);
         app.sidebar_width = 280.0;
+        app.members_width = 220.0;
         app.sound_effects = true;
         app.restore_preferences(&storage);
         assert_eq!(app.sidebar_width, 337.0);
+        assert_eq!(app.members_width, 313.0);
         assert!(!app.sound_effects);
         app.sound_effects = true;
         eframe::App::save(&mut app, &mut storage);
@@ -41096,9 +41295,12 @@ mod tests {
         assert!(app.sound_effects);
         for invalid in ["NaN", "inf", "219", "441"] {
             app.sidebar_width = 280.0;
+            app.members_width = 220.0;
             storage.0.insert("sidebar-width-v1".into(), invalid.into());
+            storage.0.insert("members-width-v1".into(), invalid.into());
             app.restore_preferences(&storage);
             assert_eq!(app.sidebar_width, 280.0);
+            assert_eq!(app.members_width, 220.0);
         }
     }
 
