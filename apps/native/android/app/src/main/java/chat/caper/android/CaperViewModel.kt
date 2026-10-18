@@ -793,7 +793,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Archives (or, from the archive, restores) [report]'s whole thread for the team. The
-     * thread leaves the list at once; the list then reloads, keeping any error on show.
+     * thread leaves the list at once; only a failure reloads the list, keeping the error on show.
      */
     fun setFeedbackArchived(report: FeedbackReport, archived: Boolean) {
         val token = accountToken ?: return
@@ -807,7 +807,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Throwable) { failure }
             if (account != accountGeneration) return@launch
-            loadFeedback(first = true, notice = error?.let { message(it) })
+            if (error != null) loadFeedback(first = true, notice = message(error))
         }
     }
 

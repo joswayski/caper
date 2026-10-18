@@ -3608,10 +3608,13 @@ impl CaperApp {
                     request,
                     result,
                 } if epoch == self.account_epoch => self.feedback.finish(request, result),
-                // Success or failure, the list reloads; a failure stays shown.
-                Event::FeedbackArchived { epoch, result } if epoch == self.account_epoch => {
+                // Successful writes leave the remaining rows and older pages in place.
+                Event::FeedbackArchived {
+                    epoch,
+                    result: Err(error),
+                } if epoch == self.account_epoch => {
                     self.load_feedback(false);
-                    self.feedback.action_error = result.err();
+                    self.feedback.action_error = Some(error);
                 }
                 Event::NotificationActivity { epoch } if epoch == self.account_epoch => {
                     if self.unread_refresh_due.is_none() {
@@ -4699,7 +4702,7 @@ impl CaperApp {
     }
 
     /// Archives (or, in the archived view, restores) a report's whole thread
-    /// for the team. It leaves the list at once; the list then reloads.
+    /// for the team. It leaves the list at once; only a failure reloads it.
     fn archive_report(&mut self, report: &feedback::Report) {
         let Some(token) = self.token.clone().filter(|_| self.feedback_team()) else {
             return;
@@ -38237,6 +38240,17 @@ mod tests {
         let report = app.feedback.reports[1].clone();
         app.archive_report(&report);
         assert_eq!(app.feedback.reports.len(), 1, "it leaves the list at once");
+        let cursor = app.feedback.cursor.clone();
+        events
+            .send(crate::worker::Event::FeedbackArchived {
+                epoch: app.account_epoch,
+                result: Ok(()),
+            })
+            .unwrap();
+        app.receive();
+        assert!(!app.feedback.loading, "success must not flash a refresh");
+        assert_eq!(app.feedback.reports.len(), 1);
+        assert_eq!(app.feedback.cursor, cursor);
         events
             .send(crate::worker::Event::FeedbackArchived {
                 epoch: app.account_epoch,

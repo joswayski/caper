@@ -2730,6 +2730,7 @@ export default function Spaces({
     // Optimistic: the thread leaves this list at once; a failure reloads it.
     feedbackRevision.current++;
     setFeedbackLoading(false);
+    setFeedbackError(undefined);
     setFeedback(
       (current) =>
         current && {
@@ -2740,11 +2741,12 @@ export default function Spaces({
         },
     );
     void archiveFeedback(report.channel.id, report.threadRootId, archived)
-      .catch((reason) => setFeedbackError(errorMessage(reason)))
-      .finally(() => {
-        void refreshFeedback();
-        void refreshUnread();
-      });
+      .catch(async (reason) => {
+        await refreshFeedback();
+        setFeedbackError(errorMessage(reason));
+      })
+      // Keep the remaining rows and older pages in place after a successful write.
+      .finally(() => void refreshUnread());
   };
   const feedbackNavigation = feedbackTeam && (
     <FeedbackInbox

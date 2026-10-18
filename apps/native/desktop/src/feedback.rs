@@ -246,6 +246,10 @@ impl Inbox {
     /// Takes a thread out of the list at once, ahead of the server's answer.
     /// Returns whether anything was listed for it.
     pub fn remove_thread(&mut self, channel: &str, thread_root: &str) -> bool {
+        // A page already in flight may still contain the thread being removed.
+        self.request += 1;
+        self.loading = false;
+        self.loading_more = false;
         let before = self.reports.len();
         self.reports
             .retain(|report| report.channel.id != channel || report.thread_root_id != thread_root);
@@ -503,8 +507,12 @@ mod tests {
         two.reports.push(two.reports[0].clone());
         two.reports[2].id = "msg000000004".into();
         archived.finish(request, Ok(two));
+        let (stale, _) = archived.start(false).unwrap();
         assert!(archived.remove_thread("chan00000001", "msg000000001"));
+        archived.finish(stale, Ok(page()));
         assert_eq!(archived.reports.len(), 1, "both reports in that thread");
+        assert!(!archived.loading && !archived.loading_more);
+        assert_eq!(archived.cursor.as_deref(), Some("123"));
         assert!(!archived.remove_thread("chan00000001", "msg000000001"));
         archived.action_error = Some("offline".into());
         archived.show_archived(true);
