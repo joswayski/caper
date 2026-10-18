@@ -11,7 +11,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The installer for a copy that cannot update in place, e.g. the Linux .deb.
 pub const DOWNLOAD_URL: &str = if cfg!(windows) {
@@ -104,14 +104,12 @@ struct State {
     status: Status,
     reviewing: bool,
     show_after_check: bool,
-    last_checked: Option<Instant>,
 }
 
 impl State {
     fn finish(&mut self, result: Result<Option<Available>, String>) {
         match result {
             Ok(found) => {
-                self.last_checked = Some(Instant::now());
                 self.status = if found.is_some() {
                     Status::Available
                 } else {
@@ -198,7 +196,6 @@ impl Updates {
                 status: Status::Available,
                 reviewing: true,
                 show_after_check: false,
-                last_checked: Some(Instant::now()),
             })),
             requests: None,
             error: None,
@@ -208,9 +205,6 @@ impl Updates {
     /// Static check feedback for Settings fixtures; never runs the updater.
     pub fn preview_status(status: Status) -> Self {
         let updates = Self::with_install(&egui::Context::default(), None);
-        if matches!(status, Status::UpToDate | Status::Available) {
-            updates.state.lock().unwrap().last_checked = Some(Instant::now());
-        }
         updates.state.lock().unwrap().status = status;
         updates
     }
@@ -239,22 +233,6 @@ impl Updates {
 
     pub fn status(&self) -> Status {
         self.state.lock().unwrap().status.clone()
-    }
-
-    pub fn last_checked(&self) -> String {
-        let Some(checked) = self.state.lock().unwrap().last_checked else {
-            return "Last checked: Never".into();
-        };
-        let seconds = checked.elapsed().as_secs();
-        let age = match seconds {
-            0..10 => "a few seconds ago".into(),
-            10..60 => format!("{seconds} seconds ago"),
-            60..120 => "1 minute ago".into(),
-            120..3600 => format!("{} minutes ago", seconds / 60),
-            3600..7200 => "1 hour ago".into(),
-            _ => format!("{} hours ago", seconds / 3600),
-        };
-        format!("Last checked: {age}")
     }
 
     /// Wakes the same worker used by automatic checks, without overlapping them.
@@ -524,8 +502,9 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn deferred_checks_keep_known_updates_and_the_last_successful_check_time() {
+    fn deferred_checks_keep_known_updates() {
         use std::os::unix::fs::PermissionsExt;
+        use std::time::Instant;
         let folder = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         std::fs::create_dir(&folder).unwrap();
         let updater = folder.join("updater");
@@ -543,11 +522,9 @@ mod tests {
                 folder: folder.clone(),
             }),
         );
-        assert_eq!(updates.last_checked(), "Last checked: Never");
         {
             let mut state = updates.state.lock().unwrap();
             state.finish(Ok(Some(release("0.1.19"))));
-            state.last_checked = Some(Instant::now() - Duration::from_secs(125));
         }
         updates.check_now();
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -561,11 +538,10 @@ mod tests {
             updates.available().is_none(),
             "throttling must not open a review"
         );
-        assert_eq!(updates.last_checked(), "Last checked: 2 minutes ago");
         updates.state.lock().unwrap().finish(Err("Offline".into()));
-        assert_eq!(updates.last_checked(), "Last checked: 2 minutes ago");
+        assert_eq!(updates.known_available(), Some(release("0.1.19")));
         updates.state.lock().unwrap().finish(Ok(None));
-        assert_eq!(updates.last_checked(), "Last checked: a few seconds ago");
+        assert!(updates.known_available().is_none());
         drop(updates);
         std::fs::remove_dir_all(folder).unwrap();
     }

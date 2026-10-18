@@ -21018,6 +21018,9 @@ impl CaperApp {
                     .show(ui, |ui| {
                         ui.set_width(width.min(available.x));
                         ui.set_height(dialog_height.min(available.y));
+                        // A frame bounds layout, not painting. Keep scrolling
+                        // content inside its border; popup areas retain their own clip.
+                        ui.shrink_clip_rect(ui.max_rect());
                         let dialog_top = ui.min_rect().top();
                         // The 7px bottom inset plus the item spacing and the
                         // separator's half leave the divider as far below the
@@ -21082,9 +21085,14 @@ impl CaperApp {
                             Dialog::ManageChannel(id) if self.channel_dirty(id) => Some(id.clone()),
                             _ => None,
                         };
+                        // Measure from the actual header rather than assuming its height.
+                        // Leave the rounded bottom corners clear, or reserve the sticky bar.
+                        let bottom_inset = if save_bar.is_some() || whats_new { 74.0 } else { 8.0 };
+                        let scroll_height = dialog_top + dialog_height.min(available.y)
+                            - ui.cursor().top() - bottom_inset;
                         egui::ScrollArea::vertical()
                             .id_salt(("modal-content", title))
-                            .max_height((dialog_height.min(available.y) - if save_bar.is_some() { 155.0 } else if whats_new { 149.0 } else { 81.0 }).max(1.0))
+                            .max_height(scroll_height.max(1.0))
                             .show(ui, |ui| {
                                 egui::Frame::new()
                                     .inner_margin(egui::Margin::symmetric(22, 20))
@@ -21519,12 +21527,6 @@ impl CaperApp {
         };
         ui.add(egui::Label::new(RichText::new(&message).color(color)).truncate())
             .on_hover_text(message);
-        ui.label(
-            RichText::new(self.updates.last_checked())
-                .size(12.0)
-                .color(MUTED),
-        );
-        ui.ctx().request_repaint_after(Duration::from_secs(10));
     }
 
     /// "Notify me about", saved as soon as it changes and reverted with an
@@ -31727,6 +31729,62 @@ mod tests {
     }
 
     #[test]
+    fn modal_scroll_content_stays_inside_the_border() {
+        for size in [egui::vec2(960.0, 720.0), egui::vec2(640.0, 400.0)] {
+            for name in ["parity-settings", "parity-admin", "parity-channel"] {
+                let context = egui::Context::default();
+                let mut app = CaperApp::new(
+                    &context,
+                    crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                    Some(name),
+                );
+                let mut frame = |events| {
+                    context.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                            events,
+                            ..Default::default()
+                        },
+                        |context| app.dialogs(context, true),
+                    )
+                };
+                for delta in [0.0, -180.0, -2000.0] {
+                    frame(vec![
+                        egui::Event::PointerMoved((size / 2.0).to_pos2()),
+                        egui::Event::MouseWheel {
+                            unit: egui::MouseWheelUnit::Point,
+                            delta: egui::vec2(0.0, delta),
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]);
+                    for _ in 0..60 {
+                        frame(vec![]);
+                    }
+                    let output = frame(vec![]);
+                    let bounds = context
+                        .memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+                    let mut visible = 0;
+                    for shape in &output.shapes {
+                        if let egui::Shape::Text(text) = &shape.shape {
+                            let painted = egui::Rect::from_min_size(text.pos, text.galley.size())
+                                .intersect(shape.clip_rect);
+                            if painted.is_positive() {
+                                visible += 1;
+                                assert!(
+                                    bounds.contains_rect(painted),
+                                    "{name} {size:?} scroll {delta}: {:?} paints {painted:?} outside {bounds:?}",
+                                    text.galley.job.text
+                                );
+                            }
+                        }
+                    }
+                    assert!(visible > 0, "the dialog must still render content");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn modal_shells_do_not_recenter_for_errors_or_pending_content() {
         for dialog in [
             Dialog::Profile,
@@ -37448,7 +37506,7 @@ mod tests {
                 }
                 positions = Some(current);
                 assert!(
-                    texts(&output)
+                    !texts(&output)
                         .iter()
                         .any(|text| text.starts_with("Last checked:"))
                 );
