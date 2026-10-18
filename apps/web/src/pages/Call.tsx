@@ -1375,6 +1375,7 @@ export default function Call({
                   label={`${participant.name} volume`}
                   value={participantVolumes[participant.id] ?? 100}
                   max={200}
+                  defaultValue={100}
                   onChange={(value) => setParticipantVolumes((current) => ({ ...current, [participant.id]: value }))}
                 />
                 <label className="participant-mute">
@@ -2046,6 +2047,7 @@ export default function Call({
                       label="Input volume"
                       value={state.inputVolume}
                       max={200}
+                      defaultValue={100}
                       onChange={(value) => clientRef.current?.setInputVolume(value)}
                     />
                   </div>
@@ -2091,7 +2093,13 @@ export default function Call({
                     <span>
                       Output volume <output>{outputVolume}%</output>
                     </span>
-                    <Slider label="Output volume" value={outputVolume} max={200} onChange={setOutputVolume} />
+                    <Slider
+                      label="Output volume"
+                      value={outputVolume}
+                      max={200}
+                      defaultValue={100}
+                      onChange={setOutputVolume}
+                    />
                   </div>
                 </AudioMenu>
               </div>
@@ -2440,6 +2448,7 @@ export default function Call({
                       label="Test microphone volume"
                       value={state.inputVolume}
                       max={200}
+                      defaultValue={100}
                       onChange={(value) => clientRef.current?.setInputVolume(value)}
                     />
                   </div>
@@ -2466,7 +2475,13 @@ export default function Call({
                     <span>
                       Speaker volume <output>{outputVolume}%</output>
                     </span>
-                    <Slider label="Test speaker volume" value={outputVolume} max={200} onChange={setOutputVolume} />
+                    <Slider
+                      label="Test speaker volume"
+                      value={outputVolume}
+                      max={200}
+                      defaultValue={100}
+                      onChange={setOutputVolume}
+                    />
                   </div>
                   <SpeakerTest output={output} volume={outputVolume} />
                 </div>

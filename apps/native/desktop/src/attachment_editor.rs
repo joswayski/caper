@@ -1238,10 +1238,12 @@ impl Editor {
         let response = ui
             .scope_builder(egui::UiBuilder::new().max_rect(slider), |ui| {
                 ui.spacing_mut().slider_width = slider.width();
-                ui.add(
-                    egui::Slider::new(&mut value, min..=max)
-                        .show_value(false)
-                        .step_by(1.0),
+                crate::default_slider::default_slider(
+                    ui,
+                    &mut value,
+                    min..=max,
+                    if draw { 6.0 } else { 32.0 },
+                    false,
                 )
             })
             .inner;

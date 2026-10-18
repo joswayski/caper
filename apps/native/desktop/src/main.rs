@@ -11,6 +11,7 @@ mod blocking;
 mod compress;
 mod credentials;
 mod daily_icon;
+mod default_slider;
 mod edits;
 mod effects;
 mod emoji;
@@ -49,6 +50,7 @@ mod whats_new;
 mod worker;
 
 use chrono::{DateTime, Local, TimeZone};
+use default_slider::default_slider;
 use effects::{Effect, Effects};
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke};
 use gateway::GatewayEvent;
@@ -14020,13 +14022,11 @@ impl CaperApp {
         let mut gain = self.voice.preferences.input_percent;
         let mut strength = self.voice.preferences.processing_strength;
         let gain_label = ui.label(bold("Input volume").size(13.0));
-        let gain_changed = ui
-            .add(egui::Slider::new(&mut gain, 0..=200).suffix("%"))
+        let gain_changed = default_slider(ui, &mut gain, 0..=200, 100, true)
             .labelled_by(gain_label.id)
             .changed();
         let strength_label = ui.label(bold("Voice processing").size(13.0));
-        let strength_changed = ui
-            .add(egui::Slider::new(&mut strength, 0..=100).suffix("%"))
+        let strength_changed = default_slider(ui, &mut strength, 0..=100, 25, true)
             .labelled_by(strength_label.id)
             .changed();
         if gain_changed || strength_changed {
@@ -14054,13 +14054,9 @@ impl CaperApp {
         let changed = ui
             .scope(|ui| {
                 ui.spacing_mut().slider_width = ui.available_width();
-                ui.add(
-                    egui::Slider::new(&mut gain, 0..=200)
-                        .show_value(false)
-                        .trailing_fill(true),
-                )
-                .labelled_by(label.id)
-                .changed()
+                default_slider(ui, &mut gain, 0..=200, 100, false)
+                    .labelled_by(label.id)
+                    .changed()
             })
             .inner;
         if changed {
@@ -14261,13 +14257,9 @@ impl CaperApp {
                 let changed = ui
                     .add_enabled_ui(recording.is_none(), |ui| {
                         ui.spacing_mut().slider_width = ui.available_width();
-                        ui.add(
-                            egui::Slider::new(&mut strength, 0..=100)
-                                .show_value(false)
-                                .trailing_fill(true),
-                        )
-                        .labelled_by(label.id)
-                        .changed()
+                        default_slider(ui, &mut strength, 0..=100, 25, false)
+                            .labelled_by(label.id)
+                            .changed()
                     })
                     .inner;
                 if changed {
@@ -27153,13 +27145,9 @@ fn volume_slider(ui: &mut egui::Ui, name: &str, value: &mut u16) -> bool {
     ui.add_space(5.0);
     ui.scope(|ui| {
         ui.spacing_mut().slider_width = ui.available_width();
-        ui.add(
-            egui::Slider::new(value, 0..=200)
-                .show_value(false)
-                .trailing_fill(true),
-        )
-        .labelled_by(label.id)
-        .changed()
+        default_slider(ui, value, 0..=200, 100, false)
+            .labelled_by(label.id)
+            .changed()
     })
     .inner
 }

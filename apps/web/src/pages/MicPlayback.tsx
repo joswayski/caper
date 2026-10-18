@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Slider from "../components/Slider";
+import { DEFAULT_VOICE_PROCESSING_STRENGTH } from "../media/voice-processing";
 import {
   createVoiceComparison,
   MAX_RECORDING_SECONDS,
@@ -369,6 +370,7 @@ export default function MicPlayback({
         <Slider
           label="Voice processing"
           value={processingStrength}
+          defaultValue={DEFAULT_VOICE_PROCESSING_STRENGTH}
           disabled={recording}
           onChange={onProcessingStrengthChange}
         />

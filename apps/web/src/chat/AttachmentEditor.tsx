@@ -882,6 +882,7 @@ export default function AttachmentEditor({
                         value={tool === "draw" ? strokePoints : textPoints}
                         min={tool === "draw" ? STROKE_SIZES.min : TEXT_SIZES.min}
                         max={tool === "draw" ? STROKE_SIZES.max : TEXT_SIZES.max}
+                        defaultValue={tool === "draw" ? STROKE_SIZES.initial : TEXT_SIZES.initial}
                         onChange={tool === "draw" ? setStrokePoints : chooseTextSize}
                       />
                     </div>

@@ -492,12 +492,13 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                             else Text("Aa", color = Color(AttachmentEdits.argb(color)), fontFamily = EditFont, fontWeight = FontWeight.Bold,
                                 fontSize = with(density) { min(points, 36f).dp.toSp() }, maxLines = 1)
                         }
-                        Slider(
+                        DefaultSlider(
                             points,
                             { value -> if (draw) strokePoints = value else { textPoints = value; field = field?.copy(points = value) } },
                             Modifier.weight(1f).semantics { contentDescription = if (draw) "Line size" else "Text size" },
                             enabled = ready,
                             valueRange = if (draw) AttachmentEdits.STROKE_MIN..AttachmentEdits.STROKE_MAX else AttachmentEdits.TEXT_MIN..AttachmentEdits.TEXT_MAX,
+                            defaultValue = if (draw) 6f else 32f,
                         )
                     }
                 }
