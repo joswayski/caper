@@ -172,6 +172,7 @@ private struct UpdateButtonSweep: View, Animatable {
                             HStack(spacing: 0) {
                                 if let url = update.commitURL {
                                     Link("Version \(update.version)", destination: url)
+                                        .buttonStyle(ReleaseLinkStyle())
                                         .help("View this version on GitHub")
                                 } else {
                                     Text("Version \(update.version)")

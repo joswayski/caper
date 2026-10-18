@@ -18,7 +18,29 @@
 .whats-new-source {
   color: var(--text-muted);
   text-decoration: underline;
+  text-decoration-thickness: 1px;
   text-underline-offset: 3px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .whats-new-build a:hover,
+  .whats-new-source:hover {
+    color: var(--action-hover);
+    background: rgb(182 77 50 / 12%);
+    text-decoration-thickness: 2px;
+  }
+}
+.whats-new-build a:active,
+.whats-new-source:active {
+  color: var(--terracotta-bright);
+  background: rgb(182 77 50 / 24%);
+  text-decoration-thickness: 2px;
+}
+.whats-new-build a:focus-visible,
+.whats-new-source:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .whats-new-source {
   font-size: 0.8rem;

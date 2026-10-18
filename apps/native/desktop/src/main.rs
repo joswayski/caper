@@ -21392,13 +21392,7 @@ impl CaperApp {
                     .size(12.0)
                     .color(MUTED),
             );
-            ui.hyperlink_to(
-                RichText::new(&whats_new::REVISION[..7])
-                    .size(12.0)
-                    .color(MUTED)
-                    .underline(),
-                updates::commit_url(whats_new::REVISION).expect("compiled source revision"),
-            );
+            release_commit_link(ui, &whats_new::REVISION[..7], whats_new::REVISION);
         });
         ui.add_space(10.0);
         if self.whats_new.loading {
@@ -21436,10 +21430,7 @@ impl CaperApp {
                         || format!("Commit {}", &release.revision[..7]),
                         |version| format!("Version {version}"),
                     );
-                    ui.hyperlink_to(
-                        RichText::new(label).size(12.0).color(MUTED).underline(),
-                        updates::commit_url(&release.revision).expect("validated release revision"),
-                    );
+                    release_commit_link(ui, &label, &release.revision);
                     for highlight in release.highlights {
                         ui.add_space(10.0);
                         ui.label(bold(highlight.title).size(16.0));
@@ -27861,6 +27852,54 @@ fn toned_rounded(
     .inner
 }
 
+/// Muted release links keep real hyperlink behavior, with visible pointer and keyboard feedback.
+fn release_commit_link(ui: &mut egui::Ui, label: &str, revision: &str) -> egui::Response {
+    let background = ui.painter().add(egui::Shape::Noop);
+    let response = ui
+        .scope(|ui| {
+            // Text selection can override the hand cursor after the link renders.
+            ui.style_mut().interaction.selectable_labels = false;
+            ui.visuals_mut().hyperlink_color = MUTED;
+            ui.hyperlink_to(
+                RichText::new(label).size(12.0).color(MUTED).underline(),
+                updates::commit_url(revision).expect("validated release revision"),
+            )
+        })
+        .inner;
+    let pressed = response.is_pointer_button_down_on();
+    if response.hovered() || pressed {
+        ui.painter().set(
+            background,
+            egui::Shape::rect_filled(
+                response.rect.expand(2.0),
+                2.0,
+                TERRACOTTA.gamma_multiply(if pressed { 0.24 } else { 0.12 }),
+            ),
+        );
+        ui.painter().hline(
+            response.rect.x_range(),
+            response.rect.bottom(),
+            Stroke::new(
+                2.0,
+                if pressed {
+                    TERRACOTTA_BRIGHT
+                } else {
+                    ACTION_HOVER
+                },
+            ),
+        );
+    }
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            response.rect.expand(3.0),
+            2.0,
+            Stroke::new(2.0, TERRACOTTA),
+            egui::StrokeKind::Outside,
+        );
+    }
+    response
+}
+
 /// Web's `.secondary` dialog button.
 fn secondary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> egui::Response {
     ui.spacing_mut().button_padding.x = 12.0;
@@ -30684,6 +30723,11 @@ mod tests {
                             ],
                         );
                         if !pressed {
+                            assert_eq!(
+                                output.platform_output.cursor_icon,
+                                egui::CursorIcon::PointingHand,
+                                "{label} advertises its link action under the pointer"
+                            );
                             assert!(output.platform_output.commands.iter().any(|command| matches!(command,
                                 egui::OutputCommand::OpenUrl(url)
                                     if url.url == format!("https://github.com/joswayski/caper/commit/{revision}"))),

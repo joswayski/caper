@@ -147,6 +147,7 @@ struct WhatsNewDisplay: Identifiable {
                            let url = URL(string: "https://github.com/joswayski/caper/commit/\(notes.revision)") {
                             Text("·")
                             Link(String(notes.revision.prefix(7)), destination: url)
+                                .buttonStyle(ReleaseLinkStyle())
                                 .accessibilityLabel("View installed commit \(notes.revision.prefix(7)) on GitHub")
                         }
                     }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).tint(CaperTheme.muted)
@@ -168,7 +169,7 @@ struct WhatsNewDisplay: Identifiable {
                                 VStack(alignment: .leading, spacing: 12) {
                                     if let url = URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)") {
                                         Link(release.version.map { "Version \($0)" } ?? "Commit \(release.revision.prefix(7))", destination: url)
-                                            .font(CaperTheme.font(12)).tint(CaperTheme.muted)
+                                            .font(CaperTheme.font(12)).buttonStyle(ReleaseLinkStyle())
                                             .accessibilityHint("View this release on GitHub")
                                     }
                                     ForEach(Array(release.highlights.enumerated()), id: \.offset) { _, highlight in
@@ -214,5 +215,32 @@ struct WhatsNewDisplay: Identifiable {
         #else
         "macOS"
         #endif
+    }
+}
+
+/// Keep commit links quiet at rest without inheriting the sheet's filled button style.
+struct ReleaseLinkStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.underline()
+            .modifier(ReleaseLinkFeedback(pressed: configuration.isPressed))
+    }
+}
+
+private struct ReleaseLinkFeedback: ViewModifier {
+    let pressed: Bool
+    @Environment(\.isFocused) private var focused
+    @State private var hovered = false
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(pressed ? CaperTheme.terracottaBright : hovered ? CaperTheme.actionHover : CaperTheme.muted)
+            .background(CaperTheme.terracotta.opacity(pressed ? 0.24 : hovered ? 0.12 : 0))
+            .overlay {
+                RoundedRectangle(cornerRadius: 2)
+                    .stroke(CaperTheme.terracotta, lineWidth: 2).padding(-3)
+                    .opacity(focused ? 1 : 0).allowsHitTesting(false)
+            }
+            .focusEffectDisabled()
+            .onHover { hovered = $0 }
+            .modifier(ControlPointer())
     }
 }
