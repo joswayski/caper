@@ -529,6 +529,9 @@ private struct AttachmentSpoilerView: View {
 /// label is overlaid. No transition can briefly expose the original pixels.
 private struct SpoilerThumbnail: View {
     let image: CGImage?
+    /// False where the caller places `SpoilerLabel` itself: a staged tile
+    /// whose action bar spans its top edge centres it below the bar.
+    var labelled = true
 
     var body: some View {
         GeometryReader { geometry in
@@ -540,17 +543,24 @@ private struct SpoilerThumbnail: View {
                         .blur(radius: max(geometry.size.width, geometry.size.height) * 0.24, opaque: true)
                         .clipped()
                 }
-                Text("SPOILER")
-                    .font(CaperTheme.font(11, weight: .bold))
-                    .foregroundStyle(CaperTheme.text)
-                    .padding(.horizontal, 10).padding(.vertical, 6)
-                    .background(CaperTheme.blackout.opacity(0.8), in: RoundedRectangle(cornerRadius: 8))
+                if labelled { SpoilerLabel() }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
         }
         .transaction { $0.animation = nil }
         .accessibilityHidden(true)
+    }
+}
+
+/// The readable "SPOILER" pill over a blurred cover.
+private struct SpoilerLabel: View {
+    var body: some View {
+        Text("SPOILER")
+            .font(CaperTheme.font(11, weight: .bold))
+            .foregroundStyle(CaperTheme.text)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(CaperTheme.blackout.opacity(0.8), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -1463,10 +1473,9 @@ private struct MediaViewerPage: View {
     }
 }
 
-/// An image fitted to the viewer. Double-click or double-tap toggles fit and
-/// 2× at that point, a pinch (touch screen or trackpad) zooms, and a drag
-/// pans while zoomed. The preview shows while the original loads; an
-/// animated GIF, WebP or PNG plays (paused at first with Reduce Motion).
+/// An image fitted to the viewer that zooms (`MediaZoom`). The preview shows
+/// while the original loads; an animated GIF, WebP or PNG plays (paused at
+/// first with Reduce Motion).
 private struct MediaViewerImage: View {
     let item: ChatAttachment
     let chat: ChatModel?
@@ -1483,8 +1492,6 @@ private struct MediaViewerImage: View {
     @State private var started = Date()
     @State private var scale: CGFloat = 1
     @State private var offset: CGSize = .zero
-    @GestureState private var pinch: CGFloat = 1
-    @GestureState private var drag: CGSize = .zero
 
     private var animated: Bool { (original?.images.count ?? 0) > 1 }
     private var playing: Bool { active && (reduceMotion ? toggled : !toggled) }
@@ -1492,16 +1499,9 @@ private struct MediaViewerImage: View {
     var body: some View {
         GeometryReader { geometry in
             if let shown = original?.images.first ?? preview {
-                let fitted = MediaViewerPolicy.fittedSize(width: Double(shown.width), height: Double(shown.height), in: geometry.size)
                 picture(shown)
-                    .frame(width: fitted.width, height: fitted.height)
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) { point in toggleZoom(at: point, fitted: fitted, container: geometry.size) }
-                    .onTapGesture { if animated { toggled.toggle() } }
-                    .gesture(magnify(fitted: fitted, container: geometry.size))
-                    .gesture(pan(fitted: fitted, container: geometry.size), including: scale > 1 ? .all : .subviews)
-                    .scaleEffect(scale * pinch)
-                    .offset(x: offset.width + drag.width, y: offset.height + drag.height)
+                    .modifier(MediaZoom(width: shown.width, height: shown.height, container: geometry.size, scale: $scale, offset: $offset,
+                                        tap: { if animated { toggled.toggle() } }))
                     .overlay { if original == nil && !failed { ProgressView() } }
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .accessibilityElement(children: .ignore)
@@ -1559,45 +1559,6 @@ private struct MediaViewerImage: View {
         }
     }
 
-    private func magnify(fitted: CGSize, container: CGSize) -> some Gesture {
-        MagnifyGesture()
-            .updating($pinch) { value, state, _ in state = value.magnification }
-            .onEnded { value in
-                let next = min(MediaViewerPolicy.maxZoom, max(1, scale * value.magnification))
-                // Reduce Motion settles zoom without easing (web drops the transition).
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-                    scale = next
-                    offset = next > 1 ? MediaViewerPolicy.clampedOffset(offset, scale: next, fitted: fitted, container: container) : .zero
-                }
-            }
-    }
-
-    private func pan(fitted: CGSize, container: CGSize) -> some Gesture {
-        // Global coordinates: the image is scaled, so its own space is too.
-        DragGesture(minimumDistance: 1, coordinateSpace: .global)
-            .updating($drag) { value, state, _ in state = value.translation }
-            .onEnded { value in
-                let moved = CGSize(width: offset.width + value.translation.width, height: offset.height + value.translation.height)
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
-                    offset = MediaViewerPolicy.clampedOffset(moved, scale: scale, fitted: fitted, container: container)
-                }
-            }
-    }
-
-    private func toggleZoom(at point: CGPoint, fitted: CGSize, container: CGSize) {
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-            if scale > 1 {
-                scale = 1
-                offset = .zero
-            } else {
-                let next = MediaViewerPolicy.doubleTapZoom
-                scale = next
-                offset = MediaViewerPolicy.clampedOffset(MediaViewerPolicy.zoomOffset(at: point, fitted: fitted, scale: next),
-                                                         scale: next, fitted: fitted, container: container)
-            }
-        }
-    }
-
     @MainActor private func load() async {
         guard MediaViewerPolicy.isViewable(item) else { return }
         if preview == nil, original == nil {
@@ -1616,6 +1577,77 @@ private struct MediaViewerImage: View {
             // fresh URL when it arrives (see `item.url`).
             if result.refusedURL && attempt == 0 {
                 chat?.requestFreshAttachmentURLs(ids: [item.id])
+            }
+        }
+    }
+}
+
+/// Fits a `width`×`height` picture to `container` and zooms it, in the
+/// viewer and the draft preview: a pinch (touch screen or trackpad) zooms
+/// between fit and `MediaViewerPolicy.maxZoom`, double-click or double-tap
+/// toggles fit and 2× at that point, and a drag pans while zoomed, until an
+/// edge meets the container's. The owner keeps `scale` and `offset`, so it
+/// can reset them.
+private struct MediaZoom: ViewModifier {
+    let width: Int
+    let height: Int
+    let container: CGSize
+    @Binding var scale: CGFloat
+    @Binding var offset: CGSize
+    /// A single tap or click on the picture.
+    var tap: () -> Void = {}
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @GestureState private var pinch: CGFloat = 1
+    @GestureState private var drag: CGSize = .zero
+
+    func body(content: Content) -> some View {
+        let fitted = MediaViewerPolicy.fittedSize(width: Double(width), height: Double(height), in: container)
+        content
+            .frame(width: fitted.width, height: fitted.height)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { point in toggleZoom(at: point, fitted: fitted) }
+            .onTapGesture(perform: tap)
+            .gesture(magnify(fitted: fitted))
+            .gesture(pan(fitted: fitted), including: scale > 1 ? .all : .subviews)
+            .scaleEffect(scale * pinch)
+            .offset(x: offset.width + drag.width, y: offset.height + drag.height)
+    }
+
+    private func magnify(fitted: CGSize) -> some Gesture {
+        MagnifyGesture()
+            .updating($pinch) { value, state, _ in state = value.magnification }
+            .onEnded { value in
+                let next = min(MediaViewerPolicy.maxZoom, max(1, scale * value.magnification))
+                // Reduce Motion settles zoom without easing (web drops the transition).
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                    scale = next
+                    offset = next > 1 ? MediaViewerPolicy.clampedOffset(offset, scale: next, fitted: fitted, container: container) : .zero
+                }
+            }
+    }
+
+    private func pan(fitted: CGSize) -> some Gesture {
+        // Global coordinates: the picture is scaled, so its own space is too.
+        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+            .updating($drag) { value, state, _ in state = value.translation }
+            .onEnded { value in
+                let moved = CGSize(width: offset.width + value.translation.width, height: offset.height + value.translation.height)
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
+                    offset = MediaViewerPolicy.clampedOffset(moved, scale: scale, fitted: fitted, container: container)
+                }
+            }
+    }
+
+    private func toggleZoom(at point: CGPoint, fitted: CGSize) {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+            if scale > 1 {
+                scale = 1
+                offset = .zero
+            } else {
+                let next = MediaViewerPolicy.doubleTapZoom
+                scale = next
+                offset = MediaViewerPolicy.clampedOffset(MediaViewerPolicy.zoomOffset(at: point, fitted: fitted, scale: next),
+                                                         scale: next, fitted: fitted, container: container)
             }
         }
     }
@@ -1801,6 +1833,175 @@ private struct MediaViewerAspect: ViewModifier {
     }
 }
 
+// MARK: Draft preview
+
+/// A staged file the editor can open, previewed with its tools. QuickLook
+/// can't host them, so it keeps every other staged file.
+struct AttachmentDraftPreviewRequest: Identifiable {
+    let id = UUID()
+    let name: String
+    /// What `url` holds: `.image` or `.video`.
+    let kind: AttachmentKind
+    let url: URL
+    /// The editor on a tool, for the file as it is then; nil when it can no longer be edited.
+    let edit: (AttachmentEditTool) -> AttachmentEditRequest?
+}
+
+/// Opens the draft preview from composers below an `AttachmentEditorHost`.
+struct AttachmentDraftPreviewAction {
+    let perform: (AttachmentDraftPreviewRequest) -> Void
+    func callAsFunction(_ request: AttachmentDraftPreviewRequest) { perform(request) }
+}
+
+private struct AttachmentDraftPreviewKey: EnvironmentKey {
+    static var defaultValue: AttachmentDraftPreviewAction? { nil }
+}
+
+extension EnvironmentValues {
+    /// Nil where nothing presents it; staged files then preview in QuickLook.
+    var attachmentDraftPreview: AttachmentDraftPreviewAction? {
+        get { self[AttachmentDraftPreviewKey.self] }
+        set { self[AttachmentDraftPreviewKey.self] = newValue }
+    }
+}
+
+/// A staged file the editor can open, fitted on the viewer's dark backdrop
+/// with Crop, Draw and Text along the bottom: each closes the preview and
+/// opens the editor on that tool. An image zooms as in the viewer
+/// (`MediaZoom`). Close, Escape or (on the Mac) a click outside the file
+/// closes it.
+struct AttachmentDraftPreview: View {
+    let request: AttachmentDraftPreviewRequest
+    let close: () -> Void
+    let edit: (AttachmentEditTool) -> Void
+    @State private var picture: AttachmentEditorPicture?
+    @State private var failed = false
+    @State private var player: AVPlayer?
+    /// The image's zoom; each preview opens fitted.
+    @State private var scale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    #if os(macOS)
+    @FocusState private var focused: Bool
+    #endif
+
+    var body: some View {
+        ZStack {
+            #if os(iOS)
+            Color.black.ignoresSafeArea().accessibilityHidden(true)
+            #else
+            Color.black.opacity(0.92).ignoresSafeArea()
+                .onTapGesture(perform: close)
+                .accessibilityHidden(true)
+            #endif
+            VStack(spacing: 0) {
+                topBar
+                media
+                    .padding(.horizontal, 16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // Under both bars: a zoomed image spreads beneath them, and
+                    // their buttons stay on top.
+                    .zIndex(-1)
+                tools
+            }
+        }
+        // Arrives with a short fade, as the editor does; closing is instant.
+        .modifier(Entrance(animation: CaperMotion.easeOut(CaperMotion.base)))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(request.kind == .video ? "Video preview" : "Image preview")
+        .accessibilityAddTraits(.isModal)
+        .accessibilityIdentifier("attachment-draft-preview")
+        #if os(macOS)
+        // Takes the keyboard from the composer underneath.
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focused)
+        .onAppear { focused = true }
+        .onExitCommand(perform: close)
+        #endif
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 8) {
+            Text(request.name).font(CaperTheme.font(14, weight: .bold)).foregroundStyle(CaperTheme.text)
+                .lineLimit(1).truncationMode(.middle)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 8)
+            Button(action: close) { CaperIcon(name: "x", size: 20) }
+                .buttonStyle(MediaViewerButton())
+                .keyboardShortcut(.cancelAction)
+                .help("Close")
+                .accessibilityLabel("Close preview")
+                .accessibilityIdentifier("attachment-draft-preview-close")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background {
+            // The viewer's shade, for the name over a zoomed image. Clicks
+            // pass through it, to the backdrop on the Mac.
+            LinearGradient(gradient: Gradient(colors: [Color.black.opacity(0.7), Color.black.opacity(0)]), startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder private var media: some View {
+        if request.kind == .video {
+            // The platform player with its controls, playing as the viewer's videos do.
+            ZStack {
+                if let player { VideoPlayer(player: player) } else { ProgressView() }
+            }
+            .onAppear {
+                guard player == nil else { return }
+                let created = AVPlayer(url: request.url)
+                player = created
+                created.play()
+            }
+            .onDisappear { player?.pause() }
+        } else if let picture {
+            GeometryReader { geometry in
+                Image(decorative: picture.image, scale: 1)
+                    .resizable()
+                    .modifier(MediaZoom(width: picture.image.width, height: picture.image.height, container: geometry.size, scale: $scale, offset: $offset))
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(request.name)
+                    .accessibilityAddTraits(.isImage)
+                    .accessibilityIdentifier("attachment-draft-preview-image")
+            }
+        } else if failed {
+            VStack(spacing: 6) {
+                Image(systemName: "photo").font(.system(size: 22))
+                Text("Preview unavailable").font(CaperTheme.font(13))
+            }
+            .foregroundStyle(CaperTheme.muted)
+            .accessibilityElement(children: .combine)
+        } else {
+            ProgressView()
+                .accessibilityLabel("Loading")
+                .task {
+                    if let loaded = await AttachmentEditorPicture.load(request.url, kind: .image, maxEdge: 4096) { picture = loaded } else { failed = true }
+                }
+        }
+    }
+
+    private var tools: some View {
+        HStack(spacing: 8) {
+            ForEach(AttachmentEditTool.allCases, id: \.self) { tool in
+                AttachmentEditToolButton(tool: tool) { edit(tool) }
+                    .help("\(tool.title) in the editor")
+                    .accessibilityHint("Opens the editor")
+                    .accessibilityIdentifier("attachment-draft-preview-\(tool.rawValue)")
+            }
+        }
+        .padding(4)
+        .background(CaperTheme.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(CaperTheme.border))
+        .padding(.top, 12)
+        .padding(.bottom, 16)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Editing tools")
+    }
+}
+
 // MARK: Composer
 
 /// Compact, wrapping draft previews shared by channel and thread composers.
@@ -1808,6 +2009,8 @@ struct AttachmentDraftsView: View {
     @Bindable var chat: ChatModel
     var inThread = false
     @State private var previewID: String?
+    @Environment(\.attachmentEditor) private var editor
+    @Environment(\.attachmentDraftPreview) private var draftPreview
     private var files: [AttachmentDraft] { chat.attachmentFiles(inThread: inThread) }
 
     var body: some View {
@@ -1827,35 +2030,50 @@ struct AttachmentDraftsView: View {
             }
             StagedFileLayout() {
                 ForEach(files) { draft in
-                    AttachmentDraftChip(draft: draft, preview: { previewID = draft.id }, retry: { chat.retryAttachmentDraft(id: draft.id) }) {
-                        chat.removeAttachmentDraft(id: draft.id)
-                    }
-                    .overlay(alignment: .topLeading) {
-                        Button { chat.toggleAttachmentSpoiler(id: draft.id) } label: {
-                            Image(systemName: draft.spoiler ? "eye.slash.fill" : "eye")
-                                .font(.system(size: 14))
-                                .frame(width: 24, height: 24)
-                                .background(.black.opacity(0.8), in: Circle())
-                                .padding(4)
-                                #if os(iOS)
-                                .frame(width: 44, height: 44, alignment: .topLeading)
-                                #endif
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.white)
-                        .accessibilityLabel(draft.spoiler ? "Remove spoiler from attachment" : "Mark \(draft.name) as spoiler")
-                        .accessibilityValue(draft.spoiler ? "Spoiler" : "Not a spoiler")
-                        .help(draft.spoiler ? "Remove spoiler" : "Mark as spoiler")
-                    }
+                    AttachmentDraftChip(draft: draft, preview: { preview(draft) }, retry: { chat.retryAttachmentDraft(id: draft.id) },
+                                        toggleSpoiler: { chat.toggleAttachmentSpoiler(id: draft.id) },
+                                        edit: editAction(draft), remove: { chat.removeAttachmentDraft(id: draft.id) })
                     .modifier(Entrance.chip)
                 }
             }
             .accessibilityLabel("Files to send")
             .quickLookPreview(Binding(
-                get: { files.first(where: { $0.id == previewID })?.localURL },
+                get: { files.first(where: { $0.id == previewID }).map { Self.shownURL($0) } },
                 set: { if $0 == nil { previewID = nil } }
             ))
+        }
+    }
+
+    /// While an edit prepares, its render rather than the unedited original.
+    private static func shownURL(_ draft: AttachmentDraft) -> URL {
+        draft.preparing ? (draft.editPreviewURL ?? draft.localURL) : draft.localURL
+    }
+
+    /// Files with the pencil open in the app's preview with the editor's
+    /// tools; QuickLook shows the rest.
+    private func preview(_ draft: AttachmentDraft) {
+        guard let draftPreview, canEdit(draft) else { previewID = draft.id; return }
+        let url = Self.shownURL(draft)
+        let id = draft.id
+        draftPreview(AttachmentDraftPreviewRequest(name: draft.name, kind: url == draft.editPreviewURL ? .image : draft.kind, url: url) { tool in
+            files.first(where: { $0.id == id }).flatMap { editRequest($0, tool: tool) }
+        })
+    }
+
+    /// Files the editor can open, below an `AttachmentEditorHost`.
+    private func canEdit(_ draft: AttachmentDraft) -> Bool { editor != nil && draft.editable && draft.original != nil }
+
+    /// The pencil.
+    private func editAction(_ draft: AttachmentDraft) -> (() -> Void)? {
+        guard let editor, canEdit(draft) else { return nil }
+        return { if let request = editRequest(draft, tool: .initial) { editor(request) } }
+    }
+
+    private func editRequest(_ draft: AttachmentDraft, tool: AttachmentEditTool) -> AttachmentEditRequest? {
+        guard canEdit(draft), let original = draft.original else { return nil }
+        return AttachmentEditRequest(name: draft.name, kind: AttachmentKind.local(contentType: original.contentType),
+                                     original: original.url, edit: draft.edit, tool: tool) { edit, preview in
+            chat.editAttachmentDraft(id: draft.id, edit: edit, preview: preview)
         }
     }
 }
@@ -1864,15 +2082,17 @@ private struct AttachmentDraftChip: View {
     let draft: AttachmentDraft
     let preview: () -> Void
     let retry: () -> Void
+    let toggleSpoiler: () -> Void
+    let edit: (() -> Void)?
     let remove: () -> Void
 
     var body: some View {
-        StagedFileChip(id: draft.id, name: draft.name, kind: draft.kind, localURL: draft.localURL,
+        StagedFileChip(id: draft.id, name: draft.name, kind: draft.kind, localURL: draft.localURL, thumbnailURL: draft.editPreviewURL,
                        status: draft.statusLabel, failed: draft.error != nil,
                        busyLabel: draft.attachment == nil && draft.error == nil ? (draft.preparing ? "Preparing…" : "Uploading…") : nil,
                        progress: draft.attachment == nil && draft.error == nil ? draft.progress : nil,
-                       spoiler: draft.spoiler,
-                       retry: draft.error == nil ? nil : retry, preview: preview, remove: remove)
+                       spoiler: draft.spoiler, toggleSpoiler: toggleSpoiler,
+                       retry: draft.error == nil ? nil : retry, edit: edit, preview: preview, remove: remove)
     }
 }
 
@@ -1908,21 +2128,29 @@ struct StagedFileLayout: Layout {
     }
 }
 
-/// A staged square with independent preview, remove and retry controls. Filenames
-/// and full status remain accessible without covering healthy image thumbnails.
+/// A staged square with independent preview, spoiler, edit, remove and retry controls.
+/// Filenames and full status remain accessible without covering healthy image thumbnails.
 struct StagedFileChip: View {
     let id: String
     let name: String
     let kind: AttachmentKind
     let localURL: URL
+    /// An edited file's render, shown in place of `localURL` (videos too).
+    var thumbnailURL: URL?
     let status: String
     var failed = false
     var busyLabel: String?
     var progress: Double?
     var removable = true
+    /// Marked as a spoiler: the thumbnail is blurred and labels leave the name unsaid.
     var spoiler = false
+    /// Marks or unmarks it (the eye leading the action bar); locked while it
+    /// can't be removed (sending).
+    var toggleSpoiler: (() -> Void)?
     /// Offered for a failed upload.
     var retry: (() -> Void)?
+    /// Opens the editor (a pencil beside Remove), for files it can change.
+    var edit: (() -> Void)?
     let preview: () -> Void
     let remove: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1934,7 +2162,7 @@ struct StagedFileChip: View {
                 GeometryReader { geometry in
                     Group {
                         if spoiler {
-                            SpoilerThumbnail(image: failed ? nil : thumbnail)
+                            SpoilerThumbnail(image: failed ? nil : thumbnail, labelled: barInset == 0)
                         } else if let thumbnail {
                             Image(decorative: thumbnail, scale: 1).resizable().scaledToFill()
                         } else if kind == .video {
@@ -1978,8 +2206,13 @@ struct StagedFileChip: View {
                             .background(.black.opacity(0.32), in: Circle())
                             .accessibilityLabel("Video")
                     }
+                    if spoiler && barInset > 0 {
+                        SpoilerLabel().accessibilityHidden(true)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Centred in the room the action bar leaves, where it spans the top edge.
+                .padding(.top, barInset)
                 .allowsHitTesting(false)
                 if failed || busyLabel != nil {
                     VStack(spacing: 3) {
@@ -2014,41 +2247,59 @@ struct StagedFileChip: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-            if removable {
-                Button(action: remove) {
-                    CaperIcon(name: "x", size: 14).frame(width: 24, height: 24)
-                        .background(.black.opacity(0.8), in: Circle())
-                        #if os(iOS)
-                        .padding(4)
-                        .frame(width: 44, height: 44, alignment: .topTrailing)
-                        #else
-                        .padding(4)
-                        #endif
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .accessibilityLabel(spoiler ? "Remove spoiler attachment" : "Remove \(name)")
+            if !barActions.isEmpty {
+                StagedFileActionBar(name: name, actions: barActions, spoiler: spoiler, locked: !removable,
+                                    toggleSpoiler: toggleSpoiler ?? {}, edit: edit ?? {}, remove: remove)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CaperTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(failed ? Color(red: 138/255, green: 67/255, blue: 52/255) : CaperTheme.border))
-        .task(id: localURL) {
-            let key = "draft:\(id):\(localURL.lastPathComponent)"
+        .task(id: thumbnailURL ?? localURL) {
+            let source = thumbnailURL ?? localURL
+            // Each prepared or edited file has its own staging directory; its name may repeat.
+            let key = "draft:\(id):\(source.path)"
             thumbnail = nil
             let loaded: CGImage?
-            switch kind {
-            case .image:
-                loaded = try? await AttachmentImageLoader.shared.load(key: key, url: localURL, maxPixelSize: 312)
-            case .video:
-                loaded = try? await AttachmentImageLoader.shared.loadVideo(key: key, url: localURL, maxPixelSize: 312)
-            default:
+            if thumbnailURL != nil || kind == .image {
+                // An edit's render is a still, for videos too.
+                loaded = try? await AttachmentImageLoader.shared.load(key: key, url: source, maxPixelSize: 312)
+            } else if kind == .video {
+                loaded = try? await AttachmentImageLoader.shared.loadVideo(key: key, url: source, maxPixelSize: 312)
+            } else {
                 loaded = nil
             }
             if !Task.isCancelled { thumbnail = loaded }
         }
+    }
+
+    /// The action bar's buttons, left to right: Spoiler where the composer
+    /// offers it, Edit for files the editor can open, then Remove. While the
+    /// file can't be removed (sending) only the spoiler toggle stays, locked;
+    /// without one there's no bar.
+    static func actions(spoilerToggle: Bool, removable: Bool, editable: Bool) -> [StagedFileAction] {
+        var actions: [StagedFileAction] = []
+        if spoilerToggle { actions.append(.spoiler) }
+        if removable {
+            if editable { actions.append(.edit) }
+            actions.append(.remove)
+        }
+        return actions
+    }
+
+    private var barActions: [StagedFileAction] {
+        Self.actions(spoilerToggle: toggleSpoiler != nil, removable: removable, editable: edit != nil)
+    }
+
+    /// The room the action bar takes along the top edge where it spans it
+    /// (iPhone and iPad): the play badge and spoiler label centre below it.
+    private var barInset: CGFloat {
+        #if os(iOS)
+        return barActions.isEmpty ? 0 : StagedFileActionBar.buttonHeight
+        #else
+        return 0
+        #endif
     }
 
     private var kindLabel: String {
@@ -2067,6 +2318,115 @@ struct StagedFileChip: View {
         case .audio: return "waveform"
         case .file: return "doc.text"
         }
+    }
+}
+
+enum StagedFileAction: Hashable { case spoiler, edit, remove }
+
+/// A staged tile's actions in one solid bar, like Discord's: Spoiler, Edit,
+/// then Remove. On the Mac it sits inset in the top-right corner with
+/// 28-point buttons; on iPhone and iPad it spans the tile's top edge, flush,
+/// its 44-point-tall buttons sharing the width. Each button is exactly its
+/// visible area, and a hover or press only lightens it, so the icons never
+/// fade over a busy picture.
+private struct StagedFileActionBar: View {
+    let name: String
+    let actions: [StagedFileAction]
+    /// The eye is crossed out, and labels leave the name unsaid.
+    let spoiler: Bool
+    /// Sending: the spoiler toggle stays, but can't be pressed.
+    let locked: Bool
+    let toggleSpoiler: () -> Void
+    let edit: () -> Void
+    let remove: () -> Void
+    #if os(iOS)
+    static let buttonHeight: CGFloat = 44
+    #else
+    static let buttonHeight: CGFloat = 28
+    #endif
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(actions.enumerated()), id: \.element) { index, action in
+                if index > 0 {
+                    Rectangle().fill(CaperTheme.border).frame(width: 1, height: Self.buttonHeight).accessibilityHidden(true)
+                }
+                button(action)
+            }
+        }
+        .background(CaperTheme.blackout.opacity(0.9))
+        #if os(iOS)
+        // The tile's own border and corners frame the rest.
+        .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1).allowsHitTesting(false) }
+        // The buttons' own highlight, not the iPad pointer's platter over them.
+        .hoverEffectDisabled()
+        #else
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border, lineWidth: 1))
+        .padding(.top, 4)
+        .padding(.trailing, 4)
+        #endif
+    }
+
+    @ViewBuilder private func button(_ action: StagedFileAction) -> some View {
+        switch action {
+        case .spoiler:
+            Button(action: toggleSpoiler) {
+                Image(systemName: spoiler ? "eye.slash.fill" : "eye").font(.system(size: 14))
+            }
+            .buttonStyle(StagedFileActionButton())
+            .disabled(locked)
+            .help(spoiler ? "Remove spoiler" : "Mark as spoiler")
+            .accessibilityLabel(spoiler ? "Remove spoiler from attachment" : "Mark \(name) as spoiler")
+            .accessibilityValue(spoiler ? "Spoiler" : "Not a spoiler")
+        case .edit:
+            Button(action: edit) { CaperIcon(name: "pencil", size: 15) }
+                .buttonStyle(StagedFileActionButton())
+                .help("Edit")
+                .accessibilityLabel(spoiler ? "Edit spoiler attachment" : "Edit \(name)")
+        case .remove:
+            Button(action: remove) { CaperIcon(name: "x", size: 15) }
+                .buttonStyle(StagedFileActionButton())
+                .help("Remove")
+                .accessibilityLabel(spoiler ? "Remove spoiler attachment" : "Remove \(name)")
+        }
+    }
+}
+
+/// White 12% under a hovering pointer (the Mac, an iPad's pointer), 18%
+/// pressed, and a terracotta ring for keyboard focus. A locked button's icon
+/// steps back to muted; the bar stays solid.
+private struct StagedFileActionButton: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { StagedFileActionLabel(configuration: configuration) }
+}
+
+private struct StagedFileActionLabel: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.isFocused) private var focused
+    @Environment(\.isEnabled) private var enabled
+    @State private var hovered = false
+
+    var body: some View {
+        configuration.label
+            .foregroundStyle(enabled ? CaperTheme.text : CaperTheme.muted)
+            .opacity(enabled ? 1 : 0.5)
+            #if os(iOS)
+            .frame(maxWidth: .infinity)
+            .frame(height: StagedFileActionBar.buttonHeight)
+            #else
+            .frame(width: StagedFileActionBar.buttonHeight, height: StagedFileActionBar.buttonHeight)
+            #endif
+            .background(Color.white.opacity(configuration.isPressed ? 0.18 : hovered && enabled ? 0.12 : 0))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(CaperTheme.terracotta, lineWidth: 2)
+                    .opacity(focused ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
+            .focusEffectDisabled()
+            .onHover { hovered = $0 }
+            .modifier(ControlPointer())
     }
 }
 

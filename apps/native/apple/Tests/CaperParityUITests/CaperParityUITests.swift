@@ -1170,7 +1170,10 @@ final class CaperParityUITests: XCTestCase {
             let chip = reactions.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "\(emoji) reaction,")).firstMatch
             try require(chip, timeout: 5, "Missing reaction \(emoji)")
             let fullyVisible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                chip.frame.minY >= timeline.frame.minY && chip.frame.maxY <= timeline.frame.maxY + 1
+                // Each frame read queries the app again; four reads per check
+                // could outlast the wait on a slow simulator before a second check.
+                let chipFrame = chip.frame, timelineFrame = timeline.frame
+                return chipFrame.minY >= timelineFrame.minY && chipFrame.maxY <= timelineFrame.maxY + 1
             }, object: chip)
             XCTAssertEqual(XCTWaiter.wait(for: [fullyVisible], timeout: 5), .completed,
                            "The entire reaction must remain above the composer with the keyboard open")
