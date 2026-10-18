@@ -30,6 +30,32 @@ Native SwiftUI clients backed by AppKit on macOS and UIKit on iPhone. They conta
 
 The native UI and platform projects still require exact-head Apple builds/tests before they are considered build-verified. Linux Swift compiler parsing and SDK-free model harnesses do not validate Apple SDK types, platform media processing or rendered SwiftUI states; this orb has no Xcode or Apple SDKs.
 
+### iPhone attachment gallery
+
+Conversation, thread and profile-message Photos actions use a Caper-owned,
+recent-first three-column image/video gallery. Ordered badges, remaining slots
+and dimmed unselected tiles respect the original draft's ten-file limit, including
+files already staged. **Add N** imports into that draft; it does not send. Changing
+capacity never silently truncates a selection. macOS still uses the system Photos
+picker; Files and avatar/space-icon pickers are unchanged.
+
+Photo access is requested only by **Choose photo access** inside the gallery.
+Limited access is sufficient; **Manage selected photos** opens Apple's limited
+library management. Denied access offers Settings and Files; restricted access
+offers Files. Library changes and foreground permission changes refresh the grid.
+Browsing requests only local, bounded thumbnails; Add streams selected PhotoKit
+resources to staging (including iCloud downloads), preferring full-size edited
+resources when supplied by Photos. Failed/cancelled imports keep no draft files;
+Cancel cancels the resource request, and its completion cleans the temporary files.
+Metadata is exposed in 60-item pages rather than materializing the whole library.
+
+Selection contract tests are in `AttachmentGallerySelectionTests`. This change has
+not been Apple-SDK compiled or rendered in an iOS simulator/device in the Linux
+orb. Before release, validate VoiceOver/Dynamic Type, full/limited/denied/restricted
+access, limited-library edits, foreground revocation, iCloud failure/cancellation,
+edited images/videos, original-target navigation, and profile-sheet dismissal on
+an Apple runner/device. No mock screenshots stand in for these checks.
+
 ## Notifications
 
 - **Controls (iOS and macOS).** The space menu and each channel's options menu

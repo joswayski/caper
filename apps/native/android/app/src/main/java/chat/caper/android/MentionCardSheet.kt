@@ -146,15 +146,18 @@ import kotlinx.coroutines.launch
                     if (direct?.incoming == true) "Open the conversation and accept this message request before replying."
                     else "Unblock this person to send a message.", color = TextMuted, fontSize = 12.sp,
                 )
-                ProfileMessageComposer(
-                    card.username!!, profileDraft, writable && pending == null, state?.uploadsEnabled == true,
-                    text = { viewModel.profileDrafts.text(person, it) },
-                    add = { viewModel.addProfileAttachments(person, it) },
-                    paste = { viewModel.pasteProfileAttachments(person) },
-                    remove = { viewModel.removeProfileAttachment(person, it) },
-                    send = { viewModel.sendProfileMessage(person, card.id, card.username, onMessageSent ?: onDismiss) },
-                    pickerInteraction = { picking = it },
-                )
+                val pickerEpoch = viewModel.accountEpoch
+                key(person, pickerEpoch) {
+                    ProfileMessageComposer(
+                        card.username!!, profileDraft, writable && pending == null, state?.uploadsEnabled == true,
+                        text = { viewModel.profileDrafts.text(person, it) },
+                        add = { if (viewModel.accountEpoch == pickerEpoch) viewModel.addProfileAttachments(person, it) },
+                        paste = { viewModel.pasteProfileAttachments(person) },
+                        remove = { viewModel.removeProfileAttachment(person, it) },
+                        send = { viewModel.sendProfileMessage(person, card.id, card.username, onMessageSent ?: onDismiss) },
+                        pickerInteraction = { picking = it },
+                    )
+                }
             }
         }
     }
@@ -244,6 +247,7 @@ import kotlinx.coroutines.launch
                         !editable -> "Sending…"
                         else -> null
                     }, add, interaction = { filePicker = it; pickerInteraction(it || emojiPicker) }, paste = paste,
+                    remaining = (chat.caper.android.data.AttachmentPolicy.MAX_ATTACHMENTS - draft.files.size).coerceAtLeast(0),
                 )
             },
             trailingIcon = {

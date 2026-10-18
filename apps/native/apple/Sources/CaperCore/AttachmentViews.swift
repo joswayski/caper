@@ -1992,6 +1992,7 @@ struct AttachmentPickerButton: View {
     @State private var showFiles = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var selectionTarget: ChatModel.AttachmentTarget?
+    @State private var filesAfterPhotos = false
 
     private var remaining: Int { max(0, AttachmentPolicy.maxAttachments - chat.attachmentFiles(inThread: inThread).count) }
     /// Why the control is disabled, worded as on every client.
@@ -2027,6 +2028,19 @@ struct AttachmentPickerButton: View {
         .accessibilityLabel("Attach files")
         .accessibilityValue(disabledReason ?? "")
         .accessibilityIdentifier("attach-files-button")
+        #if os(iOS)
+        .sheet(isPresented: $showPhotos, onDismiss: {
+            if filesAfterPhotos { filesAfterPhotos = false; showFiles = true }
+        }) {
+            if let target = selectionTarget {
+                MobileAttachmentGallery(existingCount: { chat.attachmentCount(target: target) },
+                                        valid: { chat.attachmentTargetIsValid(target) },
+                                        useFiles: { filesAfterPhotos = true }) { files in
+                    chat.addAttachments(files, to: target)
+                }
+            }
+        }
+        #else
         .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: max(1, remaining),
                       matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
         .onChange(of: photoItems) { _, items in
@@ -2043,6 +2057,7 @@ struct AttachmentPickerButton: View {
                 }
             }
         }
+        #endif
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             guard case .success(let urls) = result, let target = selectionTarget else { return }
             let files = urls.prefix(AttachmentPolicy.maxAttachments).compactMap { try? AttachmentStaging.stage(copying: $0) }
