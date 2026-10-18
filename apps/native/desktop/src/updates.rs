@@ -28,9 +28,20 @@ pub struct Available {
     pub notes: String,
     pub changelog: Vec<ChangelogEntry>,
     pub history_complete: bool,
+    /// Every release being installed, stacked newest first. `None` when the
+    /// highlights could not be read, so the plain `notes` explain why.
+    pub highlights: Option<Vec<Highlight>>,
+    /// The newest highlighted release's date (YYYY-MM-DD).
+    pub released: Option<String>,
     pub last_error: Option<String>,
     /// False when the updater cannot replace this install, e.g. the .deb.
     pub can_apply: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Highlight {
+    pub title: String,
+    pub body: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -50,6 +61,10 @@ struct CheckOutput {
     changelog: Vec<ChangelogEntry>,
     #[serde(default)]
     history_complete: bool,
+    #[serde(default)]
+    highlights: Option<Vec<Highlight>>,
+    #[serde(default)]
+    released: Option<String>,
     #[serde(default)]
     last_error: Option<String>,
     #[serde(default)]
@@ -317,6 +332,8 @@ fn parse(stdout: &[u8]) -> Result<Option<Available>, String> {
         notes: output.notes,
         changelog: output.changelog,
         history_complete: output.history_complete,
+        highlights: output.highlights,
+        released: output.released,
         last_error: output.last_error,
         can_apply: output.can_apply,
     }))
@@ -342,6 +359,8 @@ mod tests {
             notes: "Release notes".into(),
             changelog: Vec::new(),
             history_complete: false,
+            highlights: None,
+            released: None,
             last_error: None,
             can_apply: true,
         }
@@ -644,6 +663,8 @@ mod tests {
                 notes: "Screen sharing".into(),
                 changelog: Vec::new(),
                 history_complete: false,
+                highlights: None,
+                released: None,
                 last_error: None,
                 can_apply: true,
             })
@@ -670,5 +691,20 @@ mod tests {
         assert_eq!(available.changelog.len(), 2);
         assert_eq!(available.changelog[1].notes, "Skipped");
         assert_eq!(available.changelog[1].version, "0.1.39");
+        assert_eq!(available.highlights, None);
+    }
+
+    #[test]
+    fn parses_structured_highlights_and_their_date() {
+        let output = br#"{"update":true,"version":"0.1.82","notes":"plain","history_complete":true,"highlights":[{"title":"Voice in the channel list","body":"Hop in with one click."}],"released":"2026-10-18","can_apply":true}"#;
+        let available = parse(output).unwrap().unwrap();
+        assert_eq!(
+            available.highlights,
+            Some(vec![Highlight {
+                title: "Voice in the channel list".into(),
+                body: "Hop in with one click.".into(),
+            }])
+        );
+        assert_eq!(available.released.as_deref(), Some("2026-10-18"));
     }
 }

@@ -84,6 +84,17 @@ final class AppUpdaterTests: XCTestCase {
         let failed = try XCTUnwrap(AppUpdater.parse(Data(#"{"update":true,"version":"0.1.7","last_error":"Access denied"}"#.utf8)))
         XCTAssertEqual(failed.lastError, "Access denied")
         XCTAssertNil(AppUpdater.parse(Data(#"{"update":false}"#.utf8)))
+        XCTAssertNil(legacy.highlights)
+    }
+
+    func testStructuredHighlightsShowADateInsteadOfAVersion() throws {
+        let data = Data(#"{"update":true,"version":"0.1.82","notes":"plain","history_complete":true,"highlights":[{"title":"Voice in the channel list","body":"Hop in with one click."}],"released":"2026-10-18","can_apply":true}"#.utf8)
+        let update = try XCTUnwrap(AppUpdater.parse(data))
+        XCTAssertEqual(update.highlights, [DesktopUpdate.Highlight(title: "Voice in the channel list", body: "Hop in with one click.")])
+        XCTAssertEqual(update.released, "2026-10-18")
+        let label = try XCTUnwrap(update.releasedLabel)
+        XCTAssertTrue(label.contains("2026"))
+        XCTAssertFalse(label.contains("0.1.82"))
     }
 
     @MainActor

@@ -240,11 +240,14 @@ import Observation
             let history_complete: Bool?
             let can_apply: Bool?
             let last_error: String?
+            let highlights: [DesktopUpdate.Highlight]?
+            let released: String?
         }
         guard let output = try? JSONDecoder().decode(Output.self, from: data), output.update else { return nil }
         return Update(version: output.version ?? "", notes: output.notes ?? "",
                       changelog: output.changelog ?? [], historyComplete: output.history_complete ?? false,
-                      canApply: output.can_apply ?? false, lastError: output.last_error)
+                      canApply: output.can_apply ?? false, lastError: output.last_error,
+                      highlights: output.highlights, released: output.released)
     }
 
     private nonisolated static func run(_ executable: URL, _ arguments: [String]) -> Result<Data, Error> {

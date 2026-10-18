@@ -1554,6 +1554,20 @@ impl CaperApp {
                     })
                     .collect(),
                 history_complete: name != "parity-update-incomplete",
+                highlights: Some(
+                    [
+                        ("Voice moves into the channel list", "Live rooms grow into cards you can join in one click."),
+                        ("Custom profile pictures and space icons", "Upload your own, GIFs included. Everyone sees changes instantly."),
+                        ("Unread thread replies stand out", "A little dot tells you a thread has news."),
+                        ("Smoother, more private uploads", "Failed uploads retry by themselves, and photo metadata stays private."),
+                        ("Clearer pinned messages", "See who pinned what, and jump right to it."),
+                        ("Update checks stay in the menu", "Check for updates without losing your place."),
+                        ("Forwarded messages open in their thread", "View conversation takes you to the original thread."),
+                    ]
+                    .map(|(title, body)| updates::Highlight { title: title.into(), body: body.into() })
+                    .to_vec(),
+                ),
+                released: Some("2026-10-18".into()),
                 can_apply: name != "parity-update-download",
                 last_error: (name == "parity-update-error").then(|| "Could not replace the installed app: Access denied (os error 5)".into()),
             });
@@ -8776,11 +8790,29 @@ impl CaperApp {
             )
             .show(context, |ui| {
                 ui.set_width((viewport.width() - 48.0).min(420.0));
-                let (mascot, _) =
-                    ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
-                update_art::paint(ui, mascot);
+                let mut close = false;
+                ui.horizontal(|ui| {
+                    let (mascot, _) =
+                        ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
+                    update_art::paint(ui, mascot);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        close =
+                            drawn_icon_button(ui, NavIcon::Close, "Close update review").clicked();
+                    });
+                });
                 ui.label(bold("A fresh Caper is ready").size(20.0));
-                ui.label(RichText::new(format!("Version {}", update.version)).color(MUTED));
+                // People know when they updated, not which build: date, no version.
+                if let Some(date) = update
+                    .released
+                    .as_deref()
+                    .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+                {
+                    ui.label(
+                        RichText::new(date.format("%B %-d, %Y").to_string())
+                            .color(MUTED)
+                            .size(13.0),
+                    );
+                }
                 ui.add_space(12.0);
                 let error = self.updates.error.as_ref().or(update.last_error.as_ref());
                 if let Some(error) = error {
@@ -8795,64 +8827,76 @@ impl CaperApp {
                         });
                     ui.add_space(8.0);
                 }
-                ui.separator();
-                ui.label(bold("What’s new"));
+                ui.horizontal(|ui| {
+                    ui.label(
+                        bold("WHAT’S NEW")
+                            .size(11.0)
+                            .color(MUTED)
+                            .extra_letter_spacing(0.8),
+                    );
+                    let (rule, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 11.0),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter()
+                        .hline(rule.x_range(), rule.center().y, Stroke::new(1.0, BORDER));
+                });
+                ui.add_space(8.0);
                 egui::ScrollArea::vertical()
                     .id_salt("update-notes")
-                    .max_height((viewport.height() - 420.0).clamp(64.0, 260.0))
+                    .max_height((viewport.height() - 400.0).clamp(64.0, 300.0))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         if !update.history_complete {
                             ui.label(
                                 RichText::new("Earlier release notes aren’t available.")
-                                    .color(MUTED),
+                                    .color(MUTED)
+                                    .size(13.0),
                             );
-                            ui.add_space(8.0);
+                            ui.add_space(10.0);
                         }
-                        let fallback = updates::ChangelogEntry {
-                            version: update.version.clone(),
-                            notes: update.notes.clone(),
-                        };
-                        let entries = if update.changelog.is_empty() {
-                            std::slice::from_ref(&fallback)
-                        } else {
-                            &update.changelog
-                        };
-                        for (index, entry) in entries.iter().enumerate() {
-                            if index > 0 {
-                                ui.add_space(6.0);
-                                ui.separator();
-                                ui.add_space(6.0);
-                            }
-                            ui.label(bold(&entry.version).size(14.0));
-                            if entry.notes.trim().is_empty() {
+                        match &update.highlights {
+                            Some(items) if items.is_empty() => {
                                 ui.label(
-                                    RichText::new(
-                                        "Release notes aren’t available for this version.",
-                                    )
-                                    .color(MUTED),
+                                    RichText::new("Behind-the-scenes fixes this time.")
+                                        .color(MUTED),
                                 );
                             }
-                            for line in entry.notes.lines().filter(|line| !line.trim().is_empty()) {
-                                ui.label(RichText::new(line).color(MUTED).size(14.0));
+                            Some(items) => {
+                                for (index, item) in items.iter().enumerate() {
+                                    if index > 0 {
+                                        ui.add_space(14.0);
+                                    }
+                                    update_highlight(ui, &item.title, &item.body);
+                                }
+                            }
+                            // Highlights could not be read: the updater's
+                            // plain notes and the signed changelog, unversioned.
+                            None => {
+                                ui.label(RichText::new(&update.notes).color(MUTED));
+                                for line in update
+                                    .changelog
+                                    .iter()
+                                    .flat_map(|entry| entry.notes.lines())
+                                    .filter(|line| !line.trim().is_empty())
+                                {
+                                    ui.label(RichText::new(line).color(MUTED).size(14.0));
+                                }
                             }
                         }
                     });
+                ui.add_space(4.0);
                 ui.separator();
+                if !update.can_apply {
+                    ui.add_space(12.0);
+                    ui.label(
+                        RichText::new("Download the installer to update this copy manually.")
+                            .color(MUTED)
+                            .size(13.0),
+                    );
+                }
                 ui.add_space(12.0);
                 let in_call = !matches!(self.voice.state.phase, Phase::Idle);
-                ui.label(
-                    RichText::new(if !update.can_apply {
-                        "Download the installer to update this copy manually."
-                    } else if in_call {
-                        "Caper will restart and leave your voice call."
-                    } else {
-                        "Caper will restart to install the update."
-                    })
-                    .color(MUTED)
-                    .size(13.0),
-                );
-                ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if update.can_apply {
@@ -8872,16 +8916,26 @@ impl CaperApp {
                             later.request_focus();
                         }
                         if later.clicked() {
-                            self.updates.dismiss();
+                            close = true;
                         }
                     });
                 });
                 if update.can_apply {
-                    ui.add_space(8.0);
-                    ui.hyperlink_to(
-                        RichText::new("Download installer instead").color(MUTED),
-                        updates::DOWNLOAD_URL,
-                    );
+                    ui.add_space(10.0);
+                    // A quiet escape hatch, not a second call to action.
+                    let installer = ui
+                        .add(egui::Link::new(
+                            RichText::new("Having issues? Download installer instead")
+                                .color(MUTED.gamma_multiply(0.7))
+                                .size(12.0),
+                        ))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if installer.clicked() {
+                        context.open_url(egui::OpenUrl::new_tab(updates::DOWNLOAD_URL));
+                    }
+                }
+                if close {
+                    self.updates.dismiss();
                 }
             });
         if modal.should_close() {
@@ -22006,6 +22060,24 @@ fn drawn_icon_button_sized(
 /// Web's `.chat-reaction-picker-heading` on floating panels (the emoji
 /// picker, Reactions, the forward dialog): a bold title and a Lucide close
 /// in place of egui's title bar. True when Close was clicked.
+/// One release highlight in the update review: a bullet, a bold title and a
+/// muted, wrapping description.
+fn update_highlight(ui: &mut egui::Ui, title: &str, body: &str) {
+    ui.horizontal_top(|ui| {
+        let (bullet, _) = ui.allocate_exact_size(egui::vec2(14.0, 20.0), egui::Sense::hover());
+        ui.painter().circle_filled(
+            egui::pos2(bullet.min.x + 4.0, bullet.center().y),
+            2.5,
+            MUTED,
+        );
+        ui.vertical(|ui| {
+            ui.add(egui::Label::new(bold(title).size(15.0).color(TEXT)).wrap());
+            ui.add_space(2.0);
+            ui.add(egui::Label::new(RichText::new(body).color(MUTED).size(14.0)).wrap());
+        });
+    });
+}
+
 fn floating_heading(ui: &mut egui::Ui, title: &str, close_label: &str, enabled: bool) -> bool {
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), 30.0),
@@ -27978,10 +28050,57 @@ mod tests {
     }
 
     #[test]
+    fn update_review_close_button_dismisses_like_later() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-update"),
+        );
+        let frame = |app: &mut CaperApp, events| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |context| app.update_notice(context),
+            )
+        };
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let output = frame(&mut app, vec![]);
+        let close = text_position(&output, "Close update review");
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(close),
+                    egui::Event::PointerButton {
+                        pos: close,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(app.updates.available().is_none());
+    }
+
+    #[test]
     fn update_download_button_opens_the_platform_installer() {
         for (fixture, label) in [
             ("parity-update-download", "Download"),
-            ("parity-update-error", "Download installer instead"),
+            (
+                "parity-update-error",
+                "Having issues? Download installer instead",
+            ),
         ] {
             let context = egui::Context::default();
             let mut app = CaperApp::new(
@@ -28101,9 +28220,20 @@ mod tests {
                     visible(&initial, "Later"),
                     "{fixture} {size:?}: Later clipped"
                 );
-                assert!(visible(&initial, "0.1.42"), "notes start expanded");
+                assert!(
+                    visible(&initial, "Voice moves into the channel list"),
+                    "notes start expanded"
+                );
+                assert!(
+                    visible(&initial, "October 18, 2026"),
+                    "date replaces the version"
+                );
+                assert!(!visible(&initial, "0.1.42"), "no version numbers");
                 if fixture != "parity-update-download" {
-                    assert!(visible(&initial, "Download installer instead"));
+                    assert!(visible(
+                        &initial,
+                        "Having issues? Download installer instead"
+                    ));
                 }
                 if fixture == "parity-update-error" {
                     assert!(visible(&initial, "The last update didn’t finish"));
@@ -28114,12 +28244,12 @@ mod tests {
                     "expanded action clipped: {fixture} {size:?}"
                 );
                 let action_pos = text_position(&expanded, action);
-                let notes_pos = text_position(&expanded, "0.1.42");
+                let notes_pos = text_position(&expanded, "Voice moves into the channel list");
                 let mut scrolled = expanded;
                 // At narrow widths a single entry is taller than the notes
                 // viewport; scrolling straight to the bottom hides its heading.
                 for _ in 0..100 {
-                    if visible(&scrolled, "0.1.36") {
+                    if visible(&scrolled, "Forwarded messages open in their thread") {
                         break;
                     }
                     frame(vec![
@@ -28135,8 +28265,8 @@ mod tests {
                     }
                 }
                 assert!(
-                    visible(&scrolled, "0.1.36"),
-                    "{fixture} {size:?}: skipped version cannot be reached"
+                    visible(&scrolled, "Forwarded messages open in their thread"),
+                    "{fixture} {size:?}: last highlight cannot be reached"
                 );
                 assert!(visible(&scrolled, action));
                 assert_eq!(

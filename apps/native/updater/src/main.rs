@@ -139,6 +139,15 @@ struct CheckResult<'a> {
     changelog: Vec<&'a manifest::ChangelogEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     history_complete: Option<bool>,
+    /// Structured highlights for every release being installed, newest first,
+    /// so the app can show titles and bodies with hierarchy. Absent when they
+    /// could not be read; empty for a build with no user-facing changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    highlights: Option<&'a [Highlight]>,
+    /// The newest highlighted release's date (YYYY-MM-DD), shown instead of a
+    /// version number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    released: Option<&'a str>,
     /// False when the install cannot be replaced without admin rights, for
     /// example a Linux .deb under /usr; the app offers a download link instead.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,6 +165,8 @@ fn check(options: &Options) -> Result<()> {
             notes: None,
             changelog: Vec::new(),
             history_complete: None,
+            highlights: None,
+            released: None,
             can_apply: None,
         });
     };
@@ -181,12 +192,13 @@ fn check(options: &Options) -> Result<()> {
                     &manifest.commit,
                 )
             })();
-            result.unwrap_or_else(|_: Box<dyn std::error::Error>| {
-                (
+            result.unwrap_or_else(|_: Box<dyn std::error::Error>| ReleaseHighlights {
+                notes:
                     "Release highlights aren’t available yet. You can still install this update."
                         .into(),
-                    false,
-                )
+                complete: false,
+                items: None,
+                released: None,
             })
         })
     } else {
@@ -204,7 +216,7 @@ fn check(options: &Options) -> Result<()> {
             notes: Some(
                 highlights
                     .as_ref()
-                    .map(|(notes, _)| notes.as_str())
+                    .map(|highlights| highlights.notes.as_str())
                     .unwrap_or(&manifest.notes),
             ),
             changelog: if highlights.is_some() {
@@ -215,9 +227,15 @@ fn check(options: &Options) -> Result<()> {
             history_complete: Some(
                 highlights
                     .as_ref()
-                    .map(|(_, complete)| *complete)
+                    .map(|highlights| highlights.complete)
                     .unwrap_or_else(|| manifest.history_complete(current)),
             ),
+            highlights: highlights
+                .as_ref()
+                .and_then(|highlights| highlights.items.as_deref()),
+            released: highlights
+                .as_ref()
+                .and_then(|highlights| highlights.released.as_deref()),
             can_apply,
         }),
         None => print_json(&CheckResult {
@@ -228,6 +246,8 @@ fn check(options: &Options) -> Result<()> {
             notes: None,
             changelog: Vec::new(),
             history_complete: None,
+            highlights: None,
+            released: None,
             can_apply: None,
         }),
     }
@@ -461,7 +481,7 @@ struct HighlightedRelease {
     highlights: Vec<Highlight>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 struct Highlight {
     title: String,
     body: String,
@@ -474,13 +494,24 @@ fn revision_valid(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+/// Highlights for the releases between the installed build and the update.
+#[derive(Debug, PartialEq)]
+struct ReleaseHighlights {
+    /// Plain-text fallback for apps that predate `items`.
+    notes: String,
+    complete: bool,
+    /// `None` when the highlights could not be read.
+    items: Option<Vec<Highlight>>,
+    released: Option<String>,
+}
+
 fn release_highlights_from(
     client: &reqwest::blocking::Client,
     url: &str,
     platform: &str,
     current_revision: &str,
     target_revision: &str,
-) -> Result<(String, bool)> {
+) -> Result<ReleaseHighlights> {
     if !matches!(platform, "macos" | "windows" | "linux")
         || !revision_valid(current_revision)
         || !revision_valid(target_revision)
@@ -553,14 +584,38 @@ fn release_highlights_from(
         })
         .collect();
     let complete = target.releases[0].sequence <= current.sequence + 1;
-    Ok((
-        if notes.is_empty() {
+    // People install one update, not a list of versions: stack every skipped
+    // release's highlights newest first, dropping a title repeated later on.
+    let newer: Vec<_> = target
+        .releases
+        .iter()
+        .rev()
+        .filter(|release| release.sequence > current.sequence)
+        .collect();
+    let mut items: Vec<Highlight> = Vec::new();
+    for item in newer.iter().flat_map(|release| &release.highlights) {
+        let title = item.title.trim().to_lowercase();
+        if !items
+            .iter()
+            .any(|seen| seen.title.trim().to_lowercase() == title)
+        {
+            items.push(item.clone());
+        }
+    }
+    let released = newer
+        .iter()
+        .find(|release| !release.highlights.is_empty())
+        .map(|release| release.published_at[..10].to_owned());
+    Ok(ReleaseHighlights {
+        notes: if notes.is_empty() {
             "No user-facing changes in this build.".into()
         } else {
             notes.join("\n\n")
         },
         complete,
-    ))
+        items: Some(items),
+        released,
+    })
 }
 
 fn fetch_manifest_from(
@@ -805,7 +860,20 @@ mod tests {
             if invalid {
                 assert!(result.is_err());
             } else {
-                assert_eq!(result.unwrap(), ("2026-10-11\nNewest update\nA useful change.\n\n2026-10-11\nSkipped update\nA useful change.".into(), true));
+                let result = result.unwrap();
+                assert_eq!(
+                    result.notes,
+                    "2026-10-11\nNewest update\nA useful change.\n\n2026-10-11\nSkipped update\nA useful change."
+                );
+                assert!(result.complete);
+                let titles: Vec<_> = result
+                    .items
+                    .unwrap()
+                    .into_iter()
+                    .map(|item| item.title)
+                    .collect();
+                assert_eq!(titles, ["Newest update", "Skipped update"]);
+                assert_eq!(result.released.as_deref(), Some("2026-10-11"));
             }
             server.join().unwrap();
         }
@@ -832,9 +900,74 @@ mod tests {
                 &target_revision
             )
             .unwrap(),
-            ("No user-facing changes in this build.".into(), false)
+            ReleaseHighlights {
+                notes: "No user-facing changes in this build.".into(),
+                complete: false,
+                items: Some(Vec::new()),
+                released: None,
+            }
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn skipped_releases_stack_into_one_list_without_repeated_titles() {
+        use serde_json::json;
+        let current_revision = "a".repeat(40);
+        let target_revision = "c".repeat(40);
+        let entry = |sequence, revision: &str, date: &str, items: &[(&str, &str)]| {
+            json!({
+                "sequence": sequence, "revision": revision, "publishedAt": format!("{date}T12:00:00Z"),
+                "highlights": items.iter().map(|(title, body)| json!({"title": title, "body": body})).collect::<Vec<_>>()
+            })
+        };
+        let current = json!({"schema":1,"platform":"windows","revision":current_revision,"sequence":1,
+            "releases":[entry(1,&current_revision,"2026-10-10",&[])]});
+        let target = json!({"schema":1,"platform":"windows","revision":target_revision,"sequence":3,
+            "releases":[entry(1,&current_revision,"2026-10-10",&[]),
+                entry(2,&"b".repeat(40),"2026-10-12",&[("Voice in the channel list","Older words."),("Clearer pins","Pins say who pinned them.")]),
+                entry(3,&target_revision,"2026-10-14",&[("Voice in the Channel List ","Newest words.")])]});
+        let (url, server) = serve_metadata(vec![
+            (
+                "/notes?platform=windows&revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                200,
+                serde_json::to_vec(&current).unwrap(),
+            ),
+            (
+                "/notes?platform=windows&revision=cccccccccccccccccccccccccccccccccccccccc",
+                200,
+                serde_json::to_vec(&target).unwrap(),
+            ),
+        ]);
+        let result = release_highlights_from(
+            &reqwest::blocking::Client::new(),
+            &format!("{url}/notes"),
+            "windows",
+            &current_revision,
+            &target_revision,
+        )
+        .unwrap();
+        server.join().unwrap();
+        let items: Vec<_> = result
+            .items
+            .unwrap()
+            .into_iter()
+            .map(|item| (item.title, item.body))
+            .collect();
+        assert_eq!(
+            items,
+            [
+                (
+                    "Voice in the Channel List ".to_owned(),
+                    "Newest words.".to_owned()
+                ),
+                (
+                    "Clearer pins".to_owned(),
+                    "Pins say who pinned them.".to_owned()
+                ),
+            ]
+        );
+        assert_eq!(result.released.as_deref(), Some("2026-10-14"));
     }
 
     #[test]

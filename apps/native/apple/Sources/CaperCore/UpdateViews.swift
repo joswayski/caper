@@ -10,17 +10,44 @@ public struct DesktopUpdate: Equatable, Sendable {
         public let notes: String
         public init(version: String, notes: String) { self.version = version; self.notes = notes }
     }
+    public struct Highlight: Decodable, Equatable, Sendable {
+        public let title: String
+        public let body: String
+        public init(title: String, body: String) { self.title = title; self.body = body }
+    }
     public let version: String
     public let notes: String
     public let changelog: [ChangelogEntry]
     public let historyComplete: Bool
     public let canApply: Bool
     public let lastError: String?
+    /// Every release being installed, stacked newest first. `nil` when the
+    /// highlights could not be read, so the plain notes explain why.
+    public let highlights: [Highlight]?
+    /// The newest highlighted release's date (YYYY-MM-DD).
+    public let released: String?
 
     public init(version: String, notes: String, changelog: [ChangelogEntry],
-                historyComplete: Bool, canApply: Bool, lastError: String?) {
+                historyComplete: Bool, canApply: Bool, lastError: String?,
+                highlights: [Highlight]? = nil, released: String? = nil) {
         self.version = version; self.notes = notes; self.changelog = changelog
         self.historyComplete = historyComplete; self.canApply = canApply; self.lastError = lastError
+        self.highlights = highlights; self.released = released
+    }
+
+    /// People know when they updated, not which build: "October 18, 2026".
+    public var releasedLabel: String? {
+        guard let released else { return nil }
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.timeZone = TimeZone(identifier: "UTC")
+        parser.dateFormat = "yyyy-MM-dd"
+        guard let date = parser.date(from: released) else { return nil }
+        let formatter = DateFormatter()
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateStyle = .long
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
     }
 
     public var entries: [ChangelogEntry] {
@@ -121,37 +148,55 @@ private struct UpdateButtonSweep: View, Animatable {
                         UpdateCharacter().frame(width: 40, height: 40).accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 5) {
                             Text("A fresh Caper is ready").font(CaperTheme.font(20, weight: .bold))
-                            Text("Caper \(update.version)").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                            if let date = update.releasedLabel {
+                                Text(date).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                            }
                         }
                         Spacer(minLength: 0)
                         Button(action: close) { CaperIcon(name: "x", size: 18) }
                             .buttonStyle(.plain).accessibilityLabel("Close update review")
                     }
-                    Text("What’s new").font(CaperTheme.font(18, weight: .bold))
+                    HStack(spacing: 10) {
+                        Text("WHAT’S NEW").font(CaperTheme.font(11, weight: .bold)).tracking(0.8)
+                            .foregroundStyle(CaperTheme.muted)
+                        Rectangle().fill(CaperTheme.border).frame(height: 1)
+                    }.accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 22) {
+                        VStack(alignment: .leading, spacing: 16) {
                             if let error = update.lastError {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text("The last update didn’t finish").font(CaperTheme.font(14, weight: .bold))
                                     Text(error).textSelection(.enabled)
                                 }.foregroundStyle(CaperTheme.error)
                             }
-                            Text(update.historyNotice).foregroundStyle(CaperTheme.muted)
-                            ForEach(Array(update.entries.enumerated()), id: \.offset) { _, entry in
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Text(entry.version).font(CaperTheme.font(14, weight: .bold))
-                                    Text(entry.notes.isEmpty ? "Release notes aren’t available for this version." : entry.notes)
+                            if !update.historyComplete {
+                                Text("Earlier release notes aren’t available.")
+                                    .font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
+                            }
+                            if let highlights = update.highlights {
+                                if highlights.isEmpty {
+                                    Text("Behind-the-scenes fixes this time.").foregroundStyle(CaperTheme.muted)
+                                }
+                                ForEach(Array(highlights.enumerated()), id: \.offset) { _, item in
+                                    UpdateHighlightRow(title: item.title, text: item.body)
+                                }
+                            } else {
+                                // Highlights could not be read: the updater's plain
+                                // notes and the signed changelog, without versions.
+                                Text(update.notes).foregroundStyle(CaperTheme.muted).textSelection(.enabled)
+                                ForEach(Array(update.changelog.enumerated()), id: \.offset) { _, entry in
+                                    Text(entry.notes).foregroundStyle(CaperTheme.muted)
                                         .lineSpacing(5).textSelection(.enabled)
-                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                }
                             }
                         }.font(CaperTheme.font(14)).frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.trailing, 12)
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                     Divider().overlay(CaperTheme.border)
-                    Text(update.canApply
-                         ? (inCall ? "Restarting installs the update and leaves your current voice call." : "Caper restarts to install the update. Restarting leaves any voice call.")
-                         : "This copy can’t update in place. Download the installer and drag Caper into a writable Applications folder.")
-                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    if !update.canApply {
+                        Text("This copy can’t update in place. Download the installer and drag Caper into a writable Applications folder.")
+                            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    }
                     HStack(spacing: 10) {
                         Button("Later", action: close).buttonStyle(CaperSecondaryButton())
                         Spacer()
@@ -160,8 +205,13 @@ private struct UpdateButtonSweep: View, Animatable {
                             .accessibilityIdentifier("desktop-update-install")
                     }
                     if update.canApply {
-                        Button("Download installer instead", action: download)
-                            .buttonStyle(.plain).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                        // A quiet escape hatch, not a second call to action.
+                        Button("Having issues? Download installer instead", action: download)
+                            .buttonStyle(.plain).font(CaperTheme.font(12))
+                            .foregroundStyle(CaperTheme.muted.opacity(0.7))
+                            .onHover { inside in
+                                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                            }
                     }
                 }
                 .padding(20).frame(width: min(560, max(0, geometry.size.width - 32)),
@@ -178,6 +228,23 @@ private struct UpdateButtonSweep: View, Animatable {
         .focusable().focusEffectDisabled().focused($focused)
         .onAppear { NSApp.keyWindow?.makeFirstResponder(nil); focused = true }
         .onExitCommand(perform: close)
+    }
+}
+
+/// One release highlight: a bullet, a bold title and a muted description.
+private struct UpdateHighlightRow: View {
+    let title: String
+    let text: String
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Circle().fill(CaperTheme.muted).frame(width: 5, height: 5)
+                .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(CaperTheme.font(15, weight: .bold)).foregroundStyle(CaperTheme.text)
+                Text(text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).lineSpacing(3)
+            }.textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+        }.accessibilityElement(children: .combine)
     }
 }
 
