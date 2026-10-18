@@ -209,6 +209,56 @@ pub fn decode_thumbnail(bytes: &[u8]) -> Option<egui::ColorImage> {
     ))
 }
 
+/// Message-order gallery slots, relative to the gallery's top-left corner.
+pub fn gallery_rects(count: usize, width: f32) -> Vec<egui::Rect> {
+    let width = width.clamp(1.0, 480.0);
+    let gap = 4.0;
+    let height = width * 2.0 / 3.0;
+    let rect = |x, y, w, h| egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h));
+    match count {
+        0 | 1 => vec![],
+        2 => {
+            let column = (width - gap) / 2.0;
+            vec![
+                rect(0.0, 0.0, column, height),
+                rect(column + gap, 0.0, column, height),
+            ]
+        }
+        3 => {
+            let column = (width - gap) / 3.0;
+            let half = (height - gap) / 2.0;
+            vec![
+                rect(0.0, 0.0, column * 2.0, height),
+                rect(column * 2.0 + gap, 0.0, column, half),
+                rect(column * 2.0 + gap, half + gap, column, half),
+            ]
+        }
+        _ => {
+            let rows = count.div_ceil(3);
+            let short_rows = rows * 3 - count;
+            let height = if count == 4 {
+                (width - gap) / 2.0
+            } else {
+                (width - gap * 2.0) / 3.0
+            };
+            (0..rows)
+                .flat_map(|row| {
+                    let columns = if row < short_rows { 2 } else { 3 };
+                    let column = (width - gap * (columns - 1) as f32) / columns as f32;
+                    (0..columns).map(move |col| {
+                        rect(
+                            col as f32 * (column + gap),
+                            row as f32 * (height + gap),
+                            column,
+                            height,
+                        )
+                    })
+                })
+                .collect()
+        }
+    }
+}
+
 /// Display size that reserves layout space before an image loads.
 pub fn frame_size(attachment: &Attachment) -> egui::Vec2 {
     match (attachment.width, attachment.height) {

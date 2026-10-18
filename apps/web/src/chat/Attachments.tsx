@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import {
   autoUpdate,
   flip,
@@ -29,6 +29,76 @@ function frame(attachment: ChatAttachment) {
   if (!width || !height) return undefined;
   const scale = Math.min(1, MAX_WIDTH / width, MAX_HEIGHT / height);
   return { width: Math.round(width * scale), height: Math.round(height * scale) };
+}
+
+/** Count, not media dimensions or readiness, owns the sent gallery's layout. */
+function AttachmentGallery({ items }: { items: ReactElement[] }) {
+  const count = items.length;
+  const rows = count <= 3 ? (count === 3 ? 2 : 1) : Math.ceil(count / 3);
+  const shortRows = rows * 3 - count;
+  const cells =
+    count <= 3
+      ? items.map((_, index) => ({
+          row: count === 3 && index === 2 ? 2 : 1,
+          column: index === 0 ? 1 : 2,
+          span: 1,
+          rowSpan: count === 3 && index === 0 ? 2 : 1,
+          left: index === 0,
+          right: count === 2 ? index === 1 : index > 0,
+          top: index < 2,
+          bottom: count === 2 || index !== 1,
+        }))
+      : Array.from({ length: rows }, (_, row) => {
+          const columns = row < shortRows ? 2 : 3;
+          return Array.from({ length: columns }, (_, column) => ({
+            row: row + 1,
+            column: column * (6 / columns) + 1,
+            span: 6 / columns,
+            rowSpan: 1,
+            left: column === 0,
+            right: column === columns - 1,
+            top: row === 0,
+            bottom: row === rows - 1,
+          }));
+        }).flat();
+  const height =
+    count <= 3 ? "66.666667%" : count === 4 ? "100%" : `calc((100% - 8px) / 3 * ${rows} + ${(rows - 1) * 4}px)`;
+  return (
+    <div className="chat-gallery" role="group" aria-label={`${count} attachments`}>
+      <div className="chat-gallery-layout" style={{ paddingBottom: height }}>
+        <div
+          className="chat-gallery-grid"
+          style={{
+            gridTemplateColumns: count === 3 ? "2fr 1fr" : `repeat(${count === 2 ? 2 : 6}, minmax(0, 1fr))`,
+            gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+          }}
+        >
+          {items.map((item, index) => {
+            const cell = cells[index];
+            const corners = [
+              cell.left && cell.top,
+              cell.right && cell.top,
+              cell.right && cell.bottom,
+              cell.left && cell.bottom,
+            ];
+            return (
+              <div
+                key={item.key}
+                className="chat-gallery-tile"
+                style={{
+                  gridColumn: `${cell.column} / span ${cell.span}`,
+                  gridRow: `${cell.row} / span ${cell.rowSpan}`,
+                  borderRadius: corners.map((outer) => (outer ? "12px" : "3px")).join(" "),
+                }}
+              >
+                {item}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /** The sender's own copy of a just-sent file, shown until the result arrives. */
@@ -215,112 +285,121 @@ export function MessageAttachments({
     reported.current.add(attachment.id);
     onExpired?.([attachment.id]);
   };
+  const renderAttachment = (attachment: ChatAttachment) => {
+    const size = frame(attachment);
+    const view = attachmentView(attachment);
+    if (view === "processing")
+      return (
+        <Processing
+          key={attachment.id}
+          attachment={attachment}
+          percent={progress[attachment.id]}
+          local={localPreviews[attachment.id]}
+        />
+      );
+    if (view === "failed") {
+      return (
+        <div key={attachment.id} className="chat-file" data-failed>
+          <FileWarning aria-hidden="true" size={18} />
+          <span>
+            <strong>{attachment.name}</strong>
+            <small>
+              {visuals.length > 1 && (attachment.kind === "image" || attachment.kind === "video")
+                ? "Processing failed"
+                : "Couldn’t process this file"}
+            </small>
+          </span>
+        </div>
+      );
+    }
+    if (view === "image") {
+      const gif = attachment.contentType === "image/gif";
+      const Image = gif ? GifImage : "img";
+      return (
+        <a
+          key={attachment.id}
+          className="chat-media"
+          href={attachment.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={size && { width: size.width, aspectRatio: size.width / size.height }}
+          aria-haspopup={onView ? "dialog" : undefined}
+          onClick={(event) => {
+            // Modified clicks keep the link's new tab or window.
+            if (!onView || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+              return;
+            event.preventDefault();
+            onView(attachment.id, event.currentTarget);
+          }}
+        >
+          <Image
+            src={gif ? attachment.url : (attachment.previewUrl ?? attachment.url)}
+            alt={attachment.name}
+            loading="lazy"
+            decoding="async"
+            width={size?.width}
+            height={size?.height}
+            onError={() => expired(attachment)}
+          />
+        </a>
+      );
+    }
+    if (view === "animated")
+      return (
+        <AnimatedVideo
+          key={attachment.id}
+          attachment={attachment}
+          size={size}
+          onError={() => expired(attachment)}
+          onView={onView && ((anchor) => onView(attachment.id, anchor))}
+        />
+      );
+    if (view === "video") {
+      return (
+        <div
+          key={attachment.id}
+          className={size ? "chat-media chat-video" : "chat-media chat-video intrinsic"}
+          style={size && { width: size.width, aspectRatio: size.width / size.height }}
+        >
+          <video
+            controls
+            playsInline
+            preload="metadata"
+            poster={attachment.previewUrl}
+            src={attachment.url}
+            aria-label={attachment.name}
+            onError={() => expired(attachment)}
+          />
+          {onView && (
+            <ExpandButton
+              name={attachment.name}
+              onClick={(anchor) => {
+                // The viewer plays its own copy; don't play both.
+                anchor.parentElement?.querySelector("video")?.pause();
+                onView(attachment.id, anchor);
+              }}
+            />
+          )}
+        </div>
+      );
+    }
+    if (view === "audio") {
+      return (
+        <figure key={attachment.id} className="chat-audio">
+          <figcaption>{attachment.name}</figcaption>
+          <audio controls preload="metadata" src={attachment.url} onError={() => expired(attachment)} />
+        </figure>
+      );
+    }
+    return <FileCard key={attachment.id} attachment={attachment} />;
+  };
+  // Keep files/audio readable instead of squeezing their controls into photo cells.
+  const visuals = attachments.filter((attachment) => attachment.kind === "image" || attachment.kind === "video");
+  const files = attachments.filter((attachment) => attachment.kind !== "image" && attachment.kind !== "video");
   return (
     <div className="chat-attachments">
-      {attachments.map((attachment) => {
-        const size = frame(attachment);
-        const view = attachmentView(attachment);
-        if (view === "processing")
-          return (
-            <Processing
-              key={attachment.id}
-              attachment={attachment}
-              percent={progress[attachment.id]}
-              local={localPreviews[attachment.id]}
-            />
-          );
-        if (view === "failed") {
-          return (
-            <div key={attachment.id} className="chat-file" data-failed>
-              <FileWarning aria-hidden="true" size={18} />
-              <span>
-                <strong>{attachment.name}</strong>
-                <small>Couldn’t process this file</small>
-              </span>
-            </div>
-          );
-        }
-        if (view === "image") {
-          const gif = attachment.contentType === "image/gif";
-          const Image = gif ? GifImage : "img";
-          return (
-            <a
-              key={attachment.id}
-              className="chat-media"
-              href={attachment.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={size && { width: size.width, aspectRatio: size.width / size.height }}
-              aria-haspopup={onView ? "dialog" : undefined}
-              onClick={(event) => {
-                // Modified clicks keep the link's new tab or window.
-                if (!onView || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
-                  return;
-                event.preventDefault();
-                onView(attachment.id, event.currentTarget);
-              }}
-            >
-              <Image
-                src={gif ? attachment.url : (attachment.previewUrl ?? attachment.url)}
-                alt={attachment.name}
-                loading="lazy"
-                decoding="async"
-                width={size?.width}
-                height={size?.height}
-                onError={() => expired(attachment)}
-              />
-            </a>
-          );
-        }
-        if (view === "animated")
-          return (
-            <AnimatedVideo
-              key={attachment.id}
-              attachment={attachment}
-              size={size}
-              onError={() => expired(attachment)}
-              onView={onView && ((anchor) => onView(attachment.id, anchor))}
-            />
-          );
-        if (view === "video") {
-          return (
-            <div
-              key={attachment.id}
-              className={size ? "chat-media chat-video" : "chat-media chat-video intrinsic"}
-              style={size && { width: size.width, aspectRatio: size.width / size.height }}
-            >
-              <video
-                controls
-                playsInline
-                preload="metadata"
-                poster={attachment.previewUrl}
-                src={attachment.url}
-                aria-label={attachment.name}
-                onError={() => expired(attachment)}
-              />
-              {onView && (
-                <ExpandButton
-                  name={attachment.name}
-                  onClick={(anchor) => {
-                    // The viewer plays its own copy; don't play both.
-                    anchor.parentElement?.querySelector("video")?.pause();
-                    onView(attachment.id, anchor);
-                  }}
-                />
-              )}
-            </div>
-          );
-        }
-        if (view === "audio") {
-          return (
-            <figure key={attachment.id} className="chat-audio">
-              <figcaption>{attachment.name}</figcaption>
-              <audio controls preload="metadata" src={attachment.url} onError={() => expired(attachment)} />
-            </figure>
-          );
-        }
-        return <FileCard key={attachment.id} attachment={attachment} />;
-      })}
+      {visuals.length > 1 ? <AttachmentGallery items={visuals.map(renderAttachment)} /> : visuals.map(renderAttachment)}
+      {files.length > 0 && <div className="chat-attachment-files">{files.map(renderAttachment)}</div>}
     </div>
   );
 }
