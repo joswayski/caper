@@ -144,6 +144,7 @@ struct PictureEditor<Preview: View>: View {
     @State private var showPhotos = false
     @State private var showFiles = false
     @State private var photoItem: PhotosPickerItem?
+    @State private var dropping = false
 
     private enum Phase { case uploading, removing }
 
@@ -190,6 +191,19 @@ struct PictureEditor<Preview: View>: View {
             .disabled(phase != nil || (unavailable && !hasPicture))
             .accessibilityLabel(avatar ? "Change profile picture" : "Change space icon")
             .accessibilityIdentifier(avatar ? "change-profile-picture" : "change-space-icon")
+            .dropDestination(for: DroppedAttachment.self) { items, _ in
+                dropping = false
+                guard phase == nil, !unavailable, let first = items.first else {
+                    items.forEach { AttachmentStaging.remove($0.file.url) }
+                    return false
+                }
+                items.dropFirst().forEach { AttachmentStaging.remove($0.file.url) }
+                start {
+                    defer { AttachmentStaging.remove(first.file.url) }
+                    return try await Task.detached(priority: .userInitiated) { try PictureFile.read(first.file.url) }.value
+                }
+                return true
+            } isTargeted: { dropping = $0 && phase == nil && !unavailable }
             if let error {
                 Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                     .fixedSize(horizontal: false, vertical: true)
@@ -219,7 +233,7 @@ struct PictureEditor<Preview: View>: View {
             .frame(width: Self.side, height: Self.side)
             .background(CaperTheme.raised)
             .clipShape(shape)
-            .overlay(shape.stroke(CaperTheme.border))
+            .overlay(shape.stroke(dropping ? CaperTheme.terracotta : CaperTheme.border, lineWidth: dropping ? 2 : 1))
             .opacity(phase == nil ? 1 : 0.55)
             .overlay(alignment: .bottomTrailing) {
                 CaperIcon(name: "pencil", size: 15)

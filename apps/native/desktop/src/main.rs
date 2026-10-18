@@ -20928,6 +20928,27 @@ impl CaperApp {
         let rect = egui::Rect::from_min_size(outer.min, egui::vec2(side, side));
         let corner = picture_corner(side);
         let hovered = enabled && response.hovered();
+        let over_frame = ui.input(|input| {
+            input
+                .pointer
+                .latest_pos()
+                .is_some_and(|pos| outer.contains(pos))
+        });
+        let dropping = idle
+            && !unavailable
+            && over_frame
+            && ui.input(|input| !input.raw.hovered_files.is_empty());
+        let dropped = if idle && !unavailable && over_frame {
+            ui.input(|input| {
+                input
+                    .raw
+                    .dropped_files
+                    .first()
+                    .and_then(|file| file.path.clone())
+            })
+        } else {
+            None
+        };
         ui.painter().rect_filled(rect, corner, RAISED);
         face(ui, rect);
         if busy.is_some() {
@@ -20937,7 +20958,16 @@ impl CaperApp {
         ui.painter().rect_stroke(
             rect,
             corner,
-            Stroke::new(1.0, if hovered { MUTED } else { BORDER }),
+            Stroke::new(
+                if dropping { 2.0 } else { 1.0 },
+                if dropping {
+                    TERRACOTTA
+                } else if hovered {
+                    MUTED
+                } else {
+                    BORDER
+                },
+            ),
             egui::StrokeKind::Inside,
         );
         // The badge sits over the frame's corner, cut out by a ring of the dialog.
@@ -20999,7 +21029,9 @@ impl CaperApp {
         } else if unavailable {
             ui.label(RichText::new(pictures::UNAVAILABLE).size(12.0).color(MUTED));
         }
-        if change {
+        if let Some(path) = dropped {
+            self.change_picture(target, Some(path));
+        } else if change {
             self.pick_picture(ui.ctx(), target);
         } else if remove {
             self.change_picture(target, None);

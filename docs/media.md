@@ -8546,7 +8546,11 @@ fails. Decoded pictures are cached by asset
 ID, since URLs re-sign daily. Edit profile and **Manage space** (owners
 only) show the picture or icon in a frame with an edit badge on its corner: the
 frame picks a picture, or, while a custom one is set, opens a menu to choose
-another or remove it. Without a custom profile picture, the saved mascot holds
+another or remove it. Dropping a file onto the frame uploads it directly using
+the same image preparation and limits. The frame highlights the drop target;
+only the first file is used, and busy or unavailable editors refuse drops.
+This is implemented in the web, Android, Apple and Rust desktop editors.
+Without a custom profile picture, the saved mascot holds
 up a "change me!" sign (`assets/avatars/change-me.svg`, one vector drawn over
 any mascot); a successful change updates the signed-in client everywhere through the
 existing own-profile refresh path.
@@ -8567,6 +8571,19 @@ The framed editor and "change me!" sign (same day): web `npm run check` and
 without a picture and a menu with one; Escape closes the menu, not the dialog);
 Rust desktop `cargo test` (536 passed), application Clippy and Xvfb renders of
 both states. Android and Apple were not compiled (no SDK or Xcode here).
+
+Picture-frame file drops (October 18, 2026): web `npm run check`, all 661
+Vitest tests, and `scripts/test-pictures.mjs` pass. The browser regression covers
+first-file selection, replacing a custom icon without the menu, refusing a
+second drop while busy, and preserving the icon on a non-image error. Chromium
+also accepted a native file-drop event at 390px. Desktop/narrow browser screenshots and
+an interaction recording were inspected with labelled API/storage mocks; no
+live upload was made. Rust desktop builds and passes formatting, application
+Clippy and 561 tests (13 ignored); the test harness was built with `cargo rustc
+--tests -- -C linker=clang-21 -C link-arg=-fuse-ld=lld` after the default build
+ran out of memory. Its Manage space fixture renders under Xvfb; native OS file
+drags were not exercised. Apple and Android changes are not compiled or
+device-verified in this orb (no Xcode or Android SDK).
 
 Shrinking oversized GIFs (October 15, 2026): web Vitest decodes, shrinks and
 re-decodes generated GIFs (12 frames over 5 MB → 512 px under 100 KB with every
