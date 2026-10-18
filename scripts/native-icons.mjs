@@ -66,6 +66,7 @@ const names = {
   "smile-plus": "SmilePlus",
   speech: "Speech",
   thread: "Thread",
+  "trash-2": "Trash2",
   type: "Type",
   "undo-2": "Undo2",
   users: "Users",

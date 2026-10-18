@@ -113,6 +113,76 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(EditEvent.message(event, channelID: "other"))
     }
 
+    func testDeletionTombstoneMergesThroughTheEditPathAndDropsFiles() throws {
+        let author = ChatAuthor(id: "author", name: "Author", isGuest: false)
+        let file = ChatAttachment(id: "Asset0000001", kind: .file, contentType: "text/plain", name: "notes.txt", size: 5)
+        var original = ChatMessage(id: "message", channelId: "channel", seq: "3", author: author,
+                                   content: ChatContent(version: 1, type: "text", text: "secret", attachments: [file]),
+                                   createdAt: "2026-10-01T00:00:00Z", clientMessageId: "client")
+        original.attachmentsSeq = "4"
+        original.revision = 2; original.editSeq = "5"; original.editedAt = "2026-10-02T00:00:00Z"
+        original.thread = ThreadSummary(replyCount: 2, participants: [author], seq: "11")
+        XCTAssertFalse(original.isDeleted)
+        let raw: [String: Any] = [
+            "id": "message", "channelId": "channel", "seq": "3", "author": ["id": "author", "name": "Author", "isGuest": false],
+            "content": ["version": 1, "type": "text", "text": ""], "createdAt": "2026-10-01T00:00:00Z", "clientMessageId": "client",
+            "revision": 3, "editedAt": "2026-10-18T00:00:00.123Z", "editSeq": "14", "attachmentsSeq": "14",
+            "deletedAt": "2026-10-18T00:00:00.123Z",
+        ]
+        let event: [String: Any] = ["type": "message.edited", "schemaVersion": 1, "channelId": "channel", "seq": "14", "message": raw]
+        let tombstone = try XCTUnwrap(EditEvent.message(event, channelID: "channel"))
+        XCTAssertEqual(tombstone.deletedAt, "2026-10-18T00:00:00.123Z")
+        var snapshots = EditSnapshots()
+        snapshots.seed([original])
+        snapshots.apply(tombstone)
+        let merged = snapshots.overlay(original)
+        XCTAssertTrue(merged.isDeleted)
+        XCTAssertEqual(merged.content.text, "")
+        XCTAssertNil(merged.content.attachments, "the tombstone's newer attachmentsSeq drops the files")
+        XCTAssertEqual(merged.attachmentsSeq, "14")
+        XCTAssertEqual(merged.revision, 3)
+        XCTAssertEqual(merged.editSeq, "14")
+        XCTAssertEqual(merged.seq, "3", "a tombstone keeps its place")
+        XCTAssertEqual(merged.thread?.replyCount, 2, "the thread stays reachable")
+        // An older attachment snapshot cannot bring the files back.
+        var files = AttachmentSnapshots()
+        files.seed([original])
+        XCTAssertNil(files.overlay(merged).content.attachments)
+        // A plain edit still keeps the message's files.
+        var edited = original
+        edited.content = ChatContent(version: 1, type: "text", text: "corrected")
+        edited.revision = 3; edited.editSeq = "14"; edited.editedAt = "2026-10-18T00:00:00Z"
+        var edits = EditSnapshots()
+        edits.seed([original])
+        edits.apply(edited)
+        XCTAssertEqual(edits.overlay(original).content.attachments, [file])
+        XCTAssertFalse(edits.overlay(original).isDeleted)
+        let decoded = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(merged))
+        XCTAssertEqual(decoded.deletedAt, merged.deletedAt)
+    }
+
+    func testDeletedReplyQuotesAndDeletionErrors() throws {
+        func reply(_ quote: String) throws -> ChatMessage {
+            try JSONDecoder().decode(ChatMessage.self, from: Data("""
+            {"id":"reply","channelId":"channel","seq":"20","author":{"id":"u","name":"User","isGuest":false},"content":{"version":1,"type":"text","text":"answer"},"createdAt":"now","clientMessageId":"c","replyTo":\(quote)}
+            """.utf8))
+        }
+        let quoted = try reply(#"{"id":"quoted","author":{"id":"a","name":"A","isGuest":false},"text":"","hasAttachments":false,"deleted":true}"#)
+        XCTAssertEqual(quoted.replyTo?.deleted, true)
+        XCTAssertEqual(quoted.replyTo?.text, "")
+        XCTAssertNil(quoted.deletedAt, "only the quoted message was deleted")
+        XCTAssertFalse(quoted.isDeleted)
+        let legacy = try reply(#"{"id":"quoted","author":{"id":"a","name":"A","isGuest":false},"text":"hello","hasAttachments":false}"#)
+        XCTAssertNil(legacy.replyTo?.deleted)
+        XCTAssertNil(MessageReply(message: legacy).deleted)
+        XCTAssertEqual(MessageDeletion.failureMessage(for: APIError(status: 429, message: "deleting too quickly; try again shortly")),
+                       "Deleting too quickly. Try again shortly.")
+        XCTAssertEqual(MessageDeletion.failureMessage(for: APIError(status: 403, message: "only the author can delete this message")),
+                       "Only the author can delete this message.")
+        XCTAssertEqual(MessageDeletion.failureMessage(for: APIError(status: 500, message: "internal")), MessageDeletion.failure)
+        XCTAssertEqual(MessageDeletion.failureMessage(for: URLError(.networkConnectionLost)), MessageDeletion.failure)
+    }
+
     func testEditCacheBoundsOnlyUnloadedMessagesAndRecoversAfterRefresh() {
         let author = ChatAuthor(id: "author", name: "Author", isGuest: false)
         var edited = ChatMessage(id: "message", channelId: "channel", seq: "3", author: author,

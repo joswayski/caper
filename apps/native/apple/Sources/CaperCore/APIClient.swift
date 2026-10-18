@@ -490,6 +490,14 @@ public actor APIClient {
         return try validateSnapshot(message, channelID: channelID, messageID: messageID)
     }
 
+    /// Returns the tombstone; repeating it on a deleted message returns the same one.
+    public func deleteMessage(channelID: String, messageID: String, sessionToken: String) async throws -> ChatMessage {
+        let message: ChatMessage = try await request("api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(messageID))",
+            method: "DELETE", extraHeaders: ["x-caper-chat-token": sessionToken])
+        guard message.deletedAt != nil else { throw APIError(status: 502, message: "Invalid message deletion.") }
+        return try validateSnapshot(message, channelID: channelID, messageID: messageID)
+    }
+
     public func loadMessage(channelID: String, messageID: String) async throws -> ChatMessage {
         let message: ChatMessage = try await request("api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(messageID))")
         return try validateSnapshot(message, channelID: channelID, messageID: messageID)
@@ -505,7 +513,8 @@ public actor APIClient {
     private func validateSnapshot(_ message: ChatMessage, channelID: String, messageID: String) throws -> ChatMessage {
         guard message.id == messageID, message.channelId == channelID, (message.revision ?? 1) >= 1,
               message.content.version == 1, message.content.type == "text",
-              MessageValidation.error(for: message.content.text, attachmentCount: message.content.attachments?.count ?? 0) == nil,
+              // A deleted message's tombstone has empty content.
+              message.deletedAt != nil || MessageValidation.error(for: message.content.text, attachmentCount: message.content.attachments?.count ?? 0) == nil,
               (try? Sequence.compare(message.seq, "0")) != nil else { throw APIError(status: 502, message: "Invalid message snapshot.") }
         if (message.revision ?? 1) > 1 {
             let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(message))

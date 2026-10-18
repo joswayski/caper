@@ -143,7 +143,7 @@ async fn persist_edit_with(
         crate::direct::authorize_interaction(&mut tx, channel_id, user).await?;
     }
     let row: Option<(i64, Value, Option<i64>)> = sqlx::query_as(
-        "SELECT m.id,m.payload,cs.user_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND m.external_id=$2 AND m.forward_source_id IS NULL FOR UPDATE OF m",
+        "SELECT m.id,m.payload,cs.user_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND m.external_id=$2 AND m.forward_source_id IS NULL AND m.deleted_at IS NULL FOR UPDATE OF m",
     )
     .bind(channel_id)
     .bind(message)
@@ -390,7 +390,7 @@ async fn sources_page(
     let mut tx = pool.begin().await.map_err(database_error)?;
     let (channel_id, _, _) = locked_channel(&mut tx, channel, user, false).await?;
     let row: Option<(i64, Value, Option<i64>)> = sqlx::query_as(
-        "SELECT m.id,m.payload,cs.user_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND m.external_id=$2 AND m.forward_source_id IS NULL",
+        "SELECT m.id,m.payload,cs.user_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND m.external_id=$2 AND m.forward_source_id IS NULL AND m.deleted_at IS NULL",
     )
     .bind(channel_id)
     .bind(message)
@@ -506,7 +506,7 @@ async fn signed_versions_page(
     let mut tx = pool.begin().await.map_err(database_error)?;
     let (channel_id, _, _) = locked_channel(&mut tx, channel, user, false).await?;
     let (id, payload, author): (i64, Value, Option<i64>) = sqlx::query_as(
-        "SELECT m.id,m.payload,cs.user_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND m.external_id=$2",
+        "SELECT m.id,m.payload,cs.user_id FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.channel_id=$1 AND m.external_id=$2 AND m.deleted_at IS NULL",
     )
     .bind(channel_id)
     .bind(message)

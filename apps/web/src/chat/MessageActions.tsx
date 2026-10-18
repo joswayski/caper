@@ -12,7 +12,7 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import { Ban, Copy, Forward, Hash, History, Pencil, Pin, PinOff, SmilePlus, Users, X } from "lucide-react";
+import { Ban, Copy, Forward, Hash, History, Pencil, Pin, PinOff, SmilePlus, Trash2, Users, X } from "lucide-react";
 import { Reply, Thread } from "../../../../shared/message-icons.ts";
 import type { ChatMessage } from "./types.ts";
 import { emojiAsset, emojiCode, preloadEmojiImages } from "./emoji.ts";
@@ -41,6 +41,7 @@ export default function MessageActions({
   canPin,
   canForward = false,
   canEdit,
+  canDelete = false,
   pinning,
   onReact,
   onPin,
@@ -51,6 +52,7 @@ export default function MessageActions({
   onReply,
   onReplyMessage,
   onEdit,
+  onDelete,
   onHistory,
   block,
 }: {
@@ -61,6 +63,7 @@ export default function MessageActions({
   canPin: boolean;
   canForward?: boolean;
   canEdit: boolean;
+  canDelete?: boolean;
   pinning: boolean;
   onReact: (messageId: string, emoji: string, active: boolean) => Promise<void>;
   onPin: (messageId: string, active: boolean) => Promise<void>;
@@ -71,6 +74,8 @@ export default function MessageActions({
   onReply?: () => void;
   onReplyMessage?: () => void;
   onEdit: () => void;
+  /** The caller confirms before deleting. */
+  onDelete?: () => void;
   onHistory: () => void;
   /** Another signed-in author. Blocking is confirmed by the caller; unblocking is immediate. */
   block?: { blocked: boolean; name: string; onBlock: () => void; onUnblock: () => Promise<void> };
@@ -237,6 +242,12 @@ export default function MessageActions({
                 <Hash size={16} aria-hidden="true" />
                 Copy message ID
               </button>
+              {canDelete && (
+                <button type="button" className="message-action-danger" onClick={onDelete}>
+                  <Trash2 size={16} aria-hidden="true" />
+                  Delete message
+                </button>
+              )}
               {block && (
                 <button
                   type="button"

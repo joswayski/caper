@@ -4884,13 +4884,16 @@ private struct MessageRow: View {
     private var canBlockAuthor: Bool {
         requestBlock != nil && BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
     }
-    private var edited: Bool { message.forward == nil && (message.revision ?? 1) > 1 }
+    private var edited: Bool { message.forward == nil && !message.isDeleted && (message.revision ?? 1) > 1 }
+    /// A deleted message still opens its thread when it has one.
+    private var hasThread: Bool { message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0 }
     /// A shown message from someone you blocked offers Unblock instead.
     private var canUnblockAuthor: Bool {
         requestBlock != nil && BlockedMessages.canUnblock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
     }
     @State private var editing = false
     @State private var history = false
+    @State private var confirmingDelete = false
     @State private var pressing = false
     #if os(macOS)
     /// Room for the unified hover bar: 24pt controls, 3pt insets and a gap.
@@ -4910,7 +4913,7 @@ private struct MessageRow: View {
         let pills = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
         let rendered = messageText
         let row = VStack(alignment: .leading, spacing: 5) {
-            if let pin = message.pin {
+            if let pin = message.pin, !message.isDeleted {
                 Button { mentionCards.openAuthor?(pin.author) } label: {
                     HStack(spacing: 4) {
                         CaperIcon(name: "pin", size: 12)
@@ -4933,7 +4936,7 @@ private struct MessageRow: View {
                     #endif
                     .accessibilityIdentifier("pinned-by-\(message.id)")
             }
-            if let reference = message.replyTo { NativeReplyContext(reference: reference, motionKey: message.clientMessageId, chat: chat) }
+            if !message.isDeleted, let reference = message.replyTo { NativeReplyContext(reference: reference, motionKey: message.clientMessageId, chat: chat) }
             // A grouped row lines its text up with the avatar column's time.
             HStack(alignment: grouped ? .firstTextBaseline : .top, spacing: 10) {
                 if grouped { groupedGutter } else {
@@ -4952,53 +4955,56 @@ private struct MessageRow: View {
                     .padding(.trailing, actionsInset)
                     #endif
                 }
-                // File-only messages carry empty text; hide the empty row.
-                if !message.content.text.isEmpty || (grouped && edited) {
-                HStack(alignment: .lastTextBaseline, spacing: 7) {
-                    rendered.text.font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
-                        // Links take the tint. Person pills are links too: keep them in
-                        // the pill text colour, not the accent, when the text has any.
-                        .tint(pills.isEmpty ? CaperTheme.terracottaBright : CaperTheme.text)
-                        .modifier(SwipeGuardedLinks())
-                        .modifier(MentionPillInteraction(pills: pills, hasLinks: rendered.hasLinks, cards: mentionCards))
-                    if grouped && edited { editedMarker }
+                // A deleted message keeps its place, header and thread link; nothing else.
+                if message.isDeleted { deletedText } else {
+                    // File-only messages carry empty text; hide the empty row.
+                    if !message.content.text.isEmpty || (grouped && edited) {
+                    HStack(alignment: .lastTextBaseline, spacing: 7) {
+                        rendered.text.font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
+                            // Links take the tint. Person pills are links too: keep them in
+                            // the pill text colour, not the accent, when the text has any.
+                            .tint(pills.isEmpty ? CaperTheme.terracottaBright : CaperTheme.text)
+                            .modifier(SwipeGuardedLinks())
+                            .modifier(MentionPillInteraction(pills: pills, hasLinks: rendered.hasLinks, cards: mentionCards))
+                        if grouped && edited { editedMarker }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    #if os(macOS)
+                    // Without a header, the first line sits beside the hover actions.
+                    .padding(.trailing, grouped ? actionsInset : 0)
+                    // The 24pt targets start 6pt from the row top. A short caption
+                    // needs their full height before the attachment's 4pt gap.
+                    .frame(minHeight: grouped && !(message.content.attachments?.isEmpty ?? true) ? 28 : nil, alignment: .topLeading)
+                    #endif
+                    }
+                    if let attachments = message.content.attachments, !attachments.isEmpty {
+                        MessageAttachmentsView(attachments: attachments, chat: chat)
+                            #if os(macOS)
+                            // File-only follow-ups need the same action strip, even
+                            // without a caption or edited marker to reserve it.
+                            .padding(.top, grouped && message.content.text.isEmpty && !edited ? 32 : 0)
+                            #endif
+                    }
+                    if MentionAutocomplete.asksFeedback(message) {
+                        Text(FeedbackInbox.notified).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                            .accessibilityIdentifier("feedback-notified-\(message.id)")
+                    }
+                    ForwardCardView(message: message) {
+                        guard !SwipeTapGuard.swiping else { return }
+                        Task { if await chat.onOpenForward?(message) == true { forwardOpened?() } }
+                    }
+                    ReactionRow(message: message, chat: chat, reactors: reactors, showReactionPicker: addReaction)
+                    if let error = chat.pinErrors[message.id] {
+                        HStack(spacing: 8) {
+                            Text(error)
+                            Button("Retry") { if !SwipeTapGuard.swiping { Task { await chat.retryPin(messageID: message.id) } } }
+                                .disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
+                            // As on web, the error can be put away without retrying.
+                            Button("Dismiss") { if !SwipeTapGuard.swiping { chat.pinErrors[message.id] = nil } }
+                        }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.error)
+                    }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                #if os(macOS)
-                // Without a header, the first line sits beside the hover actions.
-                .padding(.trailing, grouped ? actionsInset : 0)
-                // The 24pt targets start 6pt from the row top. A short caption
-                // needs their full height before the attachment's 4pt gap.
-                .frame(minHeight: grouped && !(message.content.attachments?.isEmpty ?? true) ? 28 : nil, alignment: .topLeading)
-                #endif
-                }
-                if let attachments = message.content.attachments, !attachments.isEmpty {
-                    MessageAttachmentsView(attachments: attachments, chat: chat)
-                        #if os(macOS)
-                        // File-only follow-ups need the same action strip, even
-                        // without a caption or edited marker to reserve it.
-                        .padding(.top, grouped && message.content.text.isEmpty && !edited ? 32 : 0)
-                        #endif
-                }
-                if MentionAutocomplete.asksFeedback(message) {
-                    Text(FeedbackInbox.notified).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                        .accessibilityIdentifier("feedback-notified-\(message.id)")
-                }
-                ForwardCardView(message: message) {
-                    guard !SwipeTapGuard.swiping else { return }
-                    Task { if await chat.onOpenForward?(message) == true { forwardOpened?() } }
-                }
-                ReactionRow(message: message, chat: chat, reactors: reactors, showReactionPicker: addReaction)
-                if let error = chat.pinErrors[message.id] {
-                    HStack(spacing: 8) {
-                        Text(error)
-                        Button("Retry") { if !SwipeTapGuard.swiping { Task { await chat.retryPin(messageID: message.id) } } }
-                            .disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
-                        // As on web, the error can be put away without retrying.
-                        Button("Dismiss") { if !SwipeTapGuard.swiping { chat.pinErrors[message.id] = nil } }
-                    }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.error)
-                }
-                if !inThread && (message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0) {
+                if !inThread && hasThread {
                     Button { if !SwipeTapGuard.swiping { Task { await chat.openThread(message.threadRootId ?? message.id) } } } label: {
                         HStack(spacing: 5) {
                             if message.threadRootId == nil, let summary = message.thread {
@@ -5035,7 +5041,7 @@ private struct MessageRow: View {
             }
             }
             #if os(macOS)
-            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named("reply-row-\(message.id)")).minY } action: { if message.replyTo != nil { actionsTop = max(0, $0 - 4) } }
+            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named("reply-row-\(message.id)")).minY } action: { if message.replyTo != nil && !message.isDeleted { actionsTop = max(0, $0 - 4) } }
             #endif
         // As on web, a run reads as one block: 2pt instead of 10 between its rows.
         }.padding(.horizontal, 18).padding(.top, grouped ? 2 : 10).padding(.bottom, continued ? 2 : 10)
@@ -5052,6 +5058,12 @@ private struct MessageRow: View {
             .accessibilityIdentifier("message-row-\(message.id)")
             .sheet(isPresented: $editing) { MessageEditorView(chat: chat, message: message) { editing = false } }
             .sheet(isPresented: $history) { MessageHistoryView(chat: chat, message: message) { history = false } }
+            .alert(MessageDeletion.confirmTitle, isPresented: $confirmingDelete) {
+                Button("Delete", role: .destructive) { Task { await chat.deleteMessage(message) } }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(MessageDeletion.confirmMessage)
+            }
         #if os(iOS)
         row.contentShape(Rectangle())
             .onLongPressGesture(perform: showReactionPicker, onPressingChanged: { pressing = $0 })
@@ -5062,28 +5074,30 @@ private struct MessageRow: View {
         row
             .overlay(alignment: .topTrailing) {
                 HStack(spacing: 0) {
-                    if !inThread {
+                    if !inThread && (!message.isDeleted || hasThread) {
                         Button { Task { await chat.openThread(message.threadRootId ?? message.id) } } label: {
                             CaperIcon(name: "thread", size: 14).frame(width: 24, height: 24)
                         }.buttonStyle(.plain).focused($replyFocused).help("Reply in thread").accessibilityLabel("Reply in thread")
                             .modifier(ControlHover(isFocused: replyFocused))
                     }
                     // As on web, read-only conversations hide Reply; Add reaction stays, disabled.
-                    if chat.canInteract {
+                    if chat.canInteract && !message.isDeleted {
                         Button { chat.reply(to: message, inThread: inThread && !inPins) } label: {
                             CaperIcon(name: "reply", size: 14).frame(width: 24, height: 24)
                         }.buttonStyle(.plain).focused($replyMessageFocused).help("Reply").accessibilityLabel("Reply")
                             .modifier(ControlHover(isFocused: replyMessageFocused))
                             .disabled(chat.pendingMessage != nil)
                     }
-                    Button(action: showReactionPicker) {
-                        CaperIcon(name: "smile-plus", size: 14).frame(width: 24, height: 24)
-                            .contentShape(Rectangle())
-                    }.buttonStyle(.plain).frame(width: 24, height: 24)
-                        .focused($reactionFocused).help("Add reaction").accessibilityLabel("Add reaction")
-                        .modifier(ControlHover(isFocused: reactionFocused))
-                        .disabled(!chat.canInteract)
-                        .accessibilityIdentifier("add-reaction-\(message.id)")
+                    if !message.isDeleted {
+                        Button(action: showReactionPicker) {
+                            CaperIcon(name: "smile-plus", size: 14).frame(width: 24, height: 24)
+                                .contentShape(Rectangle())
+                        }.buttonStyle(.plain).frame(width: 24, height: 24)
+                            .focused($reactionFocused).help("Add reaction").accessibilityLabel("Add reaction")
+                            .modifier(ControlHover(isFocused: reactionFocused))
+                            .disabled(!chat.canInteract)
+                            .accessibilityIdentifier("add-reaction-\(message.id)")
+                    }
                     Menu {
                         messageMenuItems
                     } label: {
@@ -5102,7 +5116,7 @@ private struct MessageRow: View {
                     .shadow(color: .black.opacity(0.2), radius: 6, y: 4)
                     .opacity(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
                     .allowsHitTesting(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused)
-                    .padding(.trailing, 15).padding(.top, message.replyTo == nil ? 3 : max(0, actionsTop - 3))
+                    .padding(.trailing, 15).padding(.top, message.replyTo == nil || message.isDeleted ? 3 : max(0, actionsTop - 3))
             }
             // Track the whole row, including its overlay. Entering a message
             // action must not hide that action before the pointer can click it.
@@ -5131,31 +5145,41 @@ private struct MessageRow: View {
     /// Web's message actions, in the ⋯ menu and the context menu. A quick
     /// reaction is checked when it is yours; choosing it again removes it.
     @ViewBuilder private var messageMenuItems: some View {
-        ForEach(MessageQuickReactions.emoji, id: \.self) { emoji in
-            Toggle("React with \(emoji)", isOn: Binding(get: { reacted(emoji) }, set: { react(emoji, active: $0) }))
-                .disabled(!chat.canInteract)
-        }
-        // The full picker, as from the hover row's Add reaction.
-        Button("Add reaction…", action: showReactionPicker).disabled(!chat.canInteract)
-        Divider()
-        Button("Reply") { chat.reply(to: message, inThread: inThread && !inPins) }.disabled(!chat.canInteract || chat.pendingMessage != nil)
-        if !inThread { Button("Reply in thread") { Task { await chat.openThread(message.threadRootId ?? message.id) } } }
-        if chat.canForward { Button("Forward message") { chat.forwardTarget = message } }
-        if chat.canEdit(message) { Button("Edit message") { editing = true } }
-        if message.forward == nil && (message.revision ?? 1) > 1 { Button("Message history") { history = true } }
-        if let reaction = message.reactions?.first { Button("View reactions") { reactors.show(message.id, reaction.emoji) } }
-        Button(message.pin == nil ? "Pin message" : "Unpin message") {
-            Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
-        }.disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
-        // Attachment-only messages have no text to copy.
-        if !message.content.text.isEmpty { Button("Copy text") { copy(message.content.text) } }
-        Button("Copy message ID") { copy(message.id) }
-        if canBlockAuthor {
+        if message.isDeleted {
+            // Only the thread and the ID remain.
+            if !inThread && hasThread { Button("View thread") { Task { await chat.openThread(message.threadRootId ?? message.id) } } }
+            Button("Copy message ID") { copy(message.id) }
+        } else {
+            ForEach(MessageQuickReactions.emoji, id: \.self) { emoji in
+                Toggle("React with \(emoji)", isOn: Binding(get: { reacted(emoji) }, set: { react(emoji, active: $0) }))
+                    .disabled(!chat.canInteract)
+            }
+            // The full picker, as from the hover row's Add reaction.
+            Button("Add reaction…", action: showReactionPicker).disabled(!chat.canInteract)
             Divider()
-            Button("Block \(message.author.name)…", role: .destructive) { requestBlock?(message.author) }
-        } else if canUnblockAuthor {
-            Divider()
-            Button("Unblock \(message.author.name)") { chat.unblock(message.author) }
+            Button("Reply") { chat.reply(to: message, inThread: inThread && !inPins) }.disabled(!chat.canInteract || chat.pendingMessage != nil)
+            if !inThread { Button("Reply in thread") { Task { await chat.openThread(message.threadRootId ?? message.id) } } }
+            if chat.canForward { Button("Forward message") { chat.forwardTarget = message } }
+            if chat.canEdit(message) { Button("Edit message") { editing = true } }
+            if message.forward == nil && (message.revision ?? 1) > 1 { Button("Message history") { history = true } }
+            if let reaction = message.reactions?.first { Button("View reactions") { reactors.show(message.id, reaction.emoji) } }
+            Button(message.pin == nil ? "Pin message" : "Unpin message") {
+                Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
+            }.disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
+            // Attachment-only messages have no text to copy.
+            if !message.content.text.isEmpty { Button("Copy text") { copy(message.content.text) } }
+            Button("Copy message ID") { copy(message.id) }
+            if chat.canDelete(message) {
+                Divider()
+                Button("Delete message", role: .destructive) { confirmingDelete = true }
+            }
+            if canBlockAuthor {
+                Divider()
+                Button("Block \(message.author.name)…", role: .destructive) { requestBlock?(message.author) }
+            } else if canUnblockAuthor {
+                Divider()
+                Button("Unblock \(message.author.name)") { chat.unblock(message.author) }
+            }
         }
     }
     private func reacted(_ emoji: String) -> Bool {
@@ -5184,8 +5208,18 @@ private struct MessageRow: View {
             return pin.author.id == currentUserID ? CaperTheme.terracotta.opacity(0.12) : CaperTheme.pinGold.opacity(0.06)
         }
         if mentionsMe { return CaperTheme.terracotta.opacity(0.08) }
-        if message.replyTo != nil { return CaperTheme.text.opacity(0.03) }
+        if message.replyTo != nil && !message.isDeleted { return CaperTheme.text.opacity(0.03) }
         return .clear
+    }
+    /// The deleted message's body, in the muted text colour.
+    private var deletedText: some View {
+        Text(MessageDeletion.placeholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            #if os(macOS)
+            // Without a header, the line sits beside the hover actions.
+            .padding(.trailing, grouped ? actionsInset : 0)
+            #endif
+            .accessibilityIdentifier("message-deleted-\(message.id)")
     }
     /// Resolved `@mention` tokens render as pills: #F3F4F5 medium text on 24%
     /// terracotta. SwiftUI `Text` styles an inline run's background but cannot
@@ -6431,14 +6465,19 @@ private struct MessageActionsSheet: View {
     /// Who reacted, from the first reaction's tab; opened once this sheet has gone.
     var viewReactions: ((String) -> Void)? = nil
     @State private var blockRequested = false
+    @State private var confirmingDelete = false
     /// Forward also waits for this sheet to go, so its picker can present.
     @State private var forwardRequested = false
     @State private var reactionsRequested: String?
 
     private let quickReactions = MessageQuickReactions.emoji
 
+    /// A deleted message opens its thread, when it has one, and copies its ID.
+    private var deletedThread: Bool { reply != nil && (message.threadRootId != nil || (message.thread?.replyCount ?? 0) > 0) }
+
     /// Fits every offered action without scrolling.
     private var actionsHeight: CGFloat {
+        if message.isDeleted { return deletedThread ? 140 : 96 }
         var height: CGFloat = 286
         if reply != nil { height += 44 }
         if canForward { height += 50 }
@@ -6446,6 +6485,7 @@ private struct MessageActionsSheet: View {
         if message.forward == nil && (message.revision ?? 1) > 1 { height += 44 }
         if viewReactions != nil && message.reactions?.isEmpty == false { height += 44 }
         if block != nil || unblock != nil { height += 44 }
+        if chat.canDelete(message) { height += 44 }
         if message.content.text.isEmpty { height -= 44 }
         return height
     }
@@ -6553,6 +6593,14 @@ private struct MessageActionsSheet: View {
                 CaperLabel("Copy message ID", icon: "hash").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     .contentShape(Rectangle())
             }
+            if chat.canDelete(message) {
+                Divider()
+                Button(role: .destructive) { confirmingDelete = true } label: {
+                    CaperLabel("Delete message", icon: "trash-2").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .foregroundStyle(CaperTheme.terracottaBright)
+                        .contentShape(Rectangle())
+                }.accessibilityIdentifier("message-action-delete")
+            }
             if block != nil {
                 Divider()
                 Button(role: .destructive) {
@@ -6579,6 +6627,29 @@ private struct MessageActionsSheet: View {
         .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
     }
 
+    private var deletedActionList: some View {
+        VStack(spacing: 0) {
+            if deletedThread, let reply {
+                Button(action: reply) {
+                    Label { Text("View thread") } icon: { CaperIcon(name: "thread") }
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                Divider()
+            }
+            Button {
+                UIPasteboard.general.string = message.id
+                dismiss()
+            } label: {
+                CaperLabel("Copy message ID", icon: "hash").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+    }
+
     // The sheet is split into properties and its height is built in typed
     // steps: as one expression, Xcode 16's type checker gave up on the body.
     var body: some View {
@@ -6587,8 +6658,10 @@ private struct MessageActionsSheet: View {
                 ReactionPicker(select: selectReaction)
             } else {
                 VStack(spacing: 16) {
-                    quickReactionRow
-                    actionList
+                    if message.isDeleted { deletedActionList } else {
+                        quickReactionRow
+                        actionList
+                    }
                 }
                 .padding(16)
                 .font(CaperTheme.font(15))
@@ -6608,7 +6681,16 @@ private struct MessageActionsSheet: View {
         .presentationDragIndicator(.visible)
         .sheet(isPresented: $editing) { MessageEditorView(chat: chat, message: message) { editing = false; dismiss() } }
         .sheet(isPresented: $history) { MessageHistoryView(chat: chat, message: message) { history = false } }
-        .onChange(of: chat.editingContext) { _, _ in editing = false; history = false; dismiss() }
+        .alert(MessageDeletion.confirmTitle, isPresented: $confirmingDelete) {
+            Button("Delete", role: .destructive) {
+                Task { await chat.deleteMessage(message) }
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(MessageDeletion.confirmMessage)
+        }
+        .onChange(of: chat.editingContext) { _, _ in editing = false; history = false; confirmingDelete = false; dismiss() }
     }
 }
 #endif
@@ -6915,6 +6997,7 @@ private struct NativeReplyContext: View {
     @State private var motion: Task<Void, Never>?
     private var hidden: Bool { chat.blockedAuthorIDs.contains(reference.author.id) && reference.author.id != chat.viewerID }
     private var excerpt: String {
+        if reference.deleted == true { return MessageDeletion.quote }
         let text = reference.fullText ?? reference.text
         return text.isEmpty ? (reference.hasAttachments ? "Attachment" : "Message") : text
     }
@@ -6941,7 +7024,7 @@ private struct NativeReplyContext: View {
                         else {
                             Avatar(name: reference.author.name, size: 16, avatarID: reference.author.avatarId, picture: reference.author.avatarPicture)
                             Text(reference.author.name).fontWeight(.bold).lineLimit(1)
-                            if reference.hasAttachments { CaperIcon(name: "paperclip", size: 13) }
+                            if reference.hasAttachments && reference.deleted != true { CaperIcon(name: "paperclip", size: 13) }
                         }
                         Spacer(minLength: 4)
                         Text("View original").font(CaperTheme.font(11)).fixedSize()

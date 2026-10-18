@@ -329,8 +329,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     return shared;
   };
   const snapshot = (source) => ({
-    message: source ? sharedMessage(source) : null,
-    seq: source ? channelHead(source.channelId) : "0",
+    message: source && !source.deletedAt ? sharedMessage(source) : null,
+    seq: source && !source.deletedAt ? channelHead(source.channelId) : "0",
   });
   const projectForwards = (changed) => {
     for (const [wrapperId, sourceId] of state.forwardSources) {
@@ -383,6 +383,38 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     state.editEvents.set(message.channelId, [...(state.editEvents.get(message.channelId) ?? []), event]);
     broadcast("chat", message.channelId, event);
     projectForwards(message);
+    return message;
+  };
+  // Like chat::deletion: a tombstone delivered as an edit, then an unpin.
+  const remove = (channel, message, who) => {
+    if (message.deletedAt) return message;
+    const versions = state.versions.get(message.id) ?? [
+      { revision: 1, content: clone(message.content), createdAt: message.createdAt },
+    ];
+    state.versions.set(message.id, versions);
+    const now = new Date().toISOString();
+    message.editSeq = String(BigInt(channelHead(message.channelId)) + 1n);
+    message.attachmentsSeq = message.editSeq;
+    message.revision = (message.revision ?? 1) + 1;
+    message.editedAt = now;
+    message.deletedAt = now;
+    message.content = { version: 1, type: "text", text: "" };
+    for (const reply of state.messages.get(channel.id) ?? [])
+      if (reply.replyTo?.id === message.id) {
+        delete reply.replyTo.fullText;
+        Object.assign(reply.replyTo, { text: "", hasAttachments: false, deleted: true });
+      }
+    const event = {
+      type: "message.edited",
+      schemaVersion: 1,
+      channelId: message.channelId,
+      seq: message.editSeq,
+      message: clone(message),
+    };
+    state.editEvents.set(message.channelId, [...(state.editEvents.get(message.channelId) ?? []), event]);
+    broadcast("chat", message.channelId, event);
+    projectForwards(message);
+    if (message.pin) pin(channel.id, message, who, false);
     return message;
   };
   const react = (channelId, message, emoji, userId, active) => {
@@ -1086,12 +1118,19 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         }
       }
       const editing = /^\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)(\/versions)?$/.exec(path);
-      if (editing && (method === "GET" || (method === "PUT" && !editing[3]))) {
+      if (editing && (method === "GET" || ((method === "PUT" || method === "DELETE") && !editing[3]))) {
         const channel = channelFor(editing[1]);
-        if (!user || !channel || !canRead(channel, user) || (method === "PUT" && !canParticipate(channel, user)))
+        if (!user || !channel || !canRead(channel, user) || (method !== "GET" && !canParticipate(channel, user)))
           return reject(response, 404, "resource not found");
         const message = state.messages.get(channel.id)?.find((message) => message.id === editing[2]);
         if (!message) return reject(response, 404, "Message not found.");
+        if (method === "DELETE") {
+          const who = state.chatSessions.get(request.headers["x-caper-chat-token"]);
+          if (!who || who.isGuest || who.id !== user.id) return reject(response, 401, "Messaging session required.");
+          if (message.author.id !== who.id) return reject(response, 403, "only the author can delete this message");
+          return json(response, 200, remove(channel, message, who));
+        }
+        if (message.deletedAt && (method === "PUT" || editing[3])) return reject(response, 404, "Message not found.");
         if (method === "PUT") {
           if (message.forward) return reject(response, 404, "Message not found.");
           const who = state.chatSessions.get(request.headers["x-caper-chat-token"]);

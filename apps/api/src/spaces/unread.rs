@@ -46,7 +46,7 @@ pub(super) async fn list(
           SELECT m.channel_seq AS seq FROM public.messages m
           JOIN public.chat_sessions cs ON cs.id=m.session_id
           JOIN public.users author ON author.id=cs.user_id AND author.deleted_at IS NULL
-          WHERE v.joined AND m.channel_id=v.id AND m.channel_seq>v.read_seq
+          WHERE v.joined AND m.channel_id=v.id AND m.channel_seq>v.read_seq AND m.deleted_at IS NULL
             AND (m.thread_root_id IS NULL OR m.broadcast) AND cs.user_id<>$1
             AND NOT EXISTS(SELECT 1 FROM public.user_blocks b
                  WHERE b.blocker_id=$1 AND b.blocked_id=cs.user_id AND b.deleted_at IS NULL)

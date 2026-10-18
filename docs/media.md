@@ -3661,6 +3661,42 @@ actions performed during development.
    Never drop retained content/outbox/migration records or roll SQLx images back
    across the applied migration.
 
+## Message deletion
+
+Authors can delete their own messages on web, Android, Apple and Rust desktop,
+from the message actions after a confirmation. Nobody else can delete them yet;
+space owners have no moderation delete.
+
+`DELETE /api/chat/channels/{channel}/messages/{message}` (chat session token, like
+an edit) is idempotent and returns a tombstone: `deletedAt`, empty text, no files
+or mentions, a bumped `revision`, and `editSeq`/`attachmentsSeq` at the new
+sequence. It is delivered as an ordinary `message.edited` event, followed by a
+`message.pin` unpin when it was pinned, so released clients that predate
+deletion still blank the message and drop its files. Current clients render
+"This message was deleted." in place, keep its thread summary, and offer no
+other actions. Replies quoting it carry `replyTo.deleted` with empty text and
+show "Original message was deleted."; forwards of it become unavailable.
+
+Nothing is purged (`202610180002_message_deletions.sql` only adds
+`messages.deleted_at`). The content is kept in `message_versions`, the files are
+retired (readable only by the author), and stored replay events and reply quotes
+are rewritten so replays never hand the content out again. Edits, reactions,
+pins, quoting, forwarding and version history are refused for a deleted message;
+thread replies under it are still allowed. Deleted messages stop counting as
+unread and never notify; a push already delivered stays on the device, and
+attachment URLs signed before deletion work until they expire. At most 60
+deletions per person per channel per minute.
+
+Validation: the ignored Postgres/Valkey test
+`chat::deletion::tests::deletion_keeps_the_row_scrubs_content_and_only_lets_the_author_delete`,
+web unit tests, the fixture test, and a Chromium check against
+`native-parity-fixture.mjs` at 1440px and 390px (menu, confirmation, tombstone).
+Android, Apple and desktop builds are covered by their unit tests where the
+toolchain was available; device checks remain open.
+
+No infrastructure, secret or configuration change is needed. The migration is
+additive and Ship rolls the API out before the gateway and web as usual.
+
 ## Message text: links and grouping
 
 Message content stays plain text on the wire

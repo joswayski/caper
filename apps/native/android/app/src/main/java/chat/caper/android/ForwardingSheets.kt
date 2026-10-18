@@ -15,6 +15,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.TextUnit
@@ -47,19 +48,23 @@ import java.util.UUID
             Avatar(message.author.name, 24.dp, avatarId = message.author.avatarId, avatarAsset = message.author.avatarAsset, avatarUrl = message.author.avatarUrl)
             Text(message.author.name, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             if (message.author.admin) AdminBadge()
-            if (message.editedAt != null) Text("edited", color = TextMuted, fontSize = 10.sp)
+            if (message.editedAt != null && message.deletedAt == null) Text("edited", color = TextMuted, fontSize = 10.sp)
         }
-        // A file-only original has empty text: show just its files, in their processing state.
-        if (message.content.text.isNotEmpty()) LinkedText(message.content.text, fontSize = 14.sp)
-        MessageAttachments(
-            message.content.attachments.map { it.withFreshUrls(state?.freshAttachmentUrls?.get(it.id)) }, false, onAttachmentFailed,
-            state?.attachmentProgress.orEmpty(), caption = message.author.name,
-        )
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            message.reactions.forEach { reaction -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                EmojiImage(reaction.emoji, reaction.emoji, Modifier.size(18.dp))
-                Text(reaction.authorIds.size.toString(), fontSize = 12.sp)
-            } }
+        // A reply in the shared thread may have been deleted since: only its note stays.
+        if (message.deletedAt != null) Text(DELETED_MESSAGE, color = TextMuted, fontSize = 14.sp, fontStyle = FontStyle.Italic)
+        else {
+            // A file-only original has empty text: show just its files, in their processing state.
+            if (message.content.text.isNotEmpty()) LinkedText(message.content.text, fontSize = 14.sp)
+            MessageAttachments(
+                message.content.attachments.map { it.withFreshUrls(state?.freshAttachmentUrls?.get(it.id)) }, false, onAttachmentFailed,
+                state?.attachmentProgress.orEmpty(), caption = message.author.name,
+            )
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                message.reactions.forEach { reaction -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    EmojiImage(reaction.emoji, reaction.emoji, Modifier.size(18.dp))
+                    Text(reaction.authorIds.size.toString(), fontSize = 12.sp)
+                } }
+            }
         }
     }
 }

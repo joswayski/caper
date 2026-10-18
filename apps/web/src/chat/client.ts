@@ -1397,6 +1397,35 @@ export class ChatClient {
     }
   }
 
+  async deleteMessage(messageId: string): Promise<void> {
+    const generation = this.generation,
+      channelId = this.state.channelId,
+      session = this.session;
+    if (this.controller.signal.aborted || !channelId || !session)
+      throw new Error("Your chat session is unavailable. Retry the session, then delete again.");
+    const response = await fetch(
+      `/api/chat/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}`,
+      {
+        method: "DELETE",
+        headers: { "x-caper-chat-token": session.token },
+        signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+      },
+    );
+    if (!response.ok) throw await apiError(response, "Couldn’t delete the message. Try again.");
+    const message: unknown = await response.json();
+    if (
+      !isChatMessage(message) ||
+      !message.deletedAt ||
+      message.channelId !== channelId ||
+      message.id !== messageId ||
+      message.author.id !== session.author.id
+    )
+      throw new Error("The chat service returned an invalid deletion.");
+    if (generation !== this.generation || this.controller.signal.aborted || session !== this.session) return;
+    this.timeline.mergeEdit(message);
+    this.update({ messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages });
+  }
+
   async reloadMessage(messageId: string): Promise<ChatMessage> {
     const generation = this.generation,
       channelId = this.state.channelId;

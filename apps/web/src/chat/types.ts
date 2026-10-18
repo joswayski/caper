@@ -124,6 +124,8 @@ export interface ChatReplyReference {
   fullText?: string;
   hasAttachments: boolean;
   threadRootId?: string;
+  /** The quoted message was deleted; `text` is empty. */
+  deleted?: boolean;
 }
 
 export interface ChatMessage {
@@ -148,6 +150,8 @@ export interface ChatMessage {
   revision?: number;
   editedAt?: string;
   editSeq?: string;
+  /** Set once the author deleted it: `content` is then empty and stays so. */
+  deletedAt?: string;
   replyTo?: ChatReplyReference;
 }
 
@@ -219,6 +223,7 @@ export function isChatMessage(value: unknown): value is ChatMessage {
     typeof message.clientMessageId === "string" &&
     (message.revision === undefined || (Number.isSafeInteger(message.revision) && message.revision >= 1)) &&
     (message.editedAt === undefined || typeof message.editedAt === "string") &&
+    (message.deletedAt === undefined || typeof message.deletedAt === "string") &&
     (message.editSeq === undefined ||
       (typeof message.editSeq === "string" && /^(0|[1-9]\d*)$/.test(message.editSeq))) &&
     ((message.revision ?? 1) === 1 || (message.editedAt !== undefined && message.editSeq !== undefined)) &&
@@ -233,6 +238,7 @@ export function isChatMessage(value: unknown): value is ChatMessage {
         (message.replyTo.fullText === undefined ||
           (typeof message.replyTo.fullText === "string" && Array.from(message.replyTo.fullText).length <= 4000)) &&
         typeof message.replyTo.hasAttachments === "boolean" &&
+        (message.replyTo.deleted === undefined || typeof message.replyTo.deleted === "boolean") &&
         (message.replyTo.threadRootId === undefined ||
           (typeof message.replyTo.threadRootId === "string" && !!message.replyTo.threadRootId)))) &&
     (message.broadcast === undefined ||

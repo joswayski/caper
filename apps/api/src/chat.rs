@@ -31,6 +31,7 @@ use std::{
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
+mod deletion;
 mod editing;
 mod forwarding;
 mod thread_reads;
@@ -171,7 +172,9 @@ pub(crate) fn routes() -> Router<AppState> {
         )
         .route(
             "/api/chat/channels/{channel}/messages/{message}",
-            get(editing::message).put(editing::edit),
+            get(editing::message)
+                .put(editing::edit)
+                .delete(deletion::delete),
         )
         .route(
             "/api/chat/channels/{channel}/messages/{message}/versions",
@@ -680,7 +683,7 @@ async fn reactor_list(
 ) -> Result<Value, ApiError> {
     let access = crate::spaces::channel_access(pool, channel, user).await?;
     let (message_id, payload): (i64, Value) = sqlx::query_as(
-        "SELECT id,payload FROM public.messages WHERE channel_id=$1 AND external_id=$2",
+        "SELECT id,payload FROM public.messages WHERE channel_id=$1 AND external_id=$2 AND deleted_at IS NULL",
     )
     .bind(access.id)
     .bind(message)
@@ -1147,7 +1150,7 @@ pub(crate) async fn send_message_with_spoilers(
     let reference = if let Some(reply_to) = reply_to {
         let target: Option<(Value, Option<i16>, Option<String>)> = sqlx::query_as(
             "SELECT m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL
-             WHERE m.channel_id=$1 AND m.external_id=$2 AND
+             WHERE m.channel_id=$1 AND m.external_id=$2 AND m.deleted_at IS NULL AND
                (($3::bigint IS NULL AND (m.thread_root_id IS NULL OR m.broadcast)) OR m.id=$3 OR m.thread_root_id=$3)",
         )
         .bind(channel_id)
@@ -1385,7 +1388,7 @@ async fn persist_reaction(
         crate::direct::authorize_interaction(&mut tx, channel_id, user_id).await?;
     }
     let row: Option<(i64, Value)> = sqlx::query_as(
-        "SELECT id,payload FROM public.messages WHERE channel_id=$1 AND external_id=$2 FOR UPDATE",
+        "SELECT id,payload FROM public.messages WHERE channel_id=$1 AND external_id=$2 AND deleted_at IS NULL FOR UPDATE",
     )
     .bind(channel_id)
     .bind(message)
@@ -1540,7 +1543,7 @@ async fn persist_pin(
         crate::direct::authorize_interaction(&mut tx, channel_id, user_id).await?;
     }
     let row: Option<(i64, Value, Option<i16>, Option<String>)> = sqlx::query_as(
-        "SELECT m.id,m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2 FOR UPDATE OF m")
+        "SELECT m.id,m.payload,u.avatar_id,u.display_name FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.channel_id=$1 AND m.external_id=$2 AND m.deleted_at IS NULL FOR UPDATE OF m")
         .bind(channel_id).bind(message).fetch_optional(&mut *tx).await.map_err(database_error)?;
     let (message_id, mut payload, message_avatar, message_name) =
         row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;

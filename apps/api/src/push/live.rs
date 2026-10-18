@@ -173,7 +173,7 @@ pub(crate) async fn read(
                 s.external_id AS space_id,s.name AS space_name,
                 CASE WHEN n.kind='direct.request' THEN COALESCE(req.eligible,false) AND n.created_at > now()-interval '24 hours'
                 WHEN n.message_id IS NULL THEN COALESCE(inv.eligible,false) AND n.created_at > now()-interval '24 hours'
-                ELSE (n.dismissed_at IS NULL AND m.created_at > now()-interval '24 hours'
+                ELSE (n.dismissed_at IS NULL AND m.deleted_at IS NULL AND m.created_at > now()-interval '24 hours'
                  AND recipient.deleted_at IS NULL AND author.id IS NOT NULL
                  AND ch.deleted_at IS NULL AND (ch.space_id IS NULL OR s.deleted_at IS NULL)
                  AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL

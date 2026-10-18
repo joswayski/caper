@@ -8,10 +8,12 @@ struct SharedOriginalView: View {
                 Avatar(name: message.author.name, size: 24, avatarID: message.author.avatarId, picture: message.author.avatarPicture)
                 Text(message.author.name).font(CaperTheme.font(13, weight: .bold))
                 if message.author.isAdmin { AdminBadge() }
-                if message.editedAt != nil { Text("edited").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted) }
+                if message.editedAt != nil && !message.isDeleted { Text("edited").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted) }
             }
             // File-only messages carry empty text; hide the empty row.
-            if !message.content.text.isEmpty {
+            if message.isDeleted {
+                Text(MessageDeletion.placeholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+            } else if !message.content.text.isEmpty {
                 // Links open in the system browser; selection would take their clicks on macOS.
                 if let linked = MessageLinks.attributed(message.content.text) {
                     Text(linked).font(CaperTheme.font(14)).tint(CaperTheme.terracottaBright)
@@ -19,13 +21,13 @@ struct SharedOriginalView: View {
                     Text(message.content.text).font(CaperTheme.font(14)).textSelection(.enabled)
                 }
             }
-            if let attachments = message.content.attachments, !attachments.isEmpty {
+            if !message.isDeleted, let attachments = message.content.attachments, !attachments.isEmpty {
                 // Another conversation's files: shown as delivered, without
                 // this timeline's URL refresh or upload progress.
                 MessageAttachmentsView(attachments: attachments, chat: nil)
             }
             ReactionFlowLayout(spacing: 8) {
-                ForEach(message.reactions ?? []) { reaction in
+                ForEach((message.isDeleted ? nil : message.reactions) ?? []) { reaction in
                     HStack(spacing: 4) {
                         EmojiArtworkView(emoji: reaction.emoji, size: 18)
                         Text("\(reaction.authorIds.count)").font(CaperTheme.font(12))

@@ -209,3 +209,56 @@ test("unloaded edit overflow requests resync instead of silently discarding a st
     "loaded edits survive old pin payloads beyond the unseen-cache limit",
   );
 });
+
+test("a deletion arrives as an edit that empties the message, drops its files and leaves the pin list", () => {
+  const timeline = new ChatTimeline();
+  const file = {
+    id: "file",
+    kind: "image",
+    name: "plan.png",
+    contentType: "image/png",
+    size: 4,
+    status: "ready",
+  } as unknown as NonNullable<ChatMessage["content"]["attachments"]>[number];
+  const pinned: ChatMessage = {
+    ...root,
+    content: { ...root.content, attachments: [file] },
+    attachmentsSeq: "2",
+    pinSeq: "3",
+    pin: { author: root.author, createdAt: root.createdAt },
+    thread: { replyCount: 1, participants: [root.author], seq: "4" },
+  };
+  timeline.reset([pinned], "4", [pinned]);
+  const deletion: ChatEditEvent = {
+    ...edit(root, 2, "5", ""),
+    message: {
+      ...edit(root, 2, "5", "").message,
+      attachmentsSeq: "5",
+      deletedAt: "2026-10-06T13:00:00Z",
+    },
+  };
+  assert.ok(isChatEditEvent(deletion));
+  timeline.applyEvent(deletion);
+  const [message] = timeline.messages;
+  assert.equal(message.deletedAt, "2026-10-06T13:00:00Z");
+  assert.equal(message.content.text, "");
+  assert.equal(message.content.attachments, undefined);
+  assert.equal(message.thread?.replyCount, 1, "the thread stays reachable");
+  assert.deepEqual(timeline.pinnedMessages, []);
+  // A late history page from before the deletion never brings it back.
+  timeline.prepend([pinned]);
+  assert.equal(timeline.messages[0].deletedAt, "2026-10-06T13:00:00Z");
+});
+
+test("replies quoting a deleted message validate without its text", () => {
+  assert.ok(
+    isChatMessage({
+      ...root,
+      id: "reply",
+      seq: "2",
+      clientMessageId: "send-reply",
+      replyTo: { id: "root", author: root.author, text: "", hasAttachments: false, deleted: true },
+    }),
+  );
+  assert.equal(isChatMessage({ ...root, deletedAt: 5 }), false);
+});

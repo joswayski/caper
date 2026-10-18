@@ -48,6 +48,8 @@ struct MessageEditorView: View {
             .interactiveDismissDisabled(busy)
             .onAppear { focused = true }
             .onChange(of: chat.editingContext) { _, _ in close() }
+            // Deleted meanwhile (here or elsewhere): nothing is left to edit.
+            .onChange(of: chat.isDeleted(baseline.id)) { _, deleted in if deleted { close() } }
     }
 
     private func perform(_ operation: @escaping @MainActor () async throws -> Void) {
@@ -105,6 +107,8 @@ struct MessageHistoryView: View {
             #endif
             .task(id: currentRevision) { await load(older: false) }
             .onChange(of: chat.editingContext) { _, _ in close() }
+            // A deleted message's versions are no longer available.
+            .onChange(of: chat.isDeleted(message.id)) { _, deleted in if deleted { close() } }
     }
 
     private func load(older: Bool) async {

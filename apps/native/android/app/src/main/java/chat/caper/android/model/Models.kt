@@ -392,8 +392,10 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
     val editedAt: String? = null,
     val editSeq: String? = null,
     val replyTo: MessageReply? = null,
+    /** Set once the author deleted it: a tombstone with empty content, kept in place. */
+    val deletedAt: String? = null,
 )
-@Serializable data class MessageReply(val id: String, val author: ChatAuthor, val text: String, val hasAttachments: Boolean, val threadRootId: String? = null, val fullText: String? = null)
+@Serializable data class MessageReply(val id: String, val author: ChatAuthor, val text: String, val hasAttachments: Boolean, val threadRootId: String? = null, val fullText: String? = null, val deleted: Boolean = false)
 @Serializable data class ThreadSummary(val replyCount: Int, val participants: List<ChatAuthor>, val seq: String)
 @Serializable data class UnreadThread(val rootId: String, val seq: String)
 @Serializable data class UnreadThreads(val threads: List<UnreadThread>)

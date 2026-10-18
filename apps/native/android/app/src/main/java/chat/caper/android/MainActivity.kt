@@ -127,6 +127,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -2007,6 +2008,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var conversationTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var editTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var deleteTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var historyTarget by remember { mutableStateOf<ChatMessage?>(null) }
     // Message ID and the pressed chip's emoji.
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -2069,6 +2071,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         forwardTarget = null
         conversationTarget = null
         editTarget = null
+        deleteTarget = null
         historyTarget = null
         blockTarget = null
         revealedRuns = emptySet()
@@ -2236,6 +2239,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             onReplyMessage = if (state.canParticipate && state.pendingMessage == null) ({ actionTarget = null; viewModel.replyTo(presented, inThread) }) else null,
             forward = { actionTarget = null; forwardTarget = presented },
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
+            onDelete = if (viewModel.canDelete(presented)) ({ actionTarget = null; deleteTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },
             onViewReactions = { presented.reactions.firstOrNull()?.let { reactorsTarget = presented.id to it.emoji }; actionTarget = null },
             blockLabel = presented.author.takeIf { state.account != null && !it.isGuest && it.id != selfId && (it.id in blocked || viewModel.blockTarget(it).canBlock) }?.let { author ->
@@ -2251,16 +2255,20 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
     blockTarget?.let { target -> BlockConfirmDialog(target, viewModel, { blockTarget = null }) }
     editTarget?.let { target ->
-        if (viewModel.canEdit(target)) MessageEditorDialog(target, viewModel) { editTarget = null }
+        // Closes if the message is deleted meanwhile.
+        if (viewModel.canEdit(state.messages.find { it.id == target.id } ?: target)) MessageEditorDialog(target, viewModel) { editTarget = null }
         else LaunchedEffect(target.id) { editTarget = null }
     }
+    deleteTarget?.let { target -> key(target.id) { DeleteMessageDialog(target, viewModel) { deleteTarget = null } } }
     forwardTarget?.let { target -> key(target.id) { ForwardPickerSheet(target, viewModel) { forwardTarget = null } } }
     conversationTarget?.let { target ->
         val current = state.messages.firstOrNull { it.id == target.id }
         if (current != null) key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
     }
     historyTarget?.let { target ->
-        MessageHistoryDialog(state.messages.find { it.id == target.id } ?: target, viewModel) { historyTarget = null }
+        val current = state.messages.find { it.id == target.id } ?: target
+        if (current.deletedAt == null) MessageHistoryDialog(current, viewModel) { historyTarget = null }
+        else LaunchedEffect(target.id) { historyTarget = null }
     }
     reactorsTarget?.let { (messageId, emoji) ->
         val presented = state.messages.firstOrNull { it.id == messageId }
@@ -2473,16 +2481,18 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     val saves = state.reactionSaves.filterKeys { it.startsWith("${message.id}:") }.values
     val interaction = remember(message.id) { MutableInteractionSource() }
     val pressing by interaction.collectIsPressedAsState()
+    // A deleted message keeps its header and place, without its content, quote, forward, pin or reactions.
+    val deleted = message.deletedAt != null
     // Pin ownership takes precedence over the mention wash; inline mention pills remain visible.
     val mentioned = message.pin == null && mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
-    val replyWash = message.replyTo != null && message.pin == null && state.focusedMessageId != message.id && state.thread?.rootId != message.id
+    val replyWash = !deleted && message.replyTo != null && message.pin == null && state.focusedMessageId != message.id && state.thread?.rootId != message.id
     Column((if (!mentioned) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
         val edge = 2.dp.toPx()
         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
     }).drawBehind {
         if (pressing) drawRect(Text.copy(alpha = 0.08f))
     }) {
-        message.pin?.let { pin ->
+        message.pin?.takeIf { !deleted }?.let { pin ->
             val pinInteraction = remember(message.id) { MutableInteractionSource() }
             val hovered by pinInteraction.collectIsHoveredAsState()
             LaunchedEffect(hovered) { if (hovered) openAuthor?.invoke(pin.author) }
@@ -2494,7 +2504,10 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
                 color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
         }
         if (inPins) Text(fullDateLabel(message.createdAt), Modifier.padding(start = 62.dp, end = 18.dp), color = TextMuted, fontSize = 10.sp)
-        message.replyTo?.let { reference -> ReplyContext(reference, state, message.clientMessageId, openReference?.let { open -> { open(reference) } }) }
+        message.replyTo?.takeIf { !deleted }?.let { reference ->
+            // A deleted original has nothing to show, so its quote does not open it.
+            ReplyContext(reference, state, message.clientMessageId, openReference?.takeIf { !reference.deleted }?.let { open -> { open(reference) } })
+        }
         // A grouped row stays a full-width long-press target, but drops the 48dp minimum so a run reads as one block.
         Box(Modifier.heightIn(min = if (grouped) 0.dp else 48.dp).combinedClickable(
             interactionSource = interaction,
@@ -2504,9 +2517,9 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
             onLongClickLabel = "Message actions for ${message.author.name}",
         )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) } }
         // A team mention (`@feedback`, `@admin`, …): the server told the Caper team, who can read and reply here.
-        if (notifiesCaperTeam(message.content)) Text(CAPER_TEAM_NOTIFIED, Modifier.padding(start = 62.dp, end = 18.dp, bottom = 6.dp), color = TextMuted, fontSize = 11.sp)
-        ForwardCard(message, state, onAttachmentFailed) { openConversation(message) }
-        FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        if (!deleted && notifiesCaperTeam(message.content)) Text(CAPER_TEAM_NOTIFIED, Modifier.padding(start = 62.dp, end = 18.dp, bottom = 6.dp), color = TextMuted, fontSize = 11.sp)
+        if (!deleted) ForwardCard(message, state, onAttachmentFailed) { openConversation(message) }
+        if (!deleted) FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
                 ReactionChip(
@@ -2559,11 +2572,15 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
     onViewReactions: (() -> Unit)? = null,
     blockLabel: String? = null,
     onBlock: () -> Unit = {},
+    /** Asks to confirm deleting; null unless the viewer may delete it. */
+    onDelete: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val clipboard = context.getSystemService(ClipboardManager::class.java)
     val own = state.chatAuthorId ?: state.account?.id
-    val canReact = state.canParticipate && own != null
+    // A deleted message keeps only its thread and its ID.
+    val deleted = message.deletedAt != null
+    val canReact = state.canParticipate && own != null && !deleted
     fun copy(label: String, value: String) {
         clipboard.setPrimaryClip(ClipData.newPlainText(label, value))
         onDismiss()
@@ -2593,16 +2610,18 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             Surface(shape = MaterialTheme.shapes.small, color = Surface) {
                 Column {
                     // Web's order: replies, forward, edit, history, reactions, pin, then copy and block.
-                    onReplyMessage?.let { SheetAction("Reply", icon = R.drawable.lucide_reply, onClick = it); HorizontalDivider(color = Border) }
-                    onReply?.let { SheetAction("Reply in thread", icon = R.drawable.lucide_thread, onClick = it); HorizontalDivider(color = Border) }
-                    if (state.account != null && (message.forward == null || message.forward.message != null)) {
+                    if (!deleted) onReplyMessage?.let { SheetAction("Reply", icon = R.drawable.lucide_reply, onClick = it); HorizontalDivider(color = Border) }
+                    if (!deleted || (message.thread?.replyCount ?: 0) > 0 || message.threadRootId != null) {
+                        onReply?.let { SheetAction("Reply in thread", icon = R.drawable.lucide_thread, onClick = it); HorizontalDivider(color = Border) }
+                    }
+                    if (!deleted && state.account != null && (message.forward == null || message.forward.message != null)) {
                         SheetAction("Forward message", onClick = forward)
                         HorizontalDivider(color = Border)
                     }
-                    onEdit?.let { SheetAction("Edit message", onClick = it); HorizontalDivider(color = Border) }
-                    if (message.forward == null && message.revision > 1) onHistory?.let { SheetAction("Message history", onClick = it); HorizontalDivider(color = Border) }
+                    if (!deleted) onEdit?.let { SheetAction("Edit message", onClick = it); HorizontalDivider(color = Border) }
+                    if (!deleted && message.forward == null && message.revision > 1) onHistory?.let { SheetAction("Message history", onClick = it); HorizontalDivider(color = Border) }
                     // Web, Apple and desktop: who reacted, from the first reaction's tab.
-                    if (message.reactions.isNotEmpty()) onViewReactions?.let { SheetAction("View reactions", onClick = it); HorizontalDivider(color = Border) }
+                    if (!deleted && message.reactions.isNotEmpty()) onViewReactions?.let { SheetAction("View reactions", onClick = it); HorizontalDivider(color = Border) }
                     if (canReact) {
                         val saving = state.pinSaves[message.id]?.saving == true
                         SheetAction(if (saving) "Saving…" else if (message.pin == null) "Pin message" else "Unpin message", enabled = !saving) { setPin(message.id, message.pin == null) }
@@ -2617,6 +2636,10 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                     blockLabel?.let { label ->
                         HorizontalDivider(color = Border)
                         SheetAction(label, if (label.startsWith("Block")) ErrorText else Text, onClick = onBlock)
+                    }
+                    if (!deleted) onDelete?.let {
+                        HorizontalDivider(color = Border)
+                        SheetAction("Delete message", ErrorText, icon = R.drawable.lucide_trash_2, onClick = it)
                     }
                 }
             }
@@ -2639,13 +2662,14 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
 @Composable private fun PinnedMessages(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, close: () -> Unit) {
     var conversationTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var editTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var deleteTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var historyTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var actionTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var pickerTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var reactorsTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var pinnerTarget by remember { mutableStateOf<ChatAuthor?>(null) }
-    LaunchedEffect(state.account?.id, state.selectedChannel?.id, state.selectedDirectId) { conversationTarget = null; editTarget = null; historyTarget = null; pinnerTarget = null }
+    LaunchedEffect(state.account?.id, state.selectedChannel?.id, state.selectedDirectId) { conversationTarget = null; editTarget = null; deleteTarget = null; historyTarget = null; pinnerTarget = null }
     // Each pin is its own card: a gap keeps their washes from running together.
     LazyColumn(modifier.fillMaxWidth(), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         state.messageContextError?.let { error -> item { Text(error, Modifier.padding(horizontal = 18.dp, vertical = 8.dp), color = ErrorText) } }
@@ -2698,6 +2722,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             onReplyMessage = { actionTarget = null; close(); viewModel.replyTo(current) },
             forward = { actionTarget = null; forwardTarget = current },
             onEdit = if (viewModel.canEdit(current)) ({ actionTarget = null; editTarget = current }) else null,
+            onDelete = if (viewModel.canDelete(current)) ({ actionTarget = null; deleteTarget = current }) else null,
             onHistory = { actionTarget = null; historyTarget = current },
             onViewReactions = { current.reactions.firstOrNull()?.let { reactorsTarget = current.id to it.emoji }; actionTarget = null })
     }
@@ -2714,10 +2739,15 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         }
     }
     editTarget?.let { target ->
-        if (viewModel.canEdit(target)) MessageEditorDialog(target, viewModel) { editTarget = null }
+        if (viewModel.canEdit(state.pinnedMessages.find { it.id == target.id } ?: target)) MessageEditorDialog(target, viewModel) { editTarget = null }
         else LaunchedEffect(target.id) { editTarget = null }
     }
-    historyTarget?.let { target -> MessageHistoryDialog(state.pinnedMessages.find { it.id == target.id } ?: target, viewModel) { historyTarget = null } }
+    deleteTarget?.let { target -> key(target.id) { DeleteMessageDialog(target, viewModel) { deleteTarget = null } } }
+    historyTarget?.let { target ->
+        val current = state.pinnedMessages.find { it.id == target.id } ?: target
+        if (current.deletedAt == null) MessageHistoryDialog(current, viewModel) { historyTarget = null }
+        else LaunchedEffect(target.id) { historyTarget = null }
+    }
 }
 
 private val emojiPickerCategories = listOf(
@@ -2784,7 +2814,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
 }
 @Composable private fun ReplyContext(reference: MessageReply, state: AppUiState, motionKey: String, onOpen: (() -> Unit)? = null) {
     val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
-    val text = (reference.fullText ?: reference.text).ifEmpty { if (reference.hasAttachments) "Attachment" else "Message" }
+    val text = if (reference.deleted) DELETED_REPLY else (reference.fullText ?: reference.text).ifEmpty { if (reference.hasAttachments) "Attachment" else "Message" }
     val preview = remember(text) { text.substring(0, text.offsetByCodePoints(0, minOf(100, text.codePointCount(0, text.length)))) }
     val surface = MaterialTheme.colorScheme.surface
     var expanded by rememberSaveable(reference.id, hidden) { mutableStateOf(false) }
@@ -2880,7 +2910,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
                         if (!expanded && (preview != text || clipped)) drawRect(Brush.verticalGradient(
                             listOf(surface.copy(alpha = 0f), surface), startY = size.height * 0.4f, endY = size.height,
                         ))
-                    }, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp,
+                    }, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp, fontStyle = if (reference.deleted) FontStyle.Italic else null,
                         maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
                         onTextLayout = { if (!expanded) clipped = it.hasVisualOverflow })
                 }
@@ -2932,6 +2962,9 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
     }
 }
 
+internal const val DELETED_MESSAGE = "This message was deleted."
+internal const val DELETED_REPLY = "Original message was deleted."
+
 /** A delivered message: its files on fresh URLs with their live processing state, and its resolved mentions. */
 @Composable private fun MessageRow(
     message: ChatMessage, state: AppUiState, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
@@ -2942,12 +2975,13 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
     message.author.name, message.author.isGuest, message.createdAt, message.content.text, false, message.author.avatarId,
     message.content.attachments.map { it.withFreshUrls(state.freshAttachmentUrls[it.id]) }, onAttachmentFailed,
     state.attachmentProgress, state.localAttachmentPreviews,
-    edited = message.forward == null && message.revision > 1, openHistory = openHistory,
+    edited = message.forward == null && message.revision > 1 && message.deletedAt == null, openHistory = openHistory,
     mentions = highlightedMentions(message.content.text, message.content.mentions), entries = message.content.mentions,
     openMention = openMention, mentionLabel = mentionLabel, grouped = grouped,
     openAuthor = if (message.author.isGuest || openAuthor == null) null else ({ openAuthor(message.author) }),
     admin = message.author.admin,
     avatarAsset = message.author.avatarAsset, avatarUrl = message.author.avatarUrl,
+    deleted = message.deletedAt != null,
 )
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
@@ -2962,6 +2996,8 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
     admin: Boolean = false,
     /** The author's custom picture, over their [avatarId] mascot. */
     avatarAsset: String? = null, avatarUrl: String? = null,
+    /** The author deleted it: a muted note in place of its text and files. */
+    deleted: Boolean = false,
 ) {
     val hover = remember { MutableInteractionSource() }
     val hovered by hover.collectIsHoveredAsState()
@@ -3000,7 +3036,8 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
             // A grouped row's "(edited)" follows its text instead.
             val inlineEdited = grouped && edited
             // A file-only message has empty text: show just its files.
-            if (text.isNotEmpty() || inlineEdited) {
+            if (deleted) Text(DELETED_MESSAGE, color = TextMuted, fontSize = 14.sp, lineHeight = 21.sp, fontStyle = FontStyle.Italic)
+            else if (text.isNotEmpty() || inlineEdited) {
                 // Unsent text stays plain; sent text gets mention pills and links.
                 val links = remember(text, mentions, pending) { if (pending) emptyList() else linkRanges(text, mentions.map { it.start until it.end }) }
                 if (mentions.isEmpty() && links.isEmpty() && !inlineEdited) Text(text, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
@@ -3026,7 +3063,7 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
                     )
                 }
             }
-            MessageAttachments(
+            if (!deleted) MessageAttachments(
                 attachments, pending, onAttachmentFailed, attachmentProgress, localAttachmentPreviews,
                 caption = listOf(author, timeLabel(createdAt, hour24)).filter { it.isNotEmpty() }.joinToString(" · "),
             )

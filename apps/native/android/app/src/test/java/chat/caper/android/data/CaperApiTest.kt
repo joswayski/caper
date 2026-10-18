@@ -110,6 +110,37 @@ class CaperApiTest {
         assertNull(versions.headers["x-caper-chat-token"])
     }
 
+    @Test fun `deleting sends an authenticated DELETE and returns the tombstone`() = runTest {
+        val tombstone = """{"id":"message00000001","channelId":"channel00001","seq":"3","author":{"id":"account00001","name":"Jose","isGuest":false},"content":{"version":1,"type":"text","text":""},"createdAt":"2026-09-23T00:00:00Z","clientMessageId":"00000000-0000-4000-8000-000000000123","revision":3,"editSeq":"14","editedAt":"2026-10-07T00:00:00Z","attachmentsSeq":"14","deletedAt":"2026-10-07T00:00:00Z"}"""
+        server.enqueue(MockResponse().setBody(tombstone))
+        server.enqueue(MockResponse().setResponseCode(403).setBody("""{"error":"only the author can delete this message"}"""))
+        server.enqueue(MockResponse().setBody(tombstone.replace(""","deletedAt":"2026-10-07T00:00:00Z"""", "")))
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        val deleted = api.deleteMessage("account-secret", "chat-secret", "channel00001", "message00000001")
+        assertEquals("2026-10-07T00:00:00Z", deleted.deletedAt)
+        assertEquals("", deleted.content.text)
+        assertEquals(3, deleted.revision)
+        val failure = runCatching { api.deleteMessage("account-secret", "chat-secret", "channel00001", "message00000001") }.exceptionOrNull()
+        assertEquals(403, (failure as ApiException).status)
+        assertEquals("only the author can delete this message", failure.message)
+        assertTrue(runCatching { api.deleteMessage("account-secret", "chat-secret", "channel00001", "message00000001") }.isFailure)
+        assertTrue(runCatching { api.deleteMessage("account-secret", "chat-secret", "channel00001", "../message") }.isFailure)
+        val request = server.takeRequest()
+        assertEquals("DELETE", request.method)
+        assertEquals("/api/chat/channels/channel00001/messages/message00000001", request.path)
+        assertEquals("Bearer account-secret", request.headers["Authorization"])
+        assertEquals("chat-secret", request.headers["x-caper-chat-token"])
+        assertEquals(0L, request.bodySize)
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test fun `replies to a deleted message carry the deleted quote`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"id":"message00000002","channelId":"channel00001","seq":"5","author":{"id":"account00002","name":"Ann","isGuest":false},"content":{"version":1,"type":"text","text":"reply"},"createdAt":"2026-09-23T00:00:00Z","clientMessageId":"00000000-0000-4000-8000-000000000124","replyTo":{"id":"message00000001","author":{"id":"account00001","name":"Jose","isGuest":false},"text":"","hasAttachments":false,"deleted":true}}"""))
+        val reply = CaperApi(baseUrl = server.url("/").toString()).loadMessage("account-secret", "channel00001", "message00000002")
+        assertTrue(reply.replyTo?.deleted == true)
+        assertNull(reply.deletedAt)
+    }
+
     @Test fun `logout sends an authenticated POST with an empty object`() = runTest {
         server.enqueue(MockResponse().setResponseCode(204))
         CaperApi(baseUrl = server.url("/").toString()).logout("account-secret")

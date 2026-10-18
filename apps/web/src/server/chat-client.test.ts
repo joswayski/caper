@@ -506,6 +506,32 @@ test("pending edits and pins only copy affected rows, including when a newer edi
   assert.equal(f.state.pinnedMessages.length, 0);
 });
 
+test("deleting sends DELETE and shows the returned tombstone before its event arrives", async (t) => {
+  const f = await sendingFixture(t);
+  f.sockets[0].message(committed({ clientMessageId: "doomed", text: "Oops" }, "1"));
+  const [original] = f.state.messages;
+  const tombstone = {
+    ...original,
+    revision: 2,
+    editSeq: "2",
+    attachmentsSeq: "2",
+    editedAt: original.createdAt,
+    deletedAt: original.createdAt,
+    content: { version: 1 as const, type: "text" as const, text: "" },
+  };
+  const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(tombstone));
+  await f.client.deleteMessage(original.id);
+  const deletes = fetch.mock.calls.filter(([, init]) => init?.method === "DELETE");
+  assert.deepEqual(
+    deletes.map(([url]) => url),
+    [`/api/chat/channels/general/messages/${original.id}`],
+  );
+  assert.equal(f.state.messages[0].deletedAt, original.createdAt);
+  assert.equal(f.state.messages[0].content.text, "");
+  fetch.mockResolvedValue(Response.json({ error: "only the author can delete this message" }, { status: 403 }));
+  await assert.rejects(f.client.deleteMessage(original.id), /only the author/);
+});
+
 test("pin PUTs share live state without advancing HTTP replay or restoring a later unpin", async (t) => {
   const f = await sendingFixture(t);
   const original = committed({ clientMessageId: "pin-target", text: "Shared pin" }, "1");

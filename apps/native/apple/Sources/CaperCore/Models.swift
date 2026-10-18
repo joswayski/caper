@@ -582,7 +582,11 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public var editedAt: String? = nil
     public var editSeq: String? = nil
     public var replyTo: MessageReply? = nil
+    /// Set once the author deleted it: a tombstone with empty content that
+    /// keeps its place, author and thread summary.
+    public var deletedAt: String? = nil
     public var isChannelMessage: Bool { threadRootId == nil || broadcast == true }
+    public var isDeleted: Bool { deletedAt != nil }
 
     func withProfile(_ own: ChatAuthor?) -> ChatMessage {
         guard let own, !own.isGuest else { return self }
@@ -618,12 +622,31 @@ public struct MessageReply: Codable, Equatable, Sendable {
     public let fullText: String?
     public let hasAttachments: Bool
     public let threadRootId: String?
+    /// The quoted message was deleted; its text is no longer sent.
+    public var deleted: Bool? = nil
     public init(message: ChatMessage) {
         id = message.id; author = message.author; threadRootId = message.threadRootId
         let source = message.content.text.isEmpty && message.forward != nil ? "Forwarded message" : message.content.text
         text = String(String.UnicodeScalarView(source.unicodeScalars.prefix(200)))
         fullText = source.unicodeScalars.count > 200 ? source : nil
         hasAttachments = !(message.content.attachments ?? []).isEmpty
+    }
+}
+
+/// The wording every client uses for deleted messages.
+public enum MessageDeletion {
+    public static let placeholder = "This message was deleted."
+    public static let quote = "Original message was deleted."
+    public static let confirmTitle = "Delete message?"
+    public static let confirmMessage = "This removes the message for everyone. This can’t be undone."
+    public static let failure = "Couldn’t delete the message. Try again."
+
+    /// The server's refusal ("only the author…", "deleting too quickly…") as a
+    /// sentence; anything else, such as a dropped connection, reads as `failure`.
+    static func failureMessage(for error: Error) -> String {
+        guard let refusal = error as? APIError, (400..<500).contains(refusal.status),
+              !refusal.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return failure }
+        return FriendlyError.sentence(refusal.message)
     }
 }
 
@@ -1145,6 +1168,12 @@ struct EditSnapshots: Sendable {
         result.content = snapshot.content; result.revision = snapshot.revision
         if attachments != nil { result.content.attachments = attachments }
         result.editedAt = snapshot.editedAt; result.editSeq = snapshot.editSeq
+        if snapshot.deletedAt != nil {
+            // A deletion also drops the files, at the tombstone's newer `attachmentsSeq`.
+            result.deletedAt = snapshot.deletedAt
+            result.content.attachments = nil
+            result.attachmentsSeq = snapshot.attachmentsSeq ?? message.attachmentsSeq
+        }
         return result
     }
 

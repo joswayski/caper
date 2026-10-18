@@ -18,6 +18,7 @@ import MessageActions, { preloadReactionPicker, type MessageActionTarget } from 
 import ReactorsPanel, { type ReactorsTarget } from "./ReactorsPanel.tsx";
 import ThreadPanel from "./ThreadPanel.tsx";
 import MessageEditor from "./MessageEditor.tsx";
+import DeleteMessage from "./DeleteMessage.tsx";
 import MessageHistory from "./MessageHistory.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
@@ -300,6 +301,7 @@ export default function Chat({
   const openingForward = useRef(false);
   const [editTarget, setEditTarget] = useState<string>();
   const [historyTarget, setHistoryTarget] = useState<string>();
+  const [deleteTarget, setDeleteTarget] = useState<string>();
   const [viewerTarget, setViewerTarget] = useState<ViewerTarget>();
   // Confirmations such as "Text copied." show briefly; `key` restarts the timer when repeated.
   const [actionStatus, setActionStatusState] = useState<{
@@ -358,6 +360,7 @@ export default function Chat({
     setConversationTarget(undefined);
     setEditTarget(undefined);
     setHistoryTarget(undefined);
+    setDeleteTarget(undefined);
     setViewerTarget(undefined);
     setActionStatus("");
     setReactionSaves({});
@@ -402,15 +405,19 @@ export default function Chat({
     setConversationTarget(undefined);
     setEditTarget(undefined);
     setHistoryTarget(undefined);
+    setDeleteTarget(undefined);
     setReplyTargets({});
   }, [state.author?.id, state.channelId]);
   useEffect(() => {
-    if (readOnly) setEditTarget(undefined);
+    if (!readOnly) return;
+    setEditTarget(undefined);
+    setDeleteTarget(undefined);
   }, [readOnly]);
   useEffect(() => {
     if (state.phase === "error") {
       setEditTarget(undefined);
       setHistoryTarget(undefined);
+      setDeleteTarget(undefined);
       // Pins close with the conversation rather than reopening after Try again.
       setShowPins(false);
     }
@@ -485,8 +492,10 @@ export default function Chat({
       openingForward.current = false;
     }
   };
+  // A message deleted meanwhile, here or elsewhere, closes its editor and history.
   const editMessage = findMessage(editTarget);
   const historyMessage = findMessage(historyTarget);
+  const deleteMessage = findMessage(deleteTarget);
   // Forwarded originals live on the forwarding message; the viewer closes if either goes.
   const viewerMessage = findMessage(viewerTarget?.messageId);
   const viewerSource = viewerTarget?.forwarded ? (viewerMessage?.forward?.message ?? undefined) : viewerMessage;
@@ -1433,6 +1442,7 @@ export default function Chat({
     nextInThread?: (typeof messages)[number],
   ) => {
     const pending = !("content" in message);
+    const deleted = !pending && !!message.deletedAt;
     const author = message.author;
     const divider = hydrated && !inThread ? dateDivider(message.createdAt, messages[index - 1]?.createdAt) : undefined;
     const run = pending ? undefined : (inThread ? threadRuns : channelRuns).get(message.clientMessageId);
@@ -1441,7 +1451,7 @@ export default function Chat({
     // The row above a follow-up gives up its bottom padding so the run reads as one block.
     const continued = joinsPrevious(message, inThread ? nextInThread : messages[index + 1], inThread);
     const edited =
-      "content" in message && !message.forward && (message.revision ?? 1) > 1 ? (
+      "content" in message && !message.forward && !message.deletedAt && (message.revision ?? 1) > 1 ? (
         <button
           type="button"
           className="chat-edited"
@@ -1520,6 +1530,7 @@ export default function Chat({
               cancelPress();
               if (
                 !("content" in message) ||
+                message.deletedAt ||
                 event.pointerType === "mouse" ||
                 !event.isPrimary ||
                 (event.target as HTMLElement).closest("button, a")
@@ -1553,7 +1564,12 @@ export default function Chat({
             onPointerUp={cancelPress}
             onPointerCancel={cancelPress}
             onContextMenu={(event) => {
-              if (!("content" in message) || !isTouchLayout() || (event.target as HTMLElement).closest("button, a"))
+              if (
+                !("content" in message) ||
+                message.deletedAt ||
+                !isTouchLayout() ||
+                (event.target as HTMLElement).closest("button, a")
+              )
                 return;
               event.preventDefault();
               cancelPress();
@@ -1562,8 +1578,8 @@ export default function Chat({
             }}
             tabIndex={pending ? undefined : -1}
           >
-            {!pending && message.pin && pinMarker(message.pin.author)}
-            {message.replyTo && (
+            {!pending && !deleted && message.pin && pinMarker(message.pin.author)}
+            {message.replyTo && !deleted && (
               <ReplyContext
                 motionKey={message.clientMessageId}
                 reference={message.replyTo}
@@ -1598,6 +1614,7 @@ export default function Chat({
                   Replied to a thread · View thread
                 </button>
               )}
+              {deleted && <p className="chat-message-deleted">This message was deleted.</p>}
               {(!("content" in message) || message.content.text) && (
                 <p>
                   {"content" in message ? messageText(message) : message.text}
@@ -1617,11 +1634,13 @@ export default function Chat({
               )}
               {"content" in message && (
                 <>
-                  <ForwardCard
-                    message={message}
-                    onOpen={(anchor) => void openConversation(message, anchor)}
-                    onView={viewFile(message.id, true)}
-                  />
+                  {!deleted && (
+                    <ForwardCard
+                      message={message}
+                      onOpen={(anchor) => void openConversation(message, anchor)}
+                      onView={viewFile(message.id, true)}
+                    />
+                  )}
                   <div
                     className="chat-message-tools"
                     role="group"
@@ -1640,7 +1659,7 @@ export default function Chat({
                         <Thread size={14} aria-hidden="true" />
                       </button>
                     )}
-                    {!readOnly && state.author && (
+                    {!readOnly && state.author && !deleted && (
                       <button
                         type="button"
                         className="chat-reply-message"
@@ -1652,81 +1671,87 @@ export default function Chat({
                         <Reply size={14} aria-hidden="true" />
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className="chat-add-reaction"
-                      onClick={(event) =>
-                        actionTarget?.messageId === message.id && actionTarget.mode === "emoji"
-                          ? setActionTarget(undefined)
-                          : setActionTarget({
-                              messageId: message.id,
-                              anchor: event.currentTarget,
-                              anchorRect: event.currentTarget.getBoundingClientRect(),
-                              mode: "emoji",
-                              drawer: isTouchLayout(),
-                              inThread,
-                            })
-                      }
-                      onMouseEnter={() => {
-                        if (viewerId && !readOnly && state.author) preloadReactionPicker();
-                      }}
-                      onFocus={preloadReactionPicker}
-                      disabled={!viewerId || readOnly || !state.author}
-                      aria-label="Add reaction"
-                      title="Add reaction"
-                      aria-haspopup="dialog"
-                      aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
-                    >
-                      <SmilePlus size={14} aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      className="chat-message-actions-trigger"
-                      aria-label={`Message actions for ${message.author.name}`}
-                      title="More actions"
-                      aria-haspopup="dialog"
-                      aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"}
-                      onClick={(event) =>
-                        // A second click on the open menu's own trigger closes it, like a toggle.
-                        actionTarget?.messageId === message.id && actionTarget.mode === "actions"
-                          ? setActionTarget(undefined)
-                          : openActions(message.id, event.currentTarget, inThread)
-                      }
-                    >
-                      <MoreHorizontal size={14} aria-hidden="true" />
-                    </button>
+                    {!deleted && (
+                      <>
+                        <button
+                          type="button"
+                          className="chat-add-reaction"
+                          onClick={(event) =>
+                            actionTarget?.messageId === message.id && actionTarget.mode === "emoji"
+                              ? setActionTarget(undefined)
+                              : setActionTarget({
+                                  messageId: message.id,
+                                  anchor: event.currentTarget,
+                                  anchorRect: event.currentTarget.getBoundingClientRect(),
+                                  mode: "emoji",
+                                  drawer: isTouchLayout(),
+                                  inThread,
+                                })
+                          }
+                          onMouseEnter={() => {
+                            if (viewerId && !readOnly && state.author) preloadReactionPicker();
+                          }}
+                          onFocus={preloadReactionPicker}
+                          disabled={!viewerId || readOnly || !state.author}
+                          aria-label="Add reaction"
+                          title="Add reaction"
+                          aria-haspopup="dialog"
+                          aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
+                        >
+                          <SmilePlus size={14} aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          className="chat-message-actions-trigger"
+                          aria-label={`Message actions for ${message.author.name}`}
+                          title="More actions"
+                          aria-haspopup="dialog"
+                          aria-expanded={actionTarget?.messageId === message.id && actionTarget.mode === "actions"}
+                          onClick={(event) =>
+                            // A second click on the open menu's own trigger closes it, like a toggle.
+                            actionTarget?.messageId === message.id && actionTarget.mode === "actions"
+                              ? setActionTarget(undefined)
+                              : openActions(message.id, event.currentTarget, inThread)
+                          }
+                        >
+                          <MoreHorizontal size={14} aria-hidden="true" />
+                        </button>
+                      </>
+                    )}
                   </div>
-                  <MessageReactions
-                    message={message}
-                    channelId={state.channelId}
-                    authorId={viewerId}
-                    readOnly={readOnly || !state.author}
-                    save={reactionSaves[message.id]}
-                    onReact={react}
-                    onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
-                    pickerOpen={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
-                    onAddReaction={(anchor) => {
-                      preloadReactionPicker();
-                      setActionTarget(
-                        actionTarget?.messageId === message.id && actionTarget.mode === "emoji"
-                          ? undefined
-                          : {
-                              messageId: message.id,
-                              anchor,
-                              anchorRect: anchor.getBoundingClientRect(),
-                              mode: "emoji",
-                              drawer: isTouchLayout(),
-                              inThread,
-                            },
-                      );
-                    }}
-                    onDismissError={() =>
-                      setReactionSaves((current) => ({
-                        ...current,
-                        [message.id]: undefined,
-                      }))
-                    }
-                  />
+                  {!deleted && (
+                    <MessageReactions
+                      message={message}
+                      channelId={state.channelId}
+                      authorId={viewerId}
+                      readOnly={readOnly || !state.author}
+                      save={reactionSaves[message.id]}
+                      onReact={react}
+                      onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
+                      pickerOpen={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
+                      onAddReaction={(anchor) => {
+                        preloadReactionPicker();
+                        setActionTarget(
+                          actionTarget?.messageId === message.id && actionTarget.mode === "emoji"
+                            ? undefined
+                            : {
+                                messageId: message.id,
+                                anchor,
+                                anchorRect: anchor.getBoundingClientRect(),
+                                mode: "emoji",
+                                drawer: isTouchLayout(),
+                                inThread,
+                              },
+                        );
+                      }}
+                      onDismissError={() =>
+                        setReactionSaves((current) => ({
+                          ...current,
+                          [message.id]: undefined,
+                        }))
+                      }
+                    />
+                  )}
                   {!inThread && !message.threadRootId && !!message.thread?.replyCount && (
                     <button
                       type="button"
@@ -2018,6 +2043,7 @@ export default function Chat({
                   conversationTarget ||
                   editTarget ||
                   historyTarget ||
+                  deleteTarget ||
                   mentionCard
                 )
               }
@@ -2273,7 +2299,7 @@ export default function Chat({
           />
         )}
 
-        {actionTarget && actionMessage && (
+        {actionTarget && actionMessage && !actionMessage.deletedAt && (
           <MessageActions
             key={actionMessage.id}
             message={actionMessage}
@@ -2298,6 +2324,19 @@ export default function Chat({
               !state.author?.isGuest &&
               state.author?.id === actionMessage.author.id
             }
+            canDelete={
+              !actionMessage.deletedAt &&
+              !readOnly &&
+              !state.author?.isGuest &&
+              state.author?.id === actionMessage.author.id
+            }
+            onDelete={() => {
+              actionTarget.anchor.focus({ preventScroll: true });
+              setActionTarget(undefined);
+              setEditTarget(undefined);
+              setHistoryTarget(undefined);
+              setDeleteTarget(actionMessage.id);
+            }}
             onClose={() => setActionTarget(undefined)}
             onCopied={setActionStatus}
             onReply={
@@ -2489,7 +2528,7 @@ export default function Chat({
         arrivals={arrivals.current}
         onClose={closeThread}
       />
-      {state.phase === "ready" && !readOnly && editMessage && clientRef.current && (
+      {state.phase === "ready" && !readOnly && editMessage && !editMessage.deletedAt && clientRef.current && (
         <MessageEditor
           key={editMessage.id}
           message={editMessage}
@@ -2498,7 +2537,15 @@ export default function Chat({
           onClose={() => setEditTarget(undefined)}
         />
       )}
-      {state.phase === "ready" && historyMessage && (
+      {state.phase === "ready" && !readOnly && deleteMessage && !deleteMessage.deletedAt && clientRef.current && (
+        <DeleteMessage
+          key={deleteMessage.id}
+          message={deleteMessage}
+          onDelete={() => clientRef.current!.deleteMessage(deleteMessage.id)}
+          onClose={() => setDeleteTarget(undefined)}
+        />
+      )}
+      {state.phase === "ready" && historyMessage && !historyMessage.deletedAt && (
         <MessageHistory
           key={`${historyMessage.id}:${historyMessage.revision ?? 1}`}
           message={historyMessage}

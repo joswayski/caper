@@ -12,6 +12,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.buildAnnotatedString
@@ -83,6 +86,30 @@ private fun draftAtEnd(text: String) = TextFieldValue(text, TextRange(text.lengt
                     Button(::save, enabled = !saving && validEditText(draft.text), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { PendingLabel("Save changes", "Saving…", saving) }
                 }
             }
+        }
+    }
+}
+
+/** Confirms deleting; on success the tombstone replaces the message at once, like a saved edit. */
+@Composable internal fun DeleteMessageDialog(message: ChatMessage, viewModel: CaperViewModel, close: () -> Unit) {
+    var working by remember(message.id) { mutableStateOf(false) }
+    var error by remember(message.id) { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    CaperDialog("Delete message?", { if (!working) close() }, busy = working) {
+        Text("This removes the message for everyone. This can’t be undone.", color = TextMuted)
+        error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(close, enabled = !working, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }
+            Spacer(Modifier.width(8.dp))
+            Button({
+                working = true; error = null
+                scope.launch {
+                    try { viewModel.deleteMessage(message); close() }
+                    catch (failure: CancellationException) { throw failure }
+                    catch (failure: Exception) { error = friendlyError(failure, "Couldn’t delete the message. Try again.") }
+                    finally { working = false }
+                }
+            }, enabled = !working, shape = MaterialTheme.shapes.small, colors = ButtonDefaults.buttonColors(containerColor = Danger)) { PendingLabel("Delete", "Deleting…", working) }
         }
     }
 }

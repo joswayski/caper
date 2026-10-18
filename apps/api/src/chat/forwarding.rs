@@ -230,7 +230,7 @@ async fn source_snapshot(
     tx: &mut Transaction<'_, Postgres>,
     source: i64,
 ) -> Result<Option<Value>, ApiError> {
-    let row: Option<(Value, i64, Option<i16>, Option<String>)> = sqlx::query_as("SELECT m.payload,c.last_seq,u.avatar_id,u.display_name FROM public.messages m JOIN public.channels c ON c.id=m.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.id=$1 AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL)")
+    let row: Option<(Value, i64, Option<i16>, Option<String>)> = sqlx::query_as("SELECT m.payload,c.last_seq,u.avatar_id,u.display_name FROM public.messages m JOIN public.channels c ON c.id=m.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.id=$1 AND m.deleted_at IS NULL AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL)")
         .bind(source).fetch_optional(&mut **tx).await.map_err(database_error)?;
     Ok(row.map(|(message, head, avatar, name)| json!({"message":shared_message(enrich_author(message,avatar,name.as_deref())),"seq":head.to_string()})))
 }
@@ -255,7 +255,7 @@ pub(super) async fn hydrate(
     // Keep unavailable sources in the result so cached content is cleared.
     let rows: Vec<ForwardSourceRow> = sqlx::query_as(
         "SELECT f.external_id,
-                CASE WHEN c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) THEN m.payload END,
+                CASE WHEN m.deleted_at IS NULL AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) THEN m.payload END,
                 c.last_seq,u.avatar_id,u.display_name
          FROM public.messages f JOIN public.messages m ON m.id=f.forward_source_id
          JOIN public.channels c ON c.id=m.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id
@@ -423,7 +423,7 @@ pub(super) async fn project_events(
     );
     let forwards: Vec<ProjectionRow> = sqlx::query_as(
         "SELECT f.id,f.channel_id,c.external_id,f.payload,
-                CASE WHEN sc.deleted_at IS NULL AND (sc.space_id IS NULL OR ss.deleted_at IS NULL) THEN source.payload END,
+                CASE WHEN source.deleted_at IS NULL AND sc.deleted_at IS NULL AND (sc.space_id IS NULL OR ss.deleted_at IS NULL) THEN source.payload END,
                 sc.last_seq,u.avatar_id,u.display_name
          FROM public.messages f JOIN public.messages source ON source.id=f.forward_source_id
          JOIN public.channels c ON c.id=f.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id
@@ -431,7 +431,7 @@ pub(super) async fn project_events(
          JOIN public.chat_sessions cs ON cs.id=source.session_id
          LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL
          WHERE source.external_id=ANY($1) AND f.channel_id=ANY($2)
-           AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL)
+           AND f.deleted_at IS NULL AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL)
          ORDER BY f.channel_id,f.id")
         .bind(&targets).bind(&destinations).fetch_all(&mut **tx).await.map_err(database_error)?;
     for (id, channel, external, mut payload, source, head, avatar, name) in forwards {

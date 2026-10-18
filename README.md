@@ -89,6 +89,10 @@ the previous/current versions side by side and older changes selectable below;
 broadcast replies update in both places. See platform validation gaps and
 [editing and rollout details](docs/media.md#message-editing).
 
+Authors can also delete their own messages on every client; a deleted message
+leaves "This message was deleted." in place and its thread stays reachable. See
+[message deletion](docs/media.md#message-deletion).
+
 Mac release downloads use a signed, notarized disk image: open it, drag Caper onto
 Applications, eject the image, then launch Caper from Applications. `~/Applications`
 also works without administrator access. Release copies outside these folders or

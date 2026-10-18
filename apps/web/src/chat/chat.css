@@ -441,7 +441,7 @@
   .chat-thread-older:hover:not(:disabled),
   .chat-forward-card > button:hover:not(:disabled),
   .chat-forward-body button:not(.chat-forward-send):hover:not(:disabled),
-  .chat-edit-dialog button:not(.chat-edit-save):hover:not(:disabled) {
+  .chat-edit-dialog button:not(.chat-edit-save, .chat-delete-confirm):hover:not(:disabled) {
     border-color: var(--text-muted);
     color: var(--text);
     background: var(--border);
@@ -1992,6 +1992,10 @@
   .chat-edit-dialog .chat-edit-save:hover:not(:disabled) {
     border-color: var(--action-hover);
     background: var(--action-hover);
+  }
+  .chat-edit-dialog .chat-delete-confirm:hover:not(:disabled) {
+    border-color: #a33b48;
+    background: #a33b48;
   }
 }
 :is(
@@ -4529,6 +4533,11 @@ a.chat-draft-preview {
   color: var(--on-action);
   background: var(--action);
 }
+.chat-edit-dialog .chat-delete-confirm {
+  border-color: #b93646;
+  color: #fff;
+  background: #b93646;
+}
 .chat-edit-dialog button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -4697,6 +4706,12 @@ a.chat-draft-preview {
 }
 .chat-message-actions .message-action-danger {
   color: #ff8c9a;
+}
+/* What remains of a deleted message, and of a reply's quote of one. */
+.chat-message p.chat-message-deleted,
+.chat-reply-excerpt-deleted {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 :is(.chat-message-actions, .chat-reaction-picker-heading, .chat-forward-dialog, .chat-edit-dialog, .chat-mention-card)

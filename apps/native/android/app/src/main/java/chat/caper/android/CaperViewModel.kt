@@ -1936,7 +1936,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     fun replyTo(message: ChatMessage, inThread: Boolean = false) {
         val state = mutable.value
-        if (!state.canParticipate || state.pendingMessage != null || message.channelId != state.selectedChannel?.id) return
+        if (!state.canParticipate || state.pendingMessage != null || message.channelId != state.selectedChannel?.id || message.deletedAt != null) return
         val root = if (inThread) state.thread?.rootId ?: return else if (message.threadRootId != null && !message.broadcast) message.threadRootId else null
         val key = root ?: "channel"
         val text = message.content.text.ifEmpty { if (message.forward != null) "Forwarded message" else "" }
@@ -2675,13 +2675,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         authoritativeReactionMessages[message.id]?.let { authoritativeReactionMessages[message.id] = mergeEdit(it, message) }
         pinSnapshots[message.id]?.let { pinSnapshots[message.id] = mergeEdit(it, message) }
+        val deleted = message.deletedAt != null
         mutable.value = mutable.value.copy(
-            messages = mutable.value.messages.map { mergeEdit(it, message) },
-            pinnedMessages = mutable.value.pinnedMessages.map { mergeEdit(it, message) },
+            messages = mutable.value.messages.map { mergeEdit(it, message).let { merged -> if (deleted) quoteDeleted(merged, message.id) else merged } },
+            pinnedMessages = mutable.value.pinnedMessages.map { mergeEdit(it, message).let { merged -> if (deleted) quoteDeleted(merged, message.id) else merged } },
+            // The server refuses quoting a deleted message, so a reply in progress lets it go.
+            replyTargets = if (deleted) mutable.value.replyTargets.filterValues { it.id != message.id } else mutable.value.replyTargets,
         )
     }
 
-    fun canEdit(message: ChatMessage): Boolean = message.forward == null && mutable.value.canParticipate &&
+    fun canEdit(message: ChatMessage): Boolean = message.forward == null && message.deletedAt == null && mutable.value.canParticipate &&
         mutable.value.selectedChannel?.id == message.channelId &&
         chatAuthor?.let { !it.isGuest && it.id == message.author.id } == true
 
@@ -2705,6 +2708,27 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         } finally {
             if (request == generation) mutable.value = mutable.value.copy(editIntents = mutable.value.editIntents - message.id)
         }
+    }
+
+    /** Forwards included: the author may delete anything they sent. */
+    fun canDelete(message: ChatMessage): Boolean = message.deletedAt == null && mutable.value.canParticipate &&
+        mutable.value.selectedChannel?.id == message.channelId &&
+        chatAuthor?.let { !it.isGuest && it.id == message.author.id } == true
+
+    suspend fun deleteMessage(message: ChatMessage): Unit {
+        check(canDelete(message)) { "Only the author can delete while participating." }
+        val request = generation
+        val authorId = requireNotNull(chatAuthor).id
+        val capability = chatToken ?: createChatSession(accountGeneration) ?: error("Chat session is unavailable.")
+        val result = try {
+            api.deleteMessage(accountToken, capability, message.channelId, message.id)
+        } catch (error: ApiException) {
+            if (error.status == 401 && chatToken == capability) chatToken = null
+            throw error
+        }
+        if (request != generation || mutable.value.selectedChannel?.id != message.channelId) throw kotlinx.coroutines.CancellationException()
+        require(result.author.id == authorId) { "Message author mismatch." }
+        applyEditSnapshot(result)
     }
 
     suspend fun reloadMessage(message: ChatMessage): ChatMessage {

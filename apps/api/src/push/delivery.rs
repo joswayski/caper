@@ -176,7 +176,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                 (s.deleted_at IS NULL AND (n.message_id IS NULL OR ch.deleted_at IS NULL)) AS conversation_live,
                 CASE WHEN n.kind='direct.request' THEN COALESCE(req.eligible,false)
                 WHEN n.message_id IS NULL THEN COALESCE(inv.eligible,false)
-                ELSE (recipient.deleted_at IS NULL AND author.id IS NOT NULL
+                ELSE (recipient.deleted_at IS NULL AND m.deleted_at IS NULL AND author.id IS NOT NULL
                  AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
                      AND ((b.blocker_id=n.user_id AND b.blocked_id=n.actor_id)
                          OR (ch.space_id IS NULL AND b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)))

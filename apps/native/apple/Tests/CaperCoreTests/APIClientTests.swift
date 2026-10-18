@@ -475,6 +475,48 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(event.message.pin?.author.name, "Pinner")
     }
 
+    func testMessageDELETEUsesChatTokenWithoutBodyAndReturnsTombstone() async throws {
+        let channel = "Channel12345", message = "Message00000001"
+        func respond(deletedAt: String?) {
+            MockURLProtocol.handler = { request in
+                XCTAssertEqual(request.httpMethod, "DELETE")
+                XCTAssertEqual(request.url?.path, "/api/chat/channels/\(channel)/messages/\(message)")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "x-caper-chat-token"), "chat-secret")
+                XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+                XCTAssertTrue(try requestBodyData(request)?.isEmpty ?? true)
+                let marker = deletedAt.map { #","deletedAt":"\#($0)""# } ?? ""
+                return (200, Data("""
+                {"id":"\(message)","channelId":"\(channel)","seq":"2","author":{"id":"u","name":"User","isGuest":false},"content":{"version":1,"type":"text","text":""},"createdAt":"now","clientMessageId":"c2","revision":3,"editedAt":"2026-10-18T00:00:00.123Z","editSeq":"9","attachmentsSeq":"9"\(marker)}
+                """.utf8))
+            }
+        }
+        respond(deletedAt: "2026-10-18T00:00:00.123Z")
+        let tombstone = try await client().deleteMessage(channelID: channel, messageID: message, sessionToken: "chat-secret")
+        XCTAssertEqual(tombstone.deletedAt, "2026-10-18T00:00:00.123Z")
+        XCTAssertTrue(tombstone.isDeleted)
+        XCTAssertEqual(tombstone.content.text, "")
+        XCTAssertEqual(tombstone.revision, 3)
+        XCTAssertEqual(tombstone.attachmentsSeq, "9")
+        // An empty message that is not a tombstone is not a valid answer.
+        respond(deletedAt: nil)
+        do {
+            _ = try await client().deleteMessage(channelID: channel, messageID: message, sessionToken: "chat-secret")
+            XCTFail("Expected an invalid deletion")
+        } catch let error as APIError { XCTAssertEqual(error.status, 502) }
+        MockURLProtocol.handler = { _ in (403, Data(#"{"error":"only the author can delete this message"}"#.utf8)) }
+        do {
+            _ = try await client().deleteMessage(channelID: channel, messageID: message, sessionToken: "chat-secret")
+            XCTFail("Expected the server's refusal")
+        } catch let error as APIError {
+            XCTAssertEqual(error.status, 403)
+            XCTAssertEqual(error.message, "only the author can delete this message")
+        }
+        do {
+            _ = try await client().deleteMessage(channelID: channel, messageID: "only-twelve1", sessionToken: "chat-secret")
+            XCTFail("Expected local message ID rejection")
+        } catch let error as APIError { XCTAssertEqual(error.status, 400) }
+    }
+
     func testHistoryDefaultsMissingPinnedMessagesToEmpty() throws {
         let history = try JSONDecoder().decode(ChatHistory.self, from: chatHistory("Channel12345", sequences: [1], cursor: 1, hasMore: false))
         XCTAssertEqual(history.pinnedMessages.count, 0)

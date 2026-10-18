@@ -846,6 +846,36 @@ test("editing retains versions, author ownership, thread identity and original s
   );
 });
 
+test("deleting leaves an author-only tombstone delivered as an edit, unpinned and unquotable", async (t) => {
+  const { request } = await setup(t);
+  const path = `/api/chat/channels/${ids.general}/messages`;
+  const session = (await request("/api/chat/session", { method: "POST", auth: true, body: { name: "ignored" } })).value;
+  const mutation = { auth: true, headers: { "x-caper-chat-token": session.token } };
+  const send = (body) => request(path, { ...mutation, method: "POST", body });
+  const original = (await send({ clientMessageId: randomUUID(), text: "TEST FIXTURE Delete me" })).value;
+  const target = `${path}/${original.id}`;
+  const reply = (await send({ clientMessageId: randomUUID(), text: "Quoting", replyToId: original.id })).value;
+  await request(`${target}/pin`, { ...mutation, method: "PUT", body: { active: true } });
+  const history = (await request(path, { auth: true })).value;
+  const peer = history.messages.find((row) => row.author.id === ids.member);
+  assert.equal((await request(`${path}/${peer.id}`, { ...mutation, method: "DELETE" })).response.status, 403);
+  const deleted = (await request(target, { ...mutation, method: "DELETE" })).value;
+  assert.equal(deleted.content.text, "");
+  assert.ok(deleted.deletedAt);
+  assert.equal(deleted.revision, 2);
+  assert.equal(deleted.pin, null);
+  assert.equal((await request(target, { ...mutation, method: "DELETE" })).value.deletedAt, deleted.deletedAt);
+  const after = (await request(path, { auth: true })).value;
+  assert.equal(after.messages.find((row) => row.id === reply.id).replyTo.deleted, true);
+  assert.equal(after.messages.find((row) => row.id === reply.id).replyTo.text, "");
+  assert.equal(
+    (await request(target, { ...mutation, method: "PUT", body: { text: "Back", expectedRevision: 2 } })).response
+      .status,
+    404,
+  );
+  assert.equal((await request(`${target}/versions`, { auth: true })).response.status, 404);
+});
+
 test("edit history is paginated and replay keeps the immutable original content", async (t) => {
   const { request, fixture } = await setup(t);
   const path = `/api/chat/channels/${ids.demo}/messages`;

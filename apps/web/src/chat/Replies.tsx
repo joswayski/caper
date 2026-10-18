@@ -214,8 +214,14 @@ export function ReplyContext({
             <span className="chat-reply-view">View original</span>
           </span>
           {!hidden && (
-            <span ref={excerpt} id={excerptId} className="chat-reply-excerpt">
-              {(expanded ? text : preview) || (reference.hasAttachments ? "Attachment" : "Message")}
+            <span
+              ref={excerpt}
+              id={excerptId}
+              className={`chat-reply-excerpt${reference.deleted ? " chat-reply-excerpt-deleted" : ""}`}
+            >
+              {reference.deleted
+                ? "Original message was deleted."
+                : (expanded ? text : preview) || (reference.hasAttachments ? "Attachment" : "Message")}
               {!expanded && preview !== text && "…"}
             </span>
           )}

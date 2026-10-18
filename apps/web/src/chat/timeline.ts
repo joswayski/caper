@@ -47,9 +47,10 @@ export class ChatTimeline {
   }
 
   get pinnedMessages() {
-    return [...this.pinnedById.values()].sort((a, b) =>
-      sequence(b.pinSeq ?? "0") > sequence(a.pinSeq ?? "0") ? 1 : -1,
-    );
+    // A deleted message's unpin follows its deletion as a separate event.
+    return [...this.pinnedById.values()]
+      .filter((message) => !message.deletedAt)
+      .sort((a, b) => (sequence(b.pinSeq ?? "0") > sequence(a.pinSeq ?? "0") ? 1 : -1));
   }
 
   reset(messages: ChatMessage[], cursor: string, pinnedMessages: ChatMessage[] = []) {

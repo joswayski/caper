@@ -88,4 +88,38 @@ class EditsTest {
             assertTrue(runCatching { event.validated("channel00001") }.isFailure)
         }
     }
+
+    private val tombstone = original.copy(
+        content = ChatContent(1, "text", ""), revision = 3, editedAt = "2026-10-07T00:00:00Z", editSeq = "16",
+        attachmentsSeq = "16", deletedAt = "2026-10-07T00:00:00Z", reactions = emptyList(), reactionSeq = null,
+        pin = null, pinSeq = null,
+    )
+
+    @Test fun `a deletion merges as an edit that drops files and blocks older content`() {
+        val withFile = mergeEdit(original, edited).copy(
+            content = edited.content.copy(attachments = listOf(ChatAttachment("AbCdEfGh12345678", "image", "image/avif", "a.avif", 10))), attachmentsSeq = "15",
+        )
+        val deleted = mergeEdit(withFile, tombstone)
+        assertEquals(tombstone.deletedAt, deleted.deletedAt)
+        assertEquals("", deleted.content.text)
+        assertTrue(deleted.content.attachments.isEmpty())
+        assertEquals("16", deleted.attachmentsSeq)
+        // Pins and reactions follow their own events; the thread summary stays reachable.
+        assertEquals(original.pin, deleted.pin)
+        assertEquals(original.thread, deleted.thread)
+        assertEquals(deleted, mergeEdit(deleted, edited))
+        assertEquals(tombstone.deletedAt, mergeEdit(deleted, deleted.copy(deletedAt = null)).deletedAt)
+        assertEquals("16", EditUpdate("message.edited", 1, "channel00001", "16", tombstone).validated("channel00001").seq)
+        assertTrue(runCatching { tombstone.copy(content = ChatContent(1, "text", "kept")).validated("channel00001") }.isFailure)
+        assertTrue(runCatching { tombstone.copy(deletedAt = "yesterday").validated("channel00001") }.isFailure)
+    }
+
+    @Test fun `loaded replies stop quoting a deleted message`() {
+        val reference = MessageReply(original.id, author, "original", true, fullText = "original")
+        val reply = edited.copy(id = "message00000002", replyTo = reference)
+        val quoted = quoteDeleted(reply, original.id).replyTo
+        assertEquals(MessageReply(original.id, author, "", false, deleted = true), quoted)
+        assertSame(reply, quoteDeleted(reply, "message00000009"))
+        assertSame(original, quoteDeleted(original, original.id))
+    }
 }

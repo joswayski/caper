@@ -28,6 +28,9 @@ internal fun ChatMessage.validated(
         require(editedAt != null && runCatching { Instant.parse(editedAt) }.isSuccess) { "Invalid edit timestamp." }
         require(editSeq != null && sequencePattern.matches(editSeq) && BigInteger(editSeq) > BigInteger(seq)) { "Invalid edit sequence." }
     }
+    deletedAt?.let {
+        require(runCatching { Instant.parse(it) }.isSuccess && revision > 1 && content.text.isEmpty()) { "Invalid deleted message." }
+    }
     pinSeq?.let { require(sequencePattern.matches(it) && runCatching { BigInteger(it) }.isSuccess) { "Invalid pin sequence." } }
     forwardSeq?.let { require(sequencePattern.matches(it)) { "Invalid forward sequence." } }
     forward?.let {

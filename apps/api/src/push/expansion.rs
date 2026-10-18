@@ -215,7 +215,7 @@ pub(super) async fn expand(
                 -- A forward's note shows its mentions but never notifies them.
                 CASE WHEN m.forward_source_id IS NULL THEN m.payload->'content'->'mentions' END AS mentions,
                 (c.deleted_at IS NULL AND (c.space_id IS NULL OR (s.deleted_at IS NULL AND NOT s.demo))
-                 AND m.created_at > now() - interval '24 hours') AS sendable,
+                 AND m.deleted_at IS NULL AND m.created_at > now() - interval '24 hours') AS sendable,
                 EXISTS(SELECT 1 FROM public.feedback_reports r WHERE r.message_id=m.id) AS reported
          FROM public.messages m
          JOIN public.chat_sessions cs ON cs.id=m.session_id

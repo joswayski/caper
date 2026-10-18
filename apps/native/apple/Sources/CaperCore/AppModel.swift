@@ -2814,6 +2814,7 @@ public final class ChatModel {
     private var pinSnapshots = PinSnapshots()
     private var forwardSnapshots = ForwardSnapshots()
     private var editSnapshots = EditSnapshots()
+    private var deletingMessages: Set<String> = []
     private var failedPinActions: [String: Bool] = [:]
     private struct PendingReaction: Equatable {
         let active: Bool
@@ -2868,7 +2869,34 @@ public final class ChatModel {
     }
 
     func canEdit(_ message: ChatMessage) -> Bool {
-        message.forward == nil && canInteract && channelID == message.channelId && currentAuthor?.isGuest == false && currentAuthor?.id == message.author.id
+        message.forward == nil && canDelete(message)
+    }
+
+    /// Your own messages, forwards included, while you can participate.
+    func canDelete(_ message: ChatMessage) -> Bool {
+        !message.isDeleted && canInteract && channelID == message.channelId && currentAuthor?.isGuest == false && currentAuthor?.id == message.author.id
+    }
+
+    /// Whether the loaded copy of a message is now a tombstone.
+    func isDeleted(_ messageID: String) -> Bool {
+        (messageSnapshots + pinnedMessageSnapshots).contains { $0.id == messageID && $0.isDeleted }
+    }
+
+    /// Merges the returned tombstone like a saved edit; a failure shows as the conversation error.
+    func deleteMessage(_ message: ChatMessage) async {
+        guard canDelete(message), let session, !deletingMessages.contains(message.id) else { return }
+        let request = generation
+        deletingMessages.insert(message.id)
+        defer { if request == generation { deletingMessages.remove(message.id) } }
+        do {
+            let result = try await api.deleteMessage(channelID: message.channelId, messageID: message.id, sessionToken: session.token)
+            guard request == generation, channelID == message.channelId else { return }
+            guard result.author.id == session.author.id else { error = "Message author mismatch."; return }
+            if !applyEditSnapshot(result) { requestResync(generation: request, channelID: message.channelId) }
+        } catch {
+            guard request == generation, channelID == message.channelId, !(error is CancellationError) else { return }
+            self.error = MessageDeletion.failureMessage(for: error)
+        }
     }
 
     func editMessage(_ message: ChatMessage, text: String) async throws {
@@ -3313,7 +3341,7 @@ public final class ChatModel {
     }
 
     public func reply(to message: ChatMessage, inThread: Bool = false) {
-        guard canInteract, delivery.pending == nil, message.channelId == channelID else { return }
+        guard canInteract, delivery.pending == nil, message.channelId == channelID, !message.isDeleted else { return }
         guard !inThread || threadRootID != nil else { return }
         let root = inThread ? threadRootID : (message.isChannelMessage ? nil : message.threadRootId)
         replyTargets[root ?? "channel"] = MessageReply(message: message)

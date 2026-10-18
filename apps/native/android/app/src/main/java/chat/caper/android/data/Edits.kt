@@ -24,9 +24,17 @@ internal fun mergeEdit(current: ChatMessage, incoming: ChatMessage): ChatMessage
     val edited = current.copy(
         content = incoming.content.copy(attachments = current.content.attachments),
         revision = incoming.revision, editedAt = incoming.editedAt, editSeq = incoming.editSeq,
+        // A deletion arrives as an edit; its newer `attachmentsSeq` drops the files below.
+        deletedAt = incoming.deletedAt ?: current.deletedAt,
     )
     return newerAttachments(edited, incoming)
 }
+
+/** A loaded reply stops quoting [deletedId] once it is deleted, as a reload would show it. */
+internal fun quoteDeleted(message: ChatMessage, deletedId: String): ChatMessage =
+    message.replyTo?.takeIf { it.id == deletedId && !it.deleted }?.let {
+        message.copy(replyTo = it.copy(text = "", fullText = null, hasAttachments = false, deleted = true))
+    } ?: message
 
 /** Keep loaded overlays; bound only edits awaiting an unloaded page. */
 internal fun cacheEditSnapshot(

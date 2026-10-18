@@ -322,6 +322,18 @@ class CaperApi(
         return result.validated(channel)
     }
 
+    /** Returns the tombstone; repeating it on a deleted message returns the same one. */
+    suspend fun deleteMessage(token: String?, chatToken: String, channel: String, message: String): ChatMessage {
+        require(messageId.matches(message)) { "Invalid message ID." }
+        val result: ChatMessage = request(
+            "/api/chat/channels/${channel.pathId()}/messages/$message", "DELETE", token,
+            headers = mapOf("x-caper-chat-token" to chatToken),
+        )
+        require(result.id == message) { "Message identity mismatch." }
+        require(result.deletedAt != null) { "The message was not deleted." }
+        return result.validated(channel)
+    }
+
     suspend fun loadMessage(token: String?, channel: String, message: String): ChatMessage {
         require(messageId.matches(message)) { "Invalid message ID." }
         val result: ChatMessage = get("/api/chat/channels/${channel.pathId()}/messages/$message", token)
