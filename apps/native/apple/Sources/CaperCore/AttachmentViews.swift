@@ -1817,11 +1817,17 @@ struct AttachmentDraftsView: View {
                     .overlay(alignment: .topLeading) {
                         Button { chat.toggleAttachmentSpoiler(id: draft.id) } label: {
                             Image(systemName: draft.spoiler ? "eye.slash.fill" : "eye")
-                                .frame(minWidth: 44, minHeight: 44)
-                                .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                                .font(.system(size: 14))
+                                .frame(width: 24, height: 24)
+                                .background(.black.opacity(0.8), in: Circle())
+                                .padding(4)
+                                #if os(iOS)
+                                .frame(width: 44, height: 44, alignment: .topLeading)
+                                #endif
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(CaperTheme.text)
+                        .foregroundStyle(.white)
                         .accessibilityLabel(draft.spoiler ? "Remove spoiler from attachment" : "Mark \(draft.name) as spoiler")
                         .accessibilityValue(draft.spoiler ? "Spoiler" : "Not a spoiler")
                         .help(draft.spoiler ? "Remove spoiler" : "Mark as spoiler")
