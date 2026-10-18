@@ -17501,14 +17501,11 @@ impl CaperApp {
                 );
                 let response = ui.place(
                     toggle_rect,
-                    egui::Button::new(if draft.spoiler {
-                        "Spoiler on"
-                    } else {
-                        "Spoiler off"
-                    })
-                    .fill(SURFACE)
-                    .small()
-                    .truncate(),
+                    egui::Button::new("Spoiler")
+                        .selected(draft.spoiler)
+                        .fill(SURFACE)
+                        .small()
+                        .truncate(),
                 );
                 response.widget_info(|| {
                     egui::WidgetInfo::selected(
@@ -40403,7 +40400,7 @@ mod tests {
             .timeline
             .messages()
             .flat_map(|message| message.content.attachments.clone())
-            .filter(|file| crate::viewer::viewable(file))
+            .filter(crate::viewer::viewable)
             .take(2)
             .collect();
         assert_eq!(files.len(), 2);

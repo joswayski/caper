@@ -2586,6 +2586,8 @@ a.chat-draft-preview {
 .chat-spoiler {
   display: grid;
   place-items: center;
+  min-width: min(160px, 100%);
+  min-height: 80px;
   padding: 0;
   color: var(--text);
   background: radial-gradient(ellipse at 25% 20%, var(--border), transparent 75%), var(--surface-raised);
