@@ -2556,7 +2556,7 @@ private struct VoiceParticipantsList: View {
                 VoiceFace(person: person, size: 30, badges: false)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(person.name + (person.isSelf ? " (you)" : ""))
-                        .font(CaperTheme.font(13, weight: person.speaking ? .bold : .medium)).lineLimit(1)
+                        .font(CaperTheme.font(13, weight: person.speaking ? .black : .medium)).lineLimit(1)
                         .foregroundStyle(person.speaking ? CaperTheme.text : CaperTheme.muted)
                     status(person)
                 }

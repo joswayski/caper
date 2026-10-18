@@ -496,7 +496,7 @@
 }
 .participant-name[data-speaking] strong {
   color: var(--text);
-  font-weight: 700;
+  font-weight: 900;
 }
 /* Mute and deafen show as icons, like Discord; the words stay for screen readers. */
 .participant-status {

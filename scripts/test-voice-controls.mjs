@@ -1435,7 +1435,7 @@ try {
       wait(`document.querySelector('.live-everyone .avatar.speaking')`);
       assert.deepEqual(
         nameStyles(),
-        [["rgb(243, 244, 245)", "700"], quietNames[1]],
+        [["rgb(243, 244, 245)", "900"], quietNames[1]],
         "Only the speaking participant's name becomes bright and bold",
       );
       screenshot(`voice-names-speaking-${width}`);
