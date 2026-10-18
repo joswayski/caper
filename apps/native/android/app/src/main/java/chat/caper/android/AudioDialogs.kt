@@ -103,8 +103,8 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
                     }
                     var gain by remember { mutableIntStateOf(preferences.getInt("inputGain", 100)) }
                     VolumeRow("Input volume", gain)
-                    Slider(gain.toFloat(), { gain = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setInputGain(context, gain) },
-                        Modifier.semantics { contentDescription = "Input volume" }, valueRange = 0f..200f)
+                    DefaultSlider(gain.toFloat(), { gain = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setInputGain(context, gain) },
+                        Modifier.semantics { contentDescription = "Input volume" }, valueRange = 0f..200f, defaultValue = 100f)
                 } else {
                     Text("Audio output", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) voice.routes.forEach { route ->
@@ -115,8 +115,8 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
                     } else Text("Choose audio output in system settings.", color = TextMuted, fontSize = 11.sp)
                     var volume by remember { mutableIntStateOf(preferences.getInt("outputVolume", 100)) }
                     VolumeRow("Output volume", volume)
-                    Slider(volume.toFloat(), { volume = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setOutputVolume(context, volume) },
-                        Modifier.semantics { contentDescription = "Output volume" }, valueRange = 0f..200f)
+                    DefaultSlider(volume.toFloat(), { volume = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setOutputVolume(context, volume) },
+                        Modifier.semantics { contentDescription = "Output volume" }, valueRange = 0f..200f, defaultValue = 100f)
                 }
             }
         }
@@ -310,8 +310,8 @@ private const val MAX_RECORDING_SECONDS = 30
     CaperDialog("Audio test", close) {
         Text("Only you can hear these tests.", color = TextMuted, fontSize = 12.sp)
         VolumeRow("Microphone volume", inputGain)
-        Slider(inputGain.toFloat(), { inputGain = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setInputGain(context, inputGain); prejoin?.gain(inputGain) },
-            modifier = Modifier.semantics { contentDescription = "Test microphone volume" }, valueRange = 0f..200f)
+        DefaultSlider(inputGain.toFloat(), { inputGain = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setInputGain(context, inputGain); prejoin?.gain(inputGain) },
+            modifier = Modifier.semantics { contentDescription = "Test microphone volume" }, valueRange = 0f..200f, defaultValue = 100f)
         Text("Speaker", fontWeight = FontWeight.Bold, fontSize = 12.sp)
         if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) voice.routes.forEach { route ->
             Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable { VoiceCallService.selectRoute(context, route.id) }, verticalAlignment = Alignment.CenterVertically) {
@@ -320,8 +320,8 @@ private const val MAX_RECORDING_SECONDS = 30
             }
         } else Text("Choose speakers in system settings.", color = TextMuted, fontSize = 11.sp)
         VolumeRow("Speaker volume", outputVolume)
-        Slider(outputVolume.toFloat(), { outputVolume = it.toInt(); CaperEffects.slider(it / 200f); stopPlayback(); VoiceCallService.setOutputVolume(context, outputVolume) },
-            modifier = Modifier.semantics { contentDescription = "Test speaker volume" }, valueRange = 0f..200f)
+        DefaultSlider(outputVolume.toFloat(), { outputVolume = it.toInt(); CaperEffects.slider(it / 200f); stopPlayback(); VoiceCallService.setOutputVolume(context, outputVolume) },
+            modifier = Modifier.semantics { contentDescription = "Test speaker volume" }, valueRange = 0f..200f, defaultValue = 100f)
         OutlinedButton({ speakerError = false; speakerPlaying = !speakerPlaying }, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors(),
             modifier = Modifier.semantics { stateDescription = if (speakerPlaying) "On" else "Off" }) {
             Text(if (speakerPlaying) "Stop speaker test" else "Test speakers")
@@ -341,8 +341,8 @@ private const val MAX_RECORDING_SECONDS = 30
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("Voice enhancement", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("$strength%", color = TextMuted, fontSize = 11.sp, style = TabularNumbers)
             }
-            Slider(strength.toFloat(), { strength = it.toInt(); CaperEffects.slider(it / 100f); VoiceCallService.setProcessingStrength(context, strength); prejoin?.processingStrength(strength) },
-                modifier = Modifier.semantics { contentDescription = "Voice processing" }, enabled = !testing, valueRange = 0f..100f)
+            DefaultSlider(strength.toFloat(), { strength = it.toInt(); CaperEffects.slider(it / 100f); VoiceCallService.setProcessingStrength(context, strength); prejoin?.processingStrength(strength) },
+                modifier = Modifier.semantics { contentDescription = "Voice processing" }, enabled = !testing, valueRange = 0f..100f, defaultValue = 25f)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("Natural", color = TextMuted, fontSize = 10.sp); Text("Enhanced", color = TextMuted, fontSize = 10.sp)
             }

@@ -805,8 +805,8 @@ private class VoiceListRequest(val openId: String?)
                 Text("User volume", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Text)
                 Text("$volume%", fontSize = 11.sp, color = TextMuted, style = TabularNumbers)
             }
-            Slider(volume.toFloat(), { CaperEffects.slider(it / 200f); VoiceCallService.setParticipantVolume(context, person.id, it.toInt()) },
-                Modifier.semantics { contentDescription = "${person.name} volume" }, valueRange = 0f..200f)
+            DefaultSlider(volume.toFloat(), { CaperEffects.slider(it / 200f); VoiceCallService.setParticipantVolume(context, person.id, it.toInt()) },
+                Modifier.semantics { contentDescription = "${person.name} volume" }, valueRange = 0f..200f, defaultValue = 100f)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("Mute for me", Modifier.weight(1f), fontSize = 12.sp, color = Text)
                 Switch(locallyMuted, { CaperEffects.toggle(!it); VoiceCallService.toggleParticipantMute(context, person.id) },

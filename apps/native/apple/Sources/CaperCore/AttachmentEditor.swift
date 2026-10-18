@@ -465,8 +465,8 @@ struct AttachmentEditor: View {
         return HStack(spacing: 10) {
             Text("Size").font(CaperTheme.font(12, weight: .medium)).foregroundStyle(CaperTheme.muted)
                 .accessibilityHidden(true)
-            Slider(value: Binding(get: { value }, set: { chooseSize($0) }), in: range, step: 1)
-                .tint(CaperTheme.terracottaBright)
+            DefaultSlider(value: Binding(get: { value }, set: { chooseSize($0) }), in: range, step: 1,
+                          defaultValue: drawing ? AttachmentEdit.initialStrokeSize : AttachmentEdit.initialTextSize)
                 .frame(minWidth: 120, maxWidth: 240)
                 .accessibilityLabel(drawing ? "Line size" : "Text size")
                 .accessibilityValue("\(Int(value)) points")

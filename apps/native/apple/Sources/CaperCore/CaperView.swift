@@ -2612,7 +2612,7 @@ private struct VoiceParticipantsList: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("User volume · \(voice.participantGains[person.id] ?? 100)%")
                 .font(CaperTheme.font(12, weight: .bold))
-            CaperSlider(value: gain(person.id), in: 0...200, step: 1)
+            CaperSlider(value: gain(person.id), in: 0...200, step: 1, defaultValue: 100)
                 .accessibilityLabel("\(person.name) volume")
             Toggle("Mute for me", isOn: mutedForMe(person.id))
                 .font(CaperTheme.font(12, weight: .medium))
@@ -3333,11 +3333,11 @@ private struct AccountAudioMenu: View {
             if let error { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error) }
             if input {
                 Text("Input volume · \(voice.inputGain)%").font(CaperTheme.font(12))
-                CaperSlider(value: Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)); CaperEffects.shared.slider($0 / 200) }), in: 0...200, step: 1)
+                CaperSlider(value: Binding(get: { Double(voice.inputGain) }, set: { voice.setInputGain(Int($0)); CaperEffects.shared.slider($0 / 200) }), in: 0...200, step: 1, defaultValue: 100)
                     .accessibilityLabel("Input volume")
             } else {
                 Text("Output volume · \(voice.outputGain)%").font(CaperTheme.font(12))
-                CaperSlider(value: Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)); CaperEffects.shared.slider($0 / 200) }), in: 0...200, step: 1)
+                CaperSlider(value: Binding(get: { Double(voice.outputGain) }, set: { voice.setOutputGain(Int($0)); CaperEffects.shared.slider($0 / 200) }), in: 0...200, step: 1, defaultValue: 100)
                     .accessibilityLabel("Output volume")
             }
         }.padding(16).frame(width: 260).background(CaperTheme.surface)
@@ -9683,14 +9683,48 @@ private struct CaperSlider: View {
     @Binding var value: Double
     let bounds: ClosedRange<Double>
     let step: Double
-    init(value: Binding<Double>, in bounds: ClosedRange<Double>, step: Double) {
-        _value = value; self.bounds = bounds; self.step = step
+    let defaultValue: Double
+    init(value: Binding<Double>, in bounds: ClosedRange<Double>, step: Double, defaultValue: Double) {
+        _value = value; self.bounds = bounds; self.step = step; self.defaultValue = defaultValue
     }
     var body: some View {
-        Slider(value: $value, in: bounds, step: step)
+        DefaultSlider(value: $value, in: bounds, step: step, defaultValue: defaultValue)
+            .accessibilityValue("\(Int(value))%")
+    }
+}
+
+/// Keep the system slider's keyboard/VoiceOver adjustments exact; magnetism is
+/// restricted to an observed pointer/touch gesture, not every binding write.
+struct DefaultSlider: View {
+    @Binding var value: Double
+    let bounds: ClosedRange<Double>
+    let step: Double
+    let defaultValue: Double
+    @GestureState private var dragging = false
+    @Environment(\.layoutDirection) private var layoutDirection
+    @Environment(\.isEnabled) private var enabled
+
+    init(value: Binding<Double>, in bounds: ClosedRange<Double>, step: Double, defaultValue: Double) {
+        _value = value; self.bounds = bounds; self.step = step; self.defaultValue = defaultValue
+    }
+
+    var body: some View {
+        Slider(value: Binding(get: { value }, set: { next in
+            let radius = max(step, (bounds.upperBound - bounds.lowerBound) * 0.02)
+            value = dragging && abs(next - defaultValue) <= radius ? defaultValue : next
+        }), in: bounds, step: step)
             .tint(CaperTheme.terracottaBright)
             .frame(height: 32)
-            .accessibilityValue("\(Int(value))%")
+            .simultaneousGesture(DragGesture(minimumDistance: 0).updating($dragging) { _, active, _ in active = true })
+            .overlay {
+                GeometryReader { geometry in
+                    let fraction = (defaultValue - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound)
+                    let position = layoutDirection == .rightToLeft ? 1 - fraction : fraction
+                    Rectangle().fill(CaperTheme.muted.opacity(enabled ? 0.8 : 0.35))
+                        .frame(width: 2, height: 4)
+                        .position(x: 10 + max(0, geometry.size.width - 20) * position, y: 28)
+                }.allowsHitTesting(false).accessibilityHidden(true)
+            }
     }
 }
 
@@ -9805,7 +9839,7 @@ private struct AudioPreferencesView: View {
             AudioRouteRow(title: "Microphone", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
             #endif
             HStack { Text("Microphone volume"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12)).monospacedDigit()
-            CaperSlider(value: inputGain, in: 0...200, step: 1)
+            CaperSlider(value: inputGain, in: 0...200, step: 1, defaultValue: 100)
                 .accessibilityLabel("Test microphone volume")
                 .accessibilityValue("\(voice.inputGain)%")
         }.frame(maxWidth: .infinity, alignment: .leading)
@@ -9825,7 +9859,7 @@ private struct AudioPreferencesView: View {
             }
             #endif
             HStack { Text("Speaker volume"); Spacer(); Text("\(voice.outputGain)%") }.font(CaperTheme.font(12)).monospacedDigit()
-            CaperSlider(value: outputGain, in: 0...200, step: 1)
+            CaperSlider(value: outputGain, in: 0...200, step: 1, defaultValue: 100)
                 .accessibilityLabel("Test speaker volume")
                 .accessibilityValue("\(voice.outputGain)%")
             Button(speakerTest.playing ? "Stop speaker test" : "Test speakers") { speakerTest.toggle(voice: voice) }
@@ -9851,7 +9885,7 @@ private struct AudioPreferencesView: View {
             Text("Less noise. Clearer voice.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             VStack(alignment: .leading, spacing: 6) {
                 HStack { Text("Voice enhancement"); Spacer(); Text("\(voice.voiceProcessingStrength)%") }.font(CaperTheme.font(12)).monospacedDigit()
-                CaperSlider(value: liveStrength, in: 0...100, step: 1)
+                CaperSlider(value: liveStrength, in: 0...100, step: 1, defaultValue: 25)
                     .accessibilityLabel("Voice processing")
                     .accessibilityValue("\(voice.voiceProcessingStrength)%")
                     .disabled(micTest.recording)
