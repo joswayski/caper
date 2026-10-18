@@ -502,7 +502,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     var pickingChannel by rememberSaveable { mutableStateOf<String?>(null) }
     var pickingThread by rememberSaveable { mutableStateOf<String?>(null) }
     var pickingEpoch by rememberSaveable { mutableLongStateOf(0L) }
-    var galleryOpen by remember { mutableStateOf(false) }
+    var galleryOpen by rememberSaveable { mutableStateOf(false) }
     fun picked(uris: List<android.net.Uri>) {
         pickingChannel?.let { viewModel.addAttachments(uris, AttachmentDraftTarget(it, pickingThread), pickingEpoch) }
         pickingChannel = null; pickingThread = null
@@ -3083,7 +3083,7 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
     val enabled = disabledReason == null
     var open by remember { mutableStateOf(false) }
     var picking by rememberSaveable { mutableStateOf(false) }
-    var galleryOpen by remember { mutableStateOf(false) }
+    var galleryOpen by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(open, picking, galleryOpen) { interaction(open || picking || galleryOpen) }
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
         add(it); picking = false; interaction(open)

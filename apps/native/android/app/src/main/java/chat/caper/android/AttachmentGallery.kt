@@ -24,6 +24,8 @@ import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -111,7 +113,9 @@ private suspend fun page(context: Context, after: GalleryItem?): List<GalleryIte
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var revision by remember { mutableIntStateOf(0) }
-    var selected by remember { mutableStateOf(emptyList<Uri>()) }
+    var selected by rememberSaveable(stateSaver = listSaver<List<Uri>, String>(
+        save = { uris -> uris.map(Uri::toString) }, restore = { uris -> uris.map(Uri::parse) },
+    )) { mutableStateOf(emptyList<Uri>()) }
     var items by remember { mutableStateOf(emptyList<GalleryItem>()) }
     var allowed by remember { mutableStateOf(context.access()) }
     var full by remember { mutableStateOf(context.fullAccess()) }
