@@ -561,9 +561,39 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  whats-new-draft:
+    name: Draft release highlights
+    # Writes the words while the apps build, so publishing them later adds no wait.
+    needs: resolve
+    permissions:
+      contents: write
+    uses: ./.github/workflows/whats-new.yml
+    with:
+      audience: native
+      git_sha: ${{ needs.resolve.outputs.sha }}
+      native_version: 0.1.${{ github.run_number }}
+      draft: true
+    secrets: inherit
+
+  whats-new:
+    name: Publish release highlights
+    # Before the self-update manifest, so an update never goes live without its
+    # notes. Same conditions as publish: notes describe this revision only to
+    # clients running it, and a notes failure never holds back the release.
+    needs: [resolve, macos, android, desktop, whats-new-draft]
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.macos.result == 'success' && needs.desktop.result == 'success' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/whats-new.yml
+    with:
+      audience: native
+      git_sha: ${{ needs.resolve.outputs.sha }}
+      native_version: 0.1.${{ github.run_number }}
+    secrets: inherit
+
   publish:
     name: Publish native-latest
-    needs: [resolve, macos, android, desktop]
+    needs: [resolve, macos, android, desktop, whats-new]
     # Wait for Android's artifacts, but keep its build/Play failures visible
     # without blocking desktop. Apple Silicon and every desktop target must pass.
     if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.macos.result == 'success' && needs.desktop.result == 'success' }}
@@ -773,16 +803,3 @@ jobs:
       - name: Remove signing material
         if: always()
         run: rm -f "$RUNNER_TEMP/update-key.pem"
-
-  whats-new:
-    name: Publish release highlights
-    # All-platform highlights require every platform's release job to succeed.
-    needs: [resolve, macos, testflight, android, desktop, publish]
-    permissions:
-      contents: write
-    uses: ./.github/workflows/whats-new.yml
-    with:
-      audience: native
-      git_sha: ${{ needs.resolve.outputs.sha }}
-      native_version: 0.1.${{ github.run_number }}
-    secrets: inherit

@@ -8,6 +8,7 @@ Local output is DIR/<platform>/{<revision>,latest}.json.
 
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import http.client
 import json
 import os
@@ -479,6 +480,29 @@ def ask_claude(prompt):
     return parse_json(value)
 
 
+def evidence_hash(prompt):
+    """Identifies the whole request, so changed rules or evidence ask again."""
+    return hashlib.sha256(encode({"system": SYSTEM, "schema": OUTPUT_SCHEMA, "prompt": prompt})).hexdigest()
+
+
+def saved_answer(path, revision, prompt):
+    """A drafted answer for exactly this evidence, or None to ask again."""
+    try:
+        with open(path, "rb") as file:
+            data = file.read(MAX_RESPONSE_BYTES + 1)
+        saved = parse_json(data)
+    except (OSError, GenerationError):
+        return None
+    if (
+        len(data) > MAX_RESPONSE_BYTES
+        or not isinstance(saved, dict)
+        or saved.get("revision") != revision
+        or saved.get("evidence") != evidence_hash(prompt)
+    ):
+        return None
+    return saved.get("result")
+
+
 def validate_highlights(result, ranges, commits, platforms):
     keys(result, ("highlights",))
     highlights = result["highlights"]
@@ -670,8 +694,23 @@ def new_snapshot(platform, revision, previous, highlights, date, version=None):
     return raw
 
 
-def generate(revision, audience, output_dir, *, repo=Path("."), github=None, publish=False, native_version=None):
-    """Prepare every snapshot before any remote mutation; return requested snapshots."""
+def generate(
+    revision,
+    audience,
+    output_dir,
+    *,
+    repo=Path("."),
+    github=None,
+    publish=False,
+    native_version=None,
+    answer=None,
+    save_answer=None,
+):
+    """Prepare every snapshot before any remote mutation; return requested snapshots.
+
+    `save_answer` keeps Claude's answer so a later run can reuse it through
+    `answer`, but only for byte-identical evidence; anything else asks again.
+    """
     if not revision_id(revision) or audience not in ("web", "native"):
         raise GenerationError("revision must be 40 lowercase hex characters; audience must be web or native")
     if native_version is not None and (
@@ -689,7 +728,15 @@ def generate(revision, audience, output_dir, *, repo=Path("."), github=None, pub
     if missing:
         ranges, commits, prompt = evidence(repo, revision, previous, missing)
         if any(commit["platforms"] for commit in commits.values()):
-            highlights = validate_highlights(ask_claude(prompt), ranges, commits, missing)
+            result = saved_answer(answer, revision, prompt) if answer else None
+            if result is None:
+                result = ask_claude(prompt)
+            highlights = validate_highlights(result, ranges, commits, missing)
+            if save_answer:
+                Path(save_answer).parent.mkdir(parents=True, exist_ok=True)
+                Path(save_answer).write_bytes(
+                    encode({"revision": revision, "evidence": evidence_hash(prompt), "result": result})
+                )
     date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     prepared = {}
     for platform in platforms:
@@ -740,10 +787,18 @@ def main(argv=None):
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--publish", action="store_true")
     parser.add_argument("--native-version", help="Actual native app version, supplied by the release workflow")
+    parser.add_argument("--save-answer", type=Path, help="Keep Claude's answer here for a later --answer")
+    parser.add_argument("--answer", type=Path, help="Reuse a saved answer when the evidence is unchanged")
     args = parser.parse_args(argv)
     try:
         snapshots = generate(
-            args.revision, args.audience, args.output_dir, publish=args.publish, native_version=args.native_version
+            args.revision,
+            args.audience,
+            args.output_dir,
+            publish=args.publish,
+            native_version=args.native_version,
+            answer=args.answer,
+            save_answer=args.save_answer,
         )
     except (GenerationError, OSError, subprocess.SubprocessError):
         error = sys.exception()

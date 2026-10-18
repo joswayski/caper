@@ -462,6 +462,47 @@ class HighlightsTests(unittest.TestCase):
         with patch.dict(os.environ, {"ANTHROPIC_WORKSPACE_ID": "bad id\n"}):
             self.assert_cli_failure(self.commit("Improve channel menus"), "ANTHROPIC_WORKSPACE_ID")
 
+    def test_drafted_answer_is_reused_only_for_identical_evidence(self):
+        self.seed()
+        newest = self.commit("Improve channel controls")
+        self.response = {
+            "highlights": [
+                {
+                    "title": "Clearer channel controls",
+                    "body": "Channel controls are easier to find.",
+                    "platforms": ["web"],
+                    "commits": [newest],
+                }
+            ]
+        }
+        answer = self.repo / "draft" / "answer.json"
+        drafts = self.repo / "draft-output"
+        notes.generate(newest, "web", drafts, repo=self.repo, github=self.github, publish=False, save_answer=answer)
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.github.events, [])
+        # Publishing with the draft asks nothing more and publishes its words.
+        self.provider_error = TimeoutError("must not be asked")
+        feeds = notes.generate(
+            newest, "web", self.output, repo=self.repo, github=self.github, publish=True, answer=answer
+        )
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(feeds["web"]["releases"][-1]["highlights"][0]["title"], "Clearer channel controls")
+        self.assertIn(("web", f"{newest}.json"), self.github.events)
+        # A draft for different evidence, or a damaged one, is asked again.
+        self.provider_error = None
+        later = self.commit("Improve channel menus")
+        self.response = {"highlights": []}
+        drafted = answer.read_bytes()
+        prompt = self.requests[0]["messages"][0]["content"]
+        self.assertIsNotNone(notes.saved_answer(answer, newest, prompt))
+        with patch.object(notes, "SYSTEM", notes.SYSTEM + "Changed rules."):
+            self.assertIsNone(notes.saved_answer(answer, newest, prompt))
+        for contents in (drafted, b"{not json"):
+            answer.write_bytes(contents)
+            before = len(self.requests)
+            notes.generate(later, "web", drafts, repo=self.repo, github=self.github, publish=False, answer=answer)
+            self.assertEqual(len(self.requests), before + 1)
+
     def test_permanent_provider_errors_do_not_retry(self):
         self.seed()
         newest = self.commit("Improve channel controls")

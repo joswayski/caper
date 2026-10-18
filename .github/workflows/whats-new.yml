@@ -1,8 +1,11 @@
 name: Publish What’s new
 run-name: What’s new ${{ inputs.audience }} ${{ inputs.git_sha }}
 
-# Native calls this only after distribution succeeds. Infrastructure dispatches
-# it with the exact confirmed web image SHA after its rollout wait succeeds.
+# Native drafts the words while its apps build (draft: true), then publishes
+# them just before the self-update manifest, reusing the draft when its evidence
+# is unchanged, so an update never goes live before its notes. Infrastructure
+# dispatches it with the exact confirmed web image SHA after its rollout wait
+# succeeds.
 on:
   workflow_dispatch:
     inputs:
@@ -30,6 +33,11 @@ on:
       native_version:
         required: false
         type: string
+      draft:
+        description: Write and keep the answer without publishing anything
+        required: false
+        type: boolean
+        default: false
     secrets:
       ANTHROPIC_API_KEY:
         required: false
@@ -42,8 +50,9 @@ jobs:
     if: github.repository == 'joswayski/caper' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # Drafts publish nothing, so they never wait behind or block a publish.
     concurrency:
-      group: caper-whats-new-${{ inputs.audience }}
+      group: caper-whats-new-${{ inputs.audience }}${{ inputs.draft && '-draft' || '' }}
       cancel-in-progress: false
     steps:
       # Tooling comes from main, including when an older app revision ships.
@@ -63,6 +72,14 @@ jobs:
           [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$AUDIENCE" == web || "$AUDIENCE" == native ]]
           git merge-base --is-ancestor "$RELEASE_SHA" HEAD
+      - name: Read the drafted answer
+        if: ${{ !inputs.draft }}
+        # Missing for repairs and when drafting failed; publishing then asks Claude.
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: whats-new-answer-${{ inputs.audience }}
+          path: ${{ runner.temp }}/whats-new-answer
       - name: Generate and publish user-facing highlights
         id: notes
         # An unavailable editorial service must not fail a shipped app or replace
@@ -79,17 +96,43 @@ jobs:
           RELEASE_SHA: ${{ inputs.git_sha }}
           AUDIENCE: ${{ inputs.audience }}
           NATIVE_VERSION: ${{ inputs.native_version }}
+          DRAFT: ${{ inputs.draft && 'true' || 'false' }}
         run: |
-          version_args=()
-          if [[ -n "$NATIVE_VERSION" ]]; then version_args=(--native-version "$NATIVE_VERSION"); fi
+          args=()
+          if [[ -n "$NATIVE_VERSION" ]]; then args+=(--native-version "$NATIVE_VERSION"); fi
+          answer="$RUNNER_TEMP/whats-new-answer/answer.json"
+          if [[ "$DRAFT" == true ]]; then
+            args+=(--save-answer "$answer")
+          else
+            args+=(--publish)
+            if [[ -f "$answer" ]]; then args+=(--answer "$answer"); fi
+          fi
           python scripts/whats_new.py --revision "$RELEASE_SHA" --audience "$AUDIENCE" \
-            --output-dir "$RUNNER_TEMP/whats-new" --publish "${version_args[@]}"
+            --output-dir "$RUNNER_TEMP/whats-new" "${args[@]}"
+      - name: Keep the drafted answer
+        if: ${{ inputs.draft && steps.notes.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: whats-new-answer-${{ inputs.audience }}
+          path: ${{ runner.temp }}/whats-new-answer/answer.json
+          # Absent when the release has no client changes to describe.
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 7
       - name: Record the notes outcome
         if: always()
         env:
           OUTCOME: ${{ steps.notes.outcome }}
+          DRAFT: ${{ inputs.draft && 'true' || 'false' }}
         run: |
-          if [[ "$OUTCOME" == success ]]; then
+          if [[ "$DRAFT" == true ]]; then
+            if [[ "$OUTCOME" == success ]]; then
+              echo 'Release highlights drafted; publishing reuses them if the evidence is unchanged.' >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo '::warning::Release highlights could not be drafted. Publishing will ask Claude again.'
+              echo 'Release highlights draft failed. Publishing will ask Claude again; check the generator step.' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          elif [[ "$OUTCOME" == success ]]; then
             echo 'Release highlights published or reused. First publication establishes a quiet baseline.' >> "$GITHUB_STEP_SUMMARY"
           else
             echo '::warning::Release highlights were not published. Existing notes remain unchanged; the app release is unaffected.'

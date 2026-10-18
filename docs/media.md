@@ -8612,7 +8612,10 @@ blocked. Confirmed restart still leaves a call; non-writable copies use the inst
 
 Desktop clients pass their source revision to the bundled updater, which reads
 current/target exact snapshots and shows the same user-facing highlights for skipped
-releases. The updater returns them as one stacked list (newest first, repeated
+releases. When the installed build's own snapshot is missing (its notes failed to
+publish), the updater places it in the target feed by revision, else by the build
+number in each entry's `version`, else shows only the target release, and reports
+the history as incomplete instead of showing no highlights. The updater returns them as one stacked list (newest first, repeated
 titles dropped) with the newest release's date, so the review shows a date
 next to the version (linked to its commit on GitHub), bold titles over short
 descriptions and a close button. Installing from the review marks that build's
@@ -8631,8 +8634,14 @@ After Ship rolls out Caper web, infrastructure dispatches `whats-new.yml` on Cap
 `main` with the exact confirmed image SHA, authenticating as the Godis deploy
 GitHub App (no separate token). It holds the web deployment queue until
 generation finishes so successive shipped versions cannot overwrite pending
-dispatches. The native release calls the same workflow only after all distribution
-jobs succeed. The existing Godis Discord buttons need no code or deployment change.
+dispatches. The native release calls the same workflow twice: a draft while the
+apps build (`--save-answer`, publishes nothing, keeps Claude's answer as a run
+artifact), then a publish after the Apple Silicon and desktop builds succeed and
+just before the self-update manifest, so an update never goes live before its
+notes. Publishing reuses the draft (`--answer`) only when its evidence hash is
+unchanged and otherwise asks Claude again; a failure never holds back the
+release. Snapshots describe a revision only to clients running it, so iOS and
+Android entries may publish before TestFlight or Play distribution completes. The existing Godis Discord buttons need no code or deployment change.
 Committing, building an image, or a failed deployment does not generate notes.
 
 `scripts/whats_new.py` reads the previous per-platform revision, first-parent commit

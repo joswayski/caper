@@ -203,6 +203,7 @@ fn check(options: &Options) -> Result<()> {
                     "https://caper.chat/api/whats-new",
                     platform.split('-').next().unwrap_or(platform),
                     revision,
+                    current,
                     &manifest.commit,
                 )
             })();
@@ -498,8 +499,22 @@ struct Highlights {
 struct HighlightedRelease {
     sequence: u64,
     revision: String,
+    /// The native app version ("0.1.<build>"); absent on older entries.
+    #[serde(default)]
+    version: Option<String>,
     published_at: String,
     highlights: Vec<Highlight>,
+}
+
+impl HighlightedRelease {
+    /// The build number in this entry's version, when it has one.
+    fn build(&self) -> Option<u64> {
+        let mut parts = self.version.as_deref()?.split('.');
+        let build = parts.nth(2)?;
+        (parts.next().is_none() && build.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| build.parse().ok())
+            .flatten()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -533,6 +548,7 @@ fn release_highlights_from(
     url: &str,
     platform: &str,
     current_revision: &str,
+    current_build: u64,
     target_revision: &str,
 ) -> Result<ReleaseHighlights> {
     if !matches!(platform, "macos" | "windows" | "linux")
@@ -570,6 +586,10 @@ fn release_highlights_from(
                     && release.published_at.len() >= 20
                     && release.published_at.is_ascii()
                     && release.published_at.as_bytes().get(10) == Some(&b'T')
+                    && release
+                        .version
+                        .as_deref()
+                        .is_none_or(|version| text_valid(version, 64))
                     && release.highlights.len() <= 5
                     && release
                         .highlights
@@ -586,13 +606,42 @@ fn release_highlights_from(
         }
         Ok(feed)
     };
-    let current = fetch(current_revision)?;
+    // The installed build's own snapshot is missing when its notes failed to
+    // publish. The update's feed still lists earlier releases, so place the
+    // installed build there, or by build number, rather than show nothing.
+    let current = fetch(current_revision).ok();
     let target = fetch(target_revision)?;
-    let notes: Vec<_> = target
-        .releases
+    let installed = current.map(|current| current.sequence).or_else(|| {
+        target
+            .releases
+            .iter()
+            .find(|release| release.revision == current_revision)
+            .map(|release| release.sequence)
+    });
+    let newer: Vec<_> = match installed {
+        Some(installed) => target
+            .releases
+            .iter()
+            .rev()
+            .filter(|release| release.sequence > installed)
+            .collect(),
+        None => {
+            let built: Vec<_> = target
+                .releases
+                .iter()
+                .rev()
+                .filter(|release| release.build().is_some_and(|build| build > current_build))
+                .collect();
+            if built.is_empty() {
+                target.releases.last().into_iter().collect()
+            } else {
+                built
+            }
+        }
+    };
+    let notes: Vec<_> = newer
         .iter()
-        .rev()
-        .filter(|release| release.sequence > current.sequence && !release.highlights.is_empty())
+        .filter(|release| !release.highlights.is_empty())
         .map(|release| {
             format!(
                 "{}\n{}",
@@ -606,15 +655,10 @@ fn release_highlights_from(
             )
         })
         .collect();
-    let complete = target.releases[0].sequence <= current.sequence + 1;
+    // Without the installed build's position, earlier entries may be missing.
+    let complete = installed.is_some_and(|installed| target.releases[0].sequence <= installed + 1);
     // People install one update, not a list of versions: stack every skipped
     // release's highlights newest first, dropping a title repeated later on.
-    let newer: Vec<_> = target
-        .releases
-        .iter()
-        .rev()
-        .filter(|release| release.sequence > current.sequence)
-        .collect();
     let mut items: Vec<Highlight> = Vec::new();
     for item in newer.iter().flat_map(|release| &release.highlights) {
         let title = item.title.trim().to_lowercase();
@@ -899,6 +943,7 @@ mod tests {
                 &format!("{url}/notes"),
                 "macos",
                 &current_revision,
+                1,
                 &target_revision,
             );
             if invalid {
@@ -941,6 +986,7 @@ mod tests {
                 &format!("{url}/notes"),
                 "macos",
                 &current_revision,
+                1,
                 &target_revision
             )
             .unwrap(),
@@ -989,6 +1035,7 @@ mod tests {
             &format!("{url}/notes"),
             "windows",
             &current_revision,
+            1,
             &target_revision,
         )
         .unwrap();
@@ -1014,6 +1061,120 @@ mod tests {
         );
         assert_eq!(result.released.as_deref(), Some("2026-10-14"));
         assert_eq!(result.sequence, Some(3));
+    }
+
+    #[test]
+    fn missing_installed_snapshot_falls_back_to_the_update_feed() {
+        use serde_json::json;
+        let current_revision = "a".repeat(40);
+        let target_revision = "d".repeat(40);
+        let entry = |sequence, revision: &str, version: Option<&str>, title: &str| {
+            let mut value = json!({
+                "sequence": sequence, "revision": revision, "publishedAt": "2026-10-18T12:00:00Z",
+                "highlights": [{"title": title, "body": "A useful change."}]
+            });
+            if let Some(version) = version {
+                value["version"] = json!(version);
+            }
+            value
+        };
+        let feed = |releases: Vec<serde_json::Value>| json!({"schema":1,"platform":"windows","revision":target_revision,"sequence":4,"releases":releases});
+        let titles = |releases: Vec<serde_json::Value>, installed_build| {
+            let (url, server) = serve_metadata(vec![
+                (
+                    "/notes?platform=windows&revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    502,
+                    b"release highlights are not available yet".to_vec(),
+                ),
+                (
+                    "/notes?platform=windows&revision=dddddddddddddddddddddddddddddddddddddddd",
+                    200,
+                    serde_json::to_vec(&feed(releases)).unwrap(),
+                ),
+            ]);
+            let result = release_highlights_from(
+                &reqwest::blocking::Client::new(),
+                &format!("{url}/notes"),
+                "windows",
+                &current_revision,
+                installed_build,
+                &target_revision,
+            )
+            .unwrap();
+            server.join().unwrap();
+            let titles: Vec<_> = result
+                .items
+                .unwrap()
+                .into_iter()
+                .map(|item| item.title)
+                .collect();
+            (titles, result.complete, result.sequence)
+        };
+        // The installed revision is listed in the update's feed: exact position.
+        assert_eq!(
+            titles(
+                vec![
+                    entry(1, &"0".repeat(40), Some("0.1.110"), "Older"),
+                    entry(2, &current_revision, Some("0.1.119"), "Installed"),
+                    entry(3, &"b".repeat(40), Some("0.1.121"), "Skipped"),
+                    entry(4, &target_revision, Some("0.1.124"), "Newest"),
+                ],
+                119
+            ),
+            (
+                vec!["Newest".to_owned(), "Skipped".to_owned()],
+                true,
+                Some(4)
+            )
+        );
+        // Not listed (its notes never published): releases with newer builds.
+        assert_eq!(
+            titles(
+                vec![
+                    entry(2, &"0".repeat(40), Some("0.1.119"), "Older"),
+                    entry(3, &"b".repeat(40), Some("0.1.123"), "Skipped"),
+                    entry(4, &target_revision, Some("0.1.124"), "Newest"),
+                ],
+                121
+            ),
+            (
+                vec!["Newest".to_owned(), "Skipped".to_owned()],
+                false,
+                Some(4)
+            )
+        );
+        // No build numbers to compare: only the update's own highlights.
+        assert_eq!(
+            titles(
+                vec![
+                    entry(3, &"b".repeat(40), None, "Skipped"),
+                    entry(4, &target_revision, None, "Newest"),
+                ],
+                121
+            ),
+            (vec!["Newest".to_owned()], false, Some(4))
+        );
+    }
+
+    #[test]
+    fn release_versions_yield_build_numbers() {
+        let release = |version: Option<&str>| HighlightedRelease {
+            sequence: 1,
+            revision: "a".repeat(40),
+            version: version.map(str::to_owned),
+            published_at: "2026-10-18T12:00:00Z".into(),
+            highlights: Vec::new(),
+        };
+        assert_eq!(release(Some("0.1.121")).build(), Some(121));
+        for version in [
+            None,
+            Some("0.1"),
+            Some("0.1.12a"),
+            Some("0.1.2.3"),
+            Some("0.1."),
+        ] {
+            assert_eq!(release(version).build(), None, "{version:?}");
+        }
     }
 
     #[test]
