@@ -2452,7 +2452,9 @@ a.chat-draft-preview {
     filter: brightness(1.15);
   }
 }
-.chat-draft-preview > img {
+.chat-draft-preview > img,
+.chat-draft-preview > .chat-gif,
+.chat-draft-preview .chat-gif img {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -2584,16 +2586,25 @@ a.chat-draft-preview {
   object-fit: cover;
 }
 .chat-spoiler {
+  position: relative;
   display: grid;
   place-items: center;
   min-width: min(160px, 100%);
   min-height: 80px;
   padding: 0;
   color: var(--text);
-  background: radial-gradient(ellipse at 25% 20%, var(--border), transparent 75%), var(--surface-raised);
   cursor: pointer;
 }
-.chat-spoiler > span,
+.chat-spoiler-preview {
+  position: absolute;
+  inset: -16px;
+  filter: blur(24px);
+  pointer-events: none;
+}
+.chat-spoiler-label {
+  position: relative;
+}
+.chat-spoiler-label,
 .chat-draft-spoiler-label {
   padding: 6px 12px;
   border-radius: 999px;

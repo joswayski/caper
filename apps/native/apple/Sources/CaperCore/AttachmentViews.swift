@@ -235,13 +235,10 @@ struct MessageAttachmentsView: View {
             ForEach(attachments) { attachment in
                 if attachment.spoiler && !revealed.contains(attachment.id) {
                     Button { revealed.insert(attachment.id) } label: {
-                        Text("SPOILER")
-                            .font(CaperTheme.font(13, weight: .bold))
-                            .foregroundStyle(CaperTheme.muted)
-                            .frame(maxWidth: .infinity, minHeight: 80)
-                            .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                        AttachmentSpoilerView(attachment: attachment, chat: chat)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Reveal spoiler attachment")
                     .accessibilityHint("Shows the hidden file")
                 } else if attachment.unavailable {
@@ -303,6 +300,78 @@ private struct AttachmentFrame: ViewModifier {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
             .frame(maxWidth: size.width, alignment: .leading)
+    }
+}
+
+/// A still only: never constructs the image animation or video playback views.
+private struct AttachmentSpoilerView: View {
+    let attachment: ChatAttachment
+    let chat: ChatModel?
+    @State private var image: CGImage?
+
+    private var visual: Bool {
+        !attachment.unavailable && attachment.status != .failed &&
+            (attachment.kind == .image || attachment.kind == .video)
+    }
+
+    var body: some View {
+        Group {
+            if visual {
+                SpoilerThumbnail(image: image)
+                    .modifier(AttachmentFrame(attachment: attachment, fallback: (240, 180)))
+            } else {
+                SpoilerThumbnail(image: nil)
+                    .frame(maxWidth: .infinity, minHeight: 80, maxHeight: 80)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .accessibilityHidden(true)
+        .task(id: "\(attachment.id):\(attachment.previewUrl ?? ""):\(attachment.url ?? ""):\(visual)") {
+            image = nil
+            guard visual else { return }
+            // The existing loader caches by id/variant and requests refreshed
+            // signatures. Both URLs key this task so either refresh retries.
+            if attachment.previewUrl != nil {
+                let result = await loadAttachmentImage(attachment, preview: true, chat: chat)
+                guard !Task.isCancelled else { return }
+                if let still = result.image { image = still; return }
+            }
+            // Videos without a usable poster stay neutral; do not start a
+            // player to obtain one. ImageIO decodes only frame zero of images.
+            guard attachment.kind == .image else { return }
+            let result = await loadAttachmentImage(attachment, preview: false, chat: chat)
+            guard !Task.isCancelled else { return }
+            image = result.image
+        }
+    }
+}
+
+/// Blur is unconditional on the image branch, clipped before the readable
+/// label is overlaid. No transition can briefly expose the original pixels.
+private struct SpoilerThumbnail: View {
+    let image: CGImage?
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                CaperTheme.surface
+                if let image {
+                    Image(decorative: image, scale: 1).resizable().scaledToFill()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .blur(radius: 24, opaque: true)
+                        .clipped()
+                }
+                Text("SPOILER")
+                    .font(CaperTheme.font(11, weight: .bold))
+                    .foregroundStyle(CaperTheme.text)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(CaperTheme.blackout.opacity(0.8), in: RoundedRectangle(cornerRadius: 8))
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
+        }
+        .transaction { $0.animation = nil }
+        .accessibilityHidden(true)
     }
 }
 
@@ -1585,7 +1654,7 @@ struct AttachmentDraftsView: View {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(CaperTheme.text)
-                        .accessibilityLabel(draft.spoiler ? "Remove spoiler from \(draft.name)" : "Mark \(draft.name) as spoiler")
+                        .accessibilityLabel(draft.spoiler ? "Remove spoiler from attachment" : "Mark \(draft.name) as spoiler")
                         .accessibilityValue(draft.spoiler ? "Spoiler" : "Not a spoiler")
                         .help(draft.spoiler ? "Remove spoiler" : "Mark as spoiler")
                     }
@@ -1675,7 +1744,7 @@ struct StagedFileChip: View {
                 GeometryReader { geometry in
                     Group {
                         if spoiler {
-                            Text("SPOILER").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                            SpoilerThumbnail(image: failed ? nil : thumbnail)
                         } else if let thumbnail {
                             Image(decorative: thumbnail, scale: 1).resizable().scaledToFill()
                         } else {
@@ -1698,9 +1767,10 @@ struct StagedFileChip: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Preview \(name)")
-            .accessibilityValue(status)
-            .help(name)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(spoiler ? "Preview spoiler attachment" : "Preview \(name)")
+            .accessibilityValue(spoiler ? "Spoiler" : status)
+            .help(spoiler ? "Spoiler attachment" : name)
             if failed || busyLabel != nil {
                 VStack {
                     Spacer(minLength: 0)
@@ -1713,18 +1783,18 @@ struct StagedFileChip: View {
                                     .background(CaperTheme.action, in: RoundedRectangle(cornerRadius: 8))
                                     .contentShape(Rectangle())
                             }.buttonStyle(.plain)
-                                .accessibilityLabel("Retry uploading \(name)")
-                                .accessibilityHint(status)
+                                .accessibilityLabel(spoiler ? "Retry uploading spoiler attachment" : "Retry uploading \(name)")
+                                .accessibilityHint(spoiler ? "Upload failed" : status)
                         } else {
                             Text(failed ? "Failed" : busyLabel ?? "Uploading…")
                                 .lineLimit(1).minimumScaleFactor(0.8)
-                                .accessibilityLabel(status)
+                                .accessibilityLabel(spoiler ? "Spoiler attachment upload" : status)
                         }
                         if let progress {
                             ProgressView(value: progress).progressViewStyle(.linear).tint(CaperTheme.terracottaBright)
                                 // Glides between progress events instead of jumping.
                                 .animation(reduceMotion ? nil : .linear(duration: CaperMotion.base), value: progress)
-                                .accessibilityLabel("Uploading \(name)")
+                                .accessibilityLabel(spoiler ? "Uploading spoiler attachment" : "Uploading \(name)")
                         }
                     }
                     .font(CaperTheme.font(10, weight: .bold))
@@ -1746,7 +1816,7 @@ struct StagedFileChip: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
-                .accessibilityLabel("Remove \(name)")
+                .accessibilityLabel(spoiler ? "Remove spoiler attachment" : "Remove \(name)")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

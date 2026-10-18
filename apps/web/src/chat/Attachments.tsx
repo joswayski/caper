@@ -211,6 +211,14 @@ export function MessageAttachments({
         const view = attachmentView(attachment);
         if (attachment.spoiler && !revealed.has(attachment.id)) {
           const hiddenSize = size ?? DEFAULT_FRAME;
+          const local = localPreviews[attachment.id];
+          const visual = attachment.kind === "image" || attachment.kind === "video";
+          const thumbnail =
+            visual && !attachment.unavailable && attachment.status !== "failed"
+              ? (attachment.previewUrl ??
+                (local && !local.video ? local.url : undefined) ??
+                (attachment.kind === "image" ? attachment.url : undefined))
+              : undefined;
           return (
             <button
               key={attachment.id}
@@ -220,7 +228,14 @@ export function MessageAttachments({
               aria-label="Reveal spoiler attachment"
               onClick={() => setRevealed((current) => new Set([...current, attachment.id]))}
             >
-              <span>Spoiler</span>
+              {thumbnail && (
+                <span className="chat-spoiler-preview" aria-hidden="true">
+                  <MediaPreviewContext value={true}>
+                    <GifImage src={thumbnail} alt="" onError={() => expired(attachment)} />
+                  </MediaPreviewContext>
+                </span>
+              )}
+              <span className="chat-spoiler-label">Spoiler</span>
             </button>
           );
         }
@@ -411,7 +426,13 @@ export function DraftAttachments({
           const content = (
             <>
               {thumbnail ? (
-                <img src={thumbnail} alt="" />
+                draft.spoiler ? (
+                  <MediaPreviewContext value={true}>
+                    <GifImage src={thumbnail} alt="" />
+                  </MediaPreviewContext>
+                ) : (
+                  <img src={thumbnail} alt="" />
+                )
               ) : (
                 <span className="chat-draft-kind" aria-hidden="true">
                   {kind === "video" || kind === "audio" ? <Play size={24} /> : <FileText size={24} />}

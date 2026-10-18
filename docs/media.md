@@ -1281,8 +1281,11 @@ Attachment spoilers use optional `spoilerAttachmentIds` on that send request:
 distinct IDs from `attachmentIds`. Marked descriptions store `spoiler:true` in
 message JSON; missing means false. The choice is part of the retry hash and
 survives history, edits, forwards and URL refreshes. Each composer offers a
-per-file toggle, and updated clients hide the file until explicit reveal;
-opening another image does not reveal hidden gallery items. Push notifications
+per-file toggle. Updated clients conceal images and video posters with an
+on-device blur of a still thumbnail (the image original when no preview exists),
+without starting playback. Files without a usable visual preview use a neutral
+cover. Reveal is local UI state, not a database write; opening another image
+does not reveal hidden gallery items. Push notifications
 omit spoiler thumbnails and filenames. This is a presentation preference, not
 access control: authorized clients still receive URLs, and older clients do
 not understand the flag. Text spoilers and slash commands are not implemented.

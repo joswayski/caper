@@ -17008,12 +17008,12 @@ impl CaperApp {
         let resolved: Vec<(model::Attachment, bool)> = attachments
             .iter()
             .map(|attachment| {
-                if hidden(attachment, ui) {
-                    return (attachment.clone(), true);
-                }
                 let attachment = self.media.resolve(attachment);
                 if !pending {
                     self.media.visible(&attachment, unix_now, now);
+                }
+                if hidden(&attachment, ui) {
+                    return (attachment, true);
                 }
                 let media = matches!(
                     attachment.kind,
@@ -17049,10 +17049,29 @@ impl CaperApp {
                             resolved.iter().filter(|(_, inline)| *inline == tiles)
                         {
                             if hidden(attachment, ui) {
-                                let response = ui.add_sized(
-                                    [180.0, 100.0],
-                                    egui::Button::new(RichText::new("SPOILER").color(MUTED))
-                                        .fill(SURFACE),
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::vec2(180.0, 100.0),
+                                    egui::Sense::click(),
+                                );
+                                ui.painter().rect_filled(rect, 8.0, SURFACE);
+                                if let attachments::ImageState::Ready(texture) =
+                                    self.media.spoiler(attachment)
+                                {
+                                    egui::Image::new((texture, rect.size()))
+                                        .corner_radius(8)
+                                        .paint_at(ui, rect);
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        8.0,
+                                        Color32::from_black_alpha(70),
+                                    );
+                                }
+                                ui.painter().text(
+                                    rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    "SPOILER",
+                                    egui::FontId::proportional(12.0),
+                                    TEXT,
                                 );
                                 response.widget_info(|| {
                                     egui::WidgetInfo::labeled(
@@ -17317,6 +17336,16 @@ impl CaperApp {
                     ));
                 }
                 if draft.spoiler {
+                    if let Some(image) = &draft.thumbnail_image {
+                        let id = format!("draft-cover-{}", draft.key);
+                        if let attachments::ImageState::Ready(texture) =
+                            self.media.local_spoiler(ui.ctx(), &id, image)
+                        {
+                            egui::Image::new((texture, thumb.size()))
+                                .corner_radius(6)
+                                .paint_at(ui, thumb);
+                        }
+                    }
                     painter.text(
                         thumb.center(),
                         egui::Align2::CENTER_CENTER,

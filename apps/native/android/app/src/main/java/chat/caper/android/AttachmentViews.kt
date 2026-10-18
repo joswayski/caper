@@ -150,7 +150,14 @@ internal fun durationLabel(durationMs: Long?): String? {
                     ) { revealed = revealed + attachment.id },
                     color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
                 ) {
-                    Text("SPOILER · Tap to reveal", Modifier.padding(16.dp), color = TextMuted, fontSize = 12.sp)
+                    val visual = attachment.kind == "image" || attachment.kind == "video"
+                    val source = if (visual && !attachment.unavailable && attachment.state != AttachmentState.FAILED) {
+                        attachment.previewUrl ?: if (attachment.kind == "image") attachment.url else null
+                    } else null
+                    Box(Modifier.fillMaxWidth().height(if (visual) 180.dp else 64.dp), contentAlignment = Alignment.Center) {
+                        SpoilerThumbnail(source, "${attachment.id}:spoiler") { onLoadFailed(attachment, it.httpStatus()) }
+                        Text("SPOILER · Tap to reveal", Modifier.background(Blackout.copy(alpha = 0.8f), MaterialTheme.shapes.small).padding(12.dp), color = Text, fontSize = 12.sp)
+                    }
                 }
                 attachment.unavailable -> FileCard(attachment, null)
                 attachment.state == AttachmentState.FAILED -> FileCard(attachment, null, detail = "Couldn’t process this file", error = true)
@@ -398,11 +405,19 @@ internal fun durationLabel(durationMs: Long?): String? {
                                 draft.compressing -> if (draft.progress > 0f) "Prep ${(draft.progress * 100).toInt()}%" else "Preparing…"
                                 else -> "Uploading ${(draft.progress * 100).toInt()}%"
                             }
-                            Box(Modifier.fillMaxSize().clickable(enabled = url != null, role = Role.Button, onClickLabel = "Preview ${draft.name}") {
+                            val accessibleName = if (draft.spoiler) "spoiler attachment" else draft.name
+                            Box(Modifier.fillMaxSize().clickable(enabled = url != null, role = Role.Button, onClickLabel = "Preview $accessibleName") {
                                 url?.let(open)
-                            }.semantics { contentDescription = listOfNotNull(draft.name, draft.error ?: status).joinToString(", ") }, contentAlignment = Alignment.Center) {
+                            }.semantics { contentDescription = listOfNotNull(accessibleName, if (draft.spoiler) status else draft.error ?: status).joinToString(", ") }, contentAlignment = Alignment.Center) {
                                 val thumbnail = draft.thumbnail
-                                if (draft.spoiler) Text("SPOILER", color = TextMuted, fontSize = 11.sp)
+                                if (draft.spoiler) {
+                                    val visual = draft.kind == "image" || draft.kind == "video"
+                                    val source = if (visual && draft.error == null && draft.attachment?.unavailable != true) {
+                                        thumbnail ?: if (draft.kind == "image") draft.pickedImage ?: draft.localUrl ?: draft.pickedUri else null
+                                    } else null
+                                    SpoilerThumbnail(source, "draft:${draft.key}:$source:spoiler")
+                                    Text("SPOILER", Modifier.background(Blackout.copy(alpha = 0.8f)).padding(4.dp), color = Text, fontSize = 11.sp)
+                                }
                                 else if (thumbnail != null) AsyncImage(
                                     model = remember(thumbnail) { AttachmentImages.request(context, thumbnail, "draft:${draft.key}") },
                                     contentDescription = null, imageLoader = AttachmentImages.loader(context), modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
@@ -414,7 +429,7 @@ internal fun durationLabel(durationMs: Long?): String? {
                             if (status != null) {
                                 Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Blackout.copy(alpha = 0.9f)).padding(horizontal = 4.dp, vertical = if (draft.error != null && retry != null) 0.dp else 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                     if (draft.error != null && retry != null) {
-                                        Button({ retry(draft.key) }, Modifier.heightIn(min = 44.dp).semantics { contentDescription = "Retry uploading ${draft.name}" }, enabled = enabled,
+                                        Button({ retry(draft.key) }, Modifier.heightIn(min = 44.dp).semantics { contentDescription = "Retry uploading $accessibleName" }, enabled = enabled,
                                             colors = ButtonDefaults.buttonColors(containerColor = Action, contentColor = OnAction),
                                             shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 4.dp)) {
                                             Text("Retry upload", fontSize = 10.sp)
@@ -432,13 +447,13 @@ internal fun durationLabel(durationMs: Long?): String? {
                             toggleSpoiler?.let { toggle ->
                                 TextButton({ toggle(draft.key) }, Modifier.align(Alignment.TopStart).width(tileSize - 40.dp).background(Blackout.copy(alpha = 0.9f))
                                     .semantics {
-                                        contentDescription = "${if (draft.spoiler) "Remove spoiler from" else "Mark as spoiler:"} ${draft.name}"
+                                        contentDescription = "${if (draft.spoiler) "Remove spoiler from" else "Mark as spoiler:"} $accessibleName"
                                         stateDescription = if (draft.spoiler) "Spoiler enabled" else "Spoiler disabled"
                                     }, enabled = enabled, contentPadding = PaddingValues(0.dp)) {
                                     Text(if (draft.spoiler) "Spoiler ✓" else "Spoiler", fontSize = 10.sp)
                                 }
                             }
-                            IconButton({ remove(draft.key) }, Modifier.align(Alignment.TopEnd).size(40.dp).background(Blackout.copy(alpha = 0.9f), CircleShape).semantics { contentDescription = "Remove ${draft.name}" }, enabled = enabled) {
+                            IconButton({ remove(draft.key) }, Modifier.align(Alignment.TopEnd).size(40.dp).background(Blackout.copy(alpha = 0.9f), CircleShape).semantics { contentDescription = "Remove $accessibleName" }, enabled = enabled) {
                                 Icon(painterResource(R.drawable.lucide_x), null, Modifier.size(14.dp), tint = Text)
                             }
                         }

@@ -88,8 +88,15 @@ test("without a viewer (the sender's pending row) files keep their links and inl
   expect(markup).not.toContain("in viewer");
 });
 
-test("spoilers hide every file type and local processing preview without mounting media or links", () => {
-  const hidden = [...files, file("processing", "secret.png", { status: "processing" })].map((attachment) => ({
+test("spoilers show only still masked previews, never players, links, or filenames", () => {
+  const hidden = [
+    ...files,
+    file("processing", "secret.png", { status: "processing" }),
+    file("original", "secret.gif", { contentType: "image/gif" }),
+    file("poster", "secret.mp4", { kind: "video", animated: true, previewUrl: "https://cdn.test/poster" }),
+    file("removed", "removed.png", { unavailable: true }),
+    file("failed", "failed.png", { status: "failed" }),
+  ].map((attachment) => ({
     ...attachment,
     spoiler: true,
   }));
@@ -97,9 +104,16 @@ test("spoilers hide every file type and local processing preview without mountin
     <MessageAttachments attachments={hidden} localPreviews={{ processing: { url: "blob:secret", video: false } }} />,
   );
   expect(markup.match(/aria-label="Reveal spoiler attachment"/g)).toHaveLength(hidden.length);
-  expect(markup).not.toMatch(/<(?:img|video|audio|a)\b/);
+  expect(markup).not.toMatch(/<(?:video|audio|a)\b/);
   for (const attachment of hidden) expect(markup).not.toContain(attachment.name);
-  expect(markup).not.toContain("blob:secret");
+  expect(markup.match(/class="chat-spoiler-preview"/g)).toHaveLength(4);
+  expect(markup.match(/data-still="true"/g)).toHaveLength(4);
+  expect(markup).toContain('src="https://cdn.test/preview/photo"');
+  expect(markup).toContain('src="blob:secret"');
+  expect(markup).toContain('src="https://cdn.test/original/original"');
+  expect(markup).toContain('src="https://cdn.test/poster"');
+  for (const id of ["photo", "clip", "gif", "voice", "notes", "removed", "failed"])
+    expect(markup).not.toContain(`https://cdn.test/original/${id}`);
   const mixed = renderToStaticMarkup(<MessageAttachments attachments={[hidden[0], files[1]]} />);
   expect(mixed).toContain("Reveal spoiler attachment");
   expect(mixed).toContain('aria-label="clip.mp4"');
