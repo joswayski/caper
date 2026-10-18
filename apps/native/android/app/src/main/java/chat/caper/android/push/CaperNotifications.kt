@@ -47,11 +47,14 @@ internal object CaperNotifications {
     const val EXTRA_THREAD_ROOT_ID = "threadRootId"
     private const val NOTIFICATION_ID = 1
     private const val MESSAGE_IDS = "chat.caper.android.messageIds"
+    /** On each MessagingStyle line: the message it shows, so a retraction removes exactly that line. */
+    private const val LINE_MESSAGE_ID = "chat.caper.android.messageId"
     private const val MEDIA_FILES = "chat.caper.android.notificationMedia"
     private const val MAX_MESSAGES = 25
     // cancelAll (sign-out) invalidates every in-flight notification; cancel(tag) only its own conversation's.
     private var generation = 0L
     private val tagGenerations = HashMap<String, Long>()
+    private val retractions = RecentRetractions()
 
     fun createChannels(context: Context) {
         context.getSystemService(NotificationManager::class.java).createNotificationChannels(pushChannels.map { (id, name) ->
@@ -60,12 +63,13 @@ internal object CaperNotifications {
     }
 
     fun show(context: Context, payload: PushPayload) {
+        if (payload.messageId in retractions) return
         val epoch = synchronized(this) { generation to tagGenerations[payload.tag] }
         val session = TokenStore(context).read()
         val prepared = NotificationAttachment.load(context, payload.attachment)
         synchronized(this) {
             if (epoch != (generation to tagGenerations[payload.tag]) || session != TokenStore(context).read() || !PushRegistration.enabled(context) ||
-                ForegroundConversation.id == payload.tag) {
+                ForegroundConversation.id == payload.tag || payload.messageId in retractions) {
                 prepared?.delete()
                 return
             }
@@ -95,6 +99,7 @@ internal object CaperNotifications {
         val sender = Person.Builder().setName(payload.sender).setKey(payload.senderId)
             .setIcon(avatar?.let(IconCompat::createWithBitmap)).build()
         val message = NotificationCompat.MessagingStyle.Message(payload.body, System.currentTimeMillis(), sender)
+        message.extras.putString(LINE_MESSAGE_ID, payload.messageId)
         if (media != null) message.setData("image/png", FileProvider.getUriForFile(context, "${context.packageName}.notification-media", media))
         style.setConversationTitle(payload.conversationTitle).setGroupConversation(payload.groupConversation).addMessage(message)
         // The data URI keeps each conversation's PendingIntent (and its extras) separate.
@@ -125,6 +130,40 @@ internal object CaperNotifications {
         // notify() enqueues asynchronously; activeNotifications can still be the old list.
         cleanup(context, files)
         return true
+    }
+
+    /**
+     * Takes a deleted message's line back out of its conversation's notification and re-posts
+     * the rest without sound, vibration or heads-up, or clears it when no line is left. The ID
+     * is remembered either way, so an original that arrives late is never shown.
+     */
+    @Synchronized
+    fun retract(context: Context, retraction: PushRetraction) {
+        retractions.add(retraction.messageId)
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val current = manager.activeNotifications.firstOrNull { it.tag == retraction.tag && it.id == NOTIFICATION_ID }?.notification ?: return
+        val style = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(current) ?: return
+        val seen = current.extras.getStringArrayList(MESSAGE_IDS).orEmpty()
+        val line = retractedLine(style.messages.map { it.extras.getString(LINE_MESSAGE_ID) }, seen, retraction.messageId) ?: return
+        style.messages.removeAt(line)
+        if (style.messages.isEmpty()) {
+            manager.cancel(retraction.tag, NOTIFICATION_ID)
+            cleanup(context)
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val files = current.extras.getStringArrayList(MEDIA_FILES).orEmpty().filter { name -> style.messages.any { it.dataUri?.lastPathSegment == name } }
+        // The recovered builder keeps the channel, title, intents and timeout; an update that only
+        // alerts once is silent because the notification is already showing.
+        val notification = NotificationCompat.Builder(context, current)
+            .setStyle(style).setContentText(style.messages.last().text).setOnlyAlertOnce(true)
+            .addExtras(Bundle().apply {
+                putStringArrayList(MESSAGE_IDS, ArrayList(seen - retraction.messageId))
+                putStringArrayList(MEDIA_FILES, ArrayList(files))
+            })
+            .build()
+        manager.notify(retraction.tag, NOTIFICATION_ID, notification)
+        cleanup(context, files)
     }
 
     /** Clears a conversation's notification once it is on screen. */

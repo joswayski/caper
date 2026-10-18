@@ -185,7 +185,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     @Serializable(with = MentionListSerializer::class) val mentions: List<MessageMention> = emptyList(),
 )
 
-/** A file on a message. URLs are signed per response and expire in 24–48 hours. */
+/** A file on a message. URLs are signed per response and expire in 1–2 hours. */
 @Serializable data class ChatAttachment(
     val id: String,
     val kind: String,

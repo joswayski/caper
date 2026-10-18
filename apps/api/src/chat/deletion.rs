@@ -17,7 +17,41 @@ pub(super) async fn delete(
     let chat = enabled(&state)?;
     let result = persist_delete(&chat.pool, &channel, &message, sender_token(&headers)?).await?;
     chat.wake.notify_one();
+    retract_live(chat, &channel, &message).await;
     Ok(Json(result))
+}
+
+/// Running clients close the notification they showed for the message.
+/// Best effort, like other account-feed events: a client that misses it
+/// keeps its notification until dismissed. Phones are handled by the
+/// retraction rows written with the deletion.
+async fn retract_live(chat: &Chat, channel: &str, message: &str) {
+    let Ok(rows) = sqlx::query_as::<_, (i64, Option<String>)>(
+        "SELECT DISTINCT n.user_id,s.external_id FROM public.notifications n
+         JOIN public.messages m ON m.id=n.message_id JOIN public.channels c ON c.id=m.channel_id
+         LEFT JOIN public.spaces s ON s.id=c.space_id
+         WHERE m.external_id=$1 AND m.deleted_at IS NOT NULL",
+    )
+    .bind(message)
+    .fetch_all(&chat.pool)
+    .await
+    else {
+        return;
+    };
+    let Some((_, space)) = rows.first() else {
+        return;
+    };
+    let mut event = json!({"type":"notification.retracted","messageId":message});
+    match space {
+        Some(space) => {
+            event["spaceId"] = json!(space);
+            event["channelId"] = json!(channel);
+        }
+        None => event["conversationId"] = json!(channel),
+    }
+    let audience: Vec<i64> = rows.iter().map(|(user, _)| *user).collect();
+    chat.publish(PROFILE_TOPIC, &json!({"audience":audience,"event":event}))
+        .await;
 }
 
 /// Deletes the author's own message. Repeating it returns the same tombstone,
@@ -92,6 +126,18 @@ pub(super) async fn persist_delete(
         .map_err(database_error)?;
     sqlx::query(
         "UPDATE public.assets SET retired_at=now() WHERE message_id=$1 AND retired_at IS NULL",
+    )
+    .bind(message_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(database_error)?;
+    // Phones that already showed it are asked to take it back; ones it has not
+    // reached yet drop it, since a deleted message is no longer eligible.
+    sqlx::query(
+        "INSERT INTO public.notification_retractions(notification_id,device_id)
+                 SELECT d.notification_id,d.device_id FROM public.notification_deliveries d
+                 JOIN public.notifications n ON n.id=d.notification_id
+                 WHERE n.message_id=$1 AND d.delivered_at IS NOT NULL ON CONFLICT DO NOTHING",
     )
     .bind(message_id)
     .execute(&mut *tx)

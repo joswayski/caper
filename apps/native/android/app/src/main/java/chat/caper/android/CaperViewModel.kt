@@ -168,8 +168,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         loadHome()
         // Working copies only matter to this process; drop any left by an earlier one.
         viewModelScope.launch(Dispatchers.IO) { uploadRoot.listFiles()?.filter { it != uploadSession }?.forEach { it.deleteRecursively() } }
-        // Signed URLs live 24-48 hours; an app left open for days refreshes them before expiry.
-        viewModelScope.launch { while (true) { delay(10 * 60_000L); if (foreground) refreshExpiringUrls() } }
+        // Message file links live 1–2 hours and refresh 10 minutes before expiry; checking every
+        // 5 minutes keeps a long-open screen inside that window.
+        viewModelScope.launch { while (true) { delay(5 * 60_000L); if (foreground) refreshExpiringUrls() } }
         viewModelScope.launch { state.map { it.selectedChannel?.id }.distinctUntilChanged().collect { publishForegroundConversation(); refreshThreadUnread() } }
         viewModelScope.launch { PushActivity.received.collect { scheduleUnreadRefresh() } }
     }

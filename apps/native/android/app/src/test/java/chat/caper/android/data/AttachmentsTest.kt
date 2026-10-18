@@ -74,10 +74,23 @@ class AttachmentsTest {
         assertTrue("already requested for this exp", refresh.expiring(listOf(soon, later)).isEmpty())
         now = 7_000
         assertEquals(listOf("BbCdEfGh12345678"), refresh.expiring(listOf(soon, later)))
-        // A re-signed URL with a new expiry can be refreshed again in a day or two.
+        // A re-signed URL with a new expiry can be refreshed again once it nears that expiry.
         now = 95_000
         assertEquals(listOf("AbCdEfGh12345678"), refresh.expiring(listOf(attachment("AbCdEfGh12345678", exp = 96_000))))
         assertTrue(refresh.expiring(listOf(attachment(exp = null), attachment(exp = 1, unavailable = true))).isEmpty())
+    }
+
+    @Test fun `hour-long links refresh only in their last ten minutes by default`() {
+        var now = 0L
+        val refresh = AttachmentUrlRefresh(nowSeconds = { now })
+        // Links signed for the next-but-one full hour expire 1–2 hours ahead.
+        val file = attachment(exp = 5_400)
+        assertTrue("not expiring yet", refresh.expiring(listOf(file)).isEmpty())
+        now = 4_799
+        assertTrue("just outside the margin", refresh.expiring(listOf(file)).isEmpty())
+        now = 4_800
+        assertEquals(listOf(file.id), refresh.expiring(listOf(file)))
+        assertTrue(refresh.expiring(listOf(file)).isEmpty())
     }
 
     @Test fun `failed loads refresh once on 403 or 404 and never for other errors`() {

@@ -453,13 +453,14 @@ fun ChatAttachment.withFreshUrls(fresh: AttachmentUrls?): ChatAttachment {
 }
 
 /**
- * When to ask `POST /api/assets/urls` for new signatures: shortly before `exp`, and once
- * after a 403/404 load failure. Each expiry is requested once; each attachment retries a
- * failed load once, so a deleted file cannot cause a refresh loop.
+ * When to ask `POST /api/assets/urls` for new signatures: shortly before `exp` (message file
+ * links live 1–2 hours, so ten minutes ahead), and once after a 403/404 load failure. Each
+ * expiry is requested once; each attachment retries a failed load once, so a deleted file
+ * cannot cause a refresh loop.
  */
 class AttachmentUrlRefresh(
     private val nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
-    private val marginSeconds: Long = 60 * 60,
+    private val marginSeconds: Long = 10 * 60,
 ) {
     private val requestedExpiry = mutableMapOf<String, Long>()
     private val failureRetried = mutableSetOf<String>()

@@ -1,8 +1,12 @@
 //! Showing message attachments: signed-URL freshness, refresh scheduling and
 //! an image cache keyed by attachment id, so refreshed URLs reuse textures.
 //! Mirrors `apps/web/src/chat/Attachments.tsx`. Desktop stays open for days,
-//! longer than a signed URL lives (24–48 hours), so URLs are refreshed through
-//! `POST /api/assets/urls` before they expire and after a 403/404 load.
+//! far longer than a message file's signed URL lives (1–2 hours: until the
+//! next-but-one full hour), so URLs are refreshed through
+//! `POST /api/assets/urls` shortly before they expire and after a 403/404
+//! load. Rendered attachments are rechecked on every frame, and a signed-in
+//! window repaints at least every `MEMBERSHIP_REFRESH` (15 s) even while
+//! idle, well inside the refresh margin.
 //!
 //! Inline images come from the `previewUrl` clients upload for large stills
 //! (JPEG), else from the PNG/JPEG/WebP/GIF original. AVIF and HEIC originals
@@ -19,9 +23,11 @@ use std::time::{Duration, Instant};
 /// Inline media frames, as on web.
 pub const MAX_WIDTH: f32 = 360.0;
 pub const MAX_HEIGHT: f32 = 300.0;
-/// Refresh URLs that expire within this many seconds.
-pub const REFRESH_MARGIN_SECONDS: i64 = 60 * 60;
-/// Do not ask for the same attachment again sooner than this.
+/// Refresh URLs that expire within this many seconds. Links live 1–2 hours,
+/// so a wider margin would keep every link permanently "expiring".
+pub const REFRESH_MARGIN_SECONDS: i64 = 10 * 60;
+/// Do not ask for the same attachment again sooner than this (shorter than
+/// the margin, so a failed refresh is retried before the link expires).
 const REFRESH_BACKOFF: Duration = Duration::from_secs(5 * 60);
 /// The API accepts at most this many ids per refresh.
 pub const MAX_REFRESH_IDS: usize = 100;
@@ -884,11 +890,14 @@ mod tests {
     }
 
     #[test]
-    fn refresh_when_expired_or_within_an_hour() {
+    fn refresh_when_expired_or_within_ten_minutes() {
         assert!(needs_refresh(&signed(NOW - 1), NOW));
-        assert!(needs_refresh(&signed(NOW + 3_600), NOW));
-        assert!(!needs_refresh(&signed(NOW + 3_601), NOW));
-        assert!(!needs_refresh(&signed(NOW + 86_400), NOW));
+        assert!(needs_refresh(&signed(NOW + 600), NOW));
+        assert!(!needs_refresh(&signed(NOW + 601), NOW));
+        // A fresh link (next-but-one full hour) is not expiring yet.
+        assert!(!needs_refresh(&signed(NOW + 3_600), NOW));
+        assert!(!needs_refresh(&signed(NOW + 7_200), NOW));
+        const { assert!(REFRESH_BACKOFF.as_secs() < REFRESH_MARGIN_SECONDS as u64) };
         assert!(!needs_refresh("https://cdn.caper.chat/original/a", NOW));
     }
 

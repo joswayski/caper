@@ -96,6 +96,12 @@ class CaperMessagingService : FirebaseMessagingService() {
         // session that turned notifications on shows them. The server already skips
         // requests, blocks, mutes and levels, so no per-push API call is needed.
         if (!PushRegistration.enabled(this)) return
+        // A deleted message takes its notification line back; the open app refreshes unread state.
+        PushRetraction.parse(message.data)?.let { retraction ->
+            CaperNotifications.retract(this, retraction)
+            PushActivity.received.tryEmit(Unit)
+            return
+        }
         val payload = PushPayload.parse(message.data) ?: return
         PushActivity.received.tryEmit(Unit)
         if (ForegroundConversation.id == payload.tag) return

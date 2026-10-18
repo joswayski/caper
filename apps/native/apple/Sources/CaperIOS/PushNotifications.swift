@@ -25,6 +25,11 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
         model?.removeDeliveredNotifications = { conversationID in
             Task { await PushNotifications.removeDelivered(threadID: conversationID) }
         }
+        // The gateway's `notification.retracted` while the app runs; the APNs
+        // retraction covers it otherwise.
+        model?.retractNotification = { messageID in
+            Task { await NotificationRetraction.remove(messageID: messageID) }
+        }
         if let model, let route = pendingRoute {
             pendingRoute = nil
             // The model holds it until the account's spaces load.
@@ -138,9 +143,15 @@ final class PushNotifications: NSObject, UIApplicationDelegate, UNUserNotificati
     }
 
     /// The server's alert, except for the conversation that is already open.
+    /// A deleted message's retraction removes its original and shows nothing
+    /// (no banner, sound or list entry) while the app is open.
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         guard let model, model.account != nil, model.pushEnabled else { return [] }
         model.scheduleUnreadRefresh()
+        if let deleted = NotificationRetraction.deletedMessageID(notification.request.content.userInfo) {
+            await NotificationRetraction.remove(messageID: deleted)
+            return []
+        }
         if case .feedback? = NotificationRoute(userInfo: notification.request.content.userInfo) { model.feedbackNotificationArrived() }
         if let route = NotificationRoute(userInfo: notification.request.content.userInfo), model.isShowing(route) { return [] }
         return [.banner, .list, .sound]

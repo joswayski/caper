@@ -76,3 +76,37 @@ enum NotificationAttachment {
         }
     }
 }
+
+/// Taking back the notification of a deleted message. An APNs retraction
+/// (kind `message.deleted`, with `deletedMessageId` and no `messageId`)
+/// replaces the original by its collapse id; the gateway's
+/// `notification.retracted` names the message that a running app showed.
+/// Either way the notifications whose `messageId` matches are removed.
+/// Compiled into the notification service extension too.
+public enum NotificationRetraction {
+    public static let kind = "message.deleted"
+
+    /// The deleted message an APNs retraction names, or nil for any other push.
+    public static func deletedMessageID(_ userInfo: [AnyHashable: Any]) -> String? {
+        guard userInfo["kind"] as? String == kind, let id = userInfo["deletedMessageId"] as? String, !id.isEmpty else { return nil }
+        return id
+    }
+
+    /// Whether a notification's payload is the original for `messageID`.
+    public static func matches(_ userInfo: [AnyHashable: Any], messageID: String) -> Bool {
+        !messageID.isEmpty && userInfo["messageId"] as? String == messageID
+    }
+
+    /// Removes delivered and pending notifications for `messageID`.
+    public static func remove(messageID: String) async {
+        let center = UNUserNotificationCenter.current()
+        let delivered = await center.deliveredNotifications()
+            .filter { matches($0.request.content.userInfo, messageID: messageID) }
+            .map(\.request.identifier)
+        if !delivered.isEmpty { center.removeDeliveredNotifications(withIdentifiers: delivered) }
+        let pending = await center.pendingNotificationRequests()
+            .filter { matches($0.content.userInfo, messageID: messageID) }
+            .map(\.identifier)
+        if !pending.isEmpty { center.removePendingNotificationRequests(withIdentifiers: pending) }
+    }
+}

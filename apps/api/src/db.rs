@@ -203,10 +203,10 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
         format!("GRANT SELECT ON public.notification_invitation_sources TO {role}"),
         format!("GRANT SELECT ON public.notification_request_sources TO {role}"),
         format!(
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON public.notification_jobs, public.notification_deliveries TO {role}"
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON public.notification_jobs, public.notification_deliveries, public.notification_retractions TO {role}"
         ),
         format!(
-            "GRANT USAGE ON SEQUENCE public.notification_devices_id_seq, public.notification_overrides_id_seq, public.notification_jobs_id_seq, public.notifications_id_seq, public.notification_deliveries_id_seq TO {role}"
+            "GRANT USAGE ON SEQUENCE public.notification_devices_id_seq, public.notification_overrides_id_seq, public.notification_jobs_id_seq, public.notifications_id_seq, public.notification_deliveries_id_seq, public.notification_retractions_id_seq TO {role}"
         ),
         format!(
             "GRANT USAGE ON SEQUENCE public.spaces_id_seq, public.channels_id_seq, public.chat_sessions_id_seq, public.messages_id_seq, public.message_reaction_activity_id_seq, public.message_reactions_id_seq, public.space_members_id_seq, public.channel_members_id_seq, public.channel_joins_id_seq, public.message_pin_activity_id_seq, public.assets_id_seq, public.space_invite_links_id_seq, public.space_invite_link_uses_id_seq TO {role}"
@@ -445,6 +445,8 @@ mod tests {
             ("public.notification_overrides", "INSERT"),
             ("public.notification_jobs", "DELETE"),
             ("public.notification_deliveries", "DELETE"),
+            ("public.notification_retractions", "INSERT"),
+            ("public.notification_retractions", "DELETE"),
             ("public.feedback_team", "SELECT"),
             ("public.feedback_reports", "SELECT"),
             ("public.feedback_reports", "INSERT"),

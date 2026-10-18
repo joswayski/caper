@@ -1387,8 +1387,10 @@ No stored objects, upload URLs or database records move. Roll out the updated
 web/native notification downloaders and the CDN Worker before the API and
 gateway begin issuing `/assets` URLs. Older clients can still open files, but
 their notification downloaders reject the new path and show text only.
-Expiry snaps to UTC day boundaries, so a URL is identical for a day (browser
-cacheable) and lives 24–48 hours. The Worker rejects anything signed more than
+Expiry snaps to UTC day boundaries for profile pictures and space icons, so
+their URL is identical for a day (browser cacheable) and lives 24–48 hours;
+message files snap to the hour and live one to two hours (see message
+deletion). The Worker rejects anything signed more than
 three days out, serves allowlisted image/video/audio types inline, forces every
 other type to download as `application/octet-stream`, and always sends
 `nosniff` plus a sandboxing CSP. PDFs are the one document type that opens in
@@ -1891,9 +1893,8 @@ a render records its first-sent file (`edit_source_id`) and the description
   files.
 - The edit description appears only in the author's `attachment-sources`,
   never in the message, its versions or its events.
-- Not taken back: URLs already issued work until they expire (24–48 hours; the
-  CDN checks only the signature), as do downloaded copies and notifications
-  already delivered.
+- Not taken back: URLs already issued work until they expire (one to two hours;
+  the CDN checks only the signature), as do downloaded copies.
 - Replaced files are never purged, still count toward the author's
   `ASSET_QUOTA_BYTES`, and cancelling one returns 409.
 
@@ -3683,9 +3684,34 @@ retired (readable only by the author), and stored replay events and reply quotes
 are rewritten so replays never hand the content out again. Edits, reactions,
 pins, quoting, forwarding and version history are refused for a deleted message;
 thread replies under it are still allowed. Deleted messages stop counting as
-unread and never notify; a push already delivered stays on the device, and
-attachment URLs signed before deletion work until they expire. At most 60
-deletions per person per channel per minute.
+unread and never notify. At most 60 deletions per person per channel per minute.
+
+Notifications already shown are taken back. Deleting writes a
+`notification_retractions` row (operational, pruned after a week like
+deliveries) for every device a push reached, and a push delivered moments later
+gets one too. A worker beside delivery sends them with the same lease, backoff
+and 24-hour lifetime:
+
+- Android (FCM data): `{"kind":"message.deleted","deletedMessageId",...}` without
+  `messageId`, so older releases ignore it; the app removes the message from
+  its conversation notification, or the notification when nothing remains.
+- iPhone (APNs): message alerts carry `apns-collapse-id: <messageId>`; the
+  retraction reuses it with "This message was deleted.", no sound and the
+  `passive` interruption level, so iOS replaces the original in place. The
+  notification service extension also removes originals delivered before
+  collapse ids existed.
+- Running web, desktop and Mac clients get `notification.retracted`
+  (`messageId` and its conversation) on the account `profiles` feed and close
+  what they showed. Like other feed events it is best effort and not replayed.
+
+What was read on a lock screen cannot be taken back.
+
+Message files are signed for one to two hours, on the hour (`CdnSigner::attachment_url`;
+profile pictures and space icons stay daily). Clients refresh links ten minutes
+before expiry through `POST /api/assets/urls`, which no longer signs a deleted
+message's retired files for anyone but its author, so other people lose access
+within about two hours. A copy already in someone's browser or app cache stays
+there, as a saved file would.
 
 Validation: the ignored Postgres/Valkey test
 `chat::deletion::tests::deletion_keeps_the_row_scrubs_content_and_only_lets_the_author_delete`,

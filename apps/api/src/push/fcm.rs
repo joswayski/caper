@@ -193,6 +193,9 @@ fn outcome(status: u16, body: &Value, after: Option<Duration>) -> Outcome {
 
 /// Data-only: the Android app builds the notification itself.
 pub(super) fn message(token: &str, alert: &Alert) -> Value {
+    if alert.retracts {
+        return retraction(token, alert);
+    }
     let mut data = json!({
         "kind": alert.kind,
         "title": alert.title,
@@ -243,6 +246,31 @@ pub(super) fn message(token: &str, alert: &Alert) -> Value {
             "token": token,
             "data": data,
             "android": {"priority": "HIGH", "ttl": "86400s", "collapse_key": alert.thread()},
+        }
+    })
+}
+
+/// Asks the Android app to remove a deleted message from its notification.
+/// Without `messageId`, releases that predate retraction ignore it.
+fn retraction(token: &str, alert: &Alert) -> Value {
+    let mut data = json!({"kind": "message.deleted", "deletedMessageId": alert.message_id});
+    match &alert.conversation {
+        Conversation::Direct { id } => data["conversationId"] = json!(id),
+        Conversation::Channel {
+            space_id,
+            channel_id,
+            ..
+        } => {
+            data["spaceId"] = json!(space_id);
+            data["channelId"] = json!(channel_id);
+        }
+        Conversation::Invitation { .. } => {}
+    }
+    json!({
+        "message": {
+            "token": token,
+            "data": data,
+            "android": {"priority": "HIGH", "ttl": "86400s"},
         }
     })
 }

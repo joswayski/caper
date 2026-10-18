@@ -4483,6 +4483,8 @@ impl CaperApp {
                 }
             }
             gateway::ProfileEvent::Space(space) => self.apply_space(&space),
+            // The account feed closes the notification itself.
+            gateway::ProfileEvent::NotificationRetracted(_) => {}
         }
     }
 
@@ -28292,6 +28294,10 @@ fn main() -> eframe::Result {
         std::process::exit(2)
     });
     let launch_invite = app_link::launch_code(&args);
+    // Let the long-lived audio endpoint thread create cpal's shared WASAPI
+    // enumerator before a short-lived playback thread can (see the function).
+    #[cfg(all(target_os = "windows", not(test)))]
+    std::thread::spawn(voice::windows_default_names);
     if fixture.is_none() {
         // A clicked link while Caper is open goes to that window instead.
         if launch_invite.as_deref().is_some_and(app_link::hand_off) {
@@ -28633,8 +28639,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(10));
             }
             assert!(!app.voice.refreshing_devices);
-            app.voice.default_input = Some("Fixture microphone".into());
-            app.voice.default_output = Some("Fixture headphones".into());
+            // Test builds enumerate fixture devices, never real hardware.
             let output = render(&mut app, &context, vec![]);
             let label = if input {
                 "System default — Fixture microphone"

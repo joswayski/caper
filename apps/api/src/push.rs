@@ -27,6 +27,7 @@ mod delivery;
 mod expansion;
 mod fcm;
 pub(crate) mod live;
+mod retraction;
 mod settings;
 #[cfg(test)]
 mod tests;
@@ -133,7 +134,13 @@ pub(crate) struct Alert {
     pub attachment: Option<Attachment>,
     /// The thread a reply belongs to, so a notification opens it there.
     pub thread_root_id: Option<String>,
+    /// Takes back the notification already shown for `message_id`, which
+    /// was deleted: Android removes it, iPhone replaces it in place.
+    pub retracts: bool,
 }
+
+/// Shown in place of a deleted message's notification on iPhone.
+pub(crate) const RETRACTED_BODY: &str = "This message was deleted.";
 
 /// One existing upload object, never a notification-specific stored rendition.
 #[derive(Clone, Debug)]
@@ -173,7 +180,24 @@ impl Alert {
             sender_avatar_id: sender_avatar_id.filter(|id| (0..800).contains(id)),
             attachment: None,
             thread_root_id: None,
+            retracts: false,
         }
+    }
+
+    /// Replaces the notification of a deleted message: same title and
+    /// conversation, no content.
+    pub(crate) fn retraction(mut self) -> Self {
+        self.body = RETRACTED_BODY.into();
+        self.attachment = None;
+        self.retracts = true;
+        self
+    }
+
+    /// APNs `apns-collapse-id`: a message's notification can be replaced by
+    /// its retraction. Invitations and requests are never retracted.
+    pub(crate) fn collapse_id(&self) -> Option<&str> {
+        (self.notification_id.is_none() && !self.message_id.is_empty())
+            .then_some(self.message_id.as_str())
     }
 
     pub(crate) fn invitation(
@@ -583,6 +607,24 @@ pub(crate) fn start(
         loop {
             delivery::prune(&pruning).await;
             tokio::time::sleep(Duration::from_secs(600)).await;
+        }
+    });
+    let retractions = workers.clone();
+    tokio::spawn(async move {
+        loop {
+            match if retractions.push.enabled() {
+                retraction::retract_pending(&retractions).await
+            } else {
+                Ok(false)
+            } {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(()) => tracing::warn!(
+                    event_name = "push_retraction_retry",
+                    "push retraction batch will retry"
+                ),
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
     tokio::spawn(async move {

@@ -911,6 +911,16 @@ test("browser alerts show the sender avatar, suppress reading/disabled/stale mes
   emit(18, { ...request, notificationId: undefined });
   emit(19, { ...request, notificationId: "96", channelId: "chan00000001" });
   assert.equal(shown.length, 7, "request replay and malformed requests cannot alert");
+  const profiles = f.subscribe(0, 1);
+  assert.equal(profiles.kind, "profiles");
+  const retract = (messageId: string) =>
+    f.sockets[0].frame({ type: "event", id: profiles.id, event: { type: "notification.retracted", messageId } });
+  retract("message10");
+  assert.ok(shown[3].closed, "a deleted message's notification closes");
+  assert.ok(!shown[2].closed, "other notifications stay");
+  retract("message20");
+  emit(20);
+  assert.equal(shown.length, 7, "a retraction that arrives first keeps the late notification from showing");
   let complete!: (response: Response) => void;
   vi.mocked(fetch).mockImplementationOnce(
     () =>
@@ -918,7 +928,7 @@ test("browser alerts show the sender avatar, suppress reading/disabled/stale mes
         complete = resolve;
       }),
   );
-  emit(20, media);
+  emit(21, media);
   stop();
   complete(new Response("png"));
   await new Promise((resolve) => setTimeout(resolve, 0));

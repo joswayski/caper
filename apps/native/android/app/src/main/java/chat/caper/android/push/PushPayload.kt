@@ -71,6 +71,8 @@ internal data class PushPayload(
         fun parse(data: Map<String, String>): PushPayload? {
             fun value(key: String) = data[key]?.trim()?.takeIf { it.isNotEmpty() }
             val kind = value("kind").orEmpty()
+            // A retraction is never shown, whatever else it carries ([PushRetraction]).
+            if (kind == PushRetraction.KIND) return null
             val invitation = kind == "space.invitation" || kind == "channel.invitation"
             val request = kind == "direct.request"
             val consent = invitation || request
@@ -115,6 +117,70 @@ internal data class PushPayload(
         private const val MAX_BODY = 1_000
 
         private fun String.limit(max: Int): String = if (codePointCount(0, length) <= max) this else substring(0, offsetByCodePoints(0, max)) + "…"
+    }
+}
+
+/**
+ * A `message.deleted` data message: take [messageId]'s line back out of its DM's or channel's
+ * notification. It deliberately carries `deletedMessageId`, never `messageId`, so older app
+ * versions drop it.
+ */
+internal data class PushRetraction(val messageId: String, val conversationId: String?, val spaceId: String?, val channelId: String?) {
+    /** The tag of the conversation notification that may show the message, as [PushPayload.tag]. */
+    val tag: String get() = conversationId ?: checkNotNull(channelId)
+
+    companion object {
+        const val KIND = "message.deleted"
+        private val externalId = Regex("^[A-Za-z0-9]{12}$")
+        private val messageIdPattern = Regex("^[A-Za-z0-9]{15}$")
+
+        /** Null for anything but a well-formed DM or channel retraction. */
+        fun parse(data: Map<String, String>): PushRetraction? {
+            fun value(key: String) = data[key]?.trim()?.takeIf { it.isNotEmpty() }
+            if (value("kind") != KIND) return null
+            val messageId = value("deletedMessageId")?.takeIf(messageIdPattern::matches) ?: return null
+            val conversationId = value("conversationId")
+            val spaceId = value("spaceId")
+            val channelId = value("channelId")
+            if (conversationId != null) {
+                if (!externalId.matches(conversationId) || spaceId != null || channelId != null) return null
+            } else if (spaceId == null || channelId == null || !externalId.matches(spaceId) || !externalId.matches(channelId)) return null
+            return PushRetraction(messageId, conversationId, spaceId, channelId)
+        }
+    }
+}
+
+/**
+ * Which line of a conversation notification shows [messageId]. Lines posted by this version
+ * record their message ID; for lines from older versions the notification's message ID list
+ * ([postedIds], oldest first) counts only when it lines up with the lines one to one. Null
+ * leaves the notification as it is.
+ */
+internal fun retractedLine(lineIds: List<String?>, postedIds: List<String>, messageId: String): Int? {
+    lineIds.indexOf(messageId).takeIf { it >= 0 }?.let { return it }
+    if (postedIds.size != lineIds.size || lineIds.indices.any { lineIds[it] != null && lineIds[it] != postedIds[it] }) return null
+    return postedIds.indexOf(messageId).takeIf { it >= 0 && lineIds[it] == null }
+}
+
+/**
+ * Message IDs retracted in the last [ttlMs]: a retraction can overtake its original (or the
+ * original can arrive again), and that original must never be shown.
+ */
+internal class RecentRetractions(private val nowMs: () -> Long = System::currentTimeMillis, private val ttlMs: Long = 30 * 60_000L, private val max: Int = 200) {
+    private val retracted = LinkedHashMap<String, Long>()
+
+    @Synchronized fun add(messageId: String) {
+        prune()
+        retracted.remove(messageId)
+        retracted[messageId] = nowMs()
+        while (retracted.size > max) retracted.remove(retracted.keys.first())
+    }
+
+    @Synchronized operator fun contains(messageId: String): Boolean { prune(); return messageId in retracted }
+
+    private fun prune() {
+        val now = nowMs()
+        retracted.entries.removeAll { now - it.value > ttlMs }
     }
 }
 

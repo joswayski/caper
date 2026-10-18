@@ -36,6 +36,7 @@ const PURGE_INTERVAL: Duration = Duration::from_secs(60);
 /// Deleted files stay readable to moderators for a day before R2 removal.
 const PURGE_DELAY_HOURS: i32 = 24;
 const DAY: i64 = 24 * 60 * 60;
+const HOUR: i64 = 60 * 60;
 
 mod privacy;
 
@@ -372,8 +373,18 @@ impl CdnSigner {
         Self { origin, secret }
     }
 
+    /// Profile pictures and space icons: every signature issued the same day
+    /// shares one URL, so caches keyed by URL keep working.
     pub(crate) fn url(&self, key: &str, now: i64) -> String {
         let expires = (now.div_euclid(DAY) + 2) * DAY;
+        self.signed_url(key, expires)
+    }
+
+    /// Message files live one to two hours, on the hour, so a deleted or
+    /// replaced file stops loading soon after: clients refresh links through
+    /// `POST /api/assets/urls`, which no longer signs retired files.
+    pub(crate) fn attachment_url(&self, key: &str, now: i64) -> String {
+        let expires = (now.div_euclid(HOUR) + 2) * HOUR;
         self.signed_url(key, expires)
     }
 
@@ -439,11 +450,14 @@ fn sign_one(attachment: &mut Map<String, Value>, signer: &CdnSigner, now: i64) {
     if attachment.get("unavailable") == Some(&Value::Bool(true)) {
         return;
     }
-    attachment.insert("url".into(), json!(signer.url(&original_key(&id), now)));
+    attachment.insert(
+        "url".into(),
+        json!(signer.attachment_url(&original_key(&id), now)),
+    );
     if attachment.get("preview").is_some_and(Value::is_object) {
         attachment.insert(
             "previewUrl".into(),
-            json!(signer.url(&preview_key(&id), now)),
+            json!(signer.attachment_url(&preview_key(&id), now)),
         );
     }
 }
@@ -1313,9 +1327,9 @@ async fn urls(
             }
         };
         if ok {
-            let mut urls = json!({"url": signer.url(&original_key(&asset), now)});
+            let mut urls = json!({"url": signer.attachment_url(&original_key(&asset), now)});
             if preview {
-                urls["previewUrl"] = json!(signer.url(&preview_key(&asset), now));
+                urls["previewUrl"] = json!(signer.attachment_url(&preview_key(&asset), now));
             }
             out.insert(asset, urls);
         }

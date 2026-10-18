@@ -67,6 +67,12 @@ The native UI and platform projects still require exact-head Apple builds/tests 
   read-only request review; pending messages stay quiet until acceptance.
 - macOS receives local notifications from the account gateway while running;
   it has no APNs delivery after quit.
+- **Deleted messages.** On iPhone the server's passive `message.deleted` alert
+  replaces the original by its collapse id; the notification service also removes
+  any delivered original with that `messageId`, and in the foreground nothing
+  shows. While either app runs, the `profiles` feed's `notification.retracted`
+  removes that message's notification (macOS also drops one still being prepared
+  or arriving late).
 
 Physical signed devices must still validate opt-in, permission denial and
 re-enable, token rotation, logout and account switching, sandbox and production

@@ -775,28 +775,7 @@ impl Voice {
         let events = self.events.clone();
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
-            let devices = media::enumerate_audio_devices();
-            // WASAPI's eConsole default matches our ADM selection. The ADM's
-            // special name index instead returns the communications default.
-            #[cfg(target_os = "windows")]
-            let (input, output) = {
-                use rodio::cpal::traits::{DeviceTrait, HostTrait};
-                let host = rodio::cpal::default_host();
-                (
-                    host.default_input_device()
-                        .and_then(|device| device.name().ok()),
-                    host.default_output_device()
-                        .and_then(|device| device.name().ok()),
-                )
-            };
-            // Our Linux ADM exposes the system-default route at index zero.
-            #[cfg(not(target_os = "windows"))]
-            let (input, output) = devices.as_ref().map_or((None, None), |devices| {
-                (
-                    devices.inputs.first().map(|device| device.name.clone()),
-                    devices.outputs.first().map(|device| device.name.clone()),
-                )
-            });
+            let (devices, input, output) = system_devices();
             report(
                 &events,
                 &repaint,
@@ -1137,6 +1116,86 @@ fn join_failure(detail: &str) -> String {
              Close other apps using it or reconnect it, then join again."
         )
     }
+}
+
+/// This computer's audio devices and the system default input and output
+/// names. Tests never touch real audio hardware (as the device tests in
+/// `media` are opt-in), so they get a fixed fixture instead.
+type SystemDevices = (
+    Result<media::AudioDevices, String>,
+    Option<String>,
+    Option<String>,
+);
+
+#[cfg(not(test))]
+fn system_devices() -> SystemDevices {
+    let devices = media::enumerate_audio_devices();
+    // WASAPI's eConsole default matches our ADM selection. The ADM's
+    // special name index instead returns the communications default.
+    #[cfg(target_os = "windows")]
+    let (input, output) = windows_default_names();
+    // Our Linux ADM exposes the system-default route at index zero.
+    #[cfg(not(target_os = "windows"))]
+    let (input, output) = devices.as_ref().map_or((None, None), |devices| {
+        (
+            devices.inputs.first().map(|device| device.name.clone()),
+            devices.outputs.first().map(|device| device.name.clone()),
+        )
+    });
+    (devices, input, output)
+}
+
+#[cfg(test)]
+fn system_devices() -> SystemDevices {
+    let device = |id: &str, name: &str| media::AudioDevice {
+        id: id.into(),
+        name: name.into(),
+    };
+    (
+        Ok(media::AudioDevices {
+            inputs: vec![device("fixture-microphone", "Fixture microphone")],
+            outputs: vec![device("fixture-headphones", "Fixture headphones")],
+        }),
+        Some("Fixture microphone".into()),
+        Some("Fixture headphones".into()),
+    )
+}
+
+/// The WASAPI eConsole default input and output names, looked up on one
+/// thread that lives as long as the app. cpal keeps one process-wide device
+/// enumerator, created on whichever thread asks first, and that thread's COM
+/// initialization must outlive it: a short-lived lookup thread tore COM down
+/// when it ended, and the next lookup (Refresh) used the dangling enumerator
+/// and crashed with STATUS_ACCESS_VIOLATION.
+#[cfg(all(target_os = "windows", not(test)))]
+pub fn windows_default_names() -> (Option<String>, Option<String>) {
+    use std::sync::OnceLock;
+    type Reply = Sender<(Option<String>, Option<String>)>;
+    static LOOKUPS: OnceLock<Sender<Reply>> = OnceLock::new();
+    let lookups = LOOKUPS.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel::<Reply>();
+        // The sender is never dropped, so this thread (and COM on it) stays.
+        let _ = std::thread::Builder::new()
+            .name("caper-audio-endpoints".into())
+            .spawn(move || {
+                use rodio::cpal::traits::{DeviceTrait, HostTrait};
+                let host = rodio::cpal::default_host();
+                for reply in receiver {
+                    let _ = reply.send((
+                        host.default_input_device()
+                            .and_then(|device| device.name().ok()),
+                        host.default_output_device()
+                            .and_then(|device| device.name().ok()),
+                    ));
+                }
+            });
+        sender
+    });
+    let (reply, answer) = mpsc::channel();
+    if lookups.send(reply).is_err() {
+        return (None, None);
+    }
+    answer.recv().unwrap_or((None, None))
 }
 
 fn report(sender: &Sender<Report>, repaint: &egui::Context, event: Report) {

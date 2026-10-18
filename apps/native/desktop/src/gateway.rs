@@ -126,6 +126,9 @@ pub enum ProfileEvent {
     Person(crate::model::Person),
     /// `space.updated`: a space you belong to was renamed or got a new icon.
     Space(crate::model::Space),
+    /// `notification.retracted`: this message (id) was deleted, so the
+    /// notification shown for it is taken back. The account feed handles it.
+    NotificationRetracted(String),
 }
 
 /// A `profiles` event frame, or `None` for other frames, unknown event types
@@ -146,6 +149,10 @@ pub fn profiles_event(frame: &Value) -> Option<ProfileEvent> {
             .ok()
             .filter(|space| !space.id.is_empty())
             .map(ProfileEvent::Space),
+        "notification.retracted" => event["messageId"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(|id| ProfileEvent::NotificationRetracted(id.to_owned())),
         _ => None,
     }
 }
@@ -926,7 +933,28 @@ mod tests {
             (space.name.as_str(), space.icon().unwrap().asset),
             ("Friends", "icon")
         );
+        assert_eq!(
+            profiles_event(&frame(json!({
+                "type":"notification.retracted","messageId":"msg000000000001",
+                "spaceId":"space0000001","channelId":"chan00000001"
+            }))),
+            Some(ProfileEvent::NotificationRetracted(
+                "msg000000000001".into()
+            ))
+        );
+        assert_eq!(
+            profiles_event(&frame(json!({
+                "type":"notification.retracted","messageId":"msg000000000002",
+                "conversationId":"dm0000000001"
+            }))),
+            Some(ProfileEvent::NotificationRetracted(
+                "msg000000000002".into()
+            ))
+        );
         for ignored in [
+            frame(json!({"type":"notification.retracted"})),
+            frame(json!({"type":"notification.retracted","messageId":""})),
+            frame(json!({"type":"notification.retracted","messageId":7})),
             frame(json!({"type":"profile.deleted","person":{"id":"u1"}})),
             frame(json!({"type":"profile.updated","person":{"id":"u1"}})),
             frame(json!({"type":"space.updated","space":{"id":"","name":"x","ownerId":"u"}})),

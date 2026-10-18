@@ -30,6 +30,8 @@ class ProfilesGatewayTest {
         assertNull(profileEvent(event("""{"type":"space.updated","space":{"id":"space0000001","name":"Friends"}}""")).let { (it as ProfileEvent.SpaceChanged).space.iconUrl })
         // Unknown, malformed or incomplete events are dropped, never thrown.
         assertNull(profileEvent(event("""{"type":"profile.deleted","person":{"id":"maya00000001"}}""")))
+        // Android posts notifications only from push, which takes its own lines back, not from this feed.
+        assertNull(profileEvent(event("""{"type":"notification.retracted","messageId":"message00000001","conversationId":"direct000001"}""")))
         assertNull(profileEvent(event("""{"type":"profile.updated"}""")))
         assertNull(profileEvent(event("""{"type":"profile.updated","person":{"id":""}}""")))
         assertNull(profileEvent(event("""{"type":"profile.updated","person":"maya"}""")))
