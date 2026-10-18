@@ -166,6 +166,7 @@ public actor APIClient {
     }
 
     public func spaces() async throws -> SpacesResponse { try await request("api/spaces") }
+    public func spaceVoiceActivity() async throws -> SpaceVoiceActivityResponse { try await request("api/spaces/voice-activity") }
     public func unreadThreads(channelID: String) async throws -> [UnreadThread] {
         let response: UnreadThreadsResponse = try await request("api/chat/channels/\(try pathID(channelID))/threads/unread")
         guard response.threads.allSatisfy({ !$0.rootId.isEmpty && (try? Sequence.compare($0.seq, "0")) != nil }) else {

@@ -8594,3 +8594,30 @@ Verify on an iPhone: drag from Browse past the middle toward the conversation,
 slowly and with a flick, and let go. The conversation carries on to the left edge
 and stops there, never passing it. Do the same back to Browse and for the member
 list, and check that a finger still catches a moving slide.
+
+## Space-rail voice activity (October 18, 2026)
+
+Web, Android, Apple and Rust desktop show a small speaker on a space's icon:
+white on neutral chrome when voice is occupied, white on green when this
+client is connected there. Browsing a different space does not move the green
+badge. Joining/reconnecting alone never turns it green. Unread and mute marks
+remain separate.
+
+Authenticated `GET /api/spaces/voice-activity` returns `{ "spaceIds": [...] }`.
+It includes only current member spaces with non-monitor participants in
+channels the caller has joined and can access; private grants and revocations
+use the same authorization as joining voice. Reservations and monitor-only
+rooms do not count. No participant identities or channel IDs are returned.
+Clients refresh every 15 seconds (web skips hidden tabs), clear polled activity
+on failure/logout, and derive their own green badge immediately from the local
+connected state. This is a polling hint, not an instantaneous presence feed.
+
+Validation: API HTTP authorization cases pass against disposable Postgres and
+Valkey and the in-memory room backend; SFU responses are mocked. Web checks and
+tests pass; `VOICE_TEST_RAIL=1 node scripts/test-voice-controls.mjs` exercises
+idle/joining/connected, cross-space navigation, outage cleanup and leaving with
+mocked media. Chromium 1280px/390px captures were inspected (not physical-device
+or Safari acceptance). Rust desktop has endpoint, state and rail tests; its
+connected and neutral badges were rendered and inspected in Linux/Xvfb fixtures.
+Android SDK and Apple/Xcode toolchains are unavailable in this Linux orb;
+their new API tests and native rendering still need platform validation.

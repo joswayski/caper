@@ -30,6 +30,21 @@ class CaperApiTest {
 
     @After fun close() { server.close() }
 
+    @Test fun `space voice activity is an authenticated lightweight snapshot`() = runTest {
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        server.enqueue(MockResponse().setBody("""{"spaceIds":["space0000001","space0000002"]}"""))
+        assertEquals(listOf("space0000001", "space0000002"), api.spaceVoiceActivity("account-secret").spaceIds)
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/api/spaces/voice-activity", request.path)
+        assertEquals("Bearer account-secret", request.headers["Authorization"])
+        assertNull(request.headers["x-caper-chat-token"])
+        server.enqueue(MockResponse().setBody("""{"spaceIds":[]}"""))
+        assertTrue(api.spaceVoiceActivity("account-secret").spaceIds.isEmpty())
+        server.enqueue(MockResponse().setResponseCode(503))
+        assertTrue(runCatching { api.spaceVoiceActivity("account-secret") }.isFailure)
+    }
+
     @Test fun `thread unread uses account authentication and acknowledges an exact decimal sequence`() = runTest {
         val api = CaperApi(baseUrl = server.url("/").toString())
         server.enqueue(MockResponse().setBody("""{"threads":[{"rootId":"message00000001","seq":"9007199254740993"}]}"""))

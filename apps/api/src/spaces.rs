@@ -12,6 +12,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 mod invite_links;
 mod joining;
 mod unread;
+mod voice_activity;
 pub(crate) use invite_links::{accept as accept_invite_link, preview as preview_invite_link};
 pub(crate) use joining::channel_participation;
 use joining::{add_channel_member, remove_channel_member};
@@ -285,6 +286,7 @@ pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/spaces", get(list_spaces).post(create_space))
         .route("/api/spaces/unread", get(unread::list))
+        .route("/api/spaces/voice-activity", get(voice_activity::list))
         .route(
             "/api/spaces/{space}/channels/{channel}/read",
             post(unread::read),

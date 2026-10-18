@@ -1130,9 +1130,11 @@ private struct SpaceRailButton: View {
     private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
     private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
     private var unread: Bool { model.unreadSpaces.contains { $0.id == space.id } }
+    private var connected: Bool { model.account != nil && model.voice.phase == .connected && model.voice.context?.spaceID == space.id }
+    private var voiceActive: Bool { model.account != nil && (connected || model.voiceActivitySpaceIDs.contains(space.id)) }
     private var state: String {
         let base: String = model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : ""
-        return [base, unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
+        return [base, unread ? "Unread activity" : "", muted ? "Muted" : "", connected ? "Connected to voice" : voiceActive ? "Voice active" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     var body: some View {
@@ -1143,10 +1145,20 @@ private struct SpaceRailButton: View {
                 .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
                 .overlay(alignment: .bottomTrailing) { mutedBadge }
                 .overlay(alignment: .topTrailing) {
+                    if voiceActive {
+                        CaperIcon(name: "volume-2", size: 11)
+                            .foregroundStyle(CaperTheme.text)
+                            .frame(width: 18, height: 18)
+                            .background(Circle().fill(connected ? CaperTheme.voiceSessionGreen : CaperTheme.blackout))
+                            .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
+                            .offset(x: 3, y: -3).accessibilityHidden(true)
+                    }
+                }
+                .overlay(alignment: .topLeading) {
                     if unread {
                         Circle().fill(CaperTheme.text).frame(width: 8, height: 8)
                             .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
-                            .offset(x: 2, y: -2).accessibilityHidden(true)
+                            .offset(x: -2, y: -2).accessibilityHidden(true)
                     }
                 }
         }

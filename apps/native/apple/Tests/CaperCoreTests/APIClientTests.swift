@@ -70,6 +70,27 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    func testSpaceVoiceActivityUsesAuthenticatedLightweightSnapshot() async throws {
+        let api = client()
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/spaces/voice-activity")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            XCTAssertNil(request.value(forHTTPHeaderField: "x-caper-chat-token"))
+            return (200, Data(#"{"spaceIds":["space0000001","space0000002"]}"#.utf8))
+        }
+        let snapshot = try await api.spaceVoiceActivity()
+        XCTAssertEqual(snapshot.spaceIds, ["space0000001", "space0000002"])
+        MockURLProtocol.handler = { _ in (200, Data(#"{"spaceIds":[]}"#.utf8)) }
+        let empty = try await api.spaceVoiceActivity()
+        XCTAssertTrue(empty.spaceIds.isEmpty)
+        MockURLProtocol.handler = { _ in (503, Data(#"{"error":"Unavailable"}"#.utf8)) }
+        do {
+            _ = try await api.spaceVoiceActivity()
+            XCTFail("Failed snapshots must not be accepted")
+        } catch { }
+    }
+
     func testUnreadThreadContractUsesAuthenticatedGetAndVisibleSequencePut() async throws {
         let api = client()
         let root = "root00000000001"
