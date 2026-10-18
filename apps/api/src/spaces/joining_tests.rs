@@ -562,7 +562,7 @@ async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_re
         let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
         (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
     }
-    let snapshot = |channels: Value| json!({"spaces":[{"id":"space1234567","channels":channels}]});
+    let snapshot = |channels: Value| json!({"spaces":[{"id":"space1234567","channels":channels}],"feedbackWaiting":0});
     assert_eq!(
         call(&app, "GET", "/api/spaces/unread", Value::Null).await,
         (
@@ -633,7 +633,7 @@ async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_re
         .unwrap();
     assert_eq!(
         call(&app, "GET", "/api/spaces/unread", Value::Null).await.1,
-        json!({"spaces":[]})
+        json!({"spaces":[],"feedbackWaiting":0})
     );
     assert_eq!(
         call(&app, "POST", read, json!({"seq":"10"})).await.0,
