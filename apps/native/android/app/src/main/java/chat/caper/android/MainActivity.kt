@@ -3773,6 +3773,10 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     description: String? = null,
     footer: (@Composable () -> Unit)? = null,
     titleIcon: Int? = null,
+    /** Drawn above the title, like What's new's Caper face. */
+    heroIcon: Int? = null,
+    /** Right under the title, e.g. What's new's linked version. */
+    subtitle: (@Composable () -> Unit)? = null,
     /** A request is in flight: X, back and outside taps wait, so it can't finish behind a closed dialog. */
     busy: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
@@ -3782,14 +3786,17 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
             // Short dialogs fit their content; long ones scroll below a fixed heading (web).
             Surface(Modifier.fillMaxWidth().heightIn(max = minOf(maxHeight, 760.dp)), color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                 Column {
-                    Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 10.dp, top = 10.dp, bottom = if (description != null) 16.dp else 10.dp), verticalAlignment = Alignment.Top) {
+                    Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 10.dp, top = 10.dp, bottom = if (description != null || subtitle != null) 16.dp else 10.dp), verticalAlignment = Alignment.Top) {
                         Column(Modifier.weight(1f)) {
+                            // Centered on the close button's row; the title follows below.
+                            heroIcon?.let { Image(painterResource(it), contentDescription = null, modifier = Modifier.padding(top = 6.dp, bottom = 10.dp).size(36.dp)) }
                             // As tall as the close button, so the X stays level with the title.
-                            Row(Modifier.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Row(Modifier.heightIn(min = if (heroIcon != null) 0.dp else 48.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 titleIcon?.let { Image(painterResource(it), contentDescription = null, modifier = Modifier.size(32.dp)) }
                                 Text(title, Modifier.semantics { heading() }, fontSize = 19.sp, fontWeight = FontWeight.Bold)
                             }
                             description?.let { Text(it, color = TextMuted, fontSize = 12.sp, lineHeight = 17.sp) }
+                            subtitle?.let { Box(Modifier.padding(top = 2.dp)) { it() } }
                         }
                         Spacer(Modifier.width(8.dp))
                         IconButton(close, Modifier.size(48.dp), enabled = !busy) { Icon(painterResource(R.drawable.lucide_x), "Close", tint = if (busy) TextMuted.copy(alpha = 0.4f) else TextMuted) }

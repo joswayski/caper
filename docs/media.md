@@ -8601,8 +8601,12 @@ per minute while foregrounded; Settings offers immediate retry.
 History groups releases under one UTC publication date. Each native release has
 one full version link above its highlights; web releases and legacy native entries
 without recorded versions use a short commit link instead. Links open that exact
-source revision on GitHub. The header identifies the installed native version and
-commit (the deployed commit on web), independently of the history being viewed.
+source revision on GitHub. Every client's header matches the
+desktop update review: the Caper face, the title, then the installed version right
+under it (`Version 0.1.<build>`; web, which has no build number, shows `Web build
+<commit>`), linked to its commit, with no intro line. Version links are muted and
+underlined and brighten on hover or focus. Release days read like "October 18, 2026"
+everywhere.
 The native release workflow supplies its actual `0.1.<build>` as optional `version`
 metadata in schema-1 snapshots; the API preserves it and older clients ignore it.
 Previously published snapshots remain immutable: missing versions are never guessed

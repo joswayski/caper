@@ -7,6 +7,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withLink
@@ -59,23 +62,26 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
 
 @Composable internal fun WhatsNewDialog(
     state: WhatsNewUi, displayed: WhatsNewSnapshot?, automatic: Boolean, retry: () -> Unit, close: () -> Unit,
-) = CaperDialog("What’s new", close, description = "Updates to Caper on Android.") {
+) = CaperDialog(
+    "What’s new", close, heroIcon = R.drawable.caper_face,
+    // Like the update review on desktop: the installed version right under the title.
+    subtitle = {
+        val version = "Version ${BuildConfig.VERSION_NAME}"
+        if (isReleaseRevision(BuildConfig.SOURCE_REVISION)) ReleaseCommitLink(version, BuildConfig.SOURCE_REVISION, 13)
+        else Text(version, fontSize = 13.sp, color = TextMuted)
+    },
+) {
     val releases = displayed?.releases.orEmpty().filter { it.highlights.isNotEmpty() }.asReversed()
-    if (isReleaseRevision(BuildConfig.SOURCE_REVISION)) {
-        ReleaseCommitLink("Installed: ${BuildConfig.VERSION_NAME} · ${BuildConfig.SOURCE_REVISION.take(7)}", BuildConfig.SOURCE_REVISION)
-    } else {
-        Text("Installed: ${BuildConfig.VERSION_NAME}", fontSize = 12.sp, color = TextMuted)
-    }
     if (displayed == null && state.loading) {
         CircularProgressIndicator(color = Terracotta, modifier = Modifier.size(24.dp))
-        Text("Loading release notes…", color = TextMuted)
+        Text("Loading release highlights…", color = TextMuted)
     } else if (displayed == null && state.error != null) {
         Text(state.error, color = ErrorText)
         TextButton(retry, enabled = !state.loading) { Text("Retry") }
     } else if (releases.isEmpty()) {
         Text("No release highlights for this version yet.", color = TextMuted)
     } else releases.groupBy { it.publishedAt.take(10) }.forEach { (date, dayReleases) ->
-        Text(date, fontSize = 12.sp, color = TextMuted)
+        Text(releaseDayLabel(date), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextMuted)
         dayReleases.forEach { release ->
             ReleaseCommitLink(release.version?.let { "Version $it" } ?: "Commit ${release.revision.take(7)}", release.revision)
             release.highlights.forEach { highlight ->
@@ -90,10 +96,21 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
     }
 }
 
-@Composable private fun ReleaseCommitLink(label: String, revision: String) {
+/** Muted and underlined, brightening on hover, focus or press, so a version reads as a link. */
+private val ReleaseLinkStyles = TextLinkStyles(
+    SpanStyle(color = TextMuted, textDecoration = TextDecoration.Underline),
+    focusedStyle = SpanStyle(color = Text), hoveredStyle = SpanStyle(color = Text), pressedStyle = SpanStyle(color = Text),
+)
+
+@Composable private fun ReleaseCommitLink(label: String, revision: String, size: Int = 12) {
     val uriHandler = LocalUriHandler.current
     val url = "https://github.com/joswayski/caper/commit/$revision"
     Text(buildAnnotatedString {
-        withLink(LinkAnnotation.Url(url, MessageLink) { openExternalLink(uriHandler, url) }) { append(label) }
-    }, fontSize = 12.sp, color = TextMuted)
+        withLink(LinkAnnotation.Url(url, ReleaseLinkStyles) { openExternalLink(uriHandler, url) }) { append(label) }
+    }, fontSize = size.sp, color = TextMuted)
 }
+
+/** "October 18, 2026" for a release's UTC publication day ("2026-10-18"). */
+internal fun releaseDayLabel(day: String): String = runCatching {
+    java.time.LocalDate.parse(day).format(java.time.format.DateTimeFormatter.ofPattern("MMMM d, yyyy", java.util.Locale.US))
+}.getOrDefault(day)

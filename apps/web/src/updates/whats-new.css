@@ -3,25 +3,50 @@
   height: auto;
   max-height: min(680px, calc(100dvh - 32px));
 }
-.whats-new-intro {
-  margin-bottom: 28px;
-  color: var(--text-muted);
-  font-size: 0.9rem;
-  line-height: 1.5;
+.whats-new-heading {
+  align-items: flex-start;
+  padding-top: 18px;
+  padding-bottom: 16px;
 }
-.whats-new-build {
-  margin: 0 0 10px;
-  color: var(--text-muted);
-  font-size: 0.8rem;
+.whats-new-title {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
 }
-.whats-new-build a,
+.whats-new-face {
+  display: block;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 10px;
+}
+.whats-new-title h2 {
+  font-size: 1.25rem;
+}
+/* Versions are muted underlined links that brighten on hover or focus. */
+.whats-new-build,
 .whats-new-source {
   color: var(--text-muted);
   text-decoration: underline;
   text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+.whats-new-build {
+  margin-top: 2px;
+  font-size: 0.8rem;
 }
 .whats-new-source {
-  font-size: 0.8rem;
+  font-size: 0.75rem;
+}
+.whats-new-build:focus-visible,
+.whats-new-source:focus-visible {
+  color: var(--text);
+}
+@media (hover: hover) {
+  .whats-new-build:hover,
+  .whats-new-source:hover {
+    color: var(--text);
+  }
 }
 .whats-new-entry {
   margin-top: 20px;
@@ -34,6 +59,7 @@
 .whats-new-release time {
   color: var(--text-muted);
   font-size: 0.75rem;
+  font-weight: 700;
 }
 .whats-new-release article {
   margin-top: 12px;

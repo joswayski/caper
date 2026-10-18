@@ -9353,7 +9353,9 @@ impl CaperApp {
                     });
                 });
                 ui.label(bold("A fresh Caper is ready").size(20.0));
-                // "Version 0.1.82 · October 18, 2026"; the version opens its commit.
+                // "Version 0.1.82 · October 18, 2026" sits right under the title;
+                // the version opens its commit.
+                ui.add_space(-ui.spacing().item_spacing.y + 2.0);
                 let date = update
                     .released
                     .as_deref()
@@ -9361,21 +9363,13 @@ impl CaperApp {
                     .map(|date| date.format("%B %-d, %Y").to_string());
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    let version = RichText::new(format!("Version {}", update.version))
-                        .color(MUTED)
-                        .size(13.0);
+                    let version = format!("Version {}", update.version);
                     match update.revision.as_deref().and_then(updates::commit_url) {
                         Some(url) => {
-                            let link = ui
-                                .add(egui::Link::new(version))
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .on_hover_text("View this version on GitHub");
-                            if link.clicked() {
-                                context.open_url(egui::OpenUrl::new_tab(url));
-                            }
+                            release_link(ui, &version, 13.0, &url);
                         }
                         None => {
-                            ui.label(version);
+                            ui.label(RichText::new(version).color(MUTED).size(13.0));
                         }
                     }
                     if let Some(date) = date {
@@ -21091,6 +21085,16 @@ impl CaperApp {
                             .show(ui, |ui| {
                                 ui.horizontal_top(|ui| {
                                     ui.vertical(|ui| {
+                                        // Like the update review: the face, the title, then
+                                        // the installed version right under it.
+                                        if whats_new {
+                                            ui.add(
+                                                egui::Image::new(egui::include_image!(
+                                                    "../../../web/public/caper-face.svg"
+                                                ))
+                                                .fit_to_exact_size(egui::vec2(36.0, 36.0)),
+                                            );
+                                        }
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 12.0;
                                             if matches!(dialog, Dialog::Invitation(_)) {
@@ -21099,6 +21103,18 @@ impl CaperApp {
                                             }
                                             ui.label(bold(title).size(19.0));
                                         });
+                                        if whats_new {
+                                            ui.add_space(-ui.spacing().item_spacing.y + 2.0);
+                                            let version = updates::version_label();
+                                            match updates::commit_url(whats_new::REVISION) {
+                                                Some(url) => {
+                                                    release_link(ui, &version, 13.0, &url);
+                                                }
+                                                None => {
+                                                    ui.label(RichText::new(version).size(13.0).color(MUTED));
+                                                }
+                                            }
+                                        }
                                         if matches!(dialog, Dialog::ManageSpace) {
                                             ui.add_space(5.0);
                                             ui.label(
@@ -21386,21 +21402,6 @@ impl CaperApp {
             );
             ui.add_space(10.0);
         }
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new(updates::installed_version())
-                    .size(12.0)
-                    .color(MUTED),
-            );
-            ui.hyperlink_to(
-                RichText::new(&whats_new::REVISION[..7])
-                    .size(12.0)
-                    .color(MUTED)
-                    .underline(),
-                updates::commit_url(whats_new::REVISION).expect("compiled source revision"),
-            );
-        });
-        ui.add_space(10.0);
         if self.whats_new.loading {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -21416,14 +21417,15 @@ impl CaperApp {
             if releases.is_empty() {
                 ui.label(RichText::new("No release highlights for this version yet.").color(MUTED));
             } else {
-                ui.label(RichText::new("Highlights from shipped Caper updates.").color(MUTED));
                 let mut previous_day = None;
                 for release in releases {
                     let published = DateTime::parse_from_rfc3339(&release.published_at)
                         .expect("validated publication date");
                     let day = published.date_naive();
                     if previous_day != Some(day) {
-                        ui.add_space(20.0);
+                        if previous_day.is_some() {
+                            ui.add_space(20.0);
+                        }
                         ui.label(
                             bold(day.format("%B %-d, %Y").to_string())
                                 .size(12.0)
@@ -21436,9 +21438,12 @@ impl CaperApp {
                         || format!("Commit {}", &release.revision[..7]),
                         |version| format!("Version {version}"),
                     );
-                    ui.hyperlink_to(
-                        RichText::new(label).size(12.0).color(MUTED).underline(),
-                        updates::commit_url(&release.revision).expect("validated release revision"),
+                    release_link(
+                        ui,
+                        &label,
+                        12.0,
+                        &updates::commit_url(&release.revision)
+                            .expect("validated release revision"),
                     );
                     for highlight in release.highlights {
                         ui.add_space(10.0);
@@ -26720,6 +26725,37 @@ fn copy_items(ui: &mut egui::Ui, message: &model::Message) {
 
 /// Web's `.chat-thread-summary`: the reply count in bold terracotta, then a
 /// quiet "View thread", without a button frame.
+/// A muted, underlined link to a release's source that brightens on hover or
+/// keyboard focus, so it reads as clickable. Used wherever a version is shown.
+fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::Response {
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label.to_owned(), egui::FontId::proportional(size), MUTED);
+    let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::click());
+    let color = if response.hovered() || response.has_focus() {
+        TEXT
+    } else {
+        MUTED
+    };
+    if ui.is_rect_visible(rect) {
+        ui.painter()
+            .galley_with_override_text_color(rect.min, galley, color);
+        ui.painter().hline(
+            rect.x_range(),
+            rect.bottom() - 0.5,
+            Stroke::new(1.0, color.gamma_multiply(0.7)),
+        );
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, label));
+    let response = response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("View this version on GitHub");
+    if response.clicked() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    }
+    response
+}
+
 fn thread_summary_link(ui: &mut egui::Ui, replies: u64, unread: bool) -> egui::Response {
     let mut job = egui::text::LayoutJob::default();
     let count = format!(
@@ -30662,10 +30698,12 @@ mod tests {
                 "same-day releases share one heading"
             );
             if route == "Done" {
+                // The installed version under the title opens the installed commit.
+                let installed = crate::updates::version_label();
                 for (label, revision) in [
                     ("Version 0.1.112", whats_new::REVISION.to_owned()),
                     ("Commit 2222222", "2".repeat(40)),
-                    (&whats_new::REVISION[..7], whats_new::REVISION.to_owned()),
+                    (installed.as_str(), whats_new::REVISION.to_owned()),
                 ] {
                     let output = render(&mut app, &context, vec![]);
                     let position = node_center(&output, label);
