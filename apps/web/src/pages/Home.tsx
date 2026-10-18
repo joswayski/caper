@@ -111,7 +111,8 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
             <span className="experimental-warning">
               Caper is a work in progress and may contain bugs or incomplete features.
             </span>{" "}
-            Have feedback? Reach out on <ContactLinks />
+            Have feedback? <a href="https://caper.chat/invite/uz3HFpD8jV">Share it in Caper chat</a> (preferred), or
+            reach out on <ContactLinks />
           </p>
           <p className="made-by">
             Made by{" "}
