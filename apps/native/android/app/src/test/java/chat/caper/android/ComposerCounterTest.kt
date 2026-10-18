@@ -12,6 +12,55 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ComposerCounterTest {
+    @Test fun `gallery requests only version appropriate media permissions`() {
+        assertEquals(listOf("android.permission.READ_EXTERNAL_STORAGE"), galleryPermissions(32).toList())
+        assertEquals(listOf("android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO"), galleryPermissions(33).toList())
+        assertEquals(listOf("android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO", "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"), galleryPermissions(34).toList())
+    }
+
+    @Test fun `gallery distinguishes denied selected-only one-media-type and full grants`() {
+        for (sdk in listOf(26, 32, 33, 34, 36)) {
+            assertEquals(GalleryAccess.Denied, galleryAccess(sdk) { false })
+            assertEquals(GalleryAccess.Full, galleryAccess(sdk) { true })
+        }
+        assertEquals(GalleryAccess.Limited, galleryAccess(34) { it == "android.permission.READ_MEDIA_VISUAL_USER_SELECTED" })
+        assertEquals(GalleryAccess.Limited, galleryAccess(33) { it == "android.permission.READ_MEDIA_IMAGES" })
+        assertEquals(GalleryAccess.Limited, galleryAccess(34) { it == "android.permission.READ_MEDIA_VIDEO" })
+        assertEquals(GalleryAccess.Denied, galleryAccess(33) { it == "android.permission.READ_MEDIA_VISUAL_USER_SELECTED" })
+        assertEquals(GalleryAccess.Full, galleryAccess(32) { it == "android.permission.READ_EXTERNAL_STORAGE" })
+    }
+
+    @Test fun `gallery reserves existing draft slots and rejects a third selection`() {
+        val remaining = chat.caper.android.data.AttachmentPolicy.MAX_ATTACHMENTS - 8
+        val first = toggleGallerySelection(emptyList(), "photo", remaining)
+        val second = toggleGallerySelection(first, "video", remaining)
+        assertEquals(listOf("photo", "video"), second)
+        assertEquals(second, toggleGallerySelection(second, "third", remaining))
+        val removed = toggleGallerySelection(second, "photo", remaining)
+        assertEquals(listOf("video"), removed)
+        assertEquals(listOf("video", "third"), toggleGallerySelection(removed, "third", remaining))
+    }
+
+    @Test fun `gallery keeps tap order and reselect appends rather than library order`() {
+        val selected = listOf("newer", "older")
+        assertEquals(listOf("older", "newer"), toggleGallerySelection(toggleGallerySelection(selected, "newer", 2), "newer", 2))
+    }
+
+    @Test fun `gallery zero capacity rejects additions but permits deselection`() {
+        assertEquals(emptyList<String>(), toggleGallerySelection(emptyList(), "photo", 0))
+        assertEquals(emptyList<String>(), toggleGallerySelection(emptyList(), "photo", -1))
+        assertEquals(emptyList<String>(), toggleGallerySelection(listOf("photo"), "photo", 0))
+    }
+
+    @Test fun `gallery prunes revoked media and reduced capacity without reordering`() {
+        val selected = listOf("revoked", "video", "photo")
+        assertEquals(listOf("video", "photo"), pruneGallerySelection(selected, 10) { it != "revoked" })
+        assertEquals(listOf("video"), pruneGallerySelection(selected, 1) { it != "revoked" })
+        assertEquals(emptyList<String>(), pruneGallerySelection(selected, 10) { false })
+        assertEquals(emptyList<String>(), pruneGallerySelection(selected, 0) { true })
+        assertEquals(selected, pruneGallerySelection(selected, 10) { true })
+    }
+
     @Test fun `counter tones match the web thresholds`() {
         assertEquals(TextMuted, counterTone(3499))
         assertEquals(Color(0xFFE4C76A), counterTone(3500))
