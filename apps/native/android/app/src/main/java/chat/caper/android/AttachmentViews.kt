@@ -13,6 +13,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
@@ -377,6 +378,8 @@ internal fun durationLabel(durationMs: Long?): String? {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), maxItemsInEachRow = columns) {
                 // Keyed, so each tile arrives once and keeps its own progress animation.
                 drafts.forEach { draft -> key(draft.key) {
+                    var menuOpen by remember { mutableStateOf(false) }
+                    LaunchedEffect(enabled) { if (!enabled) menuOpen = false }
                     Surface(Modifier.entrance(MOTION_BASE).size(tileSize), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {
                         Box(Modifier.fillMaxSize()) {
                             val url = draft.pickedUri ?: draft.attachment?.url
@@ -387,20 +390,30 @@ internal fun durationLabel(durationMs: Long?): String? {
                                 draft.compressing -> if (draft.progress > 0f) "Prep ${(draft.progress * 100).toInt()}%" else "Preparing…"
                                 else -> "Uploading ${(draft.progress * 100).toInt()}%"
                             }
-                            Box(Modifier.fillMaxSize().clickable(enabled = url != null, role = Role.Button, onClickLabel = "Preview ${draft.name}") {
-                                url?.let(open)
-                            }.semantics { contentDescription = listOfNotNull(draft.name, draft.error ?: status).joinToString(", ") }, contentAlignment = Alignment.Center) {
+                            Box(Modifier.fillMaxSize().combinedClickable(
+                                enabled = url != null || enabled, role = Role.Button, onClickLabel = "Preview ${draft.name}",
+                                onClick = { url?.let(open) },
+                                onLongClickLabel = "Attachment options",
+                                onLongClick = if (enabled) ({ menuOpen = true }) else null,
+                            ).semantics { contentDescription = listOfNotNull(draft.name, draft.error ?: status).joinToString(", ") }, contentAlignment = Alignment.Center) {
                                 val thumbnail = draft.thumbnail
                                 if (thumbnail != null) AsyncImage(
                                     model = remember(thumbnail) { AttachmentImages.request(context, thumbnail, "draft:${draft.key}") },
                                     contentDescription = null, imageLoader = AttachmentImages.loader(context), modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
-                                ) else Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Icon(painterResource(if (draft.kind == "video" || draft.kind == "audio") R.drawable.lucide_play else R.drawable.lucide_file_text), null, Modifier.size(18.dp), tint = TextMuted)
-                                    Text(when (draft.kind) { "image" -> "Image"; "video" -> "Video"; "audio" -> "Audio"; else -> "File" }, color = TextMuted, fontSize = 11.sp)
+                                ) else if (draft.kind != "video") Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Icon(painterResource(if (draft.kind == "audio") R.drawable.lucide_play else R.drawable.lucide_file_text), null, Modifier.size(18.dp), tint = TextMuted)
+                                    Text(when (draft.kind) { "image" -> "Image"; "audio" -> "Audio"; else -> "File" }, color = TextMuted, fontSize = 11.sp)
                                 }
                             }
-                            if (status != null) {
-                                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Blackout.copy(alpha = 0.9f)).padding(horizontal = 4.dp, vertical = if (draft.error != null && retry != null) 0.dp else 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Column(Modifier.fillMaxSize()) {
+                                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                    if (draft.kind == "video") {
+                                        Box(Modifier.size(32.dp).background(Blackout.copy(alpha = 0.32f), CircleShape), contentAlignment = Alignment.Center) {
+                                            Icon(painterResource(R.drawable.lucide_play), "Video", Modifier.size(16.dp), tint = Text.copy(alpha = 0.72f))
+                                        }
+                                    }
+                                }
+                                if (status != null) Column(Modifier.fillMaxWidth().background(Blackout.copy(alpha = 0.9f)).padding(horizontal = 4.dp, vertical = if (draft.error != null && retry != null) 0.dp else 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                     if (draft.error != null && retry != null) {
                                         Button({ retry(draft.key) }, Modifier.heightIn(min = 44.dp).semantics { contentDescription = "Retry uploading ${draft.name}" }, enabled = enabled,
                                             colors = ButtonDefaults.buttonColors(containerColor = Action, contentColor = OnAction),
@@ -417,8 +430,18 @@ internal fun durationLabel(durationMs: Long?): String? {
                                     )
                                 }
                             }
-                            IconButton({ remove(draft.key) }, Modifier.align(Alignment.TopEnd).size(40.dp).background(Blackout.copy(alpha = 0.9f), CircleShape).semantics { contentDescription = "Remove ${draft.name}" }, enabled = enabled) {
-                                Icon(painterResource(R.drawable.lucide_x), null, Modifier.size(14.dp), tint = Text)
+                            Box(Modifier.align(Alignment.TopEnd)) {
+                                Box(Modifier.size(48.dp).clip(MaterialTheme.shapes.small).clickable(enabled = enabled, role = Role.Button, onClick = { if (enabled) remove(draft.key) }).semantics { contentDescription = "Remove ${draft.name}" }) {
+                                    Box(Modifier.align(Alignment.TopEnd).padding(4.dp).size(24.dp).background(Blackout.copy(alpha = 0.9f), CircleShape), contentAlignment = Alignment.Center) {
+                                        Icon(painterResource(R.drawable.lucide_x), null, Modifier.size(14.dp), tint = Text)
+                                    }
+                                }
+                                DropdownMenu(menuOpen && enabled, { menuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                                    DropdownMenuItem(
+                                        text = { Text("Remove attachment", fontSize = 13.sp) },
+                                        onClick = { menuOpen = false; if (enabled) remove(draft.key) }, enabled = enabled,
+                                    )
+                                }
                             }
                         }
                     }

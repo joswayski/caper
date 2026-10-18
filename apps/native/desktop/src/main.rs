@@ -17249,7 +17249,7 @@ impl CaperApp {
                         .uv(uv)
                         .corner_radius(6)
                         .paint_at(ui, thumb);
-                } else {
+                } else if draft.kind != model::AttachmentKind::Video {
                     paint_file_fallback(&painter, thumb, &draft.name);
                 }
                 let uploading = draft.attachment.is_none() && draft.error.is_none();
@@ -17336,8 +17336,11 @@ impl CaperApp {
                     Stroke::new(1.0, if draft.error.is_some() { ERROR } else { BORDER }),
                     egui::StrokeKind::Inside,
                 );
+                if draft.kind == model::AttachmentKind::Video {
+                    paint_draft_video_play(&painter, rect, uploading || draft.error.is_some());
+                }
                 let close = egui::Rect::from_center_size(
-                    egui::pos2(rect.right() - 15.0, rect.top() + 15.0),
+                    egui::pos2(rect.right() - 12.0, rect.top() + 12.0),
                     egui::vec2(22.0, 22.0),
                 );
                 let url = draft
@@ -17351,22 +17354,27 @@ impl CaperApp {
                             .as_ref()
                             .and_then(|attachment| attachment.url.clone())
                     });
-                if let Some(url) = url {
+                {
                     let response = ui.interact(
                         rect,
                         egui::Id::new(("draft-preview", draft.key)),
                         egui::Sense::click(),
                     );
-                    let label = format!("Preview {accessible}");
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
-                    });
-                    if response
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(label)
-                        .clicked()
-                    {
-                        preview = Some(url);
+                    if attachment_remove_menu(&response, true) {
+                        remove = Some(draft.key);
+                    }
+                    if let Some(url) = url {
+                        let label = format!("Preview {accessible}");
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+                        });
+                        if response
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text(label)
+                            .clicked()
+                        {
+                            preview = Some(url);
+                        }
                     }
                 }
                 let response = ui.interact(
@@ -21739,6 +21747,43 @@ fn paint_file_fallback(painter: &egui::Painter, rect: egui::Rect, name: &str) {
     );
 }
 
+/// Centre the translucent play indicator in the preview, clear of its footer.
+fn paint_draft_video_play(painter: &egui::Painter, rect: egui::Rect, has_footer: bool) {
+    let center = rect.center() - egui::vec2(0.0, if has_footer { 12.5 } else { 0.0 });
+    painter.circle_filled(center, 16.0, Color32::from_black_alpha(82));
+    paint_icon(
+        painter,
+        egui::Rect::from_center_size(center + egui::vec2(1.0, 0.0), egui::vec2(16.0, 16.0)),
+        NavIcon::Play,
+        TEXT.gamma_multiply(0.72),
+    );
+}
+
+fn attachment_remove_menu(response: &egui::Response, enabled: bool) -> bool {
+    let opened = enabled && (response.secondary_clicked() || response.long_touched());
+    let mut removed = false;
+    egui::Popup::menu(response)
+        .open_memory(if opened {
+            Some(egui::SetOpenCommand::Bool(true))
+        } else if response.clicked() || !enabled {
+            // Primary click still previews; it must not toggle this menu.
+            Some(egui::SetOpenCommand::Bool(false))
+        } else {
+            None
+        })
+        .at_pointer_fixed()
+        .show(|ui| {
+            if ui
+                .add_enabled(enabled, egui::Button::new("Remove attachment"))
+                .clicked()
+            {
+                removed = true;
+                ui.close();
+            }
+        });
+    removed
+}
+
 /// A staged square preview with an optional short status and Remove.
 struct FileChip<'a> {
     id: egui::Id,
@@ -21759,6 +21804,7 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, width), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 8.0, SURFACE);
+    let video = compress::type_from_name(chip.name).starts_with("video/");
     let thumb = rect;
     if let Some(texture) = chip.thumbnail {
         // Centre-crop the local preview into the square.
@@ -21772,7 +21818,7 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
             .uv(uv)
             .corner_radius(6)
             .paint_at(ui, thumb);
-    } else {
+    } else if !video {
         paint_file_fallback(&painter, thumb, chip.name);
     }
     // The name remains available to assistive technology and on hover.
@@ -21789,6 +21835,7 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
         job.wrap = egui::text::TextWrapping::truncate_at_width(text_width);
         ui.fonts_mut(|fonts| fonts.layout_job(job))
     };
+    let has_footer = !chip.status.is_empty() || chip.progress.is_some();
     if !chip.status.is_empty() {
         painter.rect_filled(
             egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 25.0), rect.max),
@@ -21826,26 +21873,32 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
         Stroke::new(1.0, if chip.error { ERROR } else { BORDER }),
         egui::StrokeKind::Inside,
     );
+    if video {
+        paint_draft_video_play(&painter, rect, has_footer);
+    }
     let close = egui::Rect::from_center_size(
-        egui::pos2(rect.right() - 15.0, rect.top() + 15.0),
+        egui::pos2(rect.right() - 12.0, rect.top() + 12.0),
         egui::vec2(22.0, 22.0),
     );
     let mut preview = None;
-    if let Some(url) = chip.url {
+    let mut removed = false;
+    {
         let response = ui.interact(rect, chip.id.with("preview"), egui::Sense::click());
-        let label = format!("Preview {accessible}");
-        response.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
-        });
-        if response
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(label)
-            .clicked()
-        {
-            preview = Some(url);
+        removed |= attachment_remove_menu(&response, chip.removable);
+        if let Some(url) = chip.url {
+            let label = format!("Preview {accessible}");
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+            });
+            if response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(label)
+                .clicked()
+            {
+                preview = Some(url);
+            }
         }
     }
-    let mut removed = false;
     if chip.removable {
         let response = ui.interact(close, chip.id.with("remove"), egui::Sense::click());
         painter.rect_filled(close, 6.0, SURFACE);
@@ -21859,7 +21912,7 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> (Option<String>, 
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
         });
-        removed = response.on_hover_text(label).clicked();
+        removed |= response.on_hover_text(label).clicked();
     }
     (preview, removed)
 }
@@ -40413,6 +40466,41 @@ mod tests {
             "Remove must not open the preview below it"
         );
         assert_eq!(app.draft_files.len(), 2);
+
+        // A failed video still offers removal through its context menu, even
+        // without a playable local URL. Opening the menu never previews it.
+        let output = render(&mut app, &context, vec![]);
+        let corner = node_bounds(&output, "Remove TEST FIXTURE large.mov").unwrap();
+        let pos = corner.center() + egui::vec2(-30.0, 25.0);
+        for pressed in [true, false] {
+            let output = render(
+                &mut app,
+                &context,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Secondary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+            assert!(opened_url(&output).is_none());
+        }
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert_eq!(app.draft_files.len(), 2, "opening is not removal");
+        assert_eq!(
+            click_opening(
+                &mut app,
+                &context,
+                text_position(&output, "Remove attachment")
+            ),
+            None
+        );
+        assert_eq!(app.draft_files.len(), 1);
+        assert_eq!(app.draft_files[0].name, "TEST FIXTURE photo.jpg");
 
         // More than four uploads use the full desktop composer, not a fixed tray.
         while app.draft_files.len() < 10 {
