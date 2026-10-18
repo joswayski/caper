@@ -25614,6 +25614,11 @@ fn message_row<R>(
                             // web does, so names/badges/times never sit under it.
                             ui.set_max_width((ui.available_width() - header_inset).max(1.0));
                             ui.horizontal_wrapped(|ui| {
+                                // The badge belongs to the name, not the timestamp.
+                                let header_spacing = ui.spacing().item_spacing.x;
+                                if author.admin {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                }
                                 let name =
                                     ui.add(egui::Label::new(bold(&author.name).size(13.0)).sense(
                                         if profile {
@@ -25622,6 +25627,7 @@ fn message_row<R>(
                                             egui::Sense::hover()
                                         },
                                     ));
+                                ui.spacing_mut().item_spacing.x = header_spacing;
                                 if profile {
                                     if name.hovered() {
                                         ui.painter().hline(
@@ -38326,6 +38332,33 @@ mod tests {
         assert!(
             badge.width() > 2.0 * badge.height(),
             "admin badge must stay rectangular rather than inherit the header height: {badge:?}"
+        );
+        let author = app
+            .timeline
+            .messages()
+            .find(|message| message.author.admin)
+            .unwrap();
+        let header_text = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text)
+                        if text.galley.job.text == label
+                            && text.pos.y < badge.bottom()
+                            && text.pos.y + text.galley.size().y > badge.top() =>
+                    {
+                        Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing header text {label}"))
+        };
+        let name_gap = badge.left() - header_text(&author.author.name).right();
+        let time_gap = header_text(&display_time(&author.created_at)).left() - badge.right();
+        assert!(
+            name_gap >= 0.0 && name_gap < time_gap,
+            "the admin badge belongs closer to its author than the timestamp: {name_gap} vs {time_gap}"
         );
         assert!(
             !labels.iter().any(|label| label.contains("Visiting as")),
