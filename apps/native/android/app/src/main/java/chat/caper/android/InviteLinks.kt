@@ -48,7 +48,10 @@ import kotlinx.coroutines.delay
  * Manage space's "Invite link" section (web's InviteLinkManager): expiry, use limit and landing
  * channel, Create link (copied at once), then the live links with Copy and Revoke.
  */
-@Composable internal fun InviteLinkSection(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel) {
+@Composable internal fun InviteLinkSection(
+    state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel,
+    initialChannelId: String? = state.selectedChannel?.takeIf { it.spaceId == detail.space.id && !it.private && !it.direct }?.id,
+) {
     val context = LocalContext.current
     val clipboard = remember(context) { context.getSystemService(ClipboardManager::class.java) }
     // Links can only open public channels.
@@ -59,8 +62,8 @@ import kotlinx.coroutines.delay
     var maxUsesText by remember(detail.space.id) { mutableStateOf("") }
     var expiryError by remember(detail.space.id) { mutableStateOf<String?>(null) }
     var maxUsesError by remember(detail.space.id) { mutableStateOf<String?>(null) }
-    var channelId by remember(detail.space.id) {
-        mutableStateOf(state.selectedChannel?.takeIf { it.spaceId == detail.space.id && !it.private && !it.direct }?.id)
+    var channelId by remember(detail.space.id, initialChannelId) {
+        mutableStateOf(initialChannelId)
     }
     var error by remember(detail.space.id) { mutableStateOf<String?>(null) }
     var loaded by remember(detail.space.id) { mutableStateOf(false) }
@@ -89,7 +92,7 @@ import kotlinx.coroutines.delay
     }
 
     Text("Invite link", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-    Text("Anyone with the link can join this space.", color = TextMuted, fontSize = 11.sp)
+    Text("Anyone with the link can join ${detail.space.name} and start in ${landing?.let { "#${it.name}" } ?: "the default channel"}.", color = TextMuted, fontSize = 11.sp)
     InviteRow("Expire after") {
         // "Never" has no number; the typed one comes back with another unit.
         if (expiryUnit != InviteExpiryUnit.Never) {

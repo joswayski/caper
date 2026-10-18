@@ -22,12 +22,14 @@ import { friendlyError } from "./errors";
 /** Owner controls for Discord-style shareable links in Manage space. */
 export function InviteLinkManager({
   spaceId,
+  spaceName,
   channels,
   channelId,
 }: {
   spaceId: string;
+  spaceName: string;
   channels: Channel[];
-  /** The open channel; links land there by default when it is public. */
+  /** Initial landing channel, when public; omit to use the space default. */
   channelId?: string;
 }) {
   const publicChannels = channels.filter((channel) => !channel.private);
@@ -42,6 +44,7 @@ export function InviteLinkManager({
   const [copied, setCopied] = useState<string>();
   const [error, setError] = useState<string>();
   const ids = useId();
+  const landingChannel = publicChannels.find((channel) => channel.id === landing);
   useEffect(() => {
     let current = true;
     void listInviteLinks(spaceId)
@@ -64,7 +67,10 @@ export function InviteLinkManager({
       <div className="dialog-section-heading">
         <h3>Invite link</h3>
       </div>
-      <p className="channel-name-guidance">Anyone with the link can join this space.</p>
+      <p className="channel-name-guidance">
+        Anyone with this link can join {spaceName}. They’ll start in{" "}
+        {landingChannel ? `#${landingChannel.name}` : "the default channel"}.
+      </p>
       <form
         className="invite-link-options"
         onSubmit={(event) => {
@@ -76,7 +82,11 @@ export function InviteLinkManager({
           if (invalid) return setError(invalid);
           setPending(true);
           setError(undefined);
-          void createInviteLink(spaceId, { channelId: landing, maxAge: maxAge.value!, maxUses: maxUses.value! })
+          void createInviteLink(spaceId, {
+            channelId: landingChannel?.id ?? null,
+            maxAge: maxAge.value!,
+            maxUses: maxUses.value!,
+          })
             .then(async (link) => {
               setLinks((current) => [link, ...(current ?? [])]);
               await copy(link.code);
@@ -138,7 +148,7 @@ export function InviteLinkManager({
           Opens in
           <select
             id={`${ids}-channel`}
-            value={landing ?? ""}
+            value={landingChannel?.id ?? ""}
             disabled={pending}
             onChange={(event) => setLanding(event.target.value || null)}
           >

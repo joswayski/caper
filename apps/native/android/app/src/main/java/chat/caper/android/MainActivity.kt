@@ -274,6 +274,7 @@ private sealed interface Overlay {
     data class OpenedInviteLink(val request: InviteLinkRequest) : Overlay
     data class Invitation(val space: Space) : Overlay
     data object ManageSpace : Overlay
+    data class InvitePeople(val initialChannelId: String? = null) : Overlay
     data object CreateChannel : Overlay
     data object StartDirect : Overlay
     data class ManageChannel(val channel: Channel) : Overlay
@@ -349,7 +350,7 @@ internal data class VoiceJoinIntent(
     }
     // Web: a space removed elsewhere closes its dialogs; an invitation answered elsewhere closes its prompt.
     LaunchedEffect(state.selectedSpace?.space?.id) {
-        if (overlay.let { it == Overlay.ManageSpace || it == Overlay.CreateChannel || it == Overlay.LeaveSpace || it is Overlay.ManageChannel || it is Overlay.LeaveChannel }) overlay = null
+        if (overlay.let { it == Overlay.ManageSpace || it is Overlay.InvitePeople || it == Overlay.CreateChannel || it == Overlay.LeaveSpace || it is Overlay.ManageChannel || it is Overlay.LeaveChannel }) overlay = null
     }
     LaunchedEffect(state.invitations) { (overlay as? Overlay.Invitation)?.let { shown -> if (state.invitations.none { it.id == shown.space.id }) overlay = null } }
     var navigationOpen by remember { mutableStateOf(false) }
@@ -427,6 +428,11 @@ internal data class VoiceJoinIntent(
             { viewModel.acceptInvitation(shown.space) { overlay = null } },
             { viewModel.declineInvitation(shown.space) { overlay = null } })
         Overlay.ManageSpace -> state.selectedSpace?.let { detail -> ManageSpaceDialog(state, detail, viewModel, { overlay = null }) }
+        is Overlay.InvitePeople -> state.selectedSpace?.takeIf { state.account != null && it.space.ownerId == state.account.id }?.let { detail ->
+            CaperDialog("Invite people to ${detail.space.name}", { overlay = null }, wide = true, busy = state.busy) {
+                InviteLinkSection(state, detail, viewModel, initialChannelId = shown.initialChannelId)
+            }
+        }
         Overlay.CreateChannel -> state.selectedSpace?.let { detail -> CreateChannelDialog(detail, state.busy, state.error, viewModel::clearError, { overlay = null }) { name, private ->
             // Web opens a new private channel's settings so people can be added.
             viewModel.createChannel(name, private) { created -> overlay = if (created.private) Overlay.ManageChannel(created) else null }
@@ -816,6 +822,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 )
                             },
                             after = {
+                                if (owner) DropdownMenuItem({ Text("Invite people…") }, { closeSpaceMenu(); show(Overlay.InvitePeople()) })
                                 if (owner) DropdownMenuItem({ Text("Space settings") }, { closeSpaceMenu(); show(Overlay.ManageSpace) },
                                     leadingIcon = { Icon(painterResource(R.drawable.lucide_settings), null, Modifier.size(16.dp)) })
                                 else DropdownMenuItem({ Text("Leave space…", color = ErrorText) }, { closeSpaceMenu(); show(Overlay.LeaveSpace) },
@@ -936,6 +943,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 IconButton({ channelMenuOpen = true; if (notifiable) viewModel.refreshNotificationSettings() }, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_ellipsis), "${channel.name} channel menu", Modifier.size(18.dp), tint = TextMuted) }
                                 DropdownMenu(channelMenuOpen, closeChannelMenu, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                                     val settingsItem: @Composable () -> Unit = {
+                                        if (owner && !channel.private && !channel.direct) DropdownMenuItem(text = { Text("Invite people…", fontSize = 13.sp) }, onClick = { closeChannelMenu(); show(Overlay.InvitePeople(channel.id)) })
                                         if (owner) DropdownMenuItem(text = { Text("Channel settings", fontSize = 13.sp) }, onClick = { closeChannelMenu(); show(Overlay.ManageChannel(channel)) })
                                     }
                                     val leaveItem: @Composable () -> Unit = {
@@ -1006,7 +1014,6 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         }
                     }
                 }
-                val invitePeople = owner && detail?.space?.demo == false
                 Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Direct messages", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     IconButton({ show(Overlay.StartDirect) }) { Icon(painterResource(R.drawable.lucide_plus), "New direct message", tint = TextMuted) }
@@ -1076,11 +1083,11 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     }
                 }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).clickable {
-                    show(if (invitePeople) Overlay.ManageSpace else Overlay.StartDirect)
+                    show(Overlay.StartDirect)
                 }.padding(horizontal = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(17.dp), tint = TextMuted)
                     Spacer(Modifier.width(9.dp))
-                    Text(if (invitePeople) "Invite people" else "New message", Modifier.weight(1f), color = TextMuted, fontSize = 13.sp)
+                    Text("New message", Modifier.weight(1f), color = TextMuted, fontSize = 13.sp)
                 }
             }
         }

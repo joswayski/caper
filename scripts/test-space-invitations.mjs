@@ -22,6 +22,15 @@ function fixture() {
     displayName: "TEST FIXTURE account",
   };
   const space = { id: "space1234567", name: "TEST FIXTURE · Studio", ownerId: "owner1234567" };
+  const channels = params.has("links")
+    ? ["general", "design", "private"].map((name, index) => ({
+        id: `channel0000${index}`,
+        spaceId: space.id,
+        name,
+        private: index === 2,
+        joined: true,
+      }))
+    : [];
   const inviter = params.has("legacy")
     ? undefined
     : { username: "fixture_host", displayName: params.has("long") ? "A".repeat(64) : "TEST FIXTURE host" };
@@ -29,7 +38,8 @@ function fixture() {
   const control = (window.inviteFixture = {
     requests: [],
     pending: [],
-    accepted: false,
+    accepted: params.has("links"),
+    links: [],
     declined: false,
     revoked: false,
     fail: false,
@@ -42,6 +52,28 @@ function fixture() {
     control.requests.push({ path, method, body: options.body });
     const error = (status, message) => Response.json({ error: message }, { status });
     if (path === "/api/account/me") return Response.json(account);
+    if (path === "/api/dms") return Response.json({ conversations: [] });
+    if (path === `/api/spaces/${space.id}/invite-links`) {
+      if (method === "POST") {
+        const body = JSON.parse(options.body);
+        const link = {
+          code: `FixtureCode${control.links.length}`,
+          channel: channels.find((c) => c.id === body.channelId) ?? null,
+          createdBy: account,
+          uses: 0,
+          maxUses: body.maxUses,
+          expiresAt: null,
+          createdAt: new Date().toISOString(),
+        };
+        control.links.push(link);
+        return Response.json(link, { status: 201 });
+      }
+      return Response.json({ links: control.links });
+    }
+    if (path.endsWith("/messages")) {
+      const channel = channels.find((c) => path.includes(c.id));
+      return Response.json({ space, channel, messages: [], cursor: "0", hasMore: false });
+    }
     if (path === "/api/spaces")
       return Response.json({
         spaces: !control.revoked && (!recipient || control.accepted) ? [space] : [],
@@ -73,8 +105,7 @@ function fixture() {
     }
     if (path === `/api/spaces/${space.id}`) {
       if (control.revoked || (recipient && !control.accepted)) return error(404, "resource not found");
-      // No channels: keeps this management/consent fixture independent of voice mocks.
-      return Response.json({ space, channels: [], members: [{ ...account, owner: !recipient }] });
+      return Response.json({ space, channels, members: [{ ...account, owner: !recipient }] });
     }
     return error(503, "TEST FIXTURE: disabled endpoint");
   };
@@ -91,10 +122,107 @@ const browser = (...command) => {
 const evaluate = (source) => browser("eval", source).result;
 const wait = (expression) => browser("wait", "--fn", expression);
 const screenshot = (name) => {
-  if (artifacts) browser("screenshot", `${artifacts}/${name}.png`);
+  if (!artifacts) return;
+  evaluate(
+    "Promise.all(document.getAnimations().filter(animation => animation.effect.getComputedTiming().iterations !== Infinity).map(animation => animation.finished))",
+  );
+  browser("screenshot", `${artifacts}/${name}.png`);
 };
 try {
   browser("open", "about:blank");
+  browser("set", "viewport", "1280", "900", "2");
+  for (const width of [1280, 390]) {
+    browser("set", "viewport", String(width), "900", "2");
+    browser("open", `${url}?links&space=space1234567&channel=channel00000`);
+    wait('!!document.querySelector(".space-menu")');
+    if (width === 390) {
+      browser("find", "role", "button", "click", "--name", "Back to Browse", "--exact");
+      wait(
+        '!!document.querySelector(".spaces-room.navigation-open") && !document.querySelector(".spaces-room").hasAttribute("data-browse-slide")',
+      );
+    }
+    browser("click", ".space-menu summary");
+    screenshot(`invite-space-menu-${width}`);
+    browser("find", "role", "button", "click", "--name", "Invite people…", "--exact");
+    wait('!!document.querySelector(".invite-links select[id]")');
+    assert.equal(
+      evaluate('document.querySelector(".space-dialog h2").textContent'),
+      "Invite people to TEST FIXTURE · Studio",
+    );
+    assert.equal(evaluate('document.querySelector(".invite-links select[id]").value'), "");
+    screenshot(`invite-space-default-${width}`);
+    browser("find", "role", "button", "click", "--name", "Create link", "--exact");
+    wait("inviteFixture.links.length === 1");
+    assert.equal(
+      evaluate(
+        'JSON.parse(inviteFixture.requests.find(r => r.method === "POST" && r.path.endsWith("/invite-links")).body).channelId',
+      ),
+      null,
+    );
+    browser("press", "Escape");
+    browser("click", 'summary[aria-label="Manage design"]');
+    screenshot(`invite-channel-menu-${width}`);
+    browser("find", "role", "button", "click", "--name", "Invite people…", "--exact");
+    wait('!!document.querySelector(".invite-links select[id]")');
+    assert.equal(evaluate('document.querySelector(".invite-links select[id]").value'), "channel00001");
+    assert.equal(
+      evaluate('document.querySelector(".invite-links .channel-name-guidance").textContent'),
+      "Anyone with this link can join TEST FIXTURE · Studio. They’ll start in #design.",
+    );
+    assert.equal(evaluate('document.querySelector(".channel-select[aria-current=page]").textContent'), "general");
+    assert.equal(
+      evaluate('document.querySelector(".invite-links select[id]").textContent.includes("#private")'),
+      false,
+    );
+    screenshot(`invite-channel-preset-${width}`);
+    browser("find", "role", "button", "click", "--name", "Create link", "--exact");
+    wait("inviteFixture.links.length === 2");
+    assert.equal(
+      evaluate(
+        'JSON.parse(inviteFixture.requests.filter(r => r.method === "POST" && r.path.endsWith("/invite-links")).at(-1).body).channelId',
+      ),
+      "channel00001",
+    );
+    browser("press", "Escape");
+    browser("click", 'summary[aria-label="Manage private"]');
+    assert.equal(
+      evaluate('document.querySelector(".channel-menu[open]").textContent.includes("Invite people")'),
+      false,
+    );
+    browser("press", "Escape");
+    browser("click", ".direct-action");
+    wait('!!document.querySelector(".space-dialog")');
+    assert.equal(evaluate('document.querySelector(".space-dialog h2").textContent'), "New direct message");
+    browser("press", "Escape");
+    browser("click", ".space-menu summary");
+    browser("find", "role", "button", "click", "--name", "Invite people…", "--exact");
+    assert.equal(
+      evaluate('document.querySelector(".invite-links select[id]").value'),
+      "",
+      "space entry resets the previous channel preset",
+    );
+    assert.equal(evaluate("document.documentElement.scrollWidth > innerWidth"), false);
+
+    browser("open", `${url}?links&recipient&space=space1234567&channel=channel00000`);
+    wait('!!document.querySelector(".space-menu")');
+    if (width === 390) {
+      browser("find", "role", "button", "click", "--name", "Back to Browse", "--exact");
+      wait(
+        '!!document.querySelector(".spaces-room.navigation-open") && !document.querySelector(".spaces-room").hasAttribute("data-browse-slide")',
+      );
+    }
+    browser("click", ".space-menu summary");
+    assert.equal(evaluate('document.querySelector(".space-menu").textContent.includes("Invite people")'), false);
+    browser("press", "Escape");
+    browser("click", 'summary[aria-label="Manage design"]');
+    assert.equal(
+      evaluate('document.querySelector(".channel-menu[open]").textContent.includes("Invite people")'),
+      false,
+    );
+  }
+  console.log(
+    "PASS: owner-only space/public-channel invites, clicked-channel payload, default reset, private-channel exclusion, DM footer; desktop + narrow Chromium.",
+  );
   browser("set", "viewport", "1280", "900", "2");
   browser("open", url);
   wait('!!document.querySelector(".space-menu")');
@@ -117,9 +245,9 @@ try {
   );
   browser("fill", "#member-username", "friend");
   browser("find", "role", "button", "click", "--name", "Invite", "--exact");
-  wait('document.querySelector(".member-manager")?.textContent.includes("Invited")');
+  wait('document.querySelector(".member-manager:not(.invite-links)")?.textContent.includes("Invited")');
   assert.equal(
-    evaluate('document.querySelector(".member-manager > ul").children.length'),
+    evaluate('document.querySelector(".member-manager:not(.invite-links) > ul").children.length'),
     1,
     "invite does not enter active member list",
   );
@@ -141,6 +269,9 @@ try {
     wait('!!document.querySelector(".invitation-consent")');
     assert.equal(evaluate('document.querySelector(".space-dialog h2").textContent'), "You’re invited!");
     wait('document.querySelector(".space-dialog > header h2 img")?.naturalWidth === 64');
+    evaluate(
+      'Promise.all(document.querySelector(".space-dialog").getAnimations().map(animation => animation.finished))',
+    );
     assert.deepEqual(
       evaluate(
         '(() => { const image = document.querySelector(".space-dialog > header h2 img"); const rect = image.getBoundingClientRect(); return [image.getAttribute("src"), image.alt, rect.width, rect.height]; })()',

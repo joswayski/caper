@@ -1051,7 +1051,12 @@ function ManageSpaceDialog({
           onChanged={(space) => onChanged({ ...detail, space: withSpaceIcon(detail.space, space), members })}
         />
       </div>
-      <InviteLinkManager spaceId={detail.space.id} channels={detail.channels} channelId={channelId} />
+      <InviteLinkManager
+        spaceId={detail.space.id}
+        spaceName={detail.space.name}
+        channels={detail.channels}
+        channelId={channelId}
+      />
       <MemberManager
         members={members}
         invitations={invitations}
@@ -1864,7 +1869,8 @@ export default function Spaces({
     const cache = directCache.current;
     return () => cache.clear();
   }, [account?.id]);
-  const [dialog, setDialog] = useState<"space" | "channel" | "manage-space" | "leave-space" | "direct">();
+  const [dialog, setDialog] = useState<"space" | "channel" | "manage-space" | "invite" | "leave-space" | "direct">();
+  const [inviteChannelId, setInviteChannelId] = useState<string>();
   // DM `@` suggestions, mention profile cards, and the invite and new-DM
   // username fields; the previous list stays while a refresh is in flight.
   // Loaded once signed in and again whenever a DM or one of those dialogs opens.
@@ -2970,13 +2976,9 @@ export default function Spaces({
             );
           })}
       </ul>
-      <button
-        type="button"
-        className="channel-select direct-action"
-        onClick={() => setDialog(owner ? "manage-space" : "direct")}
-      >
+      <button type="button" className="channel-select direct-action" onClick={() => setDialog("direct")}>
         <Plus aria-hidden="true" />
-        <span>{owner ? "Invite people" : "New message"}</span>
+        <span>New message</span>
       </button>
       {directError && (
         <p className="space-sidebar-error" role="alert">
@@ -3312,6 +3314,19 @@ export default function Spaces({
                   <Search aria-hidden="true" />
                   Browse channels
                 </button>
+                {owner && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeMenu(spaceMenu.current!);
+                      setInviteChannelId(undefined);
+                      setDialog("invite");
+                    }}
+                  >
+                    <Plus aria-hidden="true" />
+                    Invite people…
+                  </button>
+                )}
                 <LevelNotificationItems
                   noun="space"
                   loaded={notifications.loaded}
@@ -3487,6 +3502,19 @@ export default function Spaces({
                     <MoreHorizontal aria-hidden="true" />
                   </summary>
                   <div className="space-actions">
+                    {owner && !item.private && (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          closeMenu(event.currentTarget.closest("details")!);
+                          setInviteChannelId(item.id);
+                          setDialog("invite");
+                        }}
+                      >
+                        <Plus aria-hidden="true" />
+                        Invite people…
+                      </button>
+                    )}
                     <LevelNotificationItems
                       noun="channel"
                       loaded={notifications.loaded}
@@ -3842,6 +3870,16 @@ export default function Spaces({
           onChanged={replaceDetail}
           onDeleted={forgetSpace}
         />
+      )}
+      {dialog === "invite" && owner && (
+        <Dialog title={`Invite people to ${detail.space.name}`} onClose={() => setDialog(undefined)} width="wide">
+          <InviteLinkManager
+            spaceId={detail.space.id}
+            spaceName={detail.space.name}
+            channels={detail.channels}
+            channelId={inviteChannelId}
+          />
+        </Dialog>
       )}
       {dialog === "leave-space" && account && (
         <LeaveSpaceDialog

@@ -1347,6 +1347,34 @@ final class CaperParityUITests: XCTestCase {
         capture("channel-settings-from-menu", app: app)
     }
 
+    func testInvitePeopleUsesSpaceDefaultAndClickedChannel() throws {
+        let app = launch()
+        assertElement("selected-channel-name", label: "# general", in: app)
+        #if os(iOS)
+        app.buttons["Back to Browse"].tap()
+        #endif
+        try require(app.buttons["new-message"], timeout: 10, "Owners also get New message in the DM footer").tap()
+        _ = try require(app.textFields["dm-username"], timeout: 5, "The footer opens a new DM, not space settings")
+        app.buttons["Close"].firstMatch.tap()
+        app.descendants(matching: .any)["selected-space-name"].tap()
+        try require(app.descendants(matching: .any)["Invite people…"].firstMatch, timeout: 5, "The owner space menu offers invitations").tap()
+        assertStaticText("Invite people to Fixture Studio", in: app, timeout: 5)
+        XCTAssertEqual(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Opens in")).firstMatch.value as? String, "Default channel")
+        app.buttons["Close"].firstMatch.tap()
+        #if os(macOS)
+        app.buttons["channel-chan00000002"].hover()
+        #endif
+        try require(app.descendants(matching: .any)["channel-options-chan00000002"], timeout: 10, "Open the unselected design channel's menu").tap()
+        try require(app.descendants(matching: .any)["Invite people…"].firstMatch, timeout: 5, "Public channel offers invitations").tap()
+        assertStaticText("Invite people to Fixture Studio", in: app, timeout: 5)
+        XCTAssertEqual(app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Opens in")).firstMatch.value as? String, "#design")
+        app.buttons["Close"].firstMatch.tap()
+        #if os(iOS)
+        app.buttons["Close navigation"].tap()
+        #endif
+        assertElement("selected-channel-name", label: "# general", in: app)
+    }
+
     func testLeaveChannelLivesInItsOwnOptionsMenu() {
         let app = launch()
         assertElement("selected-channel-name", label: "# general", in: app)
@@ -2990,11 +3018,10 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2, "Tapping the returned composer must still dock above the keyboard")
         capture("narrow-chat-keyboard-reopened", app: app)
         // A swipe along a full-width Browse row lifts inside that row: it must
-        // navigate without also tapping it (which opened New message / Invite people).
+        // navigate without also tapping it (which opens New message).
         navigation.tap()
-        let invite = app.buttons["invite-people"], newMessage = app.buttons["new-message"]
-        XCTAssertTrue(invite.waitForExistence(timeout: 3) || newMessage.exists)
-        let row = invite.exists ? invite : newMessage
+        let row = app.buttons["new-message"]
+        XCTAssertTrue(row.waitForExistence(timeout: 3))
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).press(forDuration: 0.01,
             thenDragTo: row.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swiping along a Browse row returns to chat")
