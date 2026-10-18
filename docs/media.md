@@ -1025,6 +1025,17 @@ deactivation, username invitations, narrow-layout scrolling and failed-request r
 This is mock-backed UI validation, not live join validation; the Rust invite-link Postgres integration
 test covers the server lifecycle, concurrent opens/regenerations and rollback.
 
+Invite-people native validation follow-up: with SDK 36 installed, Android main and
+instrumentation sources compile (`compileDebugKotlin`, `compileDebugAndroidTestKotlin`)
+and all 411 JVM tests pass, including 17 invitation parsing/default/route tests.
+`lintDebug` passes with one worker and a 768 MB Gradle heap; the initial concurrent
+lint invocation was killed with exit 137. The report has zero errors, 1,684
+warnings and two hints; warnings have not been suppressed or resolved here.
+Instrumentation was compiled, not executed: no Android emulator or device is
+available in the orb. APK/native-media assembly and rendered Compose acceptance
+remain unverified. Apple compilation, XCTest and rendering still require Xcode;
+no Mac runner is connected. This follow-up does not change invite defaults or UI.
+
 Joining checks the membership quota under the same
 space lock as invitation acceptance, consumes one use, joins the landing channel,
 and fulfils any pending username invitation. Existing members get the space back
@@ -3033,7 +3044,11 @@ CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
 
 For Android source/unit validation, use JDK 17 and set `ANDROID_HOME` to an SDK
 with platform/build-tools 36 (the repository's native build also needs its pinned
-NDK/CMake). The smaller Gradle heap below fits a 4 GB orb:
+NDK/CMake). `.agents/setup` now provisions these SDK components on x86_64 orbs,
+using the app's Gradle version pins, and exposes the SDK in new login shells
+inside this checkout. Native asset preparation remains in the Android build
+scripts; setup does not install an emulator. The smaller Gradle heap below fits
+a 4 GB orb:
 
 ```sh
 apps/native/android/prepare-fonts.sh
