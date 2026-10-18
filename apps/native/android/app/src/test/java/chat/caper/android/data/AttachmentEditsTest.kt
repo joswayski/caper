@@ -19,6 +19,33 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AttachmentEditsTest {
+    @Test fun pictureCropIsSquareAndCanBeRepositionedWithoutRecentering() {
+        val center = AttachmentEdits.pictureCrop(EditRect.FULL, 800, 400)
+        assertEquals(EditRect(0.25, 0.0, 0.5, 1.0), center)
+        val moved = AttachmentEdits.dragCrop(center, CropHandle.MOVE, 0.25, 0.0, 0.02, 0.02)
+        val saved = AttachmentEdits.pictureCrop(moved, 800, 400)
+        assertEquals(PixelRect(400, 0, 400, 400), AttachmentEdits.cropPixels(AttachmentEdit(crop = saved), 800, 400))
+    }
+
+    @Test fun pictureCropRemainsSquareAfterResizeRotationAndReset() {
+        val resized = AttachmentEdits.pictureCrop(EditRect(0.1, 0.2, 0.3, 0.5), 800, 400)
+        assertEquals(resized.width * 800, resized.height * 400, 0.000001)
+        val turned = AttachmentEdits.rotateLeft(AttachmentEdit(crop = resized))
+        val square = AttachmentEdits.pictureCrop(turned.crop, 400, 800)
+        assertEquals(square.width * 400, square.height * 800, 0.000001)
+        assertEquals(EditRect(0.0, 0.25, 1.0, 0.5), AttachmentEdits.pictureCrop(EditRect.FULL, 400, 800))
+    }
+
+    @Test fun pictureCropQuantizesOddSizesToAnExactlySquareSavedRegion() {
+        for ((width, height) in listOf(803 to 401, 401 to 803, 513 to 512)) {
+            val crop = AttachmentEdits.pictureCrop(EditRect(0.12, 0.07, 0.61, 0.79), width, height)
+            val pixels = AttachmentEdits.cropPixels(AttachmentEdit(crop = crop), width, height)
+            assertEquals(pixels.width, pixels.height)
+            assertEquals(crop, AttachmentEdits.pictureCrop(crop, width, height))
+            assertTrue(pixels.left >= 0 && pixels.top >= 0 && pixels.left + pixels.width <= width && pixels.top + pixels.height <= height)
+        }
+    }
+
     private val cases: JsonObject by lazy {
         val file = generateSequence(File("").absoluteFile) { it.parentFile }
             .map { File(it, "shared/messages/edit-cases.json") }.first { it.isFile }

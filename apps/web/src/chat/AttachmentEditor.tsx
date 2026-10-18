@@ -184,6 +184,7 @@ export default function AttachmentEditor({
   edit: initial,
   tool: initialTool = "draw",
   anchor,
+  pictureMode = false,
   onCancel,
   onSave,
 }: {
@@ -195,6 +196,8 @@ export default function AttachmentEditor({
   tool?: Tool;
   /** Gets focus back on close. */
   anchor?: HTMLElement;
+  /** Square framing for profile pictures and space icons; Done always saves. */
+  pictureMode?: boolean;
   /** Keep this stable: on phones it owns a history entry. */
   onCancel: () => void;
   /** Called only for a change; `edit` is undefined when it returns to the original. */
@@ -234,14 +237,32 @@ export default function AttachmentEditor({
     void loadPicture(file, kind).then((result) => {
       if (!active) return result?.image.close();
       loaded = result;
-      if (result) setPicture(result);
-      else setFailed(true);
+      if (result) {
+        setPicture(result);
+        if (pictureMode) {
+          const side = Math.min(result.width, result.height);
+          setHistory({
+            states: [
+              {
+                ...NO_EDIT,
+                crop: {
+                  x: (1 - side / result.width) / 2,
+                  y: (1 - side / result.height) / 2,
+                  width: side / result.width,
+                  height: side / result.height,
+                },
+              },
+            ],
+            index: 0,
+          });
+        }
+      } else setFailed(true);
     });
     return () => {
       active = false;
       loaded?.image.close();
     };
-  }, [file, kind]);
+  }, [file, kind, pictureMode]);
   useEffect(() => {
     // Canvas text needs Satoshi loaded; repaint once it is.
     void document.fonts?.load(editFont(32)).then(() => setFontsReady((count) => count + 1));
@@ -377,11 +398,11 @@ export default function AttachmentEditor({
   const done = async () => {
     if (saving) return;
     const final = layout ? withField(current, field, layout.edge) : current;
-    if (sameEdit(final, initial)) {
+    if (!pictureMode && sameEdit(final, initial)) {
       onCancel();
       return;
     }
-    const result = isEdited(final) ? final : undefined;
+    const result = pictureMode || isEdited(final) ? final : undefined;
     setSaving(true);
     const preview = result && picture ? await renderPreview(picture, result).catch(() => undefined) : undefined;
     onSave(result, preview);
@@ -427,6 +448,15 @@ export default function AttachmentEditor({
   /** The crop a frame drag leaves, from where it started. */
   const draggedCrop = (moving: Extract<Gesture, { kind: "crop" }>, event: { clientX: number; clientY: number }) => {
     const rect = canvas.current!.getBoundingClientRect();
+    if (pictureMode)
+      return clampCrop(
+        {
+          ...moving.start,
+          x: moving.start.x + event.clientX / rect.width - moving.from.x,
+          y: moving.start.y + event.clientY / rect.height - moving.from.y,
+        },
+        0,
+      );
     return dragCrop(
       moving.start,
       moving.handle,
@@ -566,7 +596,25 @@ export default function AttachmentEditor({
     if (moving?.kind !== "crop" || event.pointerId !== moving.pointer || !canvas.current) return;
     track(undefined);
     setLiveCrop(undefined);
-    commit({ ...current, crop: clampCrop(draggedCrop(moving, event)) });
+    commit({ ...current, crop: clampCrop(draggedCrop(moving, event), pictureMode ? 0 : 0.02) });
+  };
+  const resizePictureCrop = (fraction: number) => {
+    if (!rotated) return;
+    const side = Math.min(rotated.width, rotated.height) * Math.max(0.1, Math.min(1, fraction));
+    const width = side / rotated.width;
+    const height = side / rotated.height;
+    commit({
+      ...current,
+      crop: clampCrop(
+        {
+          x: current.crop.x + (current.crop.width - width) / 2,
+          y: current.crop.y + (current.crop.height - height) / 2,
+          width,
+          height,
+        },
+        0,
+      ),
+    });
   };
   const cropKey = (event: KeyboardEvent<HTMLDivElement>) => {
     const step = event.altKey ? 0.002 : 0.01;
@@ -579,6 +627,19 @@ export default function AttachmentEditor({
     if (!delta) return;
     event.preventDefault();
     event.stopPropagation();
+    if (pictureMode && event.shiftKey && rotated) {
+      resizePictureCrop(
+        (current.crop.width * rotated.width) / Math.min(rotated.width, rotated.height) + delta[0] + delta[1],
+      );
+      return;
+    }
+    if (pictureMode) {
+      commit({
+        ...current,
+        crop: clampCrop({ ...current.crop, x: current.crop.x + delta[0], y: current.crop.y + delta[1] }, 0),
+      });
+      return;
+    }
     const min = { width: 0.02, height: 0.02 };
     commit({ ...current, crop: dragCrop(current.crop, event.shiftKey ? "se" : "move", delta[0], delta[1], min) });
   };
@@ -625,13 +686,15 @@ export default function AttachmentEditor({
   const custom = !EDIT_COLORS.some((preset) => preset === color);
   const hint =
     tool === "crop"
-      ? "Drag the frame’s corners or edges to crop, or inside it to move it. Arrow keys move the focused frame; Shift and arrow keys resize it."
+      ? pictureMode
+        ? "Drag the square to reposition. Adjust Crop size to zoom. Arrow keys move the focused frame; Shift and arrow keys resize it."
+        : "Drag the frame’s corners or edges to crop, or inside it to move it. Arrow keys move the focused frame; Shift and arrow keys resize it."
       : tool === "draw"
         ? "Drag on the picture to draw."
         : "Click or tap the picture to add text. Click text to change it, or drag it to move it.";
 
   return (
-    <FloatingPortal>
+    <FloatingPortal root={anchor?.closest<HTMLElement>("dialog") ?? undefined}>
       <FloatingOverlay lockScroll className="chat-editor-overlay">
         <FloatingFocusManager context={context} returnFocus={returnFocus}>
           <div
@@ -655,7 +718,9 @@ export default function AttachmentEditor({
                 <X size={22} aria-hidden="true" />
               </button>
               <div className="chat-editor-title">
-                <strong id={titleId}>{kind === "video" ? "Edit video" : "Edit image"}</strong>
+                <strong id={titleId}>
+                  {pictureMode ? "Adjust picture" : kind === "video" ? "Edit video" : "Edit image"}
+                </strong>
                 <small title={name}>{name}</small>
               </div>
               <button
@@ -684,7 +749,7 @@ export default function AttachmentEditor({
                 disabled={!picture || !isEdited(current)}
                 onClick={() => {
                   setField(undefined);
-                  commit(NO_EDIT);
+                  commit(pictureMode ? history.states[0] : NO_EDIT);
                 }}
               >
                 Reset
@@ -764,7 +829,7 @@ export default function AttachmentEditor({
                       onPointerUp={cropUp}
                       onPointerCancel={pointerCancel}
                     >
-                      {CROP_HANDLES.map((handle) => (
+                      {(pictureMode ? [] : CROP_HANDLES).map((handle) => (
                         <span
                           key={handle}
                           className="chat-editor-handle"
@@ -823,18 +888,34 @@ export default function AttachmentEditor({
             {kind === "video" && picture && (
               <p className="chat-editor-hint">Drawings and text stay on screen for the whole video.</p>
             )}
+            {pictureMode && (
+              <p className="chat-editor-hint">Drag the square to reposition. Adjust crop size to zoom.</p>
+            )}
             <div className="chat-editor-tools">
               <div className="chat-editor-options">
                 {tool === "crop" ? (
-                  <button
-                    type="button"
-                    className="chat-editor-action"
-                    disabled={!picture}
-                    onClick={() => commit(rotateLeft(current))}
-                  >
-                    <RotateCcw size={18} aria-hidden="true" />
-                    Rotate left
-                  </button>
+                  <>
+                    {pictureMode && rotated && (
+                      <div className="chat-editor-size">
+                        <Slider
+                          label="Crop size"
+                          min={10}
+                          max={100}
+                          value={((current.crop.width * rotated.width) / Math.min(rotated.width, rotated.height)) * 100}
+                          onChange={(value) => resizePictureCrop(value / 100)}
+                        />
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      className="chat-editor-action"
+                      disabled={!picture}
+                      onClick={() => commit(rotateLeft(current))}
+                    >
+                      <RotateCcw size={18} aria-hidden="true" />
+                      Rotate left
+                    </button>
+                  </>
                 ) : (
                   <>
                     <div className="chat-editor-colors" role="radiogroup" aria-label="Colour">

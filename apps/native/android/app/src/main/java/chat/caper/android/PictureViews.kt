@@ -54,6 +54,13 @@ import coil3.gif.AnimatedImageDecoder
 import coil3.gif.GifDecoder
 import coil3.request.ImageRequest
 import coil3.size.Scale
+import chat.caper.android.data.AttachmentEdit
+import chat.caper.android.data.isAnimatedImage
+import java.io.File
+import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 
 /** Custom profile pictures are rounded squares: corner radius 30% of the side (`--radius-avatar`). */
 internal val PictureShape = RoundedCornerShape(percent = 30)
@@ -122,10 +129,12 @@ private val FrameSide = 112.dp
     val account = state.account ?: return
     val save = state.pictureSaves[PROFILE_PICTURE_KEY]
     val epoch = viewModel.accountEpoch
+    val editPicture = pictureEditor(viewModel, epoch, null)
+    var pickerEpoch by remember { mutableStateOf<Long?>(null) }
     // An error from an earlier visit doesn't greet the next one; a change in flight keeps showing.
     LaunchedEffect(Unit) { viewModel.dismissPictureError(PROFILE_PICTURE_KEY) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) viewModel.changePicture(uri, epoch = epoch)
+        if (uri != null && pickerEpoch == viewModel.accountEpoch) editPicture(uri)
     }
     val name = account.displayName ?: account.username ?: "You"
     // Set even when this server sends no URL to show it with, so it can still be removed.
@@ -135,8 +144,9 @@ private val FrameSide = 112.dp
         unavailable = state.uploadsChecked && !state.uploadsEnabled,
         hasPicture = hasPicture,
         label = "Change profile picture", noun = "picture",
-        drop = { viewModel.changePicture(it, epoch = epoch) },
-        change = { runCatching { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } },
+        drop = editPicture,
+        edit = account.avatarUrl?.let { url -> { editPicture(Uri.parse(url)) } },
+        change = { pickerEpoch = epoch; runCatching { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } },
         remove = { viewModel.removePicture() },
     ) {
         if (hasPicture) {
@@ -161,9 +171,11 @@ private val FrameSide = 112.dp
     if (space.demo || state.account?.id != space.ownerId) return
     val save = state.pictureSaves[space.id]
     val epoch = viewModel.accountEpoch
+    val editPicture = pictureEditor(viewModel, epoch, space.id)
+    var pickerTarget by remember { mutableStateOf<Pair<Long, String>?>(null) }
     LaunchedEffect(space.id) { viewModel.dismissPictureError(space.id) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) viewModel.changePicture(uri, space.id, epoch)
+        if (uri != null && pickerTarget == (viewModel.accountEpoch to space.id)) editPicture(uri)
     }
     Text("Icon", fontSize = 13.sp, fontWeight = FontWeight.Bold)
     PictureFrame(
@@ -171,8 +183,9 @@ private val FrameSide = 112.dp
         unavailable = state.uploadsChecked && !state.uploadsEnabled,
         hasPicture = !space.iconAsset.isNullOrEmpty(),
         label = "Change space icon", noun = "icon",
-        drop = { viewModel.changePicture(it, space.id, epoch) },
-        change = { runCatching { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } },
+        drop = editPicture,
+        edit = space.iconUrl?.let { url -> { editPicture(Uri.parse(url)) } },
+        change = { pickerTarget = epoch to space.id; runCatching { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } },
         remove = { viewModel.removePicture(space.id) },
     ) {
         SpaceTileFace(space.name, space.iconAsset, space.iconUrl, FrameSide, TextMuted, fontSize = 34.sp)
@@ -186,7 +199,8 @@ private val FrameSide = 112.dp
  */
 @Composable private fun PictureFrame(
     save: PictureSaveUi?, unavailable: Boolean, hasPicture: Boolean, label: String, noun: String,
-    change: () -> Unit, remove: () -> Unit, drop: (Uri) -> Unit, picture: @Composable () -> Unit,
+    change: () -> Unit, remove: () -> Unit, drop: (Uri) -> Unit,
+    edit: (() -> Unit)? = null, picture: @Composable () -> Unit,
 ) {
     val busy = save?.busy == true
     // With uploads unavailable, a custom picture can still be removed.
@@ -239,6 +253,7 @@ private val FrameSide = 112.dp
                 }
             }
             DropdownMenu(menu, { menu = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                DropdownMenuItem({ Text("Edit $noun") }, { menu = false; edit?.invoke() }, enabled = !unavailable && edit != null)
                 DropdownMenuItem(
                     { Text("Choose a new $noun") }, { menu = false; change() }, enabled = !unavailable,
                     leadingIcon = { Icon(painterResource(R.drawable.lucide_image), null, Modifier.size(16.dp)) },
@@ -258,4 +273,72 @@ private val FrameSide = 112.dp
         save?.error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
             ?: status?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp) }
     }
+}
+
+/** A private, cancellable local draft. Ownership transfers to the upload only on Done. */
+@Composable private fun pictureEditor(viewModel: CaperViewModel, epoch: Long, spaceId: String?): (Uri) -> Unit {
+    val context = LocalContext.current
+    var source by remember(epoch, spaceId) { mutableStateOf<Uri?>(null) }
+    val uri = source
+    if (uri != null) key(epoch, spaceId, uri) {
+        val directory = remember { File(context.cacheDir, "picture-editor-${UUID.randomUUID()}") }
+        var file by remember { mutableStateOf<File?>(null) }
+        var error by remember { mutableStateOf<String?>(null) }
+        var animated by remember { mutableStateOf(false) }
+        var gif by remember { mutableStateOf(false) }
+        var consent by remember { mutableStateOf(false) }
+        var handedOff by remember { mutableStateOf(false) }
+        LaunchedEffect(uri) {
+            try {
+                val copied = viewModel.copyPictureForEditor(uri, directory)
+                animated = withContext(Dispatchers.IO) {
+                    val header = copied.inputStream().use { stream ->
+                        val buffer = ByteArray(64 * 1024)
+                        var count = 0
+                        while (count < buffer.size) {
+                            val n = stream.read(buffer, count, buffer.size - count)
+                            if (n < 0) break
+                            count += n
+                        }
+                        buffer.copyOf(count)
+                    }
+                    gif = String(header.take(6).toByteArray(), Charsets.US_ASCII).startsWith("GIF8")
+                    gif ||
+                        isAnimatedImage("image/webp", header) || isAnimatedImage("image/png", header)
+                }
+                file = copied
+            } catch (failure: kotlinx.coroutines.CancellationException) { throw failure }
+            catch (_: Exception) { error = "Couldn’t open this picture. Please choose it again." }
+            finally {
+                if (file == null) withContext(NonCancellable + Dispatchers.IO) { directory.deleteRecursively() }
+            }
+        }
+        DisposableEffect(directory) { onDispose { if (!handedOff) directory.deleteRecursively() } }
+        fun upload(edit: AttachmentEdit?) {
+            val local = file ?: return
+            handedOff = true
+            viewModel.changePicture(Uri.fromFile(local), spaceId, epoch, edit, directory)
+            source = null
+        }
+        when {
+            error != null -> AlertDialog(onDismissRequest = { source = null }, title = { Text("Picture unavailable") },
+                text = { Text(error!!) }, confirmButton = { TextButton({ source = null }) { Text("Close") } })
+            file == null -> AlertDialog(onDismissRequest = { source = null }, title = { Text("Opening picture…") },
+                confirmButton = { TextButton({ source = null }) { Text("Cancel") } })
+            animated && !consent -> AlertDialog(onDismissRequest = { source = null }, title = { Text("Animated picture") },
+                text = { Text(if (gif) "Cropping or adjusting saves a still frame and removes animation. Keep the original GIF to preserve its animation, or edit a still frame."
+                    else "Editing saves a still frame and removes animation. Animated pictures must be GIFs to keep their animation; cancel and choose a GIF to preserve it.") },
+                confirmButton = { if (gif) TextButton({ upload(null) }) { Text("Keep original animation") } },
+                dismissButton = { Row {
+                    TextButton({ source = null }) { Text("Cancel") }
+                    TextButton({ consent = true }) { Text("Edit still frame") }
+                } })
+            else -> AttachmentEditor(Uri.fromFile(file).toString(), "image", "Picture", null,
+                cancel = { source = null }, save = { edit, preview ->
+                    preview?.recycle()
+                    upload(edit ?: AttachmentEdit.NONE)
+                }, initialTool = EditTool.CROP, pictureMode = true)
+        }
+    }
+    return { if (viewModel.accountEpoch == epoch) source = it }
 }

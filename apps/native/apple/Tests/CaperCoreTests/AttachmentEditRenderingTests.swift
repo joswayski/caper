@@ -72,6 +72,32 @@ final class AttachmentEditRenderingTests: XCTestCase {
                                                            space: sRGB))
     }
 
+    func testProfilePictureUploadUsesRepositionedSquareInsteadOfRecentering() throws {
+        let data = try encoded(quadrants(width: 80, height: 40), type: .png)
+        // Move the square all the way right, then zoom into its green corner.
+        let edit = AttachmentEdit(crop: EditRect(x: 0.5, y: 0, width: 0.25, height: 0.5))
+        let prepared = try ProfilePicturePreparer.prepare(data, edit: edit)
+        XCTAssertEqual(prepared.width, 20)
+        XCTAssertEqual(prepared.height, 20)
+        XCTAssertLessThanOrEqual(prepared.data.count, ProfilePicturePolicy.stillMaxBytes)
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(prepared.data as CFData, nil))
+        let saved = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        try assertColor(saved, 10, 10, green, tolerance: 20)
+    }
+
+    func testProfilePictureRotatedCropMatchesPreviewPixels() throws {
+        let original = quadrants(width: 80, height: 40)
+        let data = try encoded(original, type: .png)
+        let edit = AttachmentEdit(rotation: 90, crop: EditRect(x: 0, y: 0, width: 0.5, height: 0.25))
+        let prepared = try ProfilePicturePreparer.prepare(data, edit: edit)
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(prepared.data as CFData, nil))
+        let saved = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let preview = try render(original, width: 80, height: 40, edit)
+        XCTAssertEqual(saved.width, preview.width)
+        XCTAssertEqual(saved.height, preview.height)
+        try assertColor(saved, 10, 10, try pixel(preview, 10, 10), tolerance: 20)
+    }
+
     func testQuarterTurnsAreClockwise() throws {
         let source = quadrants(width: 16, height: 8)
         let turned = try render(source, width: 16, height: 8, AttachmentEdit(rotation: 90))

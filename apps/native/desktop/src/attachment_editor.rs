@@ -75,6 +75,12 @@ const VIDEO_CROP_HINT: &str = "Crop and rotation apply to the whole video.";
 /// The draft being edited.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
+    Picture {
+        destination: crate::pictures::Target,
+        epoch: u64,
+        path: PathBuf,
+        scratch: Option<Arc<uploads::Scratch>>,
+    },
     /// A conversation or thread composer's file, by its upload key.
     Draft(u64),
     /// A profile card's staged file, by its place and path.
@@ -301,8 +307,20 @@ impl Editor {
         &self.states[self.index]
     }
 
+    fn square_edit(&self, mut edit: Edit) -> Edit {
+        if matches!(self.target, Target::Picture { .. })
+            && let Some(picture) = &self.picture
+        {
+            let (width, height) =
+                markup::rotated_size(picture.width, picture.height, edit.rotation);
+            edit.crop = crate::pictures::square_frame(edit.crop, width, height);
+        }
+        edit
+    }
+
     /// Adds a change as one undo step, dropping anything undone.
     fn commit(&mut self, next: Edit) {
+        let next = self.square_edit(next);
         if &next == self.current() {
             return;
         }
@@ -367,6 +385,11 @@ impl Editor {
                     width: loaded.width,
                     height: loaded.height,
                 });
+                if matches!(self.target, Target::Picture { .. }) {
+                    let initial = self.square_edit(Edit::default());
+                    self.states = vec![initial.clone()];
+                    self.initial = initial;
+                }
             }
             None => self.failed = true,
         }
@@ -489,10 +512,13 @@ impl Editor {
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ready, "Done"));
         if done_response.clicked() {
             let fin = with_field(self.current(), self.field.as_ref());
-            outcome = if fin == self.initial {
+            outcome = if fin == self.initial && !matches!(self.target, Target::Picture { .. }) {
                 Outcome::Cancel
             } else {
-                Outcome::Save(fin.is_edited().then_some(fin))
+                Outcome::Save(
+                    (fin.is_edited() || matches!(self.target, Target::Picture { .. }))
+                        .then_some(fin),
+                )
             };
         }
         let reset = place(64.0);
@@ -632,7 +658,12 @@ impl Editor {
     fn shown(&self) -> Edit {
         let mut shown = self.current().clone();
         if let Some(crop) = self.live_crop {
-            shown.crop = crop;
+            shown.crop = self
+                .square_edit(Edit {
+                    crop,
+                    ..shown.clone()
+                })
+                .crop;
         }
         if let Some((index, x, y)) = self.live_text
             && let Some(Mark::Text {

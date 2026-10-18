@@ -219,6 +219,28 @@ public enum ProfilePicturePolicy {
 /// Turns picked bytes into an uploadable picture (contract "Client
 /// preparation"). Synchronous ImageIO work: call it off the main actor.
 public enum ProfilePicturePreparer {
+    /// The editor and saved crop use the same bounded, upright pixels.
+    static func editorImage(_ data: Data) throws -> CGImage {
+        guard data.count <= 64 * 1_024 * 1_024 else { throw PictureError.tooLarge }
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let image = AttachmentPreparer.thumbnail(source, index: CGImageSourceGetPrimaryImageIndex(source), maxPixelSize: 4096) else {
+            throw PictureError.unreadable
+        }
+        return image
+    }
+
+    static func prepare(_ data: Data, edit: AttachmentEdit) throws -> PreparedPicture {
+        let source = try editorImage(data)
+        let crop = edit.cropPixels(width: source.width, height: source.height)
+        let edge = ProfilePicturePolicy.outputEdge(width: crop.width, height: crop.height)
+        guard abs(crop.width - crop.height) <= 1,
+              let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let image = AttachmentEditRenderer.render(source, width: source.width, height: source.height, edit: edit, region: crop,
+                                                       outputWidth: edge, outputHeight: edge, space: space) else { throw PictureError.unreadable }
+        guard let encoded = encode(image) else { throw PictureError.tooLarge }
+        return PreparedPicture(data: encoded.data, contentType: encoded.contentType, width: edge, height: edge)
+    }
+
     /// GIFs (by magic bytes) keep animating: unchanged within 5 MiB and
     /// 1024 × 1024, else shrunk by `GIFShrink` to a square that fits.
     /// Anything else ImageIO decodes (PNG, JPEG, HEIC, WebP, AVIF, BMP…) becomes an oriented, centre-cropped square of at

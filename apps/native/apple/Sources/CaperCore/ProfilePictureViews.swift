@@ -1,3 +1,4 @@
+import ImageIO
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -134,6 +135,7 @@ struct PictureEditor<Preview: View>: View {
     let purpose: PicturePurpose
     /// A custom picture is set (Remove is offered).
     let hasPicture: Bool
+    let currentURL: URL?
     let upload: (PreparedPicture) async throws -> Void
     let remove: () async throws -> Void
     private let preview: Preview
@@ -145,16 +147,22 @@ struct PictureEditor<Preview: View>: View {
     @State private var showFiles = false
     @State private var photoItem: PhotosPickerItem?
     @State private var dropping = false
+    @State private var editing: AttachmentEditRequest?
+    @State private var stagedURL: URL?
+    @State private var animationData: Data?
+    @State private var showAnimationChoice = false
+    @State private var loadTask: Task<Void, Never>?
 
-    private enum Phase { case uploading, removing }
+    private enum Phase { case loading, uploading, removing }
 
     /// The frame's side, in points.
     static var side: CGFloat { 112 }
 
-    init(purpose: PicturePurpose, hasPicture: Bool, upload: @escaping (PreparedPicture) async throws -> Void,
+    init(purpose: PicturePurpose, hasPicture: Bool, currentURL: URL? = nil, upload: @escaping (PreparedPicture) async throws -> Void,
          remove: @escaping () async throws -> Void, @ViewBuilder preview: () -> Preview) {
         self.purpose = purpose
         self.hasPicture = hasPicture
+        self.currentURL = currentURL
         self.upload = upload
         self.remove = remove
         self.preview = preview()
@@ -164,6 +172,7 @@ struct PictureEditor<Preview: View>: View {
     private var noun: String { avatar ? "picture" : "icon" }
     private var status: String? {
         switch phase {
+        case .loading: "Opening picture…"
         case .uploading: "Uploading…"
         case .removing: "Removing…"
         case nil: unavailable ? ProfilePicturePolicy.unavailableMessage : nil
@@ -173,6 +182,19 @@ struct PictureEditor<Preview: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Menu {
+                if let currentURL {
+                    Button("Edit current \(noun)") {
+                        start {
+                            let configuration = URLSessionConfiguration.ephemeral
+                            configuration.httpCookieAcceptPolicy = .never
+                            configuration.httpShouldSetCookies = false
+                            let session = URLSession(configuration: configuration)
+                            defer { session.invalidateAndCancel() }
+                            return try await ProfilePictureDecoder.fetch(currentURL, session: session)
+                        }
+                    }
+                    .disabled(unavailable)
+                }
                 Button { showPhotos = true } label: { Label("Photos", systemImage: "photo.on.rectangle") }
                     .disabled(unavailable)
                 Button { showFiles = true } label: { Label("Files", systemImage: "doc") }
@@ -193,7 +215,7 @@ struct PictureEditor<Preview: View>: View {
             .accessibilityIdentifier(avatar ? "change-profile-picture" : "change-space-icon")
             .dropDestination(for: DroppedAttachment.self) { items, _ in
                 dropping = false
-                guard phase == nil, !unavailable, let first = items.first else {
+                guard phase == nil, editing == nil, !showAnimationChoice, !unavailable, let first = items.first else {
                     items.forEach { AttachmentStaging.remove($0.file.url) }
                     return false
                 }
@@ -223,6 +245,38 @@ struct PictureEditor<Preview: View>: View {
             guard case .success(let url) = result else { return }
             start { try await Task.detached(priority: .userInitiated) { try PictureFile.read(url) }.value }
         }
+        .sheet(item: $editing, onDismiss: {
+            if let stagedURL { AttachmentStaging.remove(stagedURL) }
+            stagedURL = nil
+        }) { request in
+            AttachmentEditor(request: request) { editing = nil }
+                .preferredColorScheme(.dark)
+                #if os(macOS)
+                .frame(minWidth: 720, minHeight: 600)
+                #endif
+        }
+        .confirmationDialog("Animated picture", isPresented: $showAnimationChoice, titleVisibility: .visible) {
+            Button("Use original animation") {
+                guard let data = animationData else { return }
+                animationData = nil
+                send(data, edit: nil)
+            }
+            .disabled(animationData.map { !ProfilePicturePolicy.isGIF($0) } ?? true)
+            Button("Edit a still picture") {
+                guard let data = animationData else { return }
+                animationData = nil
+                start({ data }, allowAnimation: false)
+            }
+            Button("Cancel", role: .cancel) { animationData = nil }
+        } message: {
+            Text("Editing saves a still frame, not the animation. Original animation upload is available for GIFs only.")
+        }
+        .onDisappear {
+            loadTask?.cancel()
+            if let stagedURL { AttachmentStaging.remove(stagedURL) }
+            stagedURL = nil
+            animationData = nil
+        }
     }
 
     /// The picture, framed in the rounded square it has everywhere, with the
@@ -248,22 +302,61 @@ struct PictureEditor<Preview: View>: View {
             .contentShape(Rectangle())
     }
 
-    /// Loads the picked bytes, prepares them off the main actor, then uploads.
-    private func start(_ load: @escaping () async throws -> Data) {
-        guard phase == nil else { return }
-        phase = .uploading
+    /// Picking never uploads: only Done (or explicitly keeping animation) does.
+    private func start(_ load: @escaping () async throws -> Data, allowAnimation: Bool = true) {
+        guard phase == nil, editing == nil else { return }
+        phase = .loading
+        animationData = nil
         error = nil
-        Task { @MainActor in
+        loadTask = Task { @MainActor in
             do {
                 let data = try await load()
-                let prepared = try await Task.detached(priority: .userInitiated) { try ProfilePicturePreparer.prepare(data) }.value
-                try await upload(prepared)
+                guard data.count <= PictureFile.maxBytes else { throw PictureError.tooLarge }
+                let animated = await Task.detached {
+                    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return false }
+                    return CGImageSourceGetCount(source) > 1 || ProfilePicturePolicy.isGIF(data)
+                }.value
+                try Task.checkCancellation()
+                if allowAnimation && animated {
+                    animationData = data
+                    showAnimationChoice = true
+                } else {
+                    let image = try await Task.detached(priority: .userInitiated) { try ProfilePicturePreparer.editorImage(data) }.value
+                    try Task.checkCancellation()
+                    guard let url = AttachmentPreparer.writeStaged(data, name: "picture-original") else { throw PictureError.unreadable }
+                    stagedURL = url
+                    let rect = ProfilePicturePolicy.squareCrop(width: image.width, height: image.height)
+                    let edit = AttachmentEdit(crop: EditRect(x: rect.minX / Double(image.width), y: rect.minY / Double(image.height),
+                                                             width: rect.width / Double(image.width), height: rect.height / Double(image.height)))
+                    editing = AttachmentEditRequest(name: "Adjust \(noun)", kind: .image, original: url, edit: edit, tool: .crop, pictureMode: true) { edit, _ in
+                        send(data, edit: edit)
+                    }
+                }
             } catch is CancellationError {
             } catch {
                 self.error = ProfilePicturePolicy.message(for: error, purpose: purpose)
                 if ProfilePicturePolicy.uploadsUnavailable(error) { unavailable = true }
             }
             phase = nil
+        }
+    }
+
+    private func send(_ data: Data, edit: AttachmentEdit?) {
+        phase = .uploading
+        error = nil
+        Task { @MainActor in
+            defer { phase = nil }
+            do {
+                let prepared = try await Task.detached(priority: .userInitiated) {
+                    if let edit { return try ProfilePicturePreparer.prepare(data, edit: edit) }
+                    return try ProfilePicturePreparer.prepare(data)
+                }.value
+                try await upload(prepared)
+            } catch is CancellationError {
+            } catch {
+                self.error = ProfilePicturePolicy.message(for: error, purpose: purpose)
+                if ProfilePicturePolicy.uploadsUnavailable(error) { unavailable = true }
+            }
         }
     }
 

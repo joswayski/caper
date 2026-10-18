@@ -209,11 +209,43 @@ fn heif_family(bytes: &[u8]) -> bool {
     bytes.get(4..8) == Some(b"ftyp")
 }
 
-/// Prepare picked bytes for upload (contract "Client preparation"). GIFs keep
-/// animating: unchanged within 5 MiB and 1024 × 1024, else shrunk to a square
-/// that fits ([`shrink_gif`]); everything else is decoded upright,
-/// cropped to a centred square, scaled to at most 512 px and re-encoded as
-/// lossy WebP (JPEG only if WebP fails), which drops location metadata.
+/// Constrain the visible editor frame to a pixel-square region about its center.
+pub fn square_frame(
+    crop: crate::attachment_edit::Crop,
+    width: u32,
+    height: u32,
+) -> crate::attachment_edit::Crop {
+    let side = (crop.width * f64::from(width)).min(crop.height * f64::from(height));
+    let w = side / f64::from(width);
+    let h = side / f64::from(height);
+    crate::attachment_edit::Crop {
+        x: crop.x + (crop.width - w) / 2.0,
+        y: crop.y + (crop.height - h) / 2.0,
+        width: w,
+        height: h,
+    }
+}
+
+pub fn prepare_edited(
+    bytes: Vec<u8>,
+    edit: Option<&crate::attachment_edit::Edit>,
+) -> Result<Prepared, String> {
+    let Some(edit) = edit else {
+        return prepare(bytes);
+    };
+    let (image, icc) = crate::compress::decode_upright(&bytes).ok_or(UNREADABLE)?;
+    let icc = icc.filter(|icc| icc.get(16..20) == Some(b"RGB "));
+    let rendered =
+        crate::attachment_edit::render(&image, edit).ok_or(crate::attachment_edit::FAILED)?;
+    let edge = rendered.width().min(rendered.height()).min(UPLOAD_EDGE);
+    encode(
+        &rendered.resize_exact(edge, edge, image::imageops::FilterType::Lanczos3),
+        icc.as_deref(),
+    )
+}
+
+/// Prepare picked bytes under the picture upload policy. Unedited GIFs retain
+/// animation; stills become square, metadata-free images of at most 512 px.
 pub fn prepare(bytes: Vec<u8>) -> Result<Prepared, String> {
     if is_gif(&bytes) {
         let (width, height) = gif_dimensions(&bytes)
@@ -493,6 +525,7 @@ pub fn upload(
     target: &Target,
     path: &std::path::Path,
     animate: bool,
+    edit: Option<&crate::attachment_edit::Edit>,
 ) -> Result<Changed, Failure> {
     use std::io::Read;
     let file = std::fs::File::open(path).map_err(|_| Failure::new("Could not read that file."))?;
@@ -503,7 +536,7 @@ pub fn upload(
     if bytes.len() as u64 > MAX_SOURCE_BYTES {
         return Err(Failure::new("That file is too large to use as a picture."));
     }
-    let prepared = prepare(bytes).map_err(Failure::new)?;
+    let prepared = prepare_edited(bytes, edit).map_err(Failure::new)?;
     let (id, completed) = crate::uploads::upload_picture(
         api,
         token,
@@ -1127,6 +1160,62 @@ mod tests {
         assert_eq!(square_crop(301, 300), (0, 0, 300));
         assert_eq!(square_crop(64, 64), (0, 0, 64));
         assert_eq!(square_crop(0, 10), (0, 5, 0));
+    }
+
+    #[test]
+    fn edited_picture_upload_keeps_the_selected_square_not_the_center() {
+        use crate::attachment_edit::{Crop, Edit};
+        let image = image::RgbaImage::from_fn(120, 60, |x, _| {
+            if x < 60 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 0, 255, 255])
+            }
+        });
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        for (x, channel) in [(0.0, 0), (0.5, 2)] {
+            let crop = square_frame(
+                Crop {
+                    x,
+                    y: 0.0,
+                    width: 0.5,
+                    height: 1.0,
+                },
+                120,
+                60,
+            );
+            let edit = Edit {
+                crop,
+                ..Edit::default()
+            };
+            let prepared = prepare_edited(bytes.get_ref().clone(), Some(&edit)).unwrap();
+            let saved = image::load_from_memory(&prepared.bytes).unwrap().to_rgb8();
+            assert_eq!(saved.dimensions(), (60, 60));
+            for pixel in saved.pixels() {
+                assert!(
+                    pixel[channel] > 230,
+                    "selected region survives upload encoding"
+                );
+                assert!(
+                    pixel[2 - channel] < 25,
+                    "excluded region must not leak into the result"
+                );
+            }
+        }
+        let animation = gif(&[([255, 0, 0, 255], 80), ([0, 0, 255, 255], 120)], 60, 60);
+        assert_eq!(
+            prepare_edited(animation.clone(), None).unwrap().bytes,
+            animation
+        );
+        assert_ne!(
+            prepare_edited(animation, Some(&Edit::default()))
+                .unwrap()
+                .content_type,
+            "image/gif"
+        );
     }
 
     #[test]

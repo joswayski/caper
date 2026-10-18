@@ -22,6 +22,8 @@ struct AttachmentEditRequest: Identifiable {
     let edit: AttachmentEdit
     /// The tool it opens on: Draw from the pencil, any from the preview.
     var tool = AttachmentEditTool.initial
+    /// Profile pictures use a square crop and always save on Done.
+    var pictureMode = false
     /// Called only for a change: the new edit (the original after Reset) and
     /// a staged render of it for the chip (nil for the original).
     let save: (AttachmentEdit, URL?) -> Void
@@ -243,13 +245,13 @@ struct AttachmentEditor: View {
 
     private func load() async {
         guard picture == nil, !failed else { return }
-        if let loaded = await AttachmentEditorPicture.load(request.original, kind: request.kind) { picture = loaded } else { failed = true }
+        if let loaded = await AttachmentEditorPicture.load(request.original, kind: request.kind, maxEdge: request.pictureMode ? 4096 : 2048) { picture = loaded } else { failed = true }
     }
 
     private func undo() { closeField(); history.undo() }
     private func redo() { closeField(); history.redo() }
     /// Back to the original, as one undo step.
-    private func reset() { closeField(); history.commit(.original) }
+    private func reset() { closeField(); history.commit(request.pictureMode ? request.edit : .original) }
     private func rotateLeft() { history.commit(history.current.rotatedLeft()) }
 
     private func commitCrop(_ crop: EditRect) {
@@ -305,9 +307,9 @@ struct AttachmentEditor: View {
     private func done() {
         guard !saving, let picture else { return }
         let result = field.map { $0.applied(to: history.current, edge: fieldEdge) } ?? history.current
-        guard result != request.edit else { close(); return }
+        guard request.pictureMode || result != request.edit else { close(); return }
         saving = true
-        request.save(result, result.isEdited ? AttachmentEditRenderer.stagePreview(picture.image, edit: result) : nil)
+        request.save(result, !request.pictureMode && result.isEdited ? AttachmentEditRenderer.stagePreview(picture.image, edit: result) : nil)
         close()
     }
 
@@ -381,6 +383,12 @@ struct AttachmentEditor: View {
 
     private var bottomBar: some View {
         VStack(spacing: 10) {
+            if request.pictureMode, tool == .crop {
+                Text("Drag the square to reposition. Adjust crop size to zoom.")
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if request.kind == .video, picture != nil {
                 Text("Drawings and text stay on screen for the whole video.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
@@ -401,6 +409,19 @@ struct AttachmentEditor: View {
 
     @ViewBuilder private var options: some View {
         if tool == .crop {
+            if request.pictureMode, let picture {
+                let size = AttachmentEdit.rotatedSize(width: Double(picture.image.width), height: Double(picture.image.height), rotation: history.current.rotation)
+                Slider(value: Binding(get: {
+                    history.current.crop.width * size.width / min(size.width, size.height)
+                }, set: { fraction in
+                    let crop = history.current.crop
+                    let side = fraction * min(size.width, size.height)
+                    commitCrop(AttachmentEdit.clampCrop(EditRect(x: crop.x + crop.width / 2 - side / size.width / 2,
+                                                               y: crop.y + crop.height / 2 - side / size.height / 2,
+                                                               width: side / size.width, height: side / size.height), min: 0))
+                }), in: 0.1...1)
+                .accessibilityLabel("Crop size")
+            }
             Button(action: rotateLeft) {
                 HStack(spacing: 6) {
                     CaperIcon(name: "rotate-ccw", size: 16)
@@ -708,8 +729,8 @@ struct AttachmentEditor: View {
                 .gesture(cropGesture(.move, layout: layout))
                 .accessibilityElement()
                 .accessibilityLabel("Crop frame")
-                .accessibilityHint("Drag the frame’s corners or edges to crop, or inside it to move it.")
-            ForEach(Self.cropHandles, id: \.self) { handle in
+                .accessibilityHint(request.pictureMode ? "Drag inside the square to reposition it. Adjust Crop size to zoom." : "Drag the frame’s corners or edges to crop, or inside it to move it.")
+            ForEach(request.pictureMode ? [] : Self.cropHandles, id: \.self) { handle in
                 CropHandleMark(handle: handle)
                     .position(Self.point(of: handle, in: rect))
                     .gesture(cropGesture(handle, layout: layout))
@@ -737,7 +758,7 @@ struct AttachmentEditor: View {
                                                    minHeight: min(1, max(0.02, Self.minimumCropPoints / layout.height)))
             }
             .onEnded { _ in
-                if let liveCrop { commitCrop(AttachmentEdit.clampCrop(liveCrop)) }
+                if let liveCrop { commitCrop(AttachmentEdit.clampCrop(liveCrop, min: request.pictureMode ? 0 : 0.02)) }
                 liveCrop = nil
             }
     }

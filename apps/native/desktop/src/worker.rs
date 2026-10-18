@@ -26,6 +26,8 @@ pub enum Command {
         target: crate::pictures::Target,
         path: Option<PathBuf>,
         animate: bool,
+        edit: Option<crate::attachment_edit::Edit>,
+        scratch: Option<Arc<crate::uploads::Scratch>>,
     },
     SendProfile {
         epoch: u64,
@@ -1499,9 +1501,14 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             target,
             path,
             animate,
+            edit,
+            scratch,
         } => Event::Picture {
             result: match path {
-                Some(path) => crate::pictures::upload(api, &token, &target, &path, animate),
+                Some(path) => {
+                    let _keep = scratch;
+                    crate::pictures::upload(api, &token, &target, &path, animate, edit.as_ref())
+                }
                 None => crate::pictures::remove(api, &token, &target),
             },
             epoch,
