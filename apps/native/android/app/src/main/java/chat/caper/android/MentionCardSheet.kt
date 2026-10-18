@@ -1,5 +1,6 @@
 package chat.caper.android
 
+import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -25,6 +26,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.ui.*
+import chat.caper.android.data.AttachmentEdit
 import chat.caper.android.model.AppUiState
 import chat.caper.android.model.BlockedAccount
 import kotlinx.coroutines.launch
@@ -156,6 +158,8 @@ import kotlinx.coroutines.launch
                         remove = { viewModel.removeProfileAttachment(person, it) },
                         toggleSpoiler = { viewModel.toggleProfileAttachmentSpoiler(person, it) },
                         send = { viewModel.sendProfileMessage(person, card.id, card.username, onMessageSent ?: onDismiss) },
+                        edit = { key, change, preview -> viewModel.editProfileAttachment(person, key, change, preview) },
+                        retry = { viewModel.retryProfileAttachment(person, it) },
                         pickerInteraction = { picking = it },
                     )
                 }
@@ -222,6 +226,8 @@ import kotlinx.coroutines.launch
     remove: (String) -> Unit, send: () -> Unit,
     pickerInteraction: (Boolean) -> Unit = {},
     toggleSpoiler: ((String) -> Unit)? = null,
+    edit: ((String, AttachmentEdit?, Bitmap?) -> Unit)? = null,
+    retry: ((String) -> Unit)? = null,
 ) {
     var field by remember { mutableStateOf(TextFieldValue(draft.text, TextRange(draft.text.length))) }
     var emojiPicker by remember { mutableStateOf(false) }
@@ -230,7 +236,8 @@ import kotlinx.coroutines.launch
         if (field.text != draft.text) field = TextFieldValue(draft.text, TextRange(draft.text.length))
     }
     val editable = writable && draft.editable
-    DraftAttachmentStrip(draft.files, remove, enabled = editable, uploadOnSend = true, sending = draft.sending, toggleSpoiler = toggleSpoiler)
+    DraftAttachmentStrip(draft.files, remove, retry, enabled = editable, uploadOnSend = true, sending = draft.sending,
+        edit = edit, toggleSpoiler = toggleSpoiler)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
         EmojiTextField(
             field, { value ->

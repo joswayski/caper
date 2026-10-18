@@ -85,6 +85,15 @@ class MediaViewerTest {
         assertEquals(500f, panLimit(500f, 2000f, 6f), 0f)
     }
 
+    @Test fun `an inset image fits inside its margin but pans until it covers the whole area`() {
+        assertEquals("no inset is the viewer's fit", 500f to 0f, zoomPanLimits(2000f, 1000f, 1000f, 2000f, inset = 0f, scale = 2f))
+        // Fitted 100 in from each edge, 800 × 400: unzoomed it stays put.
+        assertEquals(0f to 0f, zoomPanLimits(2000f, 1000f, 1000f, 2000f, inset = 100f, scale = 1f))
+        // At 2× it is 1600 wide, so its edge may come in to the area's edge, not the margin's.
+        assertEquals(300f to 0f, zoomPanLimits(2000f, 1000f, 1000f, 2000f, inset = 100f, scale = 2f))
+        assertEquals("an unknown size fills the inset area", 300f to 800f, zoomPanLimits(0f, 0f, 1000f, 2000f, inset = 100f, scale = 2f))
+    }
+
     @Test fun `download names cannot leave the downloads folder`() {
         assertEquals("photo.jpg", downloadName("photo.jpg"))
         assertEquals("_.._etc_passwd", downloadName("/../etc/passwd"))

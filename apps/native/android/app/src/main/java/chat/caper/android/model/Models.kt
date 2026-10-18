@@ -1,5 +1,6 @@
 package chat.caper.android.model
 
+import chat.caper.android.data.AttachmentEdit
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -779,6 +780,12 @@ data class DraftAttachmentUi(
     val pickedUri: String? = null,
     /** The picked `content://` image, kept for the (dormant) server-processing placeholder. */
     val pickedImage: String? = null,
+    /** Local `file://` copy of the picked original, which the editor opens; edits always apply to it. */
+    val original: String? = null,
+    /** "image" or "video" once the original is known to be editable here (see `AttachmentPreparer.editableKind`). */
+    val editKind: String? = null,
+    /** Crop, turns, drawing and text applied to [original] when preparing the upload; null uploads it as picked. */
+    val edit: AttachmentEdit? = null,
     val compressing: Boolean = true,
     val progress: Float = 0f,
     val error: String? = null,

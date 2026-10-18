@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Application
 import android.content.ClipboardManager
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import androidx.core.content.ContextCompat
@@ -36,6 +37,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 class CaperViewModel(application: Application) : AndroidViewModel(application) {
@@ -120,6 +122,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val uploadJobs = mutableMapOf<String, Job>()
     private val draftDirectories = mutableMapOf<String, File>()
     private val preparedDrafts = mutableMapOf<String, PreparedAttachment>()
+    /** Each draft's local copy of the picked original, which retries and edits prepare again. */
+    private val pickedDrafts = mutableMapOf<String, PickedFile>()
+    /** A draft's folder for files prepared since its latest edit: new each time, so no thumbnail shows a stale picture. */
+    private val draftOutputs = mutableMapOf<String, File>()
     private var pendingNeedsUpload = false
     /** Drafts moved into the pending message; restored by Edit, deleted once confirmed. */
     private var pendingDrafts: List<DraftAttachmentUi> = emptyList()
@@ -2018,7 +2024,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (retry == null) {
             // If a server ever reports these as processing, this device shows its own picked images
             // (the working copies are deleted once the send is confirmed; the picked URI is not).
-            val local = drafts.mapNotNull { draft -> draft.attachment?.id?.let { id -> draft.pickedImage?.let { id to it } } }
+            val local = drafts.mapNotNull { draft -> draft.attachment?.id?.let { id -> draft.pickedImage?.takeIf { draft.edit == null }?.let { id to it } } }
             setAttachmentDrafts(target, emptyList())
             mutable.value = mutable.value.copy(
                 localAttachmentPreviews = (mutable.value.localAttachmentPreviews + local).entries.toList().takeLast(64).associate { it.key to it.value },
@@ -2174,37 +2180,58 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             }
             // Profile files stay local until Send supplies a real DM destination.
             profileDrafts.add(person, listOf(draft))
-            uploadJobs[key] = viewModelScope.launch {
-                try {
-                    val picked = preparer.copy(uri, directory)
-                    val image = picked.contentType.startsWith("image/")
-                    updateDraft(key, person) {
-                        it.copy(
-                            name = picked.name, kind = AttachmentPolicy.kind(picked.contentType), sourceSize = picked.source.length(),
-                            thumbnail = if (image) Uri.fromFile(picked.source).toString() else null, pickedImage = if (image) uri.toString() else null,
-                        )
-                    }
-                    val prepared = preparer.prepare(picked, settings, directory, progressReporter(key, person))
-                    if (request != accountGeneration) return@launch
-                    profileDrafts.ready(person, key, prepared)
-                    updateDraft(key, person) {
-                        it.copy(
-                            name = prepared.name, kind = prepared.kind, storedSize = prepared.file.length(), compressing = false, progress = 0f,
-                            thumbnail = (prepared.preview ?: prepared.file.takeIf { prepared.kind == "image" })?.let { file -> Uri.fromFile(file).toString() } ?: it.thumbnail,
-                            localUrl = Uri.fromFile(prepared.file).toString(),
-                        )
-                    }
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Throwable) {
-                    updateDraft(key, person) { it.copy(error = AttachmentPolicy.uploadErrorMessage(error), compressing = false) }
-                } finally {
-                    uploadJobs.remove(key)
-                }
-            }
+            prepareProfileDraft(person, key, settings, request)
         }
         if (person != null && uris.size > room) profileDrafts.error(person, "Only $room more file${if (room == 1) "" else "s"} can be attached.")
     }
+
+    /** Copies a profile file (once) and prepares it, with its edit, for Send to upload. */
+    private fun prepareProfileDraft(person: String, key: String, settings: CompressionSettings = compression, request: Long = accountGeneration) {
+        val directory = draftDirectories[key] ?: return
+        val uri = profileDrafts[person].files.find { it.key == key }?.pickedUri?.let(Uri::parse) ?: return
+        uploadJobs[key] = viewModelScope.launch {
+            try {
+                val picked = pickedDrafts[key] ?: preparer.copy(uri, directory).also { copy -> recordPicked(key, person, uri, copy) }
+                val edit = profileDrafts[person].files.find { it.key == key }?.edit
+                val prepared = preparer.prepare(picked, settings, draftOutput(key, directory), progressReporter(key, person), edit)
+                if (request != accountGeneration) return@launch
+                profileDrafts.ready(person, key, prepared)
+                updateDraft(key, person) {
+                    it.copy(
+                        name = prepared.name, kind = prepared.kind, storedSize = prepared.file.length(), compressing = false, progress = 0f,
+                        thumbnail = (prepared.preview ?: prepared.file.takeIf { prepared.kind == "image" })?.let { file -> Uri.fromFile(file).toString() } ?: it.thumbnail,
+                        localUrl = Uri.fromFile(prepared.file).toString(),
+                    )
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                updateDraft(key, person) { it.copy(error = AttachmentPolicy.uploadErrorMessage(error), compressing = false) }
+            } finally {
+                // An edit may already have replaced this job with the next one.
+                if (uploadJobs[key] === coroutineContext[Job]) uploadJobs.remove(key)
+            }
+        }
+    }
+
+    /** Records the local copy of [key]'s picked file: its name, kind, original and whether the editor can open it. */
+    private suspend fun recordPicked(key: String, person: String?, uri: Uri, picked: PickedFile) {
+        pickedDrafts[key] = picked
+        val editKind = preparer.editableKind(picked)
+        val image = picked.contentType.startsWith("image/")
+        updateDraft(key, person) {
+            it.copy(
+                name = picked.name, kind = AttachmentPolicy.kind(picked.contentType), sourceSize = picked.source.length(),
+                original = Uri.fromFile(picked.source).toString(), editKind = editKind,
+                // An edited file keeps the editor's render until its own preview is ready.
+                thumbnail = if (it.edit != null) it.thumbnail else if (image) Uri.fromFile(picked.source).toString() else null,
+                pickedImage = if (image) uri.toString() else null,
+            )
+        }
+    }
+
+    /** Where [key] prepares its files: the draft folder, or the fresh folder of its latest edit. */
+    private fun draftOutput(key: String, directory: File): File = (draftOutputs[key] ?: directory).apply { mkdirs() }
 
     private fun renewDraftUploads(channelId: String) {
         // Renew anything that failed or expired while the conversation was closed.
@@ -2240,8 +2267,13 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         uploadJobs[key] = viewModelScope.launch {
             try { uploadDraft(key, token, target.channelId) }
             catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Throwable) { updateDraft(key) { it.copy(error = "Failed to upload.", compressing = false) } }
-            finally { uploadJobs.remove(key) }
+            catch (error: Throwable) {
+                // Edits that cannot be applied say so; nothing unedited is uploaded instead.
+                val message = (error as? UploadException)?.message?.takeIf { it == AttachmentEdits.FAILED } ?: "Failed to upload."
+                updateDraft(key) { it.copy(error = message, compressing = false) }
+            }
+            // An edit may already have replaced this job with the next one.
+            finally { if (uploadJobs[key] === coroutineContext[Job]) uploadJobs.remove(key) }
         }
     }
 
@@ -2253,12 +2285,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val prepared = preparedDrafts[key] ?: run {
             val uri = Uri.parse(draft.pickedUri ?: throw UploadException("Failed to upload."))
             val directory = draftDirectories[key] ?: throw CancellationException()
-            val picked = preparer.copy(uri, directory)
-            val image = picked.contentType.startsWith("image/")
-            updateDraft(key) { it.copy(name = picked.name, kind = AttachmentPolicy.kind(picked.contentType),
-                sourceSize = picked.source.length(), thumbnail = if (image) Uri.fromFile(picked.source).toString() else null,
-                pickedImage = if (image) uri.toString() else null) }
-            preparer.prepare(picked, compression, directory, progressReporter(key)).also {
+            val picked = pickedDrafts[key] ?: preparer.copy(uri, directory).also { copy ->
+                if (knownDrafts().none { it.key == key }) throw CancellationException()
+                recordPicked(key, null, uri, copy)
+            }
+            val edit = knownDrafts().find { it.key == key }?.edit
+            preparer.prepare(picked, compression, draftOutput(key, directory), progressReporter(key), edit).also {
                 if (knownDrafts().none { it.key == key }) throw CancellationException()
                 preparedDrafts[key] = it
             }
@@ -2273,6 +2305,86 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         updateDraft(key) { it.copy(attachment = attachment, progress = 1f, uploadedAt = System.currentTimeMillis(), error = null) }
         return attachment
+    }
+
+    /**
+     * Saves [edit] for a composer file (null returns it to the original): its preparation, upload
+     * and reservation stop, and the original is prepared again with the edit and uploaded
+     * (docs/media.md "Editing attachments before sending"). [preview], the editor's render of the
+     * edit, is the thumbnail until the edited file is ready. No change just closes the editor.
+     */
+    fun editDraft(key: String, edit: AttachmentEdit?, preview: Bitmap? = null) {
+        val draft = mutable.value.attachmentDrafts.values.flatten().find { it.key == key }
+        if (draft == null || draft.editKind == null || AttachmentEdits.same(draft.edit, edit)) { preview?.recycle(); return }
+        val next = edit?.takeIf { AttachmentEdits.isEdited(it) }
+        val token = accountToken
+        val id = draft.attachment?.id
+        if (token != null && id != null) viewModelScope.launch(NonCancellable) { api.cancelAsset(token, id) }
+        restartDraft(key, null, preview)
+        updateDraft(key) {
+            it.copy(
+                edit = next, attachment = null, uploadedAt = null, localUrl = null, storedSize = null, compressing = true, progress = 0f, error = null,
+                thumbnail = if (next == null && it.kind == "image") it.original else null,
+            )
+        }
+        retryDraft(key)
+    }
+
+    /** [editDraft] for a profile card's file, which is prepared again now and uploaded at Send. */
+    internal fun editProfileAttachment(person: String, key: String, edit: AttachmentEdit?, preview: Bitmap? = null) {
+        val draft = profileDrafts[person].files.find { it.key == key }
+        if (!profileDrafts[person].editable || draft == null || draft.editKind == null || AttachmentEdits.same(draft.edit, edit)) { preview?.recycle(); return }
+        val next = edit?.takeIf { AttachmentEdits.isEdited(it) }
+        val token = accountToken
+        val id = draft.attachment?.id
+        if (token != null && id != null) viewModelScope.launch(NonCancellable) { api.cancelAsset(token, id) }
+        profileDrafts.unprepare(key)
+        restartDraft(key, person, preview)
+        updateDraft(key, person) {
+            it.copy(
+                edit = next, attachment = null, localUrl = null, storedSize = null, compressing = true, progress = 0f, error = null,
+                thumbnail = if (next == null && it.kind == "image") it.original else null,
+            )
+        }
+        prepareProfileDraft(person, key)
+    }
+
+    /** A profile file that could not be prepared (for instance its edit) tries again. */
+    internal fun retryProfileAttachment(person: String, key: String) {
+        val draft = profileDrafts[person].files.find { it.key == key } ?: return
+        if (!profileDrafts[person].editable || draft.localUrl != null || uploadJobs[key]?.isActive == true) return
+        updateDraft(key, person) { it.copy(error = null, compressing = true, progress = 0f) }
+        prepareProfileDraft(person, key)
+    }
+
+    /**
+     * Stops [key]'s preparation or upload and points its next preparation at a fresh folder,
+     * where [preview] is written and shown until that preparation finishes.
+     */
+    private fun restartDraft(key: String, person: String?, preview: Bitmap?) {
+        val job = uploadJobs.remove(key)
+        job?.cancel()
+        preparedDrafts.remove(key)
+        val directory = draftDirectories[key] ?: run { preview?.recycle(); return }
+        val previous = draftOutputs[key]
+        val output = File(directory, "edit-${UUID.randomUUID()}")
+        draftOutputs[key] = output
+        // Files prepared before this edit are unused now (the original `source` stays); the
+        // cancelled preparation may still be writing them.
+        viewModelScope.launch(Dispatchers.IO) {
+            job?.join()
+            if (previous != null) previous.deleteRecursively()
+            else directory.listFiles { file -> file.isFile && file.name != "source" }?.forEach { it.delete() }
+        }
+        if (preview == null) return
+        viewModelScope.launch {
+            val written = withContext(Dispatchers.IO) {
+                try { File(output.apply { mkdirs() }, "edited.webp").takeIf { EditPainter.writePreview(preview, it) } } finally { preview.recycle() }
+            }
+            if (written != null && draftOutputs[key] == output) updateDraft(key, person) {
+                if (it.localUrl == null && it.edit != null) it.copy(thumbnail = Uri.fromFile(written).toString()) else it
+            }
+        }
     }
 
     fun toggleDraftSpoiler(key: String) {
@@ -2304,6 +2416,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun discardDraftFiles(key: String) {
         uploadJobs.remove(key)?.cancel()
         preparedDrafts.remove(key)
+        pickedDrafts.remove(key)
+        draftOutputs.remove(key)
         draftDirectories.remove(key)?.let { directory -> viewModelScope.launch(Dispatchers.IO) { directory.deleteRecursively() } }
     }
 

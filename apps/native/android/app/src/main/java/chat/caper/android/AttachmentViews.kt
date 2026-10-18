@@ -2,6 +2,7 @@ package chat.caper.android
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.os.Build
 import android.widget.Toast
 import androidx.annotation.OptIn
@@ -14,6 +15,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,8 +27,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
@@ -32,11 +44,14 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -45,6 +60,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.graphics.drawable.toBitmap
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.LifecycleStartEffect
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -52,6 +68,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import chat.caper.android.data.AttachmentEdit
 import chat.caper.android.data.AttachmentPolicy
 import chat.caper.android.model.AttachmentState
 import chat.caper.android.model.ChatAttachment
@@ -420,13 +437,98 @@ internal fun durationLabel(durationMs: Long?): String? {
     }
 }
 
-/** Compact composer previews shared by message and profile uploads; never scroll sideways. */
+/** A staged file's editor, opened on [tool]: Draw from the pencil, or a tool chosen in its preview. */
+internal data class OpenEditor(val key: String, val tool: EditTool = EditTool.DRAW)
+
+/** What a staged file's action bar holds, left to right. */
+internal enum class DraftAction { SPOILER, EDIT, REMOVE }
+
+/**
+ * Spoiler where the composer offers it ([spoiler]), Edit when the editor can open the file
+ * ([editable]), then Remove; nothing while the files are locked (sending).
+ */
+internal fun draftActions(spoiler: Boolean, editable: Boolean, enabled: Boolean): List<DraftAction> =
+    if (enabled) listOfNotNull(DraftAction.SPOILER.takeIf { spoiler }, DraftAction.EDIT.takeIf { editable }, DraftAction.REMOVE) else emptyList()
+
+/** [action]'s accessible name for the file called [name], which is marked as a spoiler when [spoiler]. */
+internal fun draftActionLabel(action: DraftAction, name: String, spoiler: Boolean): String = when (action) {
+    DraftAction.SPOILER -> if (spoiler) "Remove spoiler from $name" else "Mark as spoiler: $name"
+    DraftAction.EDIT -> "Edit $name"
+    DraftAction.REMOVE -> "Remove $name"
+}
+
+/**
+ * The picture a spoilered staged file blurs: its thumbnail (an edited file's render), else a
+ * picked image itself; an edited one never falls back to its unedited original. Null shows the
+ * neutral cover.
+ */
+internal fun draftSpoilerSource(draft: DraftAttachmentUi): String? {
+    if (draft.kind != "image" && draft.kind != "video" || draft.error != null || draft.attachment?.unavailable == true) return null
+    return draft.thumbnail ?: when {
+        draft.kind != "image" -> null
+        draft.edit != null -> draft.localUrl
+        else -> draft.pickedImage ?: draft.localUrl ?: draft.pickedUri
+    }
+}
+
+/** The action bar's height across a staged file's top edge: 44dp buttons over a 1dp border. */
+private val DRAFT_ACTION_BAR = 45.dp
+
+/** The editor's tools a draft preview offers: all of them while the file can be edited, none while it is locked (sending). */
+internal fun draftPreviewTools(enabled: Boolean): List<EditTool> = if (enabled) EditTool.entries else emptyList()
+
+/** What a draft preview shows: [uri] played as a video, or as a still. */
+internal data class DraftPreviewMedia(val uri: String, val video: Boolean)
+
+/**
+ * An edited file shows what will be sent, or the editor's still render of it until that is
+ * prepared, never its unedited original; an unedited one shows the original. Null while nothing is ready.
+ */
+internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
+    val video = draft.editKind == "video"
+    return when {
+        draft.edit == null -> (draft.original ?: draft.pickedUri)?.let { DraftPreviewMedia(it, video) }
+        draft.localUrl != null -> DraftPreviewMedia(draft.localUrl, video)
+        else -> draft.thumbnail?.let { DraftPreviewMedia(it, video = false) }
+    }
+}
+
+/**
+ * Compact composer previews shared by message and profile uploads; never scroll sideways. Each
+ * tile's action bar holds Spoiler ([toggleSpoiler]), Edit and Remove; a long press also offers
+ * Remove. With [edit], editable images and videos get a pencil that opens [AttachmentEditor] on
+ * the original, and tapping one opens [DraftPreview] (unblurred, even for a spoiler), whose Crop,
+ * Draw and Text open the editor on that tool; a saved change arrives as the draft key, the edit
+ * (null for the original) and its render. Other files preview in the system viewer. Files that
+ * upload on Send ([uploadOnSend]) offer Retry only when preparing them failed.
+ */
 @kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable internal fun DraftAttachmentStrip(
     drafts: List<DraftAttachmentUi>, remove: (String) -> Unit, retry: ((String) -> Unit)? = null,
     enabled: Boolean = true, uploadOnSend: Boolean = false, sending: Boolean = false,
+    edit: ((String, AttachmentEdit?, Bitmap?) -> Unit)? = null,
     toggleSpoiler: ((String) -> Unit)? = null,
 ) {
+    var editing by remember { mutableStateOf<OpenEditor?>(null) }
+    var previewing by remember { mutableStateOf<String?>(null) }
+    editing?.let { open ->
+        val draft = drafts.find { it.key == open.key }
+        val source = draft?.original ?: draft?.pickedUri
+        val kind = draft?.editKind
+        if (draft != null && source != null && kind != null && edit != null && enabled) AttachmentEditor(
+            source, kind, draft.name, draft.edit, cancel = { editing = null },
+            save = { change, preview -> editing = null; edit(open.key, change, preview) },
+            initialTool = open.tool,
+        ) else SideEffect { editing = null }
+    }
+    previewing?.let { key ->
+        val draft = drafts.find { it.key == key }
+        // Closing and opening the editor happen together, so the hand-off is instant.
+        if (draft != null && draft.editKind != null && edit != null) DraftPreview(draft, draftPreviewTools(enabled), close = { previewing = null }) { tool ->
+            previewing = null
+            editing = OpenEditor(key, tool)
+        } else SideEffect { previewing = null }
+    }
     if (drafts.isEmpty()) return
     val context = LocalContext.current
     val still = reducedMotion()
@@ -464,7 +566,10 @@ internal fun durationLabel(durationMs: Long?): String? {
                     LaunchedEffect(enabled) { if (!enabled) menuOpen = false }
                     Surface(Modifier.entrance(MOTION_BASE).size(tileSize), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {
                         Box(Modifier.fillMaxSize()) {
-                            val url = draft.pickedUri ?: draft.attachment?.url
+                            // Files the editor can open preview in the app, with its tools; the system viewer can't host them.
+                            val editable = edit != null && draft.editKind != null
+                            // An edited file never previews its unedited original.
+                            val url = if (draft.edit != null) null else draft.pickedUri ?: draft.attachment?.url
                             val busy = draft.attachment == null && draft.error == null && (!uploadOnSend || sending || draft.compressing)
                             val status = when {
                                 draft.error != null -> "Failed"
@@ -473,39 +578,45 @@ internal fun durationLabel(durationMs: Long?): String? {
                                 else -> "Uploading ${(draft.progress * 100).toInt()}%"
                             }
                             val accessibleName = if (draft.spoiler) "spoiler attachment" else draft.name
+                            // Profile files retry from the tile only when preparing them (an edit) failed; Send retries uploads.
+                            val retriable = draft.error != null && retry != null && (!uploadOnSend || draft.localUrl == null)
+                            val actions = draftActions(spoiler = toggleSpoiler != null, editable = editable, enabled = enabled)
+                            // What the tile shows sits below the action bar, and gives way to Retry where both can't fit.
+                            val bar = if (actions.isEmpty()) 0.dp else DRAFT_ACTION_BAR
+                            val crowded = actions.isNotEmpty() && retriable
                             Box(Modifier.fillMaxSize().combinedClickable(
-                                enabled = url != null || enabled, role = Role.Button, onClickLabel = "Preview $accessibleName",
-                                onClick = { url?.let(open) },
+                                enabled = editable || url != null || enabled, role = Role.Button, onClickLabel = "Preview $accessibleName",
+                                onClick = { if (editable) previewing = draft.key else url?.let(open) },
                                 onLongClickLabel = "Attachment options",
                                 onLongClick = if (enabled) ({ menuOpen = true }) else null,
                             ).semantics { contentDescription = listOfNotNull(accessibleName, if (draft.spoiler) status else draft.error ?: status).joinToString(", ") }, contentAlignment = Alignment.Center) {
                                 val thumbnail = draft.thumbnail
                                 if (draft.spoiler) {
-                                    val visual = draft.kind == "image" || draft.kind == "video"
-                                    val source = if (visual && draft.error == null && draft.attachment?.unavailable != true) {
-                                        thumbnail ?: if (draft.kind == "image") draft.pickedImage ?: draft.localUrl ?: draft.pickedUri else null
-                                    } else null
+                                    val source = draftSpoilerSource(draft)
                                     SpoilerThumbnail(source, "draft:${draft.key}:$source:spoiler")
-                                    Text("SPOILER", Modifier.background(Blackout.copy(alpha = 0.8f)).padding(4.dp), color = Text, fontSize = 11.sp)
+                                    if (!crowded) Text("SPOILER", Modifier.offset(y = bar / 4).background(Blackout.copy(alpha = 0.8f)).padding(4.dp), color = Text, fontSize = 11.sp)
                                 }
                                 else if (thumbnail != null) AsyncImage(
-                                    model = remember(thumbnail) { AttachmentImages.request(context, thumbnail, "draft:${draft.key}") },
+                                    // Keyed by the file too, so an edited thumbnail never shows the picture it replaced.
+                                    model = remember(thumbnail) { AttachmentImages.request(context, thumbnail, "draft:${draft.key}:$thumbnail") },
                                     contentDescription = null, imageLoader = AttachmentImages.loader(context), modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
                                 ) else if (draft.kind != "video") Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Icon(painterResource(if (draft.kind == "audio") R.drawable.lucide_play else R.drawable.lucide_file_text), null, Modifier.size(18.dp), tint = TextMuted)
                                     Text(when (draft.kind) { "image" -> "Image"; "audio" -> "Audio"; else -> "File" }, color = TextMuted, fontSize = 11.sp)
                                 }
                             }
-                            Column(Modifier.fillMaxSize()) {
+                            Column(Modifier.fillMaxSize().padding(top = bar)) {
                                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                                    if (draft.kind == "video" && !draft.spoiler) {
-                                        Box(Modifier.size(32.dp).background(Blackout.copy(alpha = 0.32f), CircleShape), contentAlignment = Alignment.Center) {
+                                    if (draft.kind == "video" && !draft.spoiler && !crowded) {
+                                        // Shrinks to fit between the action bar and the upload status.
+                                        Box(Modifier.heightIn(max = 32.dp).fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true)
+                                            .background(Blackout.copy(alpha = 0.32f), CircleShape), contentAlignment = Alignment.Center) {
                                             Icon(painterResource(R.drawable.lucide_play), "Video", Modifier.size(16.dp), tint = Text.copy(alpha = 0.72f))
                                         }
                                     }
                                 }
-                                if (status != null) Column(Modifier.fillMaxWidth().background(Blackout.copy(alpha = 0.9f)).padding(horizontal = 4.dp, vertical = if (draft.error != null && retry != null) 0.dp else 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    if (draft.error != null && retry != null) {
+                                if (status != null) Column(Modifier.fillMaxWidth().background(Blackout.copy(alpha = 0.9f)).padding(horizontal = 4.dp, vertical = if (retriable) 0.dp else 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    if (retriable) {
                                         Button({ retry(draft.key) }, Modifier.heightIn(min = 44.dp).semantics { contentDescription = "Retry uploading $accessibleName" }, enabled = enabled,
                                             colors = ButtonDefaults.buttonColors(containerColor = Action, contentColor = OnAction),
                                             shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 4.dp)) {
@@ -521,21 +632,16 @@ internal fun durationLabel(durationMs: Long?): String? {
                                     )
                                 }
                             }
-                            toggleSpoiler?.let { toggle ->
-                                TextButton({ toggle(draft.key) }, Modifier.align(Alignment.TopStart).width(tileSize - 48.dp).background(Blackout.copy(alpha = 0.9f))
-                                    .semantics {
-                                        contentDescription = "${if (draft.spoiler) "Remove spoiler from" else "Mark as spoiler:"} $accessibleName"
-                                        stateDescription = if (draft.spoiler) "Spoiler enabled" else "Spoiler disabled"
-                                    }, enabled = enabled, contentPadding = PaddingValues(0.dp)) {
-                                    Text(if (draft.spoiler) "Spoiler ✓" else "Spoiler", fontSize = 10.sp)
+                            // Editing works on the local original, so it is offered as soon as the file is known editable.
+                            DraftActionBar(accessibleName, draft.spoiler, actions, Modifier.align(Alignment.TopCenter)) { action ->
+                                when (action) {
+                                    DraftAction.SPOILER -> toggleSpoiler?.invoke(draft.key)
+                                    DraftAction.EDIT -> editing = OpenEditor(draft.key)
+                                    DraftAction.REMOVE -> remove(draft.key)
                                 }
                             }
+                            // A long press offers Remove from a menu at the tile's top-right corner.
                             Box(Modifier.align(Alignment.TopEnd)) {
-                                Box(Modifier.size(48.dp).clip(MaterialTheme.shapes.small).clickable(enabled = enabled, role = Role.Button, onClick = { if (enabled) remove(draft.key) }).semantics { contentDescription = "Remove $accessibleName" }) {
-                                    Box(Modifier.align(Alignment.TopEnd).padding(4.dp).size(24.dp).background(Blackout.copy(alpha = 0.9f), CircleShape), contentAlignment = Alignment.Center) {
-                                        Icon(painterResource(R.drawable.lucide_x), null, Modifier.size(14.dp), tint = Text)
-                                    }
-                                }
                                 DropdownMenu(menuOpen && enabled, { menuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
                                     DropdownMenuItem(
                                         text = { Text("Remove attachment", fontSize = 13.sp) },
@@ -549,4 +655,159 @@ internal fun durationLabel(durationMs: Long?): String? {
             }
         }
     }
+}
+
+/**
+ * A staged file's actions in one solid bar across the tile's top edge, like Discord's attachment
+ * toolbar (web's touch layout): Spoiler, Edit and Remove share its width in 44dp-tall buttons
+ * that are exactly their visible areas, so three fit the narrowest tile. [name] is the file's
+ * accessible name.
+ */
+@Composable private fun DraftActionBar(name: String, spoiler: Boolean, actions: List<DraftAction>, modifier: Modifier, act: (DraftAction) -> Unit) {
+    if (actions.isEmpty()) return
+    // The tile's own border, drawn over its content, covers this bar's top and side edges.
+    Column(modifier.fillMaxWidth().background(Blackout.copy(alpha = 0.9f))) {
+        Row(Modifier.fillMaxWidth().height(DRAFT_ACTION_BAR - 1.dp)) {
+            actions.forEachIndexed { index, action ->
+                if (index > 0) Box(Modifier.width(1.dp).fillMaxHeight().background(Border))
+                val icon = when (action) {
+                    DraftAction.SPOILER -> if (spoiler) R.drawable.lucide_eye_off else R.drawable.lucide_eye
+                    DraftAction.EDIT -> R.drawable.lucide_pencil
+                    DraftAction.REMOVE -> R.drawable.lucide_x
+                }
+                Box(
+                    Modifier.weight(1f).fillMaxHeight().solidButton(RectangleShape, hover = 0.12f, press = 0.18f) { act(action) }
+                        .semantics {
+                            contentDescription = draftActionLabel(action, name, spoiler)
+                            if (action == DraftAction.SPOILER) stateDescription = if (spoiler) "Spoiler enabled" else "Spoiler disabled"
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(painterResource(icon), null, Modifier.size(16.dp), tint = Text)
+                }
+            }
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Border))
+    }
+}
+
+/**
+ * A button on a solid backing that never fades: hovering lightens it to [hover] white, pressing
+ * to [press], and keyboard focus rings it in terracotta just inside its edge.
+ */
+@Composable private fun Modifier.solidButton(shape: Shape, hover: Float, press: Float, onClick: () -> Unit): Modifier {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val pressed by interaction.collectIsPressedAsState()
+    val focused by interaction.collectIsFocusedAsState()
+    return clip(shape)
+        .background(Color.White.copy(alpha = if (pressed) press else if (hovered) hover else 0f))
+        .drawWithContent {
+            drawContent()
+            if (focused) {
+                val inset = 3.dp.toPx()
+                drawRoundRect(Terracotta, Offset(inset, inset), Size(size.width - inset * 2, size.height - inset * 2), CornerRadius(6.dp.toPx()), style = Stroke(2.dp.toPx()))
+            }
+        }
+        .clickable(interaction, indication = null, role = Role.Button, onClick = onClick)
+}
+
+/**
+ * The app's own full-screen preview of a staged file the editor can open (the system viewer
+ * can't host the editor's tools): the picture or video fitted on black, a close control, and
+ * [tools] at the bottom, each of which hands the file to the editor on that tool. Pictures zoom
+ * as in the media viewer; closing resets them.
+ */
+@Composable private fun DraftPreview(draft: DraftAttachmentUi, tools: List<EditTool>, close: () -> Unit, edit: (EditTool) -> Unit) {
+    val context = LocalContext.current
+    val media = draftPreviewMedia(draft)
+    val video = draft.editKind == "video"
+    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        // Filled before the insets, so the bar areas aren't left showing the dimmed scrim.
+        Column(
+            Modifier.fillMaxSize().swipeCancelsPresses().entrance(MOTION_BASE).background(Blackout).systemBarsPadding()
+                .semantics { paneTitle = if (video) "Video preview" else "Image preview" },
+        ) {
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(draft.name, Modifier.weight(1f).semantics { heading() }, color = Text, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                IconButton(close, Modifier.semantics { contentDescription = "Close preview" }) { Icon(painterResource(R.drawable.lucide_x), null, tint = Text) }
+            }
+            // Clipped, so a zoomed picture stays between the title and the tools.
+            Box(Modifier.weight(1f).fillMaxWidth().clipToBounds(), contentAlignment = Alignment.Center) {
+                when {
+                    media == null -> Spinner(null, Modifier.size(28.dp))
+                    media.video -> DraftPreviewVideo(media.uri)
+                    else -> {
+                        var failed by remember(media.uri) { mutableStateOf(false) }
+                        var loaded by remember(media.uri) { mutableStateOf<IntSize?>(null) }
+                        if (failed) Text(if (video) "This video can’t be shown here." else "This image can’t be shown here.", Modifier.padding(24.dp),
+                            color = TextMuted, fontSize = 14.sp)
+                        // Zooms like the media viewer, so it decodes at full resolution (Coil caps it at 4096 px a side).
+                        else ZoomableImage(active = true, loaded, Modifier, inset = 16.dp) {
+                            AsyncImage(
+                                model = remember(media.uri) {
+                                    AttachmentImages.request(context, media.uri, "draft-preview:${draft.key}:${media.uri}").newBuilder().size(coil3.size.Size.ORIGINAL).build()
+                                },
+                                contentDescription = draft.name, imageLoader = AttachmentImages.loader(context),
+                                modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Fit,
+                                onSuccess = { loaded = IntSize(it.result.image.width, it.result.image.height) },
+                                onError = { failed = true },
+                            )
+                        }
+                    }
+                }
+            }
+            if (tools.isNotEmpty()) Row(
+                Modifier.align(Alignment.CenterHorizontally).padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)
+                    .clip(MaterialTheme.shapes.small).background(Surface).border(1.dp, Border, MaterialTheme.shapes.small).padding(4.dp)
+                    .semantics { contentDescription = "Edit ${draft.name}" },
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                tools.forEach { tool ->
+                    Row(
+                        Modifier.heightIn(min = 44.dp).widthIn(min = 88.dp).solidButton(RoundedCornerShape(6.dp), hover = 0.10f, press = 0.16f) { edit(tool) }
+                            .padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                    ) {
+                        Icon(painterResource(tool.icon), null, Modifier.size(18.dp), tint = Text)
+                        Text(tool.label, color = Text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** A staged video with playback controls; it plays while the app is visible and pauses when it is stopped. */
+@OptIn(UnstableApi::class)
+@Composable private fun DraftPreviewVideo(uri: String) {
+    val context = LocalContext.current
+    var failed by remember(uri) { mutableStateOf(false) }
+    val player = remember(uri) {
+        ExoPlayer.Builder(context).build().apply {
+            setAudioAttributes(AudioAttributes.DEFAULT, true)
+            setMediaItem(MediaItem.fromUri(uri))
+            addListener(object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) { failed = true }
+            })
+            prepare()
+        }
+    }
+    DisposableEffect(player) { onDispose { player.release() } }
+    LifecycleStartEffect(player) {
+        player.playWhenReady = true
+        onStopOrDispose { player.pause() }
+    }
+    if (failed) return Text("This video can’t be played here.", Modifier.padding(24.dp), color = TextMuted, fontSize = 14.sp)
+    AndroidView(
+        factory = {
+            PlayerView(it).apply {
+                setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+                setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+            }
+        },
+        update = { it.player = player },
+        modifier = Modifier.fillMaxSize(),
+    )
 }

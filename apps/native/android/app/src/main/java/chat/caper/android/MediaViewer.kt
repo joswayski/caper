@@ -56,6 +56,7 @@ import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -121,6 +122,15 @@ internal fun fittedSize(width: Float, height: Float, viewportWidth: Float, viewp
 
 /** How far a zoomed image may move from centre along one axis: until its edge meets the screen's. */
 internal fun panLimit(content: Float, viewport: Float, scale: Float): Float = maxOf(0f, (content * scale - viewport) / 2f)
+
+/**
+ * [panLimit] on both axes for an image fitted [inset] in from each edge of the viewport. It pans
+ * against the whole viewport, so a zoomed image still covers the margin.
+ */
+internal fun zoomPanLimits(width: Float, height: Float, viewportWidth: Float, viewportHeight: Float, inset: Float, scale: Float): Pair<Float, Float> {
+    val (fittedWidth, fittedHeight) = fittedSize(width, height, viewportWidth - inset * 2, viewportHeight - inset * 2)
+    return panLimit(fittedWidth, viewportWidth, scale) to panLimit(fittedHeight, viewportHeight, scale)
+}
 
 /** A name DownloadManager can write: no path separators, reserved or control characters, or leading dots. */
 internal fun downloadName(name: String): String =
@@ -378,25 +388,26 @@ private class ViewerDismiss(private val scope: CoroutineScope) {
 }
 
 /**
- * Fits [content] to the page and zooms it: pinch, or double-tap to toggle 2× on the tapped point;
- * one finger pans while zoomed. Unzoomed one-finger drags are left to the pager and swipe-to-close.
+ * Fits [content] to the area, [inset] in from its edges, and zooms it: pinch, or double-tap to
+ * toggle 2× on the tapped point; one finger pans while zoomed, until the image's edges meet the
+ * area's. Unzoomed one-finger drags are left to the caller (the viewer's pager and swipe-to-close).
+ * The media viewer and a staged file's preview share it.
  */
-@Composable private fun ZoomableImage(active: Boolean, contentSize: IntSize?, modifier: Modifier, content: @Composable BoxScope.() -> Unit) {
+@Composable internal fun ZoomableImage(active: Boolean, contentSize: IntSize?, modifier: Modifier, inset: Dp = 0.dp, content: @Composable BoxScope.() -> Unit) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var viewport by remember { mutableStateOf(IntSize.Zero) }
     val bounds by rememberUpdatedState(contentSize)
+    val margin by rememberUpdatedState(with(LocalDensity.current) { inset.toPx() })
     val scope = rememberCoroutineScope()
     // A double tap's zoom, which a pinch or pan takes over from where it is.
     val zoomMotion = remember { object { var job: Job? = null } }
     // Moving to another file resets the zoom.
     LaunchedEffect(active) { if (!active) { zoomMotion.job?.cancel(); scale = 1f; offset = Offset.Zero } }
     fun clamped(value: Offset, zoom: Float): Offset {
-        val (width, height) = fittedSize(
-            bounds?.width?.toFloat() ?: 0f, bounds?.height?.toFloat() ?: 0f, viewport.width.toFloat(), viewport.height.toFloat(),
+        val (x, y) = zoomPanLimits(
+            bounds?.width?.toFloat() ?: 0f, bounds?.height?.toFloat() ?: 0f, viewport.width.toFloat(), viewport.height.toFloat(), margin, zoom,
         )
-        val x = panLimit(width, viewport.width.toFloat(), zoom)
-        val y = panLimit(height, viewport.height.toFloat(), zoom)
         return Offset(value.x.coerceIn(-x, x), value.y.coerceIn(-y, y))
     }
     Box(
@@ -437,7 +448,8 @@ private class ViewerDismiss(private val scope: CoroutineScope) {
                     } while (event.changes.any { it.pressed })
                 }
             }
-            .graphicsLayer { scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y },
+            .graphicsLayer { scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y }
+            .padding(inset),
         contentAlignment = Alignment.Center,
         content = content,
     )
