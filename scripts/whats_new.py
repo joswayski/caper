@@ -406,6 +406,18 @@ def ask_claude(prompt):
         },
         "fallbacks": "default",
     }
+    headers = {
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": "server-side-fallback-2026-07-01",
+        "Content-Type": "application/json",
+    }
+    # Keys that are not scoped to one workspace must name the workspace to bill.
+    workspace = os.environ.get("ANTHROPIC_WORKSPACE_ID")
+    if workspace:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", workspace):
+            raise GenerationError("ANTHROPIC_WORKSPACE_ID must be a workspace ID")
+        headers["anthropic-workspace-id"] = workspace
     payload = encode(body)
     if len(payload.decode("utf-8")) > MAX_INPUT_CHARS:
         raise GenerationError(f"Claude request exceeds {MAX_INPUT_CHARS} input characters")
@@ -413,12 +425,7 @@ def ask_claude(prompt):
         "https://api.anthropic.com/v1/messages",
         data=payload,
         method="POST",
-        headers={
-            "x-api-key": key,
-            "anthropic-version": "2023-06-01",
-            "anthropic-beta": "server-side-fallback-2026-07-01",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
     )
     for delay in (*PROVIDER_RETRY_DELAYS, None):
         try:

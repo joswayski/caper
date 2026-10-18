@@ -71,6 +71,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Required when the key is not scoped to a single workspace.
+          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
           # Empty variables fall back to the generator defaults (Opus 5.5, high effort).
           ANTHROPIC_MODEL: ${{ vars.CAPER_RELEASE_NOTES_MODEL }}
           ANTHROPIC_EFFORT: ${{ vars.CAPER_RELEASE_NOTES_EFFORT }}

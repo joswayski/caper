@@ -99,7 +99,13 @@ class HighlightsTests(unittest.TestCase):
         self.git("config", "user.email", "fixture@example.test")
         self.base = self.commit("Already shipped", {"apps/web/src/chat.ts": "old\n"})
         self.environment = patch.dict(
-            os.environ, {"ANTHROPIC_API_KEY": "fake-api-key", "ANTHROPIC_MODEL": "", "ANTHROPIC_EFFORT": ""}
+            os.environ,
+            {
+                "ANTHROPIC_API_KEY": "fake-api-key",
+                "ANTHROPIC_MODEL": "",
+                "ANTHROPIC_EFFORT": "",
+                "ANTHROPIC_WORKSPACE_ID": "",
+            },
         )
         self.environment.start()
         self.addCleanup(self.environment.stop)
@@ -149,6 +155,7 @@ class HighlightsTests(unittest.TestCase):
         self.assertEqual(request.full_url, "https://api.anthropic.com/v1/messages")
         self.assertEqual(request.get_header("X-api-key"), "fake-api-key")
         self.assertEqual(request.get_header("Anthropic-beta"), "server-side-fallback-2026-07-01")
+        self.assertEqual(request.get_header("Anthropic-workspace-id"), os.environ["ANTHROPIC_WORKSPACE_ID"] or None)
         self.assertEqual(timeout, 300)
         self.assertEqual(body["max_tokens"], 16000)
         self.assertEqual(body["fallbacks"], "default")
@@ -444,6 +451,16 @@ class HighlightsTests(unittest.TestCase):
             feeds = self.generate(newest)
         self.assertEqual(len(self.requests), 3)
         self.assertEqual(feeds["web"]["releases"][-1]["highlights"][0]["title"], "Clearer channel controls")
+
+    def test_workspace_id_is_sent_when_configured(self):
+        self.seed()
+        newest = self.commit("Improve channel controls")
+        with patch.dict(os.environ, {"ANTHROPIC_WORKSPACE_ID": "wrkspc_01Example"}):
+            self.generate(newest)
+        self.assertEqual(len(self.requests), 1)
+        self.github.events.clear()
+        with patch.dict(os.environ, {"ANTHROPIC_WORKSPACE_ID": "bad id\n"}):
+            self.assert_cli_failure(self.commit("Improve channel menus"), "ANTHROPIC_WORKSPACE_ID")
 
     def test_permanent_provider_errors_do_not_retry(self):
         self.seed()

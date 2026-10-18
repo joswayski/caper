@@ -8653,7 +8653,10 @@ at most 100/500 Unicode code points. Missing metadata fails closed.
    The generator defaults to `claude-opus-5-5` at `high` effort with
    `fallbacks: "default"`, so a classifier decline retries on Anthropic's
    recommended model. Optional Caper Actions variables `CAPER_RELEASE_NOTES_MODEL`
-   and `CAPER_RELEASE_NOTES_EFFORT` (`low`-`max`) override them. One request per
+   and `CAPER_RELEASE_NOTES_EFFORT` (`low`-`max`) override them. A key that is
+   not scoped to one workspace is rejected (HTTP 400 `invalid_request_error`)
+   unless the `ANTHROPIC_WORKSPACE_ID` Actions variable names the workspace;
+   a workspace-scoped key needs no variable. One request per
    shipped release sends at most 400,000 characters (about 100K tokens, under
    $0.50 at Opus 5.5 rates); a typical release is far smaller. When a long gap
    between releases exceeds that, server-only diffs are dropped and client
