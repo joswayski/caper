@@ -933,8 +933,13 @@ final class AttachmentTests: XCTestCase {
             // A fresh view, before its asynchronous task can load the final URL.
             let renderer = ImageRenderer(content: MessageAttachmentsView(attachments: [attachment], chat: nil)
                 .frame(width: 240, height: 180, alignment: .topLeading))
-            renderer.scale = 1
-            let image = try XCTUnwrap(renderer.cgImage)
+            // Render the same view into a CPU bitmap: ImageRenderer.cgImage
+            // starts Metal, which aborts on hosted Intel Macs without a GPU.
+            let context = try XCTUnwrap(CGContext(data: nil, width: 240, height: 180,
+                bitsPerComponent: 8, bytesPerRow: 240 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            renderer.render { _, draw in draw(context) }
+            let image = try XCTUnwrap(context.makeImage())
             let rgba = try XCTUnwrap(AttachmentPreparer.rgbaPixels(image)).straight
             let offset = (20 * image.width + 20) * 4
             return Array(rgba[offset..<offset + 4])
