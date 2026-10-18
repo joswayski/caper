@@ -131,10 +131,13 @@ export function InviteLinkManager({
   spaceId,
   channels,
   prepareDefault = false,
+  channelId,
 }: {
   spaceId: string;
   channels: Channel[];
   prepareDefault?: boolean;
+  /** Explicit public-channel entry context; omitted for the space default. */
+  channelId?: string;
 }) {
   const publicChannels = channels.filter((channel) => !channel.private);
   const [links, setLinks] = useState<InviteLink[]>();
@@ -159,7 +162,7 @@ export function InviteLinkManager({
     void (async () => {
       try {
         if (prepareDefault) {
-          const link = await ensureDefaultInviteLink(spaceId);
+          const link = await ensureDefaultInviteLink(spaceId, channelId);
           if (!current) return;
           setDefaultCode(link.code);
           setLinks([link]);
@@ -175,7 +178,7 @@ export function InviteLinkManager({
     return () => {
       current = false;
     };
-  }, [spaceId, prepareDefault]);
+  }, [spaceId, prepareDefault, channelId]);
   useEffect(() => {
     if (!copied) return;
     const timeout = setTimeout(() => setCopied(undefined), 2_000);
@@ -188,7 +191,7 @@ export function InviteLinkManager({
     setPending(true);
     setError(undefined);
     try {
-      const link = await ensureDefaultInviteLink(spaceId);
+      const link = await ensureDefaultInviteLink(spaceId, channelId);
       setDefaultCode(link.code);
       setCopied(undefined);
       setLinks((current) => [link, ...(current ?? []).filter((item) => item.code !== link.code)]);

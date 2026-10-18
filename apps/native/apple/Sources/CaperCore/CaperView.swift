@@ -703,10 +703,12 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
 }
 
 private enum WorkspaceSheet: Identifiable {
+    case invitePeople(spaceID: String, channelID: String?)
     /// `joinInvite` carries a link opened from another app, or nil.
-    case login, profile, createSpace, joinInvite(OpenedInviteLink?), createChannel, newDirectMessage, invitePeople, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy, notifications
+    case login, profile, createSpace, joinInvite(OpenedInviteLink?), createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy, notifications
     var id: String {
         switch self {
+        case .invitePeople(let spaceID, let channelID): "invite-people-\(spaceID)-\(channelID ?? "default")"
         case .login: "login"
         case .profile: "profile"
         case .createSpace: "create-space"
@@ -714,7 +716,6 @@ private enum WorkspaceSheet: Identifiable {
         case .createChannel: "create-channel"
         case .newDirectMessage: "new-direct-message"
         case .manageSpace: "manage-space"
-        case .invitePeople: "invite-people"
         case .manageChannel(let channel): "manage-\(channel.id)"
         case .invitation(let space): "invitation-\(space.id)"
         case .channelInvitation(let invitation): "channel-invitation-\(invitation.id)"
@@ -1223,7 +1224,12 @@ private struct ChannelSidebar: View {
             SpaceNotificationItems(model: model, spaceID: space.id)
             Divider()
         }
-        if model.isOwner { Button("Space settings") { sheet = .manageSpace } }
+        if model.isOwner {
+            if let space = model.detail?.space, space.demo != true {
+                Button("Invite people…") { sheet = .invitePeople(spaceID: space.id, channelID: nil) }
+            }
+            Button("Space settings") { sheet = .manageSpace }
+        }
         else if model.account != nil && model.detail?.space.demo != true { Button("Leave space…", role: .destructive) { sheet = .leaveSpace } }
     }
     var body: some View {
@@ -1430,19 +1436,18 @@ private struct ChannelSidebar: View {
                         }.padding(.horizontal, 16).padding(.top, 2)
                     Button {
                         guard !SwipeTapGuard.swiping else { return }
-                        if model.isOwner, model.detail?.space.demo == false { sheet = .invitePeople }
-                        else { sheet = .newDirectMessage }
+                        sheet = .newDirectMessage
                     } label: {
                         HStack(spacing: 9) {
                             CaperIcon(name: "plus", size: 17).frame(width: 24)
-                            Text(model.isOwner && model.detail?.space.demo == false ? "Invite people" : "New message")
+                            Text("New message")
                             Spacer()
                         }
                         .font(CaperTheme.font(13, weight: .medium)).foregroundStyle(CaperTheme.muted)
                         .padding(.horizontal, 9).frame(minHeight: directRowHeight)
                         .contentShape(Rectangle())
                     }.buttonStyle(.plain).modifier(ControlHover()).padding(.horizontal, 16)
-                        .accessibilityIdentifier(model.isOwner && model.detail?.space.demo == false ? "invite-people" : "new-message")
+                        .accessibilityIdentifier("new-message")
                 }.padding(.top, 12).padding(.bottom, 8)
                     .overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
                     .padding(.top, 16)
@@ -1571,6 +1576,9 @@ private struct ChannelSidebarItem: View {
 
     @ViewBuilder private var optionsMenuItems: some View {
         if model.isOwner {
+            if !channel.private, model.detail?.space.demo != true {
+                Button("Invite people…") { sheet = .invitePeople(spaceID: channel.spaceId, channelID: channel.id) }
+            }
             Button("Channel settings") { sheet = .manageChannel(channel) }
             Divider()
         }
@@ -7281,8 +7289,15 @@ private struct WorkspaceSheetView: View {
             case .joinInvite(let opened): JoinInviteSheet(model: model, opened: opened, close: close)
             case .createChannel: ChannelEditor(model: model, channel: nil, close: close)
             case .newDirectMessage: NewDirectMessageSheet(model: model, close: close)
+            case .invitePeople(let spaceID, let channelID):
+                Group {
+                    if model.isOwner, model.detail?.space.id == spaceID {
+                        SpaceEditor(model: model, close: close, managing: true, inviteOnly: true, inviteChannelID: channelID)
+                    }
+                }
+                .onChange(of: model.selectedSpaceID) { _, _ in close() }
+                .onChange(of: model.isOwner) { _, owner in if !owner { close() } }
             case .manageSpace: SpaceEditor(model: model, close: close, managing: true)
-            case .invitePeople: SpaceEditor(model: model, close: close, managing: true, inviteOnly: true)
             case .manageChannel(let channel): ChannelEditor(model: model, channel: channel, close: close)
             case .invitation(let space): InvitationSheet(model: model, invitation: space, close: close)
             case .channelInvitation(let invitation): ChannelInvitationSheet(model: model, invitation: invitation, close: close)
@@ -8529,6 +8544,7 @@ private struct InvitePreviewCard: View {
 /// Opening prepares (or reuses) a link, but never touches the clipboard.
 private struct DefaultInviteLinkSection: View {
     @Bindable var model: AppModel
+    let channelID: String?
     @State private var link: InviteLink?
     @State private var pending = false
     @State private var deactivated = false
@@ -8550,6 +8566,7 @@ private struct DefaultInviteLinkSection: View {
                     .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 TimelineView(.everyMinute) { context in
                     Text(InviteLinks.meta(for: link, now: context.date)).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                        .accessibilityIdentifier("default-invite-link-summary")
                 }
                 HStack {
                     Button(copied ? "Copied" : "Copy link") { copy(link) }.buttonStyle(CaperPrimaryButton())
@@ -8617,7 +8634,7 @@ private struct DefaultInviteLinkSection: View {
         pending = true; error = nil; copied = false
         defer { pending = false }
         do {
-            link = try await model.defaultInviteLink()
+            link = try await model.defaultInviteLink(channelID: channelID)
             deactivated = false; settingsRevision += 1
         }
         catch is CancellationError {}
@@ -8910,6 +8927,7 @@ private struct InviteOptionPicker<Value: Hashable & Sendable>: View {
 private struct SpaceEditor: View {
     @Bindable var model: AppModel; let close: () -> Void; let managing: Bool
     var inviteOnly = false
+    var inviteChannelID: String? = nil
     /// Create a space only: switches to "Join with invite link".
     var joinInvite: (() -> Void)? = nil
     @State private var name = ""; @State private var username = ""; @State private var error: String?; @State private var pending = false
@@ -8945,7 +8963,7 @@ private struct SpaceEditor: View {
                     }
                     if managing {
                         if inviteOnly {
-                            DefaultInviteLinkSection(model: model).id(model.detail?.space.id)
+                            DefaultInviteLinkSection(model: model, channelID: inviteChannelID).id(model.detail?.space.id)
                         } else {
                             iconSection
                             Divider().overlay(CaperTheme.border)

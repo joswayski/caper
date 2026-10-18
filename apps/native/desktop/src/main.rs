@@ -703,6 +703,8 @@ struct InviteLinkPanel {
     max_uses: String,
     /// The custom link's public landing channel; `None` when none exist.
     channel: Option<String>,
+    /// Explicit menu context for the primary link, independent of custom settings.
+    initial_channel: Option<String>,
     error: Option<String>,
     /// A new link's URL, copied on the next frame (copying needs the UI).
     copy: Option<String>,
@@ -727,6 +729,7 @@ impl Default for InviteLinkPanel {
             expiry_unit: invites::DEFAULT_EXPIRY.1,
             max_uses: "100".into(),
             channel: None,
+            initial_channel: None,
             error: None,
             copy: None,
             copied: None,
@@ -5286,6 +5289,10 @@ impl CaperApp {
         };
         self.notification_items(ui, &scope, "channel");
         ui.separator();
+        if self.owner() && !private && ui.button("Invite people…").clicked() {
+            self.open_invite_people(Some(channel.to_owned()));
+            ui.close();
+        }
         if self.owner() && ui.button("Channel settings").clicked() {
             self.open_manage_channel(channel, name, private);
             ui.close();
@@ -5412,8 +5419,22 @@ impl CaperApp {
             )
     }
 
-    fn open_invite_people(&mut self) {
+    fn open_invite_people(&mut self, channel: Option<String>) {
+        if !self.owner() {
+            return;
+        }
         self.open_manage_space();
+        self.invite_links.initial_channel = channel.filter(|id| {
+            self.detail.as_ref().is_some_and(|detail| {
+                detail
+                    .channels
+                    .iter()
+                    .any(|channel| channel.id == *id && !channel.private)
+            })
+        });
+        if self.invite_links.initial_channel.is_some() {
+            self.invite_links.channel = self.invite_links.initial_channel.clone();
+        }
         self.dialog = Some(Dialog::InvitePeople);
         self.ensure_default_invite_link();
     }
@@ -5430,7 +5451,7 @@ impl CaperApp {
             self.invite_links.error = None;
             self.account_op(AccountOperation::EnsureDefaultInviteLink {
                 space,
-                channel: None,
+                channel: self.invite_links.initial_channel.clone(),
                 request: self.invite_join.request,
             });
         }
@@ -5543,11 +5564,7 @@ impl CaperApp {
     }
 
     fn open_direct_action(&mut self) {
-        if self.owner() {
-            self.open_invite_people();
-        } else {
-            self.open_start_direct();
-        }
+        self.open_start_direct();
     }
 
     fn accept_channel(
@@ -10873,6 +10890,10 @@ impl CaperApp {
                                     self.channel_search.clear();
                                     ui.close();
                                 }
+                                if self.owner() && ui.button("Invite people…").clicked() {
+                                    self.open_invite_people(None);
+                                    ui.close();
+                                }
                                 if let Some(scope) = &space_scope {
                                     self.notification_items(ui, scope, "space");
                                     ui.separator();
@@ -11531,15 +11552,10 @@ impl CaperApp {
                 self.notification_error(ui, &scope);
                 ui.add_space(2.0);
             }
-            let action = if self.owner() {
-                "Invite people"
-            } else {
-                "New message"
-            };
             let (response, _, _) = channel_button(
                 ui,
                 egui::vec2(ui.available_width(), 28.0),
-                action,
+                "New message",
                 Some(NavIcon::Plus),
                 false,
                 RowExtras::default(),
@@ -30694,7 +30710,7 @@ mod tests {
         assert_eq!(direct_dots(&output), 0, "a muted DM shows no unread dot");
         assert_ne!(
             text_color(&output, "TEST FIXTURE Maya"),
-            text_color(&output, "Invite people"),
+            text_color(&output, "New message"),
             "dimmed"
         );
         let label = crate::notifications::mute_label(
@@ -40994,13 +41010,70 @@ mod tests {
             })
             .collect();
         assert!(texts.contains(&"Fixture Owner you"), "{texts:?}");
-        assert!(texts.contains(&"Invite people"), "{texts:?}");
+        assert!(texts.contains(&"New message"), "{texts:?}");
         assert!(!texts.contains(&"No direct messages yet"));
         let nodes = output.platform_output.accesskit_update.as_ref().unwrap();
         assert!(nodes.nodes.iter().any(|(_, node)| {
             node.label()
                 .is_some_and(|label| label == "Fixture Owner you")
         }));
+    }
+
+    #[test]
+    fn invite_menu_is_owner_public_only_and_presets_the_clicked_channel() {
+        for owner in [true, false] {
+            for private in [true, false] {
+                let context = egui::Context::default();
+                context.enable_accesskit();
+                let mut app = CaperApp::new(
+                    &context,
+                    crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                    Some("parity-desktop"),
+                );
+                let channel = app
+                    .detail
+                    .as_mut()
+                    .unwrap()
+                    .channels
+                    .iter_mut()
+                    .find(|channel| channel.name == "design")
+                    .unwrap();
+                channel.private = private;
+                let id = channel.id.clone();
+                assert_ne!(app.selected_channel.as_ref(), Some(&id));
+                if !owner {
+                    app.account.as_mut().unwrap().id = "fixture-member".into();
+                }
+                let output = settle(&mut app, &context);
+                click(
+                    &mut app,
+                    &context,
+                    node_center(&output, "Channel options for design"),
+                );
+                let opened = render(&mut app, &context, vec![]);
+                assert_eq!(
+                    menu_labels(&opened)
+                        .iter()
+                        .any(|label| label == "Invite people…"),
+                    owner && !private
+                );
+                if owner && !private {
+                    click(&mut app, &context, text_position(&opened, "Invite people…"));
+                    assert!(matches!(app.dialog, Some(Dialog::InvitePeople)));
+                    assert_eq!(app.invite_links.channel.as_ref(), Some(&id));
+                    assert_eq!(app.invite_links.initial_channel.as_ref(), Some(&id));
+                    let dialog = render(&mut app, &context, vec![]);
+                    assert!(menu_labels(&dialog).contains(&"Invite people".to_owned()));
+                    assert!(!menu_labels(&dialog).contains(&"Opens in".to_owned()));
+                    app.invite_links.channel = None;
+                    app.invite_links.creating = false;
+                    app.ensure_default_invite_link();
+                    assert_eq!(app.invite_links.initial_channel.as_ref(), Some(&id));
+                    app.open_invite_people(None);
+                    assert_eq!(app.invite_links.initial_channel, None);
+                }
+            }
+        }
     }
 
     #[test]
@@ -41044,11 +41117,7 @@ mod tests {
                 (40.0..56.0).contains(&gap),
                 "DM heading must leave room for the divider on both sides without being bottom-anchored: {gap}"
             );
-            let direct_action = if owner {
-                "Invite people"
-            } else {
-                "New message"
-            };
+            let direct_action = "New message";
             assert!(bounds("Mute microphone").y0 > bounds(direct_action).y1);
             assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Browse channels")));
             let name = format!("{} actions", app.detail.as_ref().unwrap().space.name);
@@ -41062,6 +41131,12 @@ mod tests {
                 ),
             );
             let opened = render(&mut app, &context, vec![]);
+            assert_eq!(
+                menu_labels(&opened)
+                    .iter()
+                    .any(|label| label == "Invite people…"),
+                owner
+            );
             click(
                 &mut app,
                 &context,
@@ -41071,6 +41146,18 @@ mod tests {
                 app.browse_channels,
                 "Browse must be available to owners and members"
             );
+            if owner {
+                app.browse_channels = false;
+                let output = settle(&mut app, &context);
+                click(&mut app, &context, node_center(&output, &name));
+                let opened = render(&mut app, &context, vec![]);
+                click(&mut app, &context, text_position(&opened, "Invite people…"));
+                assert!(matches!(app.dialog, Some(Dialog::InvitePeople)));
+                assert_eq!(
+                    app.invite_links.initial_channel, None,
+                    "space invite uses the default landing channel"
+                );
+            }
         }
     }
 
@@ -41121,9 +41208,9 @@ mod tests {
         // Unread is part of the row's name, and its dot sits inside the row,
         // so the highlight spans the sidebar like the other rows.
         let second_peer = bounds("Second fixture peer, unread activity");
-        for row in [self_row, peer, second_peer, bounds("Invite people")] {
+        for row in [self_row, peer, second_peer, bounds("New message")] {
             assert_eq!(row.height(), 28.0);
-            assert_eq!(row.x1, bounds("Invite people").x1);
+            assert_eq!(row.x1, bounds("New message").x1);
         }
         let dots: Vec<_> = output
             .shapes
@@ -41411,10 +41498,8 @@ mod tests {
         let context = egui::Context::default();
         let api = || crate::api::Api::new("http://127.0.0.1:9").unwrap();
         let mut owner = CaperApp::new(&context, api(), Some("parity-desktop"));
-        let expected_members = owner.detail.as_ref().unwrap().members.len();
         owner.open_direct_action();
-        assert!(matches!(owner.dialog, Some(Dialog::InvitePeople)));
-        assert_eq!(owner.managed_members.len(), expected_members);
+        assert!(matches!(owner.dialog, Some(Dialog::StartDirect)));
 
         let mut member = CaperApp::new(&context, api(), Some("parity-desktop"));
         member.account.as_mut().unwrap().id = "fixture-maya".into();
@@ -41470,7 +41555,7 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-desktop"),
         );
-        app.open_invite_people();
+        app.open_invite_people(None);
         let space = app.selected_space.clone().unwrap();
         let request = app.invite_links.request;
         let link = app.fixture_invite_links().remove(0);
@@ -41492,7 +41577,7 @@ mod tests {
             app.invite_links.default_link.is_none(),
             "fresh list removes externally revoked default"
         );
-        app.open_invite_people();
+        app.open_invite_people(None);
         app.account_result(crate::worker::AccountResult::InviteLinkCreated {
             space: space.clone(),
             request,
@@ -41563,7 +41648,7 @@ mod tests {
             crate::api::Api::new("http://127.0.0.1:9").unwrap(),
             Some("parity-desktop"),
         );
-        app.open_invite_people();
+        app.open_invite_people(None);
         let space = app.selected_space.clone().unwrap();
         let request = app.invite_join.request;
         let link = app.fixture_invite_links().remove(0);

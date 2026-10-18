@@ -46,7 +46,7 @@ import java.time.Instant
 import kotlinx.coroutines.delay
 
 /** Opening prepares a link once; revocation never silently replaces it in this dialog. */
-@Composable internal fun DefaultInviteLinkSection(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel) {
+@Composable internal fun DefaultInviteLinkSection(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, initialChannelId: String?) {
     val context = LocalContext.current
     var code by remember(detail.space.id) { mutableStateOf<String?>(null) }
     var preparing by remember(detail.space.id) { mutableStateOf(true) }
@@ -57,7 +57,7 @@ import kotlinx.coroutines.delay
     LaunchedEffect(Unit) { while (true) { delay(30_000); now = Instant.now() } }
     fun prepare() {
         preparing = true; error = null; copied = false
-        viewModel.ensureDefaultInviteLink(null, { code = it.code; preparing = false }) { error = it; preparing = false }
+        viewModel.ensureDefaultInviteLink(initialChannelId, { code = it.code; preparing = false }) { error = it; preparing = false }
     }
     var started by remember(detail.space.id) { mutableStateOf(false) }
     LaunchedEffect(detail.space.id, state.busy) {

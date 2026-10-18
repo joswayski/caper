@@ -39,7 +39,8 @@ const text = () => evaluate('return document.querySelector("dialog[open]").textC
 const url = () => evaluate('return document.querySelector(".invite-link-share input").value;');
 const click = (name) => browser("find", "role", "button", "click", "--name", name, "--exact");
 const open = () => {
-  click("Invite people");
+  browser("click", ".space-menu summary");
+  click("Invite people…");
   wait('!!document.querySelector(".invite-link-more:not(:disabled)")');
 };
 const close = () => click("Close Invite people to Fixture Studio");
@@ -234,7 +235,8 @@ try {
   await control({
     failure: { path: "/api/spaces/space0000001/invite-links/default", method: "POST", status: 503, persistent: true },
   });
-  click("Invite people");
+  browser("click", ".space-menu summary");
+  click("Invite people…");
   wait('!!document.querySelector("dialog[open] [role=alert]")');
   capture("web-invite-error");
   await control({ clearFailures: true });
@@ -287,8 +289,76 @@ try {
     evaluate('return document.querySelector(".invite-link-options label select option:checked").textContent;'),
     "No public channels",
   );
+  close();
+  await control({ reset: true });
+  for (const width of [1280, 390]) {
+    browser("set", "viewport", String(width), "900", "2");
+    browser("cookies", "set", "caper_fixture", "owner");
+    browser("open", new URL("/spaces?space=space0000001&channel=chan00000001", origin).href);
+    wait('!!document.querySelector("#chat-message:not(:disabled)")');
+    if (width === 390) {
+      click("Back to Browse");
+      wait(
+        '!!document.querySelector(".spaces-room.navigation-open") && !document.querySelector(".spaces-room").hasAttribute("data-browse-slide")',
+      );
+    }
+    browser("click", ".direct-action");
+    assert.match(text(), /New direct message/);
+    click("Close New direct message");
+    open();
+    const spaceLink = url();
+    assert.match(text(), /#general · 100 of 100 joins remaining/);
+    capture(`menu-space-invite-${width}`);
+    close();
+    browser("click", 'summary[aria-label="Manage design"]');
+    click("Invite people…");
+    wait('!!document.querySelector(".invite-link-more:not(:disabled)")');
+    const channelLink = url();
+    assert.notEqual(channelLink, spaceLink);
+    assert.match(text(), /#design · 100 of 100 joins remaining/);
+    assert.equal(
+      evaluate('return document.querySelector(".channel-select[aria-current=page]").textContent;'),
+      "general",
+    );
+    capture(`menu-channel-invite-${width}`);
+    close();
+    browser("click", 'summary[aria-label="Manage design"]');
+    click("Invite people…");
+    wait('!!document.querySelector(".invite-link-more:not(:disabled)")');
+    assert.equal(url(), channelLink, "Channel invitations reuse their prepared link");
+    close();
+    open();
+    assert.equal(url(), spaceLink, "Space invitations do not inherit the last clicked channel");
+    close();
+    browser("click", 'summary[aria-label="Manage planning"]');
+    assert.equal(
+      evaluate('return document.querySelector(".channel-menu[open]").textContent.includes("Invite people");'),
+      false,
+    );
+    browser("press", "Escape");
+    browser("cookies", "set", "caper_fixture", "other");
+    browser("open", new URL("/spaces?space=space0000001&channel=chan00000001", origin).href);
+    wait('!!document.querySelector("#chat-message:not(:disabled)")');
+    if (width === 390) {
+      click("Back to Browse");
+      wait(
+        '!!document.querySelector(".spaces-room.navigation-open") && !document.querySelector(".spaces-room").hasAttribute("data-browse-slide")',
+      );
+    }
+    browser("click", ".space-menu summary");
+    assert.equal(
+      evaluate('return document.querySelector(".space-menu").textContent.includes("Invite people");'),
+      false,
+    );
+    browser("press", "Escape");
+    browser("click", 'summary[aria-label="Manage design"]');
+    assert.equal(
+      evaluate('return document.querySelector(".channel-menu[open]").textContent.includes("Invite people");'),
+      false,
+    );
+  }
   console.log(
-    "PASS: copy-first invites without a main destination picker, safe regeneration/deactivation confirmations, Cancel/Enter/Escape preserve shared links, separate custom-link destinations and deactivation, failure recovery, 30-day/100-join defaults, narrow layout/scroll and username invitations.",
+    "PASS: owner-only space/public-channel invite menus, clicked-channel link reuse without navigation, DM footer; copy-first invites without a main destination picker, safe regeneration/deactivation, custom links, failure recovery, 30-day/100-join defaults, narrow layout and username invitations.",
   );
 } finally {
   browser("close");

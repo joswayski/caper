@@ -47,11 +47,14 @@ final class CaperParityUITests: XCTestCase {
 
     func testInvitePeopleOpensInviteOnlyInsteadOfSpaceManagement() {
         let app = launch()
-        let invite = app.buttons["invite-people"]
-        if !invite.isHittable {
+        let spaceMenu = app.descendants(matching: .any)["selected-space-name"]
+        if !spaceMenu.isHittable {
             let navigation = app.buttons["Back to Browse"]
             if navigation.waitForExistence(timeout: 10) { navigation.tap() }
         }
+        XCTAssertTrue(spaceMenu.waitForExistence(timeout: 10))
+        spaceMenu.tap()
+        let invite = app.descendants(matching: .any)["Invite people…"].firstMatch
         XCTAssertTrue(invite.waitForExistence(timeout: 10))
         invite.tap()
         XCTAssertTrue(app.staticTexts["Invite by username"].waitForExistence(timeout: 10))
@@ -1409,6 +1412,40 @@ final class CaperParityUITests: XCTestCase {
         assertStaticText("Channel settings", in: app, timeout: 3)
         XCTAssertEqual(app.textFields["project-updates"].value as? String, "general", "The menu opens its own channel's editor")
         capture("channel-settings-from-menu", app: app)
+    }
+
+    func testInvitePeopleUsesSpaceDefaultAndClickedChannel() throws {
+        let app = launch()
+        assertElement("selected-channel-name", label: "# general", in: app)
+        #if os(iOS)
+        app.buttons["Back to Browse"].tap()
+        #endif
+        try require(app.buttons["new-message"], timeout: 10, "Owners also get New message in the DM footer").tap()
+        _ = try require(app.textFields["dm-username"], timeout: 5, "The footer opens a new DM, not space settings")
+        app.buttons["Close"].firstMatch.tap()
+        app.descendants(matching: .any)["selected-space-name"].tap()
+        try require(app.descendants(matching: .any)["Invite people…"].firstMatch, timeout: 5, "The owner space menu offers invitations").tap()
+        assertStaticText("Invite by username", in: app, timeout: 5)
+        _ = try require(app.buttons["default-invite-link-copy"], timeout: 10, "The primary link is ready to copy")
+        let defaultSummary = try require(app.staticTexts["default-invite-link-summary"], timeout: 5, "The returned link reports its default landing channel")
+        XCTAssertTrue(defaultSummary.label.hasPrefix("#general · 100 of 100 joins remaining · Expires in 30 days"))
+        XCTAssertFalse(app.staticTexts["Opens in"].exists)
+        app.buttons["Close"].firstMatch.tap()
+        #if os(macOS)
+        app.buttons["channel-chan00000002"].hover()
+        #endif
+        try require(app.descendants(matching: .any)["channel-options-chan00000002"], timeout: 10, "Open the unselected design channel's menu").tap()
+        try require(app.descendants(matching: .any)["Invite people…"].firstMatch, timeout: 5, "Public channel offers invitations").tap()
+        assertStaticText("Invite by username", in: app, timeout: 5)
+        _ = try require(app.buttons["default-invite-link-copy"], timeout: 10, "The clicked channel's primary link is ready to copy")
+        let channelSummary = try require(app.staticTexts["default-invite-link-summary"], timeout: 5, "The returned link reports the clicked channel, not the selected channel")
+        XCTAssertTrue(channelSummary.label.hasPrefix("#design · 100 of 100 joins remaining · Expires in 30 days"))
+        XCTAssertFalse(app.staticTexts["Opens in"].exists)
+        app.buttons["Close"].firstMatch.tap()
+        #if os(iOS)
+        app.buttons["Close navigation"].tap()
+        #endif
+        assertElement("selected-channel-name", label: "# general", in: app)
     }
 
     func testLeaveChannelLivesInItsOwnOptionsMenu() {
@@ -3054,11 +3091,10 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2, "Tapping the returned composer must still dock above the keyboard")
         capture("narrow-chat-keyboard-reopened", app: app)
         // A swipe along a full-width Browse row lifts inside that row: it must
-        // navigate without also tapping it (which opened New message / Invite people).
+        // navigate without also tapping it (which opens New message).
         navigation.tap()
-        let invite = app.buttons["invite-people"], newMessage = app.buttons["new-message"]
-        XCTAssertTrue(invite.waitForExistence(timeout: 3) || newMessage.exists)
-        let row = invite.exists ? invite : newMessage
+        let row = app.buttons["new-message"]
+        XCTAssertTrue(row.waitForExistence(timeout: 3))
         row.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).press(forDuration: 0.01,
             thenDragTo: row.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.5)), withVelocity: .fast, thenHoldForDuration: 0)
         XCTAssertTrue(navigation.waitForExistence(timeout: 3), "Swiping along a Browse row returns to chat")

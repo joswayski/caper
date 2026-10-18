@@ -898,6 +898,7 @@ function MemberManager({
 function ManageSpaceDialog({
   detail,
   inviteOnly = false,
+  inviteChannelId,
   people,
   onClose,
   onChanged,
@@ -905,6 +906,7 @@ function ManageSpaceDialog({
 }: {
   detail: SpaceDetail;
   inviteOnly?: boolean;
+  inviteChannelId?: string;
   /** Known accounts (`GET /api/people`) the invite field suggests; undefined until loaded. */
   people?: Person[];
   onClose: () => void;
@@ -1001,10 +1003,11 @@ function ManageSpaceDialog({
         </div>
       )}
       <InviteLinkManager
-        key={detail.space.id}
+        key={`${detail.space.id}-${inviteChannelId ?? "default"}`}
         spaceId={detail.space.id}
         channels={detail.channels}
         prepareDefault={inviteOnly}
+        channelId={inviteChannelId}
       />
       <MemberManager
         inviteOnly={inviteOnly}
@@ -1824,6 +1827,7 @@ export default function Spaces({
   const [dialog, setDialog] = useState<
     "space" | "channel" | "manage-space" | "invite-people" | "leave-space" | "direct"
   >();
+  const [inviteChannelId, setInviteChannelId] = useState<string>();
   // DM `@` suggestions, mention profile cards, and the invite and new-DM
   // username fields; the previous list stays while a refresh is in flight.
   // Loaded once signed in and again whenever a DM or one of those dialogs opens.
@@ -2929,13 +2933,9 @@ export default function Spaces({
             );
           })}
       </ul>
-      <button
-        type="button"
-        className="channel-select direct-action"
-        onClick={() => setDialog(owner ? "invite-people" : "direct")}
-      >
+      <button type="button" className="channel-select direct-action" onClick={() => setDialog("direct")}>
         <Plus aria-hidden="true" />
-        <span>{owner ? "Invite people" : "New message"}</span>
+        <span>New message</span>
       </button>
       {directError && (
         <p className="space-sidebar-error" role="alert">
@@ -3271,6 +3271,19 @@ export default function Spaces({
                   <Search aria-hidden="true" />
                   Browse channels
                 </button>
+                {owner && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeMenu(spaceMenu.current!);
+                      setInviteChannelId(undefined);
+                      setDialog("invite-people");
+                    }}
+                  >
+                    <Plus aria-hidden="true" />
+                    Invite people…
+                  </button>
+                )}
                 <LevelNotificationItems
                   noun="space"
                   loaded={notifications.loaded}
@@ -3446,6 +3459,19 @@ export default function Spaces({
                     <MoreHorizontal aria-hidden="true" />
                   </summary>
                   <div className="space-actions">
+                    {owner && !item.private && (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          closeMenu(event.currentTarget.closest("details")!);
+                          setInviteChannelId(item.id);
+                          setDialog("invite-people");
+                        }}
+                      >
+                        <Plus aria-hidden="true" />
+                        Invite people…
+                      </button>
+                    )}
                     <LevelNotificationItems
                       noun="channel"
                       loaded={notifications.loaded}
@@ -3797,6 +3823,7 @@ export default function Spaces({
           key={`${detail.space.id}-${dialog}`}
           detail={detail}
           inviteOnly={dialog === "invite-people"}
+          inviteChannelId={dialog === "invite-people" ? inviteChannelId : undefined}
           people={people}
           onClose={() => setDialog(undefined)}
           onChanged={replaceDetail}
