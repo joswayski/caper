@@ -199,10 +199,10 @@ internal fun durationLabel(durationMs: Long?): String? {
                 visuals.forEachIndexed { index, attachment -> key(attachment.id) {
                     val cell = cells[index]
                     val shape = RoundedCornerShape(
-                        topStart = if (cell.left && cell.top) 12.dp else 3.dp,
-                        topEnd = if (cell.right && cell.top) 12.dp else 3.dp,
-                        bottomEnd = if (cell.right && cell.bottom) 12.dp else 3.dp,
-                        bottomStart = if (cell.left && cell.bottom) 12.dp else 3.dp,
+                        topStart = if (cell.left && cell.top) 12.dp else 1.dp,
+                        topEnd = if (cell.right && cell.top) 12.dp else 1.dp,
+                        bottomEnd = if (cell.right && cell.bottom) 12.dp else 1.dp,
+                        bottomStart = if (cell.left && cell.bottom) 12.dp else 1.dp,
                     )
                     RenderAttachment(attachment, Modifier.offset(cell.x.dp, cell.y.dp).size(cell.width.dp, cell.height.dp), shape)
                 } }

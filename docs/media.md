@@ -1928,7 +1928,7 @@ Remove remains a separate control and never opens a preview.
 Sent images and videos form a count-aware gallery on web, Apple, Android and
 Rust desktop: two side by side, three with a large left tile, four in a 2×2
 grid, and larger sets in rows of two or three. Galleries cap at 480 logical
-pixels, with 4px gaps, 12px outer corners and 3px interior corners. Thumbnails
+pixels, with 4px gaps, 12px outer corners and 1px interior corners. Thumbnails
 crop to fill; opening the viewer still shows the full media. A single image
 keeps its natural proportions. Processing, failed and removed media retain
 their slots. Audio and document cards follow the gallery, side by side where

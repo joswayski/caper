@@ -260,10 +260,10 @@ struct MessageAttachmentsView: View {
                             let right = abs(cell.maxX - 480) < 0.01
                             let bottom = abs(cell.maxY - height) < 0.01
                             let shape = UnevenRoundedRectangle(
-                                topLeadingRadius: cell.minX == 0 && cell.minY == 0 ? 12 : 3,
-                                bottomLeadingRadius: cell.minX == 0 && bottom ? 12 : 3,
-                                bottomTrailingRadius: right && bottom ? 12 : 3,
-                                topTrailingRadius: right && cell.minY == 0 ? 12 : 3)
+                                topLeadingRadius: cell.minX == 0 && cell.minY == 0 ? 12 : 1,
+                                bottomLeadingRadius: cell.minX == 0 && bottom ? 12 : 1,
+                                bottomTrailingRadius: right && bottom ? 12 : 1,
+                                topTrailingRadius: right && cell.minY == 0 ? 12 : 1)
                             attachmentView(attachment)
                                 .environment(\.sentGalleryCell, true)
                                 .frame(width: geometry.size.width, height: geometry.size.height)

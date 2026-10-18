@@ -17028,28 +17028,28 @@ impl CaperApp {
                                         {
                                             12
                                         } else {
-                                            3
+                                            1
                                         },
                                         ne: if (rect.right() - bounds.right()).abs() < 0.1
                                             && rect.top() == bounds.top()
                                         {
                                             12
                                         } else {
-                                            3
+                                            1
                                         },
                                         sw: if rect.left() == bounds.left()
                                             && (rect.bottom() - bounds.bottom()).abs() < 0.1
                                         {
                                             12
                                         } else {
-                                            3
+                                            1
                                         },
                                         se: if (rect.right() - bounds.right()).abs() < 0.1
                                             && (rect.bottom() - bounds.bottom()).abs() < 0.1
                                         {
                                             12
                                         } else {
-                                            3
+                                            1
                                         },
                                     };
                                     (rect, radius)

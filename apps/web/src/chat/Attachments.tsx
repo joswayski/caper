@@ -88,7 +88,7 @@ function AttachmentGallery({ items }: { items: ReactElement[] }) {
                 style={{
                   gridColumn: `${cell.column} / span ${cell.span}`,
                   gridRow: `${cell.row} / span ${cell.rowSpan}`,
-                  borderRadius: corners.map((outer) => (outer ? "12px" : "3px")).join(" "),
+                  borderRadius: corners.map((outer) => (outer ? "12px" : "1px")).join(" "),
                 }}
               >
                 {item}
