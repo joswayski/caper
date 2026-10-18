@@ -15920,8 +15920,8 @@ impl CaperApp {
                     }
                     self.timeline = timeline;
                     if self.has_newer && history_row(ui, |ui| centered_history_button(ui, "Load newer messages", !self.context_loading)).clicked() { self.load_newer_context(None); }
-                    if self.context_window.is_some() && history_row(ui, |ui| centered_history_button(ui, "Back to latest messages", true)).clicked() { self.reload_channel(); }
-                    if self.has_newer || self.context_window.is_some() {
+                    if self.has_newer && history_row(ui, |ui| centered_history_button(ui, "Back to latest messages", true)).clicked() { self.reload_channel(); }
+                    if self.has_newer {
                         previous = None;
                     }
                     if let Some(pending) = self.pending.clone().filter(|pending| pending.thread_root_id.is_none()) {
@@ -28559,6 +28559,32 @@ mod tests {
             assert_eq!(
                 app.timeline.messages().cloned().collect::<Vec<_>>(),
                 messages
+            );
+        }
+    }
+
+    #[test]
+    fn latest_messages_button_only_shows_when_newer_messages_are_missing() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.has_more = false;
+        for has_newer in [false, true, false] {
+            app.context_window = Some(super::MessageWindow {
+                start: 0,
+                end: has_newer.then_some(u64::MAX),
+            });
+            app.has_newer = has_newer;
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let output = render(&mut app, &context, vec![]);
+            assert_eq!(
+                labelled_center(&output, "Back to latest messages").is_some(),
+                has_newer,
             );
         }
     }
