@@ -2471,6 +2471,9 @@ final class APIClientTests: XCTestCase {
             XCTAssertEqual(model.chat.draft, "Unrelated draft")
         }
         MockURLProtocol.handler = { request in
+            if request.httpMethod == "GET", request.url?.path == "/api/spaces/unread" {
+                return (200, Data(#"{"spaces":[],"feedbackWaiting":0}"#.utf8))
+            }
             if request.url?.path == "/api/blocks" { return (200, Data(#"{"blocks":[]}"#.utf8)) }
             if request.httpMethod == "GET" { return (200, Data(#"{"conversations":[]}"#.utf8)) }
             return (200, Data(#"{"id":"dm0000000002","peer":{"id":"new000000001","username":"jordan","displayName":"Someone else"},"lastSeq":"0","readSeq":"0"}"#.utf8))
