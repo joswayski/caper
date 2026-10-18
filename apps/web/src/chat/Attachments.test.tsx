@@ -88,6 +88,23 @@ test("without a viewer (the sender's pending row) files keep their links and inl
   expect(markup).not.toContain("in viewer");
 });
 
+test("spoilers hide every file type and local processing preview without mounting media or links", () => {
+  const hidden = [...files, file("processing", "secret.png", { status: "processing" })].map((attachment) => ({
+    ...attachment,
+    spoiler: true,
+  }));
+  const markup = renderToStaticMarkup(
+    <MessageAttachments attachments={hidden} localPreviews={{ processing: { url: "blob:secret", video: false } }} />,
+  );
+  expect(markup.match(/aria-label="Reveal spoiler attachment"/g)).toHaveLength(hidden.length);
+  expect(markup).not.toMatch(/<(?:img|video|audio|a)\b/);
+  for (const attachment of hidden) expect(markup).not.toContain(attachment.name);
+  expect(markup).not.toContain("blob:secret");
+  const mixed = renderToStaticMarkup(<MessageAttachments attachments={[hidden[0], files[1]]} />);
+  expect(mixed).toContain("Reveal spoiler attachment");
+  expect(mixed).toContain('aria-label="clip.mp4"');
+});
+
 test("a video with a stored size reserves its shape without fixing the responsive height", () => {
   const sized = file("sized", "sized.mp4", { kind: "video", contentType: "video/mp4", width: 1080, height: 1920 });
   const markup = renderToStaticMarkup(<MessageAttachments attachments={[sized]} />);

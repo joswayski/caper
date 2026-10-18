@@ -23,13 +23,14 @@ interface ProfileFile {
   progress?: number;
   attachment?: ChatAttachment;
   error?: string;
+  spoiler?: boolean;
 }
 interface ProfileDraft {
   text: string;
   files: ProfileFile[];
   channelId?: string;
   /** Once POST starts, retries must send this exact command until settled. */
-  command?: { clientMessageId: string; text: string; attachmentIds: string[] };
+  command?: { clientMessageId: string; text: string; attachmentIds: string[]; spoilerAttachmentIds: string[] };
 }
 // Like conversation drafts, these live only in this signed-in page. Closing a
 // card never discards files or an uncertain send; signing out reloads the page.
@@ -208,6 +209,7 @@ export default function ProfileComposer({
         clientMessageId: crypto.randomUUID(),
         text: draft.text,
         attachmentIds: draft.files.map((item) => item.attachment!.id),
+        spoilerAttachmentIds: draft.files.filter((item) => item.spoiler).map((item) => item.attachment!.id),
       };
       draft.command = command;
       save({ ...draft });
@@ -275,6 +277,7 @@ export default function ProfileComposer({
     staged: !item.attachment && item.progress === undefined && !sending,
     attachment: item.attachment,
     error: item.error,
+    spoiler: item.spoiler,
   }));
   const canSend = !sending && (!!draft.text.trim() || !!draft.files.length);
 
@@ -306,7 +309,19 @@ export default function ProfileComposer({
           </p>
         )
       )}
-      <DraftAttachments drafts={files} onRemove={locked ? undefined : removeFile} />
+      <DraftAttachments
+        drafts={files}
+        onRemove={locked ? undefined : removeFile}
+        onToggleSpoiler={
+          locked
+            ? undefined
+            : (key) =>
+                save({
+                  ...draft,
+                  files: draft.files.map((item) => (item.key === key ? { ...item, spoiler: !item.spoiler } : item)),
+                })
+        }
+      />
       <form
         data-attach
         onSubmit={(event) => {

@@ -199,6 +199,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val previewUrl: String? = null,
     /** The file was deleted: show a placeholder. */
     val unavailable: Boolean = false,
+    val spoiler: Boolean = false,
 ) {
     /** How to show the file. Unknown future states fall back on whether a URL was delivered. */
     val state: AttachmentState get() = when (status) {
@@ -775,6 +776,7 @@ data class DraftAttachmentUi(
     val error: String? = null,
     val attachment: ChatAttachment? = null,
     val uploadedAt: Long? = null,
+    val spoiler: Boolean = false,
 )
 
 /** The [AppUiState.pictureSaves] key for your own profile picture (space icons use the space ID). */

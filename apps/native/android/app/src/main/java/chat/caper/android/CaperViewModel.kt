@@ -1970,11 +1970,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 return false
             }
             // Pending messages show the local compressed copies until the server's message arrives.
-            drafts.mapNotNull { draft -> draft.attachment?.copy(status = "ready", url = draft.localUrl, previewUrl = draft.thumbnail) }
+            drafts.mapNotNull { draft -> draft.attachment?.copy(status = "ready", url = draft.localUrl, previewUrl = draft.thumbnail, spoiler = draft.spoiler) }
         }
         if (retry == null && text.isBlank() && files.isEmpty()) return false
         val request = generation
-        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, mutable.value.replyTargets[threadRootId ?: "channel"], confirmed)
+        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, mutable.value.replyTargets[threadRootId ?: "channel"], files.filter { it.spoiler }.map { it.id }, confirmed)
         if (retry == null) {
             pendingDrafts = drafts
             pendingNeedsUpload = drafts.any { uploadStale(it) }
@@ -2007,14 +2007,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                         mutable.value = mutable.value.copy(pendingMessage = mutable.value.pendingMessage?.copy(
                             clientMessageId = operation.id.toString(), attachments = refreshed.mapIndexed { index, attachment ->
                                 val draft = pendingDrafts[index]
-                                attachment.copy(url = draft.localUrl, previewUrl = draft.thumbnail, status = "ready")
+                                attachment.copy(url = draft.localUrl, previewUrl = draft.thumbnail, status = "ready", spoiler = draft.spoiler)
                             }, error = null, uploadFailed = false,
                         ))
                     }
                     try {
                         sent = retryUnknownSend {
                             api.sendMessage(accountToken, capability, channel.id, author, operation.id, operation.text,
-                                operation.attachmentIds, operation.threadRootId, operation.broadcast, operation.replyTo?.id)
+                                operation.attachmentIds, operation.threadRootId, operation.broadcast, operation.replyTo?.id, operation.spoilerAttachmentIds)
                         }
                         break
                     } catch (error: ApiException) {
@@ -2237,6 +2237,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         updateDraft(key) { it.copy(attachment = attachment, progress = 1f, uploadedAt = System.currentTimeMillis(), error = null) }
         return attachment
+    }
+
+    fun toggleDraftSpoiler(key: String) {
+        updateDraft(key) { it.copy(spoiler = !it.spoiler) }
+    }
+
+    internal fun toggleProfileAttachmentSpoiler(person: String, key: String) {
+        profileDrafts.updateFile(person, key) { it.copy(spoiler = !it.spoiler) }
     }
 
     fun removeDraft(key: String) {

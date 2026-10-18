@@ -10,6 +10,7 @@ pub struct File {
     /// Pasted images belong to the draft, including while a worker reads them.
     pub scratch: Option<Arc<uploads::Scratch>>,
     pub attachment: Option<model::Attachment>,
+    pub spoiler: bool,
     /// Bytes on disk when staged, for the composer chip.
     pub size: u64,
     /// An image's decoded preview, filled off the UI thread by [File::thumbnail].
@@ -29,6 +30,7 @@ impl File {
             path,
             scratch,
             attachment: None,
+            spoiler: false,
             preview: Arc::default(),
             texture: None,
             preview_requested: false,
@@ -267,6 +269,12 @@ impl Send {
             .iter()
             .filter_map(|file| file.attachment.as_ref().map(|a| a.id.clone()))
             .collect::<Vec<_>>();
+        let spoiler_ids = self
+            .files
+            .iter()
+            .filter(|file| file.spoiler)
+            .filter_map(|file| file.attachment.as_ref().map(|a| a.id.clone()))
+            .collect::<Vec<_>>();
         let message = api
             .send(
                 Some(token),
@@ -275,6 +283,7 @@ impl Send {
                 &self.client_id,
                 &self.text,
                 &ids,
+                &spoiler_ids,
                 (None, false),
                 None,
             )
@@ -509,6 +518,7 @@ mod tests {
         let scratch = uploads::Scratch::new("txt");
         std::fs::write(scratch.path(), b"receipt").unwrap();
         let mut operation = operation(vec![File::picked(scratch.path().to_owned())]);
+        operation.files[0].spoiler = true;
         let client_id = operation.client_id.clone();
         let (api, requests) = server(move |base| {
             vec![
@@ -550,7 +560,7 @@ mod tests {
         let sent: Value = serde_json::from_slice(&seen[9].body).unwrap();
         assert_eq!(
             sent,
-            json!({"clientMessageId":operation.client_id,"text":"Receipt 🎉","attachmentIds":["asset1"]})
+            json!({"clientMessageId":operation.client_id,"text":"Receipt 🎉","attachmentIds":["asset1"],"spoilerAttachmentIds":["asset1"]})
         );
         assert_eq!(
             seen.iter()

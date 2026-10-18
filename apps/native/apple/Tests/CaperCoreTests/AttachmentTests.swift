@@ -76,6 +76,25 @@ private let futureExp = 4_102_444_800 // 2100-01-01
 private let channelID = "Chan12345678"
 
 final class AttachmentTests: XCTestCase {
+    func testAttachmentSpoilerDefaultsAndRoundTrips() throws {
+        let original = ChatAttachment(id: "Asset0000009", kind: .file, contentType: "text/plain", name: "notes.txt", size: 5)
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        let legacy = try encoder.encode(original)
+        XCTAssertFalse(try decoder.decode(ChatAttachment.self, from: legacy).spoiler)
+        var hidden = original
+        hidden.spoiler = true
+        XCTAssertTrue(try decoder.decode(ChatAttachment.self, from: encoder.encode(hidden)).spoiler)
+    }
+
+    func testGalleryExcludesSpoilersUntilEachIsRevealed() {
+        let visible = ChatAttachment(id: "visible", kind: .image, contentType: "image/png", name: "image.png", size: 5, url: "https://caper.invalid/image")
+        let hidden = ChatAttachment(id: "hidden", kind: .image, contentType: "image/png", name: "secret.png", size: 5, url: "https://caper.invalid/secret", spoiler: true)
+        let other = ChatAttachment(id: "other", kind: .video, contentType: "video/mp4", name: "secret.mp4", size: 5, url: "https://caper.invalid/other", spoiler: true)
+        XCTAssertEqual(MediaViewerPolicy.items([visible, hidden, other]).map(\.id), ["visible"])
+        XCTAssertEqual(MediaViewerPolicy.items([visible, hidden, other], revealedSpoilerIDs: ["hidden"]).map(\.id), ["visible", "hidden"])
+    }
+
     override func tearDown() {
         AttachmentURLProtocol.reset()
         super.tearDown()
@@ -1634,7 +1653,9 @@ final class AttachmentTests: XCTestCase {
         chat.addAttachments([file])
         XCTAssertEqual(chat.attachmentDrafts.count, 1)
         XCTAssertEqual(chat.attachmentDrafts.first?.statusLabel, "Compressing…")
+        chat.toggleAttachmentSpoiler(id: try XCTUnwrap(chat.attachmentDrafts.first?.id))
         await waitUntil("upload") { chat.attachmentDrafts.first?.attachment != nil }
+        XCTAssertEqual(chat.attachmentDrafts.first?.spoiler, true, "selection survives preparation and upload")
         XCTAssertNil(chat.attachmentDrafts.first?.error)
         XCTAssertEqual(chat.attachmentDrafts.first?.storedSize, 5)
         XCTAssertEqual(chat.attachmentDrafts.first?.attachment?.status, .ready)
@@ -1649,6 +1670,7 @@ final class AttachmentTests: XCTestCase {
         let send = try XCTUnwrap(AttachmentURLProtocol.requests.last { $0.method == "POST" && $0.url.path == "/api/chat/channels/\(channelID)/messages" })
         let body = try XCTUnwrap(json(send.body))
         XCTAssertEqual(body["attachmentIds"] as? [String], ["Asset0000009"])
+        XCTAssertEqual(body["spoilerAttachmentIds"] as? [String], ["Asset0000009"])
         XCTAssertEqual(body["text"] as? String, "")
         XCTAssertEqual(chat.messages.first?.content.attachments?.first?.id, "Asset0000009")
         await chat.stop()
@@ -1973,6 +1995,7 @@ final class AttachmentTests: XCTestCase {
 
         let next = try AttachmentStaging.stage(data: Data("hello".utf8), filename: "notes.txt")
         chat.addAttachments([next])
+        chat.toggleAttachmentSpoiler(id: try XCTUnwrap(chat.attachmentDrafts.first?.id))
         await waitUntil("ready again") { chat.attachmentDrafts.first?.attachment != nil }
         chat.draft = "keep this message"
         await chat.send()
@@ -1993,6 +2016,8 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(sends.count, 2)
         XCTAssertNotEqual(sends[0]["clientMessageId"] as? String, sends[1]["clientMessageId"] as? String)
         XCTAssertEqual(sends[1]["attachmentIds"] as? [String], ["Asset0000010"])
+        XCTAssertEqual(sends[0]["spoilerAttachmentIds"] as? [String], sends[0]["attachmentIds"] as? [String])
+        XCTAssertEqual(sends[1]["spoilerAttachmentIds"] as? [String], ["Asset0000010"], "renewal uses the new asset id without losing the spoiler selection")
         XCTAssertTrue(AttachmentURLProtocol.requests.filter { $0.method == "PUT" }.allSatisfy { $0.body == Data("hello".utf8) })
         await chat.stop()
     }
@@ -2010,6 +2035,7 @@ final class AttachmentTests: XCTestCase {
         _ = try await client().send(channelID: channelID, sessionToken: "chat", clientMessageID: "c", text: "hi")
         let body = try XCTUnwrap(json(AttachmentURLProtocol.requests.first?.body))
         XCTAssertNil(body["attachmentIds"], "the key is included only when non-empty")
+        XCTAssertNil(body["spoilerAttachmentIds"])
     }
 
     @MainActor

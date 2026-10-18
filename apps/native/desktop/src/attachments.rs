@@ -718,6 +718,7 @@ mod tests {
 
     fn attachment(url: Option<&str>) -> Attachment {
         Attachment {
+            spoiler: false,
             id: "asset1".into(),
             kind: AttachmentKind::Image,
             content_type: "image/png".into(),

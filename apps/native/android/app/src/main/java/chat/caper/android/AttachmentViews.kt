@@ -30,6 +30,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -127,6 +128,7 @@ internal fun durationLabel(durationMs: Long?): String? {
     if (attachments.isEmpty()) return
     var viewer by remember { mutableStateOf<ViewerPages?>(null) }
     var playing by remember { mutableStateOf<String?>(null) }
+    var revealed by remember(attachments.map { it.id to it.spoiler }) { mutableStateOf(emptySet<String>()) }
     val uriHandler = LocalUriHandler.current
     val still = reducedMotion()
     // The system browser downloads or shows the file and handles `Content-Encoding: gzip` itself.
@@ -134,7 +136,7 @@ internal fun durationLabel(durationMs: Long?): String? {
     val host = LocalMediaViewerHost.current
     val view: (ChatAttachment) -> (() -> Unit)? = { attachment ->
         if (pending) null else ({
-            val pages = viewerPages(attachments, attachment.id)
+            val pages = viewerPages(attachments, attachment.id, revealed)
             if (host != null) host.open = pages?.let { OpenViewer(it, caption) } else viewer = pages
         })
     }
@@ -142,6 +144,14 @@ internal fun durationLabel(durationMs: Long?): String? {
         attachments.forEach { attachment ->
             val url = attachment.url
             when {
+                attachment.spoiler && attachment.id !in revealed -> Surface(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(
+                        role = Role.Button, onClickLabel = "Reveal spoiler attachment",
+                    ) { revealed = revealed + attachment.id },
+                    color = Surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border),
+                ) {
+                    Text("SPOILER · Tap to reveal", Modifier.padding(16.dp), color = TextMuted, fontSize = 12.sp)
+                }
                 attachment.unavailable -> FileCard(attachment, null)
                 attachment.state == AttachmentState.FAILED -> FileCard(attachment, null, detail = "Couldn’t process this file", error = true)
                 attachment.state == AttachmentState.PROCESSING -> ProcessingAttachment(
@@ -343,6 +353,7 @@ internal fun durationLabel(durationMs: Long?): String? {
 @Composable internal fun DraftAttachmentStrip(
     drafts: List<DraftAttachmentUi>, remove: (String) -> Unit, retry: ((String) -> Unit)? = null,
     enabled: Boolean = true, uploadOnSend: Boolean = false, sending: Boolean = false,
+    toggleSpoiler: ((String) -> Unit)? = null,
 ) {
     if (drafts.isEmpty()) return
     val context = LocalContext.current
@@ -391,7 +402,8 @@ internal fun durationLabel(durationMs: Long?): String? {
                                 url?.let(open)
                             }.semantics { contentDescription = listOfNotNull(draft.name, draft.error ?: status).joinToString(", ") }, contentAlignment = Alignment.Center) {
                                 val thumbnail = draft.thumbnail
-                                if (thumbnail != null) AsyncImage(
+                                if (draft.spoiler) Text("SPOILER", color = TextMuted, fontSize = 11.sp)
+                                else if (thumbnail != null) AsyncImage(
                                     model = remember(thumbnail) { AttachmentImages.request(context, thumbnail, "draft:${draft.key}") },
                                     contentDescription = null, imageLoader = AttachmentImages.loader(context), modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
                                 ) else Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -415,6 +427,15 @@ internal fun durationLabel(durationMs: Long?): String? {
                                         progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
                                         color = Terracotta, trackColor = Border,
                                     )
+                                }
+                            }
+                            toggleSpoiler?.let { toggle ->
+                                TextButton({ toggle(draft.key) }, Modifier.align(Alignment.TopStart).width(tileSize - 40.dp).background(Blackout.copy(alpha = 0.9f))
+                                    .semantics {
+                                        contentDescription = "${if (draft.spoiler) "Remove spoiler from" else "Mark as spoiler:"} ${draft.name}"
+                                        stateDescription = if (draft.spoiler) "Spoiler enabled" else "Spoiler disabled"
+                                    }, enabled = enabled, contentPadding = PaddingValues(0.dp)) {
+                                    Text(if (draft.spoiler) "Spoiler ✓" else "Spoiler", fontSize = 10.sp)
                                 }
                             }
                             IconButton({ remove(draft.key) }, Modifier.align(Alignment.TopEnd).size(40.dp).background(Blackout.copy(alpha = 0.9f), CircleShape).semantics { contentDescription = "Remove ${draft.name}" }, enabled = enabled) {

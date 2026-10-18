@@ -2508,7 +2508,8 @@ a.chat-draft-preview {
   font-weight: 700;
   cursor: pointer;
 }
-.chat-draft-remove {
+.chat-draft-remove,
+.chat-draft-spoiler {
   position: absolute;
   top: 0;
   right: 0;
@@ -2522,7 +2523,12 @@ a.chat-draft-preview {
   background: transparent;
   cursor: pointer;
 }
-.chat-draft-remove > svg {
+.chat-draft-spoiler {
+  right: auto;
+  left: 0;
+}
+.chat-draft-remove > svg,
+.chat-draft-spoiler > svg {
   box-sizing: content-box;
   padding: 4px;
   border-radius: 50%;
@@ -2530,12 +2536,15 @@ a.chat-draft-preview {
 }
 .chat-draft-preview:focus-visible,
 .chat-draft-remove:focus-visible,
+.chat-draft-spoiler:focus-visible,
+.chat-spoiler:focus-visible,
 .chat-draft-retry:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: -2px;
 }
 @media (hover: hover) {
-  .chat-draft-remove:hover > svg {
+  .chat-draft-remove:hover > svg,
+  .chat-draft-spoiler:hover > svg {
     background: var(--surface-hover);
   }
   .chat-draft-retry:hover {
@@ -2543,7 +2552,8 @@ a.chat-draft-preview {
   }
 }
 @media (max-width: 760px), (pointer: coarse) {
-  .chat-draft-remove {
+  .chat-draft-remove,
+  .chat-draft-spoiler {
     width: 44px;
     height: 44px;
   }
@@ -2572,6 +2582,35 @@ a.chat-draft-preview {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.chat-spoiler {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: var(--text);
+  background: radial-gradient(ellipse at 25% 20%, var(--border), transparent 75%), var(--surface-raised);
+  cursor: pointer;
+}
+.chat-spoiler > span,
+.chat-draft-spoiler-label {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--blackout);
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.chat-drafts li[data-spoiler] .chat-draft-preview > * {
+  filter: blur(16px);
+}
+.chat-draft-spoiler-label {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
+  padding: 4px 8px;
+  font-size: 0.625rem;
+  pointer-events: none;
 }
 .chat-gif {
   display: block;

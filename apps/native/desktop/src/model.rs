@@ -657,6 +657,8 @@ impl AttachmentKind {
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
     pub id: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub spoiler: bool,
     pub kind: AttachmentKind,
     pub content_type: String,
     pub name: String,
@@ -737,6 +739,7 @@ impl Attachment {
         };
         Some(Self {
             id,
+            spoiler: object.get("spoiler") == Some(&serde_json::Value::Bool(true)),
             kind: AttachmentKind::parse(object.get("kind")?.as_str()?)?,
             content_type: text("contentType")?,
             name: text("name")?,
@@ -3910,6 +3913,18 @@ mod tests {
         let legacy = parse(legacy);
         assert_eq!(legacy.status, AttachmentStatus::Ready);
         assert!(!legacy.animated);
+        assert!(!legacy.spoiler);
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("spoiler")
+                .is_none()
+        );
+        let mut spoiler = file("a", "ready");
+        spoiler["spoiler"] = serde_json::json!(true);
+        let spoiler = parse(spoiler);
+        assert!(spoiler.spoiler);
+        assert_eq!(serde_json::to_value(spoiler).unwrap()["spoiler"], true);
         let mut gif = file("a", "ready");
         gif["animated"] = serde_json::json!(true);
         assert!(parse(gif).animated);

@@ -16,6 +16,7 @@ internal data class PendingSend(
     val threadRootId: String? = null,
     val broadcast: Boolean = false,
     val replyTo: MessageReply? = null,
+    val spoilerAttachmentIds: List<String> = emptyList(),
 )
 
 /** Retains an idempotency key only while the server outcome is unknown. */
@@ -24,10 +25,11 @@ internal class PendingSendTracker {
 
     fun begin(
         channel: String, author: ChatAuthor, text: String, attachmentIds: List<String> = emptyList(),
-        threadRootId: String? = null, broadcast: Boolean = false, replyTo: MessageReply? = null, confirmed: () -> Unit,
+        threadRootId: String? = null, broadcast: Boolean = false, replyTo: MessageReply? = null,
+        spoilerAttachmentIds: List<String> = emptyList(), confirmed: () -> Unit,
     ): PendingSend =
         retrying(channel, author)
-            ?: PendingSend(channel, author, text, UUID.randomUUID(), confirmed, attachmentIds, threadRootId, broadcast, replyTo).also { pending = it }
+            ?: PendingSend(channel, author, text, UUID.randomUUID(), confirmed, attachmentIds, threadRootId, broadcast, replyTo, spoilerAttachmentIds).also { pending = it }
 
     /** The unknown-outcome send a new attempt must repeat, if any. */
     fun retrying(channel: String, author: ChatAuthor): PendingSend? =
@@ -46,7 +48,8 @@ internal class PendingSendTracker {
 
     /** Only before HTTP, or after a definitive attachment refusal, never after a timeout. */
     fun replaceAttachments(id: UUID, attachmentIds: List<String>): PendingSend? =
-        pending?.takeIf { it.id == id }?.copy(id = UUID.randomUUID(), attachmentIds = attachmentIds)
+        pending?.takeIf { it.id == id }?.let { old -> old.copy(id = UUID.randomUUID(), attachmentIds = attachmentIds,
+            spoilerAttachmentIds = attachmentIds.filterIndexed { index, _ -> old.attachmentIds.getOrNull(index) in old.spoilerAttachmentIds }) }
             ?.also { pending = it }
 
     fun clear() { pending = null }

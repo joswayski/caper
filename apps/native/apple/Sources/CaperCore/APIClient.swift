@@ -35,6 +35,7 @@ private struct SendInput: Encodable {
     let text: String
     /// Omitted (nil) unless files are attached.
     let attachmentIds: [String]?
+    let spoilerAttachmentIds: [String]?
     let threadRootId: String?
     let broadcast: Bool?
     let replyToId: String?
@@ -464,8 +465,10 @@ public actor APIClient {
     }
 
     public func send(channelID: String, sessionToken: String, clientMessageID: String, text: String, attachmentIDs: [String] = [],
-                     threadRootId: String? = nil, broadcast: Bool = false, replyToId: String? = nil) async throws -> ChatMessage {
+                     spoilerAttachmentIDs: [String] = [], threadRootId: String? = nil, broadcast: Bool = false, replyToId: String? = nil) async throws -> ChatMessage {
+        let spoilers = attachmentIDs.filter { spoilerAttachmentIDs.contains($0) }
         let body = SendInput(clientMessageId: clientMessageID, text: text, attachmentIds: attachmentIDs.isEmpty ? nil : attachmentIDs,
+                             spoilerAttachmentIds: spoilers.isEmpty ? nil : spoilers,
                              threadRootId: threadRootId, broadcast: threadRootId == nil ? nil : broadcast, replyToId: replyToId)
         return try await request("api/chat/channels/\(try pathID(channelID))/messages", method: "POST", body: body, extraHeaders: ["x-caper-chat-token": sessionToken])
     }

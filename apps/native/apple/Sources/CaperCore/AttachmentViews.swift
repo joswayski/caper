@@ -228,11 +228,23 @@ struct MessageAttachmentsView: View {
     let attachments: [ChatAttachment]
     let chat: ChatModel?
     @Environment(\.mediaViewer) private var mediaViewer
+    @State private var revealed: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(attachments) { attachment in
-                if attachment.unavailable {
+                if attachment.spoiler && !revealed.contains(attachment.id) {
+                    Button { revealed.insert(attachment.id) } label: {
+                        Text("SPOILER")
+                            .font(CaperTheme.font(13, weight: .bold))
+                            .foregroundStyle(CaperTheme.muted)
+                            .frame(maxWidth: .infinity, minHeight: 80)
+                            .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Reveal spoiler attachment")
+                    .accessibilityHint("Shows the hidden file")
+                } else if attachment.unavailable {
                     AttachmentFileCard(attachment: attachment, action: nil)
                 } else if attachment.status == .failed {
                     AttachmentFailedCard(attachment: attachment)
@@ -262,7 +274,7 @@ struct MessageAttachmentsView: View {
     /// file's own behavior (no viewer here, or not a viewable file).
     private func viewer(_ attachment: ChatAttachment) -> (() -> Void)? {
         guard let mediaViewer else { return nil }
-        let items = MediaViewerPolicy.items(attachments)
+        let items = MediaViewerPolicy.items(attachments, revealedSpoilerIDs: revealed)
         guard let start = items.firstIndex(where: { $0.id == attachment.id }) else { return nil }
         return { mediaViewer(MediaViewerRequest(items: items, start: start, chat: chat)) }
     }
@@ -1565,6 +1577,18 @@ struct AttachmentDraftsView: View {
                     AttachmentDraftChip(draft: draft, preview: { previewID = draft.id }, retry: { chat.retryAttachmentDraft(id: draft.id) }) {
                         chat.removeAttachmentDraft(id: draft.id)
                     }
+                    .overlay(alignment: .topLeading) {
+                        Button { chat.toggleAttachmentSpoiler(id: draft.id) } label: {
+                            Image(systemName: draft.spoiler ? "eye.slash.fill" : "eye")
+                                .frame(minWidth: 44, minHeight: 44)
+                                .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(CaperTheme.text)
+                        .accessibilityLabel(draft.spoiler ? "Remove spoiler from \(draft.name)" : "Mark \(draft.name) as spoiler")
+                        .accessibilityValue(draft.spoiler ? "Spoiler" : "Not a spoiler")
+                        .help(draft.spoiler ? "Remove spoiler" : "Mark as spoiler")
+                    }
                     .modifier(Entrance.chip)
                 }
             }
@@ -1588,6 +1612,7 @@ private struct AttachmentDraftChip: View {
                        status: draft.statusLabel, failed: draft.error != nil,
                        busyLabel: draft.attachment == nil && draft.error == nil ? (draft.preparing ? "Preparing…" : "Uploading…") : nil,
                        progress: draft.attachment == nil && draft.error == nil ? draft.progress : nil,
+                       spoiler: draft.spoiler,
                        retry: draft.error == nil ? nil : retry, preview: preview, remove: remove)
     }
 }
@@ -1636,6 +1661,7 @@ struct StagedFileChip: View {
     var busyLabel: String?
     var progress: Double?
     var removable = true
+    var spoiler = false
     /// Offered for a failed upload.
     var retry: (() -> Void)?
     let preview: () -> Void
@@ -1648,7 +1674,9 @@ struct StagedFileChip: View {
             Button(action: preview) {
                 GeometryReader { geometry in
                     Group {
-                        if let thumbnail {
+                        if spoiler {
+                            Text("SPOILER").font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                        } else if let thumbnail {
                             Image(decorative: thumbnail, scale: 1).resizable().scaledToFill()
                         } else {
                             VStack(spacing: 6) {
