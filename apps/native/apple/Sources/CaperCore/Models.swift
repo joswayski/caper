@@ -121,6 +121,10 @@ public struct UnreadSpace: Codable, Equatable, Sendable {
     public var channels: [UnreadChannel]
 }
 
+public struct SpaceVoiceActivityResponse: Codable, Sendable {
+    public let spaceIds: [String]
+}
+
 public struct UnreadSpacesResponse: Codable, Sendable {
     public let spaces: [UnreadSpace]
     public let feedbackWaiting: Int

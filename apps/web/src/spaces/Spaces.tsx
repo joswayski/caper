@@ -26,6 +26,7 @@ import {
   Plus,
   Search,
   Settings,
+  Volume2,
   X,
 } from "lucide-react";
 import {
@@ -108,6 +109,7 @@ import {
   listPeople,
   readDirectConversation,
   listUnreadSpaces,
+  listSpaceVoiceActivity,
   readChannel,
   directStatus,
   directUnread,
@@ -2519,6 +2521,36 @@ export default function Spaces({
     };
   }, [selected, loading, invitation?.id]);
 
+  const [voiceActivity, setVoiceActivity] = useState<string[]>([]);
+  useEffect(() => {
+    setVoiceActivity([]);
+    if (!account) return;
+    let current = true;
+    let refreshing = false;
+    const refresh = async () => {
+      if (document.hidden || refreshing) return;
+      refreshing = true;
+      try {
+        const result = await listSpaceVoiceActivity();
+        if (current) setVoiceActivity(unlessSame(result.spaceIds));
+      } catch {
+        if (current) setVoiceActivity([]);
+      } finally {
+        refreshing = false;
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 15_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      current = false;
+      clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [account?.id]);
+
   // Membership can change in another account/tab while this page is open.
   // Reconcile the rail on focus and every 15s; transport authorization still
   // enforces access independently of this UI refresh.
@@ -3138,18 +3170,28 @@ export default function Spaces({
     </>
   );
 
-  const rail = (
+  const rail = (connectedSpaceId: string | undefined) => (
     <nav className="space-rail" aria-label="Spaces">
       {spaces.map((space) => {
         const muted = isMuted(overrideFor(notifications, { spaceId: space.id })?.mutedUntil);
         const unread = unreadSpaces.some((item) => item.id === space.id);
-        const label = [space.name, unread && "unread activity", muted && "muted"].filter(Boolean).join(", ");
+        const connected = connectedSpaceId === space.id;
+        const voiceActive = connected || voiceActivity.includes(space.id);
+        const label = [
+          space.name,
+          unread && "unread activity",
+          muted && "muted",
+          voiceActive && (connected ? "connected to voice" : "voice active"),
+        ]
+          .filter(Boolean)
+          .join(", ");
         return (
           <div
             className="space-rail-item"
             key={space.id}
             data-active={space.id === detail.space.id}
             data-muted={muted ? "" : undefined}
+            data-voice={voiceActive ? "" : undefined}
           >
             <button
               type="button"
@@ -3164,6 +3206,9 @@ export default function Spaces({
               <SpaceIcon space={space} />
               {unread && <i className="space-unread" aria-hidden="true" />}
               {muted && <BellOff className="space-rail-muted" aria-hidden="true" />}
+              {voiceActive && (
+                <Volume2 className="space-rail-voice" data-connected={connected ? "" : undefined} aria-hidden="true" />
+              )}
             </button>
           </div>
         );

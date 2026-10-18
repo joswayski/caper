@@ -1011,6 +1011,9 @@ struct CaperApp {
     spaces: Vec<model::Space>,
     directs: Vec<model::DirectConversation>,
     unread_spaces: Vec<model::UnreadSpace>,
+    voice_activity_spaces: BTreeSet<String>,
+    voice_activity_refreshing: bool,
+    voice_activity_refreshed: Instant,
     feedback_waiting: u64,
     unread_revision: u64,
     unread_visit: Option<String>,
@@ -1364,6 +1367,9 @@ impl CaperApp {
             spaces: Vec::new(),
             directs: Vec::new(),
             unread_spaces: Vec::new(),
+            voice_activity_spaces: BTreeSet::new(),
+            voice_activity_refreshing: false,
+            voice_activity_refreshed: now - Duration::from_secs(15),
             feedback_waiting: 0,
             unread_revision: 0,
             unread_visit: None,
@@ -2270,6 +2276,7 @@ impl CaperApp {
                 } else if name == "parity-browse" {
                     app.navigation_open = true;
                 } else if matches!(name, "parity-voice-rosters" | "parity-voice-rosters-narrow") {
+                    app.voice_activity_spaces.insert("space0000001".into());
                     app.channel_rosters.insert(
                         "chan00000002".into(),
                         vec![
@@ -3511,6 +3518,10 @@ impl CaperApp {
                         }
                     }
                 }
+                Event::VoiceActivityLoaded { epoch, result } if epoch == self.account_epoch => {
+                    self.voice_activity_refreshing = false;
+                    self.voice_activity_spaces = result.unwrap_or_default().into_iter().collect();
+                }
                 Event::UnreadLoaded {
                     epoch,
                     revision,
@@ -4375,6 +4386,9 @@ impl CaperApp {
         self.composer_emoji = None;
         self.profile_navigation = None;
         self.unread_spaces.clear();
+        self.voice_activity_spaces.clear();
+        self.voice_activity_refreshing = false;
+        self.voice_activity_refreshed = Instant::now() - Duration::from_secs(15);
         self.unread_visit = None;
         self.unread_visit_pending = false;
         self.unread_boundary = None;
@@ -8363,6 +8377,22 @@ impl CaperApp {
 
     fn periodic(&mut self, context: &egui::Context) {
         let now = Instant::now();
+        if let Some(token) = self.token.clone() {
+            let waited = now.duration_since(self.voice_activity_refreshed);
+            if !self.voice_activity_refreshing && waited >= Duration::from_secs(15) {
+                self.voice_activity_refreshing = true;
+                self.voice_activity_refreshed = now;
+                self.worker.send(Command::LoadVoiceActivity {
+                    epoch: self.account_epoch,
+                    token,
+                });
+            }
+            context.request_repaint_after(
+                Duration::from_secs(15)
+                    .saturating_sub(now.duration_since(self.voice_activity_refreshed))
+                    .max(Duration::from_secs(1)),
+            );
+        }
         if let Some(target) = self.navigation_prefetch.clone() {
             if !self.navigation_target_matches(&target) {
                 self.navigation_prefetch = None;
@@ -10265,43 +10295,64 @@ impl CaperApp {
                             if let Some(texture) = icon {
                                 paint_rail_icon(ui, &response, texture, muted.is_some());
                             }
-                            // A muted space gets a bell-slash badge and says so on hover.
-                            let response = match &muted {
-                                Some(label) => {
-                                    let badge = egui::Rect::from_center_size(
-                                        response.rect.right_bottom() - egui::vec2(3.0, 3.0),
-                                        egui::vec2(18.0, 18.0),
+                            let connected = self.voice.active_space.as_deref() == Some(&id)
+                                && matches!(self.voice.state.phase, Phase::Connected(_));
+                            let voice_active =
+                                connected || self.voice_activity_spaces.contains(&id);
+                            let mut description = name.clone();
+                            if let Some(label) = &muted {
+                                description.push_str(&format!("\n{label}"));
+                                let badge = egui::Rect::from_center_size(
+                                    response.rect.right_bottom() - egui::vec2(3.0, 3.0),
+                                    egui::vec2(18.0, 18.0),
+                                );
+                                ui.painter().circle_filled(badge.center(), 9.0, BLACKOUT);
+                                paint_icon(
+                                    ui.painter(),
+                                    badge.shrink(3.0),
+                                    NavIcon::BellOff,
+                                    MUTED,
+                                );
+                            }
+                            if voice_active {
+                                let badge = egui::Rect::from_center_size(
+                                    response.rect.right_top() + egui::vec2(-3.0, 3.0),
+                                    egui::vec2(18.0, 18.0),
+                                );
+                                ui.painter().circle_filled(badge.center(), 9.0, BLACKOUT);
+                                if connected {
+                                    ui.painter().circle_filled(
+                                        badge.center(),
+                                        7.0,
+                                        VOICE_SESSION_GREEN,
                                     );
-                                    ui.painter().circle_filled(badge.center(), 9.0, BLACKOUT);
-                                    paint_icon(
-                                        ui.painter(),
-                                        badge.shrink(3.0),
-                                        NavIcon::BellOff,
-                                        MUTED,
-                                    );
-                                    response.on_hover_text(format!(
-                                        "{name}\n{label}{}",
-                                        if unread { "\nUnread activity" } else { "" }
-                                    ))
                                 }
-                                None => response.on_hover_text(if unread {
-                                    format!("{name}\nUnread activity")
+                                paint_icon(ui.painter(), badge.shrink(3.0), NavIcon::Volume, TEXT);
+                                description.push_str(if connected {
+                                    "\nConnected to voice in this space"
                                 } else {
-                                    name.clone()
-                                }),
-                            };
-                            if unread {
-                                let center = response.rect.right_top() + egui::vec2(-1.0, 1.0);
-                                ui.painter().circle_filled(center, 5.0, BLACKOUT);
-                                ui.painter().circle_filled(center, 3.0, TEXT);
-                                response.widget_info(|| {
-                                    egui::WidgetInfo::labeled(
-                                        egui::WidgetType::Button,
-                                        true,
-                                        format!("{name}, unread activity"),
-                                    )
+                                    "\nVoice active in this space"
                                 });
                             }
+                            if unread {
+                                // Leave the speaker and mute badges unobscured.
+                                let center = if voice_active {
+                                    response.rect.left_top() + egui::vec2(1.0, 1.0)
+                                } else {
+                                    response.rect.right_top() + egui::vec2(-1.0, 1.0)
+                                };
+                                ui.painter().circle_filled(center, 5.0, BLACKOUT);
+                                ui.painter().circle_filled(center, 3.0, TEXT);
+                                description.push_str("\nUnread activity");
+                            }
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    true,
+                                    description.replace('\n', ", "),
+                                )
+                            });
+                            let response = response.on_hover_text(description);
                             if active {
                                 ui.painter().rect_filled(
                                     egui::Rect::from_min_size(
@@ -22738,6 +22789,7 @@ fn carries_identities(event: &Event) -> bool {
             | Event::NotificationActivity { .. }
             | Event::NotificationError { .. }
             | Event::UnreadLoaded { .. }
+            | Event::VoiceActivityLoaded { .. }
             | Event::ThreadUnread { .. }
             | Event::ChannelRead { .. }
             | Event::CodeRequested { .. }
@@ -33628,8 +33680,8 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         let nodes = output.platform_output.accesskit_update.unwrap().nodes;
         for label in [
-            "C",
-            "F",
+            "General",
+            "Fixture Studio",
             "design",
             "Channel options for design",
             "Join voice in #design",
@@ -36047,6 +36099,122 @@ mod tests {
             Some(name),
         );
         (context, app)
+    }
+
+    #[test]
+    fn voice_activity_rail_distinguishes_connected_from_browsing_and_connecting() {
+        let (context, mut app) = fixture("parity-feedback-zero");
+        context.enable_accesskit();
+        let space = app.spaces.iter().find(|space| !space.demo).unwrap().clone();
+        app.voice_activity_spaces.insert(space.id.clone());
+        let call = crate::state::CallContext {
+            channel_id: "voice-channel".into(),
+            channel_name: "Voice".into(),
+            space_name: space.name.clone(),
+        };
+        app.voice.active_space = Some(space.id.clone());
+        for phase in [
+            Phase::Idle,
+            Phase::Joining(call.clone()),
+            Phase::Reconnecting(call.clone()),
+            Phase::Failed(call.clone()),
+            Phase::Connected(call.clone()),
+        ] {
+            let connected = matches!(phase, Phase::Connected(_));
+            app.voice.state.phase = phase;
+            let output = context.run(egui::RawInput::default(), |context| {
+                egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+            });
+            let label = format!(
+                "{}, {}",
+                space.name,
+                if connected {
+                    "Connected to voice in this space"
+                } else {
+                    "Voice active in this space"
+                }
+            );
+            assert!(node_bounds(&output, &label).is_some(), "{label}");
+        }
+        // Local connection does not wait for (or depend on) a successful poll.
+        app.voice_activity_spaces.clear();
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+        });
+        assert!(
+            node_bounds(
+                &output,
+                &format!("{}, Connected to voice in this space", space.name)
+            )
+            .is_some()
+        );
+        app.voice.state.phase = Phase::Idle;
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+        });
+        assert!(node_bounds(&output, &space.name).is_some());
+    }
+
+    #[test]
+    fn voice_activity_rail_preserves_unread_and_muted_badges() {
+        let (context, mut app) = fixture("parity-unread");
+        context.enable_accesskit();
+        let space = app
+            .spaces
+            .iter()
+            .find(|space| space.id == "space0000002")
+            .unwrap()
+            .clone();
+        app.voice_activity_spaces.insert(space.id.clone());
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+        });
+        let label = format!(
+            "{}, {}, Voice active in this space, Unread activity",
+            space.name,
+            app.muted_label(&crate::notifications::Scope::Space(space.id))
+                .unwrap()
+        );
+        let rect = node_bounds(&output, &label).expect("all badge descriptions remain accessible");
+        for center in [
+            rect.left_top() + egui::vec2(1.0, 1.0),
+            rect.right_top() + egui::vec2(-3.0, 3.0),
+            rect.right_bottom() - egui::vec2(3.0, 3.0),
+        ] {
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Circle(circle) if circle.fill == super::BLACKOUT && circle.center == center
+            )), "badge backing remains visible at {center:?}");
+        }
+    }
+
+    #[test]
+    fn voice_activity_results_clear_on_error_and_logout_and_fence_old_accounts() {
+        let (_context, mut app) = fixture("parity-feedback-zero");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        for (epoch, result, expected) in [
+            (app.account_epoch, Ok(vec!["space-one".into()]), true),
+            (app.account_epoch + 1, Ok(vec![]), true),
+            (app.account_epoch, Err("offline".into()), false),
+        ] {
+            sender
+                .send(crate::worker::Event::VoiceActivityLoaded { epoch, result })
+                .unwrap();
+            app.receive();
+            assert_eq!(app.voice_activity_spaces.contains("space-one"), expected);
+        }
+        let old_epoch = app.account_epoch;
+        app.voice_activity_spaces.insert("space-one".into());
+        app.reset_account_state();
+        assert!(app.voice_activity_spaces.is_empty());
+        sender
+            .send(crate::worker::Event::VoiceActivityLoaded {
+                epoch: old_epoch,
+                result: Ok(vec!["space-one".into()]),
+            })
+            .unwrap();
+        app.receive();
+        assert!(app.voice_activity_spaces.is_empty());
     }
 
     #[test]

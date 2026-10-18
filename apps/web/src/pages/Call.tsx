@@ -459,7 +459,7 @@ interface CallProps {
   /** Extra items for the phone header menu, where wide-header actions move. */
   headerMenuItems?: ReactNode;
   membersPanel?: (onClose: () => void) => ReactNode;
-  spaceRail?: ReactNode;
+  spaceRail?: ReactNode | ((connectedSpaceId: string | undefined) => ReactNode);
   /** Channels in the current space, whose voice shows on their rows. */
   voiceChannels?: Array<{ id: string; name: string; private?: boolean }>;
   /**
@@ -1958,7 +1958,7 @@ export default function Call({
           members.swipe.onClickCapture(event);
         }}
       >
-        {spaceRail}
+        {typeof spaceRail === "function" ? spaceRail(connected ? voiceChannel?.spaceId : undefined) : spaceRail}
         <ChannelSidebar>
           <div className="sidebar-channels">{navigation}</div>
           <div className="voice-panel">

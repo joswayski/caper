@@ -352,6 +352,10 @@ export function listSpaces() {
   return request<{ spaces: Space[]; invitations?: Space[]; limits: SpaceLimits }>("/api/spaces");
 }
 
+export function listSpaceVoiceActivity() {
+  return request<{ spaceIds: string[] }>("/api/spaces/voice-activity", { signal: AbortSignal.timeout(10_000) });
+}
+
 export function getSpace(spaceId: string) {
   return withPeople(
     request<SpaceDetail>(`/api/spaces/${pathId(spaceId)}`, { signal: AbortSignal.timeout(10_000) }),

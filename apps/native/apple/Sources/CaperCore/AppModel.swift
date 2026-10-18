@@ -7,6 +7,8 @@ public final class AppModel {
     public var phase: Phase = .loading
     public var account: Account?
     public var spaces: [Space] = []
+    public private(set) var voiceActivitySpaceIDs: Set<String> = []
+    private var voiceActivityRefreshing = false
     public var invitations: [Space] = []
     public var notificationInvitation: Space?
     public var notificationChannelInvitation: ChannelInvitation?
@@ -1068,7 +1070,7 @@ public final class AppModel {
             chat.refreshDraftUploads()
             markSelectedDirectRead()
             removeShownNotifications()
-            Task { await refreshDirectMessages(); await refreshUnreadSpaces() }
+            Task { await refreshVoiceActivity(); await refreshDirectMessages(); await refreshUnreadSpaces() }
             refreshNotificationSettingsIfStale()
             refreshMembership()
         }
@@ -1110,6 +1112,21 @@ public final class AppModel {
             self?.unreadRefreshScheduled = false
             guard self?.generation == attempt else { return }
             await self?.refreshUnreadSpaces()
+        }
+    }
+
+    private func refreshVoiceActivity() async {
+        guard account != nil, !voiceActivityRefreshing else { return }
+        voiceActivityRefreshing = true
+        defer { voiceActivityRefreshing = false }
+        let attempt = generation
+        do {
+            let snapshot = try await api.spaceVoiceActivity()
+            guard generation == attempt, account != nil, !Task.isCancelled else { return }
+            voiceActivitySpaceIDs = Set(snapshot.spaceIds)
+        } catch {
+            guard generation == attempt else { return }
+            voiceActivitySpaceIDs = []
         }
     }
 
@@ -1184,6 +1201,7 @@ public final class AppModel {
             // Sign-in has just loaded the spaces; membership waits for the next pass.
             var reconcile = false
             while !Task.isCancelled {
+                await self?.refreshVoiceActivity()
                 await self?.refreshDirectMessages()
                 await self?.refreshUnreadSpaces()
                 if reconcile { self?.refreshMembership() }
@@ -2256,6 +2274,7 @@ extension AppModel {
     }
 
     private func clearNotificationState() {
+        voiceActivitySpaceIDs = []
         unreadSpaces = []; feedbackWaiting = 0; channelReads = [:]; unreadRevision += 1
         unreadVisitToken = UUID(); unreadVisit = nil; unreadVisitReady = false
         #if os(macOS)

@@ -8,6 +8,7 @@
 // Focus on the connected account bar and call card links with VOICE_TEST_DOCK=1.
 // Focus on click-time/shared timers with VOICE_TEST_TIMERS=1.
 // Check live channels (call card and room cards in the list, row joins, phone strip) with VOICE_TEST_REDESIGN=1.
+// Check space-rail voice badges across navigation and connection states with VOICE_TEST_RAIL=1.
 // Serve an interactive, explicitly simulated preview with VOICE_TEST_PREVIEW=1.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -167,6 +168,10 @@ async function fixture() {
     if (path === "/api/blocks") return Response.json({ blocks: [] });
     if (path === "/api/dms") return Response.json({ conversations: [selfDirect] });
     if (path === "/api/people") return Response.json({ people: [account] });
+    if (path === "/api/spaces/voice-activity")
+      return f.activityError
+        ? Response.json({ error: "Fixture outage" }, { status: 503 })
+        : Response.json({ spaceIds: f.activeSpaces ?? [] });
     if (path === "/api/spaces")
       return Response.json({
         spaces: f.noSpaces ? [] : [space, otherSpace],
@@ -556,7 +561,55 @@ try {
   wait(
     `document.querySelector('#chat-message:not(:disabled)') && document.querySelector('.channel-join[aria-disabled="false"]')`,
   );
-  if (process.env.VOICE_TEST_SIDEBAR === "1") {
+  if (process.env.VOICE_TEST_RAIL === "1") {
+    evaluate(`voiceFixture.activeSpaces = ['otherSpace12']; voiceFixture.showSpaces();`);
+    const other = '.space-rail button[aria-label^="Other test space"]';
+    const own = '.space-rail button[aria-label^="Test space"]';
+    wait(`document.querySelector('${other} .space-rail-voice')`);
+    assert.equal(evaluate(`return !!document.querySelector('${own} .space-rail-voice');`), false);
+    assert.equal(
+      evaluate(`return document.querySelector('${other}').getAttribute('aria-label');`),
+      "Other test space, voice active",
+    );
+    screenshot("voice-rail-others-1280");
+    evaluate(`voiceFixture.holdCapture = true;`);
+    click("Join voice in #alpha");
+    wait(`voiceFixture.releaseCapture`);
+    assert.equal(
+      evaluate(`return document.querySelectorAll('.space-rail-voice[data-connected]').length;`),
+      0,
+      "Joining is not connected",
+    );
+    evaluate(`voiceFixture.releaseCapture();`);
+    wait(`document.querySelector('${own} .space-rail-voice[data-connected]')`);
+    assert.equal(
+      evaluate(`return document.querySelector('${own}').getAttribute('aria-label');`),
+      "Test space, connected to voice",
+    );
+    screenshot("voice-rail-connected-1280");
+    browser("click", other);
+    wait(`document.querySelector('${other}[aria-current="page"]')`);
+    assert.ok(
+      evaluate(`return !!document.querySelector('${own} .space-rail-voice[data-connected]');`),
+      "Browsing another space keeps the connected badge on the call's space",
+    );
+    assert.equal(evaluate(`return !!document.querySelector('${other} .space-rail-voice[data-connected]');`), false);
+    browser("set", "viewport", "390", "844", "2");
+    openBrowse();
+    screenshot("voice-rail-connected-390");
+    evaluate(`voiceFixture.activityError = true; window.dispatchEvent(new Event('focus'));`);
+    wait(`!document.querySelector('${other} .space-rail-voice')`);
+    assert.ok(
+      evaluate(`return !!document.querySelector('${own} .space-rail-voice[data-connected]');`),
+      "Poll failures do not hide the actual local connection",
+    );
+    click("Leave voice");
+    wait(`!document.querySelector('.space-rail-voice')`);
+    screenshot("voice-rail-empty-390");
+    console.log(
+      "PASS: voice badges distinguish idle/joining/connected, survive cross-space navigation, render at 1280/390px, clear on outage/leave.",
+    );
+  } else if (process.env.VOICE_TEST_SIDEBAR === "1") {
     const channelGeometry = () =>
       evaluate(`return [...document.querySelectorAll('.channel-line')].map(line => {
         const r = line.getBoundingClientRect(); return [r.x, r.y, r.width, r.height];
