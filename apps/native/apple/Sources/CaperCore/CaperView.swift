@@ -5674,11 +5674,17 @@ private struct MentionCardView: View {
                             .overlay(alignment: .topLeading) {
                                 Button { draft.toggleSpoiler(id: file.id) } label: {
                                     Image(systemName: file.spoiler ? "eye.slash.fill" : "eye")
-                                        .frame(minWidth: 44, minHeight: 44)
-                                        .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                                        .font(.system(size: 14))
+                                        .frame(width: 24, height: 24)
+                                        .background(.black.opacity(0.8), in: Circle())
+                                        .padding(4)
+                                        #if os(iOS)
+                                        .frame(width: 44, height: 44, alignment: .topLeading)
+                                        #endif
+                                        .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
-                                .foregroundStyle(CaperTheme.text)
+                                .foregroundStyle(.white)
                                 .disabled(!draft.editable)
                                 .accessibilityLabel(file.spoiler ? "Remove spoiler from \(file.local.name)" : "Mark \(file.local.name) as spoiler")
                                 .accessibilityValue(file.spoiler ? "Spoiler" : "Not a spoiler")
