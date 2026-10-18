@@ -1268,7 +1268,7 @@ function StartDirectDialog({
         className="start-direct-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (pending || !username.trim()) return;
+          if (pending || usernameError(username)) return;
           setPending(true);
           setError(undefined);
           void createDirectConversation(username)
@@ -1287,11 +1287,10 @@ function StartDirectDialog({
             autoComplete="off"
             value={username}
             readOnly={pending}
-            maxLength={33}
             placeholder="@username"
             {...matches.input}
             onChange={(event) => {
-              setUsername(event.target.value);
+              setUsername(normalizeUsername(event.target.value));
               setError(undefined);
             }}
           />
@@ -1304,7 +1303,7 @@ function StartDirectDialog({
           pending={pending}
           label="Open conversation"
           pendingLabel="Opening…"
-          disabled={!username.trim()}
+          disabled={!!usernameError(username)}
           onCancel={onClose}
         />
       </form>

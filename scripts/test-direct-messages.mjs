@@ -209,6 +209,22 @@ async function testDirectMessages() {
       evaluate('document.querySelector(".space-dialog > header p").textContent'),
       "Enter an exact username. Conversations stay private across all your spaces.",
     );
+    for (const [typed, expected, disabled] of [
+      ["  !@#$ 🪐", "", true],
+      ["A b", "ab", true],
+      ["@Jo_9 !", "jo_9", false],
+      ["fasdasd  asd asd sad", "fasdasdasdasdsad", false],
+      ["A".repeat(33), "a".repeat(32), false],
+    ]) {
+      browser("fill", ".space-dialog input", typed);
+      assert.equal(evaluate('document.querySelector(".space-dialog input").value'), expected);
+      assert.equal(evaluate('document.querySelector(".space-dialog button[type=submit]").disabled'), disabled);
+      if (disabled) {
+        browser("press", "Enter");
+        assert.equal((await conversations()).conversations.length, 0, "Invalid usernames cannot start a DM");
+      }
+    }
+    console.log(`PASS: DM username filtering, length limits and submission guard at ${width}px`);
     browser("fill", ".space-dialog input", "fixture_alex");
     const inside = evaluate(
       '(() => { const r = document.querySelector(".space-dialog").getBoundingClientRect(); return [r.left + 8, r.top + 8]; })()',

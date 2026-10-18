@@ -3493,7 +3493,7 @@ internal fun counterTone(count: Int): Color = when {
             Button({
                 if (!Regex("^[a-z0-9_]{3,32}$").matches(username)) error = "Enter an exact valid username."
                 else { error = null; start(username) { error = it } }
-            }, enabled = !busy && username.isNotBlank(), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) {
+            }, enabled = !busy && Regex("^[a-z0-9_]{3,32}$").matches(username), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) {
                 PendingLabel("Start conversation", "Opening…", busy)
             }
         }
