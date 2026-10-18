@@ -2365,18 +2365,16 @@ extension AppModel {
     }
 
     /// Archives (or restores) a report's whole thread for the team. It leaves
-    /// the list at once, then the list refreshes; a failure shows the error
-    /// and reloads.
+    /// the list at once; only a failure reloads it and shows the error.
     public func setFeedbackArchived(_ report: FeedbackReport, archived: Bool) async {
         guard account != nil, isFeedbackTeam else { return }
         let attempt = generation
         feedbackRequest += 1
+        feedbackLoading = false
         feedbackReports.removeAll { $0.sharesThread(with: report) }
         feedbackError = nil
         do {
             try await api.setFeedbackArchived(channelID: report.channel.id, threadRootID: report.threadRootId, archived: archived)
-            guard generation == attempt else { return }
-            await refreshFeedback()
         } catch is CancellationError {} catch {
             guard generation == attempt else { return }
             await refreshFeedback()

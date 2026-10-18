@@ -422,12 +422,13 @@ final class FeedbackTests: XCTestCase {
         var requests: [String] = []
         var bodies: [[String: Any]] = []
         var archiveStatus = 204
+        var archivedPagePopulated = false
         FeedbackMockURLProtocol.handler = { request in
             let line = "\(request.httpMethod ?? "") \(request.url?.path ?? "")" + (request.url?.query.map { "?\($0)" } ?? "")
             requests.append(line)
             switch request.url?.path {
             case "/api/feedback":
-                if request.url?.query?.contains("archived=true") == true {
+                if request.url?.query?.contains("archived=true") == true && !archivedPagePopulated {
                     return (200, Data(#"{"reports":[],"cursor":null}"#.utf8))
                 }
                 return (200, Data(self.samplePage.utf8))
@@ -445,7 +446,10 @@ final class FeedbackTests: XCTestCase {
 
         requests = []
         await model.setFeedbackArchived(report, archived: true)
-        XCTAssertEqual(requests, ["PUT /api/feedback/archive", "GET /api/feedback"], "archives, then refreshes")
+        XCTAssertEqual(requests, ["PUT /api/feedback/archive"], "successful writes do not refresh the list")
+        XCTAssertEqual(model.feedbackReports.map(\.id), ["Note00000000001"])
+        XCTAssertEqual(model.feedbackCursor, "123", "keeps the existing pagination")
+        XCTAssertFalse(model.feedbackLoading)
         XCTAssertEqual(bodies.first?["channelId"] as? String, channelID)
         XCTAssertEqual(bodies.first?["threadRootId"] as? String, rootID)
         XCTAssertEqual(bodies.first?["archived"] as? Bool, true)
@@ -464,7 +468,13 @@ final class FeedbackTests: XCTestCase {
         XCTAssertTrue(model.feedbackLoaded)
         XCTAssertNil(model.feedbackError)
         archiveStatus = 204
+        archivedPagePopulated = true
+        await model.refreshFeedback()
+        requests = []
         await model.setFeedbackArchived(report, archived: false)
+        XCTAssertEqual(requests, ["PUT /api/feedback/archive"])
+        XCTAssertEqual(model.feedbackReports.map(\.id), ["Note00000000001"])
+        XCTAssertFalse(model.feedbackLoading)
         XCTAssertEqual(bodies.last?["archived"] as? Bool, false, "Restore to the inbox")
         await model.showArchivedFeedback(false)
         XCTAssertEqual(requests.last, "GET /api/feedback")
