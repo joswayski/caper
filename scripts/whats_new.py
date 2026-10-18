@@ -426,19 +426,24 @@ def ask_claude(prompt):
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
             break
         except urllib.error.HTTPError as error:
-            # Only the status and error type are logged: messages may echo
-            # request content.
+            # The request holds only public commits and this script's prompt,
+            # so the API's explanation is safe to log once made printable.
             status = error.code
             try:
-                kind = json.loads(error.read(4096))["error"]["type"]
-            except (OSError, http.client.HTTPException, ValueError, TypeError, KeyError):
-                kind = None
+                detail = json.loads(error.read(4096))["error"]
+                kind, reason = detail["type"], detail.get("message", "")
+            except (OSError, http.client.HTTPException, ValueError, TypeError, KeyError, AttributeError):
+                kind, reason = None, ""
             finally:
                 error.close()
             if not isinstance(kind, str) or not re.fullmatch(r"[a-z_]{1,64}", kind):
                 kind = "unknown_error"
+            reason = " ".join("".join(c if c.isprintable() else " " for c in str(reason)).split())[:300]
             if delay is None or status not in PROVIDER_RETRY_STATUSES:
-                raise GenerationError(f"Claude request failed (HTTP {status} {kind}); no snapshots published") from None
+                raise GenerationError(
+                    f"Claude request failed (HTTP {status} {kind}{': ' + reason if reason else ''}); "
+                    "no snapshots published"
+                ) from None
         except (urllib.error.URLError, ConnectionError) as error:
             if delay is None or isinstance(getattr(error, "reason", None), TimeoutError):
                 raise GenerationError("Claude request failed; no snapshots published") from None

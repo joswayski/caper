@@ -448,12 +448,14 @@ class HighlightsTests(unittest.TestCase):
     def test_permanent_provider_errors_do_not_retry(self):
         self.seed()
         newest = self.commit("Improve channel controls")
-        body = {"type": "error", "error": {"type": "invalid_request_error", "message": "secret echo"}}
+        body = {"type": "error", "error": {"type": "invalid_request_error", "message": "max_tokens:\n too\x00 large"}}
         self.provider_error = urllib.error.HTTPError(
             "https://example.test", 400, "secret error body", {}, io.BytesIO(encoded(body))
         )
         with patch.object(notes.time, "sleep") as sleep:
-            self.assert_cli_failure(newest, "Claude request failed (HTTP 400 invalid_request_error)")
+            self.assert_cli_failure(
+                newest, "Claude request failed (HTTP 400 invalid_request_error: max_tokens: too large)"
+            )
         sleep.assert_not_called()
         self.assertEqual(len(self.requests), 1)
 
