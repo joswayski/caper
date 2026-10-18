@@ -34,6 +34,7 @@ const SHOWN = 6;
  */
 export default function FeedbackInbox({
   reports,
+  waiting,
   more,
   loading,
   error,
@@ -46,6 +47,8 @@ export default function FeedbackInbox({
   onRetry,
 }: {
   reports: FeedbackReport[];
+  /** Total waiting conversations, independent of pagination or archive view. */
+  waiting: number;
   /** Older reports can be loaded. */
   more: boolean;
   loading: boolean;
@@ -63,7 +66,6 @@ export default function FeedbackInbox({
   const [open, setOpen] = useState(true);
   const [shown, setShown] = useState(SHOWN);
   const threads = feedbackThreads(reports);
-  const waiting = archived ? 0 : threads.filter((report) => !report.answered).length;
   const visible = threads.slice(0, shown);
   return (
     <section className="direct-section feedback-section" aria-label="Feedback">
@@ -80,7 +82,7 @@ export default function FeedbackInbox({
           <ChevronDown className="feedback-chevron" aria-hidden="true" />
         </button>
         {waiting > 0 && (
-          <span className="feedback-waiting-count" aria-label={`${waiting} waiting for a reply`}>
+          <span className="feedback-waiting-count" aria-label={`${waiting} feedback conversations waiting for a reply`}>
             {waiting}
           </span>
         )}

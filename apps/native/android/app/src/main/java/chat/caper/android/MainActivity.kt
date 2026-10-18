@@ -976,6 +976,13 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         Icon(painterResource(R.drawable.lucide_inbox), null, Modifier.size(17.dp), tint = if (feedbackSelected) TerracottaBright else TextMuted)
                         Spacer(Modifier.width(9.dp))
                         Text("Feedback", Modifier.weight(1f), color = if (feedbackSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        if (state.feedbackWaiting > 0) {
+                            Text(state.feedbackWaiting.toString(),
+                                Modifier.padding(start = 6.dp).background(Terracotta, CircleShape)
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    .clearAndSetSemantics { contentDescription = "${state.feedbackWaiting} feedback conversations waiting for a reply" },
+                                color = Text, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
                 val invitePeople = owner && detail?.space?.demo == false

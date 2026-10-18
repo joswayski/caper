@@ -177,9 +177,9 @@ public actor APIClient {
         _ = try Sequence.compare(seq, "0")
         let _: Empty = try await request("api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(rootID))/thread/read", method: "PUT", body: ReadInput(seq: seq))
     }
-    public func unreadSpaces() async throws -> [UnreadSpace] {
+    public func unreadSpaces() async throws -> UnreadSpacesResponse {
         let response: UnreadSpacesResponse = try await request("api/spaces/unread")
-        return response.spaces
+        return response
     }
     public func markChannelRead(spaceID: String, channelID: String, seq: String) async throws {
         _ = try Sequence.compare(seq, "0")

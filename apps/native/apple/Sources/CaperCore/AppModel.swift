@@ -43,7 +43,7 @@ public final class AppModel {
             guard let self else { return }
             let snapshot = try? await api.unreadSpaces()
             guard generation == attempt, unreadVisitToken == token, selectedChannelID == id else { return }
-            unreadVisit = snapshot?.flatMap(\.channels).first { $0.id == id }
+            unreadVisit = snapshot?.spaces.flatMap(\.channels).first { $0.id == id }
             // A failed/old-server snapshot deliberately yields no divider, not a guessed boundary.
             unreadVisitReady = true
             markSelectedChannelRead()
@@ -212,6 +212,7 @@ public final class AppModel {
     }
     private var browseCoversConversation: Bool { narrowLayout && navigationOpen }
     public private(set) var unreadSpaces: [UnreadSpace] = []
+    public private(set) var feedbackWaiting: Int = 0
     public func channelUnread(_ id: String) -> Bool { unreadSpaces.contains { $0.channels.contains { $0.id == id } } }
     @ObservationIgnored private var unreadRevision = 0
     @ObservationIgnored private var unreadRefreshScheduled = false
@@ -1096,7 +1097,8 @@ public final class AppModel {
         unreadRevision += 1
         let attempt = generation, revision = unreadRevision
         guard let snapshot = try? await api.unreadSpaces(), generation == attempt, unreadRevision == revision else { return }
-        unreadSpaces = snapshot
+        unreadSpaces = snapshot.spaces
+        feedbackWaiting = snapshot.feedbackWaiting
         markSelectedChannelRead()
     }
 
@@ -2229,7 +2231,7 @@ extension AppModel {
     }
 
     private func clearNotificationState() {
-        unreadSpaces = []; channelReads = [:]; unreadRevision += 1
+        unreadSpaces = []; feedbackWaiting = 0; channelReads = [:]; unreadRevision += 1
         unreadVisitToken = UUID(); unreadVisit = nil; unreadVisitReady = false
         #if os(macOS)
         desktopNotifications.stop()

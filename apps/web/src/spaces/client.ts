@@ -131,7 +131,7 @@ export interface UnreadSpace {
 }
 
 export function listUnreadSpaces() {
-  return request<{ spaces: UnreadSpace[] }>("/api/spaces/unread");
+  return request<{ spaces: UnreadSpace[]; feedbackWaiting?: number }>("/api/spaces/unread");
 }
 
 export function readChannel(spaceId: string, channelId: string, seq: string) {

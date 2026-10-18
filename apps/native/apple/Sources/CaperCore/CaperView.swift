@@ -7184,8 +7184,7 @@ private struct FeedbackRow: View {
     let rowHeight: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        // The archived list has no waiting count.
-        let waiting = model.showingArchivedFeedback ? 0 : FeedbackInbox.waitingCount(model.feedbackReports)
+        let waiting = model.feedbackWaiting
         Button {
             guard !SwipeTapGuard.swiping else { return }
             // Phones push the inbox; sidebars expand it in place.
@@ -7201,8 +7200,7 @@ private struct FeedbackRow: View {
                 if waiting > 0 {
                     Text("\(waiting)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.text)
                         .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 18)
-                        .background(CaperTheme.raised, in: Capsule())
-                        .overlay(Capsule().stroke(CaperTheme.border))
+                        .background(CaperTheme.terracotta, in: Capsule())
                 }
             }.font(CaperTheme.font(13, weight: .medium))
                 .foregroundStyle(model.visit != nil ? CaperTheme.text : CaperTheme.muted)
@@ -7210,7 +7208,7 @@ private struct FeedbackRow: View {
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).modifier(ControlHover())
             .accessibilityLabel(FeedbackInbox.title)
-            .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
+            .accessibilityValue(waiting > 0 ? "\(waiting) feedback conversations waiting for a reply" : "")
             .accessibilityHint(narrow ? "Opens the feedback inbox" : model.showingFeedback ? "Collapses the inbox" : "Expands the inbox")
             .accessibilityIdentifier("feedback-inbox")
     }

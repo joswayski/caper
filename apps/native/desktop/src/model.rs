@@ -263,6 +263,8 @@ pub struct UnreadSpace {
 #[derive(Deserialize)]
 pub struct UnreadSpaces {
     pub spaces: Vec<UnreadSpace>,
+    #[serde(default, rename = "feedbackWaiting")]
+    pub feedback_waiting: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

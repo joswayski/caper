@@ -38,7 +38,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class SpaceLimits(val ownedSpaces: Int, val totalSpaces: Int, val channelsPerSpace: Int)
 @Serializable data class UnreadChannel(val id: String, val lastSeq: String, val readSeq: String? = null)
 @Serializable data class UnreadSpace(val id: String, val channels: List<UnreadChannel>)
-@Serializable data class UnreadSpaces(val spaces: List<UnreadSpace>)
+@Serializable data class UnreadSpaces(val spaces: List<UnreadSpace>, val feedbackWaiting: Int = 0)
 @Serializable data class Channel(
     val id: String,
     val spaceId: String,
@@ -534,6 +534,7 @@ data class AppUiState(
     val account: Account? = null,
     val spaces: List<Space> = emptyList(),
     val unreadSpaces: List<UnreadSpace> = emptyList(),
+    val feedbackWaiting: Int = 0,
     val unreadThreads: Map<String, String> = emptyMap(),
     val invitations: List<Space> = emptyList(),
     val notificationInvitation: Space? = null,
