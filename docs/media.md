@@ -984,10 +984,47 @@ paths check membership and channel visibility, including replay and live deliver
 
 Owners create Discord-style shareable links at `/invite/<code>`. Codes are 10
 random alphanumeric characters (about 59 bits), so the unauthenticated preview
-cannot be enumerated. Owners type the expiry as a number of minutes, hours or days (the API accepts
-any `maxAge` from 60 to 31,536,000 seconds; clients default to 7 days) or choose
-Never, and optionally type max uses (1 to 10,000; empty is unlimited, the default;
-spaces have no member cap). A link can also land joiners in a public channel; a landing channel deleted or made private later
+cannot be enumerated. **Invite people** opens an invitation-only dialog on web,
+Android, Apple and Rust desktop; renaming, icons, member removal and deletion
+remain in **Manage space**. Opening prepares a ready-to-copy link for **100 total
+joins within 30 days of creation**, initially selecting the oldest public channel.
+Under the space lock, the server reuses the newest link with those settings and
+that landing channel only if it is still live,
+so reopening or opening on multiple devices does not reset its use count or expiry. Expired,
+exhausted or deactivated links are not reused. Deactivating stops new joins, not
+existing memberships; it leaves the dialog without a prepared link until the owner
+creates another or reopens Invite people. No QR code is generated.
+
+The main dialog shows a ready-to-copy link without a destination picker. The server
+chooses the oldest public channel, with no special preference for a channel named
+`general` and no space-wide destination setting. With no public channels, space-only
+invitations remain usable. Owners can choose a different public destination when
+creating a separate link under **Custom links**; previously shared links keep their
+destinations. The API returns the actual destination, which appears in link metadata.
+
+**More invite options** sits beside the primary Copy action. **Regenerate link**
+revokes the displayed code and creates a new code for the same public channel,
+with 30 full days and 100 available joins in one transaction. If the old destination
+became private or was deleted, regeneration and joining fall back to the oldest
+public channel. Regeneration and deactivation (including list revocation) require
+confirmation on every client. Cancel leaves the shared URL working; the warning
+explains that the previous URL stops new joins and regeneration resets the limits.
+Failures leave the previous link intact;
+simultaneous regenerations of the same code mint only one replacement (the stale
+request returns 404). Other links and existing memberships are untouched. The
+newest matching link for each selected channel is used, so it cannot revert to an older
+compatible link after regeneration, exhaustion or deactivation. Separate links
+created with exactly these settings are also eligible for selection. The UI shows remaining joins
+and remaining time, rather than presenting the initial lifetime as time left.
+
+**Custom links** in the options menu creates and manages separate links,
+not settings for the primary shared URL. Existing links keep their settings.
+Owners type the expiry as a number of minutes, hours or days (the API accepts
+any `maxAge` from 60 to 31,536,000 seconds) or choose Never, and optionally type max
+uses (1 to 10,000; empty is unlimited; spaces have no member cap). Custom forms
+also start at 30 days and 100 joins. The existing custom-create API still treats
+omitted/null limits as unlimited for compatibility. A link can also land joiners
+in a public channel; a landing channel deleted or made private later
 falls back to the starter channel and is no longer named in previews. Links are
 retained in `space_invite_links` (`revoked_at`, never deleted) and each join is
 recorded in `space_invite_link_uses`.
@@ -995,13 +1032,35 @@ recorded in `space_invite_link_uses`.
 | Operation | Route | Result |
 | --- | --- | --- |
 | Owner lists live links | `GET /api/spaces/{space}/invite-links` | `{links: [...]}` |
+| Owner prepares/reuses a link | `POST /api/spaces/{space}/invite-links/default?channelId=...` (no body; omit query for oldest public channel) | 200 link |
+| Owner regenerates the displayed link | `POST /api/spaces/{space}/invite-links/{code}/regenerate` (no body) | 201 replacement link |
 | Owner creates a link | `POST /api/spaces/{space}/invite-links` with `{channelId?, maxAge?, maxUses?}` | 201 link |
 | Owner revokes a link | `DELETE /api/spaces/{space}/invite-links/{code}` | 204 |
 | Anyone previews | `GET /api/invites/{code}` (optional account session) | space name, landing channel, inviter, member count, expiry, `alreadyMember` |
 | Signed-in account joins | `POST /api/invites/{code}/join` | `{space, channelId, joined}` |
 
 Creating links shares the owner's invitation attempt budget below; a space can
-have at most 100 live links. Joining checks the membership quota under the same
+have at most 100 live links. Reusing the default link does not consume that
+budget. Deploy the API before these clients; no database migration is required.
+The browser regression scenario runs with the disposable native parity fixture
+and Vite: `node scripts/test-invite-people.mjs <loopback-web-url>`. It checks
+invitation-only controls, copy, reuse, keyboard options, regeneration, custom links,
+deactivation, username invitations, narrow-layout scrolling and failed-request retry.
+This is mock-backed UI validation, not live join validation; the Rust invite-link Postgres integration
+test covers the server lifecycle, concurrent opens/regenerations and rollback.
+
+Invite-people native validation follow-up: with SDK 36 installed, Android main and
+instrumentation sources compile (`compileDebugKotlin`, `compileDebugAndroidTestKotlin`)
+and all 411 JVM tests pass, including 17 invitation parsing/default/route tests.
+`lintDebug` passes with one worker and a 768 MB Gradle heap; the initial concurrent
+lint invocation was killed with exit 137. The report has zero errors, 1,684
+warnings and two hints; warnings have not been suppressed or resolved here.
+Instrumentation was compiled, not executed: no Android emulator or device is
+available in the orb. APK/native-media assembly and rendered Compose acceptance
+remain unverified. Apple compilation, XCTest and rendering still require Xcode;
+no Mac runner is connected. This follow-up does not change invite defaults or UI.
+
+Joining checks the membership quota under the same
 space lock as invitation acceptance, consumes one use, joins the landing channel,
 and fulfils any pending username invitation. Existing members get the space back
 without consuming a use, so a link doubles as a shortcut. Leaving does not block
@@ -2520,8 +2579,9 @@ belong to the space. These are fixed policies, not new secrets/configuration.
 
 Migration `202610010001_channel_joining.sql` joins existing members to all their
 currently accessible non-demo channels, preserving conversations during rollout.
-New space acceptance joins only one public starter, preferring `general`, if
-available. Creating a channel joins its creator, not every space member. Space
+Accepting a username invitation joins one public starter, preferring `general`,
+if available. Invite links use their selected public channel, falling back to the
+oldest public channel. Creating a channel joins its creator, not every space member. Space
 removal clears participation and revokes channel invitations. No Valkey/SFU
 schema change or data reset is needed.
 
@@ -3263,7 +3323,11 @@ CHAT_TEST_DATABASE_URL=postgres://user@127.0.0.1:55432/postgres \
 
 For Android source/unit validation, use JDK 17 and set `ANDROID_HOME` to an SDK
 with platform/build-tools 36 (the repository's native build also needs its pinned
-NDK/CMake). The smaller Gradle heap below fits a 4 GB orb:
+NDK/CMake). `.agents/setup` now provisions these SDK components on x86_64 orbs,
+using the app's Gradle version pins, and exposes the SDK in new login shells
+inside this checkout. Native asset preparation remains in the Android build
+scripts; setup does not install an emulator. The smaller Gradle heap below fits
+a 4 GB orb:
 
 ```sh
 apps/native/android/prepare-fonts.sh

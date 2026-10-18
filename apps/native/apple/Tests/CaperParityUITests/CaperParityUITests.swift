@@ -45,6 +45,50 @@ final class CaperParityUITests: XCTestCase {
         return app
     }
 
+    func testInvitePeopleOpensInviteOnlyInsteadOfSpaceManagement() {
+        let app = launch()
+        let invite = app.buttons["invite-people"]
+        if !invite.isHittable {
+            let navigation = app.buttons["Back to Browse"]
+            if navigation.waitForExistence(timeout: 10) { navigation.tap() }
+        }
+        XCTAssertTrue(invite.waitForExistence(timeout: 10))
+        invite.tap()
+        XCTAssertTrue(app.staticTexts["Invite by username"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textFields["Exact username"].exists)
+        XCTAssertFalse(app.textFields["Space name"].exists)
+        XCTAssertFalse(app.buttons["Save name"].exists)
+        XCTAssertFalse(app.buttons["Delete space"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["space-members-heading"].exists)
+        let copy = app.buttons["default-invite-link-copy"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.descendants(matching: .any)["invite-link-channel"].exists)
+        XCTAssertFalse(app.staticTexts["Opens in"].exists)
+        XCTAssertFalse(app.staticTexts["Default channel"].exists)
+        let options = app.descendants(matching: .any)["default-invite-link-options"].firstMatch
+        XCTAssertTrue(options.exists)
+        XCTAssertEqual(options.label, "More invite options")
+        XCTAssertGreaterThanOrEqual(options.frame.minX, copy.frame.maxX)
+        options.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["Regenerate link"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["Custom links"].firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["Deactivate link"].firstMatch.exists)
+        app.descendants(matching: .any)["Regenerate link"].firstMatch.tap()
+        let regenerateAlert = app.alerts["Regenerate link?"]
+        XCTAssertTrue(regenerateAlert.waitForExistence(timeout: 5))
+        XCTAssertTrue(regenerateAlert.staticTexts["The previous URL stops admitting new members. The new link resets to 30 days and 100 joins."].exists)
+        regenerateAlert.buttons["Cancel"].tap()
+        XCTAssertTrue(copy.exists)
+        XCTAssertFalse(regenerateAlert.exists)
+        options.tap()
+        app.descendants(matching: .any)["Deactivate link"].firstMatch.tap()
+        let deactivateAlert = app.alerts["Deactivate link?"]
+        XCTAssertTrue(deactivateAlert.waitForExistence(timeout: 5))
+        deactivateAlert.buttons["Cancel"].tap()
+        XCTAssertTrue(copy.exists)
+        XCTAssertFalse(app.buttons["default-invite-link-create"].exists)
+    }
+
     #if os(iOS)
     /// On a freshly booted simulator the automation session can report an
     /// empty accessibility tree for about a minute while the app is already on

@@ -558,6 +558,59 @@ final class APIClientTests: XCTestCase {
         ])
     }
 
+    func testDefaultInviteLinkPostsNoBodyAndDecodesExistingLink() async throws {
+        let json = #"{"code":"aB3dE5gH9k","channel":null,"createdBy":{"username":"owner","displayName":"Owner"},"uses":12,"maxUses":100,"expiresAt":"2026-10-27T12:00:00Z","createdAt":"2026-10-11T12:00:00Z"}"#
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/spaces/Space1234567/invite-links/default")
+            XCTAssertNil(request.url?.query)
+            XCTAssertNil(try requestBodyData(request))
+            return (200, Data(json.utf8))
+        }
+        let api = client()
+        let first = try await api.defaultInviteLink(spaceID: "Space1234567")
+        let reopened = try await api.defaultInviteLink(spaceID: "Space1234567")
+        XCTAssertEqual(first, reopened)
+        XCTAssertNil(first.channel)
+        XCTAssertEqual(first.uses, 12)
+        XCTAssertEqual(first.maxUses, 100)
+        XCTAssertEqual(first.createdAt, "2026-10-11T12:00:00Z")
+        XCTAssertEqual(first.expiresAt, "2026-10-27T12:00:00Z")
+    }
+
+    func testSelectedInviteChannelPostsQueryWithoutBodyAndDecodesActualChannel() async throws {
+        let json = #"{"code":"aB3dE5gH9k","channel":{"id":"Channel12345","name":"feedback"},"createdBy":{"username":"owner","displayName":"Owner"},"uses":12,"maxUses":100,"expiresAt":"2026-11-14T12:00:00Z","createdAt":"2026-10-15T12:00:00Z"}"#
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/spaces/Space1234567/invite-links/default")
+            XCTAssertEqual(request.url?.query, "channelId=Channel12345")
+            XCTAssertNil(try requestBodyData(request))
+            return (200, Data(json.utf8))
+        }
+        let api = client()
+        let first = try await api.defaultInviteLink(spaceID: "Space1234567", channelID: "Channel12345")
+        let reused = try await api.defaultInviteLink(spaceID: "Space1234567", channelID: "Channel12345")
+        XCTAssertEqual(first, reused)
+        XCTAssertEqual(first.channel?.id, "Channel12345")
+        XCTAssertEqual(first.channel?.name, "feedback")
+        XCTAssertEqual(first.maxUses, 100)
+    }
+
+    func testRegenerateInviteLinkPostsSelectedCodeWithoutBody() async throws {
+        let json = #"{"code":"NewLink1234","channel":{"id":"Channel12345","name":"feedback"},"createdBy":{"username":"owner","displayName":"Owner"},"uses":0,"maxUses":100,"expiresAt":"2026-11-14T12:00:00Z","createdAt":"2026-10-15T12:00:00Z"}"#
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/spaces/Space1234567/invite-links/aB3dE5gH9k/regenerate")
+            XCTAssertNil(try requestBodyData(request))
+            return (201, Data(json.utf8))
+        }
+        let link = try await client().regenerateInviteLink(spaceID: "Space1234567", code: "aB3dE5gH9k")
+        XCTAssertEqual(link.code, "NewLink1234")
+        XCTAssertEqual(link.maxUses, 100)
+        XCTAssertEqual(link.uses, 0)
+        XCTAssertEqual(link.channel?.id, "Channel12345")
+    }
+
     func testInviteLinkEndpoints() async throws {
         let spaceID = "Space1234567"
         let code = "aB3dE5gH9k"

@@ -107,14 +107,14 @@ final class InviteLinksTests: XCTestCase {
             return try JSONDecoder().decode(InviteLink.self, from: JSONSerialization.data(withJSONObject: json))
         }
         XCTAssertEqual(InviteLinks.meta(for: try link(channel: "feedback", uses: 3, maxUses: 10, expiresIn: 6 * 86_400), now: now),
-                       "#feedback · 3 of 10 uses · Expires in 6 days")
+                       "#feedback · 7 of 10 joins remaining · Expires in 6 days")
         XCTAssertEqual(InviteLinks.meta(for: try link(channel: nil, uses: 3, maxUses: 10_000, expiresIn: 6 * 3_600), now: now),
-                       "3 of 10,000 uses · Expires in 6 hours")
+                       "9,997 of 10,000 joins remaining · Expires in 6 hours")
         XCTAssertEqual(InviteLinks.grouped(1_234_567), "1,234,567")
         XCTAssertEqual(InviteLinks.meta(for: try link(channel: nil, uses: 2, maxUses: nil, expiresIn: nil), now: now),
                        "2 uses · Never expires")
         XCTAssertEqual(InviteLinks.meta(for: try link(channel: nil, uses: 1, maxUses: 1, expiresIn: 1_799), now: now),
-                       "1 of 1 use · Expires in 30 minutes")
+                       "0 of 1 join remaining · Expires in 30 minutes")
         XCTAssertEqual(InviteLinks.meta(for: try link(channel: nil, uses: 1, maxUses: nil, expiresIn: 3_600), now: now),
                        "1 use · Expires in 1 hour")
         XCTAssertEqual(InviteLinks.expiry(nil, now: now), "Never expires")
@@ -126,7 +126,9 @@ final class InviteLinksTests: XCTestCase {
         func seconds(_ number: String, _ unit: InviteExpiryUnit) -> Result<Int?, InviteOptionError> {
             InviteLinks.expirySeconds(number, unit: unit)
         }
-        XCTAssertEqual(InviteLinks.defaultExpiryNumber, "7")
+        XCTAssertEqual(InviteLinks.defaultExpiryNumber, "30")
+        XCTAssertEqual(seconds(InviteLinks.defaultExpiryNumber, InviteLinks.defaultExpiryUnit), .success(2_592_000))
+        XCTAssertEqual(InviteLinks.maxUses(InviteLinks.defaultMaxUses), .success(100))
         XCTAssertEqual(InviteLinks.defaultExpiryUnit, .days)
         XCTAssertEqual(InviteExpiryUnit.allCases.map(\.label), ["minutes", "hours", "days", "Never"])
         XCTAssertEqual(seconds("7", .days), .success(604_800))
