@@ -1385,6 +1385,13 @@ try {
         Array(2).fill(["rgba(0, 0, 0, 0)", "none"]),
         "The full list's idle avatars have no visible border or halo",
       );
+      const nameStyles = () =>
+        evaluate(
+          `return [...document.querySelectorAll('.live-everyone .participant-name strong')].map(el => { const s = getComputedStyle(el); return [s.color, s.fontWeight]; });`,
+        );
+      const quietNames = Array(2).fill(["rgb(185, 188, 190)", "500"]);
+      assert.deepEqual(nameStyles(), quietNames, "Quiet participant names step back");
+      screenshot(`voice-names-quiet-${width}`);
       browser("press", "Escape");
       wait(`!document.querySelector('.live-everyone')`);
       browser("mouse", "move", "5", "5");
@@ -1424,13 +1431,26 @@ try {
       }
       browser("mouse", "move", "5", "5");
       screenshot(`voice-avatars-speaking-${width}`);
-      click("Mute microphone");
+      rightClick(".live-call .live-face");
+      wait(`document.querySelector('.live-everyone .avatar.speaking')`);
+      assert.deepEqual(
+        nameStyles(),
+        [["rgb(243, 244, 245)", "900"], quietNames[1]],
+        "Only the speaking participant's name becomes bright and bold",
+      );
+      screenshot(`voice-names-speaking-${width}`);
+      // Keep the list open: ending speech must update the existing name too.
+      evaluate(`await voiceFixture.client.setMuted(true);`);
+      wait(`!document.querySelector('.live-everyone .avatar.speaking')`);
+      assert.deepEqual(nameStyles(), quietNames, "Names return to quiet styling when muted");
+      browser("press", "Escape");
+      wait(`!document.querySelector('.live-everyone')`);
       wait(`!document.querySelector('.live-call .live-avatar[data-speaking]')`);
       assert.equal(cardHeight(), quietHeight, "Falling quiet keeps the call card's height");
     }
     evaluate(`await voiceFixture.cleanup();`);
     console.log(
-      "PASS ringless idle image/initial faces and list avatars, green speaking ring without a speaker line or card resize at 1280px and 390px (mock signaling/WebRTC)",
+      "PASS idle/speaking avatar rings and bright/bold speaker names with quiet/mute reset at 1280px and 390px (mock signaling/WebRTC)",
     );
   } else if (process.env.VOICE_TEST_CHANNEL_ROWS === "1") {
     evaluate(`voiceFixture.showSpaces();`);

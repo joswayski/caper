@@ -13336,10 +13336,12 @@ impl CaperApp {
         );
         ui.push_id(&person.id, |ui| {
             let row = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                let row_focused = ui.response().has_focus();
                 ui.allocate_ui_with_layout(
                     egui::vec2(ui.available_width(), if touch { 48.0 } else { 40.0 }),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
+                        let row_hovered = ui.rect_contains_pointer(ui.max_rect());
                         ui.spacing_mut().item_spacing.x = 8.0;
                         let (face, _) =
                             ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
@@ -13356,18 +13358,36 @@ impl CaperApp {
                         // Audio at the end; the name and status take the rest.
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let audio = (!own).then(|| {
-                                let audio = toned(
-                                    ui,
-                                    Tone {
-                                        rest: (Color32::TRANSPARENT, BORDER, MUTED),
-                                        hover: (BORDER, BORDER, TEXT),
-                                        press: (PRESSED, TERRACOTTA_BRIGHT, TEXT),
-                                    },
-                                    true,
-                                    egui::Button::new(RichText::new("Audio").size(11.0)).min_size(
-                                        egui::vec2(46.0, if touch { 40.0 } else { 28.0 }),
-                                    ),
+                                // Reserve the target even while hidden, so names never shift.
+                                let (rect, audio) = ui.allocate_exact_size(
+                                    egui::vec2(46.0, if touch { 40.0 } else { 28.0 }),
+                                    egui::Sense::click(),
                                 );
+                                if touch || row_hovered || row_focused || open || audio.has_focus()
+                                {
+                                    let (fill, border, color) = if audio.is_pointer_button_down_on()
+                                    {
+                                        (PRESSED, TERRACOTTA_BRIGHT, TEXT)
+                                    } else if audio.hovered() || audio.has_focus() {
+                                        (BORDER, BORDER, TEXT)
+                                    } else {
+                                        (Color32::TRANSPARENT, BORDER, MUTED)
+                                    };
+                                    ui.painter().rect(
+                                        rect,
+                                        8.0,
+                                        fill,
+                                        Stroke::new(1.0, border),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    ui.painter().text(
+                                        rect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        "Audio",
+                                        egui::FontId::proportional(11.0),
+                                        color,
+                                    );
+                                }
                                 audio.widget_info(|| {
                                     egui::WidgetInfo::selected(
                                         egui::WidgetType::Button,
@@ -13387,26 +13407,36 @@ impl CaperApp {
                                     ui.spacing_mut().item_spacing.y = 1.0;
                                     // The name, and any status under it,
                                     // centered on the face.
+                                    let name_font = egui::FontId::new(
+                                        12.5,
+                                        egui::FontFamily::Name(
+                                            if speaking {
+                                                "Satoshi Black"
+                                            } else {
+                                                "Satoshi Medium"
+                                            }
+                                            .into(),
+                                        ),
+                                    );
                                     let lines = ui.fonts_mut(|fonts| {
-                                        fonts.row_height(&egui::FontId::new(
-                                            12.5,
-                                            egui::FontFamily::Name("Satoshi Bold".into()),
-                                        )) + if status.is_some() {
-                                            1.0 + fonts
-                                                .row_height(&egui::FontId::proportional(11.0))
-                                        } else {
-                                            0.0
-                                        }
+                                        fonts.row_height(&name_font)
+                                            + if status.is_some() {
+                                                1.0 + fonts
+                                                    .row_height(&egui::FontId::proportional(11.0))
+                                            } else {
+                                                0.0
+                                            }
                                     });
                                     ui.add_space(((36.0 - lines) / 2.0).max(0.0));
                                     ui.add(
                                         egui::Label::new(
-                                            bold(if own {
+                                            RichText::new(if own {
                                                 format!("{} (you)", person.name)
                                             } else {
                                                 person.name.clone()
                                             })
-                                            .size(12.5),
+                                            .font(name_font)
+                                            .color(if speaking { TEXT } else { MUTED }),
                                         )
                                         .truncate()
                                         .selectable(false),
@@ -32138,8 +32168,8 @@ mod tests {
         }
         assert_eq!(
             shown.iter().filter(|text| **text == "Audio").count(),
-            2,
-            "only remote participants have Audio buttons"
+            1,
+            "only the expanded participant keeps its Audio button visible"
         );
         let heading = text_position(&list, "In #general · 3 people");
         assert!(heading.x > 340.0, "the list opens beside the sidebar");
@@ -32169,6 +32199,65 @@ mod tests {
         assert_eq!(app.call_list, Some(super::CallList { audio: None }));
         let list = render(&mut app, &context, vec![]);
         assert!(!texts(&list).contains(&"User volume"));
+        assert!(
+            !texts(&list).contains(&"Audio"),
+            "desktop controls hide at rest"
+        );
+        let maya_name = text_position(&list, "Maya");
+        let alex_audio = node_bounds(&list, "Audio controls for Alex").unwrap();
+        let hovered = render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(maya_name)],
+        );
+        assert_eq!(
+            texts(&hovered)
+                .iter()
+                .filter(|text| **text == "Audio")
+                .count(),
+            1
+        );
+        assert_eq!(text_position(&hovered, "Maya"), maya_name);
+        assert_eq!(
+            node_bounds(&hovered, "Audio controls for Alex"),
+            Some(alex_audio)
+        );
+        let away = render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerMoved(egui::pos2(1000.0, 500.0))],
+        );
+        assert!(!texts(&away).contains(&"Audio"));
+        let target = away
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Audio controls for Alex"))
+            .unwrap()
+            .0;
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::AccessKitActionRequest(
+                egui::accesskit::ActionRequest {
+                    action: egui::accesskit::Action::Focus,
+                    target,
+                    data: None,
+                },
+            )],
+        );
+        let focused = render(&mut app, &context, vec![]);
+        assert_eq!(
+            texts(&focused)
+                .iter()
+                .filter(|text| **text == "Audio")
+                .count(),
+            1,
+            "keyboard focus reveals the control"
+        );
         // Audio opens a row's controls; an outside click closes the list.
         click(
             &mut app,
