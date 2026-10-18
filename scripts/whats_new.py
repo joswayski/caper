@@ -391,6 +391,12 @@ def fit_evidence(ranges, commits, recent):
     raise GenerationError(f"release commit messages exceed {MAX_INPUT_CHARS} input characters even without diffs")
 
 
+def wait_before_retry(delay):
+    """The pause between provider attempts, apart from time.sleep, which
+    subprocess also calls while it waits for git."""
+    time.sleep(delay)
+
+
 def ask_claude(prompt):
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
@@ -461,7 +467,7 @@ def ask_claude(prompt):
                 raise GenerationError("Claude request failed; no snapshots published") from None
         except (TimeoutError, OSError, http.client.HTTPException, ValueError):
             raise GenerationError("Claude request failed; no snapshots published") from None
-        time.sleep(delay)
+        wait_before_retry(delay)
     if len(raw) > MAX_RESPONSE_BYTES:
         raise GenerationError("Claude response exceeds the size limit")
     message = parse_json(raw)

@@ -413,7 +413,7 @@ class HighlightsTests(unittest.TestCase):
         self.provider_error = urllib.error.HTTPError(
             "https://example.test", 500, "secret error body", {}, io.BytesIO(b"secret")
         )
-        with patch.object(notes.time, "sleep") as sleep:
+        with patch.object(notes, "wait_before_retry") as sleep:
             self.assert_cli_failure(newest, "Claude request failed (HTTP 500 unknown_error)")
         self.assertEqual([call.args for call in sleep.call_args_list], [(10,), (30,)])
         self.assertEqual(len(self.requests), 3)
@@ -447,7 +447,7 @@ class HighlightsTests(unittest.TestCase):
                 raise failures.pop(0)
             return provider(request, timeout)
 
-        with patch.object(notes.urllib.request, "urlopen", side_effect=flaky), patch.object(notes.time, "sleep"):
+        with patch.object(notes.urllib.request, "urlopen", side_effect=flaky), patch.object(notes, "wait_before_retry"):
             feeds = self.generate(newest)
         self.assertEqual(len(self.requests), 3)
         self.assertEqual(feeds["web"]["releases"][-1]["highlights"][0]["title"], "Clearer channel controls")
@@ -510,7 +510,7 @@ class HighlightsTests(unittest.TestCase):
         self.provider_error = urllib.error.HTTPError(
             "https://example.test", 400, "secret error body", {}, io.BytesIO(encoded(body))
         )
-        with patch.object(notes.time, "sleep") as sleep:
+        with patch.object(notes, "wait_before_retry") as sleep:
             self.assert_cli_failure(
                 newest, "Claude request failed (HTTP 400 invalid_request_error: max_tokens: too large)"
             )
