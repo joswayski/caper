@@ -1621,6 +1621,181 @@ Android's Gradle attempt stops at the missing SDK; Apple has no Swift/Apple
 toolchain in this orb. Native OS clipboard/device acceptance remains unverified.
 No Docker daemon is available; the web production build was checked directly.
 
+### Editing attachments before sending
+
+A pencil on a draft's tile opens a full-window editor for still images and
+videos before they are sent, on web (desktop and mobile layouts), Android,
+iPhone/iPad/Mac and Rust desktop. Spoiler, Edit and Remove share one solid bar
+in the tile's top-right corner, like Discord's (with a pointer, 28 px buttons;
+on touch layouts the bar spans the tile's top edge and its 44 px buttons share
+the width); hovering a button only lightens it. Edit appears only for files the
+editor can open. A spoilered file stays editable: the editor and preview show
+it unblurred to its author, its tile shows the blurred edited render, and Send
+carries both the edit (already in the uploaded file) and the spoiler flag.
+Opening a draft's preview (a tap or click on the tile) shows **Crop**, **Draw**
+and **Text** under the picture for files the editor can open; each closes the
+preview and opens the editor on that tool (the pencil opens Draw). Web uses
+its media viewer; Android, Apple and desktop open such files in the app's own
+preview instead of the system viewer (QuickLook on Apple, the system app on
+Android and desktop), which can't host the tools, and keep the system viewer
+for other files. Each preview zooms pictures like that app's media viewer
+(pinch or, on desktop, Ctrl+scroll; double-tap or double-click; drag to pan
+while zoomed); video doesn't zoom except desktop's still frame. Desktop's
+preview also has Open in default app, which opens what will be sent: the
+original when unedited, otherwise the prepared edited file, waiting with
+"Available when your edit is ready" while it prepares (a profile card file is
+prepared when it's clicked); and for videos when its FFmpeg lacks the overlay
+filter, it disables Draw and Text as the editor does. On web phones the editor
+takes over the preview's history entry, so Back closes the editor. The editor offers:
+
+- **Crop** with corner and edge handles (drag inside to move; with a keyboard,
+  arrow keys nudge the frame on web and Android) and **Rotate left** in quarter
+  turns.
+- **Draw** freehand with round lines, and add **Text** (Satoshi Bold, one line,
+  up to 200 characters): click or tap to place it, click it to change it, drag
+  to move it. With a mouse, trackpad, pen or iPad pointer, Draw shows a ring
+  the size and colour of the brush in place of the cursor (at least 6 px).
+  Both take one of six colours (red, yellow, green, blue, white, black) or any
+  colour from the platform's colour picker, and a size slider (2–40 pt lines,
+  14–96 pt text, as seen on screen).
+- **Undo**, **Redo** (Ctrl/⌘+Z, Ctrl/⌘+Shift+Z, Ctrl+Y) and **Reset** to the
+  original; Escape closes a text field, then cancels. Done with no change just
+  closes.
+
+**When it happens.** Uploads still start the moment a file is added, so
+unedited files send as quickly as before. The pencil is available straight
+away (editing uses the local original, not the upload). Saving an edit cancels
+that file's preparation and upload (`POST /api/assets/{id}/cancel`, the same as
+Remove; the unattached upload is purged by the existing cleanup) and prepares
+the **original** again with the edit applied, then uploads the result in the
+same tile. The draft keeps the original and a description of the edit, so
+reopening shows the earlier crop, drawings and text still editable, and edits
+never stack generation loss. The profile card composer, which uploads at Send,
+applies the edit when it prepares the file. The pencil is hidden while a send
+that carries the files is pending.
+
+**Never the unedited file.** People crop to hide things, so an edit that cannot
+be applied (the image cannot be decoded, the platform cannot encode H.264, the
+transcode fails) fails the tile with "Couldn’t apply your edits." and its
+Retry, rather than uploading the original. Send retries it once, like any
+failed upload, and never sends the message without it.
+
+**The model** (`apps/web/src/chat/edit.ts`, mirrored by each client): quarter
+turns of the upright original (EXIF applied), a crop as fractions of the
+turned picture, then marks painted in order: strokes (points as fractions,
+width as a fraction of the longer edge) and text centred on a point (size as a
+fraction of the longer edge, always upright). Every client's tests run
+`shared/messages/edit-cases.json` (turns, crop rounding including even video
+crops, and when a file counts as edited).
+
+**What gets uploaded.**
+
+- Images are painted at the original's own resolution, then encoded by the
+  source's class under the rules above: photos (JPEG, HEIC, lossy WebP, AVIF)
+  become AVIF/WebP at the server quality and `ASSET_IMAGE_MAX_EDGE`, and
+  screenshots/graphics (PNG, BMP, TIFF, lossless WebP) stay lossless. The
+  smallest encoding is always kept (the original is not an option), with PNG
+  as the last resort. Output is upright and carries no EXIF.
+- Videos are always transcoded to H.264, even when the original would have
+  uploaded unchanged. The turn and crop are baked into the frames, the crop
+  starts and measures on even pixels, its short edge is
+  capped by `ASSET_VIDEO_MAX_HEIGHT` (0 keeps the crop's size) and the bitrate
+  target is for the output size. Drawings and text are one still overlay over
+  the whole video (the editor says so and shows a still frame from just after
+  the start). HDR is
+  tone mapped as usual; where the platform cannot tone map it, editing fails
+  rather than uploading an unedited or washed-out copy. Audio is kept.
+- Editable: still JPEG, PNG, WebP, AVIF, HEIC/HEIF, BMP and TIFF the platform
+  decodes, and videos it can transcode. GIFs, animated WebP/PNG, audio and other
+  files show no pencil.
+
+No API, gateway, database, infrastructure or secret change is needed: the
+server sees an ordinary upload, and cancelled reservations already exist.
+
+| Client | Editor | Images | Video |
+| --- | --- | --- | --- |
+| Web | `AttachmentEditor.tsx` (loaded on demand), full-window dialog; Back closes it on phones | Canvas at full resolution, then the existing encoders | Mediabunny/WebCodecs: rotate, crop and resize, then the overlay in `process`; HDR through `hdr-video.ts` with the tone-mapped frame drawn turned and cropped. Shown only where the browser encodes H.264 (open-source Chromium has no encoder) |
+| Android | `AttachmentEditor.kt`, a full-screen Compose dialog; Compose has no colour picker, so the custom swatch opens a small hue and saturation/value picker | `EditPainter` (android.graphics) on the decoded crop region at native size, then the existing encoders | Media3: `ScaleAndRotateTransformation`, `Crop`, `Presentation`, then a `BitmapOverlay` of the marks; HDR needs Android 10+ to tone map. Like the existing transcode, portrait output may carry rotation metadata. AVIF is editable from Android 12 and HEIC from 9; TIFF is not (no platform decoder) |
+| Apple | `AttachmentEditor.swift`: a full-screen cover on iPhone/iPad, a window overlay on Mac (inside the profile popover there); the system `ColorPicker` | `AttachmentEditRenderer` (CoreGraphics/CoreText) at native size, then the existing encoders | The existing BT.709 composition (the HDR tone map) read as BGRA, each frame turned, cropped, scaled and overlaid with Core Image, written through a pixel-buffer adaptor |
+| Rust desktop | `attachment_editor.rs`, a full-window egui modal with egui's colour picker | `attachment_edit.rs` on the decoded original at native size: tiny-skia strokes, Satoshi Bold through ab_glyph, then the existing encoders. HEIC and AVIF are not editable (the desktop pipeline does not decode them) | FFmpeg filter graph: `transpose`/flips, `crop`, then scale or the HDR tone map. Marks need `overlay` with a PNG input (`-f png_pipe`), which the bundled trimmed FFmpeg 9.0.2 lacks, so Draw and Text are disabled for videos (with an explanation) until joswayski/ffmpeg-desktop enables the `overlay` filter, `png` decoder and `png_pipe` demuxer; the app checks the binary and uses them once present. Videos show a frame from 1 s in, the desktop poster rule |
+
+Validation (October 17, 2026): `npm run check` passes and `npm test`
+passes apart from three tests outside this change (`noise-assets` fails the
+same way on the base commit here; the two GIF-shrink tests pass alone and time
+out only under load). Browser runs against the loopback fixture at 1280px and
+390px (Chromium) covered drawing, text placement, dragging and re-editing,
+crop handles, rotation, undo/redo shortcuts, Reset, Escape, the pencil only on
+still images, and that the earlier upload is cancelled and the uploaded bytes
+have the expected size, crop, turn and colours. That Chromium has no H.264
+encoder, so web video edits were checked with Mediabunny and VP9 (turn, crop,
+size and overlay position); H.264 and HDR video edits in a browser remain
+unverified. Android: `testDebugUnitTest` (445 tests, including the shared
+cases), `lintDebug` and Kotlin compilation pass with a local SDK. Rust desktop:
+fmt, Clippy and 570 tests pass; ignored real-FFmpeg tests turn, crop, tone map
+and draw on video with a full FFmpeg and refuse marks with the bundled one;
+Xvfb captures of the editor were inspected. Native development builds on the
+branch: Android test, lint, build and emulator smoke pass (the smoke does not
+open the editor); Linux and Windows desktop builds pass; the macOS
+`xcodebuild test` passes, including CoreGraphics rendering and an H.264 clip
+turned, cropped and drawn on (one rerun crashed earlier, in `APIClientTests`,
+when a request reached a mock URL handler the previous test had cleared); the
+iOS simulator build passes. Its parity UI tests passed before the rebase onto
+#664. After it, `testLatestReactionsStayAboveOpenKeyboard` timed out twice with
+the reaction fully visible above the composer: each check read four frames,
+each a slow accessibility query, within a 5-second wait (`main`'s passing run
+took 4.8 s for one chip). The check now reads each frame once, and with it all
+39 iOS parity UI tests pass (one run stopped earlier at `GatewayLifecycleTests`,
+which this change doesn't touch). The macOS parity UI step fails the same nine
+tests as `main` does without this change (Live now, thread and composer layout
+checks; the Intel Mac passed one of them in the latest run), so it says nothing
+about the editor. Not yet run: the editors on an emulator or physical device,
+Media3 effects and encoders, Windows (Media Foundation) and real storage
+uploads from native clients.
+
+Validation of the tile bar, preview tools and brush ring (October 18, 2026):
+web `npm run check`, the typecheck and `npm test` pass (apart from the same
+two tests as above), and Chromium at 1280px and 390px checked the bar's order
+and solid hover, the preview's tools opening the editor on their tool, Back on
+phones closing that editor without a stray history entry, and the ring's size,
+colour and hiding. Android: compilation, unit tests (including the tile
+actions, initial tool and ring diameter) and lint pass, and in Native
+development builds the build and emulator smoke pass (the smoke doesn't open
+the preview or editor). Apple, in Native development builds: the macOS and iOS
+simulator builds compile, the core tests pass on both (including the new tile,
+tool and ring tests), all 39 iOS parity UI tests pass, and the macOS parity UI
+step fails only `main`'s tests as above; no UI test opens the new preview or
+the ring. Rust desktop: fmt, Clippy and 577 tests pass, Xvfb captures of the
+bar, preview and ring were inspected, and the Linux and Windows builds pass.
+Not yet checked anywhere: the Mac blank cursor and iPad pointer hiding, stylus
+hover, and the bar on physical touch screens.
+
+Preview zoom and desktop's Open in default app (October 18, 2026): each app's
+media viewer zoom moved into a part both screens share (Apple `MediaZoom`,
+Android `ZoomableImage`, desktop `viewer::Zoom`), so the viewers keep their
+behaviour. Android compilation, unit tests and lint pass; desktop fmt, Clippy
+and 581 tests pass (zoom, panning, the button's states and the temp copy it
+opens), with Xvfb captures of the zoomed preview and the waiting tooltip;
+in Native development builds, Apple's macOS and iOS simulator builds and core
+tests pass, all iOS parity UI tests pass (including those opening the media
+viewer whose zoom moved into `MediaZoom`), the macOS parity UI step fails only
+`main`'s tests, and the Android emulator smoke passed on a rerun after the
+emulator's own System UI crashed in the first attempt. Pinch on real touch
+screens and trackpads, and a default app actually opening, are unchecked.
+
+With spoilers (October 18, 2026): merged with attachment spoilers, the tile's
+bar holds Spoiler, Edit and Remove on every client. Web `npm run check`, the
+typecheck and `npm test` pass (apart from `noise-assets`, which fails the same
+way on `main`), and Chromium at 1100px and 390px showed the three-button bar
+inset on desktop and spanning the tile on a phone, with the spoilered tile
+blurred. Android compilation, 473 unit tests (including the bar's order, its
+labels and the picture a spoilered tile blurs) and lint pass; desktop fmt,
+Clippy and 612 tests pass, with Xvfb captures of the pointer and narrow bars,
+the spoiler cover and the video badge. Native development builds on the
+merge: the macOS and iOS simulator builds compile and their core tests pass,
+Linux desktop builds, and Android tests, lint and the build pass; the UI steps
+fail only the tests `main`'s nightly fails the same way (one iOS invite test,
+eight macOS layout tests, and Android's reaction picker and What's New links).
+
 ### Inline GIF playback
 
 GIF uploads remain ordinary `image/gif` originals; the current upload path does

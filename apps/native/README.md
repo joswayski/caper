@@ -39,6 +39,13 @@ history and offer Unpin without confirmation. Preview readers cannot mutate pins
 See [pin validation and rollout](../../docs/media.md#message-pins); implementation
 does not establish native build, device, or production acceptance.
 
+Android, iOS/macOS and Rust desktop let people edit an attached photo or video
+before sending (crop, rotate, draw, text, colour and size, undo/redo/reset) from
+a pencil on its draft tile, re-uploading the original with the edits. Rust
+desktop cannot draw on videos until its bundled FFmpeg gains an overlay filter.
+See [editing attachments](../../docs/media.md#editing-attachments-before-sending)
+for what each platform has and has not been validated on.
+
 Live forwarding is implemented in the native clients: a channel/DM picker with
 an optional note, a live original card, and a read-only shared conversation.
 Replies to the destination wrapper remain independent. Rust desktop exposes
