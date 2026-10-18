@@ -1455,7 +1455,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     openGateway(channel.id, history.cursor, committed, channel.joined && direct?.incoming != true)
                     if (direct != null) refreshPeople()
                 }
-                goToMessage(target, notify = true, onLoaded = onOpened)
+                goToMessage(target, notify = true) {
+                    if (target.threadRootId == null) openThread(target.id)
+                    onOpened()
+                }
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) {
                 if (request == generation && accountRequest == accountGeneration && navigation == conversationOpeningRevision)

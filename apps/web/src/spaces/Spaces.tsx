@@ -3707,7 +3707,8 @@ export default function Spaces({
           return true;
         }}
         focusMessage={focusMessage}
-        focusThread={!!visitView}
+        // Both report visits and forwarded conversations open the source thread.
+        focusThread
         // A reply from the team answers the report in the inbox.
         onSent={visitView ? () => void refreshFeedback() : undefined}
         onHistoryChange={(history) => {

@@ -5920,7 +5920,7 @@ impl CaperApp {
                     && request == self.navigation
                     && self.selected_channel.as_deref() == Some(&source.message.channel_id)
                 {
-                    self.load_context(source.message.thread_root_id, source.message.id, false);
+                    self.open_forward_source(source);
                 }
                 if let Some(target) = report_focus.or(visit_request.map(|request| request.target))
                     && self.selected_channel.as_deref() == Some(target.channel.as_str())
@@ -7674,7 +7674,11 @@ impl CaperApp {
     fn open_forward_source(&mut self, source: model::ForwardSource) {
         if self.selected_channel.as_deref() == Some(&source.message.channel_id) {
             self.showing_pins = false;
-            self.load_context(source.message.thread_root_id, source.message.id, false);
+            if let Some(root) = source.message.thread_root_id {
+                self.load_context(Some(root), source.message.id, false);
+            } else {
+                self.open_thread(source.message.id);
+            }
         } else {
             self.navigate(NavigationTarget {
                 space: source.space_id.clone(),
@@ -37192,6 +37196,105 @@ mod tests {
                     .iter()
                     .any(|(_, node)| node.label() == Some("Loading messages"))
             );
+        }
+    }
+
+    #[test]
+    fn forwarded_conversation_opens_root_threads_and_focuses_replies() {
+        for forwarded_reply in [false, true] {
+            let (context, mut app) = fixture("parity-mentions");
+            let mut root = app.timeline.messages().next().unwrap().clone();
+            root.content.text = "TEST FIXTURE — forwarded thread root".into();
+            let mut reply = root.clone();
+            reply.id = "forward-reply".into();
+            reply.client_message_id = "forward-reply-key".into();
+            reply.seq = "5".into();
+            reply.thread_root_id = Some(root.id.clone());
+            reply.content.text = "TEST FIXTURE — forwarded thread reply".into();
+            let source = if forwarded_reply {
+                reply.clone()
+            } else {
+                root.clone()
+            };
+            let mut wrapper = root.clone();
+            wrapper.id = "forward-wrapper".into();
+            wrapper.client_message_id = "forward-wrapper-key".into();
+            wrapper.seq = "6".into();
+            wrapper.forward = Some(Box::new(model::MessageForward {
+                message: Some(source.clone()),
+                seq: "5".into(),
+            }));
+            let conversation_path = format!(
+                "GET /api/chat/channels/{}/forwards/{}/thread",
+                root.channel_id, wrapper.id
+            );
+            let thread_path = format!(
+                "GET /api/chat/channels/{}/messages/{}/thread",
+                root.channel_id, root.id
+            );
+            let conversation = serde_json::json!({
+                "root": source, "messages": [], "cursor": "5", "hasMore": false,
+                "source": {"spaceId": app.selected_space, "message": source}
+            })
+            .to_string();
+            let thread = serde_json::json!({
+                "root": root, "messages": [reply], "cursor": "5", "hasMore": false,
+                "hasNewer": false
+            })
+            .to_string();
+            let history_path = format!(
+                "GET /api/chat/channels/{}/messages?around={}",
+                root.channel_id, root.id
+            );
+            let history = serde_json::json!({
+                "messages": [root], "hasMore": false, "hasNewer": false
+            })
+            .to_string();
+            let (base, _) = account_server_with(move |path, _| {
+                if path == conversation_path {
+                    (200, conversation.clone())
+                } else if path == thread_path
+                    || path == format!("{thread_path}?around=forward-reply")
+                {
+                    (200, thread.clone())
+                } else if path == history_path {
+                    (200, history.clone())
+                } else {
+                    (404, r#"{"error":"Not found"}"#.into())
+                }
+            });
+            app.worker =
+                crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context.clone());
+            app.token = Some("fixture-token".into());
+            // The original is outside the loaded channel history.
+            app.timeline.reset(vec![wrapper], "6").unwrap();
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            click(
+                &mut app,
+                &context,
+                text_position(&output, "View conversation"),
+            );
+            receive_until(&mut app, |app| {
+                !app.forwarding.is_open()
+                    && !app.context_loading
+                    && app
+                        .thread_view
+                        .as_ref()
+                        .is_none_or(|thread| !thread.loading)
+            });
+            assert!(app.error.is_none(), "{:?}", app.error);
+            assert_eq!(
+                app.thread_view.as_ref().map(|thread| &thread.root),
+                Some(&root.id)
+            );
+            assert!(app.thread_view.as_ref().unwrap().error.is_none());
+            if forwarded_reply {
+                assert_eq!(app.focused_message.as_deref(), Some("forward-reply"));
+            }
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            text_position(&output, "TEST FIXTURE — forwarded thread reply");
         }
     }
 

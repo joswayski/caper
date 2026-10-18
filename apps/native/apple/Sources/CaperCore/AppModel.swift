@@ -861,7 +861,9 @@ public final class AppModel {
                 guard generation == attempt, navigationGeneration == navigation + 1 else { return false }
             }
             guard chat.channelID == source.message.channelId else { return false }
-            return await chat.goToMessage(source.message)
+            guard await chat.goToMessage(source.message) else { return false }
+            if source.message.threadRootId == nil { await chat.openThread(source.message.id) }
+            return true
         } catch is CancellationError { return false }
         catch {
             if generation == attempt, navigationGeneration == navigation { navigationError = "Couldn’t open the conversation. Try again." }
