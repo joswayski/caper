@@ -901,6 +901,7 @@ export default function AttachmentEditor({
                           label="Crop size"
                           min={10}
                           max={100}
+                          defaultValue={100}
                           value={((current.crop.width * rotated.width) / Math.min(rotated.width, rotated.height)) * 100}
                           onChange={(value) => resizePictureCrop(value / 100)}
                         />

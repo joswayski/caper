@@ -1359,6 +1359,19 @@ omit spoiler thumbnails and filenames. This is a presentation preference, not
 access control: authorized clients still receive URLs, and older clients do
 not understand the flag. Text spoilers and slash commands are not implemented.
 
+Spoiler presentation validation (October 18, 2026): web checks and 682 unit tests
+pass. The browser fixture covers desktop/narrow galleries, hover concealment,
+keyboard focus, independent reveal/hide and viewer hiding; Chromium touch
+emulation verifies the visible instruction and 44px hide target. A real MP4
+playback check confirms hiding pauses and removes inline/viewer players.
+Android builds the debug APK and release R8 output, passes lint and 483 JVM
+tests; the instrumentation tests compile but have not run on a device.
+Linux desktop builds, passes application Clippy and the two spoiler regression
+tests, and its hidden/revealed/viewer states were inspected under Xvfb.
+Apple is implemented but uncompiled here (no Swift/Xcode or connected runner).
+Windows, Safari and physical-device behavior remain unverified; browser and
+native fixtures are not live-account or live-storage validation.
+
 `GET /api/assets/usage` returns `{used, limit}`. `POST /api/assets/urls`
 returns fresh URLs for visible attachments (like Discord's refresh endpoint)
 for tabs open longer than a URL's lifetime; a file an edit replaced is

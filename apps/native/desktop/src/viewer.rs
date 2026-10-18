@@ -518,15 +518,7 @@ impl Viewer {
             .map(|(text, _)| text.clone());
         let title_rect = egui::Rect::from_min_max(
             top.min + egui::vec2(20.0, 0.0),
-            egui::pos2(
-                top.right()
-                    - if current.spoiler && self.reveal_scope.is_some() {
-                        290.0
-                    } else {
-                        150.0
-                    },
-                top.bottom(),
-            ),
+            egui::pos2(top.right() - 150.0, top.bottom()),
         );
         let mut job = egui::text::LayoutJob::single_section(
             title,
@@ -586,7 +578,11 @@ impl Viewer {
             self.save(current, media);
         }
         if current.spoiler && self.reveal_scope.is_some() {
-            let bounds = egui::Rect::from_min_max(top.min, egui::pos2(x - 4.0, top.bottom()));
+            // Keep the label out of the filename and toolbar, including narrow windows.
+            let bounds = egui::Rect::from_min_max(
+                top.left_bottom(),
+                egui::pos2(top.right() - 12.0, top.bottom() + 38.0),
+            );
             if crate::spoiler_hide_button(ui, bounds, ui.id().with("viewer-hide-spoiler")).clicked()
             {
                 self.hide_spoiler(ui.ctx(), current);
