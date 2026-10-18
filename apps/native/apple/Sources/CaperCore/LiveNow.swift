@@ -1,14 +1,14 @@
 import Foundation
 
-/// Design H's "Live now" rules: your call's card, the other live rooms and the
-/// phone strip share them, so the sidebar and its tests agree.
+/// Design H's voice rules ("Live now"): your call's card, the other live rooms'
+/// cards and the phone strip share them, so the sidebar and its tests agree.
 enum LiveNow {
-    /// Room cards shown before the rest fold into "N more live".
-    static let shownRooms = 2
     /// Faces your call's card shows before the rest fold into a "+N" tile.
     static let maximumFaces = 10
     /// Rows of faces your call's card may use.
     static let faceRows = 2
+    /// Faces the phone strip shows before the rest fold into a "+N" chip.
+    static let stripFaces = 5
 
     /// A room's one-line names: "Maya"; "Maya and Alex"; "Maya, Alex and Sam";
     /// "Maya, Alex and 3 more".
@@ -42,20 +42,26 @@ enum LiveNow {
         return (Array(people.prefix(kept)), Array(people.dropFirst(kept)))
     }
 
+    /// The phone strip's faces: the card's people in the card's order, up to
+    /// five, else the first four and a "+N" chip for the rest (total − 4).
+    static func stripFold<Person>(_ people: [Person]) -> (shown: [Person], folded: [Person]) {
+        fold(people, slots: stripFaces)
+    }
+
     /// You first, then everyone else in the order they joined. Speaking never
     /// reorders faces.
     static func selfFirst<Person>(_ people: [Person], isSelf: (Person) -> Bool) -> [Person] {
         people.filter(isSelf) + people.filter { !isSelf($0) }
     }
 
-    /// Other live rooms: busiest first, then by name; ties keep their order.
-    static func busiestFirst<Room>(_ rooms: [Room], count: (Room) -> Int, name: (Room) -> String) -> [Room] {
-        rooms.enumerated().sorted { a, b in
-            let left = count(a.element), right = count(b.element)
-            if left != right { return left > right }
-            let order = name(a.element).localizedStandardCompare(name(b.element))
-            if order != .orderedSame { return order == .orderedAscending }
-            return a.offset < b.offset
-        }.map(\.element)
+    /// The channel rows listed: all of them, or while Channels is collapsed only
+    /// the live ones (your call's and rooms with people in voice), in list order,
+    /// so collapsing never hides voice.
+    static func listed<Row>(_ rows: [Row], expanded: Bool, live: (Row) -> Bool) -> [Row] {
+        expanded ? rows : rows.filter(live)
     }
+
+    /// Whether a call's channel has a row in the listed space, where its card
+    /// grows in place; otherwise its card sits above the channels.
+    static func hasRow(_ channelID: String, rows: [String]) -> Bool { rows.contains(channelID) }
 }

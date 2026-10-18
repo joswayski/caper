@@ -77,6 +77,10 @@ test("a profile update renames and re-pictures the same account only, and a remo
   const other = { ...member, id: "sam" };
   assert.equal(withProfile(other, maya), other);
   assert.equal(withProfile(member, undefined), member);
+  const admin = withProfile({ ...member, admin: false }, { ...maya, admin: true });
+  assert.equal(admin.admin, true);
+  assert.equal(withProfile(admin, maya).admin, true, "older payloads preserve admin status");
+  assert.equal(withProfile(admin, { ...maya, admin: false }).admin, false);
 });
 
 test("message authors follow live profiles everywhere they are nested, without touching content", () => {

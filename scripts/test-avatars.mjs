@@ -146,7 +146,7 @@ const browser = (...args) =>
   });
 const evaluate = (code) => JSON.parse(browser("eval", code));
 const wait = (condition) => browser("wait", "--fn", condition);
-// Voice faces have no painted border or halo at rest. Overlapping Live now faces are
+// Voice faces have no painted border or halo at rest. Overlapping live card faces are
 // separated by a 2px ring in their own surface's colour: a gap, never a visible frame.
 const unframedVoiceAvatars = `(() => {
   const faces = [...document.querySelectorAll(".avatar, .live-avatar")];
@@ -213,7 +213,7 @@ try {
     ),
     [0, 31, 32, 799, 143],
   );
-  // People in voice in a channel you are not in show as faces on its Live now card.
+  // People in voice in a channel you are not in show as faces on its row's live card.
   assert.deepEqual(
     evaluate(
       '[...document.querySelectorAll(".live-room .live-stack .live-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))',
@@ -456,7 +456,7 @@ try {
   );
   if (artifacts) browser("screenshot", join(artifacts, "avatars-vector-collection.png"));
   console.log(
-    "PASS: saved SVG IDs in chat, members, Live now room card, phone voice strip and account; transparent backing; missing-response fallback; presence; profile rename; desktop, narrow and enlarged Chromium. Mock API, no live voice.",
+    "PASS: saved SVG IDs in chat, members, live room card, phone voice strip and account; transparent backing; missing-response fallback; presence; profile rename; desktop, narrow and enlarged Chromium. Mock API, no live voice.",
   );
 } catch (error) {
   console.error(browser("snapshot"));

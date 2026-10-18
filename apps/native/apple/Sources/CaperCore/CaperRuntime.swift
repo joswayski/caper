@@ -30,23 +30,38 @@ import Foundation
         return true
     }
 
+    /// Local call rosters: `voice-roster` (you and Maya in the open channel),
+    /// `voice-crowd` (seven people, Alex speaking) and `voice-elsewhere` (you
+    /// and Maya in another space's channel, which has no row here).
+    static let voiceRosterFixtures: Set<String> = ["voice-roster", "voice-crowd", "voice-elsewhere"]
+
     static func showVoiceRosterPreview(_ model: AppModel, environment: [String: String] = ProcessInfo.processInfo.environment) {
-        guard environment["CAPER_TEST_MODE"] == "parity", environment["CAPER_UI_FIXTURE"] == "voice-roster",
+        guard environment["CAPER_TEST_MODE"] == "parity", let fixture = environment["CAPER_UI_FIXTURE"],
+              voiceRosterFixtures.contains(fixture),
               let rawURL = environment["CAPER_API_BASE_URL"], let baseURL = URL(string: rawURL),
               ["localhost", "127.0.0.1", "::1"].contains(baseURL.host?.lowercased() ?? ""),
               model.voice.context == nil,
               let detail = model.detail,
               let channel = detail.channels.first(where: { $0.id == model.selectedChannelID }) else { return }
+        let crowd = fixture == "voice-crowd" ? """
+        ,{"id":"fixture-crowd-alex","name":"TEST FIXTURE Alex","muted":false,"deafened":false,"tracks":[]},
+         {"id":"fixture-crowd-sam","name":"TEST FIXTURE Sam","muted":false,"deafened":true,"tracks":[]},
+         {"id":"fixture-crowd-jo","name":"TEST FIXTURE Jo","muted":false,"deafened":false,"tracks":[]},
+         {"id":"fixture-crowd-ri","name":"TEST FIXTURE Ri","muted":false,"deafened":false,"tracks":[]},
+         {"id":"fixture-crowd-kai","name":"TEST FIXTURE Kai","muted":false,"deafened":false,"tracks":[]}
+        """ : ""
         let data = Data("""
         [{"id":"fixture-self","name":"TEST FIXTURE You","muted":false,"deafened":false,"tracks":[]},
-         {"id":"fixture-remote","name":"TEST FIXTURE Maya","muted":true,"deafened":false,"tracks":[]}]
+         {"id":"fixture-remote","name":"TEST FIXTURE Maya","muted":true,"deafened":false,"tracks":[]}\(crowd)]
         """.utf8)
         guard let participants = try? JSONDecoder().decode([VoiceParticipant].self, from: data) else { return }
-        model.voice.displayRosterPreview(
-            context: VoiceContext(channelID: channel.id, channelName: channel.name,
-                                  spaceID: detail.space.id, spaceName: detail.space.name),
-            selfID: "fixture-self", participants: participants
-        )
+        let context = fixture == "voice-elsewhere"
+            ? VoiceContext(channelID: "fixture-elsewhere-lobby", channelName: "lobby",
+                           spaceID: "fixture-elsewhere-space", spaceName: "TEST FIXTURE Elsewhere")
+            : VoiceContext(channelID: channel.id, channelName: channel.name,
+                           spaceID: detail.space.id, spaceName: detail.space.name)
+        model.voice.displayRosterPreview(context: context, selfID: "fixture-self", participants: participants,
+                                         speaking: fixture == "voice-crowd" ? ["fixture-crowd-alex"] : [])
     }
 
     public static func makeModel(environment: [String: String] = ProcessInfo.processInfo.environment) -> AppModel {

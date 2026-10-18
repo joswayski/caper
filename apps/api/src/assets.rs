@@ -1,6 +1,6 @@
-//! Uploaded files. Bytes go straight between clients and R2: the API only
-//! reserves quota, presigns one exact upload, verifies the stored object, and
-//! signs short-lived delivery URLs that the CDN Worker checks.
+//! Uploaded files. Clients PUT to private staging objects. Completion verifies
+//! and strips media metadata before publishing separate, server-written CDN
+//! objects and signing short-lived delivery URLs.
 use crate::{
     ApiError, AppState, RuntimeEnvironment,
     auth::Principal,
@@ -36,6 +36,8 @@ const PURGE_INTERVAL: Duration = Duration::from_secs(60);
 /// Deleted files stay readable to moderators for a day before R2 removal.
 const PURGE_DELAY_HOURS: i32 = 24;
 const DAY: i64 = 24 * 60 * 60;
+
+mod privacy;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -927,7 +929,7 @@ async fn create(
     let mut body = json!({
         "id": id,
         "kind": kind,
-        "upload": upload(assets.r2.presign("PUT", &original_key(&id), UPLOAD_URL_SECONDS, &headers), &headers[..1]),
+        "upload": upload(assets.r2.presign("PUT", &privacy::staged(&original_key(&id)), UPLOAD_URL_SECONDS, &headers), &headers[..1]),
     });
     if !purpose.is_picture() {
         body["storage"] = json!({"used": used + total, "limit": assets.quota_bytes});
@@ -941,9 +943,12 @@ async fn create(
             ("content-length", length.as_str()),
         ];
         body["previewUpload"] = upload(
-            assets
-                .r2
-                .presign("PUT", &preview_key(&id), UPLOAD_URL_SECONDS, &headers),
+            assets.r2.presign(
+                "PUT",
+                &privacy::staged(&preview_key(&id)),
+                UPLOAD_URL_SECONDS,
+                &headers,
+            ),
             &headers[..1],
         );
     }
@@ -964,18 +969,48 @@ async fn complete(
     Extension(principal): Extension<Principal>,
     Path(asset): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    // Keep HTTP responses inside proxy/client deadlines. Dropping a JoinHandle
+    // detaches the bounded job; a 409 polls its durable uploaded_at result.
+    // A restart leaves staging intact so the next request can safely retry.
+    let job = tokio::spawn(complete_inner(
+        State(state),
+        Extension(principal),
+        Path(asset),
+    ));
+    match tokio::time::timeout(Duration::from_secs(10), job).await {
+        Ok(result) => result.map_err(|_| unavailable())?,
+        Err(_) => Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "upload processing; try again shortly",
+        )),
+    }
+}
+
+async fn complete_inner(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(asset): Path<String>,
+) -> Result<Json<Value>, ApiError> {
     let assets = enabled(&state)?;
-    let row: Row = sqlx::query_as(&format!(
-        "SELECT {COLUMNS} FROM public.assets WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL"
+    // Bound work before acquiring database connections. Existing clients retry
+    // 409; no client can skip this step or race a second publish for one asset.
+    let _job = tokio::time::timeout(Duration::from_secs(5), privacy::JOBS.acquire())
+        .await
+        .map_err(|_| ApiError::new(StatusCode::CONFLICT, "upload processing; try again shortly"))?
+        .map_err(|_| unavailable())?;
+    let mut tx = assets.pool.begin().await.map_err(database_error)?;
+    let mut row: Row = sqlx::query_as(&format!(
+        "SELECT {COLUMNS} FROM public.assets WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL FOR UPDATE"
     ))
     .bind(&asset)
     .bind(principal.user.id)
-    .fetch_optional(&assets.pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(database_error)?
     .ok_or_else(not_found)?;
     let purpose = Purpose::from_column(&row.purpose);
     if row.uploaded_at.is_some() {
+        tx.commit().await.map_err(database_error)?;
         return completed(&state, assets, &row, principal.user.id).await;
     }
     let mut checks = vec![(
@@ -987,26 +1022,103 @@ async fn complete(
         checks.push((preview_key(&asset), size, t.clone()));
     }
     for (key, expected, content_type) in &checks {
-        match assets.r2.size(key).await? {
+        let staged = privacy::staged(key);
+        match assets.r2.size(&staged).await? {
             None => {
                 return Err(ApiError::new(StatusCode::CONFLICT, "upload not finished"));
             }
-            Some(size) if size != *expected => return reject(assets, &asset, purpose).await,
+            Some(size) if size != *expected => {
+                tx.rollback().await.map_err(database_error)?;
+                return reject(assets, &asset, purpose).await;
+            }
             Some(_) => {}
         }
         if purpose.is_picture() {
             // Pictures also prove their real pixel size from the stored bytes.
-            let head = assets.r2.head_bytes(key, pictures::HEAD_BYTES).await?;
+            let head = assets.r2.head_bytes(&staged, pictures::HEAD_BYTES).await?;
             if !sniff(content_type, &head) || !pictures::fits(content_type, &head) {
+                tx.rollback().await.map_err(database_error)?;
                 return reject(assets, &asset, purpose).await;
             }
         } else if opens_in_browser(content_type)
-            && !sniff(content_type, &assets.r2.head_bytes(key, 64).await?)
+            && !sniff(content_type, &assets.r2.head_bytes(&staged, 64).await?)
         {
+            tx.rollback().await.map_err(database_error)?;
             return reject(assets, &asset, purpose).await;
         }
     }
-    let mut tx = assets.pool.begin().await.map_err(database_error)?;
+    let reserved = row.byte_size + row.preview_byte_size.unwrap_or(0);
+    for (index, (key, expected, content_type)) in checks.iter().enumerate() {
+        let size = match privacy::publish(
+            &assets.r2,
+            key,
+            *expected,
+            content_type,
+            (index == 0).then_some(row.filename.as_str()),
+        )
+        .await
+        {
+            Ok(size) => size,
+            Err(error) if error.status == StatusCode::UNPROCESSABLE_ENTITY => {
+                sqlx::query("UPDATE public.assets SET deleted_at=now() WHERE external_id=$1")
+                    .bind(&asset)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(database_error)?;
+                tx.commit().await.map_err(database_error)?;
+                return Err(if purpose.is_picture() {
+                    pictures::rejected()
+                } else {
+                    error
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        if index > 0 && size > PREVIEW_MAX_BYTES {
+            tx.rollback().await.map_err(database_error)?;
+            return reject(assets, &asset, purpose).await;
+        }
+        if purpose.is_picture() {
+            // Recheck the published bytes, not a potentially replaced staging
+            // object inspected before the full download.
+            let head = assets.r2.head_bytes(key, pictures::HEAD_BYTES).await?;
+            if !pictures::fits(content_type, &head) || size > pictures::max_bytes(content_type) {
+                tx.rollback().await.map_err(database_error)?;
+                return reject(assets, &asset, purpose).await;
+            }
+        }
+        if index == 0 {
+            row.byte_size = size;
+        } else {
+            row.preview_byte_size = Some(size);
+        }
+    }
+    // Remuxing may grow a container slightly. Account for the actual stored
+    // size under the same user lock as reservations, without a quota race.
+    if !purpose.is_picture() {
+        sqlx::query("SELECT 1 FROM public.users WHERE id=$1 FOR UPDATE")
+            .bind(principal.user.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(database_error)?;
+        let (used, _, _) = stored_bytes(&mut tx, principal.user.id).await?;
+        if used - reserved + row.byte_size + row.preview_byte_size.unwrap_or(0) > assets.quota_bytes
+        {
+            tx.rollback().await.map_err(database_error)?;
+            let _ = reject(assets, &asset, purpose).await;
+            return Err(
+                ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "storage limit reached")
+                    .with_code("storage_full"),
+            );
+        }
+    }
+    sqlx::query("UPDATE public.assets SET byte_size=$2,preview_byte_size=$3 WHERE external_id=$1")
+        .bind(&asset)
+        .bind(row.byte_size)
+        .bind(row.preview_byte_size)
+        .execute(&mut *tx)
+        .await
+        .map_err(database_error)?;
     let first = sqlx::query("UPDATE public.assets SET uploaded_at=now() WHERE external_id=$1 AND deleted_at IS NULL AND uploaded_at IS NULL")
         .bind(&asset)
         .execute(&mut *tx)
@@ -1037,6 +1149,11 @@ async fn complete(
         return Err(crate::spaces::not_found());
     }
     tx.commit().await.map_err(database_error)?;
+    for (key, _, _) in &checks {
+        // The sweep repeats this after the signed PUT expires, including when
+        // a late PUT recreates a source after this best-effort immediate erase.
+        let _ = assets.r2.delete(&privacy::staged(key)).await;
+    }
     if applied == Some(pictures::Outcome::Applied) {
         match (purpose, row.space_id) {
             (Purpose::Avatar, _) => crate::profiles::account_changed(&state, principal.user.id),
@@ -1396,9 +1513,12 @@ impl PurgeSweep {
                 ceiling
             }
         };
-        let rows: Vec<(i64, String, bool)> = sqlx::query_as(
-            "SELECT id, external_id, preview_content_type IS NOT NULL FROM public.assets
-             WHERE deleted_at IS NOT NULL AND message_id IS NULL AND id > $1 AND id <= $2
+        let rows: Vec<(i64, String, bool, bool)> = sqlx::query_as(
+            "SELECT id, external_id, preview_content_type IS NOT NULL,
+                    deleted_at IS NOT NULL AND message_id IS NULL FROM public.assets
+             WHERE ((deleted_at IS NOT NULL AND message_id IS NULL)
+                    OR (uploaded_at IS NOT NULL AND created_at < now() - interval '15 minutes'))
+               AND id > $1 AND id <= $2
              ORDER BY id LIMIT 25",
         )
         .bind(self.cursor)
@@ -1406,7 +1526,7 @@ impl PurgeSweep {
         .fetch_all(&assets.pool)
         .await
         .map_err(|_| ())?;
-        if let Some((last, _, _)) = rows.last() {
+        if let Some((last, _, _, _)) = rows.last() {
             self.cursor = *last;
         }
         if rows.len() < 25 || self.cursor >= ceiling {
@@ -1415,7 +1535,24 @@ impl PurgeSweep {
         }
         // Advance even on delete failure; the next pass retries without
         // letting a few failing keys starve all the later records.
-        delete_objects(assets, rows).await?;
+        let mut deleted = Vec::new();
+        for (id, external, preview, remove_all) in rows {
+            if remove_all {
+                deleted.push((id, external, preview));
+            } else {
+                assets
+                    .r2
+                    .delete(&privacy::staged(&original_key(&external)))
+                    .await?;
+                if preview {
+                    assets
+                        .r2
+                        .delete(&privacy::staged(&preview_key(&external)))
+                        .await?;
+                }
+            }
+        }
+        delete_objects(assets, deleted).await?;
         Ok(())
     }
 }
@@ -1452,8 +1589,18 @@ async fn delete_objects(assets: &Assets, rows: Vec<(i64, String, bool)>) -> Resu
     let done: Vec<i64> = futures_util::stream::iter(rows)
         .map(|(id, external, preview)| async move {
             let mut ok = assets.r2.delete(&original_key(&external)).await.is_ok();
+            ok &= assets
+                .r2
+                .delete(&privacy::staged(&original_key(&external)))
+                .await
+                .is_ok();
             if preview {
                 ok &= assets.r2.delete(&preview_key(&external)).await.is_ok();
+                ok &= assets
+                    .r2
+                    .delete(&privacy::staged(&preview_key(&external)))
+                    .await
+                    .is_ok();
             }
             ok.then_some(id)
         })

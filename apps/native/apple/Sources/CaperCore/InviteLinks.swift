@@ -7,6 +7,7 @@ public struct InvitePerson: Codable, Equatable, Sendable {
     public var avatarId: Int?
     public var avatarAsset: String? = nil
     public var avatarUrl: String? = nil
+    public var admin: Bool? = nil
 }
 
 extension InvitePerson: AvatarPictureCarrying {}
@@ -103,8 +104,9 @@ public enum InviteLinks {
     public static let codeLength = 10
     static let invalid = "This invite link is invalid or has expired."
 
-    /// "Expire after" starts at 7 days.
-    public static let defaultExpiryNumber = "7"
+    /// Custom links start with the same limits as the ready-to-copy link.
+    public static let defaultExpiryNumber = "30"
+    public static let defaultMaxUses = "100"
     public static let defaultExpiryUnit = InviteExpiryUnit.days
     /// The API's `maxAge` range: 1 minute to 365 days.
     public static let expiryRange = 60...31_536_000
@@ -205,11 +207,11 @@ public enum InviteLinks {
 
     public static func memberCount(_ count: Int) -> String { "\(count) \(count == 1 ? "member" : "members")" }
 
-    /// "#feedback · 3 of 10 uses · Expires in 6 days" or "2 uses · Never expires".
+    /// "#feedback · 7 of 10 joins remaining · Expires in 6 days" or "2 uses · Never expires".
     public static func meta(for link: InviteLink, now: Date = Date()) -> String {
         var parts: [String] = []
         if let channel = link.channel { parts.append("#\(channel.name)") }
-        if let maxUses = link.maxUses { parts.append("\(grouped(link.uses)) of \(plural(maxUses, "use"))") }
+        if let maxUses = link.maxUses { parts.append("\(grouped(max(0, maxUses - link.uses))) of \(plural(maxUses, "join")) remaining") }
         else { parts.append(plural(link.uses, "use")) }
         parts.append(expiry(link.expiresAt, now: now))
         return parts.joined(separator: " · ")

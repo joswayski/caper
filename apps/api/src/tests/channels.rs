@@ -6,6 +6,171 @@ use sqlx::{
 };
 use std::str::FromStr;
 
+async fn voice_activity(state: &AppState, account: Option<&str>) -> (StatusCode, Value) {
+    let mut request = Request::builder().uri("/api/spaces/voice-activity");
+    if let Some(account) = account {
+        request = request.header("cookie", format!("caper_session={account}"));
+    }
+    let response = app(state.clone())
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), BODY_LIMIT).await.unwrap();
+    (status, serde_json::from_slice(&body).unwrap())
+}
+
+// Exercise the real authenticated HTTP route against both room backends.
+// Database/registry fixtures model revocation and in-flight/monitor-only rooms;
+// the SFU remains mocked, as in the surrounding authorization tests.
+async fn voice_activity_contract(state: &AppState, pool: &sqlx::PgPool, member: i64) {
+    let empty = json!({"spaceIds":[]});
+    let active = json!({"spaceIds":["SpaceExample"]});
+    assert_eq!(
+        voice_activity(state, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        voice_activity(state, Some("outside-session")).await,
+        (StatusCode::OK, empty.clone())
+    );
+    // Two occupied rooms produce only one space, even before tracks publish.
+    assert_eq!(
+        voice_activity(state, Some("member-session")).await,
+        (StatusCode::OK, active.clone())
+    );
+
+    for (hide, restore) in [
+        (
+            "UPDATE channel_joins SET deleted_at=now() WHERE user_id=$1",
+            "UPDATE channel_joins SET deleted_at=NULL WHERE user_id=$1",
+        ),
+        (
+            "UPDATE channels SET private=true WHERE external_id IN ('ChannelAlpha','ChannelBravo') AND $1::bigint IS NOT NULL",
+            "UPDATE channels SET private=false WHERE external_id IN ('ChannelAlpha','ChannelBravo') AND $1::bigint IS NOT NULL",
+        ),
+        (
+            "UPDATE channels SET deleted_at=now() WHERE external_id IN ('ChannelAlpha','ChannelBravo') AND $1::bigint IS NOT NULL",
+            "UPDATE channels SET deleted_at=NULL WHERE external_id IN ('ChannelAlpha','ChannelBravo') AND $1::bigint IS NOT NULL",
+        ),
+        (
+            "UPDATE space_members SET deleted_at=now() WHERE user_id=$1",
+            "UPDATE space_members SET deleted_at=NULL WHERE user_id=$1",
+        ),
+        (
+            "UPDATE spaces SET deleted_at=now() WHERE external_id='SpaceExample' AND $1::bigint IS NOT NULL",
+            "UPDATE spaces SET deleted_at=NULL WHERE external_id='SpaceExample' AND $1::bigint IS NOT NULL",
+        ),
+        (
+            "UPDATE spaces SET demo=true,owner_id=NULL WHERE external_id='SpaceExample' AND $1::bigint IS NOT NULL",
+            "UPDATE spaces SET demo=false,owner_id=(SELECT id FROM users WHERE username='owner') WHERE external_id='SpaceExample' AND $1::bigint IS NOT NULL",
+        ),
+    ] {
+        sqlx::query(hide).bind(member).execute(pool).await.unwrap();
+        assert_eq!(
+            voice_activity(state, Some("member-session")).await,
+            (StatusCode::OK, empty.clone()),
+            "{hide}"
+        );
+        if hide.contains("private=true") {
+            assert_eq!(
+                voice_activity(state, Some("owner-session")).await,
+                (StatusCode::OK, active.clone())
+            );
+            sqlx::query(
+                "INSERT INTO channel_members(channel_id,user_id) SELECT id,$1 FROM channels WHERE external_id IN ('ChannelAlpha','ChannelBravo')",
+            )
+            .bind(member)
+            .execute(pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                voice_activity(state, Some("member-session")).await,
+                (StatusCode::OK, active.clone())
+            );
+            sqlx::query("UPDATE channel_members SET deleted_at=now() WHERE user_id=$1")
+                .bind(member)
+                .execute(pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                voice_activity(state, Some("member-session")).await,
+                (StatusCode::OK, empty.clone())
+            );
+        }
+        sqlx::query(restore)
+            .bind(member)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    // Room discovery includes reservations and monitors, but neither is voice
+    // activity. Preserve the joined participants for the surrounding tests.
+    for channel in ["ChannelAlpha", "ChannelBravo"] {
+        let mut room = state.clone();
+        room.media_channel = Some(channel.into());
+        room.update(|r| {
+            for p in r.participants.values_mut() {
+                p.monitor = Some(Monitor {
+                    parent: p.id,
+                    role: MonitorRole::Sender,
+                });
+            }
+            r.reservations.insert(
+                Uuid::nil(),
+                JoinReservation {
+                    started: Timestamp::now(),
+                    monitor: None,
+                    user: None,
+                },
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        voice_activity(state, Some("member-session")).await,
+        (StatusCode::OK, empty.clone())
+    );
+    for channel in ["ChannelAlpha", "ChannelBravo"] {
+        let mut room = state.clone();
+        room.media_channel = Some(channel.into());
+        let participants = room
+            .update(|r| Ok(std::mem::take(&mut r.participants)))
+            .await
+            .unwrap();
+        assert_eq!(
+            voice_activity(state, Some("member-session")).await,
+            (StatusCode::OK, empty.clone())
+        );
+        room.update(|r| {
+            r.participants = participants.clone();
+            for p in r.participants.values_mut() {
+                p.monitor = None;
+            }
+            r.reservations.clear();
+            Ok(())
+        })
+        .await
+        .unwrap();
+        // The first restored room is now active; mark it unjoined until both
+        // reservation-only checks have completed.
+        sqlx::query("UPDATE channel_joins SET deleted_at=now() WHERE channel_id=(SELECT id FROM channels WHERE external_id=$1) AND user_id=$2")
+            .bind(channel).bind(member).execute(pool).await.unwrap();
+    }
+    sqlx::query("UPDATE channel_joins SET deleted_at=NULL WHERE user_id=$1")
+        .bind(member)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        voice_activity(state, Some("member-session")).await,
+        (StatusCode::OK, active)
+    );
+}
+
 async fn request(
     state: &AppState,
     channel: &str,
@@ -93,8 +258,13 @@ async fn isolation_and_revocation(shared: bool) {
     }
     sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT c.id,sm.user_id FROM public.channels c JOIN public.space_members sm ON sm.space_id=c.space_id WHERE c.space_id=$1")
         .bind(space).execute(&pool).await.unwrap();
+    // An account with a different rail space must not discover this room.
+    sqlx::query("WITH s AS (INSERT INTO spaces(external_id,name,owner_id) VALUES('OutsideSpace','Outside',$1) RETURNING id)
+                 INSERT INTO space_members(space_id,user_id) SELECT id,$1 FROM s")
+        .bind(users[2]).execute(&pool).await.unwrap();
     let mock = Arc::new(Mock::new());
     let mut state = AppState::with_database(Config::test(true), mock.clone(), Some(pool.clone()));
+    state.auth = auth::AuthVerifier::new();
     let key = format!("caper:{{channel-test-{}}}:state", Uuid::new_v4());
     let broker = if shared {
         let url = std::env::var("TEST_VALKEY_URL").expect("disposable broker required");
@@ -103,6 +273,14 @@ async fn isolation_and_revocation(shared: bool) {
     } else {
         None
     };
+    assert_eq!(
+        voice_activity(&state, Some("member-session")).await,
+        (StatusCode::OK, json!({"spaceIds":[]}))
+    );
+    assert_eq!(
+        voice_activity(&state, Some("invalid-session")).await.0,
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(
         request(
             &state,
@@ -152,6 +330,7 @@ async fn isolation_and_revocation(shared: bool) {
     assert_eq!(status, StatusCode::OK, "{bravo}");
     let alpha_token = alpha["token"].as_str().unwrap();
     let bravo_token = bravo["token"].as_str().unwrap();
+    voice_activity_contract(&state, &pool, users[1]).await;
     let (_, roster) = request(
         &state,
         "ChannelAlpha",

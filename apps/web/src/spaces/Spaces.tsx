@@ -1,8 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useId,
-  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -26,6 +24,7 @@ import {
   Plus,
   Search,
   Settings,
+  Volume2,
   X,
 } from "lucide-react";
 import {
@@ -60,8 +59,7 @@ import SpaceIcon from "../components/SpaceIcon";
 import { SpaceIconSettings } from "../account/PictureSettings";
 import { withSpaceIcon } from "../account/pictures";
 import { usePeopleSuggestions } from "../components/PeopleSuggestions";
-import { useBackdropDismiss } from "../components/dialogBackdrop";
-import { dialogKeyDown } from "../components/dialogKeyboard";
+import { Dialog } from "./Dialog";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
 import MemberPresence from "./MemberPresence";
@@ -108,6 +106,7 @@ import {
   listPeople,
   readDirectConversation,
   listUnreadSpaces,
+  listSpaceVoiceActivity,
   readChannel,
   directStatus,
   directUnread,
@@ -255,66 +254,6 @@ function visitQuery(query: URLSearchParams, visit: VisitTarget) {
 
 const sameVisit = (a?: VisitTarget, b?: VisitTarget) =>
   a?.channelId === b?.channelId && a?.messageId === b?.messageId && a?.threadRootId === b?.threadRootId;
-
-function Dialog({
-  title,
-  titleIcon,
-  description,
-  onClose,
-  children,
-  width = "standard",
-  dismissOnBackdrop = false,
-}: {
-  title: string;
-  titleIcon?: ReactNode;
-  description?: string;
-  onClose: () => void;
-  children: ReactNode;
-  width?: "standard" | "wide";
-  dismissOnBackdrop?: boolean;
-}) {
-  const ref = useRef<HTMLDialogElement>(null);
-  const titleId = useId();
-  const backdrop = useBackdropDismiss(onClose, dismissOnBackdrop);
-  useLayoutEffect(() => {
-    const dialog = ref.current!;
-    const opener = document.activeElement as HTMLElement | null;
-    dialog.showModal();
-    dialog.querySelector<HTMLElement>("[data-initial-focus]")?.focus();
-    return () => {
-      dialog.close();
-      if (opener?.isConnected) opener.focus();
-    };
-  }, []);
-  return (
-    <dialog
-      ref={ref}
-      className={`space-dialog ${width === "wide" ? "space-dialog-wide" : ""}`}
-      aria-labelledby={titleId}
-      onKeyDown={dialogKeyDown}
-      onCancel={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        onClose();
-      }}
-      {...backdrop}
-    >
-      <header>
-        <div>
-          <h2 id={titleId}>
-            {titleIcon}
-            {title}
-          </h2>
-          {description && <p>{description}</p>}
-        </div>
-        <button type="button" aria-label={`Close ${title}`} onClick={onClose}>
-          <X aria-hidden="true" />
-        </button>
-      </header>
-      {children}
-    </dialog>
-  );
-}
 
 function DeleteConfirmation({
   kind,
@@ -760,9 +699,11 @@ function MemberManager({
   pending,
   loading = false,
   suggestions,
+  inviteOnly = false,
 }: {
   members: Member[];
   invitations?: Member[];
+  inviteOnly?: boolean;
   /** A private channel's grants rather than the space's members. */
   channel?: boolean;
   onCancel?: (member: Member) => Promise<void>;
@@ -804,9 +745,41 @@ function MemberManager({
   });
   return (
     <section className="member-manager">
+      {!!invitations?.length && (
+        <>
+          <div className="dialog-section-heading">
+            <h3>Pending invitations</h3>
+            <span>{invitations.length}</span>
+          </div>
+          <ul>
+            {invitations.map((member) => (
+              <li key={member.id}>
+                <span className="member-avatar" aria-hidden="true">
+                  <Avatar person={member} name={member.displayName} />
+                </span>
+                <span>
+                  <strong>{member.displayName}</strong>
+                  <small>@{member.username} · Invited</small>
+                </span>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => {
+                    // This row (and its button) goes; continue in the username field.
+                    refocus.current = true;
+                    void onCancel?.(member).catch((reason) => setError(errorMessage(reason)));
+                  }}
+                >
+                  Cancel invite
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       <div className="dialog-section-heading">
-        <h3>Members</h3>
-        {!loading && <span>{members.length}</span>}
+        <h3>{inviteOnly ? "Or invite by username" : "Members"}</h3>
+        {!loading && !inviteOnly && <span>{members.length}</span>}
       </div>
       <form
         className="member-add"
@@ -883,28 +856,30 @@ function MemberManager({
           Loading members…
         </p>
       )}
-      <ul>
-        {members.map((member) => (
-          <li key={member.id}>
-            {/* TODO show status indicator */}
-            <span className="member-avatar" aria-hidden="true">
-              <Avatar person={member} name={member.displayName} />
-            </span>
-            <span>
-              <strong>{member.displayName}</strong>
-              <small>
-                @{member.username}
-                {member.owner ? " · Owner" : ""}
-              </small>
-            </span>
-            {!member.owner && (
-              <button type="button" disabled={pending} onClick={() => setRemoving(member)}>
-                Remove
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
+      {!inviteOnly && (
+        <ul>
+          {members.map((member) => (
+            <li key={member.id}>
+              {/* TODO show status indicator */}
+              <span className="member-avatar" aria-hidden="true">
+                <Avatar person={member} name={member.displayName} />
+              </span>
+              <span>
+                <strong>{member.displayName}</strong>
+                <small>
+                  @{member.username}
+                  {member.owner ? " · Owner" : ""}
+                </small>
+              </span>
+              {!member.owner && (
+                <button type="button" disabled={pending} onClick={() => setRemoving(member)}>
+                  Remove
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
       {removing && (
         <RemoveMemberDialog
           {...removalCopy(removing)}
@@ -916,52 +891,20 @@ function MemberManager({
           }}
         />
       )}
-      {!!invitations?.length && (
-        <>
-          <div className="dialog-section-heading">
-            <h3>Pending invitations</h3>
-            <span>{invitations.length}</span>
-          </div>
-          <ul>
-            {invitations.map((member) => (
-              <li key={member.id}>
-                <span className="member-avatar" aria-hidden="true">
-                  <Avatar person={member} name={member.displayName} />
-                </span>
-                <span>
-                  <strong>{member.displayName}</strong>
-                  <small>@{member.username} · Invited</small>
-                </span>
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() => {
-                    // This row (and its button) goes; continue in the username field.
-                    refocus.current = true;
-                    void onCancel?.(member).catch((reason) => setError(errorMessage(reason)));
-                  }}
-                >
-                  Cancel invite
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
     </section>
   );
 }
 
 function ManageSpaceDialog({
   detail,
-  channelId,
+  inviteOnly = false,
   people,
   onClose,
   onChanged,
   onDeleted,
 }: {
   detail: SpaceDetail;
-  channelId?: string;
+  inviteOnly?: boolean;
   /** Known accounts (`GET /api/people`) the invite field suggests; undefined until loaded. */
   people?: Person[];
   onClose: () => void;
@@ -1000,57 +943,71 @@ function ManageSpaceDialog({
   };
   return (
     <Dialog
-      title="Manage space"
-      description="Only the owner can change this space and its membership."
+      title={inviteOnly ? `Invite people to ${detail.space.name}` : "Manage space"}
+      description={
+        inviteOnly
+          ? "Share a link or invite someone by username."
+          : "Only the owner can change this space and its membership."
+      }
       onClose={onClose}
       width="wide"
       // A stray click outside must not throw away an unsaved name.
       dismissOnBackdrop={!pending && name === detail.space.name}
     >
-      <form
-        ref={nameForm}
-        onSubmit={(event) => {
-          event.preventDefault();
-          const invalid = spaceNameError(name);
-          if (invalid) return setError(invalid);
-          refocusName.current = true;
-          void run(async () => {
-            const space = await updateSpace(detail.space.id, name);
-            setName(space.name);
-            onChanged({ ...detail, space, members });
-          }).catch((reason) => setError(errorMessage(reason)));
-        }}
-      >
-        <fieldset disabled={pending}>
-          <NameField
-            label="Space name"
-            focus={false}
-            value={name}
-            onChange={(value) => {
-              setName(value);
-              setError(undefined);
-            }}
-          />
-          <div className="inline-save">
-            <button className="secondary" disabled={pending || name.trim() === detail.space.name} type="submit">
-              Save name
-            </button>
-          </div>
-        </fieldset>
-      </form>
+      {!inviteOnly && (
+        <form
+          ref={nameForm}
+          onSubmit={(event) => {
+            event.preventDefault();
+            const invalid = spaceNameError(name);
+            if (invalid) return setError(invalid);
+            refocusName.current = true;
+            void run(async () => {
+              const space = await updateSpace(detail.space.id, name);
+              setName(space.name);
+              onChanged({ ...detail, space, members });
+            }).catch((reason) => setError(errorMessage(reason)));
+          }}
+        >
+          <fieldset disabled={pending}>
+            <NameField
+              label="Space name"
+              focus={false}
+              value={name}
+              onChange={(value) => {
+                setName(value);
+                setError(undefined);
+              }}
+            />
+            <div className="inline-save">
+              <button className="secondary" disabled={pending || name.trim() === detail.space.name} type="submit">
+                Save name
+              </button>
+            </div>
+          </fieldset>
+        </form>
+      )}
       {error && (
         <p className="space-form-error" role="alert">
           {error}
         </p>
       )}
-      <div className="space-icon-section">
-        <SpaceIconSettings
-          space={detail.space}
-          onChanged={(space) => onChanged({ ...detail, space: withSpaceIcon(detail.space, space), members })}
-        />
-      </div>
-      <InviteLinkManager spaceId={detail.space.id} channels={detail.channels} channelId={channelId} />
+      {!inviteOnly && (
+        <div className="space-icon-section">
+          <SpaceIconSettings
+            space={detail.space}
+            onChanged={(space) => onChanged({ ...detail, space: withSpaceIcon(detail.space, space), members })}
+          />
+        </div>
+      )}
+      <InviteLinkManager
+        key={detail.space.id}
+        spaceId={detail.space.id}
+        channels={detail.channels}
+        prepareDefault={inviteOnly}
+      />
       <MemberManager
+        inviteOnly={inviteOnly}
         members={members}
         invitations={invitations}
         suggestions={withInvited(excludePeople(people ?? [], members, invitations), invitations)}
@@ -1080,13 +1037,15 @@ function ManageSpaceDialog({
           })
         }
       />
-      <section className="danger-zone">
-        <h3>Delete space</h3>
-        <p>Delete this space and all its channels for every member.</p>
-        <button className="danger-outline" type="button" disabled={pending} onClick={() => setConfirmDelete(true)}>
-          Delete space
-        </button>
-      </section>
+      {!inviteOnly && (
+        <section className="danger-zone">
+          <h3>Delete space</h3>
+          <p>Delete this space and all its channels for every member.</p>
+          <button className="danger-outline" type="button" disabled={pending} onClick={() => setConfirmDelete(true)}>
+            Delete space
+          </button>
+        </section>
+      )}
       {confirmDelete && (
         <DeleteConfirmation
           kind="space"
@@ -1442,9 +1401,11 @@ function RequestBar({
         <button type="button" className="secondary" disabled={!!pending} onClick={() => run("decline", onDecline)}>
           {pending === "decline" ? "Declining…" : "Decline"}
         </button>
-        <button type="button" className="danger-outline" disabled={!!pending} onClick={onBlock}>
-          Block
-        </button>
+        {!conversation.peer.admin && !conversation.peer.team && (
+          <button type="button" className="danger-outline" disabled={!!pending} onClick={onBlock}>
+            Block
+          </button>
+        )}
       </div>
       {error && <p role="alert">{error}</p>}
     </div>
@@ -1783,6 +1744,7 @@ export default function Spaces({
   const [spaces, setSpaces] = useState<Space[]>(initialSpaceList?.spaces ?? []);
   const [invitations, setInvitations] = useState<Space[]>(initialSpaceList?.invitations ?? []);
   const [unreadSpaces, setUnreadSpaces] = useState<UnreadSpace[]>([]);
+  const [feedbackWaiting, setFeedbackWaiting] = useState(0);
   const unreadRevision = useRef(0);
   const channelReads = useRef(new Map<string, string>());
   const unreadAccount = useRef(account?.id);
@@ -1793,7 +1755,10 @@ export default function Spaces({
     const revision = ++unreadRevision.current;
     try {
       const result = await listUnreadSpaces();
-      if (unreadAccount.current === accountId && unreadRevision.current === revision) setUnreadSpaces(result.spaces);
+      if (unreadAccount.current === accountId && unreadRevision.current === revision) {
+        setUnreadSpaces(result.spaces);
+        setFeedbackWaiting(result.feedbackWaiting ?? 0);
+      }
     } catch {
       /* Keep the last known indicators during an outage. */
     }
@@ -1802,6 +1767,7 @@ export default function Spaces({
     unreadRevision.current++;
     channelReads.current.clear();
     setUnreadSpaces([]);
+    setFeedbackWaiting(0);
     const refresh = () => {
       if (!document.hidden) void refreshUnread();
     };
@@ -1855,14 +1821,16 @@ export default function Spaces({
     const cache = directCache.current;
     return () => cache.clear();
   }, [account?.id]);
-  const [dialog, setDialog] = useState<"space" | "channel" | "manage-space" | "leave-space" | "direct">();
+  const [dialog, setDialog] = useState<
+    "space" | "channel" | "manage-space" | "invite-people" | "leave-space" | "direct"
+  >();
   // DM `@` suggestions, mention profile cards, and the invite and new-DM
   // username fields; the previous list stays while a refresh is in flight.
   // Loaded once signed in and again whenever a DM or one of those dialogs opens.
   const [peopleSnapshot, setPeople] = useState<Person[]>();
   const people = peopleSnapshot?.map((person) => withLatestProfile(person, account, profiles));
   const directId = directView?.conversation.id;
-  const peopleDialog = dialog === "manage-space" || dialog === "direct";
+  const peopleDialog = dialog === "manage-space" || dialog === "invite-people" || dialog === "direct";
   useEffect(() => {
     if (!account?.id) return;
     let current = true;
@@ -2120,7 +2088,7 @@ export default function Spaces({
       threadRootId: report.threadRootId,
       reporter: report.reporter,
     });
-    setNavigationOpen(false);
+    // On phones, keep the report list visible until its context is ready.
   };
 
   const openDirect = (conversation: DirectConversation) => {
@@ -2266,7 +2234,7 @@ export default function Spaces({
     return () => controller.abort();
   }, [selected.dmId, loading, directsLoading, directAccessible]);
 
-  // A visit loads the latest page, then focuses the report and opens its thread.
+  // Prepare the report's root context before replacing the visible conversation.
   const visit = selected.visit;
   useEffect(() => {
     if (!visit) {
@@ -2274,20 +2242,20 @@ export default function Spaces({
       return;
     }
     const controller = new AbortController();
-    setDirectView(undefined);
-    // The previous conversation stays on screen until this one is ready.
-    setVisitView((shown) => (shown?.target.channelId === visit.channelId ? { ...shown, target: visit } : shown));
-    if (visit.messageId)
-      setFocusMessage({
-        id: visit.messageId,
-        channelId: visit.channelId,
-        threadRootId: visit.threadRootId !== visit.messageId ? visit.threadRootId : undefined,
-      });
-    void loadChatHistory(visit.channelId, controller.signal)
+    // Keep the previous target and its messages together until context is ready.
+    void loadChatHistory(visit.channelId, controller.signal, visit.threadRootId ?? visit.messageId)
       .then((history) => {
         if (controller.signal.aborted) return;
-        setVisitView((shown) =>
-          shown?.target.channelId === visit.channelId && shown.history ? shown : { target: visit, history },
+        setDirectView(undefined);
+        setVisitView({ target: visit, history });
+        setFocusMessage(
+          visit.messageId
+            ? {
+                id: visit.messageId,
+                channelId: visit.channelId,
+                threadRootId: visit.threadRootId !== visit.messageId ? visit.threadRootId : undefined,
+              }
+            : undefined,
         );
         setNavigationOpen(false);
       })
@@ -2300,6 +2268,7 @@ export default function Spaces({
               ? "This conversation is no longer available."
               : errorMessage(reason),
         });
+        setNavigationOpen(false);
       });
     return () => controller.abort();
   }, [visit?.channelId, visit?.messageId, visit?.threadRootId]);
@@ -2466,8 +2435,13 @@ export default function Spaces({
       if (!selected.dmId) setDirectView(undefined);
       if (openConversation) setNavigationOpen(false);
     }
-    void navigation.current
-      .take(selected.spaceId, selected.channelId)
+    // A report prepares its own context; only the surrounding space metadata
+    // is needed here, never a competing latest-page conversation.
+    void (
+      selected.visit
+        ? getSpace(selected.spaceId).then((detail) => ({ detail }) as PreparedSpace)
+        : navigation.current.take(selected.spaceId, selected.channelId)
+    )
       .then((next) => {
         if (!current) return;
         // Commit the channel list and first history together. Until this point,
@@ -2513,6 +2487,36 @@ export default function Spaces({
       current = false;
     };
   }, [selected, loading, invitation?.id]);
+
+  const [voiceActivity, setVoiceActivity] = useState<string[]>([]);
+  useEffect(() => {
+    setVoiceActivity([]);
+    if (!account) return;
+    let current = true;
+    let refreshing = false;
+    const refresh = async () => {
+      if (document.hidden || refreshing) return;
+      refreshing = true;
+      try {
+        const result = await listSpaceVoiceActivity();
+        if (current) setVoiceActivity(unlessSame(result.spaceIds));
+      } catch {
+        if (current) setVoiceActivity([]);
+      } finally {
+        refreshing = false;
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 15_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      current = false;
+      clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [account?.id]);
 
   // Membership can change in another account/tab while this page is open.
   // Reconcile the rail on focus and every 15s; transport authorization still
@@ -2575,6 +2579,7 @@ export default function Spaces({
     ? (directs.find((conversation) => conversation.id === directView.conversation.id) ?? directView.conversation)
     : undefined;
   const directBlocked = !!currentDirect && blockedIds.has(currentDirect.peer.id);
+  const directCanBlock = !!currentDirect && !currentDirect.peer.admin && !currentDirect.peer.team;
   const directLocked = !!currentDirect && (directBlocked || directStatus(currentDirect) === "incoming");
   const acceptRequest = async (request: DirectConversation) => {
     const accepted = await acceptDirectRequest(request.id);
@@ -2590,6 +2595,7 @@ export default function Spaces({
     currentDirect &&
     currentDirect.peer.id !== account?.id &&
     !directBlocked &&
+    directCanBlock &&
     directStatus(currentDirect) !== "incoming" ? (
       <button type="button" aria-haspopup="dialog" onClick={() => setBlockTarget(directPeer(currentDirect))}>
         <Ban aria-hidden="true" />
@@ -2607,7 +2613,7 @@ export default function Spaces({
         onDecline={() => declineRequest(currentDirect)}
         onBlock={() => setBlockTarget(directPeer(currentDirect))}
       />
-    ) : (
+    ) : directCanBlock ? (
       <Tooltip content={`Block @${currentDirect.peer.username}`}>
         <button
           type="button"
@@ -2618,7 +2624,7 @@ export default function Spaces({
           <Ban aria-hidden="true" />
         </button>
       </Tooltip>
-    );
+    ) : undefined;
   const visitHistory = visitView?.history;
   const channel = visitView
     ? {
@@ -2731,10 +2737,14 @@ export default function Spaces({
     );
     void archiveFeedback(report.channel.id, report.threadRootId, archived)
       .catch((reason) => setFeedbackError(errorMessage(reason)))
-      .finally(() => void refreshFeedback());
+      .finally(() => {
+        void refreshFeedback();
+        void refreshUnread();
+      });
   };
   const feedbackNavigation = feedbackTeam && (
     <FeedbackInbox
+      waiting={feedbackWaiting}
       reports={(feedback?.reports ?? []).map((report) => ({
         ...report,
         reporter: withLatestProfile(report.reporter, account, profiles),
@@ -2922,7 +2932,7 @@ export default function Spaces({
       <button
         type="button"
         className="channel-select direct-action"
-        onClick={() => setDialog(owner ? "manage-space" : "direct")}
+        onClick={() => setDialog(owner ? "invite-people" : "direct")}
       >
         <Plus aria-hidden="true" />
         <span>{owner ? "Invite people" : "New message"}</span>
@@ -3129,18 +3139,28 @@ export default function Spaces({
     </>
   );
 
-  const rail = (
+  const rail = (connectedSpaceId: string | undefined) => (
     <nav className="space-rail" aria-label="Spaces">
       {spaces.map((space) => {
         const muted = isMuted(overrideFor(notifications, { spaceId: space.id })?.mutedUntil);
         const unread = unreadSpaces.some((item) => item.id === space.id);
-        const label = [space.name, unread && "unread activity", muted && "muted"].filter(Boolean).join(", ");
+        const connected = connectedSpaceId === space.id;
+        const voiceActive = connected || voiceActivity.includes(space.id);
+        const label = [
+          space.name,
+          unread && "unread activity",
+          muted && "muted",
+          voiceActive && (connected ? "connected to voice" : "voice active"),
+        ]
+          .filter(Boolean)
+          .join(", ");
         return (
           <div
             className="space-rail-item"
             key={space.id}
             data-active={space.id === detail.space.id}
             data-muted={muted ? "" : undefined}
+            data-voice={voiceActive ? "" : undefined}
           >
             <button
               type="button"
@@ -3155,6 +3175,9 @@ export default function Spaces({
               <SpaceIcon space={space} />
               {unread && <i className="space-unread" aria-hidden="true" />}
               {muted && <BellOff className="space-rail-muted" aria-hidden="true" />}
+              {voiceActive && (
+                <Volume2 className="space-rail-voice" data-connected={connected ? "" : undefined} aria-hidden="true" />
+              )}
             </button>
           </div>
         );
@@ -3296,7 +3319,7 @@ export default function Spaces({
         </header>
       )}
       {notificationAlert(`space:${detail.space.id}`)}
-      {/* Where people are talking now, and your call, above the channels. */}
+      {/* Voice without a row below: your call in another space, or a visited room. */}
       {liveNow}
       {!!detail.space.id && !detail.space.demo && (
         <div className="channel-section-heading">
@@ -3373,102 +3396,111 @@ export default function Spaces({
           const voice = voiceFor(item.id);
           const itemNotifications = overrideFor(notifications, { spaceId: detail.space.id, channelId: item.id });
           const itemMuted = isMuted(itemNotifications?.mutedUntil);
-          return (
-            <li key={item.id} data-voice={voice ? "" : undefined} data-muted={itemMuted || spaceMuted ? "" : undefined}>
-              <div className="channel-line">
-                <button
-                  className="channel-select"
-                  type="button"
-                  aria-current={item.id === channel?.id ? "page" : undefined}
-                  aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
-                  onMouseEnter={() => prefetch(detail.space.id, item.id)}
-                  onFocus={() => prefetch(detail.space.id, item.id)}
-                  onClick={() => choose(detail.space.id, item.id)}
+          const line = (
+            <div className="channel-line">
+              <button
+                className="channel-select"
+                type="button"
+                aria-current={item.id === channel?.id ? "page" : undefined}
+                aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
+                onMouseEnter={() => prefetch(detail.space.id, item.id)}
+                onFocus={() => prefetch(detail.space.id, item.id)}
+                onClick={() => choose(detail.space.id, item.id)}
+              >
+                {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
+                <span>{item.name}</span>
+                {unreadSpaces.some((space) => space.channels.some((entry) => entry.id === item.id)) && (
+                  <>
+                    <i className="channel-unread" aria-hidden="true" />
+                    <span className="sr-only">, unread activity</span>
+                  </>
+                )}
+                {itemMuted && (
+                  <>
+                    <BellOff className="muted-icon" aria-hidden="true" />
+                    <span className="sr-only">, muted</span>
+                  </>
+                )}
+                {voice?.live}
+              </button>
+              {voice?.join}
+              {!detail.space.demo && (
+                <details
+                  className="channel-menu"
+                  onToggle={(event) => trackMenu(event.currentTarget)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape" && event.currentTarget.open) {
+                      // Handled here, so an open thread does not also close.
+                      event.preventDefault();
+                      event.currentTarget.open = false;
+                      event.currentTarget.querySelector("summary")?.focus();
+                    }
+                  }}
+                  onBlur={leaveMenu}
                 >
-                  {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
-                  <span>{item.name}</span>
-                  {unreadSpaces.some((space) => space.channels.some((entry) => entry.id === item.id)) && (
-                    <>
-                      <i className="channel-unread" aria-hidden="true" />
-                      <span className="sr-only">, unread activity</span>
-                    </>
-                  )}
-                  {itemMuted && (
-                    <>
-                      <BellOff className="muted-icon" aria-hidden="true" />
-                      <span className="sr-only">, muted</span>
-                    </>
-                  )}
-                  {voice?.live}
-                </button>
-                {voice?.join}
-                {!detail.space.demo && (
-                  <details
-                    className="channel-menu"
-                    onToggle={(event) => trackMenu(event.currentTarget)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape" && event.currentTarget.open) {
-                        // Handled here, so an open thread does not also close.
-                        event.preventDefault();
-                        event.currentTarget.open = false;
-                        event.currentTarget.querySelector("summary")?.focus();
-                      }
-                    }}
-                    onBlur={leaveMenu}
+                  <summary
+                    className="channel-manage"
+                    aria-label={`Manage ${item.name}`}
+                    title={`Channel actions for ${item.name}`}
                   >
-                    <summary
-                      className="channel-manage"
-                      aria-label={`Manage ${item.name}`}
-                      title={`Channel actions for ${item.name}`}
-                    >
-                      <MoreHorizontal aria-hidden="true" />
-                    </summary>
-                    <div className="space-actions">
-                      <LevelNotificationItems
-                        noun="channel"
-                        loaded={notifications.loaded}
-                        level={itemNotifications?.level ?? null}
-                        inherited={inheritedLevel(notifications, { spaceId: detail.space.id, channelId: item.id })}
-                        mutedUntil={itemNotifications?.mutedUntil ?? null}
-                        mutedWithSpace={spaceMuted}
-                        onChange={(change) => {
-                          const spaceId = detail.space.id;
-                          saveNotifications(`channel:${item.id}`, () =>
-                            changeChannelNotifications(spaceId, item.id, change),
-                          );
-                        }}
-                      />
-                      {owner && (
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            const menu = event.currentTarget.closest("details")!;
-                            menu.open = false;
-                            menu.querySelector("summary")?.focus();
-                            setManageChannel(item);
-                          }}
-                        >
-                          <Settings aria-hidden="true" />
-                          Channel settings
-                        </button>
-                      )}
+                    <MoreHorizontal aria-hidden="true" />
+                  </summary>
+                  <div className="space-actions">
+                    <LevelNotificationItems
+                      noun="channel"
+                      loaded={notifications.loaded}
+                      level={itemNotifications?.level ?? null}
+                      inherited={inheritedLevel(notifications, { spaceId: detail.space.id, channelId: item.id })}
+                      mutedUntil={itemNotifications?.mutedUntil ?? null}
+                      mutedWithSpace={spaceMuted}
+                      onChange={(change) => {
+                        const spaceId = detail.space.id;
+                        saveNotifications(`channel:${item.id}`, () =>
+                          changeChannelNotifications(spaceId, item.id, change),
+                        );
+                      }}
+                    />
+                    {owner && (
                       <button
                         type="button"
-                        disabled={membershipPending}
                         onClick={(event) => {
                           const menu = event.currentTarget.closest("details")!;
                           menu.open = false;
                           menu.querySelector("summary")?.focus();
-                          setLeavingChannel(item);
+                          setManageChannel(item);
                         }}
                       >
-                        <LogOut aria-hidden="true" />
-                        Leave channel
+                        <Settings aria-hidden="true" />
+                        Channel settings
                       </button>
-                    </div>
-                  </details>
-                )}
-              </div>
+                    )}
+                    <button
+                      type="button"
+                      disabled={membershipPending}
+                      onClick={(event) => {
+                        const menu = event.currentTarget.closest("details")!;
+                        menu.open = false;
+                        menu.querySelector("summary")?.focus();
+                        setLeavingChannel(item);
+                      }}
+                    >
+                      <LogOut aria-hidden="true" />
+                      Leave channel
+                    </button>
+                  </div>
+                </details>
+              )}
+            </div>
+          );
+          return (
+            <li
+              key={item.id}
+              data-voice={voice ? "" : undefined}
+              data-live={voice?.card ? "" : undefined}
+              data-muted={itemMuted || spaceMuted ? "" : undefined}
+            >
+              {/* A live channel's row grows into its card: your call, or a room to join. */}
+              {voice ? voice.frame(line) : line}
               {notificationAlert(`channel:${item.id}`)}
             </li>
           );
@@ -3562,6 +3594,7 @@ export default function Spaces({
     openDirect(conversation);
   };
   const blockAuthor = (author: ChatAuthor) =>
+    !author.admin &&
     setBlockTarget({
       id: author.id,
       username: "",
@@ -3698,7 +3731,9 @@ export default function Spaces({
           return true;
         }}
         focusMessage={focusMessage}
-        focusThread={!!visitView}
+        // Reports focus the conversation; actual replies still reveal their thread.
+        // Forwarded conversations retain their explicit source-thread behavior.
+        focusThread={!visit}
         // A reply from the team answers the report in the inbox.
         onSent={visitView ? () => void refreshFeedback() : undefined}
         onHistoryChange={(history) => {
@@ -3757,10 +3792,11 @@ export default function Spaces({
           }}
         />
       )}
-      {dialog === "manage-space" && (
+      {(dialog === "manage-space" || dialog === "invite-people") && (
         <ManageSpaceDialog
+          key={`${detail.space.id}-${dialog}`}
           detail={detail}
-          channelId={selected.channelId}
+          inviteOnly={dialog === "invite-people"}
           people={people}
           onClose={() => setDialog(undefined)}
           onChanged={replaceDetail}

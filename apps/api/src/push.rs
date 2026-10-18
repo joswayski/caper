@@ -249,6 +249,8 @@ impl Alert {
         {
             self.body = if files.len() > 1 {
                 format!("Sent {} files", files.len())
+            } else if files[0]["spoiler"] == true {
+                "Sent a file".into()
             } else {
                 match files[0]["kind"].as_str() {
                     Some("image") => "Sent a photo".into(),
@@ -263,7 +265,7 @@ impl Alert {
         }
         if let Some(cdn) = cdn {
             self.attachment = files.into_iter().find_map(|file| {
-                if file["unavailable"] == true {
+                if file["unavailable"] == true || file["spoiler"] == true {
                     return None;
                 }
                 let id = file["id"].as_str()?;

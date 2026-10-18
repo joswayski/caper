@@ -202,8 +202,14 @@ export class ChatHistoryError extends Error {
   }
 }
 
-export async function loadChatHistory(channelId?: string, signal?: AbortSignal): Promise<GeneralChatHistory> {
-  const path = channelId ? `/api/chat/channels/${encodeURIComponent(channelId)}/messages` : "/api/chat/general";
+export async function loadChatHistory(
+  channelId?: string,
+  signal?: AbortSignal,
+  around?: string,
+): Promise<GeneralChatHistory> {
+  const path = channelId
+    ? `/api/chat/channels/${encodeURIComponent(channelId)}/messages${around ? `?around=${encodeURIComponent(around)}` : ""}`
+    : "/api/chat/general";
   const response = await fetch(path, {
     cache: "no-store",
     signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10_000)]),
@@ -217,6 +223,8 @@ export async function loadChatHistory(channelId?: string, signal?: AbortSignal):
     throw new Error("The chat service returned messages from another channel.");
   if (history.pinnedMessages?.some((message) => message.channelId !== history.channel.id))
     throw new Error("The chat service returned pins from another channel.");
+  if (around && !history.messages.some((message) => message.id === around))
+    throw new Error("The chat service returned invalid message context.");
   return history;
 }
 
@@ -1064,13 +1072,18 @@ export class ChatClient {
         for (let recovery = 0; ; recovery++) {
           if (this.uploadsNeedRefresh) {
             if (!this.pendingUploads.length) throw new Error("Failed to upload.");
-            const attachments = await Promise.all(this.pendingUploads.map((upload) => upload.ensure()));
+            const attachments = (await Promise.all(this.pendingUploads.map((upload) => upload.ensure()))).map(
+              (attachment, index) => ({ ...attachment, spoiler: pending.attachments?.[index]?.spoiler }),
+            );
             if (!current() || controller.signal.aborted) throw new DOMException("Cancelled", "AbortError");
             pending = { ...pending, clientMessageId: crypto.randomUUID(), attachments };
             this.uploadsNeedRefresh = false;
             this.update({ pendingSend: pending });
           }
           const attachmentIds = (pending.attachments ?? []).map((attachment) => attachment.id);
+          const spoilerAttachmentIds = (pending.attachments ?? [])
+            .filter((attachment) => attachment.spoiler)
+            .map((attachment) => attachment.id);
           const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages`, {
             method: "POST",
             headers: {
@@ -1081,6 +1094,7 @@ export class ChatClient {
               clientMessageId: pending.clientMessageId,
               text: pending.text,
               ...(attachmentIds.length ? { attachmentIds } : {}),
+              ...(spoilerAttachmentIds.length ? { spoilerAttachmentIds } : {}),
               ...(pending.replyTo ? { replyToId: pending.replyTo.id } : {}),
               ...(pending.threadRootId
                 ? {

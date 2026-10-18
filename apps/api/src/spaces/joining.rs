@@ -166,6 +166,7 @@ pub(super) async fn add_channel_member(
     )
     .await
     .map_err(database_error)?;
+    let admin = crate::feedback::team_member(&mut tx, Some(member.0)).await?;
     tx.commit().await.map_err(database_error)?;
     Ok((
         StatusCode::CREATED,
@@ -176,6 +177,7 @@ pub(super) async fn add_channel_member(
             username: member.3,
             display_name: member.4,
             owner: false,
+            admin,
         }),
     ))
 }

@@ -113,6 +113,7 @@ public struct ChannelInvitation: Codable, Equatable, Identifiable, Sendable {
 public struct UnreadChannel: Codable, Equatable, Sendable {
     public let id: String
     public let lastSeq: String
+    public var readSeq: String? = nil
 }
 
 public struct UnreadSpace: Codable, Equatable, Sendable {
@@ -120,11 +121,25 @@ public struct UnreadSpace: Codable, Equatable, Sendable {
     public var channels: [UnreadChannel]
 }
 
+public struct SpaceVoiceActivityResponse: Codable, Sendable {
+    public let spaceIds: [String]
+}
+
 public struct UnreadSpacesResponse: Codable, Sendable {
     public let spaces: [UnreadSpace]
+    public let feedbackWaiting: Int
+
+    private enum CodingKeys: String, CodingKey { case spaces, feedbackWaiting }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        spaces = try values.decode([UnreadSpace].self, forKey: .spaces)
+        feedbackWaiting = try values.decodeIfPresent(Int.self, forKey: .feedbackWaiting) ?? 0
+    }
 }
 
 public struct DirectMessagePeer: Codable, Equatable, Sendable {
+    public var admin: Bool? = nil
     public let id: String
     public let username: String
     public let displayName: String
@@ -136,6 +151,7 @@ public struct DirectMessagePeer: Codable, Equatable, Sendable {
     public var avatarUrl: String? = nil
 
     public var isTeam: Bool { team == true }
+    public var canBlock: Bool { admin != true && !isTeam }
 }
 
 extension DirectMessagePeer: AvatarPictureCarrying {}
@@ -185,6 +201,7 @@ public struct DirectMessagesResponse: Codable, Sendable {
 /// An account that shares an active space or a DM with you, from
 /// `GET /api/people` (you excluded, ordered by username, at most 500).
 public struct Person: Codable, Equatable, Identifiable, Sendable {
+    public var admin: Bool? = nil
     public let id: String
     public let username: String
     public let displayName: String
@@ -204,6 +221,7 @@ public struct PushConfiguration: Codable, Equatable, Sendable {
 }
 
 public struct Member: Codable, Equatable, Identifiable, Sendable {
+    public var admin: Bool? = nil
     public let id: String
     public let username: String
     public let displayName: String
@@ -215,7 +233,7 @@ public struct Member: Codable, Equatable, Identifiable, Sendable {
     func withProfile(_ account: Account?) -> Member {
         guard let account, id == account.id, let username = account.username, let name = account.displayName else { return self }
         let picture = account.ownPicture(asset: avatarAsset, url: avatarUrl)
-        return Member(id: id, username: username, displayName: name, owner: owner, avatarId: avatarId,
+        return Member(admin: admin, id: id, username: username, displayName: name, owner: owner, avatarId: avatarId,
                       avatarAsset: picture.asset, avatarUrl: picture.url)
     }
 }

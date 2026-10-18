@@ -70,6 +70,27 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    func testSpaceVoiceActivityUsesAuthenticatedLightweightSnapshot() async throws {
+        let api = client()
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/spaces/voice-activity")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            XCTAssertNil(request.value(forHTTPHeaderField: "x-caper-chat-token"))
+            return (200, Data(#"{"spaceIds":["space0000001","space0000002"]}"#.utf8))
+        }
+        let snapshot = try await api.spaceVoiceActivity()
+        XCTAssertEqual(snapshot.spaceIds, ["space0000001", "space0000002"])
+        MockURLProtocol.handler = { _ in (200, Data(#"{"spaceIds":[]}"#.utf8)) }
+        let empty = try await api.spaceVoiceActivity()
+        XCTAssertTrue(empty.spaceIds.isEmpty)
+        MockURLProtocol.handler = { _ in (503, Data(#"{"error":"Unavailable"}"#.utf8)) }
+        do {
+            _ = try await api.spaceVoiceActivity()
+            XCTFail("Failed snapshots must not be accepted")
+        } catch { }
+    }
+
     func testUnreadThreadContractUsesAuthenticatedGetAndVisibleSequencePut() async throws {
         let api = client()
         let root = "root00000000001"
@@ -535,6 +556,59 @@ final class APIClientTests: XCTestCase {
             "DELETE /api/spaces/\(spaceID)/invitation",
             "DELETE /api/spaces/\(spaceID)/invitations/\(userID)",
         ])
+    }
+
+    func testDefaultInviteLinkPostsNoBodyAndDecodesExistingLink() async throws {
+        let json = #"{"code":"aB3dE5gH9k","channel":null,"createdBy":{"username":"owner","displayName":"Owner"},"uses":12,"maxUses":100,"expiresAt":"2026-10-27T12:00:00Z","createdAt":"2026-10-11T12:00:00Z"}"#
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/spaces/Space1234567/invite-links/default")
+            XCTAssertNil(request.url?.query)
+            XCTAssertNil(try requestBodyData(request))
+            return (200, Data(json.utf8))
+        }
+        let api = client()
+        let first = try await api.defaultInviteLink(spaceID: "Space1234567")
+        let reopened = try await api.defaultInviteLink(spaceID: "Space1234567")
+        XCTAssertEqual(first, reopened)
+        XCTAssertNil(first.channel)
+        XCTAssertEqual(first.uses, 12)
+        XCTAssertEqual(first.maxUses, 100)
+        XCTAssertEqual(first.createdAt, "2026-10-11T12:00:00Z")
+        XCTAssertEqual(first.expiresAt, "2026-10-27T12:00:00Z")
+    }
+
+    func testSelectedInviteChannelPostsQueryWithoutBodyAndDecodesActualChannel() async throws {
+        let json = #"{"code":"aB3dE5gH9k","channel":{"id":"Channel12345","name":"feedback"},"createdBy":{"username":"owner","displayName":"Owner"},"uses":12,"maxUses":100,"expiresAt":"2026-11-14T12:00:00Z","createdAt":"2026-10-15T12:00:00Z"}"#
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/spaces/Space1234567/invite-links/default")
+            XCTAssertEqual(request.url?.query, "channelId=Channel12345")
+            XCTAssertNil(try requestBodyData(request))
+            return (200, Data(json.utf8))
+        }
+        let api = client()
+        let first = try await api.defaultInviteLink(spaceID: "Space1234567", channelID: "Channel12345")
+        let reused = try await api.defaultInviteLink(spaceID: "Space1234567", channelID: "Channel12345")
+        XCTAssertEqual(first, reused)
+        XCTAssertEqual(first.channel?.id, "Channel12345")
+        XCTAssertEqual(first.channel?.name, "feedback")
+        XCTAssertEqual(first.maxUses, 100)
+    }
+
+    func testRegenerateInviteLinkPostsSelectedCodeWithoutBody() async throws {
+        let json = #"{"code":"NewLink1234","channel":{"id":"Channel12345","name":"feedback"},"createdBy":{"username":"owner","displayName":"Owner"},"uses":0,"maxUses":100,"expiresAt":"2026-11-14T12:00:00Z","createdAt":"2026-10-15T12:00:00Z"}"#
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/spaces/Space1234567/invite-links/aB3dE5gH9k/regenerate")
+            XCTAssertNil(try requestBodyData(request))
+            return (201, Data(json.utf8))
+        }
+        let link = try await client().regenerateInviteLink(spaceID: "Space1234567", code: "aB3dE5gH9k")
+        XCTAssertEqual(link.code, "NewLink1234")
+        XCTAssertEqual(link.maxUses, 100)
+        XCTAssertEqual(link.uses, 0)
+        XCTAssertEqual(link.channel?.id, "Channel12345")
     }
 
     func testInviteLinkEndpoints() async throws {
@@ -2453,6 +2527,10 @@ final class APIClientTests: XCTestCase {
         draft.text = "Don't lose this"
         for code in ["dm_not_accepted", "dm_blocked"] {
             MockURLProtocol.handler = { request in
+                // Selecting the retained channel reads its unread entry snapshot, independently of Send.
+                if request.httpMethod == "GET", request.url?.path == "/api/spaces/unread" {
+                    return (200, Data(#"{"spaces":[],"feedbackWaiting":0}"#.utf8))
+                }
                 if request.url?.path == "/api/blocks" { return (200, Data(#"{"blocks":[]}"#.utf8)) }
                 if request.httpMethod == "GET", request.url?.path == "/api/dms" { return (200, Data(#"{"conversations":[]}"#.utf8)) }
                 XCTAssertEqual(request.url?.path, "/api/dms", "privacy refusal must happen before upload or send")
@@ -2467,6 +2545,9 @@ final class APIClientTests: XCTestCase {
             XCTAssertEqual(model.chat.draft, "Unrelated draft")
         }
         MockURLProtocol.handler = { request in
+            if request.httpMethod == "GET", request.url?.path == "/api/spaces/unread" {
+                return (200, Data(#"{"spaces":[],"feedbackWaiting":0}"#.utf8))
+            }
             if request.url?.path == "/api/blocks" { return (200, Data(#"{"blocks":[]}"#.utf8)) }
             if request.httpMethod == "GET" { return (200, Data(#"{"conversations":[]}"#.utf8)) }
             return (200, Data(#"{"id":"dm0000000002","peer":{"id":"new000000001","username":"jordan","displayName":"Someone else"},"lastSeq":"0","readSeq":"0"}"#.utf8))
@@ -2496,6 +2577,10 @@ final class APIClientTests: XCTestCase {
             model.directMessages = loaded ? [incoming] : []
             MockURLProtocol.handler = { request in
                 XCTAssertEqual(request.httpMethod, "GET", "must not create, accept, upload or send")
+                // The retained channel's unread snapshot is also read-only; no writes are permitted.
+                if request.url?.path == "/api/spaces/unread" {
+                    return (200, Data(#"{"spaces":[],"feedbackWaiting":0}"#.utf8))
+                }
                 XCTAssertEqual(request.url?.path, "/api/dms")
                 return (200, try JSONEncoder().encode(DirectMessagesResponse(conversations: [incoming])))
             }

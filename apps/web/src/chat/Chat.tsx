@@ -23,7 +23,7 @@ import MessageSkeleton from "./MessageSkeleton.tsx";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
 import { Arrivals } from "./arrivals.ts";
 import { dateDivider } from "./dates.ts";
-import { groupsWithPrevious } from "./grouping.ts";
+import { channelNewMessagesId, groupsWithPrevious } from "./grouping.ts";
 import { replyReference, ReplyContext, ReplyDraft } from "./Replies.tsx";
 import LinkedText from "./LinkedText.tsx";
 import {
@@ -60,7 +60,7 @@ import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import AdminBadge from "./AdminBadge.tsx";
 import { blockedAuthor, blockedLabel, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
-import type { Space } from "../spaces/client.ts";
+import { listUnreadSpaces, type Space, type UnreadSpace } from "../spaces/client.ts";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
@@ -627,9 +627,43 @@ export default function Chat({
   const readCursor = clientRef.current?.readCursor() ?? initialHistory?.cursor ?? latestMessage?.seq ?? "0";
   const readCallback = useRef(onReadCursor);
   readCallback.current = onReadCursor;
+  const trackChannelVisit = !!accountId && !!channelId && !!onReadCursor && !direct && !visitor;
+  const [unreadVisit, setUnreadVisit] = useState<{
+    accountId: string;
+    channelId: string;
+    entry?: UnreadSpace["channels"][number];
+  }>();
+  const visitReady =
+    !trackChannelVisit || (unreadVisit?.accountId === accountId && unreadVisit?.channelId === channelId);
+  useEffect(() => {
+    if (!trackChannelVisit || !accountId || !channelId) return;
+    let cancelled = false;
+    // Resolve once per visit, before acknowledgements erase the saved read position.
+    void listUnreadSpaces()
+      .then((snapshot) => {
+        if (!cancelled)
+          setUnreadVisit({
+            accountId,
+            channelId,
+            entry: snapshot.spaces.flatMap((space) => space.channels).find((entry) => entry.id === channelId),
+          });
+      })
+      .catch(() => {
+        if (!cancelled) setUnreadVisit({ accountId, channelId });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, channelId, trackChannelVisit]);
   useEffect(() => {
     const read = () => {
-      if (readActive && state.phase === "ready" && !state.hasNewer && document.visibilityState === "visible")
+      if (
+        visitReady &&
+        readActive &&
+        state.phase === "ready" &&
+        !state.hasNewer &&
+        document.visibilityState === "visible"
+      )
         readCallback.current?.(readCursor);
     };
     read();
@@ -640,7 +674,7 @@ export default function Chat({
       clearInterval(timer);
       document.removeEventListener("visibilitychange", read);
     };
-  }, [state.phase, state.hasNewer, readCursor, channelId, readActive]);
+  }, [state.phase, state.hasNewer, readCursor, channelId, readActive, visitReady]);
 
   useEffect(() => {
     const refresh = () => {
@@ -830,6 +864,10 @@ export default function Chat({
   const updateDraft = useCallback((key: string, change: Partial<DraftAttachment>) => {
     setDrafts((current) => current.map((item) => (item.key === key ? { ...item, ...change } : item)));
   }, []);
+  const toggleSpoiler = (key: string) => {
+    if (state.pendingSend) return;
+    setDrafts((current) => current.map((item) => (item.key === key ? { ...item, spoiler: !item.spoiler } : item)));
+  };
   useEffect(() => {
     showStagedFiles(updateDraft);
     return () => showStagedFiles(undefined);
@@ -1093,6 +1131,10 @@ export default function Chat({
   const channelMessages = state.channelMessages ?? state.messages.filter(isChannelMessage);
   const messages =
     state.pendingSend && !state.pendingSend.threadRootId ? [...channelMessages, state.pendingSend] : channelMessages;
+  const newMessagesId =
+    trackChannelVisit && visitReady
+      ? channelNewMessagesId(channelMessages, unreadVisit?.entry, state.hasMore, viewerId, blockedIds)
+      : undefined;
   arrivals.current.observe(
     "channel",
     state.channelId ?? "",
@@ -1182,7 +1224,10 @@ export default function Chat({
     setAttachError(undefined, threadRootId);
     let attachments: ChatAttachment[];
     try {
-      attachments = await Promise.all(sources.map((upload) => upload.ensure()));
+      attachments = (await Promise.all(sources.map((upload) => upload.ensure()))).map((attachment, index) => ({
+        ...attachment,
+        spoiler: latestDrafts.current.find((draft) => draft.key === files[index].key)?.spoiler,
+      }));
     } catch {
       return;
     } // The file chip owns the upload error and its Retry action.
@@ -1227,6 +1272,7 @@ export default function Chat({
     inThread: boolean,
   ) => {
     if (!hydrated || !previous || !message) return false;
+    if (!inThread && "id" in message && message.id === newMessagesId) return false;
     const runs = inThread ? threadRuns : channelRuns;
     const run = "content" in message ? runs.get(message.clientMessageId) : undefined;
     if (run && (run.first === message.clientMessageId || !revealedRuns.has(run.first))) return false;
@@ -1403,6 +1449,11 @@ export default function Chat({
         {divider && (!run || run.first === message.clientMessageId) && (
           <div className="chat-date-divider">
             <time dateTime={message.createdAt}>{divider}</time>
+          </div>
+        )}
+        {!inThread && !pending && message.id === newMessagesId && (
+          <div className="chat-date-divider chat-new-messages" role="separator" aria-label="New messages">
+            <span>New messages</span>
           </div>
         )}
         <div className={run ? "chat-blocked-revealed" : undefined}>
@@ -1618,6 +1669,22 @@ export default function Chat({
                     save={reactionSaves[message.id]}
                     onReact={react}
                     onShowReactors={(emoji, anchor) => showReactors(message.id, emoji, anchor)}
+                    pickerOpen={actionTarget?.messageId === message.id && actionTarget.mode === "emoji"}
+                    onAddReaction={(anchor) => {
+                      preloadReactionPicker();
+                      setActionTarget(
+                        actionTarget?.messageId === message.id && actionTarget.mode === "emoji"
+                          ? undefined
+                          : {
+                              messageId: message.id,
+                              anchor,
+                              anchorRect: anchor.getBoundingClientRect(),
+                              mode: "emoji",
+                              drawer: isTouchLayout(),
+                              inThread,
+                            },
+                      );
+                    }}
                     onDismissError={() =>
                       setReactionSaves((current) => ({
                         ...current,
@@ -2217,7 +2284,10 @@ export default function Chat({
             }}
             onViewReactions={(emoji) => showReactors(actionMessage.id, emoji, actionTarget.anchor)}
             block={
-              onBlockAuthor && !actionMessage.author.isGuest && actionMessage.author.id !== state.author?.id
+              onBlockAuthor &&
+              !actionMessage.author.isGuest &&
+              actionMessage.author.id !== state.author?.id &&
+              (!actionMessage.author.admin || blockedIds.has(actionMessage.author.id))
                 ? {
                     blocked: blockedIds.has(actionMessage.author.id),
                     name: actionMessage.author.name,
@@ -2335,6 +2405,7 @@ export default function Chat({
                       onAdd: addFiles,
                       onRemove: removeDraft,
                       onRetry: retryUpload,
+                      onToggleSpoiler: toggleSpoiler,
                     }
                   : undefined
               }
@@ -2367,6 +2438,7 @@ export default function Chat({
                 onAdd: (files) => addFiles(files, state.thread?.rootId),
                 onRemove: removeDraft,
                 onRetry: retryUpload,
+                onToggleSpoiler: toggleSpoiler,
               }
             : undefined
         }

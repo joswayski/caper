@@ -64,6 +64,22 @@ final class AttachmentImageLoader: @unchecked Sendable {
         return image
     }
 
+    /// Local draft posters do not wait for compression or an upload. Keep the
+    /// same orientation and early-frame policy as uploaded video previews.
+    func loadVideo(key: String, url: URL, maxPixelSize: Int) async throws -> CGImage {
+        if let hit = cached(key) { return hit }
+        let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration).seconds
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
+        let seconds = duration.isFinite && duration > 0 ? min(0.5, duration / 2) : 0
+        let image = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600)).image
+        try Task.checkCancellation()
+        cache.setObject(CachedAttachmentImage(image), forKey: key as NSString, cost: image.bytesPerRow * image.height)
+        return image
+    }
+
     /// Bound decode work and retained pixels. Lower playback resolution when
     /// needed instead of turning an otherwise ordinary GIF into a still.
     private static let maxAnimationFrames = 600
@@ -239,43 +255,198 @@ struct MessageAttachmentsView: View {
     let attachments: [ChatAttachment]
     let chat: ChatModel?
     @Environment(\.mediaViewer) private var mediaViewer
+    @State private var revealed: Set<String> = []
+
+    private var visuals: [ChatAttachment] { attachments.filter { $0.kind == .image || $0.kind == .video } }
+    private var files: [ChatAttachment] { attachments.filter { $0.kind != .image && $0.kind != .video } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(attachments) { attachment in
-                if attachment.unavailable {
-                    AttachmentFileCard(attachment: attachment, action: nil)
-                } else if attachment.status == .failed {
-                    AttachmentFailedCard(attachment: attachment)
-                } else if attachment.status == .processing {
-                    AttachmentProcessingView(attachment: attachment, chat: chat)
-                } else if attachment.url == nil {
-                    AttachmentFileCard(attachment: attachment, action: nil)
-                } else {
-                    switch attachment.kind {
-                    case .image: AttachmentImageView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
-                    case .video:
-                        if attachment.animated {
-                            AttachmentAnimationView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
-                        } else {
-                            AttachmentVideoView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
+            if visuals.count > 1 {
+                SentGalleryLayout {
+                    ForEach(Array(visuals.enumerated()), id: \.element.id) { index, attachment in
+                        GeometryReader { geometry in
+                            let frames = SentGalleryGeometry.frames(count: visuals.count, width: 480)
+                            let cell = frames[index]
+                            let height = frames.map(\.maxY).max() ?? 0
+                            let right = abs(cell.maxX - 480) < 0.01
+                            let bottom = abs(cell.maxY - height) < 0.01
+                            let shape = UnevenRoundedRectangle(
+                                topLeadingRadius: cell.minX == 0 && cell.minY == 0 ? 12 : 1,
+                                bottomLeadingRadius: cell.minX == 0 && bottom ? 12 : 1,
+                                bottomTrailingRadius: right && bottom ? 12 : 1,
+                                topTrailingRadius: right && cell.minY == 0 ? 12 : 1)
+                            attachmentView(attachment)
+                                .environment(\.sentGalleryCell, true)
+                                .frame(width: geometry.size.width, height: geometry.size.height)
+                                .background(CaperTheme.surface)
+                                .clipShape(shape)
                         }
-                    case .audio: AttachmentAudioView(attachment: attachment, chat: chat)
-                    case .file: AttachmentOpenCard(attachment: attachment, chat: chat)
                     }
                 }
+            } else if let attachment = visuals.first {
+                attachmentView(attachment)
+            }
+            SentFileLayout {
+                ForEach(files) { attachment in attachmentView(attachment) }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private func attachmentView(_ attachment: ChatAttachment) -> some View {
+        if attachment.spoiler && !revealed.contains(attachment.id) {
+            Button { revealed.insert(attachment.id) } label: {
+                AttachmentSpoilerView(attachment: attachment, chat: chat)
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Reveal spoiler attachment")
+            .accessibilityHint("Shows the hidden file")
+        } else if attachment.unavailable {
+            SentAttachmentPlaceholder(attachment: attachment, label: "File removed")
+        } else if attachment.status == .failed {
+            SentAttachmentPlaceholder(attachment: attachment, label: "Processing failed")
+        } else if attachment.status == .processing {
+            AttachmentProcessingView(attachment: attachment, chat: chat)
+        } else if attachment.url == nil {
+            SentAttachmentPlaceholder(attachment: attachment, label: "File unavailable")
+        } else {
+            switch attachment.kind {
+            case .image: AttachmentImageView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
+            case .video:
+                if attachment.animated {
+                    AttachmentAnimationView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
+                } else {
+                    AttachmentVideoView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
+                }
+            case .audio: AttachmentAudioView(attachment: attachment, chat: chat)
+            case .file: AttachmentOpenCard(attachment: attachment, chat: chat)
+            }
+        }
     }
 
     /// Opens this message's images and videos at `attachment`; nil keeps the
     /// file's own behavior (no viewer here, or not a viewable file).
     private func viewer(_ attachment: ChatAttachment) -> (() -> Void)? {
         guard let mediaViewer else { return nil }
-        let items = MediaViewerPolicy.items(attachments)
+        let items = MediaViewerPolicy.items(attachments, revealedSpoilerIDs: revealed)
         guard let start = items.firstIndex(where: { $0.id == attachment.id }) else { return nil }
         return { mediaViewer(MediaViewerRequest(items: items, start: start, chat: chat)) }
+    }
+}
+
+private struct SentGalleryCellKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private extension EnvironmentValues {
+    var sentGalleryCell: Bool {
+        get { self[SentGalleryCellKey.self] }
+        set { self[SentGalleryCellKey.self] = newValue }
+    }
+}
+
+/// Geometry depends only on count, never readiness or downloaded dimensions.
+enum SentGalleryGeometry {
+    static func frames(count: Int, width: CGFloat) -> [CGRect] {
+        guard count > 1 else { return [] }
+        let width = max(0, min(480, width))
+        let height = width * 2 / 3
+        if count == 2 {
+            let side = max(0, (width - 4) / 2)
+            return [CGRect(x: 0, y: 0, width: side, height: height),
+                    CGRect(x: side + 4, y: 0, width: side, height: height)]
+        }
+        if count == 3 {
+            let left = max(0, (width - 4) * 2 / 3)
+            let right = max(0, (width - 4) / 3)
+            let half = max(0, (height - 4) / 2)
+            return [CGRect(x: 0, y: 0, width: left, height: height),
+                    CGRect(x: left + 4, y: 0, width: right, height: half),
+                    CGRect(x: left + 4, y: half + 4, width: right, height: half)]
+        }
+        let rows = (count + 2) / 3
+        let shortRows = rows * 3 - count
+        let rowHeight = max(0, count == 4 ? (width - 4) / 2 : (width - 8) / 3)
+        return (0..<rows).flatMap { row -> [CGRect] in
+            let columns = row < shortRows ? 2 : 3
+            let cellWidth = max(0, (width - CGFloat(columns - 1) * 4) / CGFloat(columns))
+            return (0..<columns).map { column in
+                CGRect(x: CGFloat(column) * (cellWidth + 4), y: CGFloat(row) * (rowHeight + 4), width: cellWidth, height: rowHeight)
+            }
+        }
+    }
+}
+
+private struct SentGalleryLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = max(0, min(480, proposal.width ?? 480))
+        let frames = SentGalleryGeometry.frames(count: subviews.count, width: width)
+        return CGSize(width: width, height: frames.map(\.maxY).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (index, frame) in SentGalleryGeometry.frames(count: subviews.count, width: bounds.width).enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                                  anchor: .topLeading, proposal: ProposedViewSize(frame.size))
+        }
+    }
+}
+
+/// Keep cards readable; wrap rather than shrinking filenames and audio controls.
+private struct SentFileLayout: Layout {
+    private func layout(width: CGFloat, subviews: Subviews) -> [CGRect] {
+        let columns = max(1, Int((width + 6) / 226))
+        let cardWidth = min(360, max(0, (width - CGFloat(columns - 1) * 6) / CGFloat(columns)))
+        var frames: [CGRect] = []
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for (index, subview) in subviews.enumerated() {
+            if index > 0, index % columns == 0 { y += rowHeight + 6; rowHeight = 0 }
+            let size = subview.sizeThatFits(ProposedViewSize(width: cardWidth, height: nil))
+            frames.append(CGRect(x: CGFloat(index % columns) * (cardWidth + 6), y: y, width: cardWidth, height: size.height))
+            rowHeight = max(rowHeight, size.height)
+        }
+        return frames
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? 360
+        let frames = layout(width: width, subviews: subviews)
+        return CGSize(width: width, height: frames.map(\.maxY).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (index, frame) in layout(width: bounds.width, subviews: subviews).enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                                  anchor: .topLeading, proposal: ProposedViewSize(frame.size))
+        }
+    }
+}
+
+private struct SentAttachmentPlaceholder: View {
+    let attachment: ChatAttachment
+    let label: String
+    @Environment(\.sentGalleryCell) private var galleryCell
+
+    var body: some View {
+        if galleryCell {
+            VStack(spacing: 4) {
+                Text(attachment.name).lineLimit(1).truncationMode(.middle)
+                Text(label).lineLimit(2)
+            }
+            .font(CaperTheme.font(11))
+            .foregroundStyle(CaperTheme.muted)
+            .padding(8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityElement(children: .combine)
+        } else if attachment.status == .failed && !attachment.unavailable {
+            AttachmentFailedCard(attachment: attachment)
+        } else {
+            AttachmentFileCard(attachment: attachment, action: nil)
+        }
     }
 }
 
@@ -291,17 +462,95 @@ private func openAttachment(_ attachment: ChatAttachment, chat: ChatModel?, open
 private struct AttachmentFrame: ViewModifier {
     let attachment: ChatAttachment
     let fallback: (width: Double, height: Double)
+    @Environment(\.sentGalleryCell) private var galleryCell
 
-    func body(content: Content) -> some View {
+    @ViewBuilder func body(content: Content) -> some View {
         let size = AttachmentPolicy.displaySize(width: attachment.width, height: attachment.height) ?? fallback
         // Reserve the final aspect ratio before anything loads.
-        return Color.clear
+        if galleryCell {
+            Color.clear.overlay { content }.clipped()
+        } else {
+            Color.clear
             .aspectRatio(CGSize(width: size.width, height: size.height), contentMode: .fit)
             .overlay { content }
             .background(CaperTheme.surface)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
             .frame(maxWidth: size.width, alignment: .leading)
+        }
+    }
+}
+
+/// A still only: never constructs the image animation or video playback views.
+private struct AttachmentSpoilerView: View {
+    let attachment: ChatAttachment
+    let chat: ChatModel?
+    @Environment(\.sentGalleryCell) private var galleryCell
+    @State private var image: CGImage?
+
+    private var visual: Bool {
+        !attachment.unavailable && attachment.status != .failed &&
+            (attachment.kind == .image || attachment.kind == .video)
+    }
+
+    var body: some View {
+        Group {
+            if galleryCell || visual {
+                SpoilerThumbnail(image: image)
+                    .modifier(AttachmentFrame(attachment: attachment, fallback: (240, 180)))
+            } else {
+                SpoilerThumbnail(image: nil)
+                    .frame(maxWidth: .infinity, minHeight: 80, maxHeight: 80)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .accessibilityHidden(true)
+        .task(id: "\(attachment.id):\(attachment.previewUrl ?? ""):\(attachment.url ?? ""):\(visual)") {
+            image = nil
+            guard visual else { return }
+            // The existing loader caches by id/variant and requests refreshed
+            // signatures. Both URLs key this task so either refresh retries.
+            if attachment.previewUrl != nil {
+                let result = await loadAttachmentImage(attachment, preview: true, chat: chat)
+                guard !Task.isCancelled else { return }
+                if let still = result.image { image = still; return }
+            }
+            // Videos without a usable poster stay neutral; do not start a
+            // player to obtain one. ImageIO decodes only frame zero of images.
+            guard attachment.kind == .image else { return }
+            let result = await loadAttachmentImage(attachment, preview: false, chat: chat)
+            guard !Task.isCancelled else { return }
+            image = result.image
+        }
+    }
+}
+
+/// Blur is unconditional on the image branch, clipped before the readable
+/// label is overlaid. No transition can briefly expose the original pixels.
+private struct SpoilerThumbnail: View {
+    let image: CGImage?
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                CaperTheme.surface
+                if let image {
+                    Image(decorative: image, scale: 1).resizable().scaledToFill()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .blur(radius: max(geometry.size.width, geometry.size.height) * 0.24, opaque: true)
+                        .clipped()
+                }
+                Text("SPOILER")
+                    .font(CaperTheme.font(11, weight: .bold))
+                    .foregroundStyle(CaperTheme.text)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(CaperTheme.blackout.opacity(0.8), in: RoundedRectangle(cornerRadius: 8))
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .clipped()
+        }
+        .transaction { $0.animation = nil }
+        .accessibilityHidden(true)
     }
 }
 
@@ -1563,10 +1812,41 @@ struct AttachmentDraftsView: View {
 
     var body: some View {
         if !files.isEmpty {
+            let failed = files.filter { $0.error != nil }.count
+            let uploading = files.filter { $0.attachment == nil && $0.error == nil }.count
+            if failed > 0 {
+                Text(failed == 1 ? "1 file failed to upload. Send will retry it, or you can remove it." : "\(failed) files failed to upload. Send will retry them, or you can remove them.")
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(CaperTheme.terracotta.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            }
+            if uploading > 0 {
+                Text("Uploading \(uploading) \(uploading == 1 ? "file" : "files")… Your message won’t send until every file is ready.")
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
             StagedFileLayout() {
                 ForEach(files) { draft in
                     AttachmentDraftChip(draft: draft, preview: { previewID = draft.id }, retry: { chat.retryAttachmentDraft(id: draft.id) }) {
                         chat.removeAttachmentDraft(id: draft.id)
+                    }
+                    .overlay(alignment: .topLeading) {
+                        Button { chat.toggleAttachmentSpoiler(id: draft.id) } label: {
+                            Image(systemName: draft.spoiler ? "eye.slash.fill" : "eye")
+                                .font(.system(size: 14))
+                                .frame(width: 24, height: 24)
+                                .background(.black.opacity(0.8), in: Circle())
+                                .padding(4)
+                                #if os(iOS)
+                                .frame(width: 44, height: 44, alignment: .topLeading)
+                                #endif
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.white)
+                        .accessibilityLabel(draft.spoiler ? "Remove spoiler from attachment" : "Mark \(draft.name) as spoiler")
+                        .accessibilityValue(draft.spoiler ? "Spoiler" : "Not a spoiler")
+                        .help(draft.spoiler ? "Remove spoiler" : "Mark as spoiler")
                     }
                     .modifier(Entrance.chip)
                 }
@@ -1591,6 +1871,7 @@ private struct AttachmentDraftChip: View {
                        status: draft.statusLabel, failed: draft.error != nil,
                        busyLabel: draft.attachment == nil && draft.error == nil ? (draft.preparing ? "Preparing…" : "Uploading…") : nil,
                        progress: draft.attachment == nil && draft.error == nil ? draft.progress : nil,
+                       spoiler: draft.spoiler,
                        retry: draft.error == nil ? nil : retry, preview: preview, remove: remove)
     }
 }
@@ -1639,6 +1920,7 @@ struct StagedFileChip: View {
     var busyLabel: String?
     var progress: Double?
     var removable = true
+    var spoiler = false
     /// Offered for a failed upload.
     var retry: (() -> Void)?
     let preview: () -> Void
@@ -1651,8 +1933,12 @@ struct StagedFileChip: View {
             Button(action: preview) {
                 GeometryReader { geometry in
                     Group {
-                        if let thumbnail {
+                        if spoiler {
+                            SpoilerThumbnail(image: failed ? nil : thumbnail)
+                        } else if let thumbnail {
                             Image(decorative: thumbnail, scale: 1).resizable().scaledToFill()
+                        } else if kind == .video {
+                            Color.clear
                         } else {
                             VStack(spacing: 6) {
                                 if kind == .file {
@@ -1673,31 +1959,50 @@ struct StagedFileChip: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Preview \(name)")
-            .accessibilityValue(status)
-            .help(name)
-            if failed || busyLabel != nil {
-                VStack {
-                    Spacer(minLength: 0)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(spoiler ? "Preview spoiler attachment" : "Preview \(name)")
+            .accessibilityValue(spoiler ? "Spoiler" : status)
+            .help(spoiler ? "Spoiler attachment" : name)
+            .contextMenu {
+                if removable {
+                    Button("Remove attachment", role: .destructive, action: remove)
+                }
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                ZStack {
+                    if kind == .video && !spoiler {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.72))
+                            .frame(width: 32, height: 32)
+                            .background(.black.opacity(0.32), in: Circle())
+                            .accessibilityLabel("Video")
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+                if failed || busyLabel != nil {
                     VStack(spacing: 3) {
                         if failed, let retry {
                             Button(action: retry) {
-                                Text("Failed · Retry")
+                                Text("Retry upload")
                                     .frame(maxWidth: .infinity, minHeight: 44)
+                                    .foregroundStyle(CaperTheme.blackout)
+                                    .background(CaperTheme.action, in: RoundedRectangle(cornerRadius: 8))
                                     .contentShape(Rectangle())
                             }.buttonStyle(.plain)
-                                .accessibilityLabel("Retry uploading \(name)")
-                                .accessibilityHint(status)
+                                .accessibilityLabel(spoiler ? "Retry uploading spoiler attachment" : "Retry uploading \(name)")
+                                .accessibilityHint(spoiler ? "Upload failed" : status)
                         } else {
                             Text(failed ? "Failed" : busyLabel ?? "Uploading…")
                                 .lineLimit(1).minimumScaleFactor(0.8)
-                                .accessibilityLabel(status)
+                                .accessibilityLabel(spoiler ? "Spoiler attachment upload" : status)
                         }
                         if let progress {
                             ProgressView(value: progress).progressViewStyle(.linear).tint(CaperTheme.terracottaBright)
                                 // Glides between progress events instead of jumping.
                                 .animation(reduceMotion ? nil : .linear(duration: CaperMotion.base), value: progress)
-                                .accessibilityLabel("Uploading \(name)")
+                                .accessibilityLabel(spoiler ? "Uploading spoiler attachment" : "Uploading \(name)")
                         }
                     }
                     .font(CaperTheme.font(10, weight: .bold))
@@ -1708,18 +2013,22 @@ struct StagedFileChip: View {
                     .background(.black.opacity(0.8))
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             if removable {
                 Button(action: remove) {
                     CaperIcon(name: "x", size: 14).frame(width: 24, height: 24)
                         .background(.black.opacity(0.8), in: Circle())
                         #if os(iOS)
-                        .frame(minWidth: 44, minHeight: 44)
+                        .padding(4)
+                        .frame(width: 44, height: 44, alignment: .topTrailing)
+                        #else
+                        .padding(4)
                         #endif
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
-                .accessibilityLabel("Remove \(name)")
+                .accessibilityLabel(spoiler ? "Remove spoiler attachment" : "Remove \(name)")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1727,10 +2036,18 @@ struct StagedFileChip: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(failed ? Color(red: 138/255, green: 67/255, blue: 52/255) : CaperTheme.border))
         .task(id: localURL) {
-            guard kind == .image else { thumbnail = nil; return }
             let key = "draft:\(id):\(localURL.lastPathComponent)"
             thumbnail = nil
-            thumbnail = try? await AttachmentImageLoader.shared.load(key: key, url: localURL, maxPixelSize: 312)
+            let loaded: CGImage?
+            switch kind {
+            case .image:
+                loaded = try? await AttachmentImageLoader.shared.load(key: key, url: localURL, maxPixelSize: 312)
+            case .video:
+                loaded = try? await AttachmentImageLoader.shared.loadVideo(key: key, url: localURL, maxPixelSize: 312)
+            default:
+                loaded = nil
+            }
+            if !Task.isCancelled { thumbnail = loaded }
         }
     }
 

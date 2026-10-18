@@ -106,6 +106,11 @@ pub enum Command {
     LoadUnread {
         epoch: u64,
         revision: u64,
+        visit: Option<u64>,
+        token: String,
+    },
+    LoadVoiceActivity {
+        epoch: u64,
         token: String,
     },
     ThreadUnread {
@@ -232,6 +237,7 @@ pub enum Command {
         reply_to_id: Option<String>,
         /// Resent unchanged on retry: ids join the idempotency hash.
         attachment_ids: Vec<String>,
+        spoiler_attachment_ids: Vec<String>,
     },
     /// Whether uploads are configured, and the compression settings.
     AssetUsage {
@@ -370,15 +376,28 @@ pub enum AccountOperation {
     /// An owner's live invite links for one space.
     LoadInviteLinks {
         space: String,
+        request: u64,
+    },
+    EnsureDefaultInviteLink {
+        space: String,
+        channel: Option<String>,
+        request: u64,
+    },
+    RegenerateInviteLink {
+        space: String,
+        code: String,
+        request: u64,
     },
     CreateInviteLink {
         space: String,
+        request: u64,
         channel: Option<String>,
         max_age: Option<u32>,
         max_uses: Option<u32>,
     },
     RevokeInviteLink {
         space: String,
+        request: u64,
         code: String,
     },
     /// The "Join with invite link" preview and join; `request` drops answers
@@ -431,14 +450,22 @@ pub enum AccountResult {
     },
     InviteLinks {
         space: String,
+        request: u64,
         result: Result<Vec<InviteLink>, String>,
     },
     InviteLinkCreated {
         space: String,
+        request: u64,
+        result: Result<InviteLink, String>,
+    },
+    DefaultInviteLink {
+        space: String,
+        request: u64,
         result: Result<InviteLink, String>,
     },
     InviteLinkRevoked {
         space: String,
+        request: u64,
         code: String,
         result: Result<(), String>,
     },
@@ -617,7 +644,12 @@ pub enum Event {
     UnreadLoaded {
         epoch: u64,
         revision: u64,
-        result: Result<Vec<crate::model::UnreadSpace>, String>,
+        visit: Option<u64>,
+        result: Result<crate::model::UnreadSpaces, String>,
+    },
+    VoiceActivityLoaded {
+        epoch: u64,
+        result: Result<Vec<String>, String>,
     },
     ThreadUnread {
         scope: (u64, u64, String),
@@ -1584,13 +1616,18 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
         Command::LoadUnread {
             epoch,
             revision,
+            visit,
             token,
         } => Event::UnreadLoaded {
             epoch,
             revision,
+            visit,
+            result: api.unread_spaces(&token).map_err(|error| error.to_string()),
+        },
+        Command::LoadVoiceActivity { epoch, token } => Event::VoiceActivityLoaded {
+            epoch,
             result: api
-                .unread_spaces(&token)
-                .map(|value| value.spaces)
+                .voice_activity(&token)
                 .map_err(|error| error.to_string()),
         },
         Command::ThreadUnread {
@@ -1872,6 +1909,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             client_id,
             text,
             attachment_ids,
+            spoiler_attachment_ids,
             thread_root_id,
             broadcast,
             reply_to_id,
@@ -1887,6 +1925,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                     &client_id,
                     &text,
                     &attachment_ids,
+                    &spoiler_attachment_ids,
                     (thread_root_id.as_deref(), broadcast),
                     reply_to_id.as_deref(),
                 )
@@ -2110,12 +2149,36 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
                 result: result.map_err(text),
             }
         }
-        AccountOperation::LoadInviteLinks { space } => AccountResult::InviteLinks {
+        AccountOperation::LoadInviteLinks { space, request } => AccountResult::InviteLinks {
             result: api.invite_links(token, &space).map_err(text),
             space,
+            request,
+        },
+        AccountOperation::EnsureDefaultInviteLink {
+            space,
+            channel,
+            request,
+        } => AccountResult::DefaultInviteLink {
+            result: api
+                .default_invite_link(token, &space, channel.as_deref())
+                .map_err(text),
+            space,
+            request,
+        },
+        AccountOperation::RegenerateInviteLink {
+            space,
+            code,
+            request,
+        } => AccountResult::DefaultInviteLink {
+            result: api
+                .regenerate_invite_link(token, &space, &code)
+                .map_err(text),
+            space,
+            request,
         },
         AccountOperation::CreateInviteLink {
             space,
+            request,
             channel,
             max_age,
             max_uses,
@@ -2124,11 +2187,17 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
                 .create_invite_link(token, &space, channel.as_deref(), max_age, max_uses)
                 .map_err(text),
             space,
+            request,
         },
-        AccountOperation::RevokeInviteLink { space, code } => AccountResult::InviteLinkRevoked {
+        AccountOperation::RevokeInviteLink {
+            space,
+            code,
+            request,
+        } => AccountResult::InviteLinkRevoked {
             result: api.revoke_invite_link(token, &space, &code).map_err(text),
             space,
             code,
+            request,
         },
         AccountOperation::PreviewInvite { request, code } => AccountResult::InvitePreview {
             request,
@@ -2487,6 +2556,74 @@ mod tests {
             refused.err().unwrap().message,
             "Caper returned another conversation."
         );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn feedback_waiting_count_survives_unread_poll_and_defaults_on_older_servers() {
+        let (api, worker, _) = serve(vec![
+            (
+                "GET /api/spaces/unread",
+                "200 OK",
+                r#"{"spaces":[],"feedbackWaiting":12}"#,
+            ),
+            ("GET /api/spaces/unread", "200 OK", r#"{"spaces":[]}"#),
+        ]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        for expected in [12, 0] {
+            super::execute(
+                &api,
+                super::Command::LoadUnread {
+                    epoch: 7,
+                    revision: 3,
+                    visit: None,
+                    token: "account".into(),
+                },
+                &sender,
+                &eframe::egui::Context::default(),
+            );
+            match receiver.recv().unwrap() {
+                super::Event::UnreadLoaded {
+                    epoch: 7,
+                    revision: 3,
+                    visit: None,
+                    result: Ok(unread),
+                } => {
+                    assert_eq!(unread.feedback_waiting, expected);
+                    assert!(unread.spaces.is_empty());
+                }
+                _ => panic!("expected unread result"),
+            }
+        }
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn voice_activity_uses_the_member_endpoint_and_preserves_account_epoch() {
+        let (api, worker, _) = serve(vec![(
+            "GET /api/spaces/voice-activity",
+            "200 OK",
+            r#"{"spaceIds":["space-one","space-two"]}"#,
+        )]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        super::execute(
+            &api,
+            super::Command::LoadVoiceActivity {
+                epoch: 7,
+                token: "account".into(),
+            },
+            &sender,
+            &eframe::egui::Context::default(),
+        );
+        match receiver.recv().unwrap() {
+            super::Event::VoiceActivityLoaded {
+                epoch: 7,
+                result: Ok(ids),
+            } => {
+                assert_eq!(ids, ["space-one", "space-two"]);
+            }
+            _ => panic!("expected voice activity result"),
+        }
         worker.join().unwrap();
     }
 

@@ -993,6 +993,57 @@ try {
   alignedHeaders(390);
   assert.equal(evaluate('document.querySelector(".chat-thread-resize").checkVisibility()'), false);
   await checkKeyboardDismiss(".chat-thread-messages", "#chat-thread-reply");
+  const swipeThread = async (selector, dx, dy = 0, cancel = false) => {
+    const point = evaluate(`(() => {
+      const r = document.querySelector('${selector}').getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`);
+    await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] }, sessionId);
+    for (let step = 1; step <= 8; step++) {
+      await cdp(
+        "Input.dispatchTouchEvent",
+        {
+          type: "touchMove",
+          touchPoints: [{ x: point.x + (dx * step) / 8, y: point.y + (dy * step) / 8 }],
+        },
+        sessionId,
+      );
+    }
+    await cdp("Input.dispatchTouchEvent", { type: cancel ? "touchCancel" : "touchEnd", touchPoints: [] }, sessionId);
+  };
+  const savedThreadDraft = evaluate('document.querySelector("#chat-thread-reply").value');
+  for (const [dx, dy, cancel] of [
+    [-140, 0, false],
+    [50, 0, false],
+    [140, 0, true],
+    [4, 120, false],
+  ]) {
+    await swipeThread(".chat-thread-messages", dx, dy, cancel);
+    assert.equal(
+      evaluate('!!document.querySelector(".chat-thread-panel")'),
+      true,
+      `Left, short, cancelled and vertical drags keep the thread: ${dx}, ${dy}, ${cancel}`,
+    );
+  }
+  await swipeThread("#chat-thread-reply", 90);
+  assert.equal(evaluate('!!document.querySelector(".chat-thread-panel")'), true, "The composer keeps its own gestures");
+  assert.equal(evaluate('document.querySelector("#chat-thread-reply").value'), savedThreadDraft);
+  await swipeThread(".chat-thread-messages", 140);
+  wait('!document.querySelector(".chat-thread-panel") && !history.state?.caperThread');
+  assert.equal(evaluate('document.querySelector(".chat-panel").inert'), false);
+  assert.equal(evaluate('!!document.querySelector("#chat-heading")'), true, "Swipe returns to the channel");
+  open(root.clientMessageId);
+  assert.equal(
+    evaluate('document.querySelector("#chat-thread-reply").value'),
+    savedThreadDraft,
+    "Swipe keeps the unsent draft",
+  );
+  await swipeThread(".chat-thread-heading", 140);
+  wait('!document.querySelector(".chat-thread-panel") && !history.state?.caperThread');
+  open(root.clientMessageId);
+  console.log(
+    "PASS: thread right-swipes from timeline/header return to channel and preserve draft; left/short/cancelled/vertical/composer drags stay in thread.",
+  );
   screenshot("threads-mobile");
   evaluate('document.querySelector(".chat-thread-heading span").textContent = "in #" + "long-channel-name-".repeat(3)');
   browser("set", "viewport", "320", "844", "2");

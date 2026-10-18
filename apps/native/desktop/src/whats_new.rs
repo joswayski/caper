@@ -15,7 +15,8 @@ const INVALID: &str = "Caper returned invalid release highlights. Please try aga
 #[serde(rename_all = "camelCase")]
 pub struct Release {
     pub sequence: u64,
-    revision: String,
+    pub revision: String,
+    pub version: Option<String>,
     pub published_at: String,
     pub highlights: Vec<Highlight>,
 }
@@ -63,6 +64,10 @@ impl Snapshot {
                     && release.sequence <= MAX_SEQUENCE
                     && sha(&release.revision)
                     && revisions.insert(&release.revision)
+                    && release
+                        .version
+                        .as_ref()
+                        .is_none_or(|version| text(version, 64))
                     && chrono::DateTime::parse_from_rfc3339(&release.published_at).is_ok()
                     && release.highlights.len() <= 5
                     && release
@@ -161,6 +166,14 @@ impl WhatsNew {
 
     fn acknowledge(&mut self, sequence: u64) {
         self.acknowledged = Some(self.acknowledged.unwrap_or(0).max(sequence));
+    }
+
+    /// The update review already showed this build's highlights; installing
+    /// from it marks them read so the new build does not open them again.
+    pub fn mark_read(&mut self, sequence: u64) {
+        if (1..=MAX_SEQUENCE).contains(&sequence) {
+            self.acknowledge(sequence);
+        }
     }
 
     pub fn open_unread(&mut self) -> bool {
@@ -332,6 +345,26 @@ mod tests {
         updated.dismiss(); // Closed before any frame displayed the snapshot.
         updated.save(&mut storage);
         assert!(updated.open_unread(), "unseen highlights remain unread");
+    }
+
+    #[test]
+    fn installing_from_the_update_review_does_not_reopen_the_same_highlights() {
+        let mut storage = Storage::default();
+        let mut state = WhatsNew::new("https://caper.test", "linux");
+        load(&mut state, &[1], &[1]);
+        state.mark_read(3);
+        state.mark_read(0);
+        state.save(&mut storage);
+        // The restarted build fetches its own snapshot, the one the review showed.
+        let mut updated = WhatsNew::new("https://caper.test", "linux");
+        updated.restore(&storage);
+        load(&mut updated, &[1, 2, 3], &[2, 3]);
+        assert!(!updated.open_unread(), "already read in the update review");
+        // A later release the review never showed still opens.
+        let mut later = WhatsNew::new("https://caper.test", "linux");
+        later.restore(&storage);
+        load(&mut later, &[1, 2, 3, 4], &[4]);
+        assert!(later.open_unread());
     }
 
     #[test]

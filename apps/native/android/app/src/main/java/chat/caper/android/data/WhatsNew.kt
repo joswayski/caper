@@ -15,6 +15,7 @@ internal fun isReleaseRevision(value: String) = Regex("^[0-9a-f]{40}$").matches(
 @Serializable data class ReleaseHighlight(val title: String, val body: String)
 @Serializable data class PlatformRelease(
     val sequence: Long, val revision: String, val publishedAt: String, val highlights: List<ReleaseHighlight>,
+    val version: String? = null,
 )
 @Serializable data class WhatsNewSnapshot(
     val schema: Int, val platform: String, val revision: String, val sequence: Long, val releases: List<PlatformRelease>,
@@ -29,6 +30,7 @@ internal fun isReleaseRevision(value: String) = Regex("^[0-9a-f]{40}$").matches(
         releases.forEach { release ->
             require(release.sequence in 1..MAX_SEQUENCE && release.sequence > previousSequence)
             require(isReleaseRevision(release.revision) && revisions.add(release.revision))
+            require(release.version == null || validReleaseText(release.version, 64))
             require(release.publishedAt.length <= 40 && release.publishedAt.endsWith("Z"))
             val date = Instant.parse(release.publishedAt)
             require(previousDate == null || date >= previousDate)

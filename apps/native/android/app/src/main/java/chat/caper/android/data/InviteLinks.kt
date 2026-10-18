@@ -37,9 +37,10 @@ enum class InviteExpiryUnit(val label: String, val seconds: Long?) {
     Minutes("minutes", 60), Hours("hours", 3_600), Days("days", 86_400), Never("Never", null),
 }
 
-/** Web's default expiry, 7 days. */
-const val DEFAULT_INVITE_EXPIRY_NUMBER = "7"
+/** Default expiry measured from creation, not from reopening. */
+const val DEFAULT_INVITE_EXPIRY_NUMBER = "30"
 val DEFAULT_INVITE_EXPIRY_UNIT = InviteExpiryUnit.Days
+const val DEFAULT_INVITE_MAX_USES = "100"
 
 /** The API's range for `maxAge`: 1 minute to 365 days, in seconds. */
 const val MIN_INVITE_MAX_AGE = 60L
@@ -85,9 +86,9 @@ private fun grouped(count: Long) = String.format(java.util.Locale.US, "%,d", cou
 
 private fun plural(count: Long, one: String, many: String = "${one}s") = "${grouped(count)} ${if (count == 1L) one else many}"
 
-/** "3 of 10 uses", or "2 uses" without a limit. */
+/** "7 of 10 joins remaining", or "2 uses" without a limit. */
 fun inviteUsesLabel(uses: Int, maxUses: Int?): String =
-    if (maxUses != null) "${grouped(uses.toLong())} of ${plural(maxUses.toLong(), "use")}" else plural(uses.toLong(), "use")
+    if (maxUses != null) "${grouped((maxUses.toLong() - uses).coerceAtLeast(0))} of ${plural(maxUses.toLong(), "join")} remaining" else plural(uses.toLong(), "use")
 
 /** "Expires in 6 days", "Never expires", or "Expired". Null when [expiresAt] can't be read. */
 fun inviteExpiryLabel(expiresAt: String?, now: Instant): String? {
@@ -102,7 +103,7 @@ fun inviteExpiryLabel(expiresAt: String?, now: Instant): String? {
     return "Expires in ${plural((hours / 24.0).roundToLong(), "day")}"
 }
 
-/** A link row's meta line: "#feedback · 3 of 10 uses · Expires in 6 days". */
+/** A link row's meta line: "#feedback · 7 of 10 joins remaining · Expires in 6 days". */
 fun inviteLinkMeta(link: InviteLink, now: Instant): String = listOfNotNull(
     link.channel?.let { "#${it.name}" },
     inviteUsesLabel(link.uses, link.maxUses),

@@ -157,7 +157,7 @@ class HighlightsTests(unittest.TestCase):
         schema = json.dumps(body["output_config"]["format"]["schema"])
         for unsupported in ("minLength", "maxLength", "maxItems"):
             self.assertNotIn(f'"{unsupported}"', schema)
-        self.assertLessEqual(len(request.data.decode()), 120_000)
+        self.assertLessEqual(len(request.data.decode()), notes.MAX_INPUT_CHARS)
         self.assertNotIn("tools", body)
         if self.provider_error:
             raise self.provider_error
@@ -168,7 +168,7 @@ class HighlightsTests(unittest.TestCase):
         }
         return io.BytesIO(message if isinstance(message, bytes) else encoded(message))
 
-    def generate(self, revision=None, audience="web", publish=True):
+    def generate(self, revision=None, audience="web", publish=True, native_version=None):
         return notes.generate(
             revision or self.git("rev-parse", "HEAD"),
             audience,
@@ -176,6 +176,7 @@ class HighlightsTests(unittest.TestCase):
             repo=self.repo,
             github=self.github,
             publish=publish,
+            native_version=native_version,
         )
 
     def seed(self, revision=None, platforms=("web",)):
@@ -484,6 +485,27 @@ class HighlightsTests(unittest.TestCase):
         self.assertEqual(result["sequence"], 2)
         self.assertEqual(result["releases"][-1]["highlights"], [])
 
+    def test_native_versions_are_recorded_without_relabeling_legacy_or_immutable_releases(self):
+        self.seed(platforms=PLATFORMS[1:])
+        newest = self.commit("Improve native notes", {"shared/design.css": "new controls\n"})
+        self.response = {"highlights": [highlight([newest], PLATFORMS[1:])]}
+        result = self.generate(newest, "native", native_version="0.1.112")
+        for value in result.values():
+            self.assertNotIn("version", value["releases"][0])
+            self.assertEqual(value["releases"][1]["version"], "0.1.112")
+        self.github.events.clear()
+        self.assertEqual(self.generate(newest, "native", native_version="0.1.113"), result)
+        self.assertEqual(self.github.events, [])
+        later = self.commit("Another native update", {"shared/design.css": "next controls\n"})
+        self.response = {"highlights": [highlight([later], PLATFORMS[1:])]}
+        for value in self.generate(later, "native", native_version="0.1.114").values():
+            self.assertEqual([release.get("version") for release in value["releases"]], [None, "0.1.112", "0.1.114"])
+        with self.assertRaises(notes.GenerationError):
+            self.generate(later, "web", native_version="0.1.114")
+        for version in ["", "Release 2", "0.1.114\n", "0.1." + "1" * 64]:
+            with self.assertRaises(notes.GenerationError):
+                self.generate(later, "native", native_version=version)
+
     def test_exact_rerun_and_rollback_reuse_bytes_without_model_or_lowering_latest(self):
         self.seed()
         newest = self.commit("Improve channel controls")
@@ -568,11 +590,42 @@ class HighlightsTests(unittest.TestCase):
         evidence = json.loads(self.requests[0]["messages"][0]["content"])
         self.assertEqual(set(evidence["platformRanges"]), {"macos", "windows", "linux"})
 
-    def test_over_budget_input_does_not_call_provider_or_publish(self):
+    def test_over_budget_diffs_are_shortened_so_long_gaps_still_publish(self):
         self.seed()
-        self.commit("Improve channel controls", {"apps/web/src/chat.ts": "x" * 70_000})
-        newest = self.commit("Improve voice controls", {"apps/web/src/voice.ts": "y" * 70_000})
-        with self.assertRaisesRegex(notes.GenerationError, "budget|120000"):
+        chat = self.commit("Improve channel controls", {"apps/web/src/chat.ts": "x\n" * 150_000})
+        self.commit("Persist voice state", {"apps/api/src/voice.rs": "y\n" * 150_000})
+        newest = self.commit("Improve voice controls", {"apps/web/src/voice.ts": "z\n" * 150_000})
+        self.response = {"highlights": [highlight([chat, newest])]}
+        result = self.generate(newest)["web"]
+        self.assertEqual(len(self.requests), 1)
+        evidence = json.loads(self.requests[0]["messages"][0]["content"])
+        commits = {item["subject"]: item for item in evidence["commits"]}
+        self.assertEqual(set(commits), {"Improve channel controls", "Persist voice state", "Improve voice controls"})
+        # Server-only context loses its diff first; client diffs share the rest evenly.
+        self.assertEqual(commits["Persist voice state"]["diff"], "")
+        self.assertTrue(all(item["diffTruncated"] for item in commits.values()))
+        client = [commits["Improve channel controls"]["diff"], commits["Improve voice controls"]["diff"]]
+        self.assertEqual(len(client[0]), len(client[1]))
+        self.assertGreater(len(client[0]), 100_000)
+        self.assertEqual(len(result["releases"][-1]["highlights"]), 1)
+
+    def test_small_releases_send_whole_diffs(self):
+        self.seed()
+        newest = self.commit("Improve channel controls", {"apps/web/src/chat.ts": "small();\n"})
+        self.generate(newest)
+        evidence = json.loads(self.requests[0]["messages"][0]["content"])
+        self.assertNotIn("diffTruncated", evidence["commits"][0])
+        self.assertIn("+small();", evidence["commits"][0]["diff"])
+
+    def test_commit_messages_over_budget_fail_without_provider_or_publish(self):
+        self.seed()
+        (self.repo / "apps/web/src/chat.ts").write_text("changed\n")
+        message = self.repo / "message.txt"  # not staged; only apps/ is added
+        message.write_text("Improve channel controls\n\n" + "b" * (notes.MAX_INPUT_CHARS + 1))
+        self.git("add", "apps")
+        self.git("commit", "-qF", str(message))
+        newest = self.git("rev-parse", "HEAD")
+        with self.assertRaisesRegex(notes.GenerationError, "even without diffs"):
             self.generate(newest)
         self.assertEqual(self.requests, [])
         self.assertEqual(self.github.events, [])

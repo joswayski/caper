@@ -16,20 +16,39 @@ const init = join(directory, "fixture.js");
 
 function fixture() {
   if (location.protocol === "about:") return;
-  const account = { id: "member123456", username: "member", displayName: "TEST FIXTURE member" };
+  const query = new URLSearchParams(location.search);
+  const feedbackMode = query.has("feedback") || query.has("feedbackTest");
+  const account = {
+    id: "member123456",
+    username: "member",
+    displayName: "TEST FIXTURE member",
+    feedbackTeam: feedbackMode,
+  };
   const space = { id: "space1234567", name: "TEST FIXTURE navigation", ownerId: "owner1234567" };
   const channels = [
     { id: "general12345", spaceId: space.id, name: "general", private: false, joined: true },
     { id: "design123456", spaceId: space.id, name: "design", private: false, joined: true },
   ];
   const members = [{ ...account, owner: false }];
+  const forwardedRoot = {
+    id: "message-general12345",
+    channelId: "general12345",
+    seq: "1",
+    clientMessageId: "00000000-0000-4000-8000-000000000001",
+    createdAt: "2026-10-04T12:00:00Z",
+    author: { id: account.id, name: account.displayName, isGuest: false },
+    content: { version: 1, type: "text", text: "TEST FIXTURE forwarded conversation" },
+  };
   const control = (window.navigationFixture = {
     historyReads: {},
+    requests: [],
     presenceSubscribes: 0,
     releases: [],
     holdDesign: true,
     directReleases: [],
     directError: "dm_not_accepted",
+    holdFeedback: query.has("feedbackTest"),
+    feedbackReleases: [],
   });
   const NativeSocket = window.WebSocket;
   window.WebSocket = class extends EventTarget {
@@ -59,7 +78,9 @@ function fixture() {
   };
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input, options = {}) => {
-    const path = new URL(typeof input === "string" ? input : input.url, location.href).pathname;
+    const requestUrl = new URL(typeof input === "string" ? input : input.url, location.href);
+    const path = requestUrl.pathname;
+    control.requests.push(path + requestUrl.search);
     if (!path.startsWith("/api/")) return originalFetch(input, options);
     if (path === "/api/account/me") return Response.json(account);
     if (path === "/api/spaces")
@@ -69,6 +90,28 @@ function fixture() {
         limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 },
       });
     if (path === `/api/spaces/${space.id}`) return Response.json({ space, channels, members });
+    if (path === "/api/feedback") {
+      const id = query.get("feedback") ?? "direct123456";
+      return Response.json({
+        reports: [
+          {
+            id: `report-${id}`,
+            messageId: `message-${id}`,
+            threadRootId: `message-${id}`,
+            reporter: account,
+            channel: { id, name: "TEST FIXTURE conversation", direct: id.startsWith("direct") },
+            space: id.startsWith("direct") ? null : space,
+            text: "TEST FIXTURE reported message",
+            attachments: 0,
+            replyCount: 0,
+            answered: false,
+            archived: false,
+            createdAt: "2026-10-04T12:00:00Z",
+          },
+        ],
+        cursor: null,
+      });
+    }
     if (path === "/api/dms") {
       if (options.method !== "POST") return Response.json({ conversations: [] });
       await new Promise((resolve) => control.directReleases.push(resolve));
@@ -77,14 +120,58 @@ function fixture() {
     if (path === "/api/chat/session")
       return Response.json({ token: "fixture", author: { id: account.id, name: account.displayName, isGuest: false } });
     if (path.endsWith("/media/status")) return Response.json({ enabled: false });
+    if (path.includes("/forwards/"))
+      return Response.json({
+        root: forwardedRoot,
+        source: { spaceId: space.id, message: forwardedRoot },
+        cursor: "1",
+        hasMore: false,
+        messages: [],
+      });
+    const threadMatch = path.match(/\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/thread$/);
+    if (threadMatch) {
+      const channelId = threadMatch[1];
+      const root = {
+        id: threadMatch[2],
+        channelId,
+        seq: "1",
+        clientMessageId: "00000000-0000-4000-8000-000000000001",
+        createdAt: "2026-10-04T12:00:00Z",
+        author: { id: account.id, name: account.displayName, isGuest: false },
+        content: { version: 1, type: "text", text: "TEST FIXTURE report root" },
+      };
+      return Response.json({
+        root,
+        cursor: "2",
+        hasMore: false,
+        messages: requestUrl.searchParams.has("around")
+          ? [
+              {
+                ...root,
+                id: `reply-${channelId}`,
+                seq: "2",
+                threadRootId: root.id,
+                clientMessageId: "00000000-0000-4000-8000-000000000003",
+                content: { version: 1, type: "text", text: "TEST FIXTURE reported reply" },
+              },
+            ]
+          : [],
+      });
+    }
     const match = path.match(/\/api\/chat\/channels\/([^/]+)\/messages$/);
     if (match) {
-      const channel = channels.find((item) => item.id === match[1]);
+      const channel = channels.find((item) => item.id === match[1]) ?? {
+        id: match[1],
+        name: "TEST FIXTURE DM",
+        direct: true,
+      };
       control.historyReads[channel.id] = (control.historyReads[channel.id] ?? 0) + 1;
+      if (requestUrl.searchParams.has("around") && control.holdFeedback)
+        await new Promise((resolve) => control.feedbackReleases.push(resolve));
       if (channel.id === "design123456" && control.holdDesign)
         await new Promise((resolve) => control.releases.push(resolve));
       return Response.json({
-        space,
+        space: channel.direct ? { id: "", name: "" } : space,
         channel,
         cursor: "1",
         hasMore: false,
@@ -97,6 +184,7 @@ function fixture() {
             createdAt: "2026-10-04T12:00:00Z",
             author: { id: account.id, name: account.displayName, isGuest: false },
             content: { version: 1, type: "text", text: `TEST FIXTURE ${channel.name} history` },
+            ...(query.has("forward") ? { forward: { message: forwardedRoot, seq: "1" } } : {}),
           },
         ],
       });
@@ -125,6 +213,83 @@ const screenshot = (name) => {
 let socket;
 
 try {
+  if (process.env.NAVIGATION_TEST_FEEDBACK) {
+    const pending = new URL(url);
+    pending.searchParams.set("feedbackTest", "1");
+    browser("open", pending.toString());
+    browser("set", "viewport", "390", "844", "2");
+    wait('!!document.querySelector(".feedback-select") && !!document.querySelector(".chat-message")');
+    browser("click", ".navigation-toggle");
+    browser("click", ".feedback-select");
+    wait("navigationFixture.feedbackReleases.length > 0");
+    assert.equal(
+      evaluate('document.querySelector(".spaces-room").classList.contains("navigation-open")'),
+      true,
+      "the phone report list stays visible until context is ready",
+    );
+    evaluate(
+      "navigationFixture.holdFeedback = false; navigationFixture.feedbackReleases.splice(0).forEach(release => release())",
+    );
+    wait('!document.querySelector(".spaces-room").classList.contains("navigation-open")');
+    assert.equal(evaluate('!!document.querySelector(".chat-thread-panel")'), false);
+    for (const width of [1280, 390]) {
+      for (const id of ["general12345", "direct123456"]) {
+        const target = new URL(base);
+        target.search = new URLSearchParams({ feedback: id, message: `message-${id}`, thread: `message-${id}` });
+        browser("open", target.toString());
+        browser("set", "viewport", String(width), "844", "2");
+        wait(
+          'document.querySelector(".chat-message") && document.querySelector("#chat-message") && !document.querySelector("#chat-message").disabled',
+        );
+        wait(`navigationFixture.requests.some(path => path.includes('around=message-${id}'))`);
+        assert.equal(
+          evaluate('!!document.querySelector(".chat-thread-panel")'),
+          false,
+          "root report stays in conversation",
+        );
+        const reads = evaluate(
+          "navigationFixture.requests.filter(path => path.includes('/chat/channels/') && path.includes('/messages'))",
+        );
+        assert.ok(
+          reads.length > 0 && reads.every((path) => path.includes("?around=")),
+          `prepare root context, never latest history: ${JSON.stringify(reads)}`,
+        );
+        evaluate(
+          "document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))",
+        );
+        screenshot(`feedback-root-${id}-${width}`);
+        // Headless Chromium uses the no-hover actions menu at both widths.
+        // Wait for report focus/scrolling to settle before hitting its action.
+        wait(`(() => {
+          const button = document.querySelector('.chat-panel .chat-message-actions-trigger');
+          const rect = button.getBoundingClientRect();
+          return button.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+        })()`);
+        browser("click", ".chat-panel .chat-message-actions-trigger");
+        browser("find", "role", "button", "click", "--name", "Reply in thread", "--exact");
+        wait('document.querySelector(".chat-thread-status")?.textContent.includes("No replies yet")');
+        screenshot(`feedback-explicit-thread-${id}-${width}`);
+        target.searchParams.set("message", `reply-${id}`);
+        browser("open", target.toString());
+        wait('document.querySelector(".chat-thread-panel")?.textContent.includes("TEST FIXTURE reported reply")');
+        screenshot(`feedback-reply-${id}-${width}`);
+      }
+    }
+    const forwarded = new URL(base);
+    forwarded.search = new URLSearchParams({ feedback: "general12345", message: "message-general12345", forward: "1" });
+    browser("open", forwarded.toString());
+    browser("set", "viewport", "1280", "844", "2");
+    wait('!!document.querySelector(".chat-forward-card button")');
+    browser("click", ".chat-forward-card button");
+    wait('!!document.querySelector(".chat-thread-panel")');
+    assert.equal(evaluate('new URL(location.href).searchParams.has("feedback")'), false);
+    console.log(
+      "PASS: mocked channel/DM reports prepare context; roots stay in conversation, replies and explicit thread/forward actions open threads at desktop/narrow widths",
+    );
+    browser("close");
+    rmSync(directory, { recursive: true, force: true });
+    process.exit(0);
+  }
   browser("open", "about:blank");
   browser("set", "viewport", "1280", "900", "2");
   browser("open", url.toString());

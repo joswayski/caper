@@ -379,6 +379,22 @@ impl Api {
         self.request(Method::GET, "api/spaces/unread", Some(token), None, None)
     }
 
+    pub fn voice_activity(&self, token: &str) -> Result<Vec<String>, ApiError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Activity {
+            space_ids: Vec<String>,
+        }
+        let activity: Activity = self.request(
+            Method::GET,
+            "api/spaces/voice-activity",
+            Some(token),
+            None,
+            None,
+        )?;
+        Ok(activity.space_ids)
+    }
+
     pub fn unread_threads(
         &self,
         token: &str,
@@ -813,6 +829,38 @@ impl Api {
         .map(|value| value.links)
     }
 
+    pub fn default_invite_link(
+        &self,
+        token: &str,
+        space: &str,
+        channel: Option<&str>,
+    ) -> Result<InviteLink, ApiError> {
+        let mut path = format!("api/spaces/{space}/invite-links/default");
+        if let Some(channel) = channel {
+            path.push_str("?channelId=");
+            path.extend(url::form_urlencoded::byte_serialize(channel.as_bytes()));
+        }
+        self.request(Method::POST, &path, Some(token), None, None)
+    }
+
+    pub fn regenerate_invite_link(
+        &self,
+        token: &str,
+        space: &str,
+        code: &str,
+    ) -> Result<InviteLink, ApiError> {
+        self.request(
+            Method::POST,
+            &format!(
+                "api/spaces/{space}/invite-links/{}/regenerate",
+                invite_path(code)?
+            ),
+            Some(token),
+            None,
+            None,
+        )
+    }
+
     /// `max_age` in seconds (1 minute to 365 days) and `max_uses` (1 to 10,000);
     /// `None` never expires or allows unlimited joins.
     pub fn create_invite_link(
@@ -866,6 +914,7 @@ impl Api {
         client_id: &str,
         text: &str,
         attachment_ids: &[String],
+        spoiler_attachment_ids: &[String],
         thread: (Option<&str>, bool),
         reply_to_id: Option<&str>,
     ) -> Result<Message, ApiError> {
@@ -873,6 +922,9 @@ impl Api {
         // Ids join the idempotency hash; the key is present only with files.
         if !attachment_ids.is_empty() {
             body["attachmentIds"] = json!(attachment_ids);
+        }
+        if !spoiler_attachment_ids.is_empty() {
+            body["spoilerAttachmentIds"] = json!(spoiler_attachment_ids);
         }
         if let Some(root) = thread.0 {
             body["threadRootId"] = json!(root);
@@ -1536,6 +1588,64 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
 
     #[test]
+    fn attachment_spoiler_send_contract_omits_empty_selection() {
+        use std::io::Read;
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for spoiler in [false, true] {
+                let (stream, _) = server.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["attachmentIds"], serde_json::json!(["a", "b"]));
+                if spoiler {
+                    assert_eq!(body["spoilerAttachmentIds"], serde_json::json!(["b"]));
+                } else {
+                    assert!(body.get("spoilerAttachmentIds").is_none());
+                }
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 400 Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+            }
+        });
+        for spoilers in [vec![], vec!["b".into()]] {
+            assert!(
+                api.send(
+                    None,
+                    "chat",
+                    "channel",
+                    "client",
+                    "",
+                    &["a".into(), "b".into()],
+                    &spoilers,
+                    (None, false),
+                    None
+                )
+                .is_err()
+            );
+        }
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn whats_new_requests_exact_public_snapshot_and_rejects_mismatch_and_oversize() {
         use crate::whats_new::{MAX_BYTES, PLATFORM, REVISION};
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1627,6 +1737,27 @@ mod tests {
         let link = r#"{"code":"AbC123xYz9","channel":{"id":"chan00000002","name":"feedback"},"createdBy":{"username":"owner","displayName":"Owner","avatarId":3},"uses":0,"maxUses":10,"expiresAt":"2026-10-18T12:00:00Z","createdAt":"2026-10-11T12:00:00Z"}"#;
         let exchanges = [
             (
+                "POST /api/spaces/space0000001/invite-links/AbC123xYz9/regenerate",
+                None,
+                true,
+                "201 Created",
+                link.to_owned(),
+            ),
+            (
+                "POST /api/spaces/space0000001/invite-links/default",
+                None,
+                true,
+                "200 OK",
+                link.to_owned(),
+            ),
+            (
+                "POST /api/spaces/space0000001/invite-links/default?channelId=chan00000002",
+                None,
+                true,
+                "200 OK",
+                link.to_owned(),
+            ),
+            (
                 "POST /api/spaces/space0000001/invite-links",
                 Some(r#"{"channelId":"chan00000002","maxAge":604800,"maxUses":10}"#),
                 true,
@@ -1711,6 +1842,8 @@ mod tests {
                         serde_json::from_slice::<serde_json::Value>(&sent).unwrap(),
                         serde_json::from_str::<serde_json::Value>(expected).unwrap()
                     );
+                } else {
+                    assert!(sent.is_empty(), "{path} must be bodyless");
                 }
                 write!(
                     reader.get_mut(),
@@ -1720,6 +1853,26 @@ mod tests {
                 .unwrap();
             }
         });
+        assert_eq!(
+            api.regenerate_invite_link("account", "space0000001", "AbC123xYz9")
+                .unwrap()
+                .code,
+            "AbC123xYz9"
+        );
+        assert_eq!(
+            api.default_invite_link("account", "space0000001", None)
+                .unwrap()
+                .code,
+            "AbC123xYz9"
+        );
+        assert_eq!(
+            api.default_invite_link("account", "space0000001", Some("chan00000002"))
+                .unwrap()
+                .channel
+                .unwrap()
+                .id,
+            "chan00000002"
+        );
         let created = api
             .create_invite_link(
                 "account",

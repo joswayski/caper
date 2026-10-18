@@ -7,6 +7,8 @@ export interface MentionCandidate extends PersonPicture {
   username: string;
   displayName: string;
   avatarId?: number | null;
+  admin?: boolean;
+  team?: boolean;
   /** Already has a pending invitation to the space or channel being managed; the row says so. */
   invited?: boolean;
 }
@@ -228,6 +230,8 @@ export function mentionsAccount(message: ChatMessage, accountId: string | undefi
 /** What the profile card shows: the best local match by id, never a network call. */
 export interface MentionCardPerson extends PersonPicture {
   id: string;
+  admin?: boolean;
+  team?: boolean;
   /** Pin authors need not still be in the local directory. */
   username?: string;
   displayName?: string;
@@ -237,7 +241,7 @@ export interface MentionCardPerson extends PersonPicture {
 
 /** `directory` is ordered by preference: space members, then people, then DM peers. */
 export function mentionCardPerson(
-  user: PersonPicture & { id: string; username?: string; name?: string },
+  user: PersonPicture & { id: string; username?: string; name?: string; admin?: boolean; team?: boolean },
   directory: MentionCandidate[],
   accountId: string | undefined,
 ): MentionCardPerson {
@@ -248,6 +252,8 @@ export function mentionCardPerson(
     displayName: known?.displayName ?? user.name,
     avatarId: known ? known.avatarId : user.avatarId,
     self: !!accountId && user.id === accountId,
+    ...(user.admin || directory.some((person) => person.id === user.id && person.admin) ? { admin: true } : {}),
+    ...(user.team || directory.some((person) => person.id === user.id && person.team) ? { team: true } : {}),
   };
   const picture = known ?? user;
   return withPicture(person, { avatarAsset: picture.avatarAsset, avatarUrl: picture.avatarUrl });

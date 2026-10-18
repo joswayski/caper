@@ -1,6 +1,6 @@
-//! The update notice and decorative SVG layers used in its review.
+//! The update notice's decorative button edge.
 
-use eframe::egui::{self, AtomExt as _};
+use eframe::egui;
 
 /// Match UpdateButtonShine on macOS: a still prismatic edge and one short
 /// light sweep every eight seconds. Never animate the label or hit target.
@@ -112,30 +112,22 @@ fn shine(ui: &egui::Ui, response: &egui::Response) {
         .request_repaint_after(std::time::Duration::from_millis(33));
 }
 
-pub fn paint(ui: &egui::Ui, rect: egui::Rect) {
-    egui::Image::new(egui::include_image!(
-        "../../../../assets/update-caper/feet.svg"
-    ))
-    .paint_at(ui, rect);
-    egui::Image::new(egui::include_image!(
-        "../../../../assets/update-caper/wave.svg"
-    ))
-    .paint_at(ui, rect);
-    egui::Image::new(egui::include_image!(
-        "../../../../assets/update-caper/body.svg"
-    ))
-    .paint_at(ui, rect);
-}
-
 /// A labelled, always-visible review action, separate from profile/audio controls.
 pub fn dock(ui: &mut egui::Ui, version: &str) -> egui::Response {
-    let response = crate::toned(
-        ui,
-        crate::SECONDARY_TONE,
-        true,
-        egui::Button::new(crate::bold("Update available").size(12.0).atom_grow(true))
-            .min_size(egui::vec2(ui.available_width(), 36.0)),
-    );
+    let response = ui
+        .allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 36.0),
+            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+            |ui| {
+                crate::toned(
+                    ui,
+                    crate::SECONDARY_TONE,
+                    true,
+                    egui::Button::new(crate::bold("Update available").size(12.0)),
+                )
+            },
+        )
+        .inner;
     shine(ui, &response);
     ui.add_space(8.0);
     response.on_hover_text(format!(

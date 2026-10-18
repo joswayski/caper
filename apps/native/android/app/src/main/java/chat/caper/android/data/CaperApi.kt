@@ -49,6 +49,7 @@ class CaperApi(
     suspend fun logout(token: String) { request<Unit>("/api/auth/logout", "POST", token = token) }
     suspend fun spaces(token: String): SpaceList = get("/api/spaces", token)
     suspend fun unreadSpaces(token: String): UnreadSpaces = get("/api/spaces/unread", token)
+    suspend fun spaceVoiceActivity(token: String): SpaceVoiceActivity = get("/api/spaces/voice-activity", token)
     suspend fun unreadThreads(token: String, channel: String): UnreadThreads =
         get("/api/chat/channels/${channel.pathId()}/threads/unread", token)
     suspend fun markThreadRead(token: String, channel: String, root: String, seq: String) {
@@ -186,14 +187,17 @@ class CaperApi(
         threadRootId: String? = null,
         broadcast: Boolean = false,
         replyToId: String? = null,
+        spoilerAttachmentIds: List<String> = emptyList(),
     ): ChatMessage {
         require(attachmentIds.size <= AttachmentPolicy.MAX_ATTACHMENTS) { "Attach up to 10 files." }
+        require(attachmentIds.containsAll(spoilerAttachmentIds)) { "Spoilers must be attached files." }
         val message: ChatMessage = post(
             "/api/chat/channels/${channel.pathId()}/messages",
             buildJsonObject {
                 put("clientMessageId", clientMessageId.toString()); put("text", text)
                 // Only when non-empty: text-only requests keep their original idempotency hash.
                 if (attachmentIds.isNotEmpty()) putJsonArray("attachmentIds") { attachmentIds.forEach { add(it.assetPathId()) } }
+                if (spoilerAttachmentIds.isNotEmpty()) putJsonArray("spoilerAttachmentIds") { spoilerAttachmentIds.forEach { add(it.assetPathId()) } }
                 if (threadRootId != null) { put("threadRootId", threadRootId); put("broadcast", broadcast) }
                 if (replyToId != null) put("replyToId", replyToId)
             },
@@ -403,6 +407,10 @@ class CaperApi(
     suspend fun invitePreview(code: String, token: String? = null): InvitePreview = get("/api/invites/${code.invitePathCode()}", token)
     suspend fun joinInvite(token: String, code: String): InviteJoin = post("/api/invites/${code.invitePathCode()}/join", token = token)
     suspend fun inviteLinks(token: String, space: String): InviteLinkList = get("/api/spaces/${space.pathId()}/invite-links", token)
+    suspend fun ensureDefaultInviteLink(token: String, space: String, channelId: String? = null): InviteLink =
+        request("/api/spaces/${space.pathId()}/invite-links/default" + (channelId?.let { "?channelId=${it.pathId()}" } ?: ""), "POST", token, body = "")
+    suspend fun regenerateInviteLink(token: String, space: String, code: String): InviteLink =
+        request("/api/spaces/${space.pathId()}/invite-links/${code.invitePathCode()}/regenerate", "POST", token, body = "")
     /** Null [channelId] lands in the space's default channel; null [maxAge] (seconds) never expires; null [maxUses] has no limit. */
     suspend fun createInviteLink(token: String, space: String, channelId: String?, maxAge: Int?, maxUses: Int?): InviteLink = post(
         "/api/spaces/${space.pathId()}/invite-links",

@@ -564,6 +564,9 @@ jobs:
   publish:
     name: Publish native-latest
     needs: [resolve, macos, android, desktop]
+    # Wait for Android's artifacts, but keep its build/Play failures visible
+    # without blocking desktop. Apple Silicon and every desktop target must pass.
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && needs.macos.result == 'success' && needs.desktop.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -594,9 +597,23 @@ jobs:
         run: |
           set -euo pipefail
           cd release
-          assets=(Caper-macOS-Apple-Silicon.dmg Caper-macOS-Apple-Silicon.zip Caper-Android.apk
+          assets=(Caper-macOS-Apple-Silicon.dmg Caper-macOS-Apple-Silicon.zip
             Caper-Windows-x64-Setup.exe Caper-Windows-x64.zip Caper-Linux-x64.deb Caper-Linux-x64.tar.gz)
           for asset in "${assets[@]}"; do test -s "$asset"; done
+          apk_note="No direct Android APK is available in this release."
+          apk_link="[Caper-Android.apk](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Android.apk)"
+          if test -s Caper-Android.apk; then
+            apk_note="$apk_link is from this commit."
+          elif gh release download "$RELEASE_TAG" --pattern Caper-Android.apk 2>/dev/null \
+            && test -s Caper-Android.apk; then
+            apk_note="$apk_link is the **previous published Android build**, not from this commit."
+          else
+            rm -f Caper-Android.apk
+          fi
+          if test -s Caper-Android.apk; then
+            assets+=(Caper-Android.apk)
+            apk_note+=" It is only for phones without Google Play: it never updates itself, and it must be uninstalled before installing from Google Play."
+          fi
           # macos-intel finishes later (publish-intel). Keep the current Intel
           # downloads working meanwhile; latest.json does not list them.
           if gh release download "$RELEASE_TAG" --pattern 'Caper-macOS-Intel.*' 2>/dev/null \
@@ -607,11 +624,11 @@ jobs:
           fi
           sha256sum "${assets[@]}" >SHA256SUMS
           cat >notes.md <<EOF
-          Test builds of the Caper apps, from \`${RELEASE_SHA::7}\`. They use your caper.chat account.
+          Desktop test builds from \`${RELEASE_SHA::7}\`. They use your caper.chat account. Mobile availability is independent of this desktop release.
 
           **Mac:** open the [Apple Silicon](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-macOS-Apple-Silicon.dmg) (M1 or newer) or [Intel](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-macOS-Intel.dmg) disk image, drag Caper onto Applications, then eject the image and open Caper from Applications. The app and disk image are signed and notarized by Apple. If you cannot write to /Applications, drag Caper to ~/Applications instead. Running a release directly from the download or image shows installation instructions and quits. ZIPs are retained for existing self-updaters.
 
-          **iPhone and Android:** open [caper.chat](https://caper.chat) on the phone and tap **Get the iOS beta** (TestFlight) or **Get the Android beta** (Google Play). Both update automatically. [Caper-Android.apk](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Android.apk) is only for phones without Google Play: it never updates itself, and it must be uninstalled before installing from Google Play.
+          **iPhone and Android:** open [caper.chat](https://caper.chat) on the phone and tap **Get the iOS beta** (TestFlight) or **Get the Android beta** (Google Play). Both update automatically when store builds are available; this desktop release does not confirm a new store build. ${apk_note}
 
           **Windows:** run [Caper-Windows-x64-Setup.exe](https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/Caper-Windows-x64-Setup.exe), then open Caper from Start or the desktop shortcut. No extraction or administrator access needed. Close any old Caper copy before installing. It is not code-signed yet, so Windows may warn first: choose **More info → Run anyway**. The ZIP is retained for self-updates and optional portable use.
 
@@ -759,6 +776,7 @@ jobs:
 
   whats-new:
     name: Publish release highlights
+    # All-platform highlights require every platform's release job to succeed.
     needs: [resolve, macos, testflight, android, desktop, publish]
     permissions:
       contents: write
@@ -766,4 +784,5 @@ jobs:
     with:
       audience: native
       git_sha: ${{ needs.resolve.outputs.sha }}
+      native_version: 0.1.${{ github.run_number }}
     secrets: inherit

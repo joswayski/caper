@@ -27,6 +27,7 @@ packages=(
   clang-21
   curl
   file
+  ffmpeg
   gnome-keyring
   libasound2
   libasound2-dev
@@ -34,6 +35,7 @@ packages=(
   libegl1-mesa-dev
   libgl1-mesa-dri
   libglib2.0-dev
+  libimage-exiftool-perl
   libpulse0
   librsvg2-bin
   libssl-dev
@@ -49,6 +51,8 @@ packages=(
   pkg-config
   postgresql
   openbox
+  unzip
+  util-linux
   x11-utils
   xauth
   xdotool
@@ -96,6 +100,67 @@ fi
 for executable in "$valkey_install_dir"/bin/valkey-*; do
   sudo ln -sfn "$executable" "/usr/local/bin/${executable##*/}"
 done
+
+step "checking Android build tools"
+# Google's Linux build tools target x86_64. Do not install an emulator: orbs
+# have no KVM, and compiling UI tests is not a physical-device check.
+if [[ "$(uname -m)" == x86_64 ]]; then
+  export ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
+  android_tools_version="22.0"
+  android_tools="$ANDROID_HOME/cmdline-tools/$android_tools_version"
+  if [[ ! -x "$android_tools/bin/sdkmanager" ]]; then
+    android_download="$(mktemp -d)"
+    trap 'rm -rf "$android_download"' EXIT
+    curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+      https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip \
+      --output "$android_download/tools.zip"
+    printf '%s  %s\n' '4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583' \
+      "$android_download/tools.zip" | sha256sum --check --status
+    unzip -q "$android_download/tools.zip" -d "$android_download"
+    mkdir -p "$(dirname "$android_tools")"
+    mv "$android_download/cmdline-tools" "$android_tools"
+    rm -rf "$android_download"
+    trap - EXIT
+  fi
+  # The app's build file, not a second set of pins, defines the SDK components.
+  android_build="$repo_root/apps/native/android/app/build.gradle.kts"
+  android_compile_sdk="$(sed -n 's/^ *compileSdk = \([0-9]*\)$/\1/p' "$android_build")"
+  android_build_tools="$(sed -n 's/^ *buildToolsVersion = "\([^"]*\)"$/\1/p' "$android_build")"
+  android_ndk="$(sed -n 's/^ *ndkVersion = "\([^"]*\)"$/\1/p' "$android_build")"
+  android_cmake="$(sed -n 's/.*externalNativeBuild { cmake {.*version = "\([^"]*\)".*/\1/p' "$android_build")"
+  : "${android_compile_sdk:?Missing compileSdk}" "${android_build_tools:?Missing buildToolsVersion}" \
+    "${android_ndk:?Missing ndkVersion}" "${android_cmake:?Missing CMake version}"
+  android_packages=(platform-tools "platforms;android-$android_compile_sdk" \
+    "build-tools;$android_build_tools" "ndk;$android_ndk" "cmake;$android_cmake")
+  android_missing=()
+  for package in "${android_packages[@]}"; do
+    if [[ ! -f "$ANDROID_HOME/${package//;/\/}/package.xml" ]]; then
+      android_missing+=("$package")
+    fi
+  done
+  if ((${#android_missing[@]} > 0)); then
+    # yes exits on SIGPIPE when sdkmanager is done; preserve sdkmanager's status.
+    (set +o pipefail; yes | "$android_tools/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --licenses >/dev/null)
+    "$android_tools/bin/sdkmanager" --sdk_root="$ANDROID_HOME" "${android_missing[@]}"
+  fi
+  # Gradle also finds the SDK in shells that do not read the login profile.
+  if [[ ! -f apps/native/android/local.properties ]]; then
+    printf 'sdk.dir=%s\n' "$ANDROID_HOME" > apps/native/android/local.properties
+  fi
+  # Amp and supervised services use fresh login shells after setup exits.
+  # Restrict activation to this checkout and leave a caller's SDK override alone.
+  android_profile_marker="# Caper Android SDK: $repo_root"
+  if ! grep -Fqx "$android_profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+    {
+      printf '\n%s\n' "$android_profile_marker"
+      printf 'if [[ "$PWD" == %q || "$PWD" == %q/* ]]; then\n' "$repo_root" "$repo_root"
+      printf '  if [[ -z "${ANDROID_HOME:-}" ]]; then export ANDROID_HOME=%q; fi\n' "$ANDROID_HOME"
+      printf '  export PATH="$ANDROID_HOME/cmdline-tools/%s/bin:$ANDROID_HOME/platform-tools:$PATH"\nfi\n' "$android_tools_version"
+    } >> "$HOME/.bash_profile"
+  fi
+else
+  printf '[setup] Android SDK skipped: Linux build tools require x86_64\n'
+fi
 
 step "checking Node.js and npm"
 if ! command -v npm >/dev/null 2>&1; then

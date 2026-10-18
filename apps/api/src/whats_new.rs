@@ -138,6 +138,8 @@ struct Feed {
 struct Release {
     sequence: u64,
     revision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
     #[serde(rename = "publishedAt")]
     published_at: String,
     highlights: Vec<Highlight>,
@@ -181,6 +183,10 @@ impl Feed {
             if release.sequence <= previous
                 || release.sequence > self.sequence
                 || !revision_valid(&release.revision)
+                || release
+                    .version
+                    .as_ref()
+                    .is_some_and(|version| !text_valid(version, 64))
                 || chrono::DateTime::parse_from_rfc3339(&release.published_at).is_err()
                 || release.highlights.len() > 5
                 || release.highlights.iter().any(|highlight| {
@@ -331,7 +337,7 @@ mod tests {
         let value = Arc::new(Mutex::new(
             json!({"schema":1,"platform":"web","revision":revision,"sequence":2,
             "releases":[{"revision":"b".repeat(40),"sequence":1,"publishedAt":"2026-10-10T12:00:00Z","highlights":[]},
-                {"revision":revision,"sequence":2,"publishedAt":"2026-10-11T12:00:00Z","highlights":[{"title":"Edit messages","body":"View earlier versions."}]}]}),
+                {"revision":revision,"sequence":2,"version":"0.1.112","publishedAt":"2026-10-11T12:00:00Z","highlights":[{"title":"Edit messages","body":"View earlier versions."}]}]}),
         ));
         let calls = Arc::new(AtomicUsize::new(0));
         // Holds every lookup of the all-`f` revision until permits are added.
@@ -388,6 +394,8 @@ mod tests {
                 serde_json::from_slice(&to_bytes(response.into_body(), MAX_BYTES).await.unwrap())
                     .unwrap();
             assert_eq!(body["revision"], revision);
+            assert_eq!(body["releases"][1]["version"], "0.1.112");
+            assert!(body["releases"][0].get("version").is_none());
             assert_eq!(
                 body["releases"][1]["highlights"][0]["title"],
                 "Edit messages"

@@ -30,12 +30,20 @@ export interface Member extends PersonPicture {
   username: string;
   displayName: string;
   owner: boolean;
+  admin?: boolean;
 }
 
 export interface DirectConversation {
   id: string;
   /** `team`: the Caper account, whose DM goes to the feedback team. */
-  peer: PersonPicture & { id: string; username: string; displayName: string; avatarId?: number; team?: boolean };
+  peer: PersonPicture & {
+    id: string;
+    username: string;
+    displayName: string;
+    avatarId?: number;
+    team?: boolean;
+    admin?: boolean;
+  };
   lastSeq: string;
   readSeq: string;
   /** Older servers omit it: treat as accepted. */
@@ -60,6 +68,7 @@ export interface Person extends PersonPicture {
   username: string;
   displayName: string;
   avatarId?: number | null;
+  admin?: boolean;
 }
 
 /** People in a response refresh live profile updates they postdate: there is no
@@ -127,11 +136,11 @@ export function archiveFeedback(channelId: string, threadRootId: string, archive
 
 export interface UnreadSpace {
   id: string;
-  channels: { id: string; lastSeq: string }[];
+  channels: { id: string; lastSeq: string; readSeq?: string }[];
 }
 
 export function listUnreadSpaces() {
-  return request<{ spaces: UnreadSpace[] }>("/api/spaces/unread");
+  return request<{ spaces: UnreadSpace[]; feedbackWaiting?: number }>("/api/spaces/unread");
 }
 
 export function readChannel(spaceId: string, channelId: string, seq: string) {
@@ -352,6 +361,10 @@ export function listSpaces() {
   return request<{ spaces: Space[]; invitations?: Space[]; limits: SpaceLimits }>("/api/spaces");
 }
 
+export function listSpaceVoiceActivity() {
+  return request<{ spaceIds: string[] }>("/api/spaces/voice-activity", { signal: AbortSignal.timeout(10_000) });
+}
+
 export function getSpace(spaceId: string) {
   return withPeople(
     request<SpaceDetail>(`/api/spaces/${pathId(spaceId)}`, { signal: AbortSignal.timeout(10_000) }),
@@ -476,6 +489,7 @@ export function declineChannelInvitation(spaceId: string, channelId: string) {
 export interface InvitePerson extends PersonPicture {
   username: string;
   displayName: string;
+  admin?: boolean;
   avatarId?: number | null;
 }
 
@@ -514,7 +528,8 @@ export const INVITE_EXPIRY_UNITS: { label: string; value: InviteExpiryUnit; seco
   { label: "days", value: "days", seconds: 86_400 },
   { label: "Never", value: "never", seconds: 0 },
 ];
-export const DEFAULT_INVITE_EXPIRY = { amount: "7", unit: "days" as InviteExpiryUnit };
+export const DEFAULT_INVITE_EXPIRY = { amount: "30", unit: "days" as InviteExpiryUnit };
+export const DEFAULT_INVITE_MAX_USES = "100";
 /** The API's bounds: one minute to a year, and at most 10,000 uses. */
 const MAX_AGE_SECONDS = { min: 60, max: 31_536_000 };
 export const MAX_INVITE_USES = 10_000;
@@ -571,17 +586,18 @@ export function appInviteUrl(code: string) {
   return `caper://invite/${code}`;
 }
 
-/** "#feedback · 3 of 10 uses · Expires in 6 days" */
+/** "#feedback · 7 of 10 joins remaining · Expires in 6 days" */
 export function inviteLinkSummary(link: InviteLink, now = Date.now()) {
   const uses =
     link.maxUses === null
       ? `${count(link.uses)} ${link.uses === 1 ? "use" : "uses"}`
-      : `${count(link.uses)} of ${count(link.maxUses)} ${link.maxUses === 1 ? "use" : "uses"}`;
+      : `${count(Math.max(0, link.maxUses - link.uses))} of ${count(link.maxUses)} ${link.maxUses === 1 ? "join" : "joins"} remaining`;
   return [link.channel && `#${link.channel.name}`, uses, inviteExpiry(link.expiresAt, now)].filter(Boolean).join(" · ");
 }
 
 export function inviteExpiry(expiresAt: string | null, now = Date.now()) {
   if (!expiresAt) return "Never expires";
+  if (Date.parse(expiresAt) <= now) return "Expired";
   const minutes = Math.max(1, Math.round((Date.parse(expiresAt) - now) / 60_000));
   if (minutes < 60) return `Expires in ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
   const hours = Math.round(minutes / 60);
@@ -598,6 +614,17 @@ function pathCode(code: string) {
 
 export function listInviteLinks(spaceId: string) {
   return request<{ links: InviteLink[] }>(`/api/spaces/${pathId(spaceId)}/invite-links`);
+}
+
+export function ensureDefaultInviteLink(spaceId: string, channelId?: string | null) {
+  const query = channelId ? `?${new URLSearchParams({ channelId: pathId(channelId) })}` : "";
+  return request<InviteLink>(`/api/spaces/${pathId(spaceId)}/invite-links/default${query}`, { method: "POST" });
+}
+
+export async function regenerateInviteLink(spaceId: string, code: string) {
+  return request<InviteLink>(`/api/spaces/${pathId(spaceId)}/invite-links/${pathCode(code)}/regenerate`, {
+    method: "POST",
+  });
 }
 
 export function createInviteLink(spaceId: string, options: InviteLinkOptions) {

@@ -1,6 +1,7 @@
 import { appGateway } from "../gateway/client";
 import { avatarUrl } from "./avatar";
 import { notificationImage } from "./notification-image";
+import { pictureUrl } from "./pictures";
 
 const CHOICE = "caper.browserNotifications";
 
@@ -34,6 +35,7 @@ export interface MessageNotification {
   body: string;
   createdAt: string;
   senderAvatarId?: number | null;
+  senderAvatarUrl?: string;
   attachmentUrl?: string;
   attachmentContentType?: string;
   attachmentSize?: number;
@@ -189,7 +191,7 @@ export function watchBrowserNotifications(
     try {
       const options: NotificationOptions & { image?: string } = {
         body: event.body,
-        icon: avatarUrl(event.senderAvatarId),
+        icon: pictureUrl(event.senderAvatarUrl) ?? avatarUrl(event.senderAvatarId),
         tag: `caper:${accountId}:${identity}`,
         ...(image ? { image } : {}),
       };

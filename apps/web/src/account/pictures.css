@@ -20,7 +20,8 @@
   font: inherit;
   cursor: pointer;
 }
-.picture-settings-edit:focus-visible {
+.picture-settings-edit:focus-visible,
+.picture-settings-edit[data-dropping] {
   outline: 2px solid var(--terracotta);
   outline-offset: 3px;
 }

@@ -44,41 +44,84 @@ class LiveNowTest {
         assertEquals(7, callFacesShown(10, 8))
     }
 
-    @Test fun `live rooms leave out your call and quiet channels, busiest first then by name`() {
-        val detail = SpaceDetail(
-            Space("space", "Studio"),
-            listOf(channel("general"), channel("design"), channel("planning"), channel("random"), channel("lobby", joined = false)),
-            members = emptyList(),
-        )
-        val rosters = mapOf(
-            "design" to listOf(person("a"), person("b")),
-            "random" to listOf(person("c"), person("d")),
-            "planning" to listOf(person("e"), person("f"), person("g")),
-            "general" to listOf(person("h")),
-            "lobby" to listOf(person("i")),
-        )
-        assertEquals(listOf("planning", "design", "random", "general"), liveRooms(detail, rosters, null).map { it.channel.id })
-        assertEquals(listOf("design", "random", "general"), liveRooms(detail, rosters, "planning").map { it.channel.id })
-        assertEquals(emptyList<LiveRoom>(), liveRooms(detail, emptyMap(), null))
+    @Test fun `the strip shows your call card's faces up to five, then the first four and +N`() {
+        // Up to five the strip and the card (ten, or fewer when two rows hold less) show the same people.
+        for (total in 0..5) {
+            assertEquals(total, stripFacesShown(total))
+            assertEquals(total, callFacesShown(total, CALL_FACES_MAX))
+            assertEquals(total, callFacesShown(total, 8))
+        }
+        assertEquals(4, stripFacesShown(6))
+        assertEquals(4, stripFacesShown(12))
     }
 
-    @Test fun `a feedback visit's live space channel joins the open space's rooms`() {
+    @Test fun `your call's row is a joined channel of the listed space, otherwise its card goes above the channels`() {
+        val detail = SpaceDetail(Space("space", "Studio"), listOf(channel("general"), channel("design"), channel("lobby", joined = false)), members = emptyList())
+        val call = VoiceState(phase = VoiceState.Phase.CONNECTED, channelId = "design", spaceId = "space")
+        assertEquals("design", callRowChannelId(detail, call))
+        assertEquals("design", callRowChannelId(detail, call.copy(phase = VoiceState.Phase.CONNECTING)))
+        assertEquals("design", callRowChannelId(detail, call.copy(phase = VoiceState.Phase.RECONNECTING)))
+        // No call, no card.
+        assertNull(callRowChannelId(detail, call.copy(phase = VoiceState.Phase.IDLE)))
+        assertNull(callRowChannelId(detail, call.copy(phase = VoiceState.Phase.FAILED)))
+        // Another space's call, a channel with no row here (a feedback visit) and a channel you left.
+        assertNull(callRowChannelId(detail, call.copy(spaceId = "other")))
+        assertNull(callRowChannelId(detail, call.copy(channelId = "report")))
+        assertNull(callRowChannelId(detail, call.copy(channelId = "lobby")))
+        assertNull(callRowChannelId(null, call))
+    }
+
+    @Test fun `rows show your call, other live rooms or nothing`() {
+        val rosters = mapOf("design" to listOf(person("a")), "planning" to listOf(person("b")), "lobby" to listOf(person("c")))
+        assertEquals(RowVoice.CALL, rowVoice(channel("design"), demo = false, rosters, callRowId = "design"))
+        // Your call's row is its card from the moment you join, before anyone shows in the roster.
+        assertEquals(RowVoice.CALL, rowVoice(channel("general"), demo = false, emptyMap(), callRowId = "general"))
+        assertEquals(RowVoice.ROOM, rowVoice(channel("planning"), demo = false, rosters, callRowId = "design"))
+        assertEquals(RowVoice.QUIET, rowVoice(channel("general"), demo = false, rosters, callRowId = "design"))
+        assertEquals(RowVoice.QUIET, rowVoice(channel("lobby", joined = false), demo = false, rosters, callRowId = null))
+        // The demo keys its one room by the demo root.
+        assertEquals(RowVoice.ROOM, rowVoice(channel("general"), demo = true, mapOf("" to listOf(person("a"))), callRowId = null))
+    }
+
+    @Test fun `collapsing or searching hides quiet rows only, and live rows keep the list's order`() {
+        val channels = listOf("general", "design", "planning", "random", "lobby").map { channel(it) }
+        val kinds = mapOf("design" to RowVoice.ROOM, "planning" to RowVoice.ROOM, "random" to RowVoice.CALL)
+        val voiceOf = { channel: Channel -> kinds[channel.id] ?: RowVoice.QUIET }
+        fun listed(shown: (Channel) -> Boolean) = listedChannels(channels, shown, voiceOf).map { it.id }
+        assertEquals(listOf("general", "design", "planning", "random", "lobby"), listed { true })
+        // Collapsed: your call's card and the live rooms stay, in list order rather than busiest first.
+        assertEquals(listOf("design", "planning", "random"), listed { false })
+        // A search keeps its matches and every row with voice.
+        assertEquals(listOf("design", "planning", "random", "lobby"), listed { it.name == "lobby" })
+    }
+
+    @Test fun `a feedback visit's live space channel has no row, so its card goes above the channels`() {
         val detail = SpaceDetail(Space("space", "Studio"), listOf(channel("design")), members = emptyList())
         val visited = Channel("report", "other", "support", private = false)
         val visit = VisitUi(channelId = "report", spaceId = "other", spaceName = "Other", channelName = "support", direct = false)
         val rosters = mapOf("design" to listOf(person("a")), "report" to listOf(person("b"), person("c")))
         val state = AppUiState(selectedSpace = detail, selectedChannel = visited, visit = visit, voiceRosters = rosters)
-        assertEquals(listOf("report", "design"), liveNowRooms(state, null).map { it.channel.id })
-        // Not while it is your call, or when nobody is there; a DM visit has no voice.
-        assertEquals(listOf("design"), liveNowRooms(state, "report").map { it.channel.id })
-        assertEquals(listOf("design"), liveNowRooms(state.copy(voiceRosters = rosters - "report"), null).map { it.channel.id })
-        assertEquals(listOf("design"), liveNowRooms(state.copy(visit = visit.copy(direct = true)), null).map { it.channel.id })
-        assertEquals(listOf("design"), liveNowRooms(state.copy(visit = null), null).map { it.channel.id })
+        assertEquals("report", visitedLiveRoom(state, null)?.channel?.id)
+        assertEquals(listOf("b", "c"), visitedLiveRoom(state, null)?.people?.map { it.id })
+        // Not while it is your call (your call card goes there instead), or when nobody is there; a DM visit has no voice.
+        assertNull(visitedLiveRoom(state, "report"))
+        assertNull(visitedLiveRoom(state.copy(voiceRosters = rosters - "report"), null))
+        assertNull(visitedLiveRoom(state.copy(visit = visit.copy(direct = true)), null))
+        assertNull(visitedLiveRoom(state.copy(visit = null), null))
+        // A visited channel that is a joined row of the open space has its card in place.
+        assertNull(visitedLiveRoom(state.copy(selectedSpace = detail.copy(channels = detail.channels + visited)), null))
     }
 
     @Test fun `the full list's title counts people`() {
         assertEquals("In #design · 12 people", voiceListTitle("design", 12))
         assertEquals("In #design · 1 person", voiceListTitle("design", 1))
+    }
+
+    @Test fun `your call's status is absent once connected, and says how far the connection is until then`() {
+        val two = listOf(person("me"), person("a"))
+        assertNull(callStatusLabel(VoiceState(phase = VoiceState.Phase.CONNECTED, participants = two)))
+        assertEquals("Connecting…", callStatusLabel(VoiceState(phase = VoiceState.Phase.CONNECTING, participants = two)))
+        assertEquals("Reconnecting…", callStatusLabel(VoiceState(phase = VoiceState.Phase.RECONNECTING, participants = two)))
     }
 
     @Test fun `the full list says speaking first, then your local mute, deafened and muted`() {

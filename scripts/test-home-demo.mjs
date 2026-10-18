@@ -68,43 +68,66 @@ const memberCount = () =>
   evaluate(
     'return Number(document.querySelector(".member-list-toggle").getAttribute("aria-label").match(/(\\d+) online/)[1])',
   );
-const voices = () => evaluate('return [...document.querySelectorAll(".sim-person strong")].map(el => el.textContent)');
+// As in the app, #general's row is a live card: your call card's faces while Maya is
+// in voice, or the room card's (first three) faces while she steps out.
+const voices = () =>
+  evaluate(
+    `return [...document.querySelectorAll(".live-call .live-face .sim-avatar, .live-room .live-stack .sim-avatar")].map(el => el.getAttribute("aria-label").replace("'s caper avatar", ""))`,
+  );
 const speakers = () =>
-  evaluate('return [...document.querySelectorAll(".sim-person[data-speaking] strong")].map(el => el.textContent)');
+  evaluate(
+    `return [...document.querySelectorAll(".live-call .live-avatar[data-speaking] .sim-avatar")].map(el => el.getAttribute("aria-label").replace("'s caper avatar", ""))`,
+  );
 const checkVoiceSummary = (people) => {
+  const inCall = people[0] === "Maya";
+  // A card's body rises in briefly when the row turns into it; measure once it has.
+  wait(
+    "![...document.querySelectorAll('.sim-channel-list .live-card *')].some(el => el.getAnimations().some(a => a.playState === 'running'))",
+  );
   const summary = evaluate(`
-    const stack = document.querySelector('.sim-sidebar .voice-stack');
-    const count = stack.querySelector('.voice-stack-count');
-    const frames = [...stack.querySelectorAll('.voice-stack-avatar'), ...document.querySelectorAll('.sim-voice-avatar')].map(el => ({
-      style: getComputedStyle(el),
-      speaking: el.classList.contains('speaking'),
-    }));
+    const card = document.querySelector('.sim-channel-list .live-card');
+    const mark = card.querySelector('.sim-channel .channel-live');
+    const faces = [...card.querySelectorAll('.live-avatar')];
+    const bounds = card.getBoundingClientRect();
     return {
-      avatars: [...stack.querySelectorAll('.voice-stack-avatar')].filter(el => el.getClientRects().length > 0).map(el => el.querySelector('.sim-avatar').getAttribute('aria-label')),
-      overflow: stack.querySelector('.voice-stack-faces small')?.textContent ?? '',
-      label: count.textContent,
-      accessibleLabel: stack.getAttribute('aria-label'),
-      clipped: count.scrollWidth > count.clientWidth,
-      transparentBackgrounds: frames.every(({ style }) => style.backgroundColor === 'rgba(0, 0, 0, 0)'),
-      roundFrames: frames.every(({ style }) => style.borderRadius === '50%'),
-      unframedIdleAvatars: frames.filter(({ speaking }) => !speaking).every(({ style }) => style.borderColor === 'rgba(0, 0, 0, 0)' && style.boxShadow === 'none'),
-      speakingRings: frames.filter(({ speaking }) => speaking).every(({ style }) => style.borderColor === 'rgb(99, 122, 67)' && style.boxShadow !== 'none'),
+      card: card.classList.contains('live-call') ? 'call' : 'room',
+      row: card.querySelector('.channel-select > span').textContent,
+      avatars: faces.filter(el => el.getClientRects().length > 0).map(el => el.querySelector('.sim-avatar').getAttribute('aria-label')),
+      status: card.querySelector('.live-status')?.textContent ?? null,
+      names: card.querySelector('.live-names')?.textContent ?? null,
+      chip: card.querySelector('.live-chip')?.textContent ?? null,
+      join: card.querySelector('.live-join')?.textContent ?? null,
+      mark: mark?.textContent ?? null,
+      contained: faces.every(el => { const r = el.getBoundingClientRect(); return r.left >= bounds.left && r.right <= bounds.right && r.top >= bounds.top && r.bottom <= bounds.bottom; }),
+      unframedIdleAvatars: faces.filter(el => !el.hasAttribute('data-speaking')).every(el => getComputedStyle(el).boxShadow === 'none' || getComputedStyle(el).boxShadow.endsWith(' 0px 0px 0px 2px')),
+      speakingRings: faces.filter(el => el.hasAttribute('data-speaking')).every(el => getComputedStyle(el).boxShadow.includes('rgb(74, 168, 107) 0px 0px 0px 4px')),
     };
   `);
+  const shown = inCall ? people : people.slice(0, 3);
+  const others = people.length - 2;
   assert.deepEqual(
     summary,
     {
-      avatars: people.map((name) => `${name}'s caper avatar`),
-      overflow: "",
-      label: `${people.length} in voice`,
-      accessibleLabel: `${people.length} in demo voice`,
-      clipped: false,
-      transparentBackgrounds: true,
-      roundFrames: true,
+      card: inCall ? "call" : "room",
+      row: "general",
+      avatars: shown.map((name) => `${name}'s caper avatar`),
+      status: inCall ? `You’re in · ${people.length}` : null,
+      names: inCall
+        ? null
+        : people.length > 3
+          ? `${people[0]}, ${people[1]} and ${others} more`
+          : people.length === 3
+            ? `${people[0]}, ${people[1]} and ${people[2]}`
+            : people.join(" and "),
+      chip: !inCall && people.length > 3 ? `+${people.length - 3}` : null,
+      join: inCall ? null : "Join",
+      // Your call's row shows its status instead of the room's count.
+      mark: inCall ? null : String(people.length),
+      contained: true,
       unframedIdleAvatars: true,
       speakingRings: true,
     },
-    "Every voice avatar must be visible without a gray frame; round speaking rings and the full voice total remain",
+    "#general's card shows everyone in Maya's call (or the room's first faces, its count and Join), ringing speakers",
   );
 };
 const pointFor = (selector) =>
@@ -324,10 +347,10 @@ try {
   );
   assert.equal(
     evaluate(
-      'const header = document.querySelector(".sim-chat > header"); return header.querySelector("h2").textContent + "|" + header.querySelector(".header-voice").textContent',
+      'const header = document.querySelector(".sim-chat > header"); return header.querySelector("h2").textContent + "|" + !!header.querySelector(".header-voice, .channel-join, .voice-hangup, .live-avatar")',
     ),
-    `# general|${evaluate('return document.querySelectorAll(".sim-sidebar .voice-stack-avatar").length')}${evaluate('return document.querySelector(".sim-chat .voice-leave") ? "Leave" : "Join voice"')}`,
-    "No simulated-demo badge inside the room; its header shows only who is in voice and the action",
+    "# general|false",
+    "No simulated-demo badge inside the room; like the app, voice lives in the sidebar, not the header",
   );
   assert.equal(
     evaluate('return document.querySelector(".live-caption")'),
@@ -368,11 +391,13 @@ try {
   );
   assert.equal(evaluate('return document.querySelector(".chat-edited")'), null, "Edits do not appear early");
   assert.equal(evaluate('return document.querySelector(".chat-forward-card")'), null, "Forwards do not appear early");
+  assert.equal(evaluate('return document.querySelector(".live-call .live-status").textContent'), "You’re in · 3");
+  assert.equal(evaluate('return document.querySelector(".live-call .voice-session-timer").textContent'), "00:03");
   assert.equal(
-    evaluate('return document.querySelector(".sim-sidebar .voice-dock strong").textContent'),
-    "Voice connected",
+    evaluate('return document.querySelector(".voice-dock, .header-voice")'),
+    null,
+    "No dock or header voice",
   );
-  assert.equal(evaluate('return document.querySelector(".sim-channel .voice-session-timer").textContent'), "00:03");
   assert.equal(
     evaluate('return document.querySelector(".sim-members")'),
     null,
@@ -394,11 +419,11 @@ try {
       while (element) { top += element.offsetTop + (element.offsetParent?.clientTop ?? 0); element = element.offsetParent; }
       return [top, height];
     };
-    // The 40px account row sits between the voice dock divider and the panel
-    // border (#451); with those pixels its outline matches the 42px composer.
+    // The 40px account row sits between the voice panel's borders (#451); with
+    // those pixels its outline matches the 42px composer.
     const [top, height] = geometry('.sim-account');
     const border = (selector, side) => parseFloat(getComputedStyle(document.querySelector(selector))['border' + side + 'Width']);
-    const above = border('.sim-voice-panel .voice-dock', 'Bottom'), below = border('.sim-voice-panel', 'Bottom');
+    const above = border('.sim-voice-panel', 'Top'), below = border('.sim-voice-panel', 'Bottom');
     return [[top - above, height + above + below], geometry('.sim-composer')];
   `);
   assert.deepEqual(accountBounds, composerBounds, "Account controls and single-line composer align");
@@ -428,16 +453,14 @@ try {
     ".sim-message:last-of-type",
     ".sim-reaction",
     ".sim-avatar",
-    ".sim-person",
+    ".live-call .live-face",
     ".sim-channel-list > li:last-child .channel-line",
     ".sim-channel-list > li:last-child .channel-select",
     ".channel-manage",
-    ".header-voice",
     ".direct-select",
     ".direct-action",
     ".browse-channels",
-    ".voice-dock-channel",
-    ".voice-hangup",
+    ".live-call .voice-hangup",
     ".account-profile",
     ".voice-icon-button",
     ".call-settings-trigger",
@@ -496,16 +519,26 @@ try {
   );
   assert.ok(
     evaluate(
-      'return !!document.querySelector(".sim-people").closest("li[data-voice]")?.querySelector(".channel-select[aria-current=page]")',
+      'return !document.querySelector(".sim-sidebar :is(.live-now, .live-now-heading, .live-speaker)") && !document.querySelector(".sim-sidebar").textContent.includes("Live now") && !!document.querySelector(".sim-channel-list > li > .live-card");',
     ),
-    "Voice participants belong beneath their channel",
+    "The live card grows from #general's row, with no Live now heading or speaker line, as in the app",
   );
   assert.ok(!evaluate('return document.querySelector(".sim-sidebar").textContent.includes("In voice")'));
-  assert.equal(evaluate('return getComputedStyle(document.querySelector(".sim-person .avatar")).width'), "20px");
   assert.equal(
-    evaluate('return getComputedStyle(document.querySelector(".sim-person")).backgroundColor'),
+    evaluate(
+      'return document.querySelectorAll(".sim-channel-list .voice-occupants, .sim-channel-list .participant").length',
+    ),
+    0,
+    "Rows carry a live count, not a roster",
+  );
+  assert.equal(
+    evaluate('return getComputedStyle(document.querySelector(".live-call .live-face .live-avatar")).width'),
+    "34px",
+  );
+  assert.equal(
+    evaluate('return getComputedStyle(document.querySelector(".live-call .live-face")).backgroundColor'),
     "rgba(0, 0, 0, 0)",
-    "Production indicates speech on the avatar, not a green row",
+    "Production indicates speech on the face, not a green tile",
   );
   assert.equal(
     evaluate('return document.querySelectorAll(".live-window .participant-country").length'),
@@ -513,7 +546,13 @@ try {
     "The simulation has no country flags",
   );
   assert.deepEqual(speakers(), ["Maya", "Theo", "June"], "Multiple people speak simultaneously");
-  assert.equal(evaluate('return document.querySelector(".voice-stack").tagName'), "SPAN");
+  assert.deepEqual(
+    evaluate(
+      'return [...document.querySelectorAll(".live-card :is(.live-face, .voice-hangup, .live-toggle, .live-join), .channel-live")].map(el => el.tagName)',
+    ).every((tag) => tag === "SPAN"),
+    true,
+    "The illustration's voice controls are not real buttons",
+  );
   evaluate('window.firstDemoMessage = document.querySelector(".sim-message");');
 
   // Joining a channel must not automatically join voice; leaving voice keeps
@@ -627,9 +666,9 @@ try {
   );
   assert.ok(!voices().includes("Maya"));
   assert.equal(
-    evaluate('return document.querySelector(".sim-sidebar .voice-dock")'),
+    evaluate('return document.querySelector(".live-call")'),
     null,
-    "The voice dock reflects Maya leaving voice",
+    "Maya's call card goes when she steps out; the room's card offers Join",
   );
   checkVoiceSummary(["Theo", "June", "Leo", "Noor"]);
   assert.equal(
@@ -656,7 +695,7 @@ try {
   assert.equal(voices().length, 6);
   checkVoiceSummary(["Maya", "Theo", "June", "Leo", "Noor", "Sam"]);
   assert.equal(
-    evaluate('return document.querySelectorAll(".sim-person .participant-country").length'),
+    evaluate('return document.querySelectorAll(".live-card .participant-country").length'),
     0,
     "Joining/rejoining demo participants have no flags",
   );
@@ -742,7 +781,7 @@ try {
     "PASS: pinned edits, thread avatars/counts and live-forward replies arrive on schedule and persist across loops; peer DMs and closed members match the app",
   );
   console.log(
-    "PASS: general/feedback channels, no join notices/hints/actions, nested voice roster, simultaneous speakers, burst messages and multi-person typing",
+    "PASS: general/feedback channels, no join notices/hints/actions, #general's call and room cards in its row with no Live now heading, simultaneous speakers, burst messages and multi-person typing",
   );
 
   // Resize after history checks: changing the scroll viewport can stop following.
@@ -757,7 +796,7 @@ try {
         const sidebar = document.querySelector('.sim-sidebar');
         const chat = document.querySelector('.sim-chat');
         const scene = document.querySelector('.live-scene');
-        const desktopChrome = ['.sim-section-title', '.sim-brand', '.sim-direct', '.browse-channels', '.voice-dock', '.member-list-toggle', '.header-voice-people'];
+        const desktopChrome = ['.sim-section-title', '.sim-brand', '.sim-direct', '.browse-channels', '.live-card', '.member-list-toggle', '.live-call .live-controls'];
         return rail.offsetWidth > 0 && sidebar.offsetWidth > 0 && chat.clientWidth >= 320
           && rail.offsetTop === sidebar.offsetTop && sidebar.offsetTop === chat.offsetTop
           && rail.offsetLeft < sidebar.offsetLeft && sidebar.offsetLeft < chat.offsetLeft
@@ -880,7 +919,7 @@ try {
   checkReadOnlyHover([
     ".sim-message:last-of-type",
     ".sim-reaction",
-    ".sim-person",
+    ".live-call .live-face",
     ".account-profile",
     ".voice-icon-button",
     ".call-settings-trigger",

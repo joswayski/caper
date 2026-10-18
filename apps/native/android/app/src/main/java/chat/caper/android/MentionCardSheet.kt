@@ -66,6 +66,7 @@ import kotlinx.coroutines.launch
     val ownedSpaces = state?.spaces.orEmpty().filter { space ->
         accountId != null && space.ownerId == accountId && !space.demo && space.id != openSpace
     }
+    val canInvite = !card.self && !blocked && card.username != null && ownedSpaces.isNotEmpty() && viewModel != null
     val scope = rememberCoroutineScope()
     val direct = state?.directConversations?.firstOrNull {
         if (card.id != null) it.peer.id == card.id else it.peer.username.equals(card.username, ignoreCase = true)
@@ -89,10 +90,14 @@ import kotlinx.coroutines.launch
             )
             shown.subtitle?.let { Text(it, color = TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
         }
-        if (!card.self && id != null && viewModel != null && state?.account != null) Box {
+        if (!card.self && viewModel != null && (canInvite || (id != null && account != null && (blocked || shown.canBlock)))) Box {
             ProfileIconButton(R.drawable.lucide_ellipsis, "More profile actions", idle) { profileMenu = true }
             DropdownMenu(profileMenu, { profileMenu = false }, containerColor = SurfaceRaised) {
-                DropdownMenuItem(text = {
+                if (canInvite) DropdownMenuItem(text = { Text("Invite to space") }, enabled = idle, onClick = {
+                    profileMenu = false
+                    choosingSpace = !choosingSpace
+                })
+                if (id != null && account != null && (blocked || shown.canBlock)) DropdownMenuItem(text = {
                     Text(if (pending == "unblock") "Unblocking…" else if (blocked) "Unblock" else "Block")
                 }, enabled = idle, onClick = {
                     profileMenu = false
@@ -117,10 +122,7 @@ import kotlinx.coroutines.launch
                 shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
             ) { Text("Edit profile") }
         } else {
-            val invite = !blocked && card.username != null && ownedSpaces.isNotEmpty() && viewModel != null
-            if (invite) OutlinedButton({ choosingSpace = !choosingSpace }, Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                enabled = idle, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors()) { Text("Invite to space", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-            if (invite && choosingSpace && card.username != null && viewModel != null) Column(
+            if (canInvite && choosingSpace && card.username != null && viewModel != null) Column(
                 Modifier.fillMaxWidth().heightIn(max = 240.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
@@ -144,20 +146,24 @@ import kotlinx.coroutines.launch
                     if (direct?.incoming == true) "Open the conversation and accept this message request before replying."
                     else "Unblock this person to send a message.", color = TextMuted, fontSize = 12.sp,
                 )
-                ProfileMessageComposer(
-                    card.username!!, profileDraft, writable && pending == null, state?.uploadsEnabled == true,
-                    text = { viewModel.profileDrafts.text(person, it) },
-                    add = { viewModel.addProfileAttachments(person, it) },
-                    paste = { viewModel.pasteProfileAttachments(person) },
-                    remove = { viewModel.removeProfileAttachment(person, it) },
-                    send = { viewModel.sendProfileMessage(person, card.id, card.username, onMessageSent ?: onDismiss) },
-                    pickerInteraction = { picking = it },
-                )
+                val pickerEpoch = viewModel.accountEpoch
+                key(person, pickerEpoch) {
+                    ProfileMessageComposer(
+                        card.username!!, profileDraft, writable && pending == null, state?.uploadsEnabled == true,
+                        text = { viewModel.profileDrafts.text(person, it) },
+                        add = { if (viewModel.accountEpoch == pickerEpoch) viewModel.addProfileAttachments(person, it) },
+                        paste = { viewModel.pasteProfileAttachments(person) },
+                        remove = { viewModel.removeProfileAttachment(person, it) },
+                        toggleSpoiler = { viewModel.toggleProfileAttachmentSpoiler(person, it) },
+                        send = { viewModel.sendProfileMessage(person, card.id, card.username, onMessageSent ?: onDismiss) },
+                        pickerInteraction = { picking = it },
+                    )
+                }
             }
         }
     }
     if (confirmBlock && id != null && viewModel != null) BlockConfirmDialog(
-        BlockedAccount(id, card.username.orEmpty(), card.displayName ?: card.title, card.avatarId, card.avatarAsset, card.avatarUrl),
+        BlockedAccount(id, shown.username.orEmpty(), shown.displayName ?: shown.title, shown.avatarId, shown.avatarAsset, shown.avatarUrl, shown.admin, shown.team),
         viewModel, onDismiss,
     )
     // Replace the bottom sheet with the existing editor, including picture controls.
@@ -215,6 +221,7 @@ import kotlinx.coroutines.launch
     text: (String) -> Unit, add: (List<android.net.Uri>) -> Unit, paste: () -> Unit,
     remove: (String) -> Unit, send: () -> Unit,
     pickerInteraction: (Boolean) -> Unit = {},
+    toggleSpoiler: ((String) -> Unit)? = null,
 ) {
     var field by remember { mutableStateOf(TextFieldValue(draft.text, TextRange(draft.text.length))) }
     var emojiPicker by remember { mutableStateOf(false) }
@@ -223,7 +230,7 @@ import kotlinx.coroutines.launch
         if (field.text != draft.text) field = TextFieldValue(draft.text, TextRange(draft.text.length))
     }
     val editable = writable && draft.editable
-    DraftAttachmentStrip(draft.files, remove, enabled = editable, uploadOnSend = !draft.sending)
+    DraftAttachmentStrip(draft.files, remove, enabled = editable, uploadOnSend = true, sending = draft.sending, toggleSpoiler = toggleSpoiler)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
         EmojiTextField(
             field, { value ->

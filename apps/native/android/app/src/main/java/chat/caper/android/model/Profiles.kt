@@ -14,6 +14,7 @@ import kotlinx.serialization.Serializable
     val avatarId: Int? = null,
     val avatarAsset: String? = null,
     val avatarUrl: String? = null,
+    val admin: Boolean? = null,
 ) {
     /**
      * The picture a retained copy (showing [asset] at [url]) takes. With [keepSignedUrl], a copy
@@ -37,9 +38,9 @@ sealed interface ProfileEvent {
 fun Account.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl)
 
 // Server lists (members, invitations, DM peers, people, blocks) return each person's current profile.
-fun Member.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl)
-fun DirectPeer.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl)
-fun Person.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl)
+fun Member.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl, admin)
+fun DirectPeer.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl, admin)
+fun Person.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl, admin)
 fun BlockedAccount.profile(): ProfilePerson = ProfilePerson(id, username, displayName, avatarId, avatarAsset, avatarUrl)
 
 /** Every author [ChatMessage.withPerson] rewrites: its own, the pinner, thread participants, the reply reference's and the forwarded original's. */
@@ -95,14 +96,14 @@ fun AppUiState.withPerson(person: ProfilePerson, keepSignedUrls: Boolean = false
     fun member(value: Member) = if (value.id != id) value else {
         val (asset, url) = picture(value.avatarAsset, value.avatarUrl)
         value.copy(username = person.username ?: value.username, displayName = person.displayName ?: value.displayName,
-            avatarId = person.avatarId ?: value.avatarId, avatarAsset = asset, avatarUrl = url).retaining(value)
+            avatarId = person.avatarId ?: value.avatarId, avatarAsset = asset, avatarUrl = url, admin = person.admin ?: value.admin).retaining(value)
     }
     val directs = directConversations.mapRetaining { conversation ->
         val peer = conversation.peer
         if (peer.id != id) conversation else {
             val (asset, url) = picture(peer.avatarAsset, peer.avatarUrl)
             conversation.copy(peer = peer.copy(username = person.username ?: peer.username, displayName = person.displayName ?: peer.displayName,
-                avatarId = person.avatarId ?: peer.avatarId, avatarAsset = asset, avatarUrl = url)).retaining(conversation)
+                avatarId = person.avatarId ?: peer.avatarId, avatarAsset = asset, avatarUrl = url, admin = person.admin ?: peer.admin)).retaining(conversation)
         }
     }
     // A DM is titled with its peer's display name.
@@ -130,7 +131,7 @@ fun AppUiState.withPerson(person: ProfilePerson, keepSignedUrls: Boolean = false
             if (value.id != id) value else {
                 val (asset, url) = picture(value.avatarAsset, value.avatarUrl)
                 value.copy(username = person.username ?: value.username, displayName = person.displayName ?: value.displayName,
-                    avatarId = person.avatarId ?: value.avatarId, avatarAsset = asset, avatarUrl = url).retaining(value)
+                    avatarId = person.avatarId ?: value.avatarId, avatarAsset = asset, avatarUrl = url, admin = person.admin ?: value.admin).retaining(value)
             }
         },
         blocks = blocks.mapRetaining { value ->
@@ -192,7 +193,7 @@ private inline fun <K, V> Map<K, V>.mapValuesRetaining(transform: (V) -> V): Map
 fun ChatAuthor.withPerson(person: ProfilePerson, keepSignedUrls: Boolean = false): ChatAuthor {
     if (id != person.id) return this
     val (asset, url) = person.picture(avatarAsset, avatarUrl, keepSignedUrls)
-    return copy(name = person.displayName ?: name, avatarId = person.avatarId ?: avatarId, avatarAsset = asset, avatarUrl = url).retaining(this)
+    return copy(name = person.displayName ?: name, avatarId = person.avatarId ?: avatarId, avatarAsset = asset, avatarUrl = url, admin = person.admin ?: admin).retaining(this)
 }
 
 /** The message's author, pinner, thread participants, reply reference and forwarded original; this message when none is [person]. */

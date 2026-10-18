@@ -9,6 +9,23 @@
   font-size: 0.9rem;
   line-height: 1.5;
 }
+.whats-new-build {
+  margin: 0 0 10px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+.whats-new-build a,
+.whats-new-source {
+  color: var(--text-muted);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.whats-new-source {
+  font-size: 0.8rem;
+}
+.whats-new-entry {
+  margin-top: 20px;
+}
 .whats-new-release + .whats-new-release {
   margin-top: 28px;
   padding-top: 24px;
@@ -19,7 +36,7 @@
   font-size: 0.75rem;
 }
 .whats-new-release article {
-  margin-top: 18px;
+  margin-top: 12px;
 }
 .whats-new-release h3 {
   margin: 0 0 8px;

@@ -35,6 +35,7 @@ private struct SendInput: Encodable {
     let text: String
     /// Omitted (nil) unless files are attached.
     let attachmentIds: [String]?
+    let spoilerAttachmentIds: [String]?
     let threadRootId: String?
     let broadcast: Bool?
     let replyToId: String?
@@ -166,6 +167,7 @@ public actor APIClient {
     }
 
     public func spaces() async throws -> SpacesResponse { try await request("api/spaces") }
+    public func spaceVoiceActivity() async throws -> SpaceVoiceActivityResponse { try await request("api/spaces/voice-activity") }
     public func unreadThreads(channelID: String) async throws -> [UnreadThread] {
         let response: UnreadThreadsResponse = try await request("api/chat/channels/\(try pathID(channelID))/threads/unread")
         guard response.threads.allSatisfy({ !$0.rootId.isEmpty && (try? Sequence.compare($0.seq, "0")) != nil }) else {
@@ -177,9 +179,9 @@ public actor APIClient {
         _ = try Sequence.compare(seq, "0")
         let _: Empty = try await request("api/chat/channels/\(try pathID(channelID))/messages/\(try messagePathID(rootID))/thread/read", method: "PUT", body: ReadInput(seq: seq))
     }
-    public func unreadSpaces() async throws -> [UnreadSpace] {
+    public func unreadSpaces() async throws -> UnreadSpacesResponse {
         let response: UnreadSpacesResponse = try await request("api/spaces/unread")
-        return response.spaces
+        return response
     }
     public func markChannelRead(spaceID: String, channelID: String, seq: String) async throws {
         _ = try Sequence.compare(seq, "0")
@@ -347,6 +349,15 @@ public actor APIClient {
                           body: InviteLinkInput(channelId: try channelID.map { try pathID($0) }, maxAge: maxAge, maxUses: maxUses))
     }
 
+    public func defaultInviteLink(spaceID: String, channelID: String? = nil) async throws -> InviteLink {
+        let query = try channelID.map { "?channelId=\(try pathID($0))" } ?? ""
+        return try await request("api/spaces/\(try pathID(spaceID))/invite-links/default\(query)", method: "POST")
+    }
+
+    public func regenerateInviteLink(spaceID: String, code: String) async throws -> InviteLink {
+        try await request("api/spaces/\(try pathID(spaceID))/invite-links/\(try inviteCodePath(code))/regenerate", method: "POST")
+    }
+
     public func revokeInviteLink(spaceID: String, code: String) async throws {
         let _: Empty = try await request("api/spaces/\(try pathID(spaceID))/invite-links/\(try inviteCodePath(code))", method: "DELETE")
     }
@@ -464,8 +475,10 @@ public actor APIClient {
     }
 
     public func send(channelID: String, sessionToken: String, clientMessageID: String, text: String, attachmentIDs: [String] = [],
-                     threadRootId: String? = nil, broadcast: Bool = false, replyToId: String? = nil) async throws -> ChatMessage {
+                     spoilerAttachmentIDs: [String] = [], threadRootId: String? = nil, broadcast: Bool = false, replyToId: String? = nil) async throws -> ChatMessage {
+        let spoilers = attachmentIDs.filter { spoilerAttachmentIDs.contains($0) }
         let body = SendInput(clientMessageId: clientMessageID, text: text, attachmentIds: attachmentIDs.isEmpty ? nil : attachmentIDs,
+                             spoilerAttachmentIds: spoilers.isEmpty ? nil : spoilers,
                              threadRootId: threadRootId, broadcast: threadRootId == nil ? nil : broadcast, replyToId: replyToId)
         return try await request("api/chat/channels/\(try pathID(channelID))/messages", method: "POST", body: body, extraHeaders: ["x-caper-chat-token": sessionToken])
     }

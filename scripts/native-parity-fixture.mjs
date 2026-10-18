@@ -120,6 +120,7 @@ function initialState() {
     editEvents: new Map(),
     versions: new Map(),
     invitations: new Map(),
+    inviteLinks: new Map(),
     channelInvitations: new Map(),
     joins: new Map(
       channels.map((channel) => [
@@ -219,6 +220,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
   const sockets = new Set();
   let holdSends = false;
   const heldSends = new Set();
+  let holdUploads = false;
+  const heldUploads = new Set();
   const identity = (request) =>
     request.headers.authorization === "Bearer fixture-owner-token" ||
     /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? "")
@@ -457,6 +460,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           holdSends = !body.reset && body.holdSends;
           if (!holdSends) for (const release of heldSends) release();
         }
+        if (body.reset || typeof body.holdUploads === "boolean") {
+          holdUploads = !body.reset && body.holdUploads;
+          if (!holdUploads) for (const release of heldUploads) release();
+        }
         if (body.pushPlatforms !== undefined) {
           if (
             !Array.isArray(body.pushPlatforms) ||
@@ -634,6 +641,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           }
         }
         return json(response, 200, { fixture: true, heldSends: heldSends.size });
+      }
+      if (path === "/api/assets" && method === "POST" && holdUploads) {
+        await new Promise((resolve) => {
+          const release = () => {
+            heldUploads.delete(release);
+            response.off("close", release);
+            resolve();
+          };
+          heldUploads.add(release);
+          response.once("close", release);
+        });
+        if (response.destroyed) return;
       }
       const failureIndex = state.failures.findIndex(
         (failure) => failure.path === path && (!failure.method || failure.method === method),
@@ -1276,7 +1295,12 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               text: body.text,
               ...(mentions.length ? { mentions } : {}),
               ...(attachmentIds.length
-                ? { attachments: attachmentIds.map((id) => state.assets.get(id).attachment) }
+                ? {
+                    attachments: attachmentIds.map((id) => ({
+                      ...state.assets.get(id).attachment,
+                      ...(body.spoilerAttachmentIds?.includes(id) ? { spoiler: true } : {}),
+                    })),
+                  }
                 : {}),
             },
             createdAt: new Date().toISOString(),
@@ -1327,6 +1351,65 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           pinnedMessages,
           cursor: channelHead(channel.id),
         });
+      }
+      const inviteLinksPath = /^\/api\/spaces\/([^/]+)\/invite-links(?:\/([^/]+))?(\/regenerate)?$/.exec(path);
+      if (inviteLinksPath) {
+        if (!user) return reject(response, 401, "Sign in required.");
+        const [, spaceId, code, regeneration] = inviteLinksPath;
+        const detail = state.spaces.find((entry) => entry.space.id === spaceId && entry.space.ownerId === user.id);
+        if (!detail) return reject(response, 404, "resource not found");
+        const links = state.inviteLinks.get(spaceId) ?? [];
+        const live = (link) =>
+          !link.revokedAt &&
+          (!link.expiresAt || Date.parse(link.expiresAt) > Date.now()) &&
+          (link.maxUses === null || link.uses < link.maxUses);
+        if (method === "GET" && !code) return json(response, 200, { links: links.filter(live) });
+        if (method === "DELETE" && !regeneration) {
+          const link = links.find((link) => link.code === code && !link.revokedAt);
+          if (!link) return reject(response, 404, "resource not found");
+          link.revokedAt = new Date().toISOString();
+          return json(response, 204);
+        }
+        if (method === "POST" && (!code || code === "default" || regeneration)) {
+          const previous = regeneration && links.find((link) => link.code === code && !link.revokedAt);
+          if (regeneration && !previous) return reject(response, 404, "resource not found");
+          const defaults = code === "default" || !!regeneration;
+          const maxAge = defaults ? 2_592_000 : (body.maxAge ?? null);
+          const maxUses = defaults ? 100 : (body.maxUses ?? null);
+          const publicChannels = detail.channels.filter((channel) => !channel.private);
+          const selected = code === "default" ? url.searchParams.get("channelId") : body.channelId;
+          const channel = regeneration
+            ? (publicChannels.find((channel) => channel.id === previous.channel?.id) ?? publicChannels[0] ?? null)
+            : selected
+              ? publicChannels.find((channel) => channel.id === selected)
+              : defaults
+                ? (publicChannels[0] ?? null)
+                : null;
+          if (channel === undefined) return reject(response, 400, "invalid landing channel");
+          if (defaults && !regeneration) {
+            const existing = links.find(
+              (link) =>
+                (link.channel?.id ?? null) === (channel?.id ?? null) &&
+                link.maxUses === 100 &&
+                Date.parse(link.expiresAt) - Date.parse(link.createdAt) === 2_592_000_000,
+            );
+            if (existing && live(existing)) return json(response, 200, existing);
+          }
+          const now = Date.now();
+          const link = {
+            code: randomUUID().replaceAll("-", "").slice(0, 10),
+            channel,
+            createdBy: state.account,
+            uses: 0,
+            maxUses,
+            createdAt: new Date(now).toISOString(),
+            expiresAt: maxAge === null ? null : new Date(now + maxAge * 1000).toISOString(),
+          };
+          if (previous) previous.revokedAt = new Date(now).toISOString();
+          state.inviteLinks.set(spaceId, [link, ...links]);
+          return json(response, defaults && !regeneration ? 200 : 201, link);
+        }
+        return reject(response, 405, "method not allowed");
       }
       const spacePath =
         /^\/api\/spaces(?:\/([^/]+))?(?:\/channels\/([^/]+))?(?:\/(channels|members|invitations|invitation|membership)(?:\/([^/]+))?)?$/.exec(

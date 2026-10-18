@@ -704,7 +704,7 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
 
 private enum WorkspaceSheet: Identifiable {
     /// `joinInvite` carries a link opened from another app, or nil.
-    case login, profile, createSpace, joinInvite(OpenedInviteLink?), createChannel, newDirectMessage, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy, notifications
+    case login, profile, createSpace, joinInvite(OpenedInviteLink?), createChannel, newDirectMessage, invitePeople, manageSpace, manageChannel(Channel), invitation(Space), channelInvitation(ChannelInvitation), leaveSpace, audio, connection, diagnostics, privacy, notifications
     var id: String {
         switch self {
         case .login: "login"
@@ -714,6 +714,7 @@ private enum WorkspaceSheet: Identifiable {
         case .createChannel: "create-channel"
         case .newDirectMessage: "new-direct-message"
         case .manageSpace: "manage-space"
+        case .invitePeople: "invite-people"
         case .manageChannel(let channel): "manage-\(channel.id)"
         case .invitation(let space): "invitation-\(space.id)"
         case .channelInvitation(let invitation): "channel-invitation-\(invitation.id)"
@@ -1027,7 +1028,7 @@ private struct WorkspaceView: View {
             if parityFixture == "manage-space" || parityFixture == "modal" { sheet = .manageSpace }
             else if parityFixture == "manage-channel", let channel = model.detail?.channels.first(where: { $0.private }) { sheet = .manageChannel(channel) }
             else if parityFixture == "new-direct-message" { sheet = .newDirectMessage }
-            else if parityFixture == "voice-roster" { CaperRuntime.showVoiceRosterPreview(model) }
+            else if CaperRuntime.voiceRosterFixtures.contains(parityFixture ?? "") { CaperRuntime.showVoiceRosterPreview(model) }
             else if parityFixture == "whats-new" { CaperRuntime.showWhatsNewPreview(model) }
         }
         #if os(iOS)
@@ -1130,9 +1131,11 @@ private struct SpaceRailButton: View {
     private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
     private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
     private var unread: Bool { model.unreadSpaces.contains { $0.id == space.id } }
+    private var connected: Bool { model.account != nil && model.voice.phase == .connected && model.voice.context?.spaceID == space.id }
+    private var voiceActive: Bool { model.account != nil && (connected || model.voiceActivitySpaceIDs.contains(space.id)) }
     private var state: String {
         let base: String = model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : ""
-        return [base, unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
+        return [base, unread ? "Unread activity" : "", muted ? "Muted" : "", connected ? "Connected to voice" : voiceActive ? "Voice active" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     var body: some View {
@@ -1143,10 +1146,20 @@ private struct SpaceRailButton: View {
                 .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
                 .overlay(alignment: .bottomTrailing) { mutedBadge }
                 .overlay(alignment: .topTrailing) {
+                    if voiceActive {
+                        CaperIcon(name: "volume-2", size: 11)
+                            .foregroundStyle(CaperTheme.text)
+                            .frame(width: 18, height: 18)
+                            .background(Circle().fill(connected ? CaperTheme.voiceSessionGreen : CaperTheme.blackout))
+                            .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
+                            .offset(x: 3, y: -3).accessibilityHidden(true)
+                    }
+                }
+                .overlay(alignment: .topLeading) {
                     if unread {
                         Circle().fill(CaperTheme.text).frame(width: 8, height: 8)
                             .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
-                            .offset(x: 2, y: -2).accessibilityHidden(true)
+                            .offset(x: -2, y: -2).accessibilityHidden(true)
                     }
                 }
         }
@@ -1247,12 +1260,13 @@ private struct ChannelSidebar: View {
                 } else {
                 VStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Your call and the space's occupied rooms, above its channels.
+                    // Voice with no row here (a call in another space, a visit's
+                    // room), above the channels; live rows grow into cards in place.
                     LiveNowSection(model: model, narrow: narrow)
                     HStack {
                         Button { if !SwipeTapGuard.swiping { channelsExpanded.toggle(); CaperEffects.shared.toggle(channelsExpanded) } } label: {
                             HStack(spacing: 6) {
-                                // One chevron that turns, as for message requests and Live now's fold.
+                                // One chevron that turns, as for message requests.
                                 CaperIcon(name: "chevron-down")
                                     .rotationEffect(.degrees(channelsExpanded ? 0 : -90))
                                     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: channelsExpanded)
@@ -1263,6 +1277,7 @@ private struct ChannelSidebar: View {
                                 .frame(maxHeight: .infinity).contentShape(Rectangle())
                         }.buttonStyle(.plain).modifier(ControlHover())
                             .accessibilityValue(channelsExpanded ? "Expanded" : "Collapsed")
+                            .accessibilityIdentifier("channels-toggle")
                         Spacer()
                         if model.isOwner {
                             let createHelp = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
@@ -1284,10 +1299,15 @@ private struct ChannelSidebar: View {
                         }
                     }.frame(height: 44)
 
-                    if channelsExpanded {
+                    // Collapsed, Channels still lists its live rows (your call's
+                    // card and rooms with people in voice), so voice never hides.
+                    let rows = LiveNow.listed(model.detail?.channels.filter(\.joined) ?? [], expanded: channelsExpanded) {
+                        channelIsLive(model, $0)
+                    }
+                    if !rows.isEmpty {
                         VStack(spacing: 3) {
-                            ForEach(model.detail?.channels.filter(\.joined) ?? []) { channel in
-                                ChannelSidebarItem(model: model, sheet: $sheet, channel: channel)
+                            ForEach(rows) { channel in
+                                ChannelSidebarItem(model: model, sheet: $sheet, channel: channel, narrow: narrow)
                             }
                         }
                     }
@@ -1410,7 +1430,7 @@ private struct ChannelSidebar: View {
                         }.padding(.horizontal, 16).padding(.top, 2)
                     Button {
                         guard !SwipeTapGuard.swiping else { return }
-                        if model.isOwner, model.detail?.space.demo == false { sheet = .manageSpace }
+                        if model.isOwner, model.detail?.space.demo == false { sheet = .invitePeople }
                         else { sheet = .newDirectMessage }
                     } label: {
                         HStack(spacing: 9) {
@@ -1522,10 +1542,15 @@ private struct DirectMessageSidebarRow: View {
     #endif
 }
 
+/// A channel's row. A live one grows into a card in place: your call's (its
+/// faces and controls beneath the row) or another room with people in voice
+/// (who is in it and Join beneath).
 private struct ChannelSidebarItem: View {
     @Bindable var model: AppModel
     @Binding var sheet: WorkspaceSheet?
     let channel: Channel
+    /// Phones present your call's full list as a sheet.
+    let narrow: Bool
     @State private var confirmLeave = false
     /// The channel's line (name, voice count, quick join and options): its
     /// hover wash spans them, like web's `.channel-line`.
@@ -1560,10 +1585,44 @@ private struct ChannelSidebarItem: View {
         model.selectedChannelID == channel.id ? CaperTheme.terracotta.opacity(0.16) : lineHovered ? Color.white.opacity(0.06) : .clear
     }
 
+    /// Your call, while it is in this channel.
+    private var ownCall: VoiceContext? { model.voice.isActive(channelID: channel.id) ? model.voice.context : nil }
+
+    /// The row opens its chat, and so does a tap anywhere on its card but a control.
+    private func openChat() { Task { await model.select(channel: channel) } }
+
     var body: some View {
-        let inVoice = voiceOccupants(model, channelID: channel.id).count
+        let occupants = voiceOccupants(model, channelID: channel.id)
+        Group {
+            if let call = ownCall {
+                // Your call's row is the top line of its card, in place.
+                VoiceCallCard(model: model, context: call, narrow: narrow, row: true, openChat: openChat) { callLine }
+                    .padding(.vertical, 3)
+            } else if !occupants.isEmpty {
+                // Another live room: the row, with who is in it and Join beneath.
+                let room = LiveRoom(channel: channel, people: occupants, startedAt: model.voicePresence.sessionStartedAt(for: channel.id))
+                LiveRoomCard(model: model, room: room, row: true, openChat: openChat) {
+                    line(live: true) { RowVoiceCount(count: occupants.count).accessibilityIdentifier("voice-count-\(channel.id)") }
+                }
+                .padding(.vertical, 3)
+            } else {
+                line(live: false) { EmptyView() }
+            }
+        }
+        .task(id: channel.id) { await model.refreshVoiceAvailability(channel: channel) }
+        .sheet(isPresented: $confirmLeave) {
+            ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", pendingLabel: "Leaving…", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
+                .modifier(ConfirmationPresentation())
+        }
+    }
+
+    /// The channel's line: its icon and name (which open its chat), unread dot
+    /// and bell, then `mark` (who is in voice, or your call's status and time),
+    /// the quick join and the menu. Selection and hover span the line; in a
+    /// live card it is the card's first line.
+    private func line<Mark: View>(live: Bool, @ViewBuilder mark: () -> Mark) -> some View {
         HStack(spacing: 2) {
-            Button { if !SwipeTapGuard.swiping { Task { await model.select(channel: channel) } } } label: {
+            Button { if !SwipeTapGuard.swiping { openChat() } } label: {
                 HStack(spacing: 6) {
                     CaperIcon(name: channel.private ? "lock" : "hash", size: 18)
                         .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
@@ -1589,11 +1648,8 @@ private struct ChannelSidebarItem: View {
                 })
                 .accessibilityIdentifier("channel-\(channel.id)")
                 .accessibilityValue(rowState)
-            // A live row ends with who is in voice; its card in Live now has Join.
-            if inVoice > 0 {
-                RowVoiceCount(count: inVoice).accessibilityIdentifier("voice-count-\(channel.id)")
-            }
-            quickJoin(live: inVoice > 0)
+            mark()
+            quickJoin(live: live)
             if model.detail?.space.demo != true {
                 Menu {
                     optionsMenuItems
@@ -1617,18 +1673,34 @@ private struct ChannelSidebarItem: View {
         // Selection and hover span the line, trailing controls included.
         .background { RoundedRectangle(cornerRadius: 6).fill(lineFill).allowsHitTesting(false) }
         .onHover { lineHovered = $0 }
-        .task(id: channel.id) { await model.refreshVoiceAvailability(channel: channel) }
-        .sheet(isPresented: $confirmLeave) {
-            ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", pendingLabel: "Leaving…", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
-                .modifier(ConfirmationPresentation())
+    }
+
+    /// Your call's row ends with its status and time when they fit beside the
+    /// name; otherwise with the time, and the status drops beneath the name.
+    private var callLine: some View {
+        return ViewThatFits(in: .horizontal) {
+            line(live: true) { callMark(status: true) }
+            VStack(alignment: .leading, spacing: 0) {
+                line(live: true) { callMark(status: false) }
+                // Under the name: the label's 9-point inset, the icon and its gap.
+                CallStatusText(voice: model.voice).padding(.leading, 33)
+            }
         }
+    }
+
+    private func callMark(status: Bool) -> some View {
+        HStack(spacing: 6) {
+            if status { CallStatusText(voice: model.voice) }
+            if let startedAt = callStartedAt(model) { VoiceTimer(startedAt: startedAt).allowsHitTesting(false) }
+        }
+        .padding(.horizontal, 4)
     }
 
     /// Web's channel-quick-join: one click joins (or switches to) this
     /// channel's voice without opening its chat; your own call's channel has none.
     /// Pointers reveal it on hover or keyboard focus like the row menu, in a slot
     /// that is always kept, so nothing shifts. Touch shows it, dimmed, on quiet
-    /// rows; a live row's card in Live now has Join instead.
+    /// rows; a live row's card has Join instead.
     @ViewBuilder private func quickJoin(live: Bool) -> some View {
         let action = ChannelVoiceAction(model: model, channel: channel)
         #if os(macOS)
@@ -1666,7 +1738,7 @@ private struct ChannelSidebarItem: View {
 }
 
 /// A live channel row's ending: a green waveform and how many are in voice. It
-/// is not a control; the row's name opens the chat and Live now's card joins.
+/// is not a control; the row's name opens the chat and its card's Join joins.
 private struct RowVoiceCount: View {
     let count: Int
     var body: some View {
@@ -1764,8 +1836,14 @@ private struct SidebarIconButton: ButtonStyle {
     }
 }
 
+/// A live channel row: your call's, or one with people in voice. It grows into
+/// a card, and stays listed while Channels is collapsed.
+@MainActor private func channelIsLive(_ model: AppModel, _ channel: Channel) -> Bool {
+    model.voice.isActive(channelID: channel.id) || !voiceOccupants(model, channelID: channel.id).isEmpty
+}
+
 /// Web's voiceAction for one channel: join, switch, or a join under way. Rows
-/// show it as a headphones shortcut; Live now's room cards and the phone strip
+/// show it as a headphones shortcut; live rooms' cards and the phone strip
 /// label it.
 @MainActor private struct ChannelVoiceAction {
     let model: AppModel
@@ -1812,9 +1890,9 @@ private struct SidebarIconButton: ButtonStyle {
 
 /// Design H's voice colours (the "Live now" spec), beside the shared tokens.
 private enum LiveNowPalette {
-    /// Your call's green-tinted card (#1a2a22, border #3a6b4b).
-    static let callFill = Color(red: 26/255, green: 42/255, blue: 34/255)
-    static let callBorder = Color(red: 58/255, green: 107/255, blue: 75/255)
+    /// Your call's green-tinted card (#22382c, border #4b8a60).
+    static let callFill = Color(red: 34/255, green: 56/255, blue: 44/255)
+    static let callBorder = Color(red: 75/255, green: 138/255, blue: 96/255)
     /// Other live rooms (#18231f, border #28362f).
     static let roomFill = Color(red: 24/255, green: 35/255, blue: 31/255)
     static let roomBorder = Color(red: 40/255, green: 54/255, blue: 47/255)
@@ -1871,7 +1949,7 @@ private struct CallPerson: Identifiable {
     return voice.phase == .joining ? shared ?? voice.sessionStartedAt : voice.sessionStartedAt
 }
 
-/// Another occupied room in Live now.
+/// Another occupied room: a channel row's card, or a visited channel's.
 private struct LiveRoom: Identifiable {
     let channel: Channel
     let people: [VoiceSpectator]
@@ -1881,182 +1959,135 @@ private struct LiveRoom: Identifiable {
     var id: String { channel.id }
 }
 
-/// Design H's "Live now", at the top of the channel list: your call first (from
-/// any space), then the viewed space's other occupied rooms, busiest first and
-/// two at a time. Absent while you are in no call and nobody is in voice here.
+/// Voice with no row in the channel list, above the Channels heading and with
+/// no heading of its own: your call while its channel isn't a row here (another
+/// space's, or a feedback visit's), and a visited channel's live room. They
+/// stay while you browse DMs or a space without channels. Live rows of the
+/// listed space grow into their cards in place instead.
 private struct LiveNowSection: View {
     @Bindable var model: AppModel
     let narrow: Bool
-    @State private var showsAllRooms = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// The space's joined channels with people in voice, except your call's, and
-    /// a visited channel (a feedback visit) open beside them.
-    private var rooms: [LiveRoom] {
-        var rooms: [LiveRoom] = []
-        for channel in model.detail?.channels.filter(\.joined) ?? [] where !model.voice.isActive(channelID: channel.id) {
-            let people = model.voiceRoster(for: channel.id)
-            if !people.isEmpty {
-                rooms.append(LiveRoom(channel: channel, people: people, startedAt: model.voicePresence.sessionStartedAt(for: channel.id)))
-            }
-        }
-        if let channel = model.visitChannel, model.isVisitVoice(channel), !model.voice.isActive(channelID: channel.id) {
-            let people = model.voiceRoster(for: channel.id)
-            if !people.isEmpty {
-                rooms.append(LiveRoom(channel: channel, people: people,
-                                      startedAt: model.visitVoicePresence.sessionStartedAt(for: channel.id),
-                                      spaceName: model.visit?.spaceName))
-            }
-        }
-        return LiveNow.busiestFirst(rooms, count: { $0.people.count }, name: { $0.channel.name })
+    /// Your call, while its channel has no row in this list.
+    private var call: VoiceContext? {
+        guard inVoiceCall(model.voice), let context = model.voice.context else { return nil }
+        let rows = model.detail?.channels.filter(\.joined).map(\.id) ?? []
+        return LiveNow.hasRow(context.channelID, rows: rows) ? nil : context
+    }
+
+    /// A visited channel (a feedback visit) with people in voice, while you are not in its call.
+    private var visitRoom: LiveRoom? {
+        guard let channel = model.visitChannel, model.isVisitVoice(channel), !model.voice.isActive(channelID: channel.id) else { return nil }
+        let people = model.voiceRoster(for: channel.id)
+        guard !people.isEmpty else { return nil }
+        return LiveRoom(channel: channel, people: people,
+                        startedAt: model.visitVoicePresence.sessionStartedAt(for: channel.id),
+                        spaceName: model.visit?.spaceName)
     }
 
     var body: some View {
-        let rooms = self.rooms
-        let call: VoiceContext? = inVoiceCall(model.voice) ? model.voice.context : nil
-        if call != nil || !rooms.isEmpty {
-            let folds = rooms.count > LiveNow.shownRooms
-            let shown = folds && !showsAllRooms ? Array(rooms.prefix(LiveNow.shownRooms)) : rooms
+        let call = self.call
+        let room = visitRoom
+        if call != nil || room != nil {
             VStack(alignment: .leading, spacing: 8) {
-                heading(live: rooms.count + (call == nil ? 0 : 1))
                 if let call {
-                    VoiceCallCard(model: model, context: call, narrow: narrow).modifier(Entrance.anchored)
+                    // Its chat opens in its own space; the call stays put.
+                    VoiceCallCard(model: model, context: call, narrow: narrow, row: false,
+                                  openChat: { Task { await model.openVoiceContext() } }) {
+                        CallHeading(model: model, context: call)
+                    }
                 }
-                ForEach(shown) { room in
-                    LiveRoomCard(model: model, room: room).modifier(Entrance.anchored)
+                if let room {
+                    // A visited channel's chat is already open beside Browse.
+                    LiveRoomCard(model: model, room: room, row: false, openChat: { model.navigationOpen = false }) {
+                        visitHeading(room)
+                    }
+                    // Its Join needs the channel's availability.
+                    .task(id: room.id) { await model.refreshVoiceAvailability(channel: room.channel) }
                 }
-                if folds { fold(Array(rooms.dropFirst(LiveNow.shownRooms))) }
             }
             .padding(.top, 10).padding(.bottom, 2)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Live now")
-            .accessibilityIdentifier("live-now")
-            .onChange(of: model.detail?.space.id) { _, _ in showsAllRooms = false }
+            // No container of its own: around a single card, macOS folded the card's
+            // own group ("Your call in #lobby") into it.
         }
     }
 
-    private func heading(live: Int) -> some View {
+    /// A visited room's heading: its name and space, then its session time.
+    private func visitHeading(_ room: LiveRoom) -> some View {
         HStack(spacing: 6) {
-            CaperIcon(name: "audio-lines", size: 14).foregroundStyle(CaperTheme.voiceSessionGreen)
-            Text("Live now").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.text)
-            Spacer(minLength: 8)
-            if live >= 2 {
-                Text("\(live) rooms").font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted)
-            }
-        }
-        .frame(minHeight: 20)
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
-        .accessibilityIdentifier("live-now-heading")
-    }
-
-    /// Rooms past the first two fold into one row; opened, it reads "Show less".
-    private func fold(_ hidden: [LiveRoom]) -> some View {
-        let names = hidden.map { "#\($0.channel.name)" }.joined(separator: ", ")
-        return Button { if !SwipeTapGuard.swiping { showsAllRooms.toggle() } } label: {
-            HStack(spacing: 6) {
-                CaperIcon(name: "chevron-right", size: 12)
-                    .rotationEffect(.degrees(showsAllRooms ? 90 : 0))
-                    .animation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.fast), value: showsAllRooms)
-                if showsAllRooms {
-                    Text("Show less").foregroundStyle(CaperTheme.text)
-                } else {
-                    Text("\(hidden.count) more live").foregroundStyle(CaperTheme.text).fixedSize()
-                    Text(names).lineLimit(1).truncationMode(.tail)
+            Button { if !SwipeTapGuard.swiping { model.navigationOpen = false } } label: {
+                HStack(spacing: 5) {
+                    CaperIcon(name: room.channel.private ? "lock" : "hash", size: 14).foregroundStyle(CaperTheme.muted)
+                    Text(room.channel.name).font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text).lineLimit(1)
+                    if let space = room.spaceName {
+                        Text(space).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                            .layoutPriority(-1)
+                    }
                 }
-                Spacer(minLength: 0)
+                #if os(iOS)
+                .frame(minHeight: 44)
+                #else
+                .frame(minHeight: 22)
+                #endif
+                .contentShape(Rectangle())
             }
-            .font(CaperTheme.font(12, weight: .medium)).foregroundStyle(CaperTheme.muted)
-            .padding(.horizontal, 6)
-            #if os(iOS)
-            .frame(minHeight: 44)
-            #else
-            .frame(minHeight: 28)
-            #endif
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain).modifier(ControlHover())
-        .accessibilityLabel(showsAllRooms ? "Show less" : "\(hidden.count) more live: \(names)")
-        .accessibilityValue(showsAllRooms ? "Expanded" : "Collapsed")
-        .accessibilityIdentifier("live-more")
-    }
-}
-
-/// One face or the "+N" tile in your call's card.
-private enum FaceTile: Identifiable {
-    case person(CallPerson)
-    case more([CallPerson])
-    var id: String {
-        switch self {
-        case .person(let person): return person.id
-        case .more: return "+more"
+            .buttonStyle(.plain).modifier(ControlHover())
+            .help("Open #\(room.channel.name)")
+            .accessibilityLabel("#\(room.channel.name)")
+            .accessibilityHint("Opens its chat")
+            .accessibilityIdentifier("live-room-channel-\(room.id)")
+            Spacer(minLength: 6)
+            if let startedAt = room.startedAt { VoiceTimer(startedAt: startedAt, size: 11).allowsHitTesting(false) }
         }
     }
 }
 
-/// Your call in Live now: where it is and for how long, everyone in it (two
-/// rows of faces at most), who is speaking, then Mute, Deafen and Leave. The
-/// faces open the full list, with another person's volume controls open.
-private struct VoiceCallCard: View {
+/// Connecting… or Reconnecting… while your call is not connected yet.
+@MainActor private func callPending(_ voice: VoiceClient) -> String? {
+    switch voice.phase {
+    case .joining: return "Connecting…"
+    case .reconnecting: return "Reconnecting…"
+    default: return nil
+    }
+}
+
+/// Connecting… and Reconnecting… in amber. Not a control: a tap on it opens
+/// the chat like the rest of the card.
+private struct CallStatusText: View {
+    @Bindable var voice: VoiceClient
+    var body: some View {
+        if let pending = callPending(voice) {
+            Text(pending).font(CaperTheme.font(12, weight: .bold))
+                .foregroundStyle(LiveNowPalette.connecting)
+                .lineLimit(1).fixedSize()
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("voice-call-status")
+        }
+    }
+}
+
+/// The heading of a call with no row here: the waveform, its channel (which
+/// opens its chat, in its own space) and another space's name, the status and
+/// the time on one line when they fit; the status drops beneath the channel
+/// when they do not.
+private struct CallHeading: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
     let context: VoiceContext
-    let narrow: Bool
-    @State private var listShown = false
-    /// The person whose volume controls the list opens with.
-    @State private var expandedID: String?
-    /// How many faces fit across the card.
-    @State private var columns = 5
-    /// A 36-point face in a 44-point slot: room for its speaking ring, and a touch target.
-    private let faceSize: CGFloat = 36
-    private let facePitch: CGFloat = 44
 
-    init(model: AppModel, context: VoiceContext, narrow: Bool) {
-        self.model = model; voice = model.voice; self.context = context; self.narrow = narrow
+    init(model: AppModel, context: VoiceContext) {
+        self.model = model; voice = model.voice; self.context = context
     }
 
     /// The call is in another space than the one listed: its name follows, muted.
     private var otherSpace: Bool { context.spaceID != model.detail?.space.id }
 
-    var body: some View {
-        let people = callPeople(model)
-        let split = LiveNow.fold(people, slots: LiveNow.faceSlots(columns: columns))
-        VStack(alignment: .leading, spacing: 10) {
-            title(count: people.count)
-            faces(split.shown, folded: split.folded)
-            if let speaker = people.first(where: \.speaking) {
-                (Text(speaker.name).font(CaperTheme.font(12, weight: .bold)) + Text(" is speaking"))
-                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                    .accessibilityIdentifier("voice-call-speaker")
-            }
-            controls
-        }
-        .padding(12)
-        .background(LiveNowPalette.callFill, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(LiveNowPalette.callBorder))
-        .modifier(VoiceListPresentation(shown: $listShown, narrow: narrow) { sheet in
-            VoiceParticipantsList(model: model, channelName: context.channelName, expandedID: $expandedID, sheet: sheet) { listShown = false }
-        })
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Your call in #\(context.channelName)")
-        .accessibilityIdentifier("voice-call-card")
-    }
+    var body: some View { title }
 
-    private func callStatus(count: Int) -> (text: String, tone: Color) {
-        switch voice.phase {
-        case .joining: return ("Connecting…", LiveNowPalette.connecting)
-        case .reconnecting: return ("Reconnecting…", LiveNowPalette.connecting)
-        default: return ("You’re in · \(count)", CaperTheme.voiceSessionGreen)
-        }
-    }
-
-    /// The waveform, channel, status and time on one line when they fit; the
-    /// status drops beneath the channel when they do not.
-    private func title(count: Int) -> some View {
-        let status = callStatus(count: count)
-        let icon = CaperIcon(name: "audio-lines", size: 14).foregroundStyle(status.tone)
-        let state = Text(status.text).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(status.tone)
-            .lineLimit(1).fixedSize().accessibilityIdentifier("voice-call-status")
+    private var title: some View {
+        let icon = CaperIcon(name: "audio-lines", size: 14)
+            .foregroundStyle(callPending(voice) == nil ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
+        let state = CallStatusText(voice: voice)
         return ViewThatFits(in: .horizontal) {
             HStack(spacing: 6) { icon; channelButton; state; Spacer(minLength: 6); timer }
             VStack(alignment: .leading, spacing: 2) {
@@ -2067,10 +2098,9 @@ private struct VoiceCallCard: View {
     }
 
     @ViewBuilder private var timer: some View {
-        if let startedAt = callStartedAt(model) { VoiceTimer(startedAt: startedAt) }
+        if let startedAt = callStartedAt(model) { VoiceTimer(startedAt: startedAt).allowsHitTesting(false) }
     }
 
-    /// The call's channel opens its chat (in its own space); the call stays put.
     private var channelButton: some View {
         Button { if !SwipeTapGuard.swiping { Task { await model.openVoiceContext() } } } label: {
             HStack(spacing: 5) {
@@ -2092,6 +2122,118 @@ private struct VoiceCallCard: View {
         .accessibilityLabel(otherSpace ? "#\(context.channelName) in \(context.spaceName)" : "#\(context.channelName)")
         .accessibilityHint("Opens the call’s chat")
         .accessibilityIdentifier("voice-call-channel")
+    }
+}
+
+/// A live card's surface: its fill and border, where a tap or click on any
+/// part that is not a control opens the card's chat. Its text and faces let
+/// the tap through (or open the chat themselves); the row's button, its menu
+/// and quick join, Mute, Deafen, Leave and Join keep their own actions.
+private struct LiveCardSurface: ViewModifier {
+    let fill: Color
+    let border: Color
+    let open: () -> Void
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: 10).fill(fill)
+                    .onTapGesture { if !SwipeTapGuard.swiping { open() } }
+                    .modifier(ControlPointer())
+                    .accessibilityHidden(true)
+            }
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(border).allowsHitTesting(false))
+    }
+}
+
+/// A face (or the "+N" tile) in your call's card. A tap opens the call's chat,
+/// like the rest of the card. Holding it (touch), right-clicking it (macOS) or
+/// its accessibility action opens everyone in the call instead, and only that.
+private struct CallFaceActions: ViewModifier {
+    /// The accessibility action: Volume for another person, else Show everyone.
+    let action: String
+    let openChat: () -> Void
+    let openList: () -> Void
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            #if os(iOS)
+            // As on message rows: a hold opens the list, and its lift is no tap.
+            .onLongPressGesture(minimumDuration: 0.5) { if !SwipeTapGuard.swiping { openList() } }
+            #else
+            .onRightClick(enabled: true, perform: openList)
+            #endif
+            .gesture(TapGesture().onEnded { if !SwipeTapGuard.swiping { openChat() } })
+            .accessibilityAction(named: Text(action), openList)
+    }
+}
+
+/// One face or the "+N" tile in your call's card.
+private enum FaceTile: Identifiable {
+    case person(CallPerson)
+    case more([CallPerson])
+    var id: String {
+        switch self {
+        case .person(let person): return person.id
+        case .more: return "+more"
+        }
+    }
+}
+
+/// Your call's card: its heading (its channel's row in the list, or for a call
+/// with no row there its own heading), everyone in it (two rows of faces at
+/// most), then Mute, Deafen and Leave. A tap anywhere but a control opens the
+/// call's chat; holding or right-clicking a face opens the full list, with
+/// another person's volume controls open. Nothing in it changes with who speaks.
+private struct VoiceCallCard<Heading: View>: View {
+    @Bindable var model: AppModel
+    @Bindable var voice: VoiceClient
+    let context: VoiceContext
+    let narrow: Bool
+    /// The heading is the call's channel row, already listed: only the faces
+    /// and controls arrive beneath it.
+    let row: Bool
+    let openChat: () -> Void
+    let heading: Heading
+    @State private var listShown = false
+    /// The person whose volume controls the list opens with.
+    @State private var expandedID: String?
+    /// How many faces fit across the card.
+    @State private var columns = 5
+    /// A 36-point face in a 44-point slot: room for its speaking ring, and a touch target.
+    private let faceSize: CGFloat = 36
+    private let facePitch: CGFloat = 44
+
+    init(model: AppModel, context: VoiceContext, narrow: Bool, row: Bool, openChat: @escaping () -> Void,
+         @ViewBuilder heading: () -> Heading) {
+        self.model = model; voice = model.voice; self.context = context; self.narrow = narrow
+        self.row = row; self.openChat = openChat; self.heading = heading()
+    }
+
+    var body: some View {
+        let people = callPeople(model)
+        let split = LiveNow.fold(people, slots: LiveNow.faceSlots(columns: columns))
+        VStack(alignment: .leading, spacing: 0) {
+            // A row keeps its own inset and selection, just inside the border.
+            heading.padding([.horizontal, .top], row ? 3 : 12)
+            VStack(alignment: .leading, spacing: 10) {
+                faces(split.shown, folded: split.folded)
+                Text(LiveNow.people(people.count)).font(CaperTheme.font(11))
+                    .foregroundStyle(CaperTheme.muted)
+                    .accessibilityIdentifier("voice-call-count")
+                controls
+            }
+            .padding([.horizontal, .bottom], 12)
+            .padding(.top, row ? 6 : 10)
+            .modifier(Entrance.anchored(when: row))
+        }
+        .modifier(LiveCardSurface(fill: LiveNowPalette.callFill, border: LiveNowPalette.callBorder, open: openChat))
+        .modifier(Entrance.anchored(when: !row))
+        .modifier(VoiceListPresentation(shown: $listShown, narrow: narrow) { sheet in
+            VoiceParticipantsList(model: model, channelName: context.channelName, expandedID: $expandedID, sheet: sheet) { listShown = false }
+        })
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Your call in #\(context.channelName)")
+        .accessibilityIdentifier("voice-call-card")
     }
 
     /// Up to ten faces in at most two rows; more fold into a "+N" tile.
@@ -2119,35 +2261,36 @@ private struct VoiceCallCard: View {
     @ViewBuilder private func faceTile(_ tile: FaceTile) -> some View {
         switch tile {
         case .person(let person):
-            Button { if !SwipeTapGuard.swiping { openList(expanding: person.isSelf ? nil : person.id) } } label: {
-                VoiceFace(person: person, size: faceSize).frame(width: facePitch, height: facePitch).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).modifier(ControlHover())
-            .help(person.isSelf ? "\(person.name) (you)" : "\(person.name): volume")
-            .accessibilityLabel(person.name + (person.isSelf ? " (you)" : ""))
-            .accessibilityValue(VoiceFace.state(person))
-            .accessibilityHint(person.isSelf ? "Shows everyone in the call" : "Shows everyone in the call, with \(person.name)’s volume")
-            .accessibilityIdentifier("voice-face-\(person.id)")
-            #if os(macOS)
-            // As before, right-clicking someone opens their audio controls.
-            .onRightClick(enabled: !person.isSelf) { openList(expanding: person.id) }
-            #endif
+            VoiceFace(person: person, size: faceSize).frame(width: facePitch, height: facePitch)
+                #if os(macOS)
+                .help(person.isSelf ? "\(person.name) (you): right-click for everyone" : "\(person.name): right-click for volume")
+                #endif
+                .accessibilityElement(children: .ignore)
+                // A tap opens the call's chat. As a button, macOS also reports its state.
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel(person.name + (person.isSelf ? " (you)" : ""))
+                .accessibilityValue(VoiceFace.state(person))
+                .accessibilityIdentifier("voice-face-\(person.id)")
+                .modifier(CallFaceActions(action: person.isSelf ? "Show everyone" : "Volume", openChat: openChat) {
+                    openList(expanding: person.isSelf ? nil : person.id)
+                })
         case .more(let folded):
-            Button { if !SwipeTapGuard.swiping { openList(expanding: nil) } } label: {
-                Text("+\(folded.count)").font(CaperTheme.font(12, weight: .bold).monospacedDigit())
-                    .foregroundStyle(CaperTheme.text)
-                    .frame(width: faceSize, height: faceSize)
-                    .background(Circle().fill(CaperTheme.raised))
-                    .overlay(Circle().strokeBorder(CaperTheme.border))
-                    // Someone folded in here is speaking.
-                    .overlay { if folded.contains(where: \.speaking) { SpeakingRing(size: faceSize, rounded: false) } }
-                    .frame(width: facePitch, height: facePitch).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain).modifier(ControlHover())
-            .help("Everyone in the call")
-            .accessibilityLabel("\(folded.count) more in the call")
-            .accessibilityHint("Shows everyone in the call")
-            .accessibilityIdentifier("voice-faces-more")
+            Text("+\(folded.count)").font(CaperTheme.font(12, weight: .bold).monospacedDigit())
+                .foregroundStyle(CaperTheme.text)
+                .frame(width: faceSize, height: faceSize)
+                .background(Circle().fill(CaperTheme.raised))
+                .overlay(Circle().strokeBorder(CaperTheme.border))
+                // Someone folded in here is speaking.
+                .overlay { if folded.contains(where: \.speaking) { SpeakingRing(size: faceSize, rounded: false) } }
+                .frame(width: facePitch, height: facePitch)
+                #if os(macOS)
+                .help("Right-click for everyone in the call")
+                #endif
+                .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel("\(folded.count) more in the call")
+                .accessibilityIdentifier("voice-faces-more")
+                .modifier(CallFaceActions(action: "Show everyone", openChat: openChat) { openList(expanding: nil) })
         }
     }
 
@@ -2482,55 +2625,40 @@ private struct VoiceParticipantsList: View {
     }
 }
 
-/// Another live room: its name (which opens its chat), session time, faces,
-/// names and one Join (or Switch) that never changes the chat being read. No
-/// speaking rings: there is no audio from rooms you are not in.
-private struct LiveRoomCard: View {
+/// Another live room's card: its heading (its channel's row in the list, or a
+/// visited channel's name and session time), then faces, names, (beneath a
+/// row) the session time, and one Join (or Switch) that never changes the chat
+/// being read. A tap anywhere but a control opens its chat. No speaking rings:
+/// there is no audio from rooms you are not in.
+private struct LiveRoomCard<Heading: View>: View {
     @Bindable var model: AppModel
     let room: LiveRoom
+    /// The heading is the room's channel row, already listed: only its body
+    /// arrives beneath it, with the session time the row has no room for.
+    let row: Bool
+    let openChat: () -> Void
+    let heading: Heading
+
+    init(model: AppModel, room: LiveRoom, row: Bool, openChat: @escaping () -> Void, @ViewBuilder heading: () -> Heading) {
+        self.model = model; self.room = room; self.row = row; self.openChat = openChat; self.heading = heading()
+    }
 
     var body: some View {
         let action = ChannelVoiceAction(model: model, channel: room.channel)
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Button(action: SwipeTapGuard.unlessSwiping(openChat)) {
-                    HStack(spacing: 5) {
-                        CaperIcon(name: room.channel.private ? "lock" : "hash", size: 14).foregroundStyle(CaperTheme.muted)
-                        Text(room.channel.name).font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text).lineLimit(1)
-                        if let space = room.spaceName {
-                            Text(space).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                                .layoutPriority(-1)
-                        }
-                    }
-                    #if os(iOS)
-                    .frame(minHeight: 44)
-                    #else
-                    .frame(minHeight: 22)
-                    #endif
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                // Like its channel row, the pointer prepares the chat it opens.
-                .modifier(NavigationPrefetchModifier {
-                    if !model.isVisitVoice(room.channel), let space = model.detail?.space {
-                        model.prefetch(space: space, channelID: room.channel.id)
-                    }
-                })
-                .help("Open #\(room.channel.name)")
-                .accessibilityLabel("#\(room.channel.name)")
-                .accessibilityHint("Opens its chat")
-                .accessibilityIdentifier("live-room-channel-\(room.id)")
-                Spacer(minLength: 6)
-                if let startedAt = room.startedAt { VoiceTimer(startedAt: startedAt, size: 11) }
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            // A row keeps its own inset and selection, just inside the border.
+            heading.padding([.horizontal, .top], row ? 3 : 10)
             HStack(spacing: 8) {
                 RoomFaces(people: room.people, limit: 3)
+                // The names truncate first; the time and Join keep their size.
                 Text(LiveNow.names(room.people.map(\.name)))
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     .lineLimit(1).truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .layoutPriority(-1)
+                    .allowsHitTesting(false)
                     .accessibilityIdentifier("live-room-names-\(room.id)")
+                if row, let startedAt = room.startedAt { VoiceTimer(startedAt: startedAt, size: 11).allowsHitTesting(false) }
                 Button(action.title, action: SwipeTapGuard.unlessSwiping(action.join))
                     .buttonStyle(LiveJoinButtonStyle(primary: !action.switches, busy: action.busy) { model.prepareVoiceJoin(channel: room.channel) })
                     .disabled(!action.enabled)
@@ -2539,25 +2667,20 @@ private struct LiveRoomCard: View {
                     .accessibilityIdentifier("live-join-\(room.id)")
                     .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: room.channel) })
             }
+            .padding([.horizontal, .bottom], 10)
+            .padding(.top, row ? 2 : 6)
+            .modifier(Entrance.anchored(when: row))
         }
-        .padding(10)
-        .background(LiveNowPalette.roomFill, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(LiveNowPalette.roomBorder))
+        .modifier(LiveCardSurface(fill: LiveNowPalette.roomFill, border: LiveNowPalette.roomBorder, open: openChat))
+        .modifier(Entrance.anchored(when: !row))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("#\(room.channel.name), \(room.people.count) in voice")
         .accessibilityIdentifier("live-room-\(room.id)")
-        // Its Join needs the channel's availability, also while the channel list is collapsed.
-        .task(id: room.id) { await model.refreshVoiceAvailability(channel: room.channel) }
-    }
-
-    /// Opens the room's chat. A visited channel's is already open beside Browse.
-    private func openChat() {
-        if model.isVisitVoice(room.channel) { model.navigationOpen = false }
-        else { Task { await model.select(channel: room.channel) } }
     }
 }
 
 /// Up to `limit` overlapping faces of a room you are not in, then a "+N" chip.
+/// Not a control: a tap on them goes to the card or strip beneath.
 private struct RoomFaces: View {
     let people: [VoiceSpectator]
     let limit: Int
@@ -2569,20 +2692,27 @@ private struct RoomFaces: View {
                     Avatar(name: person.name, size: size, avatarID: person.avatarId, picture: person.avatarPicture)
                 }
             }
-            if people.count > limit {
-                Text("+\(people.count - limit)").font(CaperTheme.font(10, weight: .bold).monospacedDigit())
-                    .foregroundStyle(CaperTheme.text)
-                    .padding(.horizontal, 6).frame(height: 20)
-                    .background(Capsule().fill(CaperTheme.raised))
-                    .overlay(Capsule().strokeBorder(CaperTheme.border))
-            }
+            if people.count > limit { MoreChip(count: people.count - limit) }
         }
         .fixedSize()
+        .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 }
 
-/// Live now's Join (eggshell fill, blackout label) and Switch (neutral surface).
+/// The "+N" chip after a short stack of faces.
+private struct MoreChip: View {
+    let count: Int
+    var body: some View {
+        Text("+\(count)").font(CaperTheme.font(10, weight: .bold).monospacedDigit())
+            .foregroundStyle(CaperTheme.text)
+            .padding(.horizontal, 6).frame(height: 20)
+            .background(Capsule().fill(CaperTheme.raised))
+            .overlay(Capsule().strokeBorder(CaperTheme.border))
+    }
+}
+
+/// A live room's Join (eggshell fill, blackout label) and Switch (neutral surface).
 /// Joining…/Leaving… keep their fill while disabled; an unavailable one steps
 /// back to neutral chrome, with its tooltip. Touch prepares the join on press.
 private struct LiveJoinButtonStyle: ButtonStyle {
@@ -2629,9 +2759,12 @@ private struct LiveJoinLabel: View {
 }
 
 /// Phones (narrow layouts): a slim strip directly under the chat header. In a
-/// call it shows the call's channel, two faces, who is speaking, the time and
-/// Mute; the rest opens Browse, where the call's card is. Otherwise a channel
-/// with people in voice offers Join, which never changes the chat being read.
+/// call it shows the call's channel, the card's people in the card's order (up
+/// to five faces, else four and "+N"), Connecting… or Reconnecting… until
+/// connected, the time and Mute; the rest opens Browse, where the call's card
+/// is. No name comes and goes with who speaks: their face's ring shows it.
+/// Otherwise a channel with people in voice offers Join, which never changes
+/// the chat being read.
 private struct PhoneVoiceStrip: View {
     @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
@@ -2664,21 +2797,26 @@ private struct PhoneVoiceStrip: View {
 
     private func callStrip(_ context: VoiceContext) -> some View {
         let people = callPeople(model)
-        let speaker = people.first(where: \.speaking)
+        let faces = LiveNow.stripFold(people)
+        let pending = callPending(voice)
         let startedAt = callStartedAt(model)
         return HStack(spacing: 6) {
             Button(action: SwipeTapGuard.unlessSwiping(browse)) {
                 HStack(spacing: 8) {
                     CaperIcon(name: "audio-lines", size: 16)
-                        .foregroundStyle(voice.phase == .connected ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
+                        .foregroundStyle(pending == nil ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
                     Text("#\(context.channelName)").font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text)
                         .lineLimit(1)
-                    HStack(spacing: 8) {
-                        ForEach(people.prefix(2)) { VoiceFace(person: $0, size: 24, badges: false) }
+                    HStack(spacing: 4) {
+                        HStack(spacing: -6) {
+                            ForEach(faces.shown) { VoiceFace(person: $0, size: 24, badges: false) }
+                        }
+                        if !faces.folded.isEmpty { MoreChip(count: faces.folded.count) }
                     }
-                    if let speaker {
-                        Text(speaker.name).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                            .layoutPriority(-1)
+                    .fixedSize()
+                    if let pending {
+                        Text(pending).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(LiveNowPalette.connecting)
+                            .lineLimit(1).fixedSize()
                     }
                     Spacer(minLength: 4)
                     if let startedAt { VoiceTimer(startedAt: startedAt) }
@@ -2688,7 +2826,7 @@ private struct PhoneVoiceStrip: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Voice in #\(context.channelName)")
-            .accessibilityValue(speaker.map { "\($0.name) is speaking" } ?? LiveNow.people(people.count))
+            .accessibilityValue([pending, LiveNow.people(people.count)].compactMap { $0 }.joined(separator: ", "))
             .accessibilityHint("Opens Browse, where your call is")
             .accessibilityIdentifier("voice-strip-open")
             CallMuteButton(voice: voice, identifier: "voice-strip-mute")
@@ -2999,7 +3137,7 @@ private struct AccountBar: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            // Your call lives in Live now, above the channels; its errors stay here.
+            // Your call lives in its channel's card in the list; its errors stay here.
             if let error = voice.error {
                 HStack(alignment: .top, spacing: 8) {
                     // At least the dismiss button's height, so one line sits centred on its X.
@@ -3467,7 +3605,12 @@ private struct ChatView: View {
     private func channelRow(_ message: ChatMessage, grouping: MessageGrouping.Layout) -> some View {
         MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactorContext, mentionCards: mentionCards,
                    grouped: grouping.grouped.contains(message.id), continued: grouping.continued.contains(message.id),
-                   requestBlock: { blockTarget = BlockTarget(author: $0) }) {
+                   requestBlock: { blockTarget = BlockTarget(author: $0) },
+                   addReaction: {
+                       guard chat.canInteract, reactorsTarget == nil, !SwipeTapGuard.swiping else { return }
+                       showingEmojiPicker = true
+                       reactionMessage = message
+                   }) {
             // Holding a chip opens who reacted, not message actions; a swipe
             // that paused before moving opens neither.
             guard reactorsTarget == nil, !SwipeTapGuard.swiping else { return }
@@ -3480,7 +3623,7 @@ private struct ChatView: View {
         if conversation.blocked || model.blockedIDs.contains(conversation.peer.id) {
             Button("Unblock @\(conversation.peer.username)") { unblock(conversation.peer.id) }
                 .accessibilityIdentifier("dm-unblock")
-        } else {
+        } else if conversation.peer.canBlock {
             Button("Block @\(conversation.peer.username)…", role: .destructive) { blockTarget = BlockTarget(peer: conversation.peer) }
                 .accessibilityIdentifier("dm-block")
         }
@@ -3639,8 +3782,8 @@ private struct ChatView: View {
                         .lineLimit(1).fixedSize()
                         .accessibilityIdentifier("chat-connection-status")
                 }
-                // Voice is not in the header: Live now holds your call and the
-                // rooms to join, and phones add a strip beneath the header.
+                // Voice is not in the header: the channel list's live cards hold
+                // your call and the rooms to join, and phones add a strip beneath it.
                 if !narrow {
                     Button { showingPins = true } label: { CaperIcon(name: "pin", size: 20) }
                         .buttonStyle(SidebarIconButton()).help("Pins").accessibilityLabel("Pins")
@@ -3700,7 +3843,8 @@ private struct ChatView: View {
                     let firstID = channelMessages.first?.id
                     // The channel's own pending message; a thread reply's shows in the thread.
                     let pending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == nil ? $0 : nil }
-                    let grouping = MessageGrouping.layout(entries, inThread: false, pending: pending, author: chat.currentAuthor)
+                    let newMessagesID = model.channelNewMessagesDividerID()
+                    let grouping = MessageGrouping.layout(entries, inThread: false, pending: pending, author: chat.currentAuthor, breakBeforeID: newMessagesID)
                     // Before any row is built, so rows see this render's arrivals.
                     let _ = arrivals.observe("channel", key: chat.channelID ?? "",
                                              ids: channelMessages.map(\.clientMessageId) + (pending.map { [$0.id] } ?? []),
@@ -3728,7 +3872,18 @@ private struct ChatView: View {
                                         ChatDateDivider(createdAt: entry.firstCreatedAt)
                                     }
                                     switch entry {
-                                    case let .message(message): channelRow(message, grouping: grouping)
+                                    case let .message(message):
+                                        if message.id == newMessagesID {
+                                            HStack(spacing: 8) {
+                                                Rectangle().frame(height: 1)
+                                                Text("New messages").font(CaperTheme.font(11, weight: .medium)).fixedSize()
+                                                Rectangle().frame(height: 1)
+                                            }
+                                            .foregroundStyle(CaperTheme.terracotta)
+                                            .padding(.horizontal, 16).padding(.vertical, 8)
+                                            .accessibilityIdentifier("channel-new-messages")
+                                        }
+                                        channelRow(message, grouping: grouping)
                                     case let .blocked(run):
                                         VStack(spacing: 0) {
                                             BlockedRunRow(run: run) { revealedBlocked = BlockedMessages.toggling(run, in: revealedBlocked) }
@@ -4180,6 +4335,52 @@ private struct ThreadBroadcastToggleStyle: ToggleStyle {
     }
 }
 
+#if os(iOS)
+/// Deliberately not a drawer: only a completed rightward drag navigates.
+/// Gesture state resets on cancellation; vertical/left starts stay rejected.
+private struct ThreadBackSwipe: ViewModifier {
+    let enabled: Bool
+    let close: () -> Void
+    @GestureState private var direction = 0
+
+    /// Leave text selection, controls and nested horizontal scrollers alone.
+    private func reservedStart(_ point: CGPoint) -> Bool {
+        let window = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first(where: \.isKeyWindow)
+        var view = window?.hitTest(point, with: nil)
+        while let current = view {
+            if current is UIControl || current is UITextView { return true }
+            if let scroll = current as? UIScrollView,
+               scroll.contentSize.width > scroll.bounds.width + 1 { return true }
+            view = current.superview
+        }
+        return false
+    }
+
+    func body(content: Content) -> some View {
+        content.contentShape(Rectangle()).simultaneousGesture(
+            DragGesture(minimumDistance: 16, coordinateSpace: .global)
+                .updating($direction) { value, direction, _ in
+                    if direction == 0 {
+                        direction = enabled && !reservedStart(value.startLocation) &&
+                            value.translation.width > abs(value.translation.height) * 1.5 ? 1 : -1
+                    }
+                }
+                .onChanged { _ in
+                    if direction == 1 { SwipeTapGuard.follow() }
+                }
+                .onEnded { value in
+                    guard direction == 1 else { return }
+                    SwipeTapGuard.release()
+                    guard enabled, value.translation.width >= 72,
+                          value.translation.width > abs(value.translation.height) * 1.5 else { return }
+                    close()
+                }
+        )
+    }
+}
+#endif
+
 private struct NativeThreadView: View {
     @Bindable var chat: ChatModel
     /// For the mention card: names from loaded members/people/DMs, and Message.
@@ -4234,7 +4435,11 @@ private struct NativeThreadView: View {
     private func threadRow(_ message: ChatMessage, grouping: MessageGrouping.Layout) -> some View {
         MessageRow(message: message, chat: chat, currentUserID: viewerID, reactors: reactors, mentionCards: mentionCards, inThread: true,
                    grouped: grouping.grouped.contains(message.id), continued: grouping.continued.contains(message.id),
-                   requestBlock: { blockTarget = BlockTarget(author: $0) }) { reactionMessage = message }
+                   requestBlock: { blockTarget = BlockTarget(author: $0) },
+                   addReaction: {
+                       showingEmojiPicker = true
+                       reactionMessage = message
+                   }) { showingEmojiPicker = false; reactionMessage = message }
             .modifier(Entrance.message(arrivals.claim(message.clientMessageId)))
             .onGeometryChange(for: String?.self) { geometry in
                 // A later own or collapsed blocked reply must not hide a read acknowledgement.
@@ -4290,22 +4495,36 @@ private struct NativeThreadView: View {
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
         }
     }
+    #if os(iOS)
+    private var canSwipeBack: Bool {
+        reactionMessage == nil && !showingEmojiPicker && reactorsTarget == nil && mentionCard == nil &&
+        blockTarget == nil && forwardMessage == nil && !fileDropTargeted
+    }
+    #endif
     var body: some View {
         VStack(spacing: 0) {
             HStack {
+                #if os(iOS)
+                Button(action: SwipeTapGuard.unlessSwiping { chat.closeThread() }) {
+                    CaperIcon(name: "arrow-left", size: 20)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .accessibilityLabel(direct ? "Back to conversation" : "Back to channel")
+                #endif
                 VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text(direct ? "with \(chat.channelName)" : "in #\(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1) }
                 Spacer()
+                #if os(macOS)
                 Button { chat.closeThread() } label: {
                     Text(direct ? "Back to conversation" : "Back to channel")
-                        #if os(iOS)
-                        .frame(minHeight: 44)
-                        #else
                         .frame(minHeight: 28)
-                        #endif
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).font(CaperTheme.font(12)).modifier(ControlHover())
+                #endif
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                #if os(iOS)
+                .modifier(ThreadBackSwipe(enabled: canSwipeBack, close: { chat.closeThread() }))
+                #endif
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
                     // Read once per render, never per scroll frame in the geometry below.
@@ -4364,6 +4583,7 @@ private struct NativeThreadView: View {
                 }
                 #if os(iOS)
                 .scrollDismissesKeyboard(.immediately)
+                .modifier(ThreadBackSwipe(enabled: canSwipeBack, close: { chat.closeThread() }))
                 #endif
                 #if os(macOS)
                 .accessibilityIdentifier("thread-timeline")
@@ -4506,7 +4726,7 @@ private struct NativeThreadView: View {
             #if os(iOS)
             .sheet(item: $forwardMessage) { message in ForwardPickerView(chat: chat, message: message) }
             #endif
-            .onChange(of: reactionMessage?.id) { _, _ in showingEmojiPicker = false }
+            .onChange(of: reactionMessage?.id) { _, id in if id == nil { showingEmojiPicker = false } }
             .onChange(of: chat.editingContext) { _, _ in reactionMessage = nil; reactorsTarget = nil; forwardMessage = nil }
             .modifier(BlockConfirmation(target: $blockTarget) { await chat.block($0) })
             #if os(iOS)
@@ -4646,6 +4866,8 @@ private struct MessageRow: View {
     var forwardOpened: (() -> Void)? = nil
     /// Pins opt in; child links and controls keep their own interactions.
     var openMessage: (() -> Void)? = nil
+    /// The row shortcut bypasses iOS's long-press message actions.
+    let addReaction: () -> Void
     let showReactionPicker: () -> Void
     private var canBlockAuthor: Bool {
         requestBlock != nil && BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
@@ -4754,7 +4976,7 @@ private struct MessageRow: View {
                     guard !SwipeTapGuard.swiping else { return }
                     Task { if await chat.onOpenForward?(message) == true { forwardOpened?() } }
                 }
-                ReactionRow(message: message, chat: chat, reactors: reactors)
+                ReactionRow(message: message, chat: chat, reactors: reactors, showReactionPicker: addReaction)
                 if let error = chat.pinErrors[message.id] {
                     HStack(spacing: 8) {
                         Text(error)
@@ -5321,12 +5543,18 @@ private struct MentionCardView: View {
                     }
                     Spacer(minLength: 0)
                     HStack(spacing: 2) {
-                        if !person.isSelf {
+                        if !person.isSelf && (blocked || person.canBlock || (person.username != nil && !ownedSpaces.isEmpty)) {
                             Menu {
-                                Button(blocked ? "Unblock" : "Block") {
-                                    if blocked { Task { await unblock() } }
-                                    else { blockRequested = true; close() }
-                                }.accessibilityIdentifier("mention-card-block")
+                                if !blocked, person.username != nil, !ownedSpaces.isEmpty {
+                                    Button("Invite to space") { choosingSpace.toggle() }
+                                        .accessibilityIdentifier("mention-card-invite")
+                                }
+                                if blocked || person.canBlock {
+                                    Button(blocked ? "Unblock" : "Block") {
+                                        if blocked { Task { await unblock() } }
+                                        else { blockRequested = true; close() }
+                                    }.accessibilityIdentifier("mention-card-block")
+                                }
                             } label: {
                                 // The label must stay an accessibility element: with only
                                 // CaperIcon's hidden image, the menu leaves the tree entirely.
@@ -5363,11 +5591,6 @@ private struct MentionCardView: View {
                             .accessibilityIdentifier("mention-card-edit-profile")
                     }
                 } else {
-                    if !blocked, person.username != nil, !ownedSpaces.isEmpty {
-                        Button("Invite to space") { choosingSpace.toggle() }
-                            .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil || draft.sending)
-                            .accessibilityIdentifier("mention-card-invite")
-                    }
                     if choosingSpace, !blocked, person.username != nil {
                         VStack(spacing: 6) {
                             ForEach(ownedSpaces) { space in
@@ -5470,7 +5693,7 @@ private struct MentionCardView: View {
             draft.presentingDialog = false
             if blockRequested {
                 requestBlock(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId,
-                                         avatarAsset: person.picture?.asset, avatarUrl: person.picture?.url.absoluteString))
+                                         avatarAsset: person.picture?.asset, avatarUrl: person.picture?.url.absoluteString, admin: person.admin, team: person.team))
             }
         }
         // Contain, so this identifier does not replace each child's own.
@@ -5489,16 +5712,45 @@ private struct MentionCardView: View {
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             }
             if !draft.files.isEmpty {
+                let failed = draft.files.filter { $0.uploadError != nil }.count
+                if failed > 0 {
+                    Text(failed == 1 ? "1 file failed to upload. Send will retry it, or you can remove it." : "\(failed) files failed to upload. Send will retry them, or you can remove them.")
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(CaperTheme.terracotta.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                }
                 StagedFileLayout() {
                     ForEach(draft.files) { file in
                         StagedFileChip(id: file.id, name: file.local.name,
                                        kind: AttachmentKind.local(contentType: file.local.contentType),
                                        localURL: file.local.url,
-                                       status: AttachmentPolicy.formatBytes(file.local.size),
-                                       busyLabel: draft.sending ? "Sending…" : nil,
+                                       status: file.uploadError ?? AttachmentPolicy.formatBytes(file.local.size),
+                                       failed: file.uploadError != nil,
+                                       busyLabel: file.progress != nil ? "Uploading…" : nil,
+                                       progress: file.progress,
                                        removable: draft.editable,
+                                       spoiler: file.spoiler,
                                        preview: { draft.presentingDialog = true; previewFile = file.local.url },
                                        remove: { draft.remove(id: file.id) })
+                            .overlay(alignment: .topLeading) {
+                                Button { draft.toggleSpoiler(id: file.id) } label: {
+                                    Image(systemName: file.spoiler ? "eye.slash.fill" : "eye")
+                                        .font(.system(size: 14))
+                                        .frame(width: 24, height: 24)
+                                        .background(.black.opacity(0.8), in: Circle())
+                                        .padding(4)
+                                        #if os(iOS)
+                                        .frame(width: 44, height: 44, alignment: .topLeading)
+                                        #endif
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.white)
+                                .disabled(!draft.editable)
+                                .accessibilityLabel(file.spoiler ? "Remove spoiler from \(file.local.name)" : "Mark \(file.local.name) as spoiler")
+                                .accessibilityValue(file.spoiler ? "Spoiler" : "Not a spoiler")
+                                .help(file.spoiler ? "Remove spoiler" : "Mark as spoiler")
+                            }
                     }
                 }.accessibilityLabel("Files to send")
             }
@@ -5659,11 +5911,29 @@ private struct ReactionRow: View {
     let message: ChatMessage
     @Bindable var chat: ChatModel
     let reactors: ReactorContext
+    let showReactionPicker: () -> Void
 
     var body: some View {
         ReactionFlowLayout(spacing: 6) {
             ForEach(message.reactions ?? []) { reaction in
                 ReactionChip(message: message, reaction: reaction, chat: chat, reactors: reactors)
+            }
+            if !(message.reactions ?? []).isEmpty && chat.canInteract {
+                Button {
+                    guard !SwipeTapGuard.swiping else { return }
+                    showReactionPicker()
+                } label: {
+                    CaperIcon(name: "smile-plus", size: 18)
+                        .foregroundStyle(CaperTheme.muted)
+                        .frame(width: 28, height: 28)
+                        #if os(iOS)
+                        .frame(minWidth: 44, minHeight: 44)
+                        #endif
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).modifier(ControlHover())
+                .help("Add reaction").accessibilityLabel("Add reaction")
+                .accessibilityIdentifier("reaction-row-add-\(message.id)")
             }
         }
         // Preserve individual reaction-chip identifiers inside the flow layout.
@@ -6314,7 +6584,10 @@ private struct PinnedMessagesView: View {
                                 MessageRow(message: message, chat: chat, currentUserID: viewerID,
                                     reactors: ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { id, emoji in reactorsTarget = ReactorsTarget(messageID: id, emoji: emoji) },
                                     mentionCards: mentionCards, inThread: true, inPins: true, forwardOpened: close,
-                                    openMessage: { goToMessage(message) }) { actionTarget = message }
+                                    openMessage: { goToMessage(message) },
+                                    addReaction: { showingEmojiPicker = true; actionTarget = message }) {
+                                        showingEmojiPicker = false; actionTarget = message
+                                    }
                                 HStack {
                                     Spacer()
                                     Button { goToMessage(message) } label: {
@@ -6864,13 +7137,24 @@ private struct ProfileView: View {
 public struct DesktopUpdateControls {
     public let isChecking: Bool
     public let canApply: Bool
+    public let lastSuccessfulCheck: Date?
+    public let installedVersion: String
+    public let sourceRevision: String?
+    public var commitURL: URL? {
+        sourceRevision.flatMap { WhatsNewSnapshot.validRevision($0) ? URL(string: "https://github.com/joswayski/caper/commit/\($0)") : nil }
+    }
     public let check: (@MainActor () -> Void)?
     public let review: (@MainActor () -> Void)?
 
     public init(isChecking: Bool = false, canApply: Bool = false,
+                lastSuccessfulCheck: Date? = nil, installedVersion: String = "Installed: Development build",
+                sourceRevision: String? = nil,
                 check: (@MainActor () -> Void)? = nil, review: (@MainActor () -> Void)? = nil) {
         self.isChecking = isChecking
         self.canApply = canApply
+        self.lastSuccessfulCheck = lastSuccessfulCheck
+        self.installedVersion = installedVersion
+        self.sourceRevision = sourceRevision
         self.check = check
         self.review = review
     }
@@ -6933,7 +7217,20 @@ extension EnvironmentValues {
                 Rectangle().fill(CaperTheme.border).frame(height: 1)
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Updates").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                    Button(updates.isChecking ? "Checking…" : "Check for updates") { updates.check?() }
+                    HStack(spacing: 4) {
+                        Text(updates.installedVersion).foregroundStyle(CaperTheme.muted)
+                        if let revision = updates.sourceRevision, let url = updates.commitURL {
+                            Text("·").foregroundStyle(CaperTheme.muted)
+                            Link(String(revision.prefix(7)), destination: url)
+                        }
+                    }.font(CaperTheme.font(12))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(updates.isChecking ? "Checking for updates…" : updates.review != nil ? "An update is available." : updates.lastSuccessfulCheck != nil ? "Caper is up to date." : "Not checked yet.")
+                        TimelineView(.periodic(from: .now, by: 10)) { context in
+                            Text(lastCheckedText(now: context.date))
+                        }
+                    }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    Button("Check for updates") { updates.check?() }
                         .disabled(updates.check == nil || updates.isChecking)
                         .accessibilityIdentifier("check-for-updates")
                     Text(updates.check == nil
@@ -6958,6 +7255,14 @@ extension EnvironmentValues {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in loginItem.refresh() }
     }
+
+    private func lastCheckedText(now: Date) -> String {
+        guard let date = updates.lastSuccessfulCheck else { return "Last checked: Never" }
+        if now.timeIntervalSince(date) < 10 { return "Last checked: a few seconds ago" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return "Last checked: \(formatter.localizedString(for: date, relativeTo: now))"
+    }
 }
 #endif
 
@@ -6977,6 +7282,7 @@ private struct WorkspaceSheetView: View {
             case .createChannel: ChannelEditor(model: model, channel: nil, close: close)
             case .newDirectMessage: NewDirectMessageSheet(model: model, close: close)
             case .manageSpace: SpaceEditor(model: model, close: close, managing: true)
+            case .invitePeople: SpaceEditor(model: model, close: close, managing: true, inviteOnly: true)
             case .manageChannel(let channel): ChannelEditor(model: model, channel: channel, close: close)
             case .invitation(let space): InvitationSheet(model: model, invitation: space, close: close)
             case .channelInvitation(let invitation): ChannelInvitationSheet(model: model, invitation: invitation, close: close)
@@ -7040,8 +7346,7 @@ private struct FeedbackRow: View {
     let rowHeight: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        // The archived list has no waiting count.
-        let waiting = model.showingArchivedFeedback ? 0 : FeedbackInbox.waitingCount(model.feedbackReports)
+        let waiting = model.feedbackWaiting
         Button {
             guard !SwipeTapGuard.swiping else { return }
             // Phones push the inbox; sidebars expand it in place.
@@ -7057,8 +7362,7 @@ private struct FeedbackRow: View {
                 if waiting > 0 {
                     Text("\(waiting)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.text)
                         .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 18)
-                        .background(CaperTheme.raised, in: Capsule())
-                        .overlay(Capsule().stroke(CaperTheme.border))
+                        .background(CaperTheme.terracotta, in: Capsule())
                 }
             }.font(CaperTheme.font(13, weight: .medium))
                 .foregroundStyle(model.visit != nil ? CaperTheme.text : CaperTheme.muted)
@@ -7066,7 +7370,7 @@ private struct FeedbackRow: View {
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).modifier(ControlHover())
             .accessibilityLabel(FeedbackInbox.title)
-            .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
+            .accessibilityValue(waiting > 0 ? "\(waiting) feedback conversations waiting for a reply" : "")
             .accessibilityHint(narrow ? "Opens the feedback inbox" : model.showingFeedback ? "Collapses the inbox" : "Expands the inbox")
             .accessibilityIdentifier("feedback-inbox")
     }
@@ -7349,8 +7653,10 @@ private struct MessageRequestBar: View {
                 Button(pending == "decline" ? "Declining…" : "Decline") { run("decline") { try await model.declineRequest(conversation) } }
                     .buttonStyle(CaperSecondaryButton(minHeight: 42))
                     .accessibilityIdentifier("message-request-decline")
-                Button("Block", role: .destructive, action: block).buttonStyle(CaperSecondaryButton(minHeight: 42))
-                    .accessibilityIdentifier("message-request-block")
+                if conversation.peer.canBlock {
+                    Button("Block", role: .destructive, action: block).buttonStyle(CaperSecondaryButton(minHeight: 42))
+                        .accessibilityIdentifier("message-request-block")
+                }
                 Spacer(minLength: 0)
             }.disabled(pending != nil)
             if let error {
@@ -8205,6 +8511,7 @@ private struct InvitePreviewCard: View {
                 HStack(spacing: 6) {
                     Avatar(name: preview.inviter.displayName, size: 18, avatarID: preview.inviter.avatarId, picture: preview.inviter.avatarPicture)
                     Text("Invited by \(preview.inviter.displayName)").lineLimit(1)
+                    if preview.inviter.admin == true { AdminBadge().fixedSize() }
                 }
                 Text(InviteLinks.memberCount(preview.memberCount))
                 if let channel = preview.channel { Text("Opens in #\(channel.name)").lineLimit(1) }
@@ -8219,13 +8526,155 @@ private struct InvitePreviewCard: View {
     }
 }
 
+/// Opening prepares (or reuses) a link, but never touches the clipboard.
+private struct DefaultInviteLinkSection: View {
+    @Bindable var model: AppModel
+    @State private var link: InviteLink?
+    @State private var pending = false
+    @State private var deactivated = false
+    @State private var copied = false
+    @State private var error: String?
+    @State private var settingsRevision = 0
+    @State private var settingsExpanded = false
+    @State private var customPending = false
+    @State private var confirmation: InviteLink?
+    @State private var confirmingRegenerate = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Invite link").font(CaperTheme.font(14, weight: .bold))
+            Text("Anyone with this link can join. Up to 100 total joins, valid for 30 days from creation.")
+                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            if let link {
+                Text(model.inviteLinkURL(link.code)).font(.system(size: 12, design: .monospaced))
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                TimelineView(.everyMinute) { context in
+                    Text(InviteLinks.meta(for: link, now: context.date)).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                }
+                HStack {
+                    Button(copied ? "Copied" : "Copy link") { copy(link) }.buttonStyle(CaperPrimaryButton())
+                        .accessibilityIdentifier("default-invite-link-copy")
+                    Menu {
+                        Button("Regenerate link") { confirmingRegenerate = true; confirmation = link }
+                            .accessibilityIdentifier("default-invite-link-regenerate")
+                        Text("The previous link stops working. The new link allows 100 joins for 30 days.")
+                        Button("Custom links") { settingsExpanded = true }
+                        Button("Deactivate link", role: .destructive) { confirmingRegenerate = false; confirmation = link }
+                            .accessibilityIdentifier("default-invite-link-deactivate")
+                    } label: {
+                        CaperIcon(name: "ellipsis", size: 16)
+                            .foregroundStyle(CaperTheme.muted)
+                            .frame(width: 32, height: 32).contentShape(Rectangle())
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("More invite options")
+                    }
+                    .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+                    .fixedSize().accessibilityLabel("More invite options")
+                    .accessibilityIdentifier("default-invite-link-options")
+                }.disabled(pending || customPending)
+            } else if pending {
+                ProgressView("Preparing invite link…")
+            } else {
+                if deactivated {
+                    Text("This link is deactivated. Opening Invite people again prepares a new link, or you can create another now.")
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                }
+                Button(deactivated ? "Create another link" : "Prepare link") { Task { await prepare() } }
+                    .buttonStyle(CaperPrimaryButton()).accessibilityIdentifier("default-invite-link-create")
+                    .disabled(customPending)
+            }
+            if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
+            if settingsExpanded || link == nil {
+                DisclosureGroup("Custom links", isExpanded: $settingsExpanded) {
+                    Text("Create a separate custom link. These settings do not edit existing links.")
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    InviteLinksSection(model: model, mutationPending: $customPending, onRevoked: { code in
+                        if link?.code == code { link = nil; copied = false; deactivated = true }
+                    }).id(settingsRevision).disabled(pending)
+                }.font(CaperTheme.font(12))
+            }
+        }
+        .task(id: model.detail?.space.id) {
+            link = nil; deactivated = false
+            await prepare()
+        }
+        .alert(confirmingRegenerate ? "Regenerate link?" : "Deactivate link?", isPresented: Binding(
+            get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }
+        ), presenting: confirmation) { target in
+            Button("Cancel", role: .cancel) { confirmation = nil }
+            Button(confirmingRegenerate ? "Regenerate link" : "Deactivate link", role: .destructive) {
+                confirmation = nil
+                if confirmingRegenerate { regenerate(target) } else { deactivate(target) }
+            }
+        } message: { _ in
+            Text("The previous URL stops admitting new members." +
+                 (confirmingRegenerate ? " The new link resets to 30 days and 100 joins." : ""))
+        }
+    }
+
+    private func prepare() async {
+        guard !pending, !customPending else { return }
+        pending = true; error = nil; copied = false
+        defer { pending = false }
+        do {
+            link = try await model.defaultInviteLink()
+            deactivated = false; settingsRevision += 1
+        }
+        catch is CancellationError {}
+        catch { self.error = FriendlyError.message(for: error) }
+    }
+
+    private func regenerate(_ current: InviteLink) {
+        guard !pending, !customPending else { return }
+        pending = true; error = nil
+        Task {
+            defer { pending = false }
+            do {
+                let replacement = try await model.regenerateInviteLink(current)
+                guard link?.code == current.code else { return }
+                link = replacement
+                copied = false; deactivated = false; settingsRevision += 1
+            } catch is CancellationError {}
+            catch { self.error = FriendlyError.message(for: error) }
+        }
+    }
+
+    private func deactivate(_ current: InviteLink) {
+        guard !pending, !customPending else { return }
+        pending = true; error = nil
+        Task {
+            do {
+                try await model.revokeInviteLink(current)
+                link = nil; copied = false; deactivated = true; settingsRevision += 1
+            } catch let failure as APIError where failure.status == 404 {
+                link = nil; copied = false; deactivated = true; settingsRevision += 1
+            } catch is CancellationError {}
+            catch { self.error = FriendlyError.message(for: error) }
+            pending = false
+        }
+    }
+
+    private func copy(_ current: InviteLink) {
+        let url = model.inviteLinkURL(current.code)
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        guard NSPasteboard.general.setString(url, forType: .string) else { error = "Copy failed; try again."; return }
+        #else
+        UIPasteboard.general.string = url
+        #endif
+        copied = true
+    }
+}
+
 /// Manage space's "Invite link": owners create, copy and revoke shareable links.
 private struct InviteLinksSection: View {
     @Bindable var model: AppModel
+    @Binding var mutationPending: Bool
+    var onRevoked: ((String) -> Void)? = nil
     @State private var expiryNumber = InviteLinks.defaultExpiryNumber
     @State private var expiryUnit = InviteLinks.defaultExpiryUnit
     /// Empty is No limit.
-    @State private var maxUses = ""
+    @State private var maxUses = InviteLinks.defaultMaxUses
     @State private var expiryError: String?
     @State private var maxUsesError: String?
     @State private var channelID: String?
@@ -8237,28 +8686,31 @@ private struct InviteLinksSection: View {
     /// The link whose Copy button reads "Copied".
     @State private var copied: String?
     @State private var copiedReset: Task<Void, Never>?
+    @State private var revokeTarget: InviteLink?
 
     private var publicChannels: [Channel] { (model.detail?.channels ?? []).filter { !$0.private } }
     private var unitOptions: [InviteOption<InviteExpiryUnit>] {
         InviteExpiryUnit.allCases.map { InviteOption(label: $0.label, value: $0) }
     }
     private var channelOptions: [InviteOption<String?>] {
-        [InviteOption<String?>(label: "Default channel", value: nil)]
-            + publicChannels.map { InviteOption<String?>(label: "#\($0.name)", value: $0.id) }
+        publicChannels.isEmpty
+            ? [InviteOption<String?>(label: "No public channels", value: nil)]
+            : publicChannels.map { InviteOption<String?>(label: "#\($0.name)", value: $0.id) }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Invite link").font(CaperTheme.font(14, weight: .bold))
+                Text("Create a custom link").font(CaperTheme.font(14, weight: .bold))
                 Text("Anyone with the link can join this space.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                Text("Create a separate link. Existing links keep their settings.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             }
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 10) { pickers }
                 VStack(alignment: .leading, spacing: 10) { pickers }
             }
             Button(pending == "create" ? "Creating…" : "Create link", action: create)
-                .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil)
+                .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil || loading)
                 .accessibilityIdentifier("invite-link-create")
             if let error {
                 Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
@@ -8268,17 +8720,25 @@ private struct InviteLinksSection: View {
             ForEach(links) { link in row(link) }
         }
         .onAppear {
-            // Opens in the channel being viewed when anyone can see it.
-            if let channel = model.selectedChannel, !channel.private { channelID = channel.id }
+            channelID = publicChannels.first?.id
         }
         .task(id: model.detail?.space.id) { await load() }
         .onDisappear { copiedReset?.cancel() }
+        .alert("Revoke link?", isPresented: Binding(
+            get: { revokeTarget != nil }, set: { if !$0 { revokeTarget = nil } }
+        ), presenting: revokeTarget) { target in
+            Button("Cancel", role: .cancel) { revokeTarget = nil }
+            Button("Revoke", role: .destructive) { revokeTarget = nil; revoke(target) }
+        } message: { _ in
+            Text("The previous URL stops admitting new members.")
+        }
     }
 
     @ViewBuilder private var pickers: some View {
         expiryField
         maxUsesField
         InviteOptionPicker(title: "Opens in", selection: $channelID, options: channelOptions)
+            .disabled(pending != nil || publicChannels.isEmpty)
     }
 
     /// A whole number and its unit; Never hides the number.
@@ -8287,7 +8747,7 @@ private struct InviteLinksSection: View {
             Text("Expire after").font(CaperTheme.font(12, weight: .bold))
             HStack(spacing: 8) {
                 if expiryUnit != .never {
-                    numberField("7", text: Binding(get: { expiryNumber }, set: { expiryNumber = $0; expiryError = nil }))
+                    numberField("30", text: Binding(get: { expiryNumber }, set: { expiryNumber = $0; expiryError = nil }))
                         .frame(width: 76)
                         .accessibilityLabel("Expire after")
                         .accessibilityIdentifier("invite-link-expiry-number")
@@ -8337,8 +8797,8 @@ private struct InviteLinksSection: View {
             Spacer(minLength: 8)
             Button(copied == link.code ? "Copied" : "Copy") { copy(link) }.buttonStyle(CaperSecondaryButton())
                 .accessibilityLabel(copied == link.code ? "Copied" : "Copy invite link")
-            Button(pending == link.code ? "Revoking…" : "Revoke", role: .destructive) { revoke(link) }
-                .buttonStyle(CaperSecondaryButton()).disabled(pending != nil)
+            Button(pending == link.code ? "Revoking…" : "Revoke", role: .destructive) { revokeTarget = link }
+                .buttonStyle(CaperSecondaryButton()).disabled(pending != nil || loading)
         }
         .padding(10).background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
@@ -8346,25 +8806,27 @@ private struct InviteLinksSection: View {
     }
 
     private func load() async {
-        loading = true; error = nil
+        guard !loading, pending == nil else { return }
+        loading = true; mutationPending = true; error = nil
+        defer { loading = false; mutationPending = false }
         do { links = try await model.loadInviteLinks() }
         catch is CancellationError {}
         catch { self.error = FriendlyError.message(for: error) }
-        loading = false
     }
 
     private func create() {
-        guard pending == nil else { return }
+        guard pending == nil, !loading else { return }
         // Out-of-range options show beside their fields and aren't sent.
         let expiry = InviteLinks.expirySeconds(expiryNumber, unit: expiryUnit)
         let uses = InviteLinks.maxUses(maxUses)
         if case .failure(let failure) = expiry { expiryError = failure.message } else { expiryError = nil }
         if case .failure(let failure) = uses { maxUsesError = failure.message } else { maxUsesError = nil }
         guard case .success(let maxAge) = expiry, case .success(let useLimit) = uses else { return }
-        // A channel made private since it was picked falls back to the default.
-        let channel = channelID.flatMap { id in publicChannels.contains { $0.id == id } ? id : nil }
-        pending = "create"; error = nil
+        // A channel made private since it was picked falls back to the oldest public channel.
+        let channel = channelID.flatMap { id in publicChannels.contains { $0.id == id } ? id : nil } ?? publicChannels.first?.id
+        pending = "create"; mutationPending = true; error = nil
         Task {
+            defer { mutationPending = false }
             do {
                 let link = try await model.createInviteLink(channelID: channel, maxAge: maxAge, maxUses: useLimit)
                 links.removeAll { $0.code == link.code }
@@ -8376,15 +8838,18 @@ private struct InviteLinksSection: View {
     }
 
     private func revoke(_ link: InviteLink) {
-        guard pending == nil else { return }
-        pending = link.code; error = nil
+        guard pending == nil, !loading else { return }
+        pending = link.code; mutationPending = true; error = nil
         Task {
+            defer { mutationPending = false }
             do {
                 try await model.revokeInviteLink(link)
                 links.removeAll { $0.code == link.code }
+                onRevoked?(link.code)
             } catch let failure as APIError where failure.status == 404 {
                 // Already expired, used up or revoked elsewhere.
                 links.removeAll { $0.code == link.code }
+                onRevoked?(link.code)
             } catch { self.error = FriendlyError.message(for: error) }
             pending = nil
         }
@@ -8444,6 +8909,7 @@ private struct InviteOptionPicker<Value: Hashable & Sendable>: View {
 
 private struct SpaceEditor: View {
     @Bindable var model: AppModel; let close: () -> Void; let managing: Bool
+    var inviteOnly = false
     /// Create a space only: switches to "Join with invite link".
     var joinInvite: (() -> Void)? = nil
     @State private var name = ""; @State private var username = ""; @State private var error: String?; @State private var pending = false
@@ -8467,22 +8933,36 @@ private struct SpaceEditor: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            SheetHeader(title: managing ? "Manage space" : "Create a space", detail: managing ? "Only the owner can change this space and its membership." : nil, closeDisabled: creating, close: close)
+            SheetHeader(title: inviteOnly ? "Invite people" : managing ? "Manage space" : "Create a space", detail: inviteOnly ? model.detail?.space.name : managing ? "Only the owner can change this space and its membership." : nil, closeDisabled: creating, close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    CaperField(title: "Space name", text: $name, placeholder: "Gaming nights", focus: $nameFocused)
-                        .onChange(of: name) { _, _ in error = nil }
-                    Button(pending ? (managing ? "Saving…" : "Creating…") : managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton())
-                        .disabled(pending || (!managing && model.limits != nil && !model.canCreateSpace))
-                    if !managing { createFooter }
+                    if !inviteOnly {
+                        CaperField(title: "Space name", text: $name, placeholder: "Gaming nights", focus: $nameFocused)
+                            .onChange(of: name) { _, _ in error = nil }
+                        Button(pending ? (managing ? "Saving…" : "Creating…") : managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton())
+                            .disabled(pending || (!managing && model.limits != nil && !model.canCreateSpace))
+                        if !managing { createFooter }
+                    }
                     if managing {
-                        iconSection
+                        if inviteOnly {
+                            DefaultInviteLinkSection(model: model).id(model.detail?.space.id)
+                        } else {
+                            iconSection
+                            Divider().overlay(CaperTheme.border)
+                            InviteLinksSection(model: model, mutationPending: .constant(false)).id(model.detail?.space.id)
+                        }
                         Divider().overlay(CaperTheme.border)
-                        InviteLinksSection(model: model)
-                        Divider().overlay(CaperTheme.border)
-                        Text("Members  \(model.detail?.members.count ?? 0)").font(CaperTheme.font(14, weight: .bold))
-                            .accessibilityLabel("Members \(model.detail?.members.count ?? 0)")
-                            .accessibilityIdentifier("space-members-heading")
+                        Text("Pending invitations  \(model.pendingMembers.count)").font(CaperTheme.font(14, weight: .bold))
+                        ForEach(model.pendingMembers) { member in
+                            HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)").foregroundStyle(CaperTheme.muted) }; Spacer(); Button("Cancel") { run { try await model.cancelSpaceInvitation(member) } } }.font(CaperTheme.font(12))
+                        }
+                        if !inviteOnly {
+                            Text("Members  \(model.detail?.members.count ?? 0)").font(CaperTheme.font(14, weight: .bold))
+                                .accessibilityLabel("Members \(model.detail?.members.count ?? 0)")
+                                .accessibilityIdentifier("space-members-heading")
+                        } else {
+                            Text("Invite by username").font(CaperTheme.font(14, weight: .bold))
+                        }
                         let choices = suggestions.choices(text: username, candidates: inviteCandidates, focused: memberFocused)
                         VStack(alignment: .leading, spacing: 6) {
                             // The field stays enabled during a request so it keeps focus; addMember ignores it until then.
@@ -8505,17 +8985,17 @@ private struct SpaceEditor: View {
                         }
                         if let memberStatus { Text(memberStatus).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted) }
                         if let memberError { Text(memberError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
-                        ForEach(model.detail?.members ?? []) { member in
-                            HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)\(member.owner ? " · Owner" : "")").foregroundStyle(CaperTheme.muted) }; Spacer(); if !member.owner { Button("Remove") { removing = member }.disabled(pending) } }.font(CaperTheme.font(12))
+                        if !inviteOnly {
+                            ForEach(model.detail?.members ?? []) { member in
+                                HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)\(member.owner ? " · Owner" : "")").foregroundStyle(CaperTheme.muted) }; Spacer(); if !member.owner { Button("Remove") { removing = member }.disabled(pending) } }.font(CaperTheme.font(12))
+                            }
                         }
-                        Text("Pending invitations  \(model.pendingMembers.count)").font(CaperTheme.font(14, weight: .bold))
-                        ForEach(model.pendingMembers) { member in
-                            HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)").foregroundStyle(CaperTheme.muted) }; Spacer(); Button("Cancel") { run { try await model.cancelSpaceInvitation(member) } } }.font(CaperTheme.font(12))
+                        if !inviteOnly {
+                            Divider().overlay(CaperTheme.border)
+                            Text("Delete space").font(CaperTheme.font(14, weight: .bold))
+                            Text("Delete this space and all its channels for every member.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                            Button("Delete space", role: .destructive) { CaperEffects.shared.play(.warning); confirmDelete = true }.buttonStyle(CaperSecondaryButton()).disabled(pending)
                         }
-                        Divider().overlay(CaperTheme.border)
-                        Text("Delete space").font(CaperTheme.font(14, weight: .bold))
-                        Text("Delete this space and all its channels for every member.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                        Button("Delete space", role: .destructive) { CaperEffects.shared.play(.warning); confirmDelete = true }.buttonStyle(CaperSecondaryButton()).disabled(pending)
                     }
                     if let error { Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
                 }.padding(22)

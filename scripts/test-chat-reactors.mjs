@@ -70,17 +70,30 @@ try {
     browser("open", `${web}/spaces`);
     const row = '[data-message-key="00000000-0000-4000-8000-000000000004"]';
     wait(`!!document.querySelector('${row} .chat-reaction') && !document.querySelector('.chat-initial-messages')`);
+    // Someone else's reactions expose a shortcut even before hovering the message.
+    assert.equal(
+      evaluate(`document.querySelector('${row} .chat-reaction-add').getAttribute('aria-label')`),
+      "Add reaction",
+    );
+    browser("click", `${row} .chat-reaction-add`);
+    wait('!!document.querySelector(".chat-emoji-search")');
+    browser("click", '.chat-emoji-grid button[data-unified="1f600"]');
+    wait(`!!document.querySelector('${row} .chat-reaction[aria-label^="😀,"][aria-pressed="true"]')`);
+    browser("click", `${row} .chat-reaction[aria-label^="😀,"]`);
+    wait(`!document.querySelector('${row} .chat-reaction[aria-label^="😀,"]')`);
+    // End the keyboard-focus session restored by the picker before hover checks.
+    evaluate("document.activeElement?.blur()");
     if (layout === "desktop") {
       assert.equal(evaluate('matchMedia("(hover: hover) and (pointer: fine)").matches'), true);
       const chip = `${row} .chat-reaction:first-child`;
       const actionOpacity = () =>
-        evaluate(`getComputedStyle(document.querySelector('${row} .chat-message-actions-trigger')).opacity`);
+        evaluate(`getComputedStyle(document.querySelector('${row} .chat-message-tools')).opacity`);
       browser("click", `${row} p`);
       browser("mouse", "move", "10", "10");
-      wait(`getComputedStyle(document.querySelector('${row} .chat-message-actions-trigger')).opacity === '0'`);
+      wait(`getComputedStyle(document.querySelector('${row} .chat-message-tools')).opacity === '0'`);
       assert.equal(actionOpacity(), "0", "clicking a message must not pin its actions open");
       browser("hover", `${row} p`);
-      wait(`getComputedStyle(document.querySelector('${row} .chat-message-actions-trigger')).opacity === '1'`);
+      wait(`getComputedStyle(document.querySelector('${row} .chat-message-tools')).opacity === '1'`);
       assert.equal(actionOpacity(), "1", "hover still reveals the actions");
       browser("hover", chip);
       wait('document.querySelector(".chat-reaction-tooltip")?.textContent === "Alex reacted with :rocket:"');
@@ -136,7 +149,7 @@ try {
         JSON.stringify(texts),
       );
       browser("mouse", "move", "10", "10");
-      wait(`getComputedStyle(document.querySelector('${row} .chat-message-actions-trigger')).opacity === '0'`);
+      wait(`getComputedStyle(document.querySelector('${row} .chat-message-tools')).opacity === '0'`);
       assert.equal(actionOpacity(), "0", "a clicked reaction must not pin the toolbar either");
       if (artifacts) browser("screenshot", `${artifacts}/message-desktop-clicked.png`);
       browser("press", "Shift+Tab");
@@ -147,7 +160,7 @@ try {
         ),
         true,
       );
-      wait(`getComputedStyle(document.querySelector('${row} .chat-message-actions-trigger')).opacity === '1'`);
+      wait(`getComputedStyle(document.querySelector('${row} .chat-message-tools')).opacity === '1'`);
       assert.equal(actionOpacity(), "1", "keyboard focus must reveal the actions");
       assert.equal(evaluate("getComputedStyle(document.activeElement).outlineStyle"), "none");
       assert.ok(evaluate("getComputedStyle(document.activeElement).boxShadow").includes("inset"));

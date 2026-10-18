@@ -422,7 +422,7 @@ async function checkSquares(target, label) {
 }
 
 /**
- * People in voice in a room you are not in show as overlapping faces (a Live now card,
+ * People in voice in a room you are not in show as overlapping faces (its row's live card,
  * or the phone strip). Picture faces are clipped rounded squares, and the ring that
  * separates them from their neighbours (their surface's own colour) follows that square.
  * These rooms carry no speaking rings: there is no audio for a call you are not in.
@@ -505,9 +505,9 @@ try {
   await shot(page.locator(".space-rail"), "pictures-rail-desktop.png");
   await checkSquares(page, "desktop");
 
-  // The room's faces on its Live now card keep the pictures' rounded squares.
+  // The room's faces on its live card keep the pictures' rounded squares.
   await checkFaces(page, ".live-room");
-  await shot(page.locator(".live-now"), "pictures-live-room-desktop.png");
+  await shot(page.locator(".live-room"), "pictures-live-room-desktop.png");
 
   // ---- Profile picture: upload a still (cropped, WebP), then a GIF (unchanged), then remove ----
   await page.locator(".account-profile").click();
@@ -623,11 +623,20 @@ try {
   await page.waitForFunction(
     '!document.querySelector(".space-rail-item:first-child .caper-picture") && document.querySelector(".space-rail-item:first-child button > span").textContent === "T"',
   );
-  await manage.locator('.space-icon-section input[type="file"]').setInputFiles({
-    name: "icon.png",
-    mimeType: "image/png",
-    buffer: stillIcon,
-  });
+  const iconButton = manage.getByRole("button", { name: "Change space icon" });
+  const drop = await page.evaluateHandle(
+    (bytes) => {
+      const data = new DataTransfer();
+      data.items.add(new File([new Uint8Array(bytes)], "icon.png", { type: "image/png" }));
+      // A picture editor uses the first file, not the last or every file.
+      data.items.add(new File(["not a picture"], "notes.txt", { type: "text/plain" }));
+      return data;
+    },
+    [...stillIcon],
+  );
+  await iconButton.dispatchEvent("dragover", { dataTransfer: drop });
+  await shot(manage.locator(".space-icon-section"), "pictures-space-drop-target.png");
+  await iconButton.dispatchEvent("drop", { dataTransfer: drop });
   await manage.getByText("Space icon updated.").waitFor();
   const iconReservation = await page.evaluate(() => window.pictureFixture.reservations.at(-1));
   assert.deepEqual(
@@ -636,6 +645,39 @@ try {
   );
   await page.waitForFunction(loaded(".space-rail-item:first-child button"));
   await shot(manage, "pictures-space-dialog.png");
+  // Replacement bypasses the menu, and invalid files keep the existing picture.
+  let releaseUpload;
+  const uploadHeld = new Promise((resolve) => (releaseUpload = resolve));
+  await page.route("https://r2.test/put/**", async (route) => {
+    await uploadHeld;
+    await route.fallback();
+  });
+  const beforeReplacement = await page.evaluate(() => window.pictureFixture.reservations.length);
+  await iconButton.click();
+  await iconButton.dispatchEvent("drop", { dataTransfer: drop });
+  await manage.locator('.picture-settings[aria-busy="true"]').waitFor();
+  await iconButton.dispatchEvent("drop", { dataTransfer: drop });
+  releaseUpload();
+  await manage.getByText("Space icon updated.").waitFor();
+  await page.unroute("https://r2.test/put/**");
+  assert.equal(
+    await page.evaluate(() => window.pictureFixture.reservations.length),
+    beforeReplacement + 1,
+    "a second drop during preparation/upload must not start another upload",
+  );
+  assert.equal(await manage.getByRole("menu").count(), 0);
+  const reservations = await page.evaluate(() => window.pictureFixture.reservations.length);
+  const invalid = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    data.items.add(new File(["not a picture"], "notes.txt", { type: "text/plain" }));
+    return data;
+  });
+  await iconButton.dispatchEvent("drop", { dataTransfer: invalid });
+  await manage.locator(".picture-settings-error").waitFor();
+  assert.equal(await page.evaluate(() => window.pictureFixture.reservations.length), reservations);
+  await page.waitForFunction(loaded(".space-rail-item:first-child button"));
+  await drop.dispose();
+  await invalid.dispose();
   await manage.getByRole("button", { name: "Close Manage space" }).click();
   await shot(page.locator(".space-rail"), "pictures-rail-updated.png");
 
@@ -733,7 +775,7 @@ try {
   await phone.waitForTimeout(400);
   await shot(phone, "pictures-narrow-browse.png");
   await checkSquares(phone, "narrow");
-  // Browse shows the same room as a Live now card.
+  // Browse shows the same room as a live card in its row.
   await phone.waitForFunction(loaded('.live-room .live-avatar [data-avatar-asset="gifpicture01"]'));
   await checkFaces(phone, ".live-room");
   await narrow.close();
@@ -772,7 +814,7 @@ try {
   await shot(quiet, "pictures-reduced-motion.png");
   await calm.close();
   console.log(
-    "PASS: animated, still, broken and absent pictures; rounded squares, including Live now room and phone voice strip faces; upload, GIF, errors and removal; space icons; live profile and space updates; narrow; reduced motion.",
+    "PASS: animated, still, broken and absent pictures; rounded squares, including live room card and phone voice strip faces; upload, GIF, errors and removal; space icons; live profile and space updates; narrow; reduced motion.",
   );
 } finally {
   await browser.close();

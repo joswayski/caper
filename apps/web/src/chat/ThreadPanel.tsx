@@ -95,6 +95,8 @@ export default function ThreadPanel({
   const returnFocus = useRef<HTMLElement>(null);
   const panel = useRef<HTMLElement>(null);
   const [mobile, setMobile] = useState(false);
+  const backSwipe = useRef<{ id: number; x: number; y: number; claimed: boolean } | undefined>(undefined);
+  const suppressSwipeClick = useRef(false);
   const [preferredWidth, setPreferredWidth] = useState(DEFAULT_WIDTH);
   const [maximumWidth, setMaximumWidth] = useState(MAX_WIDTH);
   const minimumWidth = Math.min(MIN_WIDTH, maximumWidth);
@@ -401,6 +403,59 @@ export default function ThreadPanel({
       aria-labelledby="chat-thread-heading"
       role={mobile ? "dialog" : undefined}
       aria-modal={mobile || undefined}
+      onPointerDownCapture={(event) => {
+        suppressSwipeClick.current = false;
+        backSwipe.current = undefined;
+        if (!mobile || event.pointerType !== "touch" || !event.isPrimary) return;
+        if (
+          !(event.target instanceof Element) ||
+          !event.target.closest(".chat-thread-heading, .chat-thread-messages") ||
+          event.target.closest("input, textarea, select, [contenteditable=true], [role=slider], audio, video, pre") ||
+          document.querySelector(
+            "dialog[open], details[open], [popover]:popover-open, .chat-message-actions, .chat-reaction-picker, .chat-mention-card, .chat-reactors",
+          ) ||
+          window.getSelection()?.type === "Range"
+        )
+          return;
+        backSwipe.current = { id: event.pointerId, x: event.clientX, y: event.clientY, claimed: false };
+      }}
+      onPointerMoveCapture={(event) => {
+        const swipe = backSwipe.current;
+        if (!swipe || swipe.id !== event.pointerId) return;
+        const dx = event.clientX - swipe.x,
+          dy = event.clientY - swipe.y;
+        if (!swipe.claimed) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) <= 12) return;
+          // Decide once: a vertical scroll or left swipe cannot turn into Back.
+          if (dx <= 12 || dx <= Math.abs(dy) * 1.5) {
+            backSwipe.current = undefined;
+            return;
+          }
+          swipe.claimed = true;
+          suppressSwipeClick.current = true;
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }
+      }}
+      onPointerUpCapture={(event) => {
+        const swipe = backSwipe.current;
+        backSwipe.current = undefined;
+        if (swipe?.id !== event.pointerId || !swipe.claimed) return;
+        const dx = event.clientX - swipe.x,
+          dy = event.clientY - swipe.y;
+        if (dx >= 72 && dx > Math.abs(dy) * 1.5) onClose();
+      }}
+      onPointerCancelCapture={() => {
+        backSwipe.current = undefined;
+      }}
+      onLostPointerCapture={(event) => {
+        // Taking capture from the touched row also bubbles its lost-capture event.
+        if (event.target === event.currentTarget) backSwipe.current = undefined;
+      }}
+      onClickCapture={(event) => {
+        if (!suppressSwipeClick.current) return;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
       onDragEnter={(event) => {
         if (!canAttach || !carriesFiles(event.dataTransfer)) return;
         dragDepth.current += 1;
@@ -649,6 +704,7 @@ export default function ThreadPanel({
                 drafts={attachments.drafts}
                 onRemove={attachments.onRemove}
                 onRetry={attachments.onRetry}
+                onToggleSpoiler={sending ? undefined : attachments.onToggleSpoiler}
               />
             )}
             <form

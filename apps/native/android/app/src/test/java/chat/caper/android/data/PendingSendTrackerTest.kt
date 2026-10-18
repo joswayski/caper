@@ -8,6 +8,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PendingSendTrackerTest {
+    @Test fun `spoiler selection survives unknown retries and replacement uploads`() {
+        val tracker = PendingSendTracker()
+        val first = tracker.begin("channel", author(), "", listOf("a", "b"), spoilerAttachmentIds = listOf("b")) {}
+        val retry = tracker.begin("channel", author(), "edited", listOf("different")) {}
+        assertEquals(first.id, retry.id)
+        assertEquals(listOf("b"), retry.spoilerAttachmentIds)
+        val renewed = tracker.replaceAttachments(first.id, listOf("fresh-a", "fresh-b"))!!
+        assertEquals(listOf("fresh-b"), renewed.spoilerAttachmentIds)
+    }
+
     @Test fun `unknown outcome retains id and original text despite edits`() {
         val tracker = PendingSendTracker()
         val first = tracker.begin("channel", author(), "original") {}

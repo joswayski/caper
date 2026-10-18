@@ -76,6 +76,8 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
   const [status, setStatus] = useState<string>();
   const [composerState, setComposerState] = useState({ picking: false, sending: false });
   const canMessage = !person.self && !blocked && !!onMessage && !!person.username;
+  const canInvite = !person.self && !blocked && !!person.username && spaces.length > 0;
+  const canBlock = !!onBlock && (blocked || (!person.admin && !person.team));
   const returnFocus = useRef(anchor);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   const nodeId = useFloatingNodeId();
@@ -169,22 +171,28 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
             {person.displayName && person.username && <span>@{person.username}</span>}
           </div>
           <div className="chat-profile-header-actions">
-            {!person.self && onBlock && (
+            {!person.self && (canBlock || canInvite) && (
               <ProfileMenu
                 disabled={!!pending || composerState.sending}
                 label={pending === "unblock" ? "Unblocking…" : blocked ? "Unblock" : "Block"}
-                onAction={() => {
-                  if (blocked) void unblockPerson();
-                  else
-                    onBlock({
-                      id: person.id,
-                      name: person.displayName ?? person.username ?? "Profile",
-                      avatarId: person.avatarId,
-                      avatarAsset: person.avatarAsset,
-                      avatarUrl: person.avatarUrl,
-                      isGuest: false,
-                    });
-                }}
+                onInvite={canInvite ? () => setChoosingSpace(!choosingSpace) : undefined}
+                onAction={
+                  canBlock && onBlock
+                    ? () => {
+                        if (blocked) void unblockPerson();
+                        else
+                          onBlock({
+                            id: person.id,
+                            name: person.displayName ?? person.username ?? "Profile",
+                            avatarId: person.avatarId,
+                            avatarAsset: person.avatarAsset,
+                            avatarUrl: person.avatarUrl,
+                            isGuest: false,
+                            admin: person.admin,
+                          });
+                      }
+                    : undefined
+                }
               />
             )}
             {!person.self && !blocked && onMessage && person.username && (
@@ -209,7 +217,7 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
             </button>
           </div>
         </div>
-        {person.self ? (
+        {person.self && (
           <>
             <p className="chat-mention-card-self">You</p>
             {canEditProfile() && (
@@ -225,20 +233,6 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
               </button>
             )}
           </>
-        ) : (
-          <div className="chat-profile-actions">
-            {!blocked && person.username && spaces.length > 0 && (
-              <button
-                type="button"
-                className="chat-mention-card-action"
-                aria-expanded={choosingSpace}
-                disabled={!!pending || composerState.sending}
-                onClick={() => setChoosingSpace(!choosingSpace)}
-              >
-                Invite to space
-              </button>
-            )}
-          </div>
         )}
         {!person.self && !blocked && choosingSpace && (
           <ul className="chat-profile-spaces" aria-label="Spaces you own">
@@ -299,8 +293,18 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
   );
 }
 
-/** A child menu keeps safety actions out of the profile's primary action row. */
-function ProfileMenu({ disabled, label, onAction }: { disabled: boolean; label: string; onAction: () => void }) {
+/** A child menu keeps secondary actions out of the profile's primary action row. */
+function ProfileMenu({
+  disabled,
+  label,
+  onAction,
+  onInvite,
+}: {
+  disabled: boolean;
+  label: string;
+  onAction?: () => void;
+  onInvite?: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const nodeId = useFloatingNodeId();
   const { refs, floatingStyles, context } = useFloating({
@@ -333,18 +337,34 @@ function ProfileMenu({ disabled, label, onAction }: { disabled: boolean; label: 
         <FloatingPortal>
           <FloatingFocusManager context={context}>
             <div ref={refs.setFloating} style={floatingStyles} className="chat-profile-menu" {...getFloatingProps()}>
-              <button
-                type="button"
-                disabled={disabled}
-                {...getItemProps({
-                  onClick: () => {
-                    setOpen(false);
-                    onAction();
-                  },
-                })}
-              >
-                {label}
-              </button>
+              {onInvite && (
+                <button
+                  type="button"
+                  disabled={disabled}
+                  {...getItemProps({
+                    onClick: () => {
+                      setOpen(false);
+                      onInvite();
+                    },
+                  })}
+                >
+                  Invite to space
+                </button>
+              )}
+              {onAction && (
+                <button
+                  type="button"
+                  disabled={disabled}
+                  {...getItemProps({
+                    onClick: () => {
+                      setOpen(false);
+                      onAction();
+                    },
+                  })}
+                >
+                  {label}
+                </button>
+              )}
             </div>
           </FloatingFocusManager>
         </FloatingPortal>

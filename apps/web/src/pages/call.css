@@ -1947,41 +1947,23 @@
   }
 }
 
-/* Live now: your call and the rooms where people are talking, above the channels.
-   Rows below keep only a quiet "N in voice" mark, so a channel never reads as a
-   voice room; its card is where people are shown and joined. */
-.live-now {
+/* Live channels: a channel's row grows into a card in its place in the list, for
+   your call (faces, mute, deafen and Leave) or a room where people are talking
+   (faces, names and Join). Pressing a card opens its chat. Voice without a row in
+   the list (your call in another space, a visited room) sits above the channels. */
+.live-now,
+.live-card {
   --live-card: #18231f;
   --live-card-border: #28362f;
-  --live-call: #1a2a22;
-  --live-call-border: #3a6b4b;
+  --live-call: #22382c;
+  --live-call-border: #4b8a60;
   --live-ring: var(--voice-session-green);
+}
+.live-now {
   flex-shrink: 0;
   display: grid;
   gap: 8px;
   margin: 8px 0 2px;
-  animation: live-arrive var(--motion-base) var(--ease-out);
-}
-.live-now-heading {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 28px;
-  margin: 0;
-  padding: 0 6px;
-  color: var(--text-muted);
-  font-size: 0.76rem;
-  font-weight: 700;
-}
-.live-now-heading > svg {
-  width: 14px;
-  height: 14px;
-  color: var(--voice-session-green);
-}
-.live-now-heading > span {
-  margin-left: auto;
-  font-weight: 500;
-  font-size: 0.68rem;
 }
 .live-card {
   min-width: 0;
@@ -1991,7 +1973,60 @@
   border: 1px solid var(--live-card-border);
   border-radius: 10px;
   background: var(--live-card);
+  cursor: pointer;
   animation: live-arrive var(--motion-base) var(--ease-out);
+}
+/* In the list the row is already there: only what the card adds arrives. */
+.live-card:has(> :is(.channel-line, .channel-row)) {
+  animation: none;
+}
+.live-card:has(> :is(.channel-line, .channel-row)) > :not(.channel-line, .channel-row) {
+  animation: live-arrive var(--motion-base) var(--ease-out);
+}
+.channel-navigation li[data-live] {
+  margin-block: 3px;
+}
+.channel-navigation li > :is(.channel-card, .live-card) {
+  min-width: 0;
+  flex: 1 1 100%;
+}
+/* Every row sits in the same 1px frame, so becoming a card never moves its name or
+   menu. In a card the row's own line spans it edge to edge, its icon in line with
+   the faces below. */
+.channel-card {
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+.live-card:has(> :is(.channel-line, .channel-row)) {
+  padding-inline: 9px;
+}
+.live-card > :is(.channel-line, .channel-row) {
+  margin: -10px -9px 0;
+}
+.live-call > :is(.channel-line, .channel-row) {
+  margin-top: -12px;
+}
+@media (hover: hover) {
+  .live-card:hover > .channel-line:not(:has(.channel-select[aria-current="page"])) {
+    background: var(--surface-hover);
+  }
+}
+.live-call-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+.live-call-status > .live-status {
+  margin-left: 0;
+}
+.live-call-status > .voice-session-timer {
+  color: var(--voice-session-green);
+  font-size: 0.7rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
 }
 .live-call {
   --live-face-gap: var(--live-call);
@@ -2094,14 +2129,23 @@
     0 0 0 2px var(--live-face-gap, var(--live-card)),
     0 0 0 4px var(--live-ring);
 }
-/* Two rows of faces at most; the rest fold into "+N" (callCardFaces). */
-.live-now .live-call ul.live-faces {
+/* Two rows of faces at most; the rest fold into "+N" (callCardFaces). A long press
+   opens everyone's volume, so it must not select text or call up the image menu.
+   Doubled classes outrank the channel list's own ul rules: the card sits inside it. */
+.live-card.live-call ul.live-faces {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
   margin: 0;
   padding: 0;
   list-style: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.live-people-count {
+  color: var(--text-muted);
+  font-size: 11px;
 }
 .live-face,
 .live-more {
@@ -2117,17 +2161,9 @@
   background: transparent;
   color: inherit;
 }
-button.live-face {
-  cursor: pointer;
-}
 .live-face > .live-avatar {
   width: 34px;
   height: 34px;
-}
-.live-face:focus-visible,
-.live-more:focus-visible {
-  outline: 2px solid var(--terracotta);
-  outline-offset: 2px;
 }
 .live-badge {
   position: absolute;
@@ -2154,32 +2190,11 @@ button.live-face {
   font-size: 0.74rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  cursor: pointer;
-}
-.live-more[aria-expanded="true"] {
-  box-shadow:
-    0 0 0 2px var(--live-call),
-    0 0 0 4px var(--text-muted);
 }
 .live-more[data-speaking] {
   box-shadow:
     0 0 0 2px var(--live-call),
     0 0 0 4px var(--live-ring);
-}
-.live-more:disabled {
-  cursor: default;
-}
-.live-speaker {
-  min-width: 0;
-  margin: -2px 0 0;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.live-speaker strong {
-  color: var(--text);
 }
 .live-controls {
   display: flex;
@@ -2257,6 +2272,13 @@ button.live-face {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.live-room-body > .voice-session-timer {
+  flex: none;
+  color: var(--voice-session-green);
+  font-size: 0.7rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
 .live-join {
   height: 30px;
   flex: none;
@@ -2302,44 +2324,6 @@ button.live-face {
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }
-.live-more-rooms {
-  min-width: 0;
-  min-height: 32px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: var(--radius);
-  color: var(--text-muted);
-  background: transparent;
-  font: inherit;
-  font-size: 0.74rem;
-  font-weight: 500;
-  text-align: left;
-  cursor: pointer;
-}
-.live-more-rooms > svg {
-  width: 14px;
-  height: 14px;
-  flex: none;
-}
-.live-more-rooms[aria-expanded="true"] > svg {
-  transform: rotate(180deg);
-}
-.live-more-rooms > span {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-@media (hover: hover) {
-  .live-more-rooms:hover {
-    color: var(--text);
-    background: var(--surface-hover);
-  }
-}
 /* Everyone in your call, with each person's volume: a top-layer popover beside
    the sidebar (placeEveryone), or a bottom sheet on phones. */
 .live-everyone {
@@ -2357,6 +2341,7 @@ button.live-face {
   color: var(--text);
   background: var(--surface-raised);
   box-shadow: 0 16px 40px rgb(0 0 0 / 0.5);
+  cursor: auto;
 }
 .live-everyone:popover-open {
   animation: audio-panel-in var(--motion-fast) var(--ease-out);
@@ -2380,7 +2365,7 @@ button.live-face {
   color: var(--text-muted);
   font-size: 0.72rem;
 }
-.live-now .live-call .live-everyone > ul {
+.live-card.live-call .live-everyone > ul {
   min-height: 0;
   display: grid;
   gap: 0;
@@ -2437,7 +2422,7 @@ button.live-face {
   color: var(--voice-session-green);
 }
 /* Touch has no hover: quiet rows always show their join button; live rows are
-   joined from their Live now card. */
+   joined from their card. */
 @media (hover: none), (pointer: coarse) {
   .channel-quick-join:not([data-occupied], [data-placeholder]) {
     width: 44px;
@@ -2475,9 +2460,6 @@ button.live-face {
   .live-face > .live-avatar {
     width: 38px;
     height: 38px;
-  }
-  .live-more-rooms {
-    min-height: 44px;
   }
   .live-everyone .participant {
     min-height: 48px;
@@ -2528,8 +2510,10 @@ button.voice-strip-open {
   flex: none;
   color: var(--voice-session-green);
 }
+/* The name gives way first, so the faces and time keep their place. */
 .voice-strip-open > strong {
-  flex: none;
+  min-width: 0;
+  flex: 0 1 auto;
   max-width: 40%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2540,8 +2524,15 @@ button.voice-strip-open {
   height: 24px;
 }
 /* Your call's faces ring while speaking, so they sit apart rather than overlap. */
-.voice-strip .live-stack > .live-avatar + .live-avatar {
+.voice-strip .live-stack > .live-avatar + .live-avatar,
+.voice-strip .live-stack > .live-chip {
   margin-left: 6px;
+}
+.voice-strip .live-stack > .live-chip {
+  height: 24px;
+  min-width: 24px;
+  border-radius: var(--radius-avatar);
+  box-shadow: none;
 }
 .voice-strip-detail {
   min-width: 0;
@@ -2604,8 +2595,8 @@ button.voice-strip-open {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .live-now,
   .live-card,
+  .live-card:has(> :is(.channel-line, .channel-row)) > :not(.channel-line, .channel-row),
   .voice-strip,
   .live-everyone:popover-open {
     animation: none;

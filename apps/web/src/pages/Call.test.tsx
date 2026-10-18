@@ -2,7 +2,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 import type { GeneralChatHistory } from "../chat/types";
 import { Route as SpacesRoute } from "../routes/spaces";
-import Call, { callCardFaces, liveNames } from "./Call";
+import Call from "./Call";
+import { STRIP_FACES, callCardFaces, liveNames } from "../media/live-now";
 
 test("a direct spaces visit renders a visible server fallback before account data or hydration", () => {
   const Pending = SpacesRoute.options.pendingComponent!;
@@ -46,7 +47,8 @@ test("audio controls remain available before joining; joining is a channel row a
   const shortcut = markup.match(/<button[^>]*aria-label="Join voice in #general"[^>]*>(.*?)<\/button>/)?.[1];
   expect(shortcut).toContain("<svg");
   expect(shortcut).not.toContain("Join");
-  // Nobody is talking yet, so there is no Live now section and nothing to leave.
+  // Nobody is talking yet, so no row is a live card and there is nothing to leave.
+  expect(markup).not.toContain("live-card");
   expect(markup).not.toContain('aria-label="Live now"');
   expect(markup).not.toContain('aria-label="Leave voice"');
 });
@@ -57,7 +59,7 @@ test.each([
   [["Maya", "Alex"], "Maya and Alex"],
   [["Maya", "Alex", "Sam"], "Maya, Alex and Sam"],
   [["Rosa", "Ben", "Mina", "Leo", "Ivy", "Omar", "June", "Kai"], "Rosa, Ben and 6 more"],
-])("Live now names a room in one line: %j", (names, line) => {
+])("a live room names its people in one line: %j", (names, line) => {
   expect(liveNames(names)).toBe(line);
 });
 
@@ -69,6 +71,17 @@ test("your call card shows up to ten faces, then nine and a +N tile", () => {
   expect(twelve.shown).toEqual(people(9));
   expect(twelve.hidden).toEqual([9, 10, 11]);
   expect(callCardFaces(people(50)).shown).toHaveLength(9);
+});
+
+test("the phone strip shows the card's faces in its order, folding after five", () => {
+  const people = (count: number) => Array.from({ length: count }, (_, index) => index);
+  // Up to five, the strip and the card show exactly the same people.
+  for (const count of [1, 2, 3, 5])
+    expect(callCardFaces(people(count), STRIP_FACES).shown).toEqual(callCardFaces(people(count)).shown);
+  const eight = callCardFaces(people(8), STRIP_FACES);
+  expect(eight.shown).toEqual(people(4));
+  expect(eight.hidden).toEqual([4, 5, 6, 7]);
+  expect(callCardFaces(people(8)).shown.slice(0, 4)).toEqual(eight.shown);
 });
 
 test("members start open in the initial markup, before responsive hydration", () => {

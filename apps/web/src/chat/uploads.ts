@@ -2,8 +2,8 @@ import type { ChatAttachment } from "./types.ts";
 import { compressionSettings, prepareFile, type CompressionSettings, type PreparedFile } from "./prepare.ts";
 
 export const MAX_ATTACHMENTS = 10;
-/** Waits between `/complete` attempts while the upload is not visible yet (409). */
-export const COMPLETE_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000];
+/** Allow a queued batch of ten files (two minutes per original/preview) to finish cleaning. */
+export const COMPLETE_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, ...Array<number>(240).fill(5_000)];
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -128,7 +128,7 @@ export class AttachmentUpload {
       this.update({ attachment, progress: 1 });
       return attachment;
     } catch (error) {
-      if (!signal.aborted) this.update({ error: "Failed to upload." });
+      if (!signal.aborted) this.update({ error: error instanceof UploadError ? error.message : "Failed to upload." });
       throw error;
     }
   }
@@ -144,6 +144,8 @@ async function failure(response: Response, fallback: string) {
   const body = (await response.json().catch(() => undefined)) as { error?: unknown; code?: unknown } | undefined;
   if (body?.code === "storage_full") return new UploadError("You’ve used all of your file storage.", true);
   if (response.status === 413) return new UploadError("This file is too large to upload.");
+  if (response.status === 422 && body?.code !== "media_metadata")
+    return new UploadError("The upload did not arrive intact. Try again.");
   return new UploadError(typeof body?.error === "string" ? body.error : fallback);
 }
 
@@ -253,9 +255,8 @@ export async function uploadPrepared(
         progress(1);
         return attachment;
       }
-      // 409: storage has not made the object visible yet. Anything else is final.
+      // 409: storage is not visible yet, or metadata processing is queued.
       if (completed.status !== 409 || attempt >= COMPLETE_RETRY_DELAYS_MS.length) {
-        if (completed.status === 422) throw new UploadError("The upload did not arrive intact. Try again.");
         throw await failure(completed, "This file could not be uploaded.");
       }
       await completed.body?.cancel().catch(() => undefined);

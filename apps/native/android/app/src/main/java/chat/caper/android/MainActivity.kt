@@ -275,6 +275,7 @@ private sealed interface Overlay {
     data class OpenedInviteLink(val request: InviteLinkRequest) : Overlay
     data class Invitation(val space: Space) : Overlay
     data object ManageSpace : Overlay
+    data object InvitePeople : Overlay
     data object CreateChannel : Overlay
     data object StartDirect : Overlay
     data class ManageChannel(val channel: Channel) : Overlay
@@ -350,7 +351,7 @@ internal data class VoiceJoinIntent(
     }
     // Web: a space removed elsewhere closes its dialogs; an invitation answered elsewhere closes its prompt.
     LaunchedEffect(state.selectedSpace?.space?.id) {
-        if (overlay.let { it == Overlay.ManageSpace || it == Overlay.CreateChannel || it == Overlay.LeaveSpace || it is Overlay.ManageChannel || it is Overlay.LeaveChannel }) overlay = null
+        if (overlay.let { it == Overlay.ManageSpace || it == Overlay.InvitePeople || it == Overlay.CreateChannel || it == Overlay.LeaveSpace || it is Overlay.ManageChannel || it is Overlay.LeaveChannel }) overlay = null
     }
     LaunchedEffect(state.invitations) { (overlay as? Overlay.Invitation)?.let { shown -> if (state.invitations.none { it.id == shown.space.id }) overlay = null } }
     var navigationOpen by remember { mutableStateOf(false) }
@@ -428,6 +429,7 @@ internal data class VoiceJoinIntent(
             { viewModel.acceptInvitation(shown.space) { overlay = null } },
             { viewModel.declineInvitation(shown.space) { overlay = null } })
         Overlay.ManageSpace -> state.selectedSpace?.let { detail -> ManageSpaceDialog(state, detail, viewModel, { overlay = null }) }
+        Overlay.InvitePeople -> state.selectedSpace?.let { detail -> InvitePeopleDialog(state, detail, viewModel, { overlay = null }) }
         Overlay.CreateChannel -> state.selectedSpace?.let { detail -> CreateChannelDialog(detail, state.busy, state.error, viewModel::clearError, { overlay = null }) { name, private ->
             // Web opens a new private channel's settings so people can be added.
             viewModel.createChannel(name, private) { created -> overlay = if (created.private) Overlay.ManageChannel(created) else null }
@@ -578,7 +580,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             }.toTypedArray())
         }
     }
-    // Live now's call card: Leave, or Cancel while joining.
+    // Your call card's Leave, or Cancel while joining.
     val leaveVoice: () -> Unit = {
         if (voice.phase == VoiceState.Phase.CONNECTED) CaperEffects.play(CaperEffects.Effect.Disconnect)
         VoiceCallService.stop(context)
@@ -620,7 +622,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                             // Browse, account bar included, stays still beneath the conversation, which slides off to reveal it.
                             if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize().then(if (navigationOpen) Modifier else Modifier.clearAndSetSemantics {})) {
                                 Row(Modifier.weight(1f).browseSwipeRegion(drawer, enabled = state.selectedChannel != null || state.selectedDirectId != null || state.feedbackShown)) {
-                                    SpaceRail(state, viewModel, show, Modifier.width(60.dp))
+                                    SpaceRail(state, voice, viewModel, show, Modifier.width(60.dp))
                                     ChannelSidebar(state, voice, viewModel, show,
                                         Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp)),
                                         channelsExpanded, { channelsExpanded = it }, browsing, { browsing = it }, pendingVoiceJoin, voicePermissionError,
@@ -660,7 +662,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         }
                     }
                 } else Row {
-                    SpaceRail(state, viewModel, show, Modifier.width(60.dp))
+                    SpaceRail(state, voice, viewModel, show, Modifier.width(60.dp))
                     ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, browsing, { browsing = it }, pendingVoiceJoin, voicePermissionError, { voicePermissionError = null },
                         joinVoice, leaveVoice)
                     if (medium) Box(Modifier.weight(1f).fillMaxHeight()) {
@@ -678,13 +680,15 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     }
 }
 
-@Composable private fun SpaceRail(state: AppUiState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
+@Composable private fun SpaceRail(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
     val now = rememberMuteClock(state.notificationSettings)
     Column(modifier.fillMaxHeight().background(Blackout).verticalScroll(rememberScrollState()).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         state.spaces.forEach { space ->
             val selected = state.selectedSpace?.space?.id == space.id
             val muted = state.notificationSettings?.spaceMuted(space.id, now) == true
             val unread = state.unreadSpaces.any { it.id == space.id }
+            val connected = state.account != null && voice.phase == VoiceState.Phase.CONNECTED && voice.spaceId == space.id
+            val voiceActive = state.account != null && (connected || space.id in state.voiceActivitySpaceIds)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.width(3.dp).height(if (selected) 24.dp else 0.dp).background(if (selected) TerracottaBright else Color.Transparent))
                 Spacer(Modifier.width(3.dp))
@@ -692,12 +696,15 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     Surface(
                         // Clipped first, so the press ripple keeps the tile's corners.
                         Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clip(MaterialTheme.shapes.medium).clickable { viewModel.selectSpace(space.id) }
-                            .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread activity" else null, if (muted) "Muted" else null).joinToString(", ") },
+                            .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread activity" else null, if (muted) "Muted" else null, if (connected) "Connected to voice" else if (voiceActive) "Voice active" else null).joinToString(", ") },
                         color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
                         border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
                     ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, if (selected) Color.White else TextMuted) }
                     if (muted) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
-                    if (unread) Box(Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp).size(10.dp).background(Blackout, CircleShape).padding(2.dp).background(Text, CircleShape).clearAndSetSemantics {})
+                    if (voiceActive) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp).size(18.dp).background(if (connected) VoiceSessionGreen else Blackout, CircleShape).border(2.dp, Blackout, CircleShape).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
+                        Icon(painterResource(R.drawable.lucide_volume_2), null, Modifier.size(11.dp), tint = Text)
+                    }
+                    if (unread) Box(Modifier.align(Alignment.TopStart).offset(x = (-2).dp, y = (-2).dp).size(10.dp).background(Blackout, CircleShape).padding(2.dp).background(Text, CircleShape).clearAndSetSemantics {})
                 }
             }
         }
@@ -757,7 +764,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     val canCreateChannel = detail != null && state.limits?.let { channelCount < it.channelsPerSpace } == true
     var channelMenuOpen by remember(detail?.space?.id) { mutableStateOf(false) }
     var channelQuery by remember(detail?.space?.id) { mutableStateOf("") }
-    val activeChannel = voice.channelId.takeIf { voice.phase != VoiceState.Phase.IDLE && voice.phase != VoiceState.Phase.FAILED }
+    // Your call's row becomes its call card when its channel is listed here.
+    val callRowId = callRowChannelId(detail, voice)
     Column(modifier.fillMaxHeight().background(SurfaceSidebar)) {
         // Web: the space name and its menu stay put while a long channel list scrolls.
         Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)) {
@@ -809,7 +817,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
-            // Your call and the space's live rooms lead the list, above Channels. Joining keeps the chat being read.
+            // Voice with no row in this list (your call elsewhere, a visited channel's room) sits above
+            // Channels; listed channels show theirs in place. Joining keeps the chat being read.
             LiveNowSection(
                 state, voice, pendingVoiceJoin, narrow = closeNavigation != null, joinVoice = joinVoice, prepareVoice = viewModel::prepareVoiceJoin,
                 // A visited channel's room is the conversation already open.
@@ -858,13 +867,17 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             }
             // People often type the name as it is shown, with its `#` (web).
             val channelSearch = channelQuery.trim().trimStart('#').trim()
-            if (channelsExpanded) detail?.channels?.filter { channel ->
-                (browsing || channel.joined) && channel.name.contains(channelSearch, ignoreCase = true)
+            val voiceOf = { channel: Channel ->
+                if (BuildConfig.ENABLE_NATIVE_VOICE && detail != null) rowVoice(channel, detail.space.demo, state.voiceRosters, callRowId) else RowVoice.QUIET
+            }
+            // Rows with voice stay listed, in list order, while collapsing or searching hides quiet rows.
+            detail?.channels?.let { channels ->
+                listedChannels(channels, { channelsExpanded && (browsing || it.joined) && it.name.contains(channelSearch, ignoreCase = true) }, voiceOf)
             }?.forEach { channel ->
                 key(channel.id) {
                     val selected = channel.id == state.selectedChannel?.id
-                    val callHere = activeChannel == channel.id
-                    val people = if (callHere) voice.participants else state.voiceRosters[voiceRootKey(detail.space.demo, channel.id)].orEmpty()
+                    val kind = voiceOf(channel)
+                    val people = if (kind == RowVoice.CALL) voice.participants else state.voiceRosters[voiceRootKey(detail.space.demo, channel.id)].orEmpty()
                     val channelVoice = channel.joined && BuildConfig.ENABLE_NATIVE_VOICE
                     var channelMenuOpen by remember(channel.id) { mutableStateOf(false) }
                     var channelMenuPage by remember(channel.id) { mutableStateOf(NotificationMenuPage.Main) }
@@ -878,7 +891,9 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     LaunchedEffect(channel.id, channel.joined, detail.space.demo, state.account?.id, available) {
                         if (channel.joined && BuildConfig.ENABLE_NATIVE_VOICE && available == null) viewModel.checkVoiceAvailability(channel)
                     }
-                    Column(Modifier.fillMaxWidth()) {
+                    val openChannel: () -> Unit = { viewModel.selectChannel(channel); closeNavigation?.invoke() }
+                    // The channel's row. In a voice card the whole card opens the chat, so the row itself doesn't.
+                    val row: @Composable () -> Unit = {
                         Row(
                             Modifier.fillMaxWidth().height(48.dp).clip(MaterialTheme.shapes.small)
                                 .background(if (selected) TerracottaWash else Color.Transparent),
@@ -886,17 +901,22 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         ) {
                             // The press starts at the row's edge; only the content is inset.
                             Row(Modifier.weight(1f).fillMaxHeight().alpha(if (channelMuted) MUTED_ALPHA else 1f)
-                                .clickable { viewModel.selectChannel(channel); closeNavigation?.invoke() }.padding(start = 9.dp)
+                                .then(if (kind == RowVoice.QUIET) Modifier.clickable(onClick = openChannel) else Modifier).padding(start = 9.dp)
                                 .semantics { if (channelMuted) stateDescription = "Muted" }, verticalAlignment = Alignment.CenterVertically) {
                                 Icon(if (channel.private) painterResource(R.drawable.lucide_lock_keyhole) else painterResource(R.drawable.lucide_hash), null, Modifier.size(17.dp), tint = if (selected) TerracottaBright else TextMuted)
                                 Spacer(Modifier.width(6.dp)); Text(channel.name, Modifier.weight(1f), color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 if (state.unreadSpaces.any { it.channels.any { it.id == channel.id } }) Box(Modifier.padding(horizontal = 6.dp).size(6.dp).background(Text, CircleShape).semantics { contentDescription = "Unread activity" })
                                 if (ownMute) MutedBell(Modifier.padding(horizontal = 6.dp))
-                                // A live row ends with a waveform and its count; its Live now card has the Join.
-                                if (channelVoice && people.isNotEmpty()) LiveVoiceCount(people.size)
+                                // A live room's row ends with a waveform and its count, your call's with its status and timer.
+                                when (kind) {
+                                    RowVoice.ROOM -> LiveVoiceCount(people.size)
+                                    // The ⋯ button's own inset spaces it from the menu; the name gives way first.
+                                    RowVoice.CALL -> CallStatus(voice, callSessionStartedAt(state, voice), Modifier.padding(start = 6.dp))
+                                    RowVoice.QUIET -> Unit
+                                }
                             }
-                            // Touch keeps a quiet row's one-tap join in view, except on your own call's row.
-                            if (channelVoice && people.isEmpty() && !callHere) RowVoiceJoin(channel.name, voiceJoinAction(state, voice, pendingVoiceJoin, channel),
+                            // Touch keeps a quiet row's one-tap join in view; a live room's card has its Join.
+                            if (channelVoice && kind == RowVoice.QUIET) RowVoiceJoin(channel.name, voiceJoinAction(state, voice, pendingVoiceJoin, channel),
                                 { joinVoice(channel) }) { viewModel.prepareVoiceJoin(channel) }
                             if (owner || notifiable || (channel.joined && !detail.space.demo)) Box {
                                 IconButton({ channelMenuOpen = true; if (notifiable) viewModel.refreshNotificationSettings() }, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_ellipsis), "${channel.name} channel menu", Modifier.size(18.dp), tint = TextMuted) }
@@ -914,6 +934,19 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                     ) else { settingsItem(); leaveItem() }
                                 }
                             }
+                        }
+                    }
+                    Column(Modifier.fillMaxWidth()) {
+                        // In its place in the list: your call's row grows into your call card, a live room's gains who is there and Join.
+                        when (kind) {
+                            RowVoice.CALL -> RowCallCard(voice, state.account, narrow = closeNavigation != null, open = openChannel, leave = leaveVoice,
+                                Modifier.padding(vertical = 4.dp), row = row)
+                            RowVoice.ROOM -> RowRoomCard(
+                                LiveRoom(channel, people), voiceJoinAction(state, voice, pendingVoiceJoin, channel),
+                                state.voiceSessionStartedAt[voiceRootKey(detail.space.demo, channel.id)], open = openChannel, join = { joinVoice(channel) },
+                                prepare = { viewModel.prepareVoiceJoin(channel) }, Modifier.padding(vertical = 4.dp), row = row,
+                            )
+                            RowVoice.QUIET -> row()
                         }
                         NotificationSaveError(state.notificationErrors[channelKey(channel.id)], Modifier.padding(start = 35.dp)) { viewModel.dismissNotificationError(channelKey(channel.id)) }
                     }
@@ -950,6 +983,13 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         Icon(painterResource(R.drawable.lucide_inbox), null, Modifier.size(17.dp), tint = if (feedbackSelected) TerracottaBright else TextMuted)
                         Spacer(Modifier.width(9.dp))
                         Text("Feedback", Modifier.weight(1f), color = if (feedbackSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        if (state.feedbackWaiting > 0) {
+                            Text(state.feedbackWaiting.toString(),
+                                Modifier.padding(start = 6.dp).background(Terracotta, CircleShape)
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    .clearAndSetSemantics { contentDescription = "${state.feedbackWaiting} feedback conversations waiting for a reply" },
+                                color = Text, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
                 val invitePeople = owner && detail?.space?.demo == false
@@ -1022,7 +1062,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     }
                 }
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).clickable {
-                    show(if (invitePeople) Overlay.ManageSpace else Overlay.StartDirect)
+                    show(if (invitePeople) Overlay.InvitePeople else Overlay.StartDirect)
                 }.padding(horizontal = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(17.dp), tint = TextMuted)
                     Spacer(Modifier.width(9.dp))
@@ -1316,7 +1356,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
             // Filled before the insets, so the bar and keyboard areas aren't left showing the dimmed scrim.
             ThreadConversation(state, viewModel, pickFiles, Modifier.swipeCancelsPresses().entrance(MOTION_BASE, dx = 12.dp).fillMaxSize()
-                .background(SurfaceConversation).systemBarsPadding().imePadding())
+                .background(SurfaceConversation).systemBarsPadding().imePadding(), swipeToClose = true)
         }
     }
 }
@@ -1349,6 +1389,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 
 @Composable private fun ThreadConversation(
     state: AppUiState, viewModel: CaperViewModel, pickFiles: (AttachmentDraftTarget, Boolean) -> Unit, modifier: Modifier,
+    swipeToClose: Boolean = false,
 ) {
     val thread = state.thread ?: return
     val channel = state.selectedChannel ?: return
@@ -1368,46 +1409,54 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         if (state.pendingMessage != null && pending == null || pending?.rejected == true || pending != null && pending.error == null) return
         if (pending != null) viewModel.send(pending.text, threadRootId = thread.rootId, broadcast = pending.broadcast)
         // "Also send to channel" applies to one reply, so it resets with the draft.
-        else if ((draft.text.isNotBlank() || files.isNotEmpty()) && viewModel.send(draft.text, threadRootId = thread.rootId, broadcast = broadcast)) {
-            draft = TextFieldValue(""); broadcast = false
+        else if (draft.text.isNotBlank() || files.isNotEmpty()) {
+            val sent = draft.text
+            val sentBroadcast = broadcast
+            val clear = { draft = TextFieldValue(""); broadcast = false }
+            if (viewModel.send(sent, threadRootId = thread.rootId, broadcast = sentBroadcast,
+                unchanged = { draft.text == sent && broadcast == sentBroadcast }, accepted = clear)) clear()
         }
     }
     Box(modifier.attachmentDrop(canAttach, target, viewModel, dropping)) {
         Column(Modifier.fillMaxSize().background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
-            Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Thread · $conversation", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                TextButton(viewModel::closeThread, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text(if (direct) "Back to conversation" else "Back to channel") }
-            }
-            HorizontalDivider(color = Border)
-            thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread(older = thread.failedOlder, newer = thread.failedNewer) }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
-            if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
-            // Remembered: every keystroke in the reply draft recomposes this panel.
-            val rows = remember(state.messages, thread.rootId, thread.windowStart, thread.windowEnd) {
-                state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
-                    (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
-                    (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
-            }
-            MessageTimeline(state.copy(messages = rows, pendingMessage = pending, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
-                pending?.error?.let { error ->
-                    Text(error, color = ErrorText)
-                    if (pending.rejected) Row {
-                        TextButton({
-                            viewModel.discardPending(restoreFiles = true)?.let {
-                                draft = TextFieldValue(it, TextRange(it.length)); broadcast = pending.broadcast
-                            }
-                        }, enabled = canEditRejectedMessage(draft.text, pending.text), shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Edit") }
-                        TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Dismiss") }
-                    } else TextButton(::send, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry send") }
+            Column(Modifier.weight(1f).fillMaxWidth().threadBackSwipe(swipeToClose, viewModel::closeThread)) {
+                Row(Modifier.fillMaxWidth().height(53.dp).padding(start = 4.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(viewModel::closeThread, Modifier.size(48.dp)) {
+                        Icon(painterResource(R.drawable.lucide_chevron_left), if (direct) "Back to conversation" else "Back to channel", Modifier.size(20.dp), tint = TextMuted)
+                    }
+                    Text("Thread · $conversation", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
+                HorizontalDivider(color = Border)
+                thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread(older = thread.failedOlder, newer = thread.failedNewer) }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
+                if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
+                // Remembered: every keystroke in the reply draft recomposes this panel.
+                val rows = remember(state.messages, thread.rootId, thread.windowStart, thread.windowEnd) {
+                    state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
+                        (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
+                        (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
+                }
+                MessageTimeline(state.copy(messages = rows, pendingMessage = pending, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
+                    pending?.error?.let { error ->
+                        Text(error, color = ErrorText)
+                        if (pending.rejected) Row {
+                            TextButton({
+                                viewModel.discardPending(restoreFiles = true)?.let {
+                                    draft = TextFieldValue(it, TextRange(it.length)); broadcast = pending.broadcast
+                                }
+                            }, enabled = canEditRejectedMessage(draft.text, pending.text), shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Edit") }
+                            TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Dismiss") }
+                        } else TextButton(::send, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry send") }
+                    }
+                }
+                if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
+                // A failed load shows its error and Retry instead (web).
+                if (!thread.loading && thread.error == null && rows.none { it.threadRootId == thread.rootId })
+                    Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
             }
-            if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
-            // A failed load shows its error and Retry instead (web).
-            if (!thread.loading && thread.error == null && rows.none { it.threadRootId == thread.rootId })
-                Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
             if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) {
                 state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
                 state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
-                DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft)
+                DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
                 val broadcastChecked = pending?.broadcast ?: broadcast
                 // The label toggles too, as one checkbox control.
                 Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
@@ -1494,7 +1543,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     // A 1:1 DM (not your notes) offers Block / Unblock; a request does so in its own bar.
     val direct = state.selectedDirect?.takeIf { channel.direct && it.peer.id != state.account?.id && !it.incoming }
     var confirmBlock by remember(channel.id) { mutableStateOf(false) }
-    if (confirmBlock && direct != null) BlockConfirmDialog(BlockedAccount(direct.peer.id, direct.peer.username, direct.peer.displayName, direct.peer.avatarId, direct.peer.avatarAsset, direct.peer.avatarUrl), viewModel, { confirmBlock = false })
+    if (confirmBlock && direct != null) BlockConfirmDialog(BlockedAccount(direct.peer.id, direct.peer.username, direct.peer.displayName, direct.peer.avatarId, direct.peer.avatarAsset, direct.peer.avatarUrl, direct.peer.admin, direct.peer.team), viewModel, { confirmBlock = false })
     fun toggleBlock() { if (direct == null) return; if (direct.blocked) viewModel.unblock(direct.peer.id) else confirmBlock = true }
     // Files dragged in from another app (split screen, freeform windows, desktop mode, ChromeOS).
     val canAttach = joined && state.uploadsEnabled && state.chatAuthorId != null && !state.messagesLoading && state.messagesError == null && state.sessionError == null
@@ -1506,7 +1555,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             val live = state.gateway == GatewayStatus.LIVE
             var showConnection by remember(channel.id) { mutableStateOf(false) }
             LaunchedEffect(live, channel.id) { showConnection = false; if (!live) { kotlinx.coroutines.delay(1_000); showConnection = true } }
-            // The header carries no voice (Live now has it); phones' strip under it offers this channel's Join.
+            // The header carries no voice (the channel list has it); phones' strip under it offers this channel's Join.
             val channelVoice = !channel.direct && joined && BuildConfig.ENABLE_NATIVE_VOICE
             // A visited channel is never in the (demo) space you have open.
             val demo = visit == null && state.selectedSpace?.space?.demo == true
@@ -1562,7 +1611,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
                             Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
                     }
-                    if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
+                    if (!narrow && direct != null && (direct.blocked || direct.peer.canBlock)) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
                         Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                     if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Join channel") }
@@ -1583,7 +1632,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         onClick = { channelMenuOpen = false; toggleMembers() },
                     )
                     // A 1:1 DM keeps Block / Unblock here on phones.
-                    if (direct != null) DropdownMenuItem(
+                    if (direct != null && (direct.blocked || direct.peer.canBlock)) DropdownMenuItem(
                         text = { Text(if (direct.blocked) "Unblock" else "Block", fontSize = 14.sp, color = if (direct.blocked) Text else ErrorText) },
                         leadingIcon = { Spacer(Modifier.size(18.dp)) },
                         onClick = { channelMenuOpen = false; toggleBlock() },
@@ -1677,13 +1726,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 }
                 state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
-                DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft)
+                DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
                 val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
                 fun sendDraft() {
                     if (hasContent && state.pendingMessage == null) {
                         val sent = draft.text
                         viewModel.setTyping(false)
-                        if (viewModel.send(sent)) updateDraft(TextFieldValue(""))
+                        val clear = { updateDraft(TextFieldValue("")) }
+                        if (viewModel.send(sent, unchanged = { draft.text == sent }, accepted = clear)) clear()
                     }
                 }
                 fun submit() {
@@ -1966,6 +2016,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val selfId = state.chatAuthorId ?: state.account?.id
     val blocked = state.blockedIds
     val rows = remember(messages, blocked, selfId, revealedRuns) { timelineRows(groupBlocked(messages, blocked, selfId, revealedRuns)) }
+    val newMessagesId = if (!inThread && state.visit == null && !state.feedbackShown && state.selectedDirectId == null && state.selectedChannel?.direct == false)
+        chat.caper.android.data.channelNewMessagesId(messages, state.channelVisitUnread, state.hasMoreMessages, blocked, selfId) else null
     // Recheck while stationary too: foreground return and failed acknowledgements need no scroll.
     // The bottom of a real reply must be visible (also works for replies taller than the viewport).
     LaunchedEffect(inThread, state.selectedChannel?.id, state.thread, rows) {
@@ -2068,6 +2120,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
             }) {
                 if (divider && row !is TimelineRow.Blocked) DateDivider(message.createdAt)
+                if (row is TimelineRow.Message && message.id == newMessagesId) Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    HorizontalDivider(Modifier.weight(1f), color = Terracotta, thickness = 1.dp)
+                    Text("New messages", color = Terracotta, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    HorizontalDivider(Modifier.weight(1f), color = Terracotta, thickness = 1.dp)
+                }
                 if (row is TimelineRow.Blocked) {
                     BlockedRunRow(row.run.messages.size, row.run.revealed) {
                         revealedRuns = if (row.run.revealed) revealedRuns - row.run.key else revealedRuns + row.run.key
@@ -2083,6 +2144,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     ReactionMessageRow(
                         message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                         openReactors = { target, emoji -> reactorsTarget = target.id to emoji },
+                        openPicker = { pickerTarget = it },
                         openMention = { mentionTarget = mentionCard(it.id, it.username, state) },
                         openAuthor = { mentionTarget = authorCard(it, state) },
                         openActions = { actionTarget = it },
@@ -2093,7 +2155,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         retryPin = viewModel::retryPin,
                         dismissPinError = viewModel::dismissPinError,
                         onAttachmentFailed = viewModel::reportAttachmentFailure,
-                        grouped = row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
+                        grouped = message.id != newMessagesId && row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
                     )
                     if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
                         message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl) }
@@ -2171,7 +2233,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },
             onViewReactions = { presented.reactions.firstOrNull()?.let { reactorsTarget = presented.id to it.emoji }; actionTarget = null },
-            blockLabel = presented.author.takeIf { state.account != null && !it.isGuest && it.id != selfId }?.let { author ->
+            blockLabel = presented.author.takeIf { state.account != null && !it.isGuest && it.id != selfId && (it.id in blocked || viewModel.blockTarget(it).canBlock) }?.let { author ->
                 val target = viewModel.blockTarget(author)
                 val name = if (target.username.isNotBlank()) "@${target.username}" else target.displayName
                 if (author.id in blocked) "Unblock $name" else "Block $name"
@@ -2385,6 +2447,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     retryReaction: (String, String) -> Unit,
     dismissReactionError: (String, String) -> Unit,
     openReactors: (ChatMessage, String) -> Unit,
+    openPicker: (ChatMessage) -> Unit = {},
     retryPin: (String) -> Unit = {},
     dismissPinError: (String) -> Unit = {},
     openConversation: (ChatMessage) -> Unit = {},
@@ -2446,6 +2509,11 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
                     toggle = { setReaction(message.id, reaction.emoji, !selected) },
                     showReactors = { openReactors(message, reaction.emoji) },
                 )
+            }
+            if (message.reactions.isNotEmpty() && canReact) {
+                IconButton({ openPicker(message) }, modifier = Modifier.size(48.dp)) {
+                    Icon(painterResource(R.drawable.lucide_smile), "Add reaction", Modifier.size(18.dp), tint = TextMuted)
+                }
             }
         }
         saves.filter { it.error != null }.forEach { save ->
@@ -2589,6 +2657,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
             Column(Modifier.clip(MaterialTheme.shapes.small).background(if (message.pin?.author?.id == (state.account?.id ?: state.chatAuthorId)) Terracotta.copy(alpha = 0.12f) else PinGoldWash)) {
                 ReactionMessageRow(message, state, viewModel::setReaction, viewModel::retryReaction, viewModel::dismissReactionError,
                     openReactors = { target, emoji -> reactorsTarget = target.id to emoji }, openActions = { actionTarget = it },
+                    openPicker = { pickerTarget = it },
                     inPins = true, openMessage = goToMessage,
                     openAuthor = { pinnerTarget = it },
                     openConversation = { target -> viewModel.openForwardedConversation(target, { conversationTarget = target }, close) }, openHistory = { historyTarget = it },
@@ -3141,7 +3210,7 @@ internal fun counterTone(count: Int): Color = when {
  * in a rounded square ([PictureShape]) over the saved mascot ([avatarId]), which shows (in its
  * circle) while the picture loads, when it fails and when there is none; initials only without a
  * valid mascot. The speaking ring and an [outline] (voice stacks) follow whichever shape shows;
- * presence dots stay outside, at the bottom-right corner. [voiceRing] (Live now) draws the speaking
+ * presence dots stay outside, at the bottom-right corner. [voiceRing] (your call's faces) draws the speaking
  * ring as a 2dp gap in the surrounding colour and 2dp of voice green, outside the avatar.
  */
 @Composable internal fun Avatar(
@@ -3158,7 +3227,7 @@ internal fun counterTone(count: Int): Color = when {
             // Web: caper-green border with a soft outer ring while speaking.
             .size(size)
             .then(if (speaking) Modifier.drawBehind {
-                // Live now: the gap shows the surface behind, then a solid voice-green ring.
+                // Your call's faces: the gap shows the surface behind, then a solid voice-green ring.
                 val ring = if (voiceRing) VoiceSessionGreen else CaperGreen.copy(alpha = .2f)
                 val stroke = (if (voiceRing) 2.dp else 3.dp).toPx()
                 val gap = if (voiceRing) 2.dp.toPx() + stroke / 2 else 1.5.dp.toPx()
@@ -3446,6 +3515,18 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
+@Composable private fun InvitePeopleDialog(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, close: () -> Unit) {
+    LaunchedEffect(detail.space.id) { viewModel.loadSpaceInvitations(); viewModel.refreshPeople() }
+    CaperDialog("Invite people", close, wide = true, description = "Invite people to ${detail.space.name}.", busy = state.busy) {
+        state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+        DefaultInviteLinkSection(state, detail, viewModel)
+        HorizontalDivider(color = Border)
+        InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
+            {}, viewModel::cancelSpaceInvitation, channel = false,
+            suggestions = spaceInviteCandidates(state.people, detail.members, state.pendingSpaceInvitations), inviteOnly = true)
+    }
+}
+
 @Composable private fun ManageSpaceDialog(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, close: () -> Unit) {
     var name by remember(detail.space.id) { mutableStateOf(detail.space.name) }
     var nameError by remember(detail.space.id) { mutableStateOf<String?>(null) }
@@ -3465,7 +3546,7 @@ internal fun counterTone(count: Int): Color = when {
         nameError?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         Button(::rename, enabled = canRename, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Save name") }
         HorizontalDivider(color = Border)
-        InviteLinkSection(state, detail, viewModel)
+        InviteLinkSettingsDisclosure(state, detail, viewModel)
         HorizontalDivider(color = Border)
         InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
             { removing = it }, viewModel::cancelSpaceInvitation, channel = false,
@@ -3502,12 +3583,12 @@ internal fun counterTone(count: Int): Color = when {
     }
 }
 
-@Composable private fun InviteManager(
+@Composable internal fun InviteManager(
     members: List<Member>, pending: List<Member>, busy: Boolean, add: (String, () -> Unit, (String) -> Unit) -> Unit,
     remove: (Member) -> Unit, cancel: (Member) -> Unit, channel: Boolean, suggestions: List<MentionCandidate>,
+    inviteOnly: Boolean = false,
 ) {
     Text("Invite", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-    MemberManager(members, pending, busy, add, remove, channel, suggestions, heading = "Members", action = "Invite")
     Text("Pending invitations", fontSize = 13.sp, fontWeight = FontWeight.Bold)
     if (pending.isEmpty()) Text("No pending invitations.", color = TextMuted, fontSize = 11.sp)
     pending.forEach { member ->
@@ -3520,6 +3601,7 @@ internal fun counterTone(count: Int): Color = when {
             TextButton({ cancel(member) }, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Cancel", color = ErrorText) }
         }
     }
+    MemberManager(members, pending, busy, add, remove, channel, suggestions, heading = "Members", action = "Invite", inviteOnly = inviteOnly)
 }
 
 @Composable private fun ManageChannelDialog(state: AppUiState, channel: Channel, viewModel: CaperViewModel, close: () -> Unit) {
@@ -3567,11 +3649,12 @@ internal fun counterTone(count: Int): Color = when {
 @Composable private fun MemberManager(
     members: List<Member>, invitations: List<Member>, busy: Boolean, add: (String, () -> Unit, (String) -> Unit) -> Unit, remove: (Member) -> Unit,
     channel: Boolean, suggestions: List<MentionCandidate>, heading: String = "Members", action: String = "Add",
+    inviteOnly: Boolean = false,
 ) {
     var username by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var success by remember { mutableStateOf<String?>(null) }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    if (!inviteOnly) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(heading, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         Surface(color = SurfaceRaised, shape = CircleShape) { Text(members.size.toString(), Modifier.padding(horizontal = 6.dp, vertical = 2.dp), color = TextMuted, fontSize = 10.sp) }
     }
@@ -3591,7 +3674,7 @@ internal fun counterTone(count: Int): Color = when {
     }
     success?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp) }
     error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
-    members.forEach { member ->
+    if (!inviteOnly) members.forEach { member ->
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
             Avatar(member.displayName, 30.dp, avatarId = member.avatarId, avatarAsset = member.avatarAsset, avatarUrl = member.avatarUrl); Spacer(Modifier.width(9.dp))
             Column(Modifier.weight(1f)) {
@@ -3616,7 +3699,7 @@ internal fun canEditRejectedMessage(draft: String, rejectedText: String): Boolea
     Icon(painterResource(R.drawable.lucide_lock_keyhole), null, Modifier.size(17.dp), tint = TextMuted); Spacer(Modifier.width(8.dp)); Column(Modifier.weight(1f)) { Text("Private channel", fontWeight = FontWeight.Bold, fontSize = 13.sp); Text(if (value) "Only you and the people you add can view or join." else "Anyone in $spaceName can view or join this channel.", color = TextMuted, fontSize = 11.sp) }; Switch(value, { CaperEffects.toggle(it); changed(it) }, colors = caperSwitchColors())
 }
 
-@Composable private fun ConfirmDialog(
+@Composable internal fun ConfirmDialog(
     title: String, body: String, action: String, busy: Boolean, close: () -> Unit, warn: Boolean = false,
     pendingLabel: String = if (action.startsWith("Delete")) "Deleting…" else "Saving…",
     /** The app-wide error, shown once this action has run. */

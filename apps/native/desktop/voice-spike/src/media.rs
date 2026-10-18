@@ -1404,8 +1404,25 @@ impl NativeSession {
         guard.peer = Some(peer.clone());
         let subscriptions = Arc::new(Mutex::new(BTreeMap::<String, String>::new()));
         let callback_subscriptions = subscriptions.clone();
-        let callback_control = control.clone();
-        let runtime = tokio::runtime::Handle::current();
+        // on_track runs on WebRTC's signaling thread, which must never wait for the playback
+        // lock: its holders call set_enabled on remote tracks, which WebRTC runs on that same
+        // thread, so both would wait forever. Tracks start silent there and are added here, in order.
+        let (arrived, mut arrivals) =
+            tokio::sync::mpsc::unbounded_channel::<(String, MediaStreamTrack)>();
+        let arrival_control = control.clone();
+        tokio::spawn(async move {
+            while let Some((track_id, track)) = arrivals.recv().await {
+                let audio = match &track {
+                    MediaStreamTrack::Audio(audio) => Some(audio.clone()),
+                    _ => None,
+                };
+                if arrival_control.add_remote_track(track_id.clone(), track)
+                    && let Some(audio) = audio
+                {
+                    tokio::spawn(arrival_control.clone().meter_remote_track(track_id, audio));
+                }
+            }
+        });
         peer.on_track(Some(Box::new(move |event| {
             let Some(mid) = event.transceiver.mid() else {
                 event.track.set_enabled(false);
@@ -1419,18 +1436,12 @@ impl NativeSession {
                         .iter()
                         .find_map(|(track, assigned)| (assigned == &mid).then(|| track.clone()))
                 });
+            event.track.set_enabled(false);
+            if let MediaStreamTrack::Audio(audio) = &event.track {
+                audio.set_volume(0.0);
+            }
             if let Some(track_id) = track_id {
-                let audio = match &event.track {
-                    MediaStreamTrack::Audio(audio) => Some(audio.clone()),
-                    _ => None,
-                };
-                if callback_control.add_remote_track(track_id.clone(), event.track)
-                    && let Some(audio) = audio
-                {
-                    runtime.spawn(callback_control.clone().meter_remote_track(track_id, audio));
-                }
-            } else {
-                event.track.set_enabled(false);
+                let _ = arrived.send((track_id, event.track));
             }
         })));
 

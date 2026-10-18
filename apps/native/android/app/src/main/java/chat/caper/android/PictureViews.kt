@@ -1,7 +1,9 @@
 package chat.caper.android
 
 import android.content.Context
+import android.net.Uri
 import android.os.Build
+import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -10,6 +12,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -18,6 +21,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.mimeTypes
+import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -33,6 +40,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import chat.caper.android.data.FileDrop
 import chat.caper.android.model.AppUiState
 import chat.caper.android.model.PROFILE_PICTURE_KEY
 import chat.caper.android.model.Picture
@@ -127,6 +135,7 @@ private val FrameSide = 112.dp
         unavailable = state.uploadsChecked && !state.uploadsEnabled,
         hasPicture = hasPicture,
         label = "Change profile picture", noun = "picture",
+        drop = { viewModel.changePicture(it, epoch = epoch) },
         change = { runCatching { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } },
         remove = { viewModel.removePicture() },
     ) {
@@ -162,6 +171,7 @@ private val FrameSide = 112.dp
         unavailable = state.uploadsChecked && !state.uploadsEnabled,
         hasPicture = !space.iconAsset.isNullOrEmpty(),
         label = "Change space icon", noun = "icon",
+        drop = { viewModel.changePicture(it, space.id, epoch) },
         change = { runCatching { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } },
         remove = { viewModel.removePicture(space.id) },
     ) {
@@ -176,16 +186,39 @@ private val FrameSide = 112.dp
  */
 @Composable private fun PictureFrame(
     save: PictureSaveUi?, unavailable: Boolean, hasPicture: Boolean, label: String, noun: String,
-    change: () -> Unit, remove: () -> Unit, picture: @Composable () -> Unit,
+    change: () -> Unit, remove: () -> Unit, drop: (Uri) -> Unit, picture: @Composable () -> Unit,
 ) {
     val busy = save?.busy == true
     // With uploads unavailable, a custom picture can still be removed.
     val enabled = !busy && (hasPicture || !unavailable)
     var menu by remember { mutableStateOf(false) }
+    var dropping by remember { mutableStateOf(false) }
+    val canDrop by rememberUpdatedState(!busy && !unavailable)
+    val onDrop by rememberUpdatedState(drop)
+    val activity = LocalActivity.current
+    val dropTarget = remember(activity) {
+        object : DragAndDropTarget {
+            override fun onEntered(event: DragAndDropEvent) { dropping = canDrop }
+            override fun onExited(event: DragAndDropEvent) { dropping = false }
+            override fun onEnded(event: DragAndDropEvent) { dropping = false }
+            override fun onDrop(event: DragAndDropEvent): Boolean {
+                dropping = false
+                if (!canDrop) return false
+                val drag = event.toAndroidDragEvent()
+                val clip = drag.clipData ?: return false
+                val uri = (0 until clip.itemCount).firstNotNullOfOrNull { clip.getItemAt(it).uri } ?: return false
+                activity?.requestDragAndDropPermissions(drag)
+                menu = false
+                onDrop(uri)
+                return true
+            }
+        }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Box {
             Box(
                 Modifier
+                    .dragAndDropTarget({ canDrop && FileDrop.carriesFiles(it.mimeTypes()) }, dropTarget)
                     .semantics { contentDescription = label }
                     .clickable(enabled = enabled, role = Role.Button) { if (hasPicture) menu = true else change() }
                     // Room for the badge, which sits over the frame's corner.
@@ -193,7 +226,7 @@ private val FrameSide = 112.dp
             ) {
                 Box(
                     Modifier.size(FrameSide).alpha(if (busy) 0.55f else 1f).clip(PictureShape)
-                        .background(SurfaceRaised).border(1.dp, Border, PictureShape),
+                        .background(SurfaceRaised).border(if (dropping) 2.dp else 1.dp, if (dropping) Terracotta else Border, PictureShape),
                     contentAlignment = Alignment.Center,
                 ) { picture() }
                 Box(

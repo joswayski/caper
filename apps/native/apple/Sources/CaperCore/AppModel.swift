@@ -7,6 +7,8 @@ public final class AppModel {
     public var phase: Phase = .loading
     public var account: Account?
     public var spaces: [Space] = []
+    public private(set) var voiceActivitySpaceIDs: Set<String> = []
+    private var voiceActivityRefreshing = false
     public var invitations: [Space] = []
     public var notificationInvitation: Space?
     public var notificationChannelInvitation: ChannelInvitation?
@@ -24,7 +26,39 @@ public final class AppModel {
         set { detailSnapshot = newValue }
     }
     public var selectedSpaceID: String?
-    public var selectedChannelID: String? { didSet { if selectedChannelID != oldValue { removeShownNotifications() } } }
+    public var selectedChannelID: String? { didSet { if selectedChannelID != oldValue {
+        removeShownNotifications()
+        beginChannelUnreadVisit()
+    } } }
+    private var unreadVisitToken = UUID()
+    private var unreadVisitReady = false
+    private var unreadVisit: UnreadChannel?
+
+    /// Resolve the entry snapshot before any automatic acknowledgement can advance it.
+    private func beginChannelUnreadVisit() {
+        let token = UUID(), attempt = generation
+        unreadVisitToken = token
+        unreadVisitReady = false
+        unreadVisit = nil
+        guard let id = selectedChannelID, account != nil else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            let snapshot = try? await api.unreadSpaces()
+            guard generation == attempt, unreadVisitToken == token, selectedChannelID == id else { return }
+            unreadVisit = snapshot?.spaces.flatMap(\.channels).first { $0.id == id }
+            // A failed/old-server snapshot deliberately yields no divider, not a guessed boundary.
+            unreadVisitReady = true
+            markSelectedChannelRead()
+        }
+    }
+
+    public func channelNewMessagesDividerID() -> String? {
+        guard selectedDirectMessageID == nil, visit == nil, selectedChannelID == chat.channelID,
+              let unreadVisit, let boundary = unreadVisit.readSeq else { return nil }
+        return ChannelUnreadDivider.messageID(messages: chat.channelMessages, readSeq: boundary,
+            lastSeq: unreadVisit.lastSeq, hasMore: chat.hasMore, viewerID: account?.id,
+            blocked: chat.blockedAuthorIDs)
+    }
     private var directMessageSnapshots: [DirectMessageConversation] = []
     public var directMessages: [DirectMessageConversation] {
         get {
@@ -33,7 +67,7 @@ public final class AppModel {
                 guard let account, conversation.peer.id == account.id, let username = account.username, let name = account.displayName else { return conversation }
                 let picture = account.ownPicture(asset: conversation.peer.avatarAsset, url: conversation.peer.avatarUrl)
                 return DirectMessageConversation(id: conversation.id,
-                    peer: DirectMessagePeer(id: conversation.peer.id, username: username, displayName: name, avatarId: conversation.peer.avatarId,
+                    peer: DirectMessagePeer(admin: conversation.peer.admin, id: conversation.peer.id, username: username, displayName: name, avatarId: conversation.peer.avatarId, team: conversation.peer.team,
                                             avatarAsset: picture.asset, avatarUrl: picture.url),
                     lastSeq: conversation.lastSeq, readSeq: conversation.readSeq, status: conversation.status, blocked: conversation.blocked)
             }
@@ -180,6 +214,7 @@ public final class AppModel {
     }
     private var browseCoversConversation: Bool { narrowLayout && navigationOpen }
     public private(set) var unreadSpaces: [UnreadSpace] = []
+    public private(set) var feedbackWaiting: Int = 0
     public func channelUnread(_ id: String) -> Bool { unreadSpaces.contains { $0.channels.contains { $0.id == id } } }
     @ObservationIgnored private var unreadRevision = 0
     @ObservationIgnored private var unreadRefreshScheduled = false
@@ -724,7 +759,8 @@ public final class AppModel {
             draft.progress = "Sending…"
             attemptedSend = true
             let message = try await api.send(channelID: conversation.id, sessionToken: session.token, clientMessageID: command.id,
-                                             text: command.text, attachmentIDs: command.attachmentIDs)
+                                             text: command.text, attachmentIDs: command.attachmentIDs,
+                                             spoilerAttachmentIDs: command.attachments.filter(\.spoiler).map(\.id))
             try draft.checkActive()
             guard generation == attempt else { throw CancellationError() }
             guard MessageValidation.acceptsResponse(message, channelID: conversation.id, command: command, authorID: account.id),
@@ -750,6 +786,31 @@ public final class AppModel {
         }
     }
 
+    /// Whether `sendUpdateReport` can post: signed in with a username.
+    public var canSendUpdateReport: Bool { account?.username != nil }
+
+    /// Posts a failed update's error as `@feedback` in the account's notes, where
+    /// the Caper team can read it and reply. Never navigates. Returns a message
+    /// to show on failure, or nil once the message is sent.
+    public func sendUpdateReport(error report: String, installed: String, target: String) async -> String? {
+        guard let account, let username = account.username else { return "Sign in to send this to the Caper team." }
+        do {
+            let conversation: DirectMessageConversation
+            if let known = directMessages.first(where: { $0.peer.id == account.id }) { conversation = known }
+            else { conversation = try await api.createDirectMessage(username: username) }
+            guard conversation.peer.id == account.id else { return "Couldn’t open your notes. Try again." }
+            replaceDirectMessage(conversation)
+            let session = try await api.chatSession(name: account.displayName ?? "")
+            let text = "@feedback My Caper update didn’t finish.\n\n\(report)\n\n\(installed) → Caper \(target) on macOS"
+            let message = try await api.send(channelID: conversation.id, sessionToken: session.token,
+                                             clientMessageID: UUID().uuidString.lowercased(), text: text)
+            chat.receiveProfileMessage(message)
+            return nil
+        } catch {
+            return FriendlyError.message(for: error)
+        }
+    }
+
     /// Opens the account's notes conversation, creating it through the normal DM
     /// endpoint only when the server has not returned one yet.
     public func openSelfDirectMessage() async {
@@ -763,10 +824,10 @@ public final class AppModel {
         }
     }
 
-    public func select(directMessage conversation: DirectMessageConversation) async {
+    public func select(directMessage conversation: DirectMessageConversation, contextHistory: ChatHistory? = nil) async {
         if openingDirectID == conversation.id { return }
         directHistoryTask?.cancel(); directHistoryTask = nil; openingDirectID = nil
-        if selectedDirectMessageID == conversation.id, !chat.loadFailed,
+        if contextHistory == nil, selectedDirectMessageID == conversation.id, !chat.loadFailed,
            chat.isPreview == (conversation.status == .incoming) {
             navigationGeneration += 1
             navigationTarget = nil; navigationError = nil
@@ -788,7 +849,8 @@ public final class AppModel {
         do {
             let key = navigationKey(spaceID: "", channelID: conversation.id)
             let prepared: PreparedNavigation
-            if let retained = visited[key] { prepared = retained }
+            if let contextHistory { prepared = PreparedNavigation(detail: nil, channelID: conversation.id, history: contextHistory) }
+            else if let retained = visited[key] { prepared = retained }
             else {
                 prefetch(directMessage: conversation)
                 let entry = prefetches[key]!
@@ -861,7 +923,9 @@ public final class AppModel {
                 guard generation == attempt, navigationGeneration == navigation + 1 else { return false }
             }
             guard chat.channelID == source.message.channelId else { return false }
-            return await chat.goToMessage(source.message)
+            guard await chat.goToMessage(source.message) else { return false }
+            if source.message.threadRootId == nil { await chat.openThread(source.message.id) }
+            return true
         } catch is CancellationError { return false }
         catch {
             if generation == attempt, navigationGeneration == navigation { navigationError = "Couldn’t open the conversation. Try again." }
@@ -914,6 +978,7 @@ public final class AppModel {
     /// declined server-side, so it leaves the requests list too.
     public func block(_ target: BlockTarget) async throws {
         guard let account else { return }
+        guard target.canBlock else { throw UserFacingError(message: "Caper admins and the Caper team can't be blocked.") }
         guard target.id != account.id else { throw UserFacingError(message: "You can't block yourself.") }
         let attempt = generation
         try await api.block(accountID: target.id)
@@ -1008,7 +1073,7 @@ public final class AppModel {
             chat.refreshDraftUploads()
             markSelectedDirectRead()
             removeShownNotifications()
-            Task { await refreshDirectMessages(); await refreshUnreadSpaces() }
+            Task { await refreshVoiceActivity(); await refreshDirectMessages(); await refreshUnreadSpaces() }
             refreshNotificationSettingsIfStale()
             refreshMembership()
         }
@@ -1053,6 +1118,21 @@ public final class AppModel {
         }
     }
 
+    private func refreshVoiceActivity() async {
+        guard account != nil, !voiceActivityRefreshing else { return }
+        voiceActivityRefreshing = true
+        defer { voiceActivityRefreshing = false }
+        let attempt = generation
+        do {
+            let snapshot = try await api.spaceVoiceActivity()
+            guard generation == attempt, account != nil, !Task.isCancelled else { return }
+            voiceActivitySpaceIDs = Set(snapshot.spaceIds)
+        } catch {
+            guard generation == attempt else { return }
+            voiceActivitySpaceIDs = []
+        }
+    }
+
     public func refreshUnreadSpaces() async {
         guard account != nil else { return }
         let accountGeneration = generation
@@ -1062,7 +1142,8 @@ public final class AppModel {
         unreadRevision += 1
         let attempt = generation, revision = unreadRevision
         guard let snapshot = try? await api.unreadSpaces(), generation == attempt, unreadRevision == revision else { return }
-        unreadSpaces = snapshot
+        unreadSpaces = snapshot.spaces
+        feedbackWaiting = snapshot.feedbackWaiting
         markSelectedChannelRead()
     }
 
@@ -1077,7 +1158,7 @@ public final class AppModel {
     }
 
     private func markSelectedChannelRead() {
-        guard foreground, !browseCoversConversation, account != nil, selectedDirectMessageID == nil,
+        guard unreadVisitReady, foreground, !browseCoversConversation, account != nil, selectedDirectMessageID == nil,
               let spaceID = detail?.space.id, !spaceID.isEmpty, let id = selectedChannelID,
               let history = chat.currentSnapshot(), history.channel?.id == id, history.hasNewer != true,
               (try? Sequence.compare(history.cursor, channelReads[id] ?? "0")) == .orderedDescending else { return }
@@ -1123,6 +1204,7 @@ public final class AppModel {
             // Sign-in has just loaded the spaces; membership waits for the next pass.
             var reconcile = false
             while !Task.isCancelled {
+                await self?.refreshVoiceActivity()
                 await self?.refreshDirectMessages()
                 await self?.refreshUnreadSpaces()
                 if reconcile { self?.refreshMembership() }
@@ -1268,7 +1350,7 @@ public final class AppModel {
         await navigate(space: target.space, channelID: target.channelID)
     }
 
-    private func navigate(space: Space, channelID: String?) async {
+    private func navigate(space: Space, channelID: String?, contextHistory: ChatHistory? = nil) async {
         directHistoryTask?.cancel(); directHistoryTask = nil; openingDirectID = nil
         rememberCurrentNavigation()
         navigationGeneration += 1
@@ -1287,7 +1369,7 @@ public final class AppModel {
         do {
             let key = navigationKey(spaceID: space.id, channelID: channelID)
             let prepared: PreparedNavigation?
-            if let entry = prefetches[key], entry.expires > Date(), entry.generation == generation {
+            if contextHistory == nil, let entry = prefetches[key], entry.expires > Date(), entry.generation == generation {
                 removePrefetch(key)
                 prepared = try await entry.task.value
                 guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
@@ -1308,7 +1390,8 @@ public final class AppModel {
             if channelID != nil && channel == nil { throw APIError(status: 404, message: "This channel is no longer accessible.") }
             let history: ChatHistory?
             if let channel {
-                if let retained = visitedNavigation(spaceID: space.id, channelID: channel.id)?.history { history = retained }
+                if let contextHistory { history = contextHistory }
+                else if let retained = visitedNavigation(spaceID: space.id, channelID: channel.id)?.history { history = retained }
                 else if prepared?.channelID == channel.id { history = prepared?.history }
                 else { history = try await api.history(channelID: channel.id) }
                 guard navigationGeneration == navigation, generation == attempt, navigationCacheEpoch == cacheEpoch else { return }
@@ -1629,10 +1712,26 @@ public final class AppModel {
         return links
     }
 
+    public func defaultInviteLink(channelID: String? = nil) async throws -> InviteLink {
+        guard let id = detail?.space.id, isOwner else { throw CancellationError() }
+        let attempt = generation
+        let link = try await api.defaultInviteLink(spaceID: id, channelID: channelID)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        return link
+    }
+
     public func createInviteLink(channelID: String?, maxAge: Int?, maxUses: Int?) async throws -> InviteLink {
         guard let id = detail?.space.id, isOwner else { throw CancellationError() }
         let attempt = generation
         let link = try await api.createInviteLink(spaceID: id, channelID: channelID, maxAge: maxAge, maxUses: maxUses)
+        guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
+        return link
+    }
+
+    public func regenerateInviteLink(_ current: InviteLink) async throws -> InviteLink {
+        guard let id = detail?.space.id, isOwner else { throw CancellationError() }
+        let attempt = generation
+        let link = try await api.regenerateInviteLink(spaceID: id, code: current.code)
         guard generation == attempt, detail?.space.id == id else { throw CancellationError() }
         return link
     }
@@ -2195,7 +2294,9 @@ extension AppModel {
     }
 
     private func clearNotificationState() {
-        unreadSpaces = []; channelReads = [:]; unreadRevision += 1
+        voiceActivitySpaceIDs = []
+        unreadSpaces = []; feedbackWaiting = 0; channelReads = [:]; unreadRevision += 1
+        unreadVisitToken = UUID(); unreadVisit = nil; unreadVisitReady = false
         #if os(macOS)
         desktopNotifications.stop()
         #endif
@@ -2289,8 +2390,8 @@ extension AppModel {
         await openFeedback(report.target)
     }
 
-    /// Opens a reported conversation around the reported message, with its
-    /// thread open so replies land there by default. A conversation you
+    /// Opens a reported conversation around the reported message, opening a
+    /// thread only for a reported reply. A conversation you
     /// belong to (no `visitor` flag) that your lists hold opens the normal
     /// way; anything else opens as a visit, without joining.
     public func openFeedback(_ target: FeedbackTarget) async {
@@ -2312,13 +2413,13 @@ extension AppModel {
             let direct = history.channel?.direct == true || history.space?.id == ""
             if !history.visitor {
                 if direct, let conversation = directMessages.first(where: { $0.id == target.channelID }) {
-                    await select(directMessage: conversation)
+                    await select(directMessage: conversation, contextHistory: history)
                     guard generation == attempt, selectedDirectMessageID == target.channelID, chat.channelID == target.channelID else { return }
                     await focusFeedback(target)
                     return
                 }
                 if !direct, let spaceID = history.space?.id, let space = spaces.first(where: { $0.id == spaceID }) {
-                    await navigate(space: space, channelID: target.channelID)
+                    await navigate(space: space, channelID: target.channelID, contextHistory: history)
                     guard generation == attempt, selectedChannelID == target.channelID, chat.channelID == target.channelID else { return }
                     await focusFeedback(target)
                     return
@@ -2348,9 +2449,10 @@ extension AppModel {
         }
     }
 
-    /// Opens the report's thread (around the reply, if it is one) and marks the reported message.
+    /// Root reports stay in the loaded timeline; replies open their existing thread.
     private func focusFeedback(_ target: FeedbackTarget) async {
-        await chat.openThread(target.rootID, around: target.isReply ? target.messageID : nil)
+        if target.isReply { await chat.openThread(target.rootID, around: target.messageID) }
+        else { chat.closeThread() }
         guard chat.channelID == target.channelID else { return }
         chat.focusedMessageID = target.messageID
         chat.focusRevision += 1
@@ -2481,7 +2583,9 @@ public final class ChatModel {
     public var displayedPins: [ChatMessage] { profiled(mutations.pinned(messages: messages, confirmed: pinnedMessages)) }
     public var channelName = "general"
     public var spaceName = "Caper"
-    public var draft = ""
+    public var draft = "" { didSet { if oldValue != draft { composerRevision += 1 } } }
+    private var composerRevision = 0
+    private var uploadSubmission: UUID?
     public var loading = false
     public var loadingOlder = false
     public var olderError: String?
@@ -2529,21 +2633,21 @@ public final class ChatModel {
     public var attachUnavailableReason: String {
         (uploadsChecked && !uploadsEnabled) || isPreview || channelID == nil || loadFailed ? "File uploads are unavailable" : "Checking file uploads…"
     }
-    /// The send control's enabled state: text or uploaded files, nothing still uploading.
+    /// Failed files may be retried by Send; initial uploads must settle first.
     public var canSubmit: Bool { canSubmit(inThread: false) }
     public func canSubmit(inThread: Bool) -> Bool {
-        if sending || delivery.rejected { return false }
+        if sending || uploadSubmission != nil || delivery.rejected { return false }
         let root = inThread ? threadRootID : nil
         if inThread && root == nil { return false }
         if let pending = delivery.pending { return pending.threadRootId == root }
         let files = attachmentFiles(inThread: inThread)
-        return files.allSatisfy { $0.attachment != nil }
+        return files.allSatisfy { $0.attachment != nil || $0.error != nil }
             && MessageValidation.error(for: inThread ? threadDraft : draft, attachmentCount: files.count) == nil
     }
     public var pinErrors: [String: String] = [:]
     public var pendingPins: Set<String> = []
     public var threadRootID: String? {
-        didSet { if oldValue != threadRootID { visibleThreadReply = nil } }
+        didSet { if oldValue != threadRootID { visibleThreadReply = nil; composerRevision += 1; uploadSubmission = nil } }
     }
     public private(set) var unreadThreads: [String: String] = [:]
     private var unreadThreadChannel: String?
@@ -2630,7 +2734,12 @@ public final class ChatModel {
     }
     public var threadDraft: String {
         get { threadRootID.flatMap { threadDrafts[$0] } ?? "" }
-        set { if let threadRootID { threadDrafts[threadRootID] = newValue } }
+        set {
+            if let threadRootID {
+                if threadDrafts[threadRootID] != newValue { composerRevision += 1 }
+                threadDrafts[threadRootID] = newValue
+            }
+        }
     }
     public var threadBroadcast: Bool {
         get { threadRootID.flatMap { threadBroadcasts[$0] } ?? false }
@@ -2858,6 +2967,9 @@ public final class ChatModel {
         messages = history.messages.map { overlaySnapshots($0) }
         pinnedMessages = history.pinnedMessages.map { overlayPinned($0) }
         delivery.reset(cursor: history.cursor); hasMore = history.hasMore
+        hasNewer = history.hasNewer
+        windowStart = history.hasNewer ? history.messages.first?.seq : nil
+        windowEnd = history.hasNewer ? history.messages.last?.seq : nil
         channelName = history.channel?.name ?? "general"; spaceName = history.space?.name ?? "Caper"
         session = nil; loading = false; loadFailed = false; sessionError = nil
         if let oldSubscription { await gateway.unsubscribe(oldSubscription) }
@@ -3211,7 +3323,7 @@ public final class ChatModel {
     }
 
     public func send(inThread: Bool = false, retryPending: Bool = false) async {
-        guard !sending, !delivery.rejected else { return }
+        guard !sending, uploadSubmission == nil, !delivery.rejected else { return }
         guard !retryPending || delivery.pending != nil else { return }
         guard let channelID, let session else { error = "Messaging session is unavailable."; return }
         let rootID = inThread ? (retryPending ? delivery.pending?.threadRootId : threadRootID) : nil
@@ -3219,13 +3331,31 @@ public final class ChatModel {
         if let pending = delivery.pending, pending.threadRootId != rootID { return }
         let text = inThread ? threadDraft : draft
         let target = composerTarget(inThread: inThread)
-        let files = attachmentFiles(inThread: inThread)
+        var files = attachmentFiles(inThread: inThread)
         if delivery.pending == nil {
-            if files.contains(where: { $0.attachment == nil }) {
-                for file in files where file.error != nil { retryAttachmentDraft(id: file.id) }
-                return
-            }
             if let validation = MessageValidation.error(for: text, attachmentCount: files.count) { error = validation; return }
+            if files.contains(where: { $0.attachment == nil }) {
+                let submission = UUID()
+                let expectedGeneration = generation
+                let expectedUploads = uploadGeneration
+                let revision = composerRevision
+                let broadcast = threadBroadcast
+                let reply = replyTargets[rootID ?? "channel"]?.id
+                let ids = files.map(\.id)
+                uploadSubmission = submission
+                defer { if uploadSubmission == submission { uploadSubmission = nil } }
+                for file in files where file.error != nil { retryAttachmentDraft(id: file.id) }
+                let tasks = files.compactMap { uploadTasks[$0.id] }
+                for task in tasks { await task.value }
+                guard !Task.isCancelled, uploadSubmission == submission, generation == expectedGeneration, uploadGeneration == expectedUploads,
+                      self.channelID == channelID, self.session?.token == session.token,
+                      composerTarget(inThread: inThread) == target, composerRevision == revision,
+                      !inThread || (threadRootID == rootID && threadBroadcast == broadcast),
+                      replyTargets[rootID ?? "channel"]?.id == reply,
+                      delivery.pending == nil else { return }
+                files = attachmentFiles(inThread: inThread)
+                guard files.map(\.id) == ids, files.allSatisfy({ $0.attachment != nil }) else { return }
+            }
         }
         let newSubmission = delivery.pending == nil
         // The pending row previews the local originals (which this device can
@@ -3237,6 +3367,7 @@ public final class ChatModel {
             attachment.animated = false
             attachment.url = item.localURL.absoluteString
             attachment.previewUrl = nil
+            attachment.spoiler = item.spoiler
             return attachment
         } : []
         var command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast, replyTo: replyTargets[rootID ?? "channel"])
@@ -3277,6 +3408,7 @@ public final class ChatModel {
                         var attachment = try await uploadAttachmentDraft(id: file.id)
                         attachment.kind = file.kind; attachment.status = .ready; attachment.animated = false
                         attachment.url = file.localURL.absoluteString; attachment.previewUrl = nil
+                        attachment.spoiler = file.spoiler
                         attachments.append(attachment)
                     }
                     guard self.channelID == channelID,
@@ -3288,7 +3420,7 @@ public final class ChatModel {
                 }
                 do {
                     message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text,
-                                                 attachmentIDs: command.attachmentIDs, threadRootId: command.threadRootId, broadcast: command.broadcast, replyToId: command.replyTo?.id)
+                                                 attachmentIDs: command.attachmentIDs, spoilerAttachmentIDs: command.attachments.filter(\.spoiler).map(\.id), threadRootId: command.threadRootId, broadcast: command.broadcast, replyToId: command.replyTo?.id)
                     break
                 } catch let refusal as APIError where refusal.status == 409 && refusal.code == "attachment_unavailable" {
                     guard self.channelID == channelID, delivery.pending?.id == command.id else { return }
@@ -3762,6 +3894,7 @@ public final class ChatModel {
     }
 
     private func clearLocal(preservingPending: Bool = false) {
+        uploadSubmission = nil
         unreadThreads = [:]; unreadThreadChannel = nil; visibleThreadReply = nil
         stashDraft()
         typingTask?.cancel(); typingIdleTask?.cancel(); typingExpiryTask?.cancel()
@@ -4012,6 +4145,7 @@ public final class ChatModel {
             files.forEach { AttachmentStaging.remove($0.url) }
             return
         }
+        composerRevision += 1
         setAttachmentNotice(files.count > room ? "Only \(room) more file\(room == 1 ? "" : "s") can be attached." : nil, target: target)
         files.dropFirst(room).forEach { AttachmentStaging.remove($0.url) }
         if error == "Write a message first." || error == "Wait for files to finish uploading." { error = nil }
@@ -4058,6 +4192,10 @@ public final class ChatModel {
             attachmentNotices[target] = nil
             return
         }
+    }
+
+    public func toggleAttachmentSpoiler(id: String) {
+        updateDraft(id) { $0.spoiler.toggle() }
     }
 
     private func updateDraft(_ id: String, _ change: (inout AttachmentDraft) -> Void) {

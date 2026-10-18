@@ -1,5 +1,8 @@
 package chat.caper.android
 
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -21,15 +24,23 @@ class WhatsNewUiTest {
         val snapshot = WhatsNewSnapshot(1, "android", "4".repeat(40), 4, listOf(2L, 4L).map {
             PlatformRelease(it, it.toString().repeat(40), "2026-10-11T19:00:00Z", listOf(
                 ReleaseHighlight("TEST FIXTURE — Update $it", "Local release-notes UI preview."),
-            ))
+            ), version = if (it == 4L) "0.1.112" else null)
         }).validated("android", "4".repeat(40))
         var dismissed: Long? = null
-        compose.setContent { CaperTheme {
+        var opened: String? = null
+        val uriHandler = object : UriHandler { override fun openUri(uri: String) { opened = uri } }
+        compose.setContent { CompositionLocalProvider(LocalUriHandler provides uriHandler) { CaperTheme {
             WhatsNewDialog(WhatsNewUi(), snapshot, true, {}, { dismissed = snapshot.sequence })
+        }
         } }
         val newer = compose.onNodeWithText("TEST FIXTURE — Update 4").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         val older = compose.onNodeWithText("TEST FIXTURE — Update 2").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         assertTrue(newer.top < older.top)
+        compose.onAllNodesWithText("2026-10-11").assertCountEquals(1)
+        compose.onNodeWithText("Version 0.1.112").performTouchInput { click() }
+        compose.runOnIdle { assertEquals("https://github.com/joswayski/caper/commit/" + "4".repeat(40), opened) }
+        compose.onNodeWithText("Commit 2222222").performTouchInput { click() }
+        compose.runOnIdle { assertEquals("https://github.com/joswayski/caper/commit/" + "2".repeat(40), opened) }
         compose.onNodeWithText("Got it").performClick()
         compose.runOnIdle { assertEquals(4L, dismissed) }
     }

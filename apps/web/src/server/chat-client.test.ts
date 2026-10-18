@@ -361,6 +361,7 @@ interface SendBody {
   clientMessageId: string;
   text: string;
   attachmentIds?: string[];
+  spoilerAttachmentIds?: string[];
   replyToId?: string;
 }
 
@@ -405,7 +406,7 @@ async function sendingFixture(t: TestContext) {
     const body = JSON.parse(String(init?.body)) as SendBody;
     assert.deepEqual(
       Object.keys(body)
-        .filter((key) => key !== "attachmentIds" && key !== "replyToId")
+        .filter((key) => key !== "attachmentIds" && key !== "spoilerAttachmentIds" && key !== "replyToId")
         .sort(),
       ["clientMessageId", "text"],
       "local metadata never enters the wire contract",
@@ -1074,10 +1075,11 @@ test("unknown sends keep original IDs, then a definitive unavailable response si
   const f = await sendingFixture(t);
   const files = retainedUploads();
   const upload = files.create("original bytes");
-  const attachment = await upload.ensure();
+  const attachment = { ...(await upload.ensure()), spoiler: true };
   const parent = committed({ clientMessageId: "parent", text: "Earlier message" }, "1");
   const replyTo = { id: parent.id, author: parent.author, text: parent.content.text, hasAttachments: false };
   const send = f.client.send("keep my text", { attachments: [attachment], uploads: [upload], replyTo });
+  assert.deepEqual(f.posts[0].body.spoilerAttachmentIds, ["asset1"]);
   f.posts[0].reject(new TypeError("offline"));
   assert.equal(await send, false);
   assert.equal(f.client.discardRejected(), undefined);
@@ -1091,6 +1093,8 @@ test("unknown sends keep original IDs, then a definitive unavailable response si
   assert.equal(f.posts.length, 3);
   assert.notEqual(f.posts[2].body.clientMessageId, f.posts[0].body.clientMessageId);
   assert.deepEqual(f.posts[2].body.attachmentIds, ["asset2"]);
+  assert.deepEqual(f.posts[2].body.spoilerAttachmentIds, ["asset2"]);
+  assert.equal(f.state.pendingSend?.attachments?.[0].spoiler, true);
   assert.equal(f.posts[2].body.text, "keep my text");
   assert.equal(f.posts[2].body.replyToId, parent.id);
   assert.deepEqual(f.state.pendingSend?.replyTo, replyTo);
@@ -1763,6 +1767,39 @@ test("prefetch rejects a history payload containing another channel's messages",
     }),
   );
   await assert.rejects(loadChatHistory("alphaChannel"), /another channel/);
+});
+
+test("report context preparation requests its root upfront and rejects a missing anchor", async () => {
+  const paths: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    paths.push(String(input));
+    return Response.json({
+      space: { id: "space", name: "Studio" },
+      channel: { id: "alphaChannel", name: "general" },
+      messages: [
+        {
+          id: "root",
+          channelId: "alphaChannel",
+          seq: "1",
+          author: { id: "peer", name: "Peer", isGuest: false },
+          content: { version: 1, type: "text", text: "Report root" },
+          createdAt: "2026-09-23T12:00:00Z",
+          clientMessageId: "command-one",
+        },
+      ],
+      cursor: "100",
+      hasMore: true,
+      hasNewer: true,
+    });
+  });
+  const history = await loadChatHistory("alphaChannel", undefined, "root");
+  assert.equal(history.hasNewer, true);
+  assert.equal(history.messages[0].id, "root");
+  await assert.rejects(loadChatHistory("alphaChannel", undefined, "missing"), /invalid message context/);
+  assert.deepEqual(paths, [
+    "/api/chat/channels/alphaChannel/messages?around=root",
+    "/api/chat/channels/alphaChannel/messages?around=missing",
+  ]);
 });
 
 test("a prepared history failure renders once and retries only when requested", async (t) => {

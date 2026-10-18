@@ -18,13 +18,24 @@ function fixture() {
   const mode = new URL(location.href).searchParams.get("fixture");
   const account = { id: "account00001", username: "fixture", displayName: "TEST FIXTURE member", avatarId: 3 };
   const space = { id: "space0000001", name: "TEST FIXTURE · Invite", ownerId: "owner0000001" };
-  const state = (window.inviteFixture = { posts: 0 });
+  const state = (window.inviteFixture = { posts: 0, account: mode === "guest" ? null : account });
   const original = window.fetch.bind(window);
   window.fetch = async (input, options) => {
     const path = new URL(input instanceof Request ? input.url : String(input), location.href).pathname;
     if (!path.startsWith("/api/")) return original(input, options);
-    if (path === "/api/account/me")
-      return mode === "guest" ? Response.json({ error: "unauthorized" }, { status: 401 }) : Response.json(account);
+    if (path === "/api/account/me") {
+      if (mode === "outage") return Response.json({ error: "unavailable" }, { status: 503 });
+      return state.account ? Response.json(state.account) : Response.json({ error: "unauthorized" }, { status: 401 });
+    }
+    if (path === "/api/auth/email/request") return Response.json({ challengeId: "TEST-challenge" });
+    if (path === "/api/auth/email/verify") {
+      state.account = { ...account, username: null, displayName: null };
+      return Response.json({ account: state.account });
+    }
+    if (path === "/api/account/profile") {
+      state.account = { ...account, ...JSON.parse(options.body) };
+      return Response.json(state.account);
+    }
     if (path === "/api/invites/TESTfixt01")
       return Response.json({
         code: "TESTfixt01",
@@ -68,6 +79,38 @@ try {
   browser("open", "about:blank");
   for (const width of [1280, 390]) {
     browser("set", "viewport", String(width), "844", "2");
+    // A reloaded profile with an expired session must keep its invite through reauthentication.
+    browser("open", `${origin}/profile?fixture=guest&invite=TESTfixt01`);
+    browser("wait", "--url", "**/login*");
+    assert.equal(evaluate("location.search"), "?invite=TESTfixt01");
+    browser("wait", "#email");
+    browser("find", "label", "Email address", "fill", "invite-fixture@example.test");
+    browser("find", "role", "button", "click", "--name", "Email me a code");
+    browser("wait", "#code");
+    browser("find", "label", "Sign-in code", "fill", "ABC234");
+    browser("press", "Enter");
+    browser("wait", "--url", "**/profile?invite=TESTfixt01");
+    browser("wait", "#username");
+    browser("find", "label", "Username", "fill", "invite_fixture");
+    browser("find", "label", "Display name", "fill", "TEST FIXTURE member");
+    browser("find", "role", "button", "click", "--name", "Finish account");
+    browser("wait", "--url", "**/invite/TESTfixt01");
+    browser("wait", "--fn", 'document.querySelector("main button")?.textContent.includes("Join space")');
+    assert.equal(evaluate("inviteFixture.posts"), 0, "Reauthentication must not automatically accept the invite");
+    browser("click", "main button");
+    browser("wait", "--url", "**/spaces?space=space0000001&channel=channel00001");
+    assert.equal(evaluate("inviteFixture.posts"), 1);
+
+    for (const invite of ["", "&invite=bad", "&invite=%2F%2Fevil.example"]) {
+      browser("open", `${origin}/profile?fixture=guest${invite}`);
+      browser("wait", "--url", "**/login");
+      assert.equal(evaluate("location.search"), "", "Only a valid invite may survive the redirect");
+    }
+    browser("open", `${origin}/profile?fixture=outage&invite=TESTfixt01`);
+    browser("wait", "--text", "Your account didn’t load.");
+    assert.equal(evaluate("location.pathname"), "/profile", "An outage must not sign the visitor out");
+    assert.equal(evaluate("new URLSearchParams(location.search).get('invite')"), "TESTfixt01");
+
     browser("open", `${origin}/spaces?fixture=newcomer`);
     if (width === 390) {
       browser("wait", '[aria-label="Back to Browse"]');
@@ -113,11 +156,14 @@ try {
       browser("click", "main button");
       browser("wait", "--fn", mode === "guest" ? "location.pathname === '/login'" : "location.pathname === '/spaces'");
       assert.equal(evaluate("inviteFixture.posts"), mode === "guest" ? 0 : 1);
-      if (mode !== "guest") assert.equal(evaluate("location.search"), "?space=space0000001&channel=channel00001");
+      assert.equal(
+        evaluate("location.search"),
+        mode === "guest" ? "?invite=TESTfixt01" : "?space=space0000001&channel=channel00001",
+      );
     }
   }
   console.log(
-    "PASS: desktop/narrow accessible invite entry, decorative hint click-through and dismissal, member Open space, newcomer Join space, signed-out sign-in, older API fallback, read-only previews, and landing-channel navigation.",
+    "PASS: desktop/narrow invite recovery through sign-in and profile setup, invalid/missing invite and outage controls, accessible invite entry, decorative hint click-through and dismissal, member Open space, newcomer Join space, signed-out sign-in, older API fallback, read-only previews, and landing-channel navigation.",
   );
 } finally {
   try {

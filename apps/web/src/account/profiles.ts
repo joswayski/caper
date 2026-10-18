@@ -10,6 +10,7 @@ export interface ProfileUpdate extends PersonPicture {
   id: string;
   username: string;
   displayName: string;
+  admin?: boolean;
 }
 
 /** `space.updated`: icon fields absent means the icon was removed. */
@@ -43,6 +44,7 @@ export function liveUpdate(value: unknown): LiveUpdate | undefined {
         id: person.id,
         username: person.username,
         displayName: person.displayName,
+        ...(typeof person.admin === "boolean" ? { admin: person.admin } : {}),
         ...(avatarId !== undefined ? { avatarId: avatarId as number | null } : {}),
         ...(avatarAsset ? { avatarAsset } : {}),
         ...(avatarUrl ? { avatarUrl } : {}),
@@ -68,22 +70,33 @@ export function liveUpdate(value: unknown): LiveUpdate | undefined {
 }
 
 /** `person` with `update`'s names and picture when it is the same account. */
-export function withProfile<T extends { id: string; username?: string | null; displayName?: string | null }>(
-  person: T,
-  update: ProfileUpdate | undefined,
-): T {
+export function withProfile<
+  T extends { id: string; username?: string | null; displayName?: string | null; admin?: boolean },
+>(person: T, update: ProfileUpdate | undefined): T {
   if (!update || update.id !== person.id) return person;
   const named =
-    person.username === update.username && person.displayName === update.displayName
+    person.username === update.username &&
+    person.displayName === update.displayName &&
+    (update.admin === undefined || person.admin === update.admin)
       ? person
-      : { ...person, username: update.username, displayName: update.displayName };
+      : {
+          ...person,
+          username: update.username,
+          displayName: update.displayName,
+          ...(update.admin !== undefined ? { admin: update.admin } : {}),
+        };
   return withPicture(named, update);
 }
 
 /** A message author (which has one `name`) with the latest profile; guests are never accounts. */
 export function withAuthorProfile<T extends ChatAuthor>(author: T, update: ProfileUpdate | undefined): T {
   if (!update || update.id !== author.id || author.isGuest) return author;
-  return withPicture(author.name === update.displayName ? author : { ...author, name: update.displayName }, update);
+  return withPicture(
+    author.name === update.displayName && (update.admin === undefined || author.admin === update.admin)
+      ? author
+      : { ...author, name: update.displayName, ...(update.admin !== undefined ? { admin: update.admin } : {}) },
+    update,
+  );
 }
 
 /** Every author a message carries: its own, the reply reference's, the pin's,
