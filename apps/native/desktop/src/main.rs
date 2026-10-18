@@ -13743,7 +13743,8 @@ impl CaperApp {
             egui::UiBuilder::new()
                 .max_rect(text)
                 .layout(egui::Layout::top_down(egui::Align::Min)),
-            |ui| ui.add(egui::Label::new(galley).selectable(false)),
+            // Selectable, so the error can be copied into a report.
+            |ui| ui.add(egui::Label::new(galley).selectable(true)),
         );
         let dismiss = ui
             .scope_builder(

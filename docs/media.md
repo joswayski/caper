@@ -6236,6 +6236,17 @@ failed; retry must not be treated as an already-running microphone. A failed
 input switch restores the previous route's live/muted intent, while keeping old
 capture epochs fenced until the fresh peer is ready.
 
+Before the desktop asks the media API to join, it checks that a saved
+microphone or speaker still exists, without opening it. A saved device this
+computer no longer has fails Join with an error that names the device and the
+fix, without listing the person in the call. Other device failures surface
+after joining and leave at once. Leaves after a failed setup or a call use
+their own connection and retry transport failures, because the joining
+runtime and its pooled connection may already be shutting down. Earlier
+builds could lose that leave, so a device failure left a participant on the
+roster until its 45 s lease expired while the app offered Join again, and
+repeated attempts listed the same person several times.
+
 Windows Firewall may ask to allow `caper-desktop` when voice or an audio test
 first gathers WebRTC ICE candidates. Both calls and the local test's private
 peer pair open network sockets. Test recordings stay on this machine and are

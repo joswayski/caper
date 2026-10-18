@@ -1008,10 +1008,15 @@ impl Voice {
                     self.error = None
                 }
                 Report::Failed(g, error) if g == self.state.generation => {
-                    if error.terminal() || matches!(self.state.phase, Phase::Joining(_)) {
+                    let joining = matches!(self.state.phase, Phase::Joining(_));
+                    if error.terminal() || joining {
                         self.leave();
                     }
-                    self.error = Some(error.to_string());
+                    self.error = Some(if joining {
+                        join_failure(&error.to_string())
+                    } else {
+                        error.to_string()
+                    });
                 }
                 Report::Changed(g, Err(error)) if g == self.state.generation => {
                     if error.terminal() {
@@ -1102,6 +1107,38 @@ pub enum VoiceOperation {
     DefaultOutput,
 }
 
+/// Why Join failed, worded for whoever pressed it. A missing or busy device
+/// says what to change, since joining again alone fails the same way.
+fn join_failure(detail: &str) -> String {
+    let Some(device) = ["microphone", "speaker"]
+        .into_iter()
+        .find(|device| detail.ends_with(&format!("{device} is unavailable")))
+    else {
+        return match detail {
+            "native audio devices are unavailable" => {
+                "Couldn't join voice: this computer's audio devices are unavailable.".into()
+            }
+            _ => detail.into(),
+        };
+    };
+    if detail.starts_with("selected ") {
+        format!(
+            "Couldn't join voice: your selected {device} is unavailable. \
+             Choose another {device} or reconnect it, then join again."
+        )
+    } else if detail.starts_with("system default ") {
+        format!(
+            "Couldn't join voice: your system default {device} is unavailable. \
+             Check your sound settings, then join again."
+        )
+    } else {
+        format!(
+            "Couldn't join voice: your {device} is unavailable. \
+             Close other apps using it or reconnect it, then join again."
+        )
+    }
+}
+
 fn report(sender: &Sender<Report>, repaint: &egui::Context, event: Report) {
     let _ = sender.send(event);
     repaint.request_repaint();
@@ -1119,6 +1156,24 @@ mod tests {
             channel_name: id.into(),
             space_name: "General".into(),
         }
+    }
+
+    #[test]
+    fn join_failures_say_which_device_to_fix() {
+        assert_eq!(
+            join_failure("selected microphone is unavailable"),
+            "Couldn't join voice: your selected microphone is unavailable. \
+             Choose another microphone or reconnect it, then join again."
+        );
+        assert!(
+            join_failure("system default speaker is unavailable")
+                .starts_with("Couldn't join voice: your system default speaker")
+        );
+        assert!(join_failure("microphone is unavailable").contains("Close other apps"));
+        assert_eq!(
+            join_failure("media request failed or timed out"),
+            "media request failed or timed out"
+        );
     }
 
     #[test]

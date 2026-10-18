@@ -434,17 +434,28 @@ impl MediaApi {
             |channel| format!("api/channels/{channel}/media/"),
         );
         let root = base.join(&path).map_err(|_| "invalid media API URL")?;
-        let client = Client::builder()
-            .timeout(CONTROL_TIMEOUT)
-            .redirect(Policy::none())
-            .user_agent("Caper-Desktop-Voice/0.1")
-            .build()
-            .map_err(|_| "could not initialize media networking")?;
+        let client = Self::client().map_err(|_| "could not initialize media networking")?;
         Ok(Self {
             root,
             account_token,
             client,
         })
+    }
+
+    fn client() -> reqwest::Result<Client> {
+        Client::builder()
+            .timeout(CONTROL_TIMEOUT)
+            .redirect(Policy::none())
+            .user_agent("Caper-Desktop-Voice/0.1")
+            .build()
+    }
+
+    /// The same API without connections pooled by another runtime.
+    fn with_own_connection(&self) -> Self {
+        Self {
+            client: Self::client().unwrap_or_else(|_| self.client.clone()),
+            ..self.clone()
+        }
     }
 
     async fn post<T: for<'de> Deserialize<'de>>(
@@ -619,15 +630,52 @@ impl Drop for SetupGuard {
     }
 }
 
+/// Leaves on a thread and connection of its own. The joining runtime is often
+/// shutting down by now, and a pooled connection it opened dies with it; a lost
+/// leave would keep you listed in the call until your lease expires.
 fn detached_leave(api: MediaApi, token: String) {
     std::thread::spawn(move || {
-        if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        let api = api.with_own_connection();
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-        {
-            let _ = runtime.block_on(api.post_empty("leave", &token, json!({})));
-        }
+        else {
+            return;
+        };
+        runtime.block_on(async {
+            for delay in [0, 1, 3] {
+                tokio::time::sleep(Duration::from_secs(delay)).await;
+                match api.post_empty("leave", &token, json!({})).await {
+                    // The service answered; only its own failures are worth retrying.
+                    Err(error) if error.status.is_none_or(|status| status >= 500) => {}
+                    _ => return,
+                }
+            }
+        });
     });
+}
+
+/// A saved microphone or speaker that this computer no longer has. Checked
+/// before asking for a seat, so Join fails without listing you in the call.
+/// No device is opened; other device failures surface after joining and leave.
+fn missing_saved_device(input: Option<&str>, output: Option<&str>) -> Option<String> {
+    if input.is_none() && output.is_none() {
+        return None;
+    }
+    let devices = match enumerate_audio_devices() {
+        Ok(devices) => devices,
+        Err(error) => return Some(error),
+    };
+    let missing = |id: Option<&str>, list: &[AudioDevice]| {
+        id.is_some_and(|id| !list.iter().any(|device| device.id == id))
+    };
+    if missing(input, &devices.inputs) {
+        Some("selected microphone is unavailable".into())
+    } else if missing(output, &devices.outputs) {
+        Some("selected speaker is unavailable".into())
+    } else {
+        None
+    }
 }
 
 #[derive(Clone)]
@@ -1296,6 +1344,24 @@ impl NativeSession {
         control: &JoinControl,
         join_started_at: Option<u64>,
     ) -> Result<Self, VoiceError> {
+        let saved = {
+            let intent = control
+                .device_intent
+                .lock()
+                .map_err(|_| "device intent unavailable")?;
+            let input = intent
+                .input
+                .clone()
+                .unwrap_or(input_guid.map(str::to_owned));
+            let output = intent
+                .output
+                .clone()
+                .unwrap_or(output_guid.map(str::to_owned));
+            (input, output)
+        };
+        if let Some(missing) = missing_saved_device(saved.0.as_deref(), saved.1.as_deref()) {
+            return Err(VoiceError::Local(missing));
+        }
         let joined: JoinResponse = api
             .post(
                 "join",
@@ -3515,6 +3581,29 @@ mod tests {
             "gathered offer must contain a usable candidate"
         );
         peer.close();
+    }
+
+    #[tokio::test]
+    async fn missing_saved_microphone_fails_join_before_taking_a_seat() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let api = MediaApi::new(&base, None, None).unwrap();
+        let error = NativeSession::join(
+            api,
+            "Guest",
+            AudioIntent::default(),
+            Some("missing-microphone"),
+            None,
+            &JoinControl::new(),
+            None,
+        )
+        .await
+        .err()
+        .expect("a missing microphone fails the join");
+        assert!(error.to_string().ends_with("unavailable"), "{error}");
+        // Nothing reached the media API: no seat to leave, no roster entry.
+        assert!(listener.accept().is_err());
     }
 
     #[tokio::test]
