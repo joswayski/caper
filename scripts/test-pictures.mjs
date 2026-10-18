@@ -623,11 +623,20 @@ try {
   await page.waitForFunction(
     '!document.querySelector(".space-rail-item:first-child .caper-picture") && document.querySelector(".space-rail-item:first-child button > span").textContent === "T"',
   );
-  await manage.locator('.space-icon-section input[type="file"]').setInputFiles({
-    name: "icon.png",
-    mimeType: "image/png",
-    buffer: stillIcon,
-  });
+  const iconButton = manage.getByRole("button", { name: "Change space icon" });
+  const drop = await page.evaluateHandle(
+    (bytes) => {
+      const data = new DataTransfer();
+      data.items.add(new File([new Uint8Array(bytes)], "icon.png", { type: "image/png" }));
+      // A picture editor uses the first file, not the last or every file.
+      data.items.add(new File(["not a picture"], "notes.txt", { type: "text/plain" }));
+      return data;
+    },
+    [...stillIcon],
+  );
+  await iconButton.dispatchEvent("dragover", { dataTransfer: drop });
+  await shot(manage.locator(".space-icon-section"), "pictures-space-drop-target.png");
+  await iconButton.dispatchEvent("drop", { dataTransfer: drop });
   await manage.getByText("Space icon updated.").waitFor();
   const iconReservation = await page.evaluate(() => window.pictureFixture.reservations.at(-1));
   assert.deepEqual(
@@ -636,6 +645,39 @@ try {
   );
   await page.waitForFunction(loaded(".space-rail-item:first-child button"));
   await shot(manage, "pictures-space-dialog.png");
+  // Replacement bypasses the menu, and invalid files keep the existing picture.
+  let releaseUpload;
+  const uploadHeld = new Promise((resolve) => (releaseUpload = resolve));
+  await page.route("https://r2.test/put/**", async (route) => {
+    await uploadHeld;
+    await route.fallback();
+  });
+  const beforeReplacement = await page.evaluate(() => window.pictureFixture.reservations.length);
+  await iconButton.click();
+  await iconButton.dispatchEvent("drop", { dataTransfer: drop });
+  await manage.locator('.picture-settings[aria-busy="true"]').waitFor();
+  await iconButton.dispatchEvent("drop", { dataTransfer: drop });
+  releaseUpload();
+  await manage.getByText("Space icon updated.").waitFor();
+  await page.unroute("https://r2.test/put/**");
+  assert.equal(
+    await page.evaluate(() => window.pictureFixture.reservations.length),
+    beforeReplacement + 1,
+    "a second drop during preparation/upload must not start another upload",
+  );
+  assert.equal(await manage.getByRole("menu").count(), 0);
+  const reservations = await page.evaluate(() => window.pictureFixture.reservations.length);
+  const invalid = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    data.items.add(new File(["not a picture"], "notes.txt", { type: "text/plain" }));
+    return data;
+  });
+  await iconButton.dispatchEvent("drop", { dataTransfer: invalid });
+  await manage.locator(".picture-settings-error").waitFor();
+  assert.equal(await page.evaluate(() => window.pictureFixture.reservations.length), reservations);
+  await page.waitForFunction(loaded(".space-rail-item:first-child button"));
+  await drop.dispose();
+  await invalid.dispose();
   await manage.getByRole("button", { name: "Close Manage space" }).click();
   await shot(page.locator(".space-rail"), "pictures-rail-updated.png");
 
