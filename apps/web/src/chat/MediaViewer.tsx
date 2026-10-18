@@ -7,7 +7,7 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Brush, ChevronLeft, ChevronRight, Crop, Download, ExternalLink, Type, X } from "lucide-react";
+import { Brush, ChevronLeft, ChevronRight, Crop, Download, ExternalLink, EyeOff, Type, X } from "lucide-react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -41,7 +41,15 @@ export interface ViewerTarget {
   anchor: HTMLElement;
   /** The file is on the message's forwarded original. */
   forwarded?: boolean;
+  /** Re-cover a spoiler in the row that opened this viewer. */
+  onHideSpoiler?: (attachmentId: string) => void;
 }
+
+export type ViewAttachment = (
+  attachmentId: string,
+  anchor: HTMLElement,
+  onHideSpoiler?: ViewerTarget["onHideSpoiler"],
+) => void;
 
 interface Gesture {
   /** Where the gesture's single pointer started, in client pixels. */
@@ -363,6 +371,7 @@ export default function MediaViewer({
   editing,
   onClose,
   onExpired,
+  onHideSpoiler,
 }: {
   /** The message's files, with fresh URLs where the caller has them. */
   attachments: ChatAttachment[];
@@ -375,6 +384,7 @@ export default function MediaViewer({
   /** Keep this stable: on phones it owns a history entry. */
   onClose: () => void;
   onExpired?: (ids: string[]) => void;
+  onHideSpoiler?: ViewerTarget["onHideSpoiler"];
 }) {
   /** The editor takes this viewer's history entry over, so closing for it must not go back. */
   const handedToEditor = useRef(false);
@@ -533,6 +543,19 @@ export default function MediaViewer({
                 <X size={22} aria-hidden="true" />
               </button>
             </header>
+            {current?.spoiler && onHideSpoiler && (
+              <button
+                type="button"
+                className="chat-spoiler-hide chat-viewer-spoiler"
+                onClick={() => {
+                  onHideSpoiler(current.id);
+                  onClose();
+                }}
+              >
+                <EyeOff size={16} aria-hidden="true" />
+                Hide spoiler
+              </button>
+            )}
             {current ? (
               <ViewerItem
                 key={current.id}

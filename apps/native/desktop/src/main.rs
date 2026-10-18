@@ -17902,12 +17902,23 @@ impl CaperApp {
                                         Color32::from_black_alpha(70),
                                     );
                                 }
-                                ui.painter().text(
-                                    rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    "SPOILER",
-                                    egui::FontId::proportional(12.0),
-                                    TEXT,
+                                let painter = ui.painter_at(rect.shrink(2.0));
+                                let mut x = rect.left() - rect.height();
+                                while x < rect.right() {
+                                    painter.line_segment(
+                                        [
+                                            egui::pos2(x, rect.bottom()),
+                                            egui::pos2(x + rect.height(), rect.top()),
+                                        ],
+                                        Stroke::new(1.0, Color32::from_white_alpha(12)),
+                                    );
+                                    x += 12.0;
+                                }
+                                spoiler_badge(
+                                    ui,
+                                    rect,
+                                    true,
+                                    response.hovered() || response.has_focus(),
                                 );
                                 response.widget_info(|| {
                                     egui::WidgetInfo::labeled(
@@ -17916,10 +17927,7 @@ impl CaperApp {
                                         "Reveal spoiler attachment",
                                     )
                                 });
-                                if response
-                                    .on_hover_text("Reveal spoiler attachment")
-                                    .clicked()
-                                {
+                                if response.clicked() {
                                     ui.ctx().data_mut(|data| {
                                         data.insert_temp(
                                             reveal_scope
@@ -17931,12 +17939,38 @@ impl CaperApp {
                                 continue;
                             }
                             let progress = self.attachment_progress.get(&attachment.id).copied();
+                            let mut card_rect = None;
                             let clicked = if tiles {
                                 self.media_tile(ui, attachment, pending, progress, placed)
-                            } else {
+                            } else if !attachment.spoiler {
                                 file_card(ui, attachment, pending, progress)
+                            } else {
+                                let card =
+                                    ui.scope(|ui| file_card(ui, attachment, pending, progress));
+                                card_rect = Some(card.response.rect);
+                                card.inner
                             };
-                            if clicked && !pending {
+                            let mut hide = false;
+                            if attachment.spoiler
+                                && let Some(rect) = placed.map(|(rect, _)| rect).or(card_rect)
+                            {
+                                hide = spoiler_hide_button(
+                                    ui,
+                                    rect,
+                                    ui.id().with(("hide-spoiler", &attachment.id)),
+                                )
+                                .clicked();
+                            }
+                            if hide {
+                                ui.ctx().data_mut(|data| {
+                                    data.insert_temp(
+                                        reveal_scope.with(("attachment-spoiler", &attachment.id)),
+                                        false,
+                                    )
+                                });
+                                ui.ctx().request_repaint();
+                            }
+                            if clicked && !hide && !pending {
                                 if tiles && viewer::viewable(attachment) {
                                     // This message's images and videos, starting here.
                                     let items: Vec<_> = resolved
@@ -17949,7 +17983,10 @@ impl CaperApp {
                                         .iter()
                                         .position(|item| item.id == attachment.id)
                                         .unwrap_or(0);
-                                    self.viewer = Some(viewer::Viewer::open(items, index));
+                                    self.viewer = Some(
+                                        viewer::Viewer::open(items, index)
+                                            .with_reveal_scope(reveal_scope),
+                                    );
                                     ui.ctx().request_repaint();
                                 } else {
                                     self.media.open(ui.ctx(), attachment, unix_now);
@@ -18237,13 +18274,7 @@ impl CaperApp {
                                 .paint_at(ui, thumb);
                         }
                     }
-                    painter.text(
-                        content.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "SPOILER",
-                        egui::FontId::proportional(11.0),
-                        MUTED,
-                    );
+                    spoiler_badge(ui, content, false, false);
                 } else if let Some(texture) = &draft.thumbnail {
                     // Centre-crop the local preview into the square.
                     let [width, height] = texture.size().map(|value| value.max(1) as f32);
@@ -23633,6 +23664,95 @@ fn tile_actions(
     })
 }
 
+fn spoiler_badge(ui: &egui::Ui, bounds: egui::Rect, instruction: bool, emphasized: bool) {
+    let center = bounds.center();
+    let rect = egui::Rect::from_center_size(
+        center,
+        egui::vec2(
+            (if instruction { 134.0_f32 } else { 88.0 }).min((bounds.width() - 8.0).max(0.0)),
+            if instruction { 50.0 } else { 28.0 },
+        ),
+    );
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        8,
+        BLACKOUT,
+        Stroke::new(1.0, if emphasized { MUTED } else { BORDER }),
+        egui::StrokeKind::Inside,
+    );
+    let y = rect.top() + 14.0;
+    paint_icon(
+        painter,
+        egui::Rect::from_center_size(egui::pos2(center.x - 26.0, y), egui::vec2(14.0, 14.0)),
+        NavIcon::EyeOff,
+        TEXT,
+    );
+    painter.text(
+        egui::pos2(center.x - 13.0, y),
+        egui::Align2::LEFT_CENTER,
+        "Spoiler",
+        egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
+        TEXT,
+    );
+    if instruction {
+        painter.text(
+            egui::pos2(center.x, rect.bottom() - 12.0),
+            egui::Align2::CENTER_CENTER,
+            "Click to reveal",
+            egui::FontId::proportional(11.0),
+            MUTED,
+        );
+    }
+}
+
+fn spoiler_hide_button(ui: &egui::Ui, bounds: egui::Rect, id: egui::Id) -> egui::Response {
+    let width = 126.0_f32.min((bounds.width() - 8.0).max(0.0));
+    let compact = width < 116.0;
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(bounds.right() - width - 4.0, bounds.top() + 4.0),
+        egui::vec2(width, if compact { 42.0 } else { 30.0 }),
+    );
+    let response = ui.interact(rect, id, egui::Sense::click());
+    ui.painter().rect(
+        rect,
+        8,
+        BLACKOUT,
+        Stroke::new(
+            1.0,
+            if response.hovered() || response.has_focus() {
+                MUTED
+            } else {
+                BORDER
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    paint_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            rect.left_center() + egui::vec2(16.0, 0.0),
+            egui::vec2(14.0, 14.0),
+        ),
+        NavIcon::EyeOff,
+        TEXT,
+    );
+    ui.painter().text(
+        rect.left_center() + egui::vec2(29.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        if compact {
+            "Hide\nspoiler"
+        } else {
+            "Hide spoiler"
+        },
+        egui::FontId::proportional(12.0),
+        TEXT,
+    );
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Hide spoiler"));
+    response
+}
+
 /// What was clicked in a tile's action bar.
 #[derive(Debug, Default, PartialEq)]
 struct TileClicks {
@@ -23942,7 +24062,14 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> ChipClicks {
     // Edit only where the file can still change, as Remove.
     let editable = chip.removable && chip.editable;
     let actions = tile_actions(rect, chip.removable, editable, chip.removable, chip.touch);
-    if video {
+    if chip.spoiler {
+        spoiler_badge(
+            ui,
+            tile_content(rect, actions.as_ref(), has_footer),
+            false,
+            false,
+        );
+    } else if video {
         paint_draft_video_play(&painter, tile_content(rect, actions.as_ref(), has_footer));
     }
     let mut preview = None;
@@ -44252,7 +44379,64 @@ mod tests {
                 );
             }
             click(&mut app, revealed.center());
-            assert_eq!(app.viewer.take().unwrap().len(), visual_count);
+            let mut viewer = app.viewer.take().unwrap();
+            assert_eq!(viewer.len(), visual_count);
+            // The modal action closes and writes the exact originating key,
+            // so the message cover returns without changing saved metadata.
+            let mut show_viewer = |viewer: &mut crate::viewer::Viewer, events| {
+                let mut keep = true;
+                let output = context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440.0, 900.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| {
+                        keep = viewer.show(
+                            context,
+                            &mut app.media,
+                            &mut app.media_proxy,
+                            chrono::Utc::now().timestamp(),
+                        );
+                    },
+                );
+                (keep, output)
+            };
+            show_viewer(&mut viewer, vec![]);
+            let (_, output) = show_viewer(&mut viewer, vec![]);
+            let hide = node_bounds(&output, "Hide spoiler").unwrap();
+            let mut keep = true;
+            for pressed in [true, false] {
+                keep = show_viewer(
+                    &mut viewer,
+                    vec![
+                        egui::Event::PointerMoved(hide.center()),
+                        egui::Event::PointerButton {
+                            pos: hide.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                )
+                .0;
+            }
+            assert!(!keep, "hide closes the viewer");
+            drop(viewer);
+            draw(&mut app, vec![]);
+            let output = draw(&mut app, vec![]);
+            assert!(node_bounds(&output, &format!("View {}", files[visual].name)).is_none());
+            assert!(files[visual].spoiler, "saved spoiler metadata is unchanged");
+            click(&mut app, cover.center());
+            let output = draw(&mut app, vec![]);
+            let hide = node_bounds(&output, "Hide spoiler").unwrap();
+            click(&mut app, hide.center());
+            assert!(app.viewer.is_none(), "inline hide never opens the viewer");
+            let output = draw(&mut app, vec![]);
+            assert!(node_bounds(&output, &format!("View {}", files[visual].name)).is_none());
         }
     }
 

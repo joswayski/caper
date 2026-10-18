@@ -199,6 +199,8 @@ pub struct Viewer {
     /// Where the video's control bar starts on the layer, so swipes move
     /// only the picture.
     controls_mark: Option<usize>,
+    /// Original message-local, ephemeral spoiler reveal state (not draft previews).
+    reveal_scope: Option<egui::Id>,
 }
 
 impl Viewer {
@@ -220,6 +222,20 @@ impl Viewer {
             returning: None,
             paged: None,
             controls_mark: None,
+            reveal_scope: None,
+        }
+    }
+
+    pub fn with_reveal_scope(mut self, scope: egui::Id) -> Self {
+        self.reveal_scope = Some(scope);
+        self
+    }
+
+    fn hide_spoiler(&self, context: &egui::Context, current: &Attachment) {
+        if let Some(scope) = self.reveal_scope {
+            context.data_mut(|data| {
+                data.insert_temp(scope.with(("attachment-spoiler", &current.id)), false)
+            });
         }
     }
 
@@ -502,7 +518,15 @@ impl Viewer {
             .map(|(text, _)| text.clone());
         let title_rect = egui::Rect::from_min_max(
             top.min + egui::vec2(20.0, 0.0),
-            egui::pos2(top.right() - 150.0, top.bottom()),
+            egui::pos2(
+                top.right()
+                    - if current.spoiler && self.reveal_scope.is_some() {
+                        290.0
+                    } else {
+                        150.0
+                    },
+                top.bottom(),
+            ),
         );
         let mut job = egui::text::LayoutJob::single_section(
             title,
@@ -560,6 +584,14 @@ impl Viewer {
             && !saving
         {
             self.save(current, media);
+        }
+        if current.spoiler && self.reveal_scope.is_some() {
+            let bounds = egui::Rect::from_min_max(top.min, egui::pos2(x - 4.0, top.bottom()));
+            if crate::spoiler_hide_button(ui, bounds, ui.id().with("viewer-hide-spoiler")).clicked()
+            {
+                self.hide_spoiler(ui.ctx(), current);
+                return true;
+            }
         }
 
         // The media itself, carried by a finger or sliding in after a page turn.

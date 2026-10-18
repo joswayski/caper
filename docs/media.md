@@ -1347,8 +1347,14 @@ it later by editing the message's files. Each composer offers a
 per-file toggle. Updated clients conceal images and video posters with an
 on-device blur of a still thumbnail (the image original when no preview exists),
 without starting playback. Files without a usable visual preview use a neutral
-cover. Reveal is local UI state, not a database write; opening another image
-does not reveal hidden gallery items. Push notifications
+cover. The eye-off spoiler badge always explains how to reveal it (click or
+tap); hover only emphasizes the cover. Revealed attachments keep a labelled
+"Hide spoiler" action, including on touch devices. Hiding in the media viewer
+closes it and covers that attachment back in chat; hiding also removes its
+inline player. Draft badges omit the reveal instruction and retain their
+separate spoiler/edit/remove actions. Reveal is local UI state, not a database
+write; hiding one attachment leaves its neighbours unchanged, and opening
+another image does not reveal hidden gallery items. Push notifications
 omit spoiler thumbnails and filenames. This is a presentation preference, not
 access control: authorized clients still receive URLs, and older clients do
 not understand the flag. Text spoilers and slash commands are not implemented.
