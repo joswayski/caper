@@ -330,6 +330,39 @@ test("retained drafts coalesce focus and Send, renew after 23 hours, and retry t
   assert.equal(t.calls.filter((call) => call.endsWith("/cancel")).length, cancelled, "confirming does not cancel");
 });
 
+test("an edit cancels the earlier upload and never falls back to the unedited original", async () => {
+  const t = transport([ready, ready]);
+  const states: Array<string | undefined> = [];
+  const upload = new AttachmentUpload(
+    "c1",
+    new File(["TEST FIXTURE photo"], "photo.jpg", { type: "image/jpeg" }),
+    DEFAULT_COMPRESSION,
+    (state) => states.push(state.error),
+    t.value,
+  );
+  await upload.ensure();
+  assert.equal(t.puts.length, 1);
+  // No canvas here, so the crop cannot be applied: the file fails instead of uploading as it was.
+  await assert.rejects(upload.setEdit({ rotation: 0, crop: { x: 0, y: 0, width: 0.5, height: 1 }, marks: [] }));
+  assert.equal(upload.state.error, "Couldn’t apply your edits.");
+  assert.equal(upload.state.attachment, undefined);
+  assert.equal(t.puts.length, 1, "nothing more was uploaded");
+  assert.deepEqual(
+    t.calls.filter((call) => call.endsWith("/cancel")),
+    ["POST /api/assets/f1/cancel"],
+    "the unedited upload was cancelled",
+  );
+  assert.ok(upload.edit, "Retry keeps the edit");
+  await assert.rejects(upload.ensure());
+  assert.equal(t.puts.length, 1);
+  // Going back to the original uploads it again.
+  await upload.setEdit(undefined);
+  assert.equal(upload.state.error, undefined);
+  assert.equal(t.puts.length, 2);
+  assert.equal(await t.puts[1].body.text(), "TEST FIXTURE photo");
+  assert.equal(upload.source?.name, "photo.jpg", "the original stays available to the editor");
+});
+
 test("a reserved preview without an upload URL is refused rather than left to fail verification", async () => {
   const t = transport([]);
   await assert.rejects(

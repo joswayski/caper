@@ -1,7 +1,7 @@
 import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
 import { Send } from "lucide-react";
 import AttachmentPicker from "./AttachmentPicker.tsx";
-import { DraftAttachments, type DraftAttachment } from "./Attachments.tsx";
+import { DraftAttachments, type DraftAttachment, type DraftEditing } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { readDraft, saveDraft } from "./drafts.ts";
@@ -24,6 +24,8 @@ export interface ComposerAttachments {
   onRemove: (key: string) => void;
   onRetry: (key: string) => void;
   onToggleSpoiler?: (key: string) => void;
+  /** Opens images and videos in the editor before sending. */
+  editing?: DraftEditing;
 }
 
 export interface ComposerHandle {
@@ -209,6 +211,7 @@ export default function Composer({
           onRemove={attachments.onRemove}
           onRetry={attachments.onRetry}
           onToggleSpoiler={sending ? undefined : attachments.onToggleSpoiler}
+          editing={attachments.editing}
         />
       )}
       <form

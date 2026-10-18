@@ -385,3 +385,31 @@ test("transcodes are kept for playability, for resolution when smaller, for bitr
   assert.ok(keepTranscode(["bitrate"], 1000, 900));
   assert.ok(!keepTranscode(["bitrate"], 1000, 901));
 });
+
+test("edited video is always transcoded at its cropped size and always kept", () => {
+  // An efficient H.264 crop of 1080p video that would otherwise upload unchanged.
+  assert.deepEqual(videoPlan(probe({ width: 960, height: 1080, bitrateKbps: 4000 }), DEFAULT_COMPRESSION, true), {
+    action: "transcode",
+    reasons: ["edit"],
+    width: 960,
+    height: 1080,
+    bitrateKbps: 4000,
+  });
+  // A crop of 4K portrait video still respects the short-edge cap.
+  assert.deepEqual(videoPlan(probe({ width: 2160, height: 3840, bitrateKbps: 50000 }), DEFAULT_COMPRESSION, true), {
+    action: "transcode",
+    reasons: ["edit", "resolution", "bitrate"],
+    width: 1440,
+    height: 2560,
+    bitrateKbps: 14222,
+  });
+  // Compression switched off still applies edits, at the cropped size.
+  assert.deepEqual(videoPlan(probe({ hdr: true }), { ...DEFAULT_COMPRESSION, videoMaxHeight: 0 }, true), {
+    action: "transcode",
+    reasons: ["edit", "hdr"],
+    width: 1920,
+    height: 1080,
+    bitrateKbps: 6000,
+  });
+  assert.ok(keepTranscode(["edit"], 1000, 5000));
+});

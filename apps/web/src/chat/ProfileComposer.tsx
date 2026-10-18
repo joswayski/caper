@@ -5,14 +5,15 @@ import { getAccount } from "../account/client.ts";
 import { createDirectConversation, directStatus, listDirectConversations } from "../spaces/client.ts";
 import { directMessageErrors } from "../spaces/direct-errors.ts";
 import { apiError, forgetAccountSession, sharedAccountSession } from "./client.ts";
-import { DraftAttachments, type DraftAttachment } from "./Attachments.tsx";
+import { DraftAttachments, type DraftAttachment, type DraftEditing } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import EmojiButton from "./EmojiButton.tsx";
 import { insertEmoji } from "./emoji-autocomplete.ts";
 import MentionTextarea from "./MentionTextarea.tsx";
-import { prepareFile, type CompressionSettings } from "./prepare.ts";
+import { EditFailed, type AttachmentEdit } from "./edit.ts";
+import { editableKind, prepareFile, type CompressionSettings } from "./prepare.ts";
 import { isChatMessage, type ChatAttachment } from "./types.ts";
-import { browserTransport, MAX_ATTACHMENTS, uploadPrepared, uploadSettings } from "./uploads.ts";
+import { browserTransport, cancelUpload, MAX_ATTACHMENTS, uploadPrepared, uploadSettings } from "./uploads.ts";
 
 interface ProfileFile {
   key: string;
@@ -24,6 +25,11 @@ interface ProfileFile {
   attachment?: ChatAttachment;
   error?: string;
   spoiler?: boolean;
+  editable?: "image" | "video";
+  /** Applied to the original when Send prepares it. */
+  edit?: AttachmentEdit;
+  /** A render of an edited video for its tile; revoked when the file leaves. */
+  thumbnailUrl?: string;
 }
 interface ProfileDraft {
   text: string;
@@ -128,13 +134,45 @@ export default function ProfileComposer({
       localUrl: /^(image|video)\//.test(file.type) ? URL.createObjectURL(file) : undefined,
     }));
     save({ ...draft, files: [...draft.files, ...added] });
+    for (const item of added)
+      void editableKind(item.file).then((editable) => {
+        const latest = drafts.get(personId);
+        if (!editable || !latest?.files.some((file) => file.key === item.key)) return;
+        save({ ...latest, files: latest.files.map((file) => (file.key === item.key ? { ...file, editable } : file)) });
+      });
     restoreFocus();
   };
   const removeFile = (key: string) => {
     const removed = draft.files.find((item) => item.key === key);
     if (removed?.localUrl) URL.revokeObjectURL(removed.localUrl);
+    if (removed?.thumbnailUrl) URL.revokeObjectURL(removed.thumbnailUrl);
     save({ ...draft, files: draft.files.filter((item) => item.key !== key) });
     restoreFocus();
+  };
+  // Edits apply when Send prepares the original; the tile shows them now.
+  const editing: DraftEditing = {
+    source: (key) => draft.files.find((item) => item.key === key)?.file,
+    save: (key, edit, preview) => {
+      const latest = drafts.get(personId);
+      const item = latest?.files.find((file) => file.key === key);
+      if (!latest || !item || latest.command) return;
+      if (item.localUrl) URL.revokeObjectURL(item.localUrl);
+      if (item.thumbnailUrl) URL.revokeObjectURL(item.thumbnailUrl);
+      // A file uploaded by an earlier, failed send was the unedited original.
+      if (item.attachment) void cancelUpload(item.attachment.id);
+      const url = (blob: Blob | undefined) => blob && URL.createObjectURL(blob);
+      const localUrl = !edit ? url(item.file) : item.editable === "image" ? url(preview) : undefined;
+      const thumbnailUrl = edit && item.editable === "video" ? url(preview) : undefined;
+      save({
+        ...latest,
+        files: latest.files.map((file) =>
+          file.key === key
+            ? { ...file, edit, localUrl, thumbnailUrl, attachment: undefined, progress: undefined }
+            : file,
+        ),
+      });
+      restoreFocus();
+    },
   };
   const chooseEmoji = (emoji: string) => {
     const element = input.current;
@@ -189,7 +227,7 @@ export default function ProfileComposer({
         save({ ...draft });
         const signal = AbortSignal.timeout(120_000);
         try {
-          const prepared = await prepareFile(item.file, settings, () => {}, signal);
+          const prepared = await prepareFile(item.file, settings, () => {}, signal, item.edit);
           item.attachment = await uploadPrepared(
             conversation.id,
             prepared,
@@ -201,7 +239,7 @@ export default function ProfileComposer({
             signal,
           );
         } catch (reason) {
-          item.error = "Failed to upload.";
+          item.error = reason instanceof EditFailed ? reason.message : "Failed to upload.";
           throw reason;
         }
       }
@@ -242,7 +280,10 @@ export default function ProfileComposer({
         message.author.id !== account.id
       )
         throw new Error("The chat service returned an invalid confirmation.");
-      for (const item of draft.files) if (item.localUrl) URL.revokeObjectURL(item.localUrl);
+      for (const item of draft.files) {
+        if (item.localUrl) URL.revokeObjectURL(item.localUrl);
+        if (item.thumbnailUrl) URL.revokeObjectURL(item.thumbnailUrl);
+      }
       save({ text: "", files: [] });
       setStatus(undefined);
       onSent();
@@ -271,6 +312,9 @@ export default function ProfileComposer({
     name: item.file.name,
     localUrl: item.localUrl,
     localKind: item.localUrl ? (item.file.type.startsWith("video/") ? "video" : "image") : undefined,
+    editable: item.editable,
+    edit: item.edit,
+    thumbnailUrl: item.thumbnailUrl,
     sourceSize: item.file.size,
     storedSize: item.attachment?.size ?? (item.progress === undefined ? undefined : item.file.size),
     progress: item.progress ?? 0,
@@ -321,6 +365,7 @@ export default function ProfileComposer({
                   files: draft.files.map((item) => (item.key === key ? { ...item, spoiler: !item.spoiler } : item)),
                 })
         }
+        editing={editing}
       />
       <form
         data-attach

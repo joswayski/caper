@@ -2547,56 +2547,79 @@ a.chat-draft-preview {
   font-weight: 700;
   cursor: pointer;
 }
-.chat-draft-remove,
-.chat-draft-spoiler {
+/* Spoiler, Edit and Remove share one solid bar in the top-right corner, like Discord's.
+   Each button is exactly its visible square, and hovering only lightens it. */
+.chat-draft-actions {
   position: absolute;
-  top: 0;
-  right: 0;
-  width: 32px;
-  height: 32px;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgb(12 13 15 / 90%);
+}
+.chat-draft-actions > button {
+  width: 28px;
+  height: 28px;
   display: grid;
-  place-items: start end;
-  padding: 4px;
+  place-items: center;
+  padding: 0;
   border: 0;
-  border-radius: 8px;
   color: var(--text);
   background: transparent;
   cursor: pointer;
 }
-.chat-draft-spoiler {
-  right: auto;
-  left: 0;
-  place-items: start;
+.chat-draft-actions > button + button {
+  border-left: 1px solid var(--border);
 }
-.chat-draft-remove > svg,
-.chat-draft-spoiler > svg {
-  box-sizing: content-box;
-  padding: 4px;
-  border-radius: 50%;
-  background: rgb(12 13 15 / 90%);
+.chat-draft-actions > button:active {
+  background: rgb(255 255 255 / 18%);
 }
 .chat-draft-preview:focus-visible,
-.chat-draft-remove:focus-visible,
-.chat-draft-spoiler:focus-visible,
 .chat-spoiler:focus-visible,
 .chat-draft-retry:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: -2px;
 }
+.chat-draft-actions > button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -3px;
+  border-radius: 6px;
+}
 @media (hover: hover) {
-  .chat-draft-remove:hover > svg,
-  .chat-draft-spoiler:hover > svg {
-    background: var(--surface-hover);
+  .chat-draft-actions > button:hover:not(:active) {
+    background: rgb(255 255 255 / 12%);
   }
   .chat-draft-retry:hover {
     filter: brightness(1.08);
   }
 }
 @media (max-width: 760px), (pointer: coarse) {
-  .chat-draft-remove,
-  .chat-draft-spoiler {
-    width: 44px;
+  /* Touch targets need the tile's whole top edge, shared equally, so three always fit. */
+  .chat-draft-actions {
+    top: 0;
+    right: 0;
+    left: 0;
+    border-width: 0 0 1px;
+    border-radius: 0;
+  }
+  .chat-draft-actions > button {
+    flex: 1;
+    width: auto;
     height: 44px;
+  }
+  /* What the tile shows sits below the bar. */
+  .chat-drafts li:has(> .chat-draft-actions) .chat-draft-video-play {
+    top: 44px;
+  }
+  .chat-drafts li:has(> .chat-draft-actions) .chat-draft-spoiler-label {
+    top: calc(50% + 10px);
+  }
+  .chat-drafts
+    li:has(> .chat-draft-actions):has(> .chat-draft-retry)
+    :is(.chat-draft-video-play, .chat-draft-spoiler-label) {
+    display: none;
   }
   .chat-draft-retry {
     min-height: 44px;
@@ -2935,6 +2958,433 @@ a.chat-draft-preview {
     transition: none;
   }
 }
+/* The attachment editor: one dark, full-window workspace above the composer.
+   Chrome stays neutral; terracotta marks the chosen tool and colour. */
+.chat-editor-overlay {
+  z-index: 1200;
+  background: var(--blackout);
+  animation: caper-fade-in var(--motion-fast) var(--ease-out);
+}
+.chat-editor {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  outline: none;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.chat-editor-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 56px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.chat-editor-title {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  margin: 0 8px;
+}
+.chat-editor-title :is(strong, small) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-editor-title strong {
+  font-size: 0.9rem;
+}
+.chat-editor-title small {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+.chat-editor button {
+  font: inherit;
+  cursor: pointer;
+}
+.chat-editor button:disabled {
+  cursor: default;
+}
+.chat-editor-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: none;
+}
+.chat-editor-icon:disabled {
+  opacity: 0.4;
+}
+.chat-editor-reset {
+  flex: none;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: transparent;
+  font-size: 0.85rem;
+}
+.chat-editor-reset:disabled {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+.chat-editor-done {
+  flex: none;
+  height: 36px;
+  margin-left: 4px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--on-action);
+  background: var(--action);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+.chat-editor-done:disabled {
+  color: var(--text-muted);
+  background: var(--surface-raised);
+}
+@media (hover: hover) {
+  .chat-editor-icon:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
+  .chat-editor-reset:hover:not(:disabled) {
+    background: var(--surface-hover);
+  }
+  .chat-editor-done:hover:not(:disabled) {
+    background: var(--action-hover);
+  }
+  .chat-editor-modes button:hover:not(:disabled, [aria-pressed="true"]),
+  .chat-editor-action:hover:not(:disabled) {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
+}
+.chat-editor-done:active:not(:disabled) {
+  background: var(--action-press);
+}
+.chat-editor :is(button, input, [tabindex="0"]):focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.chat-editor-stage {
+  position: relative;
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  place-items: center;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.chat-editor-picture {
+  position: relative;
+}
+.chat-editor-picture canvas {
+  display: block;
+  touch-action: none;
+}
+/* Draw shows a ring the size and colour of the brush in place of the cursor. */
+.chat-editor-picture canvas[data-tool="draw"] {
+  cursor: none;
+}
+.chat-editor-brush {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: none;
+  border: 1.5px solid #fff;
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 1px rgb(12 13 15 / 70%),
+    inset 0 0 0 1px rgb(12 13 15 / 70%);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.chat-editor-brush[data-visible] {
+  display: block;
+}
+.chat-editor-picture canvas[data-tool="text"] {
+  cursor: text;
+}
+/* Outside the crop is dimmed; the frame and its handles sit above, unclipped. */
+.chat-editor-shade {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.chat-editor-shade > span {
+  position: absolute;
+  box-shadow: 0 0 0 100vmax rgb(0 0 0 / 55%);
+}
+.chat-editor-crop {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid rgb(255 255 255 / 85%);
+  cursor: move;
+  touch-action: none;
+}
+.chat-editor-handle {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  touch-action: none;
+}
+.chat-editor-handle::after {
+  content: "";
+  position: absolute;
+  inset: 10px;
+  border-radius: 2px;
+  background: var(--text);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 35%);
+}
+.chat-editor-handle[data-handle="nw"] {
+  top: -14px;
+  left: -14px;
+  cursor: nwse-resize;
+}
+.chat-editor-handle[data-handle="ne"] {
+  top: -14px;
+  right: -14px;
+  cursor: nesw-resize;
+}
+.chat-editor-handle[data-handle="se"] {
+  bottom: -14px;
+  right: -14px;
+  cursor: nwse-resize;
+}
+.chat-editor-handle[data-handle="sw"] {
+  bottom: -14px;
+  left: -14px;
+  cursor: nesw-resize;
+}
+.chat-editor-handle:is([data-handle="n"], [data-handle="s"]) {
+  left: calc(50% - 14px);
+  cursor: ns-resize;
+}
+.chat-editor-handle[data-handle="n"] {
+  top: -14px;
+}
+.chat-editor-handle[data-handle="s"] {
+  bottom: -14px;
+}
+.chat-editor-handle:is([data-handle="e"], [data-handle="w"]) {
+  top: calc(50% - 14px);
+  cursor: ew-resize;
+}
+.chat-editor-handle[data-handle="e"] {
+  right: -14px;
+}
+.chat-editor-handle[data-handle="w"] {
+  left: -14px;
+}
+.chat-editor-handle:is([data-handle="n"], [data-handle="s"])::after {
+  inset: 11px 6px;
+}
+.chat-editor-handle:is([data-handle="e"], [data-handle="w"])::after {
+  inset: 6px 11px;
+}
+@media (pointer: coarse) {
+  .chat-editor-handle {
+    width: 44px;
+    height: 44px;
+    margin: -8px;
+  }
+  .chat-editor-handle::after {
+    inset: 18px;
+  }
+  .chat-editor-handle:is([data-handle="n"], [data-handle="s"])::after {
+    inset: 19px 12px;
+  }
+  .chat-editor-handle:is([data-handle="e"], [data-handle="w"])::after {
+    inset: 12px 19px;
+  }
+}
+/* Typed where it will appear, in the colour and size it will have. */
+.chat-editor-text {
+  position: absolute;
+  min-width: 48px;
+  max-width: 90vw;
+  padding: 0 4px;
+  border: 1px dashed rgb(255 255 255 / 70%);
+  border-radius: 4px;
+  outline: none;
+  background: rgb(0 0 0 / 25%);
+  font-family: var(--font-satoshi);
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  translate: -50% -50%;
+}
+.chat-editor-message {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+.chat-editor-hint {
+  margin: 0;
+  padding: 0 16px 4px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
+.chat-editor-tools {
+  display: grid;
+  gap: 8px;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--border);
+}
+.chat-editor-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 20px;
+  min-height: 44px;
+}
+.chat-editor-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: transparent;
+  font-size: 0.85rem;
+}
+.chat-editor-colors {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chat-editor-swatch {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+.chat-editor-swatch::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 20%);
+}
+.chat-editor-swatch:is([aria-checked="true"], [data-selected]) {
+  border-color: var(--terracotta-bright);
+}
+.chat-editor-custom::after {
+  background: var(--swatch, conic-gradient(#e5484d, #f5c542, #4caf50, #3b82f6, #a855f7, #e5484d));
+}
+.chat-editor-custom input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.chat-editor-custom:focus-within {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.chat-editor-size {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(240px, 100%);
+}
+.chat-editor-size-preview {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  font-weight: 700;
+  line-height: 1;
+}
+.chat-editor-dot {
+  display: block;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 25%);
+}
+.chat-editor-modes {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+}
+.chat-editor-modes button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 96px;
+  height: 40px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: 0.85rem;
+}
+.chat-editor-modes button[aria-pressed="true"] {
+  border-color: var(--terracotta);
+  color: var(--text);
+  background: rgb(182 77 50 / 14%);
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-editor-bar {
+    padding: 6px 8px;
+  }
+  .chat-editor-icon {
+    width: 44px;
+    height: 44px;
+  }
+  .chat-editor-reset,
+  .chat-editor-done,
+  .chat-editor-action,
+  .chat-editor-modes button {
+    height: 44px;
+  }
+  .chat-editor-swatch {
+    width: 36px;
+    height: 36px;
+  }
+  .chat-editor-modes button {
+    flex: 1;
+    min-width: 0;
+  }
+}
+@media (max-width: 420px) {
+  .chat-editor-title small {
+    display: none;
+  }
+  .chat-editor-reset {
+    padding: 0 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-editor-overlay {
+    animation: none;
+  }
+}
 /* Above every chat layer, including the pins and forward dialogs it can open from. */
 .chat-viewer-overlay {
   z-index: 1200;
@@ -3117,8 +3567,54 @@ a.chat-draft-preview {
     background: rgb(40 42 46 / 0.9);
   }
 }
+/* A staged file's editor tools, under the picture and between the page arrows. */
+.chat-viewer-tools {
+  display: flex;
+  flex: none;
+  align-self: center;
+  gap: 4px;
+  margin: 12px 72px 20px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgb(21 23 25 / 92%);
+}
+.chat-viewer-tools button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 88px;
+  height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: none;
+  font-weight: 500;
+  transition: background-color 140ms ease;
+}
+@media (hover: hover) {
+  .chat-viewer-tools button:hover {
+    background: rgb(255 255 255 / 10%);
+  }
+}
+.chat-viewer-tools button:active {
+  background: rgb(255 255 255 / 16%);
+}
 /* Phones and tablets: edge to edge, with the bar over the media. */
 @media (max-width: 760px), (pointer: coarse) {
+  .chat-viewer-tools {
+    position: relative;
+    z-index: 1;
+    /* Its buttons line up with the page arrows' bottom edge. */
+    margin: 0 68px calc(max(16px, env(safe-area-inset-bottom)) - 5px);
+  }
+  .chat-viewer-tools button {
+    min-width: 0;
+    height: 44px;
+    padding: 0 12px;
+  }
   .chat-viewer-bar {
     position: absolute;
     top: 0;
@@ -3147,7 +3643,8 @@ a.chat-draft-preview {
   }
   .chat-viewer-media,
   .chat-viewer-bar :is(a, button),
-  .chat-viewer-nav {
+  .chat-viewer-nav,
+  .chat-viewer-tools button {
     transition: none;
   }
   .chat-viewer-media[data-enter] {

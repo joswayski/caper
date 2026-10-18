@@ -7,7 +7,7 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { ChevronLeft, ChevronRight, Download, ExternalLink, X } from "lucide-react";
+import { Brush, ChevronLeft, ChevronRight, Crop, Download, ExternalLink, Type, X } from "lucide-react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -17,6 +17,7 @@ import {
   useRole,
 } from "@floating-ui/react";
 import { movesOf, Velocity } from "../components/swipe.ts";
+import type { EditTool } from "./edit.ts";
 import type { ChatAttachment } from "./types.ts";
 import { formatBytes } from "./uploads.ts";
 import {
@@ -336,6 +337,19 @@ function ViewerItem({
   );
 }
 
+const EDIT_TOOLS = [
+  { tool: "crop", label: "Crop", Icon: Crop },
+  { tool: "draw", label: "Draw", Icon: Brush },
+  { tool: "text", label: "Text", Icon: Type },
+] as const;
+
+/** Opening the editor from the viewer, for files not sent yet. */
+export interface ViewerEditing {
+  editable: (id: string) => boolean;
+  /** Called instead of closing; the caller closes the viewer and opens the editor on `tool`. */
+  open: (id: string, tool: EditTool) => void;
+}
+
 /**
  * Full-window viewer for one message's images and videos, like Discord's.
  * Escape, the close button, the dark area, swiping down and (on phones) Back close it.
@@ -346,6 +360,7 @@ export default function MediaViewer({
   anchor,
   author,
   sentAt,
+  editing,
   onClose,
   onExpired,
 }: {
@@ -355,10 +370,14 @@ export default function MediaViewer({
   anchor: HTMLElement;
   author?: string;
   sentAt?: string;
+  /** Staged files the editor can open show its tools under the picture. */
+  editing?: ViewerEditing;
   /** Keep this stable: on phones it owns a history entry. */
   onClose: () => void;
   onExpired?: (ids: string[]) => void;
 }) {
+  /** The editor takes this viewer's history entry over, so closing for it must not go back. */
+  const handedToEditor = useRef(false);
   // Opening one file must not reveal another spoiler by paging through it.
   const attachments = allAttachments.filter((attachment) => !attachment.spoiler || attachment.id === attachmentId);
   const [currentId, setCurrentId] = useState(attachmentId);
@@ -409,7 +428,7 @@ export default function MediaViewer({
       window.removeEventListener("popstate", back);
       // Left until the next task, so a remount in the same commit can take the entry over.
       setTimeout(() => {
-        if (window.history.state?.caperViewer === key) window.history.back();
+        if (!handedToEditor.current && window.history.state?.caperViewer === key) window.history.back();
       });
     };
   }, [onClose]);
@@ -534,6 +553,24 @@ export default function MediaViewer({
                 <div className="chat-viewer-frame">
                   <p className="chat-viewer-message">File removed</p>
                 </div>
+              </div>
+            )}
+            {current && editing?.editable(current.id) && (
+              <div className="chat-viewer-tools" role="group" aria-label={`Edit ${current.name}`}>
+                {EDIT_TOOLS.map(({ tool, label, Icon }) => (
+                  <button
+                    key={tool}
+                    type="button"
+                    aria-haspopup="dialog"
+                    onClick={() => {
+                      handedToEditor.current = true;
+                      editing.open(current.id, tool);
+                    }}
+                  >
+                    <Icon size={18} aria-hidden="true" />
+                    {label}
+                  </button>
+                ))}
               </div>
             )}
             {(previous || next) && (

@@ -247,6 +247,38 @@ test("draft files can be previewed before uploading finishes, with removal separ
   expect(staged).not.toContain('role="status"');
 });
 
+test("a draft's Spoiler, Edit and Remove share one bar, Edit only for files the editor opens", () => {
+  const drafts: DraftAttachment[] = [
+    {
+      key: "photo",
+      name: "photo.jpg",
+      localUrl: "blob:photo",
+      localKind: "image",
+      editable: "image",
+      sourceSize: 1,
+      progress: 0,
+    },
+    { key: "notes", name: "notes.pdf", localUrl: "blob:notes", sourceSize: 1, progress: 0 },
+  ];
+  const editing = { source: () => new Blob(), save: () => {} };
+  const markup = renderToStaticMarkup(<DraftAttachments drafts={drafts} onRemove={() => {}} editing={editing} />);
+  expect(markup).toMatch(
+    /<div class="chat-draft-actions"><button[^>]*aria-label="Edit photo\.jpg"[^>]*>.*?<\/button><button[^>]*aria-label="Remove photo\.jpg"/,
+  );
+  expect(markup).toMatch(/<div class="chat-draft-actions"><button[^>]*aria-label="Remove notes\.pdf"/);
+  expect(markup).not.toContain('aria-label="Edit notes.pdf"');
+  const spoilers = renderToStaticMarkup(
+    <DraftAttachments drafts={drafts} onRemove={() => {}} onToggleSpoiler={() => {}} editing={editing} />,
+  );
+  expect(spoilers).toMatch(
+    /<div class="chat-draft-actions"><button[^>]*aria-label="Spoiler attachment: photo\.jpg"[^>]*>.*?<\/button><button[^>]*aria-label="Edit photo\.jpg"[^>]*>.*?<\/button><button[^>]*aria-label="Remove photo\.jpg"/,
+  );
+  // While sending nothing can be removed or edited, so there is no bar.
+  expect(renderToStaticMarkup(<DraftAttachments drafts={drafts} editing={editing} />)).not.toContain(
+    "chat-draft-actions",
+  );
+});
+
 test("a draft video keeps its poster and spoiler state, and cannot be removed while sending", () => {
   const draft: DraftAttachment = {
     key: "clip",

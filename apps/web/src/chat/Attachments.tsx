@@ -1,4 +1,14 @@
-import { useCallback, useContext, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import {
   autoUpdate,
   flip,
@@ -11,12 +21,15 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import { Eye, EyeOff, FileText, FileWarning, Maximize2, Play, X } from "lucide-react";
+import { Eye, EyeOff, FileText, FileWarning, Maximize2, Pencil, Play, X } from "lucide-react";
 import GifImage from "./GifImage.tsx";
-import MediaViewer from "./MediaViewer.tsx";
+import MediaViewer, { type ViewerEditing } from "./MediaViewer.tsx";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
+import type { AttachmentEdit, EditTool } from "./edit.ts";
 import { attachmentView, type ChatAttachment } from "./types.ts";
 import { formatBytes, type UploadState } from "./uploads.ts";
+
+const AttachmentEditor = lazy(() => import("./AttachmentEditor.tsx"));
 
 const MAX_WIDTH = 360;
 const MAX_HEIGHT = 300;
@@ -470,9 +483,25 @@ export interface DraftAttachment extends UploadState {
   threadRootId?: string;
   /** Kept locally until Send, which prepares and uploads it (profile cards). */
   staged?: boolean;
-  /** Local file for previewing before sending, also used by the pending row. */
+  /** Local file for previewing before sending, also used by the pending row.
+   * An edited image's is a render of the edit; an edited video has none (the
+   * upload is its preview). */
   localUrl?: string;
   localKind?: "image" | "video";
+  /** What the editor can open this file as, once known. */
+  editable?: "image" | "video";
+  /** Edits the file will be prepared with; the original is kept. */
+  edit?: AttachmentEdit;
+  /** A render of the edited picture for the tile (edited videos). */
+  thumbnailUrl?: string;
+}
+
+/** Opening a draft in the editor, and keeping what it produces. */
+export interface DraftEditing {
+  /** The original file, unless it is no longer available. */
+  source: (key: string) => Blob | undefined;
+  /** `edit` is undefined when the file goes back to its original. */
+  save: (key: string, edit: AttachmentEdit | undefined, preview?: Blob) => void;
 }
 
 /** Decode one early frame, then release the decoder instead of keeping a
@@ -573,7 +602,7 @@ function DraftAttachmentTile({
           suppressClick.current = false;
           if (!onRemove || !event.isPrimary || event.button !== 0) return;
           const target = event.target as HTMLElement;
-          if (target.closest(".chat-draft-remove, .chat-draft-retry, .chat-draft-spoiler")) return;
+          if (target.closest(".chat-draft-actions, .chat-draft-retry")) return;
           returnFocus.current = event.currentTarget.querySelector<HTMLElement>(".chat-draft-preview");
           press.current = {
             x: event.clientX,
@@ -645,21 +674,40 @@ function DraftAttachmentTile({
   );
 }
 
-/** Without `onRemove` (while a message is sending) files cannot be removed;
- * without `onRetry` a failed upload has no chip-level Retry. */
+/** Without `onRemove` (while a message is sending) files cannot be removed,
+ * edited or marked as spoilers; without `onRetry` a failed upload has no
+ * chip-level Retry. */
 export function DraftAttachments({
   drafts,
   onRemove,
   onRetry,
   onToggleSpoiler,
+  editing,
 }: {
   drafts: DraftAttachment[];
   onRemove?: (key: string) => void;
   onRetry?: (key: string) => void;
   onToggleSpoiler?: (key: string) => void;
+  editing?: DraftEditing;
 }) {
   const [viewing, setViewing] = useState<{ key: string; anchor: HTMLElement }>();
   const closeViewer = useCallback(() => setViewing(undefined), []);
+  const [editingKey, setEditingKey] = useState<{ key: string; anchor: HTMLElement; tool?: EditTool }>();
+  const closeEditor = useCallback(() => setEditingKey(undefined), []);
+  const edited = editingKey && drafts.find((draft) => draft.key === editingKey.key);
+  const editedSource = edited?.editable && editing?.source(edited.key);
+  // The viewer offers the editor's tools for the same files the pencil does.
+  const viewerEditing: ViewerEditing | undefined =
+    editing && onRemove
+      ? {
+          editable: (key) => !!drafts.find((draft) => draft.key === key)?.editable && !!editing.source(key),
+          open: (key, tool) => {
+            if (!viewing) return;
+            setViewing(undefined);
+            setEditingKey({ key, anchor: viewing.anchor, tool });
+          },
+        }
+      : undefined;
   const media: ChatAttachment[] = drafts.flatMap((draft) => {
     const kind = draft.localUrl ? draft.localKind : draft.attachment?.kind;
     const url = draft.localUrl ?? draft.attachment?.url;
@@ -701,7 +749,9 @@ export function DraftAttachments({
         {drafts.map((draft) => {
           const url = draft.localUrl ?? draft.attachment?.url;
           const kind = draft.localKind ?? draft.attachment?.kind;
-          const thumbnail = kind === "image" ? (draft.localUrl ?? draft.attachment?.previewUrl ?? url) : undefined;
+          const thumbnail =
+            draft.thumbnailUrl ??
+            (kind === "image" ? (draft.localUrl ?? draft.attachment?.previewUrl ?? url) : undefined);
           const busy = !draft.attachment && !draft.error && !draft.staged;
           const status = draft.error
             ? "Failed"
@@ -714,7 +764,7 @@ export function DraftAttachments({
                 : `Uploading ${Math.round(draft.progress * 100)}%`;
           const content = (
             <>
-              {kind === "video" ? (
+              {kind === "video" && !draft.thumbnailUrl ? (
                 <DraftVideoThumbnail url={url} poster={draft.attachment?.previewUrl} />
               ) : thumbnail ? (
                 draft.spoiler ? (
@@ -789,34 +839,76 @@ export function DraftAttachments({
                 </button>
               )}
               {draft.spoiler && <span className="chat-draft-spoiler-label">Spoiler</span>}
-              {onToggleSpoiler && (
-                <button
-                  type="button"
-                  className="chat-draft-spoiler"
-                  aria-label={`Spoiler attachment: ${draft.name}`}
-                  aria-pressed={!!draft.spoiler}
-                  title={draft.spoiler ? "Remove spoiler" : "Mark as spoiler"}
-                  onClick={() => onToggleSpoiler(draft.key)}
-                >
-                  {draft.spoiler ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}
-                </button>
-              )}
-              {onRemove && (
-                <button
-                  type="button"
-                  className="chat-draft-remove"
-                  aria-label={`Remove ${draft.name}`}
-                  onClick={() => onRemove(draft.key)}
-                >
-                  <X size={14} aria-hidden="true" />
-                </button>
+              {(onToggleSpoiler || onRemove) && (
+                // One bar in the corner, like Discord's: Spoiler, Edit (when the editor can open the file), then Remove.
+                <div className="chat-draft-actions">
+                  {onToggleSpoiler && (
+                    <button
+                      type="button"
+                      className="chat-draft-spoiler"
+                      aria-label={`Spoiler attachment: ${draft.name}`}
+                      aria-pressed={!!draft.spoiler}
+                      title={draft.spoiler ? "Remove spoiler" : "Mark as spoiler"}
+                      onClick={() => onToggleSpoiler(draft.key)}
+                    >
+                      {draft.spoiler ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}
+                    </button>
+                  )}
+                  {onRemove && editing && draft.editable && (
+                    <button
+                      type="button"
+                      className="chat-draft-edit"
+                      aria-label={`Edit ${draft.name}`}
+                      title="Edit"
+                      aria-haspopup="dialog"
+                      onClick={(event) => setEditingKey({ key: draft.key, anchor: event.currentTarget })}
+                    >
+                      <Pencil size={14} aria-hidden="true" />
+                    </button>
+                  )}
+                  {onRemove && (
+                    <button
+                      type="button"
+                      className="chat-draft-remove"
+                      aria-label={`Remove ${draft.name}`}
+                      title="Remove"
+                      onClick={() => onRemove(draft.key)}
+                    >
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
               )}
             </DraftAttachmentTile>
           );
         })}
       </ul>
       {viewing && media.some((attachment) => attachment.id === viewing.key) && (
-        <MediaViewer attachments={media} attachmentId={viewing.key} anchor={viewing.anchor} onClose={closeViewer} />
+        <MediaViewer
+          attachments={media}
+          attachmentId={viewing.key}
+          anchor={viewing.anchor}
+          editing={viewerEditing}
+          onClose={closeViewer}
+        />
+      )}
+      {edited?.editable && editedSource && editing && onRemove && (
+        <Suspense fallback={null}>
+          <AttachmentEditor
+            key={edited.key}
+            file={editedSource}
+            kind={edited.editable}
+            name={edited.name}
+            edit={edited.edit}
+            tool={editingKey?.tool}
+            anchor={editingKey?.anchor}
+            onCancel={closeEditor}
+            onSave={(edit, preview) => {
+              closeEditor();
+              editing.save(edited.key, edit, preview);
+            }}
+          />
+        </Suspense>
       )}
     </>
   );

@@ -8,6 +8,15 @@ import { stripMetadata } from "./metadata.ts";
 import { encodeAvif } from "./avif.ts";
 import { encodeLosslessWebp, iccProfile, pngBitDepth, pngChunks, webpWithIcc } from "./webp.ts";
 import type { HdrTransfer } from "./hdr.ts";
+import {
+  EditFailed,
+  cropPixels,
+  editableImageType,
+  isEdited,
+  loadEditFont,
+  paintEdit,
+  type AttachmentEdit,
+} from "./edit.ts";
 
 const PREVIEW_MAX_BYTES = 512 * 1024;
 const PREVIEW_QUALITY = 0.8;
@@ -452,6 +461,84 @@ async function prepareImage(file: File, contentType: string, settings: Compressi
   }
 }
 
+/** An edited still: the edit is painted onto the upright original at its own
+ * resolution, then encoded by the source's class like any other still (photos
+ * scaled and lossy, screenshots lossless). The original is never an option, so
+ * the smallest encoding is always kept, with PNG as the last resort. */
+async function prepareEditedImage(
+  file: File,
+  contentType: string,
+  settings: CompressionSettings,
+  edit: AttachmentEdit,
+): Promise<PreparedFile> {
+  if (typeof createImageBitmap === "undefined") throw new EditFailed();
+  const head = new Uint8Array(await file.slice(0, 256 * 1024).arrayBuffer());
+  const kept = stillSource(contentType, head);
+  // AVIF and 16-bit PNG would upload unchanged; edited, they are encoded too.
+  const source: StillSource = kept !== "keep" ? kept : contentType === "image/png" ? "lossless" : "photo";
+  const options: ImageBitmapOptions =
+    source === "lossless"
+      ? { colorSpaceConversion: "none", premultiplyAlpha: "none", imageOrientation: "from-image" }
+      : { imageOrientation: "from-image" };
+  const bitmap = await createImageBitmap(file, options).catch(() => undefined);
+  if (!bitmap) throw new EditFailed();
+  try {
+    await loadEditFont(edit);
+    const region = cropPixels(edit, bitmap.width, bitmap.height);
+    let size =
+      source === "photo" && settings.imageMaxEdge > 0
+        ? fitWithin(region.width, region.height, settings.imageMaxEdge)
+        : { width: region.width, height: region.height };
+    if (size.width * size.height > MAX_COMPRESS_PIXELS) {
+      const scale = Math.sqrt(MAX_COMPRESS_PIXELS / (size.width * size.height));
+      size = {
+        width: Math.max(1, Math.floor(size.width * scale)),
+        height: Math.max(1, Math.floor(size.height * scale)),
+      };
+    }
+    const canvas = surface(size.width, size.height);
+    const context = canvas.getContext("2d") as Context2D | null;
+    if (!context) throw new EditFailed();
+    context.imageSmoothingQuality = "high";
+    paintEdit(context, bitmap, bitmap.width, bitmap.height, edit, region, size.width / region.width);
+    let rgba: Uint8ClampedArray | undefined;
+    let bytes: Uint8Array | undefined;
+    let pixels: StillPixels = { fitsPalette: false, opaque: false, binaryAlpha: false };
+    if (source === "lossless") {
+      rgba = context.getImageData(0, 0, size.width, size.height).data;
+      bytes = new Uint8Array(await file.arrayBuffer());
+      pixels = {
+        fitsPalette: settings.paletteColors > 0 && !!exactPalette(rgba, settings.paletteColors),
+        ...alphaKinds(rgba),
+      };
+    }
+    const plans: StillPlan[] = [
+      ...stillPlans(source, contentType, settings, pixels).filter((plan) => plan !== "lossless-png"),
+      "lossless-png",
+    ];
+    let best: Blob | undefined;
+    for (const plan of plans) {
+      if (plan === "lossless-png" && best) continue;
+      const encoded = await encodeStill(plan, { canvas, context }, rgba, bytes, settings).catch(() => undefined);
+      if (encoded && (!best || encoded.size < best.size)) best = encoded;
+    }
+    if (!best) throw new EditFailed();
+    const prepared: PreparedFile = {
+      blob: best,
+      name: renamed(file.name, best.type),
+      contentType: best.type,
+      kind: "image",
+      sourceSize: file.size,
+      ...size,
+    };
+    if (Math.max(size.width, size.height) > settings.previewEdge || best.size > PREVIEW_MAX_BYTES)
+      prepared.preview = await preview(canvas, size.width, size.height, settings.previewEdge);
+    return prepared;
+  } finally {
+    bitmap.close();
+  }
+}
+
 // ---- Video ------------------------------------------------------------------
 
 /** Output size for a transcode, or undefined to keep the original size. The
@@ -492,17 +579,19 @@ export interface VideoProbe {
   inlineContainer: boolean;
 }
 
-export type VideoReason = "hdr" | "resolution" | "codec" | "container" | "bitrate";
+export type VideoReason = "edit" | "hdr" | "resolution" | "codec" | "container" | "bitrate";
 export type VideoPlan =
   | { action: "keep"; reason: "disabled" | "efficient" }
   | { action: "transcode"; reasons: VideoReason[]; width: number; height: number; bitrateKbps: number };
 
 /** Transcode only when needed; otherwise upload the original untouched so
  * already-efficient phone video is never re-compressed. HDR is always tone
- * mapped to SDR (`hdr.ts`); the caller keeps the original when it cannot. */
-export function videoPlan(probe: VideoProbe, settings: CompressionSettings): VideoPlan {
-  if (settings.videoMaxHeight <= 0) return { action: "keep", reason: "disabled" };
-  const reasons: VideoReason[] = probe.hdr ? ["hdr"] : [];
+ * mapped to SDR (`hdr.ts`); the caller keeps the original when it cannot.
+ * An edited video (whose probe is its cropped size) is always transcoded. */
+export function videoPlan(probe: VideoProbe, settings: CompressionSettings, edited = false): VideoPlan {
+  if (settings.videoMaxHeight <= 0 && !edited) return { action: "keep", reason: "disabled" };
+  const reasons: VideoReason[] = edited ? ["edit"] : [];
+  if (probe.hdr) reasons.push("hdr");
   const scaled = videoTargetSize(probe.width, probe.height, settings.videoMaxHeight);
   if (scaled) reasons.push("resolution");
   if (probe.codec !== "avc") reasons.push("codec");
@@ -543,11 +632,11 @@ export function outputKbps(
   return Math.max(MIN_VIDEO_KBPS, Math.min(targetKbps, Math.round((sourceKbps * percent) / 100)));
 }
 
-/** A transcode for playability (codec or container) is always kept; one for
- * HDR or resolution only when smaller; a bitrate-only one only when ≥ 10%
- * smaller. */
+/** A transcode for edits or playability (codec or container) is always kept;
+ * one for HDR or resolution only when smaller; a bitrate-only one only when
+ * ≥ 10% smaller. */
 export function keepTranscode(reasons: VideoReason[], originalSize: number, outputSize: number) {
-  if (reasons.includes("codec") || reasons.includes("container")) return true;
+  if (reasons.includes("edit") || reasons.includes("codec") || reasons.includes("container")) return true;
   if (reasons.includes("resolution") || reasons.includes("hdr")) return outputSize < originalSize;
   return outputSize <= originalSize * (1 - MIN_SAVING);
 }
@@ -573,8 +662,9 @@ async function transcodeVideo(
   settings: CompressionSettings,
   progress: (fraction: number) => void,
   signal?: AbortSignal,
+  edit?: AttachmentEdit,
 ): Promise<Blob | undefined> {
-  if (settings.videoMaxHeight <= 0 || typeof VideoEncoder === "undefined" || signal?.aborted) return;
+  if ((settings.videoMaxHeight <= 0 && !edit) || typeof VideoEncoder === "undefined" || signal?.aborted) return;
   const media = await import("mediabunny");
   const input = new media.Input({ source: new media.BlobSource(file), formats: media.ALL_FORMATS });
   try {
@@ -596,10 +686,12 @@ async function transcodeVideo(
       const audioBps = audio ? ((await audio.computePacketStats(500).catch(() => undefined))?.averageBitrate ?? 0) : 0;
       bitrateKbps = Math.max(0, ((file.size * 8) / duration - audioBps) / 1000);
     }
+    // Edits crop and turn the displayed picture; the plan sizes the result.
+    const crop = edit && cropPixels(edit, width, height, true);
     const plan = videoPlan(
       {
-        width,
-        height,
+        width: crop?.width ?? width,
+        height: crop?.height ?? height,
         codec,
         bitrateKbps,
         fps: stats && stats.averagePacketRate > 0 ? stats.averagePacketRate : undefined,
@@ -607,12 +699,13 @@ async function transcodeVideo(
         inlineContainer: attachmentKind(contentType) === "video",
       },
       settings,
+      !!edit,
     );
     if (plan.action === "keep") return;
     const bitrate = plan.bitrateKbps * 1000;
     const hdrMode = plan.reasons.includes("hdr");
     // H.264 in a container browsers will not play inline is only remuxed.
-    const remux = !hdrMode && codec === "avc" && plan.reasons.every((reason) => reason === "container");
+    const remux = !edit && !hdrMode && codec === "avc" && plan.reasons.every((reason) => reason === "container");
     if (!remux && !(await media.canEncodeVideo("avc", { width: plan.width, height: plan.height, bitrate }))) return;
     const audioCodec = !audio
       ? undefined
@@ -625,15 +718,16 @@ async function transcodeVideo(
             : undefined;
     // Never trade a smaller file for silently losing the soundtrack.
     if (audio && !audioCodec) return;
+    const even = (n: number) => Math.max(2, Math.floor(n / 2) * 2);
+    const output = { width: even(plan.width), height: even(plan.height) };
+    const overlay = edit?.marks.length ? await editOverlay(edit, width, height, crop!, output) : undefined;
     if (hdrMode) {
       // HDR whose transfer is unknown cannot be tone mapped correctly.
       const transfer = hdrTransfer(colorSpace);
       if (!transfer) return;
       const { transcodeHdrVideo } = await import("./hdr-video.ts");
-      const even = (n: number) => Math.max(2, Math.floor(n / 2) * 2);
       const buffer = await transcodeHdrVideo(media, input, {
-        width: even(plan.width),
-        height: even(plan.height),
+        ...output,
         transfer,
         codec: "avc",
         bitrate,
@@ -641,12 +735,18 @@ async function transcodeVideo(
         audioBitrate: settings.audioBitrateKbps * 1000,
         progress,
         signal,
+        edit: edit && {
+          rotation: edit.rotation,
+          crop: crop!,
+          frame: surface(output.width, output.height),
+          overlay,
+        },
       });
       return buffer && keepTranscode(plan.reasons, file.size, buffer.byteLength)
         ? new Blob([buffer], { type: "video/mp4" })
         : undefined;
     }
-    const output = new media.Output({
+    const target = new media.Output({
       format: new media.Mp4OutputFormat({ fastStart: "in-memory" }),
       target: new media.BufferTarget(),
     });
@@ -655,10 +755,19 @@ async function transcodeVideo(
         ? { width: plan.width }
         : { height: plan.height }
       : {};
+    // An edit bakes its turn and crop into the frames (rotation, then crop, then
+    // scale) and paints its marks over each one at the output size.
+    const edited = edit && {
+      rotate: edit.rotation,
+      crop: crop!,
+      ...output,
+      fit: "fill" as const,
+      ...(overlay && { process: overlayFrames(overlay), processedWidth: output.width, processedHeight: output.height }),
+    };
     const conversion = await media.Conversion.init({
       input,
-      output,
-      video: remux ? { codec: "avc" } : { ...size, codec: "avc", bitrate, forceTranscode: true },
+      output: target,
+      video: remux ? { codec: "avc" } : { ...(edited ?? size), codec: "avc", bitrate, forceTranscode: true },
       ...(audioCodec && audioCodec !== "copy"
         ? { audio: { codec: audioCodec, bitrate: settings.audioBitrateKbps * 1000 } }
         : {}),
@@ -672,7 +781,7 @@ async function transcodeVideo(
     } finally {
       signal?.removeEventListener("abort", cancel);
     }
-    const buffer = output.target.buffer;
+    const buffer = target.target.buffer;
     if (!buffer) return;
     return keepTranscode(plan.reasons, file.size, buffer.byteLength)
       ? new Blob([buffer], { type: "video/mp4" })
@@ -682,6 +791,34 @@ async function transcodeVideo(
   } finally {
     input.dispose();
   }
+}
+
+/** An edit's marks alone, at the output size: the still overlay of an edited video. */
+async function editOverlay(
+  edit: AttachmentEdit,
+  width: number,
+  height: number,
+  crop: { left: number; top: number; width: number; height: number },
+  output: { width: number; height: number },
+) {
+  await loadEditFont(edit);
+  const canvas = surface(output.width, output.height);
+  const context = canvas.getContext("2d") as Context2D | null;
+  if (!context) throw new EditFailed();
+  paintEdit(context, undefined, width, height, edit, crop, output.width / crop.width);
+  return canvas;
+}
+
+/** Paints each (already turned, cropped and scaled) frame with the overlay on top.
+ * Mediabunny copies the returned canvas into a new frame straight away. */
+function overlayFrames(overlay: Surface) {
+  const frame = surface(overlay.width, overlay.height);
+  const context = frame.getContext("2d") as Context2D;
+  return (sample: { draw: (context: Context2D, dx: number, dy: number, dw: number, dh: number) => void }) => {
+    sample.draw(context, 0, 0, frame.width, frame.height);
+    context.drawImage(overlay, 0, 0);
+    return frame;
+  };
 }
 
 function mediaElement(file: Blob, tag: "video" | "audio") {
@@ -711,9 +848,16 @@ async function prepareTimed(
   settings: CompressionSettings,
   progress: (fraction: number) => void,
   signal?: AbortSignal,
+  edit?: AttachmentEdit,
 ): Promise<PreparedFile> {
   const looksLikeVideo = attachmentKind(contentType) === "video" || contentType.startsWith("video/");
-  const transcoded = looksLikeVideo ? await transcodeVideo(file, contentType, settings, progress, signal) : undefined;
+  const transcoded = looksLikeVideo
+    ? await transcodeVideo(file, contentType, settings, progress, signal, edit)
+    : undefined;
+  if (edit && !transcoded) {
+    signal?.throwIfAborted();
+    throw new EditFailed();
+  }
   const blob: Blob = transcoded ?? file;
   const type = transcoded ? "video/mp4" : contentType;
   const kind = attachmentKind(type);
@@ -750,20 +894,49 @@ async function prepareTimed(
   return prepared;
 }
 
+/** What the editor can open of a picked file here: a still image this browser
+ * decodes (not animated), or a video when WebCodecs can re-encode it. */
+export async function editableKind(file: File): Promise<"image" | "video" | undefined> {
+  const type = declaredType(file);
+  if (type.startsWith("video/")) {
+    // Open-source Chromium builds have WebCodecs but no H.264 encoder.
+    if (typeof VideoEncoder === "undefined" || typeof VideoFrame === "undefined") return;
+    const support = await VideoEncoder.isConfigSupported({ codec: "avc1.42001f", width: 1280, height: 720 }).catch(
+      () => undefined,
+    );
+    return support?.supported ? "video" : undefined;
+  }
+  if (!editableImageType(type) || typeof createImageBitmap === "undefined") return;
+  const head = new Uint8Array(await file.slice(0, 256 * 1024).arrayBuffer());
+  if ((type === "image/png" && pngIsAnimated(head)) || (type === "image/webp" && webpInfo(head)?.animated)) return;
+  // Only some browsers decode these.
+  if (["image/heic", "image/heif", "image/tiff"].includes(type)) {
+    const bitmap = await createImageBitmap(file).catch(() => undefined);
+    if (!bitmap) return;
+    bitmap.close();
+  }
+  return "image";
+}
+
 /** Compress stills and video, measure media and draw previews in the browser.
- * Any failure falls back to the original file. */
+ * Any failure falls back to the original file, except with edits: those must
+ * apply or the file fails (`EditFailed`). */
 export async function prepareFile(
   file: File,
   settings = DEFAULT_COMPRESSION,
   progress: (fraction: number) => void = () => undefined,
   signal?: AbortSignal,
+  edit?: AttachmentEdit,
 ): Promise<PreparedFile> {
   const contentType = declaredType(file);
   const kind = attachmentKind(contentType);
+  const edited = isEdited(edit) ? edit : undefined;
   const prepared = contentType.startsWith("image/")
-    ? await prepareImage(file, contentType, settings)
+    ? edited
+      ? await prepareEditedImage(file, contentType, settings, edited)
+      : await prepareImage(file, contentType, settings)
     : kind === "video" || kind === "audio" || contentType.startsWith("video/")
-      ? await prepareTimed(file, contentType, settings, progress, signal)
+      ? await prepareTimed(file, contentType, settings, progress, signal, edited)
       : { blob: file, name: file.name, contentType, kind, sourceSize: file.size };
   // An original upload still loses its location and other metadata, losslessly.
   if (prepared.blob === file) prepared.blob = await stripMetadata(file, contentType);
