@@ -106,7 +106,18 @@ pub enum Command {
     LoadUnread {
         epoch: u64,
         revision: u64,
+        visit: Option<u64>,
         token: String,
+    },
+    LoadVoiceActivity {
+        epoch: u64,
+        token: String,
+    },
+    ThreadUnread {
+        scope: (u64, u64, String),
+        revision: u64,
+        token: String,
+        read: Option<(String, String)>,
     },
     ReadChannel {
         epoch: u64,
@@ -226,6 +237,7 @@ pub enum Command {
         reply_to_id: Option<String>,
         /// Resent unchanged on retry: ids join the idempotency hash.
         attachment_ids: Vec<String>,
+        spoiler_attachment_ids: Vec<String>,
     },
     /// Whether uploads are configured, and the compression settings.
     AssetUsage {
@@ -579,6 +591,11 @@ pub enum AdminResult {
 }
 
 pub enum Event {
+    /// A live `profiles` change from the account feed.
+    Profiles {
+        epoch: u64,
+        event: gateway::ProfileEvent,
+    },
     Picture {
         epoch: u64,
         target: crate::pictures::Target,
@@ -627,7 +644,18 @@ pub enum Event {
     UnreadLoaded {
         epoch: u64,
         revision: u64,
-        result: Result<Vec<crate::model::UnreadSpace>, String>,
+        visit: Option<u64>,
+        result: Result<crate::model::UnreadSpaces, String>,
+    },
+    VoiceActivityLoaded {
+        epoch: u64,
+        result: Result<Vec<String>, String>,
+    },
+    ThreadUnread {
+        scope: (u64, u64, String),
+        revision: u64,
+        read: Option<(String, String)>,
+        result: Result<std::collections::BTreeMap<String, String>, String>,
     },
     ChannelRead {
         epoch: u64,
@@ -847,10 +875,19 @@ pub struct LoadError {
 
 impl From<crate::api::ApiError> for LoadError {
     fn from(error: crate::api::ApiError) -> Self {
+        // A jump to a message or thread that is not in this conversation
+        // (`around`/thread anchors) is a 404 too, but the conversation itself
+        // is still readable: show the error rather than closing it.
+        let missing_message = error.status.is_some_and(|status| status.as_u16() == 404)
+            && matches!(
+                error.message.as_str(),
+                "Message not found." | "Thread not found."
+            );
         Self {
-            access_denied: error
-                .status
-                .is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)),
+            access_denied: !missing_message
+                && error
+                    .status
+                    .is_some_and(|status| matches!(status.as_u16(), 401 | 403 | 404)),
             space_access_denied: false,
             message: error.to_string(),
         }
@@ -1133,53 +1170,73 @@ fn manage(
                 let visible = visible.clone();
                 notifications = Some((
                     epoch,
-                    crate::os_notifications::watch(api.base(), token, move |alert, stopped| {
-                        send(&events, &context, Event::NotificationActivity { epoch });
-                        // A focused UI publishes a short lease. If minimized
-                        // windows stop repainting, stale focus cannot suppress alerts.
-                        if !alert.fresh()
-                            || visible.lock().unwrap().as_ref().is_some_and(|(id, at)| {
-                                Some(id.as_str()) == alert.conversation()
-                                    && at.elapsed() < Duration::from_secs(2)
-                            })
+                    crate::os_notifications::watch(
+                        api.base(),
+                        token,
                         {
-                            return;
-                        }
-                        let events = events.clone();
-                        let context = context.clone();
-                        let visible = visible.clone();
-                        thread::spawn(move || {
-                            let target = alert.clone();
-                            let conversation = alert.conversation().map(str::to_owned);
-                            let clicks = events.clone();
-                            let repaint = context.clone();
-                            if let Err(error) = crate::os_notifications::show(
-                                alert,
-                                stopped,
-                                || {
-                                    visible.lock().unwrap().as_ref().is_some_and(|(id, at)| {
-                                        Some(id.as_str()) == conversation.as_deref()
+                            let events = events.clone();
+                            let context = context.clone();
+                            move |alert, stopped| {
+                                send(&events, &context, Event::NotificationActivity { epoch });
+                                // A focused UI publishes a short lease. If minimized
+                                // windows stop repainting, stale focus cannot suppress alerts.
+                                if !alert.fresh()
+                                    || visible.lock().unwrap().as_ref().is_some_and(|(id, at)| {
+                                        Some(id.as_str()) == alert.conversation()
                                             && at.elapsed() < Duration::from_secs(2)
                                     })
-                                },
-                                move || {
-                                    repaint
-                                        .send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                                    repaint.send_viewport_cmd(egui::ViewportCommand::Focus);
-                                    send(
-                                        &clicks,
-                                        &repaint,
-                                        Event::OpenNotification {
-                                            epoch,
-                                            alert: target.clone(),
+                                {
+                                    return;
+                                }
+                                let events = events.clone();
+                                let context = context.clone();
+                                let visible = visible.clone();
+                                thread::spawn(move || {
+                                    let target = alert.clone();
+                                    let conversation = alert.conversation().map(str::to_owned);
+                                    let clicks = events.clone();
+                                    let repaint = context.clone();
+                                    if let Err(error) = crate::os_notifications::show(
+                                        alert,
+                                        stopped,
+                                        || {
+                                            visible.lock().unwrap().as_ref().is_some_and(
+                                                |(id, at)| {
+                                                    Some(id.as_str()) == conversation.as_deref()
+                                                        && at.elapsed() < Duration::from_secs(2)
+                                                },
+                                            )
                                         },
-                                    );
-                                },
-                            ) {
-                                send(&events, &context, Event::NotificationError { epoch, error });
+                                        move || {
+                                            repaint.send_viewport_cmd(
+                                                egui::ViewportCommand::Minimized(false),
+                                            );
+                                            repaint.send_viewport_cmd(egui::ViewportCommand::Focus);
+                                            send(
+                                                &clicks,
+                                                &repaint,
+                                                Event::OpenNotification {
+                                                    epoch,
+                                                    alert: target.clone(),
+                                                },
+                                            );
+                                        },
+                                    ) {
+                                        send(
+                                            &events,
+                                            &context,
+                                            Event::NotificationError { epoch, error },
+                                        );
+                                    }
+                                });
                             }
-                        });
-                    }),
+                        },
+                        {
+                            let events = events.clone();
+                            let context = context.clone();
+                            move |event| send(&events, &context, Event::Profiles { epoch, event })
+                        },
+                    ),
                 ));
             }
             Command::StopNotifications => {
@@ -1559,15 +1616,39 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
         Command::LoadUnread {
             epoch,
             revision,
+            visit,
             token,
         } => Event::UnreadLoaded {
             epoch,
             revision,
+            visit,
+            result: api.unread_spaces(&token).map_err(|error| error.to_string()),
+        },
+        Command::LoadVoiceActivity { epoch, token } => Event::VoiceActivityLoaded {
+            epoch,
             result: api
-                .unread_spaces(&token)
-                .map(|value| value.spaces)
+                .voice_activity(&token)
                 .map_err(|error| error.to_string()),
         },
+        Command::ThreadUnread {
+            scope,
+            revision,
+            token,
+            read,
+        } => {
+            let result = if let Some((root, seq)) = &read {
+                api.read_thread(&token, &scope.2, root, seq)
+                    .map(|()| std::collections::BTreeMap::new())
+            } else {
+                api.unread_threads(&token, &scope.2)
+            };
+            Event::ThreadUnread {
+                scope,
+                revision,
+                read,
+                result: result.map_err(|error| error.to_string()),
+            }
+        }
         Command::ReadChannel {
             epoch,
             token,
@@ -1828,6 +1909,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             client_id,
             text,
             attachment_ids,
+            spoiler_attachment_ids,
             thread_root_id,
             broadcast,
             reply_to_id,
@@ -1843,6 +1925,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                     &client_id,
                     &text,
                     &attachment_ids,
+                    &spoiler_attachment_ids,
                     (thread_root_id.as_deref(), broadcast),
                     reply_to_id.as_deref(),
                 )
@@ -2477,6 +2560,74 @@ mod tests {
     }
 
     #[test]
+    fn feedback_waiting_count_survives_unread_poll_and_defaults_on_older_servers() {
+        let (api, worker, _) = serve(vec![
+            (
+                "GET /api/spaces/unread",
+                "200 OK",
+                r#"{"spaces":[],"feedbackWaiting":12}"#,
+            ),
+            ("GET /api/spaces/unread", "200 OK", r#"{"spaces":[]}"#),
+        ]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        for expected in [12, 0] {
+            super::execute(
+                &api,
+                super::Command::LoadUnread {
+                    epoch: 7,
+                    revision: 3,
+                    visit: None,
+                    token: "account".into(),
+                },
+                &sender,
+                &eframe::egui::Context::default(),
+            );
+            match receiver.recv().unwrap() {
+                super::Event::UnreadLoaded {
+                    epoch: 7,
+                    revision: 3,
+                    visit: None,
+                    result: Ok(unread),
+                } => {
+                    assert_eq!(unread.feedback_waiting, expected);
+                    assert!(unread.spaces.is_empty());
+                }
+                _ => panic!("expected unread result"),
+            }
+        }
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn voice_activity_uses_the_member_endpoint_and_preserves_account_epoch() {
+        let (api, worker, _) = serve(vec![(
+            "GET /api/spaces/voice-activity",
+            "200 OK",
+            r#"{"spaceIds":["space-one","space-two"]}"#,
+        )]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        super::execute(
+            &api,
+            super::Command::LoadVoiceActivity {
+                epoch: 7,
+                token: "account".into(),
+            },
+            &sender,
+            &eframe::egui::Context::default(),
+        );
+        match receiver.recv().unwrap() {
+            super::Event::VoiceActivityLoaded {
+                epoch: 7,
+                result: Ok(ids),
+            } => {
+                assert_eq!(ids, ["space-one", "space-two"]);
+            }
+            _ => panic!("expected voice activity result"),
+        }
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn feedback_pages_load_with_the_account_bearer_and_their_cursor() {
         let page = r#"{"reports":[{"id":"m2","messageId":"m2","threadRootId":"m1","createdAt":"2026-10-11T19:00:00Z","text":"@feedback hi","attachments":0,"reporter":{"id":"u1","username":"alice","displayName":"Alice","avatarId":3},"channel":{"id":"c1","name":"general","direct":false},"space":{"id":"s1","name":"Studio"},"replyCount":1,"answered":false}],"cursor":"41"}"#;
         let (api, worker, bodies) = serve(vec![
@@ -2988,5 +3139,22 @@ mod login_copy_tests {
             profile_error(&error(StatusCode::INTERNAL_SERVER_ERROR, None)),
             "Your profile could not be saved. Please try again."
         );
+    }
+
+    #[test]
+    fn a_missing_jump_target_is_an_error_not_lost_access() {
+        let not_found = |message: &str| {
+            super::LoadError::from(ApiError {
+                message: message.into(),
+                ..error(StatusCode::NOT_FOUND, None)
+            })
+        };
+        for missing in ["Message not found.", "Thread not found."] {
+            let error = not_found(missing);
+            assert!(!error.access_denied, "{missing}");
+            assert_eq!(error.message, missing);
+        }
+        assert!(not_found("This channel is no longer available.").access_denied);
+        assert!(super::LoadError::from(error(StatusCode::FORBIDDEN, None)).access_denied);
     }
 }

@@ -6,7 +6,7 @@
 .voice-panel {
   --presence-ring: var(--surface-raised);
   flex: 0 0 auto;
-  margin: auto 12px 12px;
+  margin: auto 12px var(--workspace-bottom-inset);
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-raised);
@@ -1944,5 +1944,661 @@
   .voice-stack > svg,
   .range-slider-thumb {
     transition: none;
+  }
+}
+
+/* Live channels: a channel's row grows into a card in its place in the list, for
+   your call (faces, mute, deafen and Leave) or a room where people are talking
+   (faces, names and Join). Pressing a card opens its chat. Voice without a row in
+   the list (your call in another space, a visited room) sits above the channels. */
+.live-now,
+.live-card {
+  --live-card: #18231f;
+  --live-card-border: #28362f;
+  --live-call: #22382c;
+  --live-call-border: #4b8a60;
+  --live-ring: var(--voice-session-green);
+}
+.live-now {
+  flex-shrink: 0;
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 2px;
+}
+.live-card {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 10px 8px 10px 12px;
+  border: 1px solid var(--live-card-border);
+  border-radius: 10px;
+  background: var(--live-card);
+  cursor: pointer;
+  animation: live-arrive var(--motion-base) var(--ease-out);
+}
+/* In the list the row is already there: only what the card adds arrives. */
+.live-card:has(> :is(.channel-line, .channel-row)) {
+  animation: none;
+}
+.live-card:has(> :is(.channel-line, .channel-row)) > :not(.channel-line, .channel-row) {
+  animation: live-arrive var(--motion-base) var(--ease-out);
+}
+.channel-navigation li[data-live] {
+  margin-block: 3px;
+}
+.channel-navigation li > :is(.channel-card, .live-card) {
+  min-width: 0;
+  flex: 1 1 100%;
+}
+/* Every row sits in the same 1px frame, so becoming a card never moves its name or
+   menu. In a card the row's own line spans it edge to edge, its icon in line with
+   the faces below. */
+.channel-card {
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+.live-card:has(> :is(.channel-line, .channel-row)) {
+  padding-inline: 9px;
+}
+.live-card > :is(.channel-line, .channel-row) {
+  margin: -10px -9px 0;
+}
+.live-call > :is(.channel-line, .channel-row) {
+  margin-top: -12px;
+}
+@media (hover: hover) {
+  .live-card:hover > .channel-line:not(:has(.channel-select[aria-current="page"])) {
+    background: var(--surface-hover);
+  }
+}
+.live-call-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+.live-call-status > .live-status {
+  margin-left: 0;
+}
+.live-call-status > .voice-session-timer {
+  color: var(--voice-session-green);
+  font-size: 0.7rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.live-call {
+  --live-face-gap: var(--live-call);
+  gap: 10px;
+  padding: 12px;
+  border-color: var(--live-call-border);
+  background: var(--live-call);
+}
+.live-room {
+  --live-face-gap: var(--live-card);
+}
+.live-card-heading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.live-card-heading > svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--text-muted);
+}
+.live-card-heading > .live-wave {
+  color: var(--voice-session-green);
+}
+.live-channel {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+.live-channel > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-channel > small {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 500;
+}
+.live-channel:disabled {
+  cursor: default;
+}
+@media (hover: hover) {
+  .live-channel:not(:disabled):hover > span {
+    text-decoration: underline;
+  }
+}
+.live-channel:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.live-status {
+  flex: none;
+  margin-left: 4px;
+  color: var(--voice-session-green);
+  font-size: 0.7rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.live-call:not([data-phase="connected"]) .live-status {
+  color: #d9ab5c;
+}
+.live-card-heading > .voice-session-timer {
+  flex: none;
+  margin-left: auto;
+  padding-right: 2px;
+  color: var(--voice-session-green);
+  font-size: 0.7rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.live-avatar {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border-radius: var(--radius-avatar);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 900;
+}
+/* Outranks a stack's plain gap ring (the phone strip's faces). */
+.live-avatar[data-speaking],
+.live-stack > .live-avatar[data-speaking] {
+  overflow: visible;
+  box-shadow:
+    0 0 0 2px var(--live-face-gap, var(--live-card)),
+    0 0 0 4px var(--live-ring);
+}
+/* Two rows of faces at most; the rest fold into "+N" (callCardFaces). A long press
+   opens everyone's volume, so it must not select text or call up the image menu.
+   Doubled classes outrank the channel list's own ul rules: the card sits inside it. */
+.live-card.live-call ul.live-faces {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.live-people-count {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.live-face,
+.live-more {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-avatar);
+  background: transparent;
+  color: inherit;
+}
+.live-face > .live-avatar {
+  width: 34px;
+  height: 34px;
+}
+.live-badge {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--live-call);
+  border-radius: 50%;
+  color: var(--error-text);
+  background: #2b1f1b;
+}
+.live-badge svg {
+  width: 10px;
+  height: 10px;
+}
+.live-more {
+  border-radius: var(--radius-avatar);
+  color: #d9f3e2;
+  background: #2b3d33;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.live-more[data-speaking] {
+  box-shadow:
+    0 0 0 2px var(--live-call),
+    0 0 0 4px var(--live-ring);
+}
+.live-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.live-controls .voice-icon-button {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius);
+  background: #24342b;
+}
+.live-controls .voice-icon-button.active {
+  color: var(--error-text);
+  background: rgb(219 104 73 / 0.16);
+}
+.live-controls .voice-leave {
+  margin-left: auto;
+  height: 34px;
+  color: var(--error-text);
+  background: rgb(219 104 73 / 0.16);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+@media (hover: hover) {
+  .live-controls .voice-icon-button:not([aria-disabled="true"]):hover {
+    color: var(--text);
+    background: #2c4033;
+  }
+  .live-controls .voice-leave:hover {
+    color: #ffb3a0;
+    background: rgb(219 104 73 / 0.26);
+  }
+}
+.live-room-body {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.live-stack {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+.live-stack > .live-avatar {
+  width: 22px;
+  height: 22px;
+  box-shadow: 0 0 0 2px var(--live-face-gap, var(--live-card));
+}
+.live-stack > .live-avatar + .live-avatar,
+.live-stack > .live-chip {
+  margin-left: -6px;
+}
+.live-chip {
+  height: 22px;
+  min-width: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0 5px;
+  border-radius: 11px;
+  color: #d9f3e2;
+  background: #2b3d33;
+  box-shadow: 0 0 0 2px var(--live-face-gap, var(--live-card));
+  font-size: 0.64rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.live-names {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-room-body > .voice-session-timer {
+  flex: none;
+  color: var(--voice-session-green);
+  font-size: 0.7rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.live-join {
+  height: 30px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--on-action);
+  background: var(--action);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.live-join.live-switch {
+  border-color: #3a4744;
+  color: var(--text);
+  background: #2a3532;
+}
+.live-join[aria-disabled="true"] {
+  border-color: var(--border);
+  color: var(--text-muted);
+  background: transparent;
+  cursor: default;
+}
+.live-join[aria-busy="true"] {
+  cursor: progress;
+}
+@media (hover: hover) {
+  .live-join:not([aria-disabled="true"]):not(.live-switch):hover {
+    background: var(--action-hover);
+  }
+  .live-join.live-switch:not([aria-disabled="true"]):hover {
+    background: #34413e;
+  }
+}
+.live-join:not([aria-disabled="true"]):not(.live-switch):active {
+  background: var(--action-press);
+}
+.live-join:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+/* Everyone in your call, with each person's volume: a top-layer popover beside
+   the sidebar (placeEveryone), or a bottom sheet on phones. */
+.live-everyone {
+  position: fixed;
+  inset: auto;
+  width: 280px;
+  max-height: min(520px, calc(100dvh - 16px));
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 0 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--surface-raised);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 0.5);
+  cursor: auto;
+}
+.live-everyone:popover-open {
+  animation: audio-panel-in var(--motion-fast) var(--ease-out);
+}
+.live-everyone-heading {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 8px 6px 14px;
+}
+.live-everyone-heading p {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font-size: 0.86rem;
+}
+.live-everyone-heading span {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+.live-card.live-call .live-everyone > ul {
+  min-height: 0;
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0 6px;
+  overflow-y: auto;
+  list-style: none;
+}
+.live-everyone .participant {
+  min-height: 38px;
+  gap: 10px;
+  padding: 4px 8px;
+}
+@media (hover: hover) {
+  .live-everyone .participant:hover {
+    background: var(--surface-hover);
+  }
+}
+.live-everyone .avatar {
+  width: 26px;
+  height: 26px;
+  border-width: 1.5px;
+  font-size: 0.62rem;
+}
+.live-everyone .avatar.speaking {
+  border-color: var(--voice-session-green);
+  box-shadow: none;
+}
+.live-everyone .participant-name strong {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.live-everyone .participant-menu-button {
+  height: 26px;
+  font-size: 0.68rem;
+}
+/* The live mark on a channel row: how many are talking there. */
+.channel-select .channel-live,
+.channel-row .channel-live {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--voice-session-green);
+  font-size: 0.72rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.channel-navigation .channel-select .channel-live svg,
+.channel-row .channel-live svg {
+  width: 13px;
+  height: 13px;
+  color: var(--voice-session-green);
+}
+/* Touch has no hover: quiet rows always show their join button; live rows are
+   joined from their card. */
+@media (hover: none), (pointer: coarse) {
+  .channel-quick-join:not([data-occupied], [data-placeholder]) {
+    width: 44px;
+    height: 44px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius);
+    color: #687174;
+    background: transparent;
+  }
+  .channel-quick-join svg {
+    width: 17px;
+    height: 17px;
+  }
+  .live-join {
+    height: 40px;
+    padding: 0 14px;
+    font-size: 0.84rem;
+  }
+  .live-controls .voice-icon-button,
+  .live-controls .voice-leave {
+    height: 44px;
+  }
+  .live-controls .voice-icon-button {
+    width: 44px;
+  }
+  .live-face,
+  .live-more {
+    width: 42px;
+    height: 42px;
+  }
+  .live-face > .live-avatar {
+    width: 38px;
+    height: 38px;
+  }
+  .live-everyone .participant {
+    min-height: 48px;
+  }
+  .live-everyone .participant-menu-button {
+    height: 36px;
+    padding: 0 10px;
+  }
+}
+/* Phones: the conversation stands alone, so a strip under its header carries
+   your call (tap for Browse, or mute in place) or this channel's live room. */
+.voice-strip {
+  --live-face-gap: #1a2622;
+  --live-ring: var(--voice-session-green);
+  flex: none;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 6px;
+  border-bottom: 1px solid #26352f;
+  background: #1a2622;
+  animation: live-arrive var(--motion-base) var(--ease-out);
+}
+.voice-strip-open {
+  min-width: 0;
+  min-height: 44px;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0 6px 0 10px;
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.86rem;
+  text-align: left;
+}
+button.voice-strip-open {
+  cursor: pointer;
+}
+.voice-strip-open > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--voice-session-green);
+}
+/* The name gives way first, so the faces and time keep their place. */
+.voice-strip-open > strong {
+  min-width: 0;
+  flex: 0 1 auto;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-strip .live-stack > .live-avatar {
+  width: 24px;
+  height: 24px;
+}
+/* Your call's faces ring while speaking, so they sit apart rather than overlap. */
+.voice-strip .live-stack > .live-avatar + .live-avatar,
+.voice-strip .live-stack > .live-chip {
+  margin-left: 6px;
+}
+.voice-strip .live-stack > .live-chip {
+  height: 24px;
+  min-width: 24px;
+  border-radius: var(--radius-avatar);
+  box-shadow: none;
+}
+.voice-strip-detail {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-strip:not([data-phase]) .voice-strip-detail,
+.voice-strip[data-phase="connected"] .voice-strip-detail {
+  color: var(--text-muted);
+}
+.voice-strip[data-phase="joining"] .voice-strip-detail,
+.voice-strip[data-phase="reconnecting"] .voice-strip-detail {
+  color: #d9ab5c;
+}
+.voice-strip-open > .voice-session-timer {
+  flex: none;
+  color: var(--voice-session-green);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+}
+.voice-strip .voice-icon-button {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  border-radius: var(--radius);
+  background: #24342b;
+}
+.voice-strip .voice-icon-button.active {
+  color: var(--error-text);
+  background: rgb(219 104 73 / 0.16);
+}
+@media (max-width: 760px) {
+  .live-everyone {
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    width: auto;
+    max-height: 75dvh;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+    border-width: 1px 0 0;
+    border-radius: 18px 18px 0 0;
+  }
+  .live-everyone::backdrop {
+    background: rgb(5 6 7 / 0.55);
+  }
+}
+@keyframes live-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-card,
+  .live-card:has(> :is(.channel-line, .channel-row)) > :not(.channel-line, .channel-row),
+  .voice-strip,
+  .live-everyone:popover-open {
+    animation: none;
   }
 }

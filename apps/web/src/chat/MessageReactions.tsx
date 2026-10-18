@@ -12,10 +12,8 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import { SmilePlus } from "lucide-react";
 import type { ChatMessage, ChatReaction } from "./types.ts";
 import { emojiAsset, emojiCode } from "./emoji.ts";
-import { preloadReactionPicker } from "./MessageActions.tsx";
 import {
   cachedReactors,
   emojiLabel,
@@ -180,9 +178,7 @@ export default function MessageReactions({
   authorId,
   readOnly = false,
   save,
-  pickerOpen,
   onReact,
-  onOpenPicker,
   onShowReactors,
   onDismissError,
 }: {
@@ -191,9 +187,7 @@ export default function MessageReactions({
   authorId?: string;
   readOnly?: boolean;
   save?: ReactionSave;
-  pickerOpen: boolean;
   onReact: (messageId: string, emoji: string, active: boolean) => Promise<void>;
-  onOpenPicker: (anchor: HTMLButtonElement) => void;
   onShowReactors: (emoji: string, anchor: HTMLElement) => void;
   onDismissError: () => void;
 }) {
@@ -201,22 +195,6 @@ export default function MessageReactions({
 
   return (
     <>
-      <button
-        type="button"
-        className="chat-add-reaction"
-        onClick={(event) => onOpenPicker(event.currentTarget)}
-        onMouseEnter={() => {
-          if (canReact) preloadReactionPicker();
-        }}
-        onFocus={preloadReactionPicker}
-        disabled={!canReact}
-        aria-label="Add reaction"
-        title="Add reaction"
-        aria-haspopup="dialog"
-        aria-expanded={pickerOpen}
-      >
-        <SmilePlus size={14} aria-hidden="true" />
-      </button>
       {!!message.reactions?.length && (
         <div className="chat-reactions" aria-label="Reactions">
           {message.reactions.map((reaction) => (

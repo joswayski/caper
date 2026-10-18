@@ -121,6 +121,49 @@ class ProfileUpdatesTest {
         assertEquals("unknown people keep the card they opened with", stranger, refreshedCard(stranger, before.withPerson(update)))
     }
 
+    @Test fun `resolving a profile that changes nothing keeps the same instances`() {
+        fun message(id: String, author: ChatAuthor) = ChatMessage(id, "channel00001", "1", author, ChatContent(1, "text", "hi"), "now", "client-$id")
+        val state = AppUiState(
+            account = Account(self, "me", "Me", avatarId = 1),
+            selectedSpace = SpaceDetail(Space("space0000001", "Studio", self), emptyList(), listOf(Member(self, "me", "Me", true, 1), member())),
+            messages = listOf(message("message00001", ChatAuthor(self, "Me", false, 1)), message("message00002", author())),
+            replyTargets = mapOf("channel" to MessageReply("message00002", author(), "hi", false)),
+        )
+        val resolved = state.withAccountProfile()
+        assertSame(state.account, resolved.account)
+        assertSame(state.selectedSpace, resolved.selectedSpace)
+        assertSame(state.messages, resolved.messages)
+        assertSame(state.replyTargets, resolved.replyTargets)
+
+        // A real change rebuilds only what holds that person.
+        val renamed = state.withPerson(update)
+        assertSame(state.messages[0], renamed.messages[0])
+        assertEquals("Maya New", renamed.messages[1].author.name)
+        assertSame(state.selectedSpace!!.members[0], renamed.selectedSpace!!.members[0])
+        assertEquals("Maya New", renamed.replyTargets.getValue("channel").author.name)
+    }
+
+    @Test fun `a refreshed list finds the copies a missed update left behind`() {
+        val before = state()
+        assertEquals("loaded messages and other lists still show the old profile", listOf(update), before.staleProfiles(listOf(update)))
+        assertEquals("once applied nothing is left to repair", emptyList<ProfilePerson>(),
+            before.withPerson(update, keepSignedUrls = true).staleProfiles(listOf(update)))
+
+        val current = ProfilePerson(maya, "maya", "Maya", 312, oldAsset, "https://cdn.caper.chat/assets/$oldAsset?sig=fresh")
+        assertEquals("a newly signed URL for the same picture is not a change", emptyList<ProfilePerson>(),
+            before.copy(blocks = emptyList()).staleProfiles(listOf(current)))
+        assertEquals("your own copies follow the account", emptyList<ProfilePerson>(),
+            before.staleProfiles(listOf(ProfilePerson(self, "me_too", "Me Too", 1))))
+
+        // A conversation cached before the update counts too, nested authors included.
+        val cached = ChatHistory(before.messages, "7", false)
+        val elsewhere = AppUiState(account = before.account)
+        assertEquals(listOf(update), elsewhere.staleProfiles(listOf(update), listOf(cached)))
+        assertEquals(emptyList<ProfilePerson>(), elsewhere.staleProfiles(listOf(update), listOf(cached.withPerson(update, keepSignedUrls = true))))
+        assertEquals("people nobody here shows are ignored", emptyList<ProfilePerson>(),
+            elsewhere.staleProfiles(listOf(update.copy(id = "zed000000001")), listOf(cached)))
+    }
+
     @Test fun `a space update renames and re-icons that space everywhere, and ignores others`() {
         val icon = "https://cdn.caper.chat/assets/$newAsset?sig=i"
         val studio = Space("space0000001", "Studio", self, iconAsset = oldAsset, iconUrl = "x")
@@ -129,6 +172,12 @@ class ProfileUpdatesTest {
             spaces = listOf(studio, Space("space0000003", "Other", self)), invitations = listOf(invited),
             selectedSpace = SpaceDetail(studio, emptyList(), emptyList()),
             visit = VisitUi("channel00001", "space0000001", "Studio", "general", false),
+            feedback = FeedbackInboxUi(reports = listOf(
+                FeedbackReport("report000001", "message00001", "message00001", "now", reporter = FeedbackReporter("ann000000001"),
+                    channel = FeedbackChannel("channel00001", "general"), space = FeedbackSpace("space0000001", "Studio")),
+                FeedbackReport("report000002", "message00002", "message00002", "now", reporter = FeedbackReporter("ann000000001"),
+                    channel = FeedbackChannel("channel00003", "general"), space = FeedbackSpace("space0000003", "Other")),
+            )),
         )
         val renamed = state.withSpace(Space("space0000001", "Friends", self, iconAsset = newAsset, iconUrl = icon))
         assertEquals("Friends", renamed.spaces[0].name)
@@ -137,6 +186,7 @@ class ProfileUpdatesTest {
         assertEquals("Friends", renamed.selectedSpace!!.space.name)
         assertEquals(newAsset, renamed.selectedSpace!!.space.iconAsset)
         assertEquals("Friends", renamed.visit!!.spaceName)
+        assertEquals("Feedback reports take the new name", listOf("Friends", "Other"), renamed.feedback.reports.map { it.space?.name })
 
         val cleared = renamed.withSpace(Space("space0000001", "Friends", self))
         assertNull(cleared.spaces[0].iconAsset)

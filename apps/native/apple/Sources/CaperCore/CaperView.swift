@@ -1,3 +1,4 @@
+import PhotosUI
 import QuickLook
 import SwiftUI
 import UniformTypeIdentifiers
@@ -37,6 +38,13 @@ public enum CaperTheme {
     public static let error = Color(red: 1, green: 155/255, blue: 130/255)
     /// Web's muted/deafened account controls (#ED5265): the icon and its options chevron.
     public static let voiceOff = Color(red: 237/255, green: 82/255, blue: 101/255)
+    /// Shared bottom edge for the account dock and conversation composer.
+    static let workspaceBottomInset: CGFloat = 16
+    #if os(iOS)
+    static let accountBarHeight: CGFloat = 52
+    #else
+    static let accountBarHeight: CGFloat = 42
+    #endif
 
     public static func font(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         let name: String
@@ -155,7 +163,7 @@ private struct FirstSpaceView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Choose something you will recognize easily. You can always change it later!")
                     .font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
-                CaperField(title: "Space name", text: $name).onSubmit(create)
+                CaperField(title: "Space name", text: $name, placeholder: "Gaming nights").onSubmit(create)
                 Button(pending ? "Creating…" : "Create space", action: create)
                     .buttonStyle(CaperPrimaryButton())
                     .disabled(pending || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.canCreateSpace)
@@ -1020,7 +1028,7 @@ private struct WorkspaceView: View {
             if parityFixture == "manage-space" || parityFixture == "modal" { sheet = .manageSpace }
             else if parityFixture == "manage-channel", let channel = model.detail?.channels.first(where: { $0.private }) { sheet = .manageChannel(channel) }
             else if parityFixture == "new-direct-message" { sheet = .newDirectMessage }
-            else if parityFixture == "voice-roster" { CaperRuntime.showVoiceRosterPreview(model) }
+            else if CaperRuntime.voiceRosterFixtures.contains(parityFixture ?? "") { CaperRuntime.showVoiceRosterPreview(model) }
             else if parityFixture == "whats-new" { CaperRuntime.showWhatsNewPreview(model) }
         }
         #if os(iOS)
@@ -1123,9 +1131,11 @@ private struct SpaceRailButton: View {
     private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
     private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
     private var unread: Bool { model.unreadSpaces.contains { $0.id == space.id } }
+    private var connected: Bool { model.account != nil && model.voice.phase == .connected && model.voice.context?.spaceID == space.id }
+    private var voiceActive: Bool { model.account != nil && (connected || model.voiceActivitySpaceIDs.contains(space.id)) }
     private var state: String {
         let base: String = model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : ""
-        return [base, unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
+        return [base, unread ? "Unread activity" : "", muted ? "Muted" : "", connected ? "Connected to voice" : voiceActive ? "Voice active" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     var body: some View {
@@ -1136,10 +1146,20 @@ private struct SpaceRailButton: View {
                 .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
                 .overlay(alignment: .bottomTrailing) { mutedBadge }
                 .overlay(alignment: .topTrailing) {
+                    if voiceActive {
+                        CaperIcon(name: "volume-2", size: 11)
+                            .foregroundStyle(CaperTheme.text)
+                            .frame(width: 18, height: 18)
+                            .background(Circle().fill(connected ? CaperTheme.voiceSessionGreen : CaperTheme.blackout))
+                            .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
+                            .offset(x: 3, y: -3).accessibilityHidden(true)
+                    }
+                }
+                .overlay(alignment: .topLeading) {
                     if unread {
                         Circle().fill(CaperTheme.text).frame(width: 8, height: 8)
                             .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
-                            .offset(x: 2, y: -2).accessibilityHidden(true)
+                            .offset(x: -2, y: -2).accessibilityHidden(true)
                     }
                 }
         }
@@ -1240,10 +1260,13 @@ private struct ChannelSidebar: View {
                 } else {
                 VStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
+                    // Voice with no row here (a call in another space, a visit's
+                    // room), above the channels; live rows grow into cards in place.
+                    LiveNowSection(model: model, narrow: narrow)
                     HStack {
                         Button { if !SwipeTapGuard.swiping { channelsExpanded.toggle(); CaperEffects.shared.toggle(channelsExpanded) } } label: {
                             HStack(spacing: 6) {
-                                // One chevron that turns, as for message requests and voice rosters.
+                                // One chevron that turns, as for message requests.
                                 CaperIcon(name: "chevron-down")
                                     .rotationEffect(.degrees(channelsExpanded ? 0 : -90))
                                     .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: channelsExpanded)
@@ -1254,6 +1277,7 @@ private struct ChannelSidebar: View {
                                 .frame(maxHeight: .infinity).contentShape(Rectangle())
                         }.buttonStyle(.plain).modifier(ControlHover())
                             .accessibilityValue(channelsExpanded ? "Expanded" : "Collapsed")
+                            .accessibilityIdentifier("channels-toggle")
                         Spacer()
                         if model.isOwner {
                             let createHelp = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
@@ -1275,10 +1299,15 @@ private struct ChannelSidebar: View {
                         }
                     }.frame(height: 44)
 
-                    if channelsExpanded {
+                    // Collapsed, Channels still lists its live rows (your call's
+                    // card and rooms with people in voice), so voice never hides.
+                    let rows = LiveNow.listed(model.detail?.channels.filter(\.joined) ?? [], expanded: channelsExpanded) {
+                        channelIsLive(model, $0)
+                    }
+                    if !rows.isEmpty {
                         VStack(spacing: 3) {
-                            ForEach(model.detail?.channels.filter(\.joined) ?? []) { channel in
-                                ChannelSidebarItem(model: model, sheet: $sheet, channel: channel)
+                            ForEach(rows) { channel in
+                                ChannelSidebarItem(model: model, sheet: $sheet, channel: channel, narrow: narrow)
                             }
                         }
                     }
@@ -1336,15 +1365,6 @@ private struct ChannelSidebar: View {
 
                     if let error = model.error ?? model.directMessagesError {
                         Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error).padding(8)
-                    }
-                    if (model.voice.phase == .connected || model.voice.phase == .reconnecting || !model.voice.participants.isEmpty),
-                       (!channelsExpanded || !((model.detail?.channels ?? []).contains { $0.id == model.voice.context?.channelID })) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("In voice · \(model.voice.participants.count) · \(model.voice.context?.channelName ?? "general")")
-                                .font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                                .accessibilityIdentifier("voice-elsewhere-label")
-                            VoiceRoster(model: model)
-                        }.padding(.top, 8)
                     }
                 }.padding(.horizontal, 16)
             if model.account != nil {
@@ -1423,17 +1443,15 @@ private struct ChannelSidebar: View {
                         .contentShape(Rectangle())
                     }.buttonStyle(.plain).modifier(ControlHover()).padding(.horizontal, 16)
                         .accessibilityIdentifier(model.isOwner && model.detail?.space.demo == false ? "invite-people" : "new-message")
-                }.padding(.bottom, 8)
+                }.padding(.top, 12).padding(.bottom, 8)
                     .overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                    .padding(.top, 16)
             }
                 }
                 }
             }
             .modifier(FeedbackPullToRefresh(enabled: narrow && model.showingFeedback && model.isFeedbackTeam) { await model.refreshFeedback() })
             .accessibilityIdentifier("channel-browser")
-            if !narrow, model.voice.phase != .idle, model.voice.phase != .failed {
-                Divider().overlay(CaperTheme.border)
-            }
             if !narrow { AccountBar(model: model, sheet: $sheet) }
         }
         .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil || model.visit != nil), excludedStart: browsing ? searchFrame : .null, navigate: close))
@@ -1510,12 +1528,13 @@ private struct DirectMessageSidebarRow: View {
         Menu { DirectMessageNotificationItems(model: model, conversationID: conversation.id) } label: { CaperIcon(name: "ellipsis") }
             .menuStyle(.borderlessButton).menuIndicator(.hidden)
             .foregroundStyle(CaperTheme.muted)
-            .frame(width: 28, height: 28)
+            .frame(width: 24, height: 24)
             .focused($optionsFocused)
             .opacity(hovered || optionsFocused ? 1 : 0)
             .allowsHitTesting(hovered || optionsFocused)
             // Hover feedback like the channel rows' options.
             .contentShape(Rectangle()).modifier(ControlHover(isFocused: optionsFocused))
+            .padding(.trailing, 4)
             .help("Conversation options for \(conversation.peer.displayName)")
             .accessibilityLabel("Conversation options for \(conversation.peer.displayName)")
             .accessibilityIdentifier("dm-options-\(conversation.id)")
@@ -1523,28 +1542,23 @@ private struct DirectMessageSidebarRow: View {
     #endif
 }
 
+/// A channel's row. A live one grows into a card in place: your call's (its
+/// faces and controls beneath the row) or another room with people in voice
+/// (who is in it and Join beneath).
 private struct ChannelSidebarItem: View {
     @Bindable var model: AppModel
     @Binding var sheet: WorkspaceSheet?
     let channel: Channel
+    /// Phones present your call's full list as a sheet.
+    let narrow: Bool
     @State private var confirmLeave = false
-    /// The channel's line (name, quick join and options): its hover wash spans
-    /// them, like web's `.channel-line`, but not the voice roster below.
+    /// The channel's line (name, voice count, quick join and options): its
+    /// hover wash spans them, like web's `.channel-line`.
     @State private var lineHovered = false
     #if os(macOS)
-    @State private var hovered = false
     @FocusState private var optionsFocused: Bool
     @FocusState private var joinFocused: Bool
     #endif
-
-    private var sessionStartedAt: Double? {
-        let shared = model.voicePresence.sessionStartedAt(for: channel.id)
-        if model.voice.isActive(channelID: channel.id) {
-            return model.voice.phase == .joining ? shared ?? model.voice.sessionStartedAt : model.voice.sessionStartedAt
-        }
-        return shared
-            ?? (model.pendingVoiceChannelID == channel.id ? Double(model.pendingVoiceStartedAt) : nil)
-    }
 
     private var muted: Bool { model.notificationsMuted(.channel(spaceID: channel.spaceId, channelID: channel.id)) }
     /// Muted channels are dimmed, with a bell-slash.
@@ -1571,76 +1585,30 @@ private struct ChannelSidebarItem: View {
         model.selectedChannelID == channel.id ? CaperTheme.terracotta.opacity(0.16) : lineHovered ? Color.white.opacity(0.06) : .clear
     }
 
+    /// Your call, while it is in this channel.
+    private var ownCall: VoiceContext? { model.voice.isActive(channelID: channel.id) ? model.voice.context : nil }
+
+    /// The row opens its chat, and so does a tap anywhere on its card but a control.
+    private func openChat() { Task { await model.select(channel: channel) } }
+
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 2) {
-                Button { if !SwipeTapGuard.swiping { Task { await model.select(channel: channel) } } } label: {
-                    HStack(spacing: 6) {
-                        CaperIcon(name: channel.private ? "lock" : "hash", size: 18)
-                            .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
-                            .opacity(nameOpacity)
-                        Text(channel.name).lineLimit(1).opacity(nameOpacity)
-                        Spacer(minLength: 0)
-                        // Web and Android order: the unread dot, then the bell.
-                        if unread { Circle().fill(CaperTheme.text).frame(width: 6, height: 6).accessibilityHidden(true) }
-                        if muted { MutedBell() }
-                        if let sessionStartedAt {
-                            TimelineView(.periodic(from: .now, by: 1)) { context in
-                                Text(VoiceSessionDuration.format(startedAtMilliseconds: sessionStartedAt, now: context.date))
-                                    .font(CaperTheme.font(11, weight: .medium).monospacedDigit())
-                                    .foregroundStyle(CaperTheme.voiceSessionGreen)
-                                    .fixedSize(horizontal: true, vertical: false)
-                                    .accessibilityLabel("Voice session duration")
-                                    .accessibilityValue(VoiceSessionDuration.format(startedAtMilliseconds: sessionStartedAt, now: context.date))
-                            }
-                        }
-                    }
-                    .font(CaperTheme.font(13, weight: .medium))
-                    .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.text : CaperTheme.muted)
-                    .padding(.horizontal, 9)
-                    #if os(iOS)
-                    .frame(height: 44)
-                    #else
-                    .frame(height: 32)
-                    #endif
-                    .contentShape(Rectangle())
-                }.buttonStyle(.plain)
-                    .modifier(NavigationPrefetchModifier(wash: false) {
-                        if let space = model.detail?.space { model.prefetch(space: space, channelID: channel.id) }
-                    })
-                    .accessibilityIdentifier("channel-\(channel.id)")
-                    .accessibilityValue(rowState)
-                #if os(macOS)
-                quickJoin
-                #endif
-                if model.detail?.space.demo != true {
-                    Menu {
-                        optionsMenuItems
-                    } label: { CaperIcon(name: "ellipsis") }
-                        .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                        .foregroundStyle(CaperTheme.muted)
-                        #if os(iOS)
-                        .frame(width: 44, height: 44)
-                        #else
-                        .frame(width: 32, height: 32)
-                        .focused($optionsFocused)
-                        .opacity(hovered || optionsFocused ? 1 : 0)
-                        .allowsHitTesting(hovered || optionsFocused)
-                        #endif
-                        .contentShape(Rectangle()).modifier(ControlHover())
-                        .help("Channel options for \(channel.name)")
-                        .accessibilityLabel("Channel options for \(channel.name)")
-                        .accessibilityIdentifier("channel-options-\(channel.id)")
+        let occupants = voiceOccupants(model, channelID: channel.id)
+        Group {
+            if let call = ownCall {
+                // Your call's row is the top line of its card, in place.
+                VoiceCallCard(model: model, context: call, narrow: narrow, row: true, openChat: openChat) { callLine }
+                    .padding(.vertical, 3)
+            } else if !occupants.isEmpty {
+                // Another live room: the row, with who is in it and Join beneath.
+                let room = LiveRoom(channel: channel, people: occupants, startedAt: model.voicePresence.sessionStartedAt(for: channel.id))
+                LiveRoomCard(model: model, room: room, row: true, openChat: openChat) {
+                    line(live: true) { RowVoiceCount(count: occupants.count).accessibilityIdentifier("voice-count-\(channel.id)") }
                 }
+                .padding(.vertical, 3)
+            } else {
+                line(live: false) { EmptyView() }
             }
-            // Selection and hover span the line, trailing controls included.
-            .background { RoundedRectangle(cornerRadius: 6).fill(lineFill).allowsHitTesting(false) }
-            .onHover { lineHovered = $0 }
-            ChannelVoiceSlot(model: model, channel: channel)
         }
-        #if os(macOS)
-        .onHover { hovered = $0 }
-        #endif
         .task(id: channel.id) { await model.refreshVoiceAvailability(channel: channel) }
         .sheet(isPresented: $confirmLeave) {
             ConfirmationSheet(title: "Leave #\(channel.name)?", detail: channel.private && !model.isOwner ? "You’ll lose access and need another invitation to return. You’ll disconnect from this channel’s voice call." : "It will leave your sidebar. You can preview and rejoin from Browse channels. You’ll disconnect from this channel’s voice call.", action: "Leave channel", pendingLabel: "Leaving…", close: { confirmLeave = false }) { try await model.leaveChannel(channel) }
@@ -1648,33 +1616,162 @@ private struct ChannelSidebarItem: View {
         }
     }
 
-    #if os(macOS)
-    /// Web's channel-quick-join: a pointer shortcut revealed by hover or keyboard
-    /// focus like the row menu. Its slot is always kept, so nothing shifts; your
-    /// own call's channel has none. Touch joins from the conversation header.
-    @ViewBuilder private var quickJoin: some View {
+    /// The channel's line: its icon and name (which open its chat), unread dot
+    /// and bell, then `mark` (who is in voice, or your call's status and time),
+    /// the quick join and the menu. Selection and hover span the line; in a
+    /// live card it is the card's first line.
+    private func line<Mark: View>(live: Bool, @ViewBuilder mark: () -> Mark) -> some View {
+        HStack(spacing: 2) {
+            Button { if !SwipeTapGuard.swiping { openChat() } } label: {
+                HStack(spacing: 6) {
+                    CaperIcon(name: channel.private ? "lock" : "hash", size: 18)
+                        .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.terracottaBright : CaperTheme.muted)
+                        .opacity(nameOpacity)
+                    Text(channel.name).lineLimit(1).opacity(nameOpacity)
+                    Spacer(minLength: 0)
+                    // Web and Android order: the unread dot, then the bell.
+                    if unread { Circle().fill(CaperTheme.text).frame(width: 6, height: 6).accessibilityHidden(true) }
+                    if muted { MutedBell() }
+                }
+                .font(CaperTheme.font(13, weight: .medium))
+                .foregroundStyle(model.selectedChannelID == channel.id ? CaperTheme.text : CaperTheme.muted)
+                .padding(.horizontal, 9)
+                #if os(iOS)
+                .frame(height: 44)
+                #else
+                .frame(height: 32)
+                #endif
+                .contentShape(Rectangle())
+            }.buttonStyle(.plain)
+                .modifier(NavigationPrefetchModifier(wash: false) {
+                    if let space = model.detail?.space { model.prefetch(space: space, channelID: channel.id) }
+                })
+                .accessibilityIdentifier("channel-\(channel.id)")
+                .accessibilityValue(rowState)
+            mark()
+            quickJoin(live: live)
+            if model.detail?.space.demo != true {
+                Menu {
+                    optionsMenuItems
+                } label: { CaperIcon(name: "ellipsis") }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                    .foregroundStyle(CaperTheme.muted)
+                    #if os(iOS)
+                    .frame(width: 44, height: 44)
+                    #else
+                    .frame(width: 32, height: 32)
+                    .focused($optionsFocused)
+                    .opacity(lineHovered || optionsFocused ? 1 : 0)
+                    .allowsHitTesting(lineHovered || optionsFocused)
+                    #endif
+                    .contentShape(Rectangle()).modifier(ControlHover())
+                    .help("Channel options for \(channel.name)")
+                    .accessibilityLabel("Channel options for \(channel.name)")
+                    .accessibilityIdentifier("channel-options-\(channel.id)")
+            }
+        }
+        // Selection and hover span the line, trailing controls included.
+        .background { RoundedRectangle(cornerRadius: 6).fill(lineFill).allowsHitTesting(false) }
+        .onHover { lineHovered = $0 }
+    }
+
+    /// Your call's row ends with its status and time when they fit beside the
+    /// name; otherwise with the time, and the status drops beneath the name.
+    private var callLine: some View {
+        return ViewThatFits(in: .horizontal) {
+            line(live: true) { callMark(status: true) }
+            VStack(alignment: .leading, spacing: 0) {
+                line(live: true) { callMark(status: false) }
+                // Under the name: the label's 9-point inset, the icon and its gap.
+                CallStatusText(voice: model.voice).padding(.leading, 33)
+            }
+        }
+    }
+
+    private func callMark(status: Bool) -> some View {
+        HStack(spacing: 6) {
+            if status { CallStatusText(voice: model.voice) }
+            if let startedAt = callStartedAt(model) { VoiceTimer(startedAt: startedAt).allowsHitTesting(false) }
+        }
+        .padding(.horizontal, 4)
+    }
+
+    /// Web's channel-quick-join: one click joins (or switches to) this
+    /// channel's voice without opening its chat; your own call's channel has none.
+    /// Pointers reveal it on hover or keyboard focus like the row menu, in a slot
+    /// that is always kept, so nothing shifts. Touch shows it, dimmed, on quiet
+    /// rows; a live row's card has Join instead.
+    @ViewBuilder private func quickJoin(live: Bool) -> some View {
         let action = ChannelVoiceAction(model: model, channel: channel)
+        #if os(macOS)
         if action.here {
             Color.clear.frame(width: 28, height: 28).accessibilityHidden(true)
         } else {
-            Button { Task { await model.joinVoice(channel: channel) } } label: {
+            Button(action: action.join) {
                 CaperIcon(name: "headphones", size: 16).frame(width: 28, height: 28).contentShape(Rectangle())
             }.buttonStyle(.plain)
                 .foregroundStyle(CaperTheme.muted)
                 .disabled(!action.enabled)
                 .focused($joinFocused)
-                .opacity((hovered || joinFocused) ? (action.enabled ? 1 : 0.45) : 0)
-                .allowsHitTesting(hovered || joinFocused)
+                .opacity((lineHovered || joinFocused) ? (action.enabled ? 1 : 0.45) : 0)
+                .allowsHitTesting(lineHovered || joinFocused)
                 .modifier(ControlHover(isFocused: joinFocused))
                 .help(action.help)
-                .accessibilityLabel(action.description(header: false))
+                .accessibilityLabel(action.description)
                 .accessibilityIdentifier("join-voice-\(channel.id)")
                 .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: channel) })
                 .onChange(of: joinFocused) { _, focused in if focused { model.prepareVoiceJoin(channel: channel) } }
         }
+        #else
+        if !action.here && !live {
+            Button(action: SwipeTapGuard.unlessSwiping(action.join)) {
+                CaperIcon(name: "headphones", size: 18).frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(QuietJoinButtonStyle { model.prepareVoiceJoin(channel: channel) })
+            .disabled(!action.enabled)
+            .help(action.help)
+            .accessibilityLabel(action.description)
+            .accessibilityIdentifier("join-voice-\(channel.id)")
+        }
+        #endif
     }
-    #endif
 }
+
+/// A live channel row's ending: a green waveform and how many are in voice. It
+/// is not a control; the row's name opens the chat and its card's Join joins.
+private struct RowVoiceCount: View {
+    let count: Int
+    var body: some View {
+        HStack(spacing: 3) {
+            CaperIcon(name: "audio-lines", size: 13)
+            Text("\(count)").font(CaperTheme.font(11, weight: .bold).monospacedDigit())
+        }
+        .foregroundStyle(CaperTheme.voiceSessionGreen)
+        .fixedSize()
+        .padding(.horizontal, 4)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(count) in voice")
+    }
+}
+
+#if os(iOS)
+/// Touch's quiet-row join: a dim headphones icon in a 44-point target. Like
+/// web, a join is prepared as the finger lands (the press), before it lifts.
+private struct QuietJoinButtonStyle: ButtonStyle {
+    let prepare: () -> Void
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(LiveNowPalette.quietJoin)
+            .background(configuration.isPressed ? CaperTheme.border : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .opacity(enabled ? 1 : 0.45)
+            .modifier(ControlHover())
+            .onChange(of: configuration.isPressed) { _, pressed in if pressed { prepare() } }
+    }
+}
+#endif
 
 enum VoiceSessionDuration {
     static func format(startedAtMilliseconds: Double, now: Date) -> String {
@@ -1739,8 +1836,15 @@ private struct SidebarIconButton: ButtonStyle {
     }
 }
 
-/// Web's voiceAction: join, switch or leave voice for one channel. The
-/// conversation header labels it on every device; macOS rows add a shortcut.
+/// A live channel row: your call's, or one with people in voice. It grows into
+/// a card, and stays listed while Channels is collapsed.
+@MainActor private func channelIsLive(_ model: AppModel, _ channel: Channel) -> Bool {
+    model.voice.isActive(channelID: channel.id) || !voiceOccupants(model, channelID: channel.id).isEmpty
+}
+
+/// Web's voiceAction for one channel: join, switch, or a join under way. Rows
+/// show it as a headphones shortcut; live rooms' cards and the phone strip
+/// label it.
 @MainActor private struct ChannelVoiceAction {
     let model: AppModel
     let channel: Channel
@@ -1749,96 +1853,34 @@ private struct SidebarIconButton: ButtonStyle {
     var active: Bool { model.voice.isActive(channelID: channel.id) }
     /// Your call is here or on its way: rows offer no shortcut.
     var here: Bool { active || model.pendingVoiceChannelID == channel.id }
-    /// Connected (or reconnecting) here: the header offers Leave instead of Join.
-    var leaves: Bool { active && (model.voice.phase == .connected || model.voice.phase == .reconnecting) }
+    /// In a call elsewhere: the action switches your call here.
+    var switches: Bool { inVoiceCall(model.voice) && !active }
     private var pending: Bool {
         model.pendingVoiceChannelID != nil || model.voice.phase == .joining || model.voice.phase == .reconnecting || model.voice.phase == .leaving
     }
     var enabled: Bool { !pending && model.voiceAvailable(in: channel) == true }
-    /// Joining… or Leaving… here: disabled, but still the call's accent (web's aria-busy).
+    /// Joining… or Leaving… here: disabled, but keeping its fill (web's aria-busy).
     var busy: Bool { model.pendingVoiceChannelID == channel.id || active }
+    /// The visible label: Join, Switch, Joining… or Leaving….
     var title: String {
         if model.pendingVoiceChannelID == channel.id { return "Joining…" }
         if active { return model.voice.phase == .leaving ? "Leaving…" : "Joining…" }
-        return model.voice.phase == .idle || model.voice.phase == .failed ? "Join voice" : "Switch here"
+        return switches ? "Switch" : "Join"
     }
-    /// The header's Join is already beside the channel's name; a row's names its channel.
-    func description(header: Bool) -> String {
+    /// The accessible name, which also names the channel.
+    var description: String {
         switch title {
         case "Joining…": return "Joining voice in #\(channel.name)"
         case "Leaving…": return "Leaving voice in #\(channel.name)"
-        case "Switch here": return "Switch voice to #\(channel.name)"
-        default: return header ? "Join voice" : "Join voice in #\(channel.name)"
+        case "Switch": return "Switch voice to #\(channel.name)"
+        default: return "Join voice in #\(channel.name)"
         }
     }
     var help: String {
-        let named = description(header: false)
-        return active ? named : voiceAvailabilityHelp(model.voiceAvailable(in: channel)) ?? named
+        active ? description : voiceAvailabilityHelp(model.voiceAvailable(in: channel)) ?? description
     }
-}
-
-/// An occupied channel's voice line: faces and "N in voice", expanding to who is
-/// there. Empty channels add nothing beneath their name.
-private struct ChannelVoiceSlot: View {
-    @Bindable var model: AppModel
-    let channel: Channel
-    @State private var collapsed = true
-
-    var body: some View {
-        let occupants = voiceOccupants(model, channelID: channel.id)
-        let active = model.voice.isActive(channelID: channel.id)
-        if !occupants.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Button { if !SwipeTapGuard.swiping { collapsed.toggle() } } label: {
-                        ViewThatFits(in: .horizontal) {
-                            HStack(spacing: 6) {
-                                HStack(spacing: -6) {
-                                    ForEach(occupants.prefix(2)) { person in
-                                        Avatar(name: person.name, size: 20, avatarID: person.avatarId, picture: person.avatarPicture,
-                                               speaking: active && model.voice.speakingParticipants.contains(person.id))
-                                    }
-                                }
-                                Text("\(occupants.count) in voice")
-                                CaperIcon(name: "chevron-down", size: 11).rotationEffect(.degrees(collapsed ? -90 : 0))
-                            }.fixedSize(horizontal: true, vertical: false)
-                            HStack(spacing: 6) {
-                                Text("\(occupants.count) in voice")
-                                CaperIcon(name: "chevron-down", size: 11).rotationEffect(.degrees(collapsed ? -90 : 0))
-                            }.fixedSize(horizontal: true, vertical: false)
-                        }
-                        .font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.muted)
-                        #if os(iOS)
-                        .frame(minWidth: 44, minHeight: 44, alignment: .leading)
-                        #else
-                        .frame(minWidth: 42, minHeight: 28, alignment: .leading)
-                        #endif
-                        .contentShape(Rectangle())
-                    }.buttonStyle(.plain).modifier(ControlHover())
-                        .accessibilityLabel("\(occupants.count) in voice in \(channel.name). \(collapsed ? "Show" : "Hide") who is in voice")
-                        .accessibilityIdentifier("voice-stack-\(channel.id)")
-                        .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
-                    Spacer(minLength: 0)
-                }
-                .padding(.trailing, 4)
-                if !collapsed {
-                    if active {
-                        VoiceRoster(model: model)
-                    } else {
-                        ForEach(occupants) { person in
-                            HStack(spacing: 7) {
-                                Avatar(name: person.name, size: 23, avatarID: person.avatarId, picture: person.avatarPicture)
-                                Text(person.name).lineLimit(1)
-                                if person.muted { CaperIcon(name: "mic-off", size: 13) }
-                                if person.deafened { CaperIcon(name: "headphone-off", size: 13) }
-                            }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
-                                .accessibilityElement(children: .combine)
-                        }
-                    }
-                }
-            }.padding(.bottom, 2)
-        }
-    }
+    /// Joins (verified at click time) without changing the chat being read.
+    func join() { Task { await model.joinVoice(channel: channel) } }
 }
 
 /// Whether you are in a call, from joining until it has left.
@@ -1846,273 +1888,970 @@ private struct ChannelVoiceSlot: View {
     voice.phase != .idle && voice.phase != .failed
 }
 
-/// Web's headerVoice: who is in voice in the open channel, then Join voice,
-/// Switch here or Leave. Phones show only icon buttons (with the call's microphone
-/// toggle, since the account bar stays in Browse) and no faces; wider headers
-/// drop to one face only when the title needs the room.
-private struct HeaderVoice: View {
-    @Bindable var model: AppModel
+/// Design H's voice colours (the "Live now" spec), beside the shared tokens.
+private enum LiveNowPalette {
+    /// Your call's green-tinted card (#22382c, border #4b8a60).
+    static let callFill = Color(red: 34/255, green: 56/255, blue: 44/255)
+    static let callBorder = Color(red: 75/255, green: 138/255, blue: 96/255)
+    /// Other live rooms (#18231f, border #28362f).
+    static let roomFill = Color(red: 24/255, green: 35/255, blue: 31/255)
+    static let roomBorder = Color(red: 40/255, green: 54/255, blue: 47/255)
+    /// The phone strip under the chat header (#1a2622, bottom border #26352f).
+    static let stripFill = Color(red: 26/255, green: 38/255, blue: 34/255)
+    static let stripBorder = Color(red: 38/255, green: 53/255, blue: 47/255)
+    /// Connecting… and Reconnecting… (#d9ab5c).
+    static let connecting = Color(red: 217/255, green: 171/255, blue: 92/255)
+    /// Touch's join on quiet channel rows (#687174).
+    static let quietJoin = Color(red: 104/255, green: 113/255, blue: 116/255)
+    /// Web's disconnect red (#ff7182): Leave and Cancel.
+    static let disconnect = Color(red: 1, green: 113/255, blue: 130/255)
+}
+
+/// Someone in your call, as its card, the phone strip and the full list show them.
+private struct CallPerson: Identifiable {
+    let id: String
+    let name: String
+    let avatarID: Int?
+    let picture: CaperPicture?
+    let isSelf: Bool
+    let muted: Bool
+    let deafened: Bool
+    let speaking: Bool
+    /// You muted them for yourself only.
+    let locallyMuted: Bool
+}
+
+/// Everyone in your call: you first, then in the order they joined. Your own
+/// name, picture, microphone and deafen state follow changes made during the call.
+@MainActor private func callPeople(_ model: AppModel) -> [CallPerson] {
+    let voice = model.voice
+    let people = voice.participants.map { participant -> CallPerson in
+        let mine = voice.isSelf(participantID: participant.id)
+        let own = mine ? model.account : nil
+        return CallPerson(id: participant.id, name: own?.displayName ?? participant.name,
+                          avatarID: own?.avatarId ?? participant.avatarId,
+                          picture: own != nil ? own?.avatarPicture : participant.avatarPicture,
+                          isSelf: mine,
+                          muted: mine ? voice.muted : participant.muted,
+                          deafened: mine ? voice.deafened : participant.deafened,
+                          speaking: voice.speakingParticipants.contains(participant.id),
+                          locallyMuted: !mine && voice.locallyMutedParticipants.contains(participant.id))
+    }
+    return LiveNow.selfFirst(people) { $0.isSelf }
+}
+
+/// Your call's running time; while joining, the room's shared session time.
+@MainActor private func callStartedAt(_ model: AppModel) -> Double? {
+    let voice = model.voice
+    guard let channelID = voice.context?.channelID else { return nil }
+    let shared = model.voicePresence.sessionStartedAt(for: channelID)
+        ?? model.visitVoicePresence.sessionStartedAt(for: channelID)
+    return voice.phase == .joining ? shared ?? voice.sessionStartedAt : voice.sessionStartedAt
+}
+
+/// Another occupied room: a channel row's card, or a visited channel's.
+private struct LiveRoom: Identifiable {
     let channel: Channel
+    let people: [VoiceSpectator]
+    let startedAt: Double?
+    /// A visited channel's own space, which is not the one listed beside it.
+    var spaceName: String? = nil
+    var id: String { channel.id }
+}
+
+/// Voice with no row in the channel list, above the Channels heading and with
+/// no heading of its own: your call while its channel isn't a row here (another
+/// space's, or a feedback visit's), and a visited channel's live room. They
+/// stay while you browse DMs or a space without channels. Live rows of the
+/// listed space grow into their cards in place instead.
+private struct LiveNowSection: View {
+    @Bindable var model: AppModel
     let narrow: Bool
 
-    /// "Maya is in voice", "Maya and Alex are in voice", "A, B, C and 2 more are in voice".
-    static func summary(_ names: [String]) -> String {
-        if names.count > 3 { return "\(names.prefix(3).joined(separator: ", ")) and \(names.count - 3) more are in voice" }
-        if names.count > 1 { return "\(names.dropLast().joined(separator: ", ")) and \(names[names.count - 1]) are in voice" }
-        return "\(names.first ?? "") is in voice"
+    /// Your call, while its channel has no row in this list.
+    private var call: VoiceContext? {
+        guard inVoiceCall(model.voice), let context = model.voice.context else { return nil }
+        let rows = model.detail?.channels.filter(\.joined).map(\.id) ?? []
+        return LiveNow.hasRow(context.channelID, rows: rows) ? nil : context
+    }
+
+    /// A visited channel (a feedback visit) with people in voice, while you are not in its call.
+    private var visitRoom: LiveRoom? {
+        guard let channel = model.visitChannel, model.isVisitVoice(channel), !model.voice.isActive(channelID: channel.id) else { return nil }
+        let people = model.voiceRoster(for: channel.id)
+        guard !people.isEmpty else { return nil }
+        return LiveRoom(channel: channel, people: people,
+                        startedAt: model.visitVoicePresence.sessionStartedAt(for: channel.id),
+                        spaceName: model.visit?.spaceName)
     }
 
     var body: some View {
-        let people = voiceOccupants(model, channelID: channel.id)
-        let action = ChannelVoiceAction(model: model, channel: channel)
-        Group {
-            if narrow {
-                // Phones: one bordered group of icons beside the name, as in Slack. The
-                // labels stay as accessible names. No faces: a lone face was unclear, and
-                // the title's subtitle already counts who is in voice.
-                HStack(spacing: 2) {
-                    if inVoiceCall(model.voice) {
-                        HeaderMuteButton(voice: model.voice)
-                        HeaderDeafenButton(voice: model.voice)
+        let call = self.call
+        let room = visitRoom
+        if call != nil || room != nil {
+            VStack(alignment: .leading, spacing: 8) {
+                if let call {
+                    // Its chat opens in its own space; the call stays put.
+                    VoiceCallCard(model: model, context: call, narrow: narrow, row: false,
+                                  openChat: { Task { await model.openVoiceContext() } }) {
+                        CallHeading(model: model, context: call)
                     }
-                    if action.leaves { HeaderLeaveButton(model: model, compact: true) }
-                    else { join(action, compact: true, occupied: !people.isEmpty) }
-                }.modifier(CompactVoiceGroup())
-            } else {
-                HStack(spacing: 10) {
-                    if !people.isEmpty { occupants(people, speaking: action.active) }
-                    if action.leaves { HeaderLeaveButton(model: model, compact: false) }
-                    else { join(action, compact: false, occupied: !people.isEmpty) }
+                }
+                if let room {
+                    // A visited channel's chat is already open beside Browse.
+                    LiveRoomCard(model: model, room: room, row: false, openChat: { model.navigationOpen = false }) {
+                        visitHeading(room)
+                    }
+                    // Its Join needs the channel's availability.
+                    .task(id: room.id) { await model.refreshVoiceAvailability(channel: room.channel) }
                 }
             }
+            .padding(.top, 10).padding(.bottom, 2)
+            // No container of its own: around a single card, macOS folded the card's
+            // own group ("Your call in #lobby") into it.
         }
-        .task(id: channel.id) { await model.refreshVoiceAvailability(channel: channel) }
     }
 
-    private func occupants(_ people: [VoiceSpectator], speaking active: Bool) -> some View {
-        let summary = Self.summary(people.map(\.name))
-        return ViewThatFits(in: .horizontal) {
-            faces(people, limit: 3, count: true, speaking: active)
-            faces(people, limit: 1, count: false, speaking: active)
-        }
-        .help(summary)
-        .accessibilityElement(children: .ignore)
-        .accessibilityAddTraits(.isImage)
-        .accessibilityLabel(summary)
-        .accessibilityIdentifier("header-voice-people")
-    }
-
-    /// Join voice, Switch here or Joining…: labelled on wider layouts, an icon on phones.
-    /// While people are talking here and you are not in this channel's call, it glows.
-    @ViewBuilder private func join(_ action: ChannelVoiceAction, compact: Bool, occupied: Bool) -> some View {
-        let glows = occupied && action.enabled && !action.active
-        let button = Button { if !SwipeTapGuard.swiping { Task { await model.joinVoice(channel: channel) } } } label: {
-            if compact {
-                CaperIcon(name: "headphones", size: 20)
-            } else {
-                HStack(spacing: 6) {
-                    CaperIcon(name: "headphones", size: 14)
-                    Text(action.title).lineLimit(1)
-                }
-            }
-        }
-        Group {
-            if compact {
-                // Unavailable steps back to neutral chrome, as on web; Joining…/Leaving… keep the accent.
-                button.buttonStyle(HeaderVoiceIconButton(tint: action.enabled || action.busy ? CaperTheme.terracottaBright : CaperTheme.muted,
-                                                         fill: glows ? CaperTheme.terracotta.opacity(0.16) : .clear,
-                                                         dimsWhenDisabled: action.busy))
-            } else {
-                button.buttonStyle(HeaderVoiceButton(primary: true, busy: action.busy)).fixedSize()
-            }
-        }
-        .modifier(VoiceJoinGlow(active: glows))
-        .disabled(!action.enabled)
-        .help(action.help)
-        .accessibilityLabel(action.description(header: true))
-        .accessibilityIdentifier("join-voice-button")
-        .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: channel) })
-    }
-
-    private func faces(_ people: [VoiceSpectator], limit: Int, count: Bool, speaking active: Bool) -> some View {
+    /// A visited room's heading: its name and space, then its session time.
+    private func visitHeading(_ room: LiveRoom) -> some View {
         HStack(spacing: 6) {
-            HStack(spacing: -6) {
-                ForEach(people.prefix(limit)) { person in
-                    Avatar(name: person.name, size: 24, avatarID: person.avatarId, picture: person.avatarPicture,
-                           speaking: active && model.voice.speakingParticipants.contains(person.id))
+            Button { if !SwipeTapGuard.swiping { model.navigationOpen = false } } label: {
+                HStack(spacing: 5) {
+                    CaperIcon(name: room.channel.private ? "lock" : "hash", size: 14).foregroundStyle(CaperTheme.muted)
+                    Text(room.channel.name).font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text).lineLimit(1)
+                    if let space = room.spaceName {
+                        Text(space).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                            .layoutPriority(-1)
+                    }
+                }
+                #if os(iOS)
+                .frame(minHeight: 44)
+                #else
+                .frame(minHeight: 22)
+                #endif
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).modifier(ControlHover())
+            .help("Open #\(room.channel.name)")
+            .accessibilityLabel("#\(room.channel.name)")
+            .accessibilityHint("Opens its chat")
+            .accessibilityIdentifier("live-room-channel-\(room.id)")
+            Spacer(minLength: 6)
+            if let startedAt = room.startedAt { VoiceTimer(startedAt: startedAt, size: 11).allowsHitTesting(false) }
+        }
+    }
+}
+
+/// Connecting… or Reconnecting… while your call is not connected yet.
+@MainActor private func callPending(_ voice: VoiceClient) -> String? {
+    switch voice.phase {
+    case .joining: return "Connecting…"
+    case .reconnecting: return "Reconnecting…"
+    default: return nil
+    }
+}
+
+/// Connecting… and Reconnecting… in amber. Not a control: a tap on it opens
+/// the chat like the rest of the card.
+private struct CallStatusText: View {
+    @Bindable var voice: VoiceClient
+    var body: some View {
+        if let pending = callPending(voice) {
+            Text(pending).font(CaperTheme.font(12, weight: .bold))
+                .foregroundStyle(LiveNowPalette.connecting)
+                .lineLimit(1).fixedSize()
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("voice-call-status")
+        }
+    }
+}
+
+/// The heading of a call with no row here: the waveform, its channel (which
+/// opens its chat, in its own space) and another space's name, the status and
+/// the time on one line when they fit; the status drops beneath the channel
+/// when they do not.
+private struct CallHeading: View {
+    @Bindable var model: AppModel
+    @Bindable var voice: VoiceClient
+    let context: VoiceContext
+
+    init(model: AppModel, context: VoiceContext) {
+        self.model = model; voice = model.voice; self.context = context
+    }
+
+    /// The call is in another space than the one listed: its name follows, muted.
+    private var otherSpace: Bool { context.spaceID != model.detail?.space.id }
+
+    var body: some View { title }
+
+    private var title: some View {
+        let icon = CaperIcon(name: "audio-lines", size: 14)
+            .foregroundStyle(callPending(voice) == nil ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
+        let state = CallStatusText(voice: voice)
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { icon; channelButton; state; Spacer(minLength: 6); timer }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) { icon; channelButton; Spacer(minLength: 6); timer }
+                state.padding(.leading, 20)
+            }
+        }
+    }
+
+    @ViewBuilder private var timer: some View {
+        if let startedAt = callStartedAt(model) { VoiceTimer(startedAt: startedAt).allowsHitTesting(false) }
+    }
+
+    private var channelButton: some View {
+        Button { if !SwipeTapGuard.swiping { Task { await model.openVoiceContext() } } } label: {
+            HStack(spacing: 5) {
+                Text("#\(context.channelName)").font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text).lineLimit(1)
+                if otherSpace {
+                    Text(context.spaceName).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).lineLimit(1)
+                        .layoutPriority(-1)
                 }
             }
-            if count {
-                Text("\(people.count)").font(CaperTheme.font(12, weight: .bold).monospacedDigit())
-                    .foregroundStyle(CaperTheme.muted)
-            }
-        }.fixedSize()
-    }
-}
-
-/// Phones group the header's voice controls in one bordered container.
-private struct CompactVoiceGroup: ViewModifier {
-    func body(content: Content) -> some View {
-        content.padding(.horizontal, 2)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border, lineWidth: 1))
-            .fixedSize()
-    }
-}
-
-/// Web's #ff7182: a muted microphone, deafened audio and the header's disconnect.
-private let headerVoiceAlert = Color(red: 1, green: 113/255, blue: 130/255)
-
-/// Web's voice-join-glow: a soft terracotta glow pulsing on a 2.4s cycle while
-/// people are in voice here and you are not; Reduce Motion keeps it still.
-private struct VoiceJoinGlow: ViewModifier {
-    let active: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var lit = false
-    func body(content: Content) -> some View {
-        let opacity: Double = !active ? 0 : reduceMotion ? 0.35 : lit ? 0.45 : 0
-        content
-            .shadow(color: CaperTheme.terracottaBright.opacity(opacity), radius: reduceMotion ? 5 : 7)
-            .task(id: active && !reduceMotion) {
-                lit = false
-                guard active && !reduceMotion else { return }
-                // 1.2s each way: one 2.4s breath, as on web.
-                withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { lit = true }
-            }
-    }
-}
-
-/// An icon-only 44-point control in a phone header's voice group.
-private struct HeaderVoiceIconButton: ButtonStyle {
-    var tint: Color = CaperTheme.muted
-    var fill: Color = .clear
-    /// Off for an unavailable Join, whose muted tint already reads as unavailable.
-    var dimsWhenDisabled = true
-    @Environment(\.isEnabled) private var enabled
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label.foregroundStyle(tint)
-            .frame(width: 44, height: 44)
-            .background(configuration.isPressed ? CaperTheme.raised : fill)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            #if os(iOS)
+            .frame(minHeight: 44)
+            #else
+            .frame(minHeight: 22)
+            #endif
             .contentShape(Rectangle())
-            .opacity(enabled || !dimsWhenDisabled ? 1 : 0.45).modifier(ControlHover())
+        }
+        .buttonStyle(.plain).modifier(ControlHover())
+        .help("Open #\(context.channelName)")
+        .accessibilityLabel(otherSpace ? "#\(context.channelName) in \(context.spaceName)" : "#\(context.channelName)")
+        .accessibilityHint("Opens the call’s chat")
+        .accessibilityIdentifier("voice-call-channel")
     }
 }
 
-/// The call's microphone toggle in a phone's conversation header: the same
-/// action as the account bar's, which stays in Browse.
-private struct HeaderMuteButton: View {
+/// A live card's surface: its fill and border, where a tap or click on any
+/// part that is not a control opens the card's chat. Its text and faces let
+/// the tap through (or open the chat themselves); the row's button, its menu
+/// and quick join, Mute, Deafen, Leave and Join keep their own actions.
+private struct LiveCardSurface: ViewModifier {
+    let fill: Color
+    let border: Color
+    let open: () -> Void
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: 10).fill(fill)
+                    .onTapGesture { if !SwipeTapGuard.swiping { open() } }
+                    .modifier(ControlPointer())
+                    .accessibilityHidden(true)
+            }
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(border).allowsHitTesting(false))
+    }
+}
+
+/// A face (or the "+N" tile) in your call's card. A tap opens the call's chat,
+/// like the rest of the card. Holding it (touch), right-clicking it (macOS) or
+/// its accessibility action opens everyone in the call instead, and only that.
+private struct CallFaceActions: ViewModifier {
+    /// The accessibility action: Volume for another person, else Show everyone.
+    let action: String
+    let openChat: () -> Void
+    let openList: () -> Void
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            #if os(iOS)
+            // As on message rows: a hold opens the list, and its lift is no tap.
+            .onLongPressGesture(minimumDuration: 0.5) { if !SwipeTapGuard.swiping { openList() } }
+            #else
+            .onRightClick(enabled: true, perform: openList)
+            #endif
+            .gesture(TapGesture().onEnded { if !SwipeTapGuard.swiping { openChat() } })
+            .accessibilityAction(named: Text(action), openList)
+    }
+}
+
+/// One face or the "+N" tile in your call's card.
+private enum FaceTile: Identifiable {
+    case person(CallPerson)
+    case more([CallPerson])
+    var id: String {
+        switch self {
+        case .person(let person): return person.id
+        case .more: return "+more"
+        }
+    }
+}
+
+/// Your call's card: its heading (its channel's row in the list, or for a call
+/// with no row there its own heading), everyone in it (two rows of faces at
+/// most), then Mute, Deafen and Leave. A tap anywhere but a control opens the
+/// call's chat; holding or right-clicking a face opens the full list, with
+/// another person's volume controls open. Nothing in it changes with who speaks.
+private struct VoiceCallCard<Heading: View>: View {
+    @Bindable var model: AppModel
     @Bindable var voice: VoiceClient
+    let context: VoiceContext
+    let narrow: Bool
+    /// The heading is the call's channel row, already listed: only the faces
+    /// and controls arrive beneath it.
+    let row: Bool
+    let openChat: () -> Void
+    let heading: Heading
+    @State private var listShown = false
+    /// The person whose volume controls the list opens with.
+    @State private var expandedID: String?
+    /// How many faces fit across the card.
+    @State private var columns = 5
+    /// A 36-point face in a 44-point slot: room for its speaking ring, and a touch target.
+    private let faceSize: CGFloat = 36
+    private let facePitch: CGFloat = 44
+
+    init(model: AppModel, context: VoiceContext, narrow: Bool, row: Bool, openChat: @escaping () -> Void,
+         @ViewBuilder heading: () -> Heading) {
+        self.model = model; voice = model.voice; self.context = context; self.narrow = narrow
+        self.row = row; self.openChat = openChat; self.heading = heading()
+    }
+
+    var body: some View {
+        let people = callPeople(model)
+        let split = LiveNow.fold(people, slots: LiveNow.faceSlots(columns: columns))
+        VStack(alignment: .leading, spacing: 0) {
+            // A row keeps its own inset and selection, just inside the border.
+            heading.padding([.horizontal, .top], row ? 3 : 12)
+            VStack(alignment: .leading, spacing: 10) {
+                faces(split.shown, folded: split.folded)
+                Text(LiveNow.people(people.count)).font(CaperTheme.font(11))
+                    .foregroundStyle(CaperTheme.muted)
+                    .accessibilityIdentifier("voice-call-count")
+                controls
+            }
+            .padding([.horizontal, .bottom], 12)
+            .padding(.top, row ? 6 : 10)
+            .modifier(Entrance.anchored(when: row))
+        }
+        .modifier(LiveCardSurface(fill: LiveNowPalette.callFill, border: LiveNowPalette.callBorder, open: openChat))
+        .modifier(Entrance.anchored(when: !row))
+        .modifier(VoiceListPresentation(shown: $listShown, narrow: narrow) { sheet in
+            VoiceParticipantsList(model: model, channelName: context.channelName, expandedID: $expandedID, sheet: sheet) { listShown = false }
+        })
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Your call in #\(context.channelName)")
+        .accessibilityIdentifier("voice-call-card")
+    }
+
+    /// Up to ten faces in at most two rows; more fold into a "+N" tile.
+    private func faces(_ shown: [CallPerson], folded: [CallPerson]) -> some View {
+        let tiles: [FaceTile] = shown.map { FaceTile.person($0) } + (folded.isEmpty ? [] : [FaceTile.more(folded)])
+        let perRow = max(1, columns)
+        let rows: [[FaceTile]] = stride(from: 0, to: tiles.count, by: perRow).map { Array(tiles[$0..<min($0 + perRow, tiles.count)]) }
+        let pitch = Double(facePitch)
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(rows.indices, id: \.self) { index in
+                HStack(spacing: 0) {
+                    ForEach(rows[index]) { faceTile($0) }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: Int.self) { proxy in
+            LiveNow.columns(width: Double(proxy.size.width), pitch: pitch)
+        } action: { columns = $0 }
+        // The faces line up with the text; their slots' margins reach into the card's padding.
+        .padding(.horizontal, -(facePitch - faceSize) / 2)
+        .padding(.vertical, -(facePitch - faceSize) / 2)
+    }
+
+    @ViewBuilder private func faceTile(_ tile: FaceTile) -> some View {
+        switch tile {
+        case .person(let person):
+            VoiceFace(person: person, size: faceSize).frame(width: facePitch, height: facePitch)
+                #if os(macOS)
+                .help(person.isSelf ? "\(person.name) (you): right-click for everyone" : "\(person.name): right-click for volume")
+                #endif
+                .accessibilityElement(children: .ignore)
+                // A tap opens the call's chat. As a button, macOS also reports its state.
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel(person.name + (person.isSelf ? " (you)" : ""))
+                .accessibilityValue(VoiceFace.state(person))
+                .accessibilityIdentifier("voice-face-\(person.id)")
+                .modifier(CallFaceActions(action: person.isSelf ? "Show everyone" : "Volume", openChat: openChat) {
+                    openList(expanding: person.isSelf ? nil : person.id)
+                })
+        case .more(let folded):
+            Text("+\(folded.count)").font(CaperTheme.font(12, weight: .bold).monospacedDigit())
+                .foregroundStyle(CaperTheme.text)
+                .frame(width: faceSize, height: faceSize)
+                .background(Circle().fill(CaperTheme.raised))
+                .overlay(Circle().strokeBorder(CaperTheme.border))
+                // Someone folded in here is speaking.
+                .overlay { if folded.contains(where: \.speaking) { SpeakingRing(size: faceSize, rounded: false) } }
+                .frame(width: facePitch, height: facePitch)
+                #if os(macOS)
+                .help("Right-click for everyone in the call")
+                #endif
+                .accessibilityElement(children: .ignore)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel("\(folded.count) more in the call")
+                .accessibilityIdentifier("voice-faces-more")
+                .modifier(CallFaceActions(action: "Show everyone", openChat: openChat) { openList(expanding: nil) })
+        }
+    }
+
+    private func openList(expanding id: String?) {
+        expandedID = id
+        listShown = true
+    }
+
+    private var controls: some View {
+        let joining = voice.phase == .joining
+        return HStack(spacing: 6) {
+            CallMuteButton(voice: voice, identifier: "voice-call-mute")
+            CallDeafenButton(voice: voice, identifier: "voice-call-deafen")
+            Spacer(minLength: 8)
+            Button {
+                guard !SwipeTapGuard.swiping else { return }
+                if voice.phase == .connected { CaperEffects.shared.play(.disconnect) }
+                model.leaveVoice()
+            } label: {
+                HStack(spacing: 6) {
+                    CaperIcon(name: "phone-off", size: 14)
+                    Text(joining ? "Cancel" : "Leave").lineLimit(1)
+                }
+            }
+            .buttonStyle(CallLeaveButtonStyle())
+            .help(joining ? "Cancel joining voice" : "Disconnect")
+            .accessibilityLabel(joining ? "Cancel joining voice" : "Leave voice")
+            .accessibilityIdentifier("voice-call-leave")
+        }
+    }
+}
+
+/// A face in your call: the speaking ring and, where shown, a mic-off or
+/// headphone-off badge at its corner.
+private struct VoiceFace: View {
+    let person: CallPerson
+    let size: CGFloat
+    var badges = true
+
+    /// Spoken with the face: Speaking, then Muted or Deafened.
+    static func state(_ person: CallPerson) -> String {
+        [person.speaking ? "Speaking" : "", person.deafened ? "Deafened" : person.muted ? "Muted" : ""]
+            .filter { !$0.isEmpty }.joined(separator: ", ")
+    }
+
+    var body: some View {
+        Avatar(name: person.name, size: size, avatarID: person.avatarID, picture: person.picture)
+            .overlay { if person.speaking { SpeakingRing(size: size, rounded: person.picture != nil) } }
+            .overlay(alignment: .bottomTrailing) {
+                if badges && (person.muted || person.deafened) {
+                    let badge = (size * 0.44).rounded()
+                    CaperIcon(name: person.deafened ? "headphone-off" : "mic-off", size: (badge * 0.62).rounded())
+                        .foregroundStyle(CaperTheme.error)
+                        .frame(width: badge, height: badge)
+                        .background(Circle().fill(CaperTheme.blackout))
+                        .offset(x: 3, y: 3)
+                        .accessibilityHidden(true)
+                }
+            }
+    }
+}
+
+/// The speaking ring: a 2-point gap in the surface's own colour, then 2 points
+/// of voice green, following the face's shape (custom pictures are rounded squares).
+private struct SpeakingRing: View {
+    let size: CGFloat
+    let rounded: Bool
+    var body: some View {
+        Group {
+            if rounded { Avatar.pictureShape(size + 8).strokeBorder(CaperTheme.voiceSessionGreen, lineWidth: 2) }
+            else { Circle().strokeBorder(CaperTheme.voiceSessionGreen, lineWidth: 2) }
+        }
+        .frame(width: size + 8, height: size + 8)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// A voice session's running time, in voice green with tabular digits.
+private struct VoiceTimer: View {
+    let startedAt: Double
+    var size: CGFloat = 12
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let elapsed = VoiceSessionDuration.format(startedAtMilliseconds: startedAt, now: context.date)
+            Text(elapsed)
+                .font(CaperTheme.font(size, weight: .medium).monospacedDigit())
+                .foregroundStyle(CaperTheme.voiceSessionGreen)
+                .fixedSize()
+                .accessibilityLabel("Voice session duration")
+                .accessibilityValue(elapsed)
+        }
+    }
+}
+
+/// Your call's microphone, in its card and the phone strip: the same action and
+/// state as the account bar's, which also works before joining.
+private struct CallMuteButton: View {
+    @Bindable var voice: VoiceClient
+    let identifier: String
     var body: some View {
         Button {
             guard !SwipeTapGuard.swiping else { return }
             CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) }
         } label: {
-            CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
+            CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 18)
         }
-        // Web's phone header tints a muted microphone red (#ff7182).
-        .buttonStyle(HeaderVoiceIconButton(tint: voice.muted ? headerVoiceAlert : CaperTheme.muted))
+        .buttonStyle(CallToggleStyle(on: voice.muted))
         .help(voice.muted ? "Unmute" : "Mute")
         .accessibilityLabel(voice.muted ? "Unmute microphone" : "Mute microphone")
         .accessibilityValue(voice.muted ? "Muted" : "On")
-        .accessibilityIdentifier("header-mute")
+        .accessibilityIdentifier(identifier)
     }
 }
 
-/// The call's deafen toggle beside the header's microphone on phones: the same
-/// action as the account bar's.
-private struct HeaderDeafenButton: View {
+/// Your call's deafen toggle: the same action and state as the account bar's.
+private struct CallDeafenButton: View {
     @Bindable var voice: VoiceClient
+    let identifier: String
     var body: some View {
         Button {
             guard !SwipeTapGuard.swiping else { return }
             CaperEffects.shared.toggle(voice.deafened); Task { await voice.setDeafened(!voice.deafened) }
         } label: {
-            CaperIcon(name: voice.deafened ? "volume-x" : "headphones", size: 20)
+            CaperIcon(name: voice.deafened ? "volume-x" : "headphones", size: 18)
         }
-        .buttonStyle(HeaderVoiceIconButton(tint: voice.deafened ? headerVoiceAlert : CaperTheme.muted))
+        .buttonStyle(CallToggleStyle(on: voice.deafened))
         .help(voice.deafened ? "Undeafen" : "Deafen")
         .accessibilityLabel(voice.deafened ? "Undeafen audio" : "Deafen audio")
         .accessibilityValue(voice.deafened ? "Deafened" : "On")
-        .accessibilityIdentifier("header-deafen")
+        .accessibilityIdentifier(identifier)
     }
 }
 
-/// Leave (or, before connecting, Cancel) the call from the conversation header:
-/// labelled on wider layouts, an icon on phones.
-private struct HeaderLeaveButton: View {
-    let model: AppModel
-    let compact: Bool
-    var body: some View {
-        let connected = model.voice.phase == .connected
-        let button = Button {
-            guard !SwipeTapGuard.swiping else { return }
-            if connected { CaperEffects.shared.play(.disconnect) }
-            model.leaveVoice()
-        } label: {
-            if compact {
-                CaperIcon(name: "phone-off", size: 20)
-            } else {
-                HStack(spacing: 6) {
-                    CaperIcon(name: "phone-off", size: 14)
-                    Text(connected ? "Leave" : "Cancel").lineLimit(1)
-                }
-            }
-        }
-        Group {
-            // Disconnect is a red icon and label everywhere in the header, with no fill or border, as on web.
-            if compact { button.buttonStyle(HeaderVoiceIconButton(tint: headerVoiceAlert)) }
-            else { button.buttonStyle(HeaderLeaveButtonStyle()).fixedSize() }
-        }
-        .help(connected ? "Disconnect" : "Cancel joining voice")
-        .accessibilityLabel(connected ? "Leave voice" : "Cancel joining voice")
-        .accessibilityIdentifier("header-leave-voice")
-    }
-}
-
-/// The wider header's labelled disconnect: #ff7182 text and icon only; pressing
-/// adds the neutral raised wash other header controls use.
-private struct HeaderLeaveButtonStyle: ButtonStyle {
+/// Mute and Deafen in your call: pressed, in the account bar's muted red, while on.
+private struct CallToggleStyle: ButtonStyle {
+    let on: Bool
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(CaperTheme.font(12, weight: .bold))
-            .foregroundStyle(headerVoiceAlert)
-            .padding(.horizontal, 10)
+        configuration.label
+            .foregroundStyle(on ? CaperTheme.voiceOff : CaperTheme.text)
             #if os(iOS)
-            .frame(minHeight: 44)
+            .frame(width: 44, height: 44)
             #else
-            .frame(minHeight: 30)
+            .frame(width: 32, height: 32)
             #endif
-            .background(configuration.isPressed ? CaperTheme.raised : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .background(on ? CaperTheme.voiceOff.opacity(configuration.isPressed ? 0.28 : 0.16)
+                        : configuration.isPressed ? CaperTheme.composer : CaperTheme.raised,
+                        in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(on ? CaperTheme.voiceOff.opacity(0.45) : CaperTheme.border))
             .contentShape(Rectangle())
             .modifier(ControlHover())
     }
 }
 
-/// The header's voice action: terracotta-tinted Join or Switch here.
-private struct HeaderVoiceButton: ButtonStyle {
-    let primary: Bool
-    /// Joining…/Leaving…: disabled but keeping the accent.
-    var busy = false
-    @Environment(\.isEnabled) private var enabled
+/// Leave (or Cancel while joining): the disconnect red on a faint red fill.
+private struct CallLeaveButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        // As on web, an unavailable Join steps back to neutral chrome: a plain
-        // border and muted label, at full opacity.
-        let unavailable = primary && !enabled && !busy
-        let accent = primary && !unavailable
         configuration.label.font(CaperTheme.font(12, weight: .bold))
-            .foregroundStyle(accent ? CaperTheme.terracottaBright : CaperTheme.muted)
-            .padding(.horizontal, 10)
+            .foregroundStyle(LiveNowPalette.disconnect)
+            .padding(.horizontal, 12)
             #if os(iOS)
             .frame(minHeight: 44)
             #else
-            .frame(minHeight: 30)
+            .frame(minHeight: 32)
             #endif
-            .background(unavailable ? Color.clear : accent ? CaperTheme.terracotta.opacity(configuration.isPressed ? 0.25 : 0.14)
-                        : configuration.isPressed ? CaperTheme.composer : CaperTheme.raised)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(accent ? CaperTheme.terracotta.opacity(0.7) : CaperTheme.border))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .background(LiveNowPalette.disconnect.opacity(configuration.isPressed ? 0.22 : 0.12), in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
-            .opacity(enabled || unavailable ? 1 : 0.45).modifier(ControlHover())
+            .modifier(ControlHover())
+    }
+}
+
+/// The full list of who is in your call: a popover beside the sidebar on wide
+/// layouts (iPad included), a bottom sheet on phones. Escape, a click or tap
+/// outside, and Close dismiss it.
+private struct VoiceListPresentation<Panel: View>: ViewModifier {
+    @Binding var shown: Bool
+    let narrow: Bool
+    /// Builds the list, told whether it is a sheet.
+    let panel: (Bool) -> Panel
+
+    @ViewBuilder func body(content: Content) -> some View {
+        #if os(iOS)
+        if narrow {
+            content.sheet(isPresented: $shown) {
+                panel(true)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(CaperTheme.surface)
+            }
+        } else {
+            content.popover(isPresented: $shown, arrowEdge: .trailing) {
+                panel(false).frame(width: 320).presentationCompactAdaptation(.popover)
+            }
+        }
+        #else
+        content.popover(isPresented: $shown, arrowEdge: .trailing) { panel(false).frame(width: 320) }
+        #endif
+    }
+}
+
+/// Everyone in your call ("In #design · 12 people"): what each is doing and,
+/// for everyone else, the volume and mute that only change what you hear.
+private struct VoiceParticipantsList: View {
+    @Bindable var model: AppModel
+    @Bindable var voice: VoiceClient
+    let channelName: String
+    @Binding var expandedID: String?
+    let sheet: Bool
+    let close: () -> Void
+
+    init(model: AppModel, channelName: String, expandedID: Binding<String?>, sheet: Bool, close: @escaping () -> Void) {
+        self.model = model; voice = model.voice; self.channelName = channelName
+        _expandedID = expandedID; self.sheet = sheet; self.close = close
+    }
+
+    var body: some View {
+        let people = callPeople(model)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text("In #\(channelName) · \(LiveNow.people(people.count))")
+                    .font(CaperTheme.font(13, weight: .bold)).lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityIdentifier("voice-list-title")
+                Spacer(minLength: 0)
+                Button(action: close) { CaperIcon(name: "x") }
+                    .buttonStyle(SidebarIconButton()).help("Close")
+                    .accessibilityLabel("Close").accessibilityIdentifier("voice-list-close")
+            }
+            .padding(.leading, 16).padding(.trailing, 8).padding(.vertical, 6)
+            .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(people) { row($0) }
+                }
+                .padding(8)
+            }
+            // A popover fits its rows, scrolling past 440 points; a sheet scrolls within its height.
+            .frame(maxHeight: sheet ? .infinity : 440)
+            .fixedSize(horizontal: false, vertical: !sheet)
+        }
+        .foregroundStyle(CaperTheme.text)
+        .background(CaperTheme.surface)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("voice-participants")
+        // The call ended while the list was open.
+        .onChange(of: inVoiceCall(voice)) { _, inCall in if !inCall { close() } }
+    }
+
+    @ViewBuilder private func row(_ person: CallPerson) -> some View {
+        let expanded = !person.isSelf && expandedID == person.id
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                VoiceFace(person: person, size: 30, badges: false)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(person.name + (person.isSelf ? " (you)" : ""))
+                        .font(CaperTheme.font(13, weight: .medium)).lineLimit(1)
+                    status(person)
+                }
+                Spacer(minLength: 0)
+                if !person.isSelf {
+                    Button { expandedID = expanded ? nil : person.id } label: {
+                        HStack(spacing: 4) {
+                            Text("Audio").font(CaperTheme.font(11, weight: .bold))
+                            CaperIcon(name: "chevron-down", size: 11).rotationEffect(.degrees(expanded ? 180 : 0))
+                        }
+                        .foregroundStyle(CaperTheme.muted)
+                        #if os(iOS)
+                        .frame(minWidth: 44, minHeight: 44)
+                        #else
+                        .padding(.horizontal, 6).frame(minHeight: 24)
+                        #endif
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).modifier(ControlHover())
+                    .help("Audio controls for \(person.name)")
+                    .accessibilityLabel("Audio controls for \(person.name)")
+                    .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+                    .accessibilityIdentifier("participant-audio-\(person.id)")
+                }
+            }
+            if expanded { audioControls(person) }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(expanded ? CaperTheme.raised : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("voice-participant-\(person.id)")
+    }
+
+    /// One status: You muted X, Speaking, Deafened or Muted.
+    @ViewBuilder private func status(_ person: CallPerson) -> some View {
+        if person.locallyMuted {
+            HStack(spacing: 4) {
+                CaperIcon(name: "volume-x", size: 10)
+                Text("You muted \(person.name)")
+                    .accessibilityIdentifier("participant-local-muted-\(person.id)")
+            }.font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright)
+        } else if person.speaking {
+            Text("Speaking").font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.voiceSessionGreen)
+        } else if person.deafened {
+            Text("Deafened").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+        } else if person.muted {
+            Text("Muted").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+        }
+    }
+
+    /// The per-person audio controls: they only change what you hear.
+    private func audioControls(_ person: CallPerson) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("User volume · \(voice.participantGains[person.id] ?? 100)%")
+                .font(CaperTheme.font(12, weight: .bold))
+            CaperSlider(value: gain(person.id), in: 0...200, step: 1)
+                .accessibilityLabel("\(person.name) volume")
+            Toggle("Mute for me", isOn: mutedForMe(person.id))
+                .font(CaperTheme.font(12, weight: .medium))
+            Text("Only changes what you hear.").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+        }
+        .padding(.leading, 40)
+    }
+
+    private func gain(_ id: String) -> Binding<Double> {
+        Binding(
+            get: { Double(voice.participantGains[id] ?? 100) },
+            set: { voice.setParticipantGain(Int($0), participantID: id); CaperEffects.shared.slider($0 / 200) }
+        )
+    }
+
+    private func mutedForMe(_ id: String) -> Binding<Bool> {
+        Binding(
+            get: { voice.locallyMutedParticipants.contains(id) },
+            set: { voice.setParticipantMuted($0, participantID: id); CaperEffects.shared.toggle(!$0) }
+        )
+    }
+}
+
+/// Another live room's card: its heading (its channel's row in the list, or a
+/// visited channel's name and session time), then faces, names, (beneath a
+/// row) the session time, and one Join (or Switch) that never changes the chat
+/// being read. A tap anywhere but a control opens its chat. No speaking rings:
+/// there is no audio from rooms you are not in.
+private struct LiveRoomCard<Heading: View>: View {
+    @Bindable var model: AppModel
+    let room: LiveRoom
+    /// The heading is the room's channel row, already listed: only its body
+    /// arrives beneath it, with the session time the row has no room for.
+    let row: Bool
+    let openChat: () -> Void
+    let heading: Heading
+
+    init(model: AppModel, room: LiveRoom, row: Bool, openChat: @escaping () -> Void, @ViewBuilder heading: () -> Heading) {
+        self.model = model; self.room = room; self.row = row; self.openChat = openChat; self.heading = heading()
+    }
+
+    var body: some View {
+        let action = ChannelVoiceAction(model: model, channel: room.channel)
+        VStack(alignment: .leading, spacing: 0) {
+            // A row keeps its own inset and selection, just inside the border.
+            heading.padding([.horizontal, .top], row ? 3 : 10)
+            HStack(spacing: 8) {
+                RoomFaces(people: room.people, limit: 3)
+                // The names truncate first; the time and Join keep their size.
+                Text(LiveNow.names(room.people.map(\.name)))
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    .lineLimit(1).truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(-1)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("live-room-names-\(room.id)")
+                if row, let startedAt = room.startedAt { VoiceTimer(startedAt: startedAt, size: 11).allowsHitTesting(false) }
+                Button(action.title, action: SwipeTapGuard.unlessSwiping(action.join))
+                    .buttonStyle(LiveJoinButtonStyle(primary: !action.switches, busy: action.busy) { model.prepareVoiceJoin(channel: room.channel) })
+                    .disabled(!action.enabled)
+                    .help(action.help)
+                    .accessibilityLabel(action.description)
+                    .accessibilityIdentifier("live-join-\(room.id)")
+                    .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: room.channel) })
+            }
+            .padding([.horizontal, .bottom], 10)
+            .padding(.top, row ? 2 : 6)
+            .modifier(Entrance.anchored(when: row))
+        }
+        .modifier(LiveCardSurface(fill: LiveNowPalette.roomFill, border: LiveNowPalette.roomBorder, open: openChat))
+        .modifier(Entrance.anchored(when: !row))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("#\(room.channel.name), \(room.people.count) in voice")
+        .accessibilityIdentifier("live-room-\(room.id)")
+    }
+}
+
+/// Up to `limit` overlapping faces of a room you are not in, then a "+N" chip.
+/// Not a control: a tap on them goes to the card or strip beneath.
+private struct RoomFaces: View {
+    let people: [VoiceSpectator]
+    let limit: Int
+    var size: CGFloat = 24
+    var body: some View {
+        HStack(spacing: 4) {
+            HStack(spacing: -6) {
+                ForEach(people.prefix(limit)) { person in
+                    Avatar(name: person.name, size: size, avatarID: person.avatarId, picture: person.avatarPicture)
+                }
+            }
+            if people.count > limit { MoreChip(count: people.count - limit) }
+        }
+        .fixedSize()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The "+N" chip after a short stack of faces.
+private struct MoreChip: View {
+    let count: Int
+    var body: some View {
+        Text("+\(count)").font(CaperTheme.font(10, weight: .bold).monospacedDigit())
+            .foregroundStyle(CaperTheme.text)
+            .padding(.horizontal, 6).frame(height: 20)
+            .background(Capsule().fill(CaperTheme.raised))
+            .overlay(Capsule().strokeBorder(CaperTheme.border))
+    }
+}
+
+/// A live room's Join (eggshell fill, blackout label) and Switch (neutral surface).
+/// Joining…/Leaving… keep their fill while disabled; an unavailable one steps
+/// back to neutral chrome, with its tooltip. Touch prepares the join on press.
+private struct LiveJoinButtonStyle: ButtonStyle {
+    let primary: Bool
+    var busy = false
+    var prepare: () -> Void = {}
+    func makeBody(configuration: Configuration) -> some View {
+        LiveJoinLabel(configuration: configuration, primary: primary, busy: busy)
+            .onChange(of: configuration.isPressed) { _, pressed in if pressed { prepare() } }
+    }
+}
+
+private struct LiveJoinLabel: View {
+    let configuration: ButtonStyleConfiguration
+    let primary: Bool
+    let busy: Bool
+    @Environment(\.isEnabled) private var enabled
+    @State private var hovered = false
+    var body: some View {
+        let accent = primary && (enabled || busy)
+        let pressed = configuration.isPressed
+        let fill: Color = accent ? (pressed ? CaperTheme.actionPress : hovered && enabled ? CaperTheme.actionHover : CaperTheme.action)
+            : (pressed ? CaperTheme.composer : CaperTheme.raised)
+        configuration.label
+            .font(CaperTheme.font(12, weight: .bold))
+            .foregroundStyle(accent ? CaperTheme.onAction : enabled || busy ? CaperTheme.text : CaperTheme.muted)
+            .lineLimit(1).fixedSize()
+            .padding(.horizontal, 12)
+            #if os(iOS)
+            .frame(height: 40)
+            #else
+            .frame(height: 26)
+            #endif
+            .background(fill, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(accent ? Color.clear : CaperTheme.border))
+            #if os(iOS)
+            // A 40-point control in a 44-point touch target.
+            .frame(minHeight: 44)
+            #endif
+            .contentShape(Rectangle())
+            .onHover { hovered = $0 }
+            .modifier(ControlHover(wash: !accent))
+    }
+}
+
+/// Phones (narrow layouts): a slim strip directly under the chat header. In a
+/// call it shows the call's channel, the card's people in the card's order (up
+/// to five faces, else four and "+N"), Connecting… or Reconnecting… until
+/// connected, the time and Mute; the rest opens Browse, where the call's card
+/// is. No name comes and goes with who speaks: their face's ring shows it.
+/// Otherwise a channel with people in voice offers Join, which never changes
+/// the chat being read.
+private struct PhoneVoiceStrip: View {
+    @Bindable var model: AppModel
+    @Bindable var voice: VoiceClient
+    /// The open channel, if it has voice: DMs and previews have none.
+    let channel: Channel?
+    let browse: () -> Void
+
+    init(model: AppModel, channel: Channel?, browse: @escaping () -> Void) {
+        self.model = model; voice = model.voice; self.channel = channel; self.browse = browse
+    }
+
+    var body: some View {
+        let occupants = channel.map { voiceOccupants(model, channelID: $0.id) } ?? []
+        if inVoiceCall(voice), let context = voice.context {
+            strip { callStrip(context) }
+        } else if let channel, !occupants.isEmpty {
+            strip { joinStrip(channel, people: occupants) }
+        }
+    }
+
+    private func strip<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity, minHeight: 56, maxHeight: 56)
+            .background(LiveNowPalette.stripFill)
+            .overlay(alignment: .bottom) { Rectangle().fill(LiveNowPalette.stripBorder).frame(height: 1) }
+            .modifier(Entrance(offset: CGSize(width: 0, height: -4), animation: CaperMotion.easeOut(CaperMotion.fast)))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("voice-strip")
+    }
+
+    private func callStrip(_ context: VoiceContext) -> some View {
+        let people = callPeople(model)
+        let faces = LiveNow.stripFold(people)
+        let pending = callPending(voice)
+        let startedAt = callStartedAt(model)
+        return HStack(spacing: 6) {
+            Button(action: SwipeTapGuard.unlessSwiping(browse)) {
+                HStack(spacing: 8) {
+                    CaperIcon(name: "audio-lines", size: 16)
+                        .foregroundStyle(pending == nil ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
+                    Text("#\(context.channelName)").font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text)
+                        .lineLimit(1)
+                    HStack(spacing: 4) {
+                        HStack(spacing: -6) {
+                            ForEach(faces.shown) { VoiceFace(person: $0, size: 24, badges: false) }
+                        }
+                        if !faces.folded.isEmpty { MoreChip(count: faces.folded.count) }
+                    }
+                    .fixedSize()
+                    if let pending {
+                        Text(pending).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(LiveNowPalette.connecting)
+                            .lineLimit(1).fixedSize()
+                    }
+                    Spacer(minLength: 4)
+                    if let startedAt { VoiceTimer(startedAt: startedAt) }
+                }
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Voice in #\(context.channelName)")
+            .accessibilityValue([pending, LiveNow.people(people.count)].compactMap { $0 }.joined(separator: ", "))
+            .accessibilityHint("Opens Browse, where your call is")
+            .accessibilityIdentifier("voice-strip-open")
+            CallMuteButton(voice: voice, identifier: "voice-strip-mute")
+        }
+        .padding(.leading, 13).padding(.trailing, 6)
+    }
+
+    private func joinStrip(_ channel: Channel, people: [VoiceSpectator]) -> some View {
+        let action = ChannelVoiceAction(model: model, channel: channel)
+        return HStack(spacing: 8) {
+            CaperIcon(name: "audio-lines", size: 16).foregroundStyle(CaperTheme.voiceSessionGreen)
+            Text("\(people.count) talking").font(CaperTheme.font(13, weight: .bold)).foregroundStyle(CaperTheme.text)
+                .lineLimit(1).fixedSize()
+                .accessibilityIdentifier("voice-strip-count")
+            RoomFaces(people: Array(people.prefix(2)), limit: 2)
+            Spacer(minLength: 4)
+            Button(action.title, action: SwipeTapGuard.unlessSwiping(action.join))
+                .buttonStyle(LiveJoinButtonStyle(primary: !action.switches, busy: action.busy) { model.prepareVoiceJoin(channel: channel) })
+                .disabled(!action.enabled)
+                .help(action.help)
+                .accessibilityLabel(action.description)
+                .accessibilityIdentifier("voice-strip-join")
+                .modifier(PrepareVoiceOnApproach { model.prepareVoiceJoin(channel: channel) })
+        }
+        .padding(.leading, 13).padding(.trailing, 10)
     }
 }
 
@@ -2342,94 +3081,9 @@ private extension View {
 }
 #endif
 
-private struct VoiceRoster: View {
-    @Bindable var voice: VoiceClient
-    let model: AppModel
-    @State private var audioParticipantID: String? = nil
-    init(model: AppModel) { voice = model.voice; self.model = model }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(voice.participants) { participant in
-                let name = voice.isSelf(participantID: participant.id) ? (model.account?.displayName ?? participant.name) : participant.name
-                // Your own picture follows a change made during the call.
-                let own = voice.isSelf(participantID: participant.id) ? model.account : nil
-                let picture: CaperPicture? = own != nil ? own?.avatarPicture : participant.avatarPicture
-                HStack(spacing: 8) {
-                    Avatar(name: name, size: 20, avatarID: participant.avatarId, picture: picture, speaking: voice.speakingParticipants.contains(participant.id))
-                        .accessibilityValue(voice.speakingParticipants.contains(participant.id) ? "Speaking" : "")
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(name + (voice.isSelf(participantID: participant.id) ? " (you)" : ""))
-                            .font(CaperTheme.font(12, weight: .medium)).lineLimit(1)
-                        if !voice.isSelf(participantID: participant.id), voice.locallyMutedParticipants.contains(participant.id) {
-                            HStack(spacing: 4) {
-                                CaperIcon(name: "volume-x", size: 10)
-                                Text("You muted \(participant.name)")
-                                    .accessibilityIdentifier("participant-local-muted-\(participant.id)")
-                            }.font(CaperTheme.font(10)).foregroundStyle(CaperTheme.terracottaBright)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    if (voice.isSelf(participantID: participant.id) ? voice.muted : participant.muted) {
-                        CaperIcon(name: "mic-off", size: 14).accessibilityHidden(false).accessibilityLabel("Muted")
-                    }
-                    if (voice.isSelf(participantID: participant.id) ? voice.deafened : participant.deafened) {
-                        CaperIcon(name: "headphone-off", size: 14).accessibilityHidden(false).accessibilityLabel("Deafened")
-                    }
-                    if !voice.isSelf(participantID: participant.id) {
-                        Button { audioParticipantID = audioParticipantID == participant.id ? nil : participant.id } label: {
-                            Text("Audio").font(CaperTheme.font(10, weight: .bold))
-                                #if os(iOS)
-                                .frame(minWidth: 44, minHeight: 44)
-                                #else
-                                .padding(.horizontal, 4).frame(minHeight: 22)
-                                #endif
-                                .contentShape(Rectangle())
-                        }.buttonStyle(.plain).modifier(ControlHover())
-                            .accessibilityLabel("Audio controls for \(participant.name)")
-                            .accessibilityIdentifier("participant-audio-\(participant.id)")
-                            .popover(isPresented: Binding(
-                                get: { audioParticipantID == participant.id },
-                                set: { if !$0, audioParticipantID == participant.id { audioParticipantID = nil } }
-                            ), arrowEdge: .trailing) {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    Text("User volume · \(voice.participantGains[participant.id] ?? 100)%")
-                                        .font(CaperTheme.font(12, weight: .bold))
-                                    CaperSlider(value: participantGain(participant.id), in: 0...200, step: 1)
-                                        .accessibilityLabel("\(participant.name) volume")
-                                    Toggle("Mute", isOn: participantMute(participant.id))
-                                        .font(CaperTheme.font(12, weight: .medium))
-                                    Text("Only changes what you hear.").font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
-                                }.padding(16).frame(width: 220).background(CaperTheme.surface)
-                                #if os(iOS)
-                                .presentationCompactAdaptation(.popover)
-                                #endif
-                            }
-                    }
-                }.foregroundStyle(CaperTheme.muted).padding(.vertical, 4)
-                #if os(macOS)
-                .contentShape(Rectangle())
-                .onRightClick(enabled: !voice.isSelf(participantID: participant.id)) { audioParticipantID = participant.id }
-                #endif
-            }
-        }
-    }
-
-    private func participantGain(_ id: String) -> Binding<Double> {
-        Binding(
-            get: { Double(voice.participantGains[id] ?? 100) },
-            set: { voice.setParticipantGain(Int($0), participantID: id); CaperEffects.shared.slider($0 / 200) }
-        )
-    }
-
-    private func participantMute(_ id: String) -> Binding<Bool> {
-        Binding(
-            get: { voice.locallyMutedParticipants.contains(id) },
-            set: { voice.setParticipantMuted($0, participantID: id); CaperEffects.shared.toggle(!$0) }
-        )
-    }
-}
-
-/// Web prepares a join as the pointer nears Join, or on touch-down.
+/// Web prepares a join as the pointer nears Join. Touch prepares on the press
+/// instead, in the Join buttons' styles: a touch-down gesture on each button
+/// would compete with the sidebar's scrolling.
 private struct PrepareVoiceOnApproach: ViewModifier {
     let prepare: () -> Void
     func body(content: Content) -> some View {
@@ -2437,7 +3091,7 @@ private struct PrepareVoiceOnApproach: ViewModifier {
         // Hovering Join itself: a wider hover region would take clicks from neighboring rows.
         content.onHover { if $0 { prepare() } }
         #else
-        content.simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in prepare() })
+        content
         #endif
     }
 }
@@ -2481,37 +3135,9 @@ private struct AccountBar: View {
         if let id = model.account?.id, let status = model.presence.statuses[id], status != .unknown { return status }
         return model.chat.liveState == .connected ? .online : nil
     }
-    private var accountAlignment: VerticalAlignment {
-        #if os(macOS)
-        updates.review == nil ? .center : .bottom
-        #else
-        .center
-        #endif
-    }
     var body: some View {
         VStack(spacing: 0) {
-            if let context = voice.context, voice.phase != .idle && voice.phase != .failed {
-                HStack(spacing: 8) {
-                    Button { Task { await model.openVoiceContext() } } label: {
-                        HStack(spacing: 8) {
-                        // Web: green when connected, amber while connecting or reconnecting.
-                        let tone = voice.phase == .connected ? Color(red: 140/255, green: 178/255, blue: 98/255)
-                            : Color(red: 217/255, green: 171/255, blue: 92/255)
-                        CaperIcon(name: "audio-lines", size: 16).foregroundStyle(tone)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(voice.phase == .connected ? "Voice connected" : voice.phase == .joining ? "Connecting…" : "Reconnecting…")
-                                .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(tone)
-                            Text("\(context.channelName) / \(context.spaceName)")
-                                .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted).lineLimit(1)
-                        }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                    }.buttonStyle(.plain).modifier(ControlHover())
-                    Button { if voice.phase == .connected { CaperEffects.shared.play(.disconnect) }; model.leaveVoice() } label: { CaperIcon(name: "phone-off") }
-                        .buttonStyle(SidebarIconButton()).help(voice.phase == .connected ? "Disconnect" : "Cancel")
-                        .accessibilityLabel(voice.phase == .connected ? "Leave voice" : "Cancel joining voice")
-                }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
-                    .accessibilityIdentifier("active-voice-context")
-            }
+            // Your call lives in its channel's card in the list; its errors stay here.
             if let error = voice.error {
                 HStack(alignment: .top, spacing: 8) {
                     // At least the dismiss button's height, so one line sits centred on its X.
@@ -2527,29 +3153,34 @@ private struct AccountBar: View {
                 }.padding(9).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 8))
                     .accessibilityIdentifier("voice-error")
             }
-            HStack(alignment: accountAlignment, spacing: 5) {
-                VStack(spacing: 0) {
-                    #if os(macOS)
-                    if let review = updates.review {
-                        DesktopUpdateMascot(review: review)
-                    }
-                    #endif
-                    Button { sheet = model.account == nil ? .login : .profile } label: {
-                        HStack(spacing: 7) {
-                            Avatar(name: identityName, size: 30, avatarID: model.account?.avatarId, picture: model.account?.avatarPicture)
-                                .overlay(alignment: .bottomTrailing) { PresenceDot(status: ownPresence, live: model.presence.online) }
-                            if showsName {
-                                Text(identityName).font(CaperTheme.font(13, weight: .medium)).lineLimit(1).truncationMode(.tail)
-                            }
-                        }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                            // The width is what the controls leave, whether or not the name shows.
-                            .onGeometryChange(for: Bool.self) { $0.size.width >= 76 } action: { showsName = $0 }
-                    }.buttonStyle(.plain).modifier(ControlHover())
-                        .help(identityName)
-                        // Web: the account's name, else the guest chat identity, with its profile label.
-                        .accessibilityLabel(model.account == nil ? "Sign in to edit your profile" : "Edit profile for \(identityName)")
-                        .accessibilityIdentifier("account-profile")
-                }
+            #if os(macOS)
+            if let review = updates.review {
+                // Keep the update outside the fixed-height profile/audio row.
+                Button(action: review) {
+                    Text("Update available").frame(maxWidth: .infinity)
+                }.buttonStyle(CaperSecondaryButton(minHeight: 36))
+                    .modifier(UpdateButtonShine())
+                    .accessibilityIdentifier("desktop-update-action")
+                    .help("Review the update before restarting Caper.")
+                    .padding(8)
+            }
+            #endif
+            HStack(spacing: 5) {
+                Button { sheet = model.account == nil ? .login : .profile } label: {
+                    HStack(spacing: 7) {
+                        Avatar(name: identityName, size: 30, avatarID: model.account?.avatarId, picture: model.account?.avatarPicture)
+                            .overlay(alignment: .bottomTrailing) { PresenceDot(status: ownPresence, live: model.presence.online) }
+                        if showsName {
+                            Text(identityName).font(CaperTheme.font(13, weight: .medium)).lineLimit(1).truncationMode(.tail)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        // The width is what the controls leave, whether or not the name shows.
+                        .onGeometryChange(for: Bool.self) { $0.size.width >= 76 } action: { showsName = $0 }
+                }.buttonStyle(.plain).modifier(ControlHover())
+                    .help(identityName)
+                    // Web: the account's name, else the guest chat identity, with its profile label.
+                    .accessibilityLabel(model.account == nil ? "Sign in to edit your profile" : "Edit profile for \(identityName)")
+                    .accessibilityIdentifier("account-profile")
             Button { CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) } } label: {
                 CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
                     .foregroundStyle(voice.muted ? CaperTheme.voiceOff : CaperTheme.muted)
@@ -2634,15 +3265,11 @@ private struct AccountBar: View {
                 #endif
                 .accessibilityLabel("Account settings").accessibilityIdentifier("account-settings-menu")
             }.padding(4)
-                #if os(iOS)
-                .frame(height: 52)
-                #else
-                .frame(height: 42)
-                #endif
+                .frame(height: CaperTheme.accountBarHeight)
                 .background(CaperTheme.raised)
         }
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border)).clipShape(RoundedRectangle(cornerRadius: 6))
-        .padding(12)
+        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, CaperTheme.workspaceBottomInset)
         #if os(macOS)
         .onChange(of: sheet?.id) { old, new in
             guard new == nil, let old, ["audio", "connection", "diagnostics", "notifications", "privacy"].contains(old) else { return }
@@ -2815,41 +3442,16 @@ private struct ConversationStage: View {
 }
 
 /// The timeline's content/viewport heights and whether its end is visible.
-private struct TimelinePin: Equatable {
-    var height: CGFloat
-    var contentHeight: CGFloat
-    var atBottom: Bool
-    var firstID: String?
-    /// The last rows, whose reactions, edits and files grow the end in place.
-    var recent: [TimelineEntry]
-    /// More than a screen of short messages.
-    static let recentRows = 20
+extension TimelinePin {
     /// `geometry` is the scrolled content's; `viewport` names the scroll view's space.
     init(_ geometry: GeometryProxy, viewport: String, firstID: String?, recent: [TimelineEntry]) {
         let visible = geometry.bounds(of: .named(viewport)) ?? CGRect(origin: .zero, size: geometry.size)
         height = visible.height
         contentHeight = geometry.size.height
+        offset = visible.minY
         atBottom = visible.maxY >= geometry.size.height - 24
         self.firstID = firstID
         self.recent = recent
-    }
-}
-
-/// The timeline's last `TimelinePin`. A plain reference box, so scrolling
-/// never re-renders the conversation.
-private final class TimelinePinBox {
-    private var last: TimelinePin?
-    /// Whether the reader was last seen at the end; true before the first measurement.
-    var atBottom: Bool { last?.atBottom ?? true }
-    /// Keep a bottom reader pinned when reactions grow or the viewport shrinks.
-    /// A changed first row means history was prepended/replaced, not tail growth.
-    /// Growth that leaves the end without any recent row changing is LazyVStack
-    /// measuring rows as the reader starts scrolling up; that must not snap back.
-    func needsReveal(to pin: TimelinePin) -> Bool {
-        defer { last = pin }
-        guard let last else { return false }
-        return last.atBottom && last.firstID == pin.firstID &&
-            (pin.height < last.height || (pin.contentHeight > last.contentHeight && (pin.atBottom || pin.recent != last.recent)))
     }
 }
 
@@ -2912,9 +3514,10 @@ private struct ChatView: View {
     private var membersAvailable: Bool {
         model.selectedDirectMessageID == nil && model.visit == nil && !(narrow && model.previewingChannel)
     }
-    /// The open channel once joined: its header carries voice. Previews and DMs have none.
-    private var headerVoiceChannel: Channel? {
-        // A visited space channel joins voice from the same header; DMs have none.
+    /// The open channel once joined, which has voice: the phone strip offers it
+    /// and the phone subtitle counts it. Previews and DMs have none.
+    private var voiceChannel: Channel? {
+        // A visited space channel has voice too; DMs have none.
         if model.visit != nil { return model.visitChannel.flatMap { model.isVisitVoice($0) ? $0 : nil } }
         guard model.selectedDirectMessageID == nil, let channel = model.selectedChannel, channel.joined else { return nil }
         return channel
@@ -2934,21 +3537,21 @@ private struct ChatView: View {
     }
     /// The space's member count, where the member list applies to a joined channel.
     private var memberCount: Int? {
-        guard membersAvailable, headerVoiceChannel != nil, let detail = model.detail, detail.space.demo != true else { return nil }
+        guard membersAvailable, voiceChannel != nil, let detail = model.detail, detail.space.demo != true else { return nil }
         return detail.members.count
     }
     /// Web's headerSubtitle under a phone's title: "N members · M in voice", omitting what does not apply.
     private var headerSubtitle: String? {
         var parts: [String] = []
         if let count = memberCount { parts.append("\(count) \(count == 1 ? "member" : "members")") }
-        if let channel = headerVoiceChannel {
+        if let channel = voiceChannel {
             let inVoice = voiceOccupants(model, channelID: channel.id).count
             if inVoice > 0 { parts.append("\(inVoice) in voice") }
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
     /// Phones: the name is the conversation's menu trigger, as in Slack, holding
-    /// Pins, Members and (in a 1:1 DM) Block. It fills the width the voice group leaves.
+    /// Pins, Members and (in a 1:1 DM) Block. It fills the header's width.
     private var titleMenu: some View {
         let direct = model.selectedDirectMessageID != nil
         let membersTitle = membersVisible ? "Hide members" : "Members"
@@ -3015,7 +3618,7 @@ private struct ChatView: View {
         if conversation.blocked || model.blockedIDs.contains(conversation.peer.id) {
             Button("Unblock @\(conversation.peer.username)") { unblock(conversation.peer.id) }
                 .accessibilityIdentifier("dm-unblock")
-        } else {
+        } else if conversation.peer.canBlock {
             Button("Block @\(conversation.peer.username)…", role: .destructive) { blockTarget = BlockTarget(peer: conversation.peer) }
                 .accessibilityIdentifier("dm-block")
         }
@@ -3163,7 +3766,6 @@ private struct ChatView: View {
                     titleMenu
                 } else {
                     Text(headerTitle).font(CaperTheme.font(14, weight: .medium)).lineLimit(1)
-                        // A long name truncates only once the voice faces have compacted.
                         .layoutPriority(1)
                         .accessibilityLabel(headerTitleLabel)
                         .accessibilityIdentifier("selected-channel-name")
@@ -3175,22 +3777,8 @@ private struct ChatView: View {
                         .lineLimit(1).fixedSize()
                         .accessibilityIdentifier("chat-connection-status")
                 }
-                // Web joins voice from here on every device; touch has no row shortcut.
-                // Wider headers set it apart from the Pins and Members icons with a rule.
-                if let channel = headerVoiceChannel {
-                    HeaderVoice(model: model, channel: channel, narrow: narrow)
-                    if !narrow {
-                        Rectangle().fill(CaperTheme.border).frame(width: 1, height: 24)
-                            .padding(.horizontal, 2).accessibilityHidden(true)
-                    }
-                } else if narrow && inVoiceCall(voice) {
-                    // A DM or preview has no voice of its own; phones still offer the call's mute, deafen and Leave.
-                    HStack(spacing: 2) {
-                        HeaderMuteButton(voice: voice)
-                        HeaderDeafenButton(voice: voice)
-                        HeaderLeaveButton(model: model, compact: true)
-                    }.modifier(CompactVoiceGroup())
-                }
+                // Voice is not in the header: the channel list's live cards hold
+                // your call and the rooms to join, and phones add a strip beneath it.
                 if !narrow {
                     Button { showingPins = true } label: { CaperIcon(name: "pin", size: 20) }
                         .buttonStyle(SidebarIconButton()).help("Pins").accessibilityLabel("Pins")
@@ -3221,6 +3809,11 @@ private struct ChatView: View {
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
                 .modifier(BrowseSwipe(open: false, enabled: narrow && !membersVisible && !showingPins && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: browse))
                 .modifier(MembersSwipe(open: membersVisible, enabled: narrow && membersAvailable && !showingPins && reactionMessage == nil && reactorsTarget == nil && !showingEmojiPicker && mentionCard == nil, navigate: toggleMembers))
+                // Checked as a channel opens: the strip's Join needs it, and a
+                // visited channel has no sidebar row to check it.
+                .task(id: voiceChannel?.id) {
+                    if let channel = voiceChannel { await model.refreshVoiceAvailability(channel: channel) }
+                }
                 #if os(macOS)
                 // Use the fixed header as the native anchor. A point inside the
                 // timeline can resolve to a lazy row that live delivery removes.
@@ -3232,16 +3825,24 @@ private struct ChatView: View {
                 }
                 #endif
 
+            // Phones: your call, or the open channel's voice, directly under the header.
+            if narrow { PhoneVoiceStrip(model: model, channel: voiceChannel, browse: browse) }
+
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
                     let entries = timelineEntries
                     let recentRows = Array(entries.suffix(TimelinePin.recentRows))
+                    // Read once per render: the geometry transform below runs on every
+                    // scroll frame and must not re-derive the whole timeline each time.
+                    let channelMessages = chat.channelMessages
+                    let firstID = channelMessages.first?.id
                     // The channel's own pending message; a thread reply's shows in the thread.
                     let pending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == nil ? $0 : nil }
-                    let grouping = MessageGrouping.layout(entries, inThread: false, pending: pending, author: chat.currentAuthor)
+                    let newMessagesID = model.channelNewMessagesDividerID()
+                    let grouping = MessageGrouping.layout(entries, inThread: false, pending: pending, author: chat.currentAuthor, breakBeforeID: newMessagesID)
                     // Before any row is built, so rows see this render's arrivals.
                     let _ = arrivals.observe("channel", key: chat.channelID ?? "",
-                                             ids: chat.channelMessages.map(\.clientMessageId) + (pending.map { [$0.id] } ?? []),
+                                             ids: channelMessages.map(\.clientMessageId) + (pending.map { [$0.id] } ?? []),
                                              live: !chat.loading && !chat.loadFailed && !chat.hasNewer && !chat.loadingNewer)
                     VStack(spacing: 0) {
                         LazyVStack(spacing: 0) {
@@ -3266,7 +3867,18 @@ private struct ChatView: View {
                                         ChatDateDivider(createdAt: entry.firstCreatedAt)
                                     }
                                     switch entry {
-                                    case let .message(message): channelRow(message, grouping: grouping)
+                                    case let .message(message):
+                                        if message.id == newMessagesID {
+                                            HStack(spacing: 8) {
+                                                Rectangle().frame(height: 1)
+                                                Text("New messages").font(CaperTheme.font(11, weight: .medium)).fixedSize()
+                                                Rectangle().frame(height: 1)
+                                            }
+                                            .foregroundStyle(CaperTheme.terracotta)
+                                            .padding(.horizontal, 16).padding(.vertical, 8)
+                                            .accessibilityIdentifier("channel-new-messages")
+                                        }
+                                        channelRow(message, grouping: grouping)
                                     case let .blocked(run):
                                         VStack(spacing: 0) {
                                             BlockedRunRow(run: run) { revealedBlocked = BlockedMessages.toggling(run, in: revealedBlocked) }
@@ -3321,7 +3933,7 @@ private struct ChatView: View {
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
                     // Reactions grow existing rows; a draft or keyboard shrinks
                     // the viewport. Both retain a reader already at the bottom.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: chat.channelMessages.first?.id, recent: recentRows) } action: { pin in
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: firstID, recent: recentRows) } action: { pin in
                         if timelinePin.needsReveal(to: pin) { revealLatest(proxy) }
                     }
                 }
@@ -3398,7 +4010,7 @@ private struct ChatView: View {
             if let error = chat.error, chat.pendingMessage == nil, !chat.loadFailed {
                 Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18)
             }
-            // Phones show the conversation alone, without the account bar's dock,
+            // Phones show the conversation alone, without the account bar,
             // so voice permission and failure errors come with it.
             if narrow, let error = voice.error {
                 HStack(alignment: .top, spacing: 8) {
@@ -3477,7 +4089,7 @@ private struct ChatView: View {
                     ComposerSuggestionsView(controller: composerAutocomplete)
                     #endif
                     HStack(alignment: .bottom, spacing: 0) {
-                        AttachmentPickerButton(chat: chat).padding(.leading, 4)
+                        AttachmentPickerButton(chat: chat).frame(height: composerMinHeight).padding(.leading, 4)
                         ZStack(alignment: .topLeading) {
                             if chat.draft.isEmpty {
                                 Text(composerPlaceholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
@@ -3485,14 +4097,14 @@ private struct ChatView: View {
                             }
                             messageComposer
                         }
-                        .frame(minHeight: 42, maxHeight: 174)
+                        .frame(minHeight: composerMinHeight, maxHeight: 174)
                         // Measure the text view instead of filling the 174-point maximum.
                         .fixedSize(horizontal: false, vertical: true)
                         .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
                         #if os(iOS)
                         .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
                         #endif
-                        ComposerEmojiButton(controller: composerAutocomplete).padding(.trailing, 2)
+                        ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight).padding(.trailing, 2)
                     }
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
@@ -3505,7 +4117,7 @@ private struct ChatView: View {
                     CaperIcon(name: "send", size: 16)
                         // Size the actual label, not only its styled background: clicks
                         // beside the glyph must submit too, especially on macOS.
-                        .frame(width: 42, height: 42)
+                        .frame(width: 42, height: composerMinHeight)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PrimaryIconButton())
@@ -3519,7 +4131,7 @@ private struct ChatView: View {
             }
             }.padding(.horizontal, 18).padding(.top, 12)
             // Keep breathing room above the keyboard/home-indicator safe area.
-            .padding(.bottom, 16)
+            .padding(.bottom, CaperTheme.workspaceBottomInset)
             if chat.draft.unicodeScalars.count >= 3000 {
                 Text("\(chat.draft.unicodeScalars.count.formatted()) / 4,000").font(CaperTheme.font(10)).monospacedDigit().foregroundStyle(counterTone).padding(.bottom, 6)
             }
@@ -3651,6 +4263,8 @@ private struct ChatView: View {
         let direct = model.selectedDirectMessageID != nil || model.visit?.direct == true
         return direct ? "Message \(chat.channelName)" : "Message #\(chat.channelName.lowercased())"
     }
+    /// Side-by-side layouts match the account bar; phones retain their compact editor.
+    private var composerMinHeight: CGFloat { narrow ? 42 : CaperTheme.accountBarHeight }
     // Type-check the native editor and its optional callback separately from
     // channelBody's large SwiftUI builder; keep the editor at the same position.
     private var messageComposer: NativeMessageComposer {
@@ -3694,6 +4308,28 @@ private struct ChatView: View {
     }
 }
 
+/// A leading checkbox keeps the broadcast option away from the reply's Send button.
+private struct ThreadBroadcastToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button { configuration.isOn.toggle() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: configuration.isOn ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 18))
+                    .foregroundStyle(configuration.isOn ? CaperTheme.terracottaBright : CaperTheme.muted)
+                    .frame(width: 24, height: 24)
+                configuration.label.fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // Preserve the native toggle's label, value and action for VoiceOver.
+        .accessibilityRepresentation {
+            Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(.switch)
+        }
+    }
+}
+
 private struct NativeThreadView: View {
     @Bindable var chat: ChatModel
     /// For the mention card: names from loaded members/people/DMs, and Message.
@@ -3730,8 +4366,7 @@ private struct NativeThreadView: View {
     @State private var arrivals = MessageArrivals()
     /// Your latest reply sent from this thread: its arrival scrolls to it.
     @State private var localReplyID: String?
-    /// Web: an icon send button, leaving the row to the broadcast toggle. Kept
-    /// out of the body so the type checker handles it separately.
+    /// Kept out of the body so the type checker handles it separately.
     private var sendReplyButton: some View {
         Button { Task { await chat.send(inThread: true) } } label: {
             CaperIcon(name: "send", size: 18)
@@ -3751,6 +4386,24 @@ private struct NativeThreadView: View {
                    grouped: grouping.grouped.contains(message.id), continued: grouping.continued.contains(message.id),
                    requestBlock: { blockTarget = BlockTarget(author: $0) }) { reactionMessage = message }
             .modifier(Entrance.message(arrivals.claim(message.clientMessageId)))
+            .onGeometryChange(for: String?.self) { geometry in
+                // A later own or collapsed blocked reply must not hide a read acknowledgement.
+                guard let rootID = message.threadRootId, message.seq == chat.unreadThreads[rootID],
+                      !chat.threadHasNewer, !chat.threadLoading,
+                      let visible = geometry.bounds(of: .named(MentionCard.timelineSpace)),
+                      visible.height > 0, visible.minY < geometry.size.height,
+                      visible.maxY >= geometry.size.height - 1 else { return nil }
+                return message.seq
+            } action: { seq in
+                guard message.threadRootId == chat.threadRootID,
+                      message.seq == chat.unreadThreads[chat.threadRootID ?? ""] else { return }
+                model.threadVisibilityChanged(rootID: chat.threadRootID, seq: seq)
+            }
+            .onDisappear {
+                if chat.visibleThreadReply?.seq == message.seq {
+                    model.threadVisibilityChanged(rootID: nil, seq: nil)
+                }
+            }
     }
     /// The root and replies collapse like the channel: blocked runs show "Show".
     /// Replies group among themselves; the root never groups (empty `grouping`).
@@ -3805,7 +4458,10 @@ private struct NativeThreadView: View {
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
-                    let replyRows = entries(replies)
+                    // Read once per render, never per scroll frame in the geometry below.
+                    let threadReplies = replies
+                    let firstReplyID = threadReplies.first?.id
+                    let replyRows = entries(threadReplies)
                     let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID })
                     // The root's reactions grow the thread as well as its replies'.
                     let recentRows: [TimelineEntry] = (root.map { entries([$0]) } ?? []) + replyRows.suffix(TimelinePin.recentRows)
@@ -3851,7 +4507,8 @@ private struct NativeThreadView: View {
                         }
                     }
                     // Follow reaction height changes as well as a shorter viewport.
-                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: replies.first?.id, recent: recentRows) } action: { pin in
+                    .onDisappear { model.threadVisibilityChanged(rootID: nil, seq: nil) }
+                    .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: firstReplyID, recent: recentRows) } action: { pin in
                         if timelinePin.needsReveal(to: pin), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
@@ -3907,34 +4564,39 @@ private struct NativeThreadView: View {
                     Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright)
                 }
                 AttachmentDraftsView(chat: chat, inThread: true)
+                Toggle(isOn: $chat.threadBroadcast) {
+                    (Text("Also send to ") + Text(direct ? chat.channelName : "#\(chat.channelName)").font(CaperTheme.font(11, weight: .bold)))
+                        .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                }
+                .toggleStyle(ThreadBroadcastToggleStyle())
+                .disabled(chat.pendingMessage != nil)
                 #if os(iOS)
                 ComposerSuggestionsView(controller: composerAutocomplete)
                 #endif
-                HStack(alignment: .bottom, spacing: 0) {
-                    AttachmentPickerButton(chat: chat, inThread: true).padding(.leading, 4)
-                    // Like the channel composer: the placeholder sits behind the clear editor, which draws none.
-                    ZStack(alignment: .topLeading) {
-                        if chat.threadDraft.isEmpty {
-                            Text("Reply to thread…").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                                .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                HStack(alignment: .bottom, spacing: 8) {
+                    HStack(alignment: .bottom, spacing: 0) {
+                        AttachmentPickerButton(chat: chat, inThread: true).padding(.leading, 4)
+                        // Like the channel composer: the placeholder sits behind the clear editor, which draws none.
+                        ZStack(alignment: .topLeading) {
+                            if chat.threadDraft.isEmpty {
+                                Text("Reply to thread…").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                                    .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                            }
+                            threadComposer
                         }
-                        threadComposer
+                            .frame(minHeight: 42, maxHeight: 174)
+                            .fixedSize(horizontal: false, vertical: true)
+                            #if os(iOS)
+                            .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                            #endif
+                        ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading).padding(.trailing, 2)
                     }
-                        .frame(minHeight: 72, maxHeight: 174)
-                        .fixedSize(horizontal: false, vertical: true)
-                        #if os(iOS)
-                        .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                        // Clipped too: the fill's square corners showed outside the rounded border.
+                        .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                        #if os(macOS)
+                        .anchorPreference(key: ThreadComposerAnchorKey.self, value: .bounds) { $0 }
                         #endif
-                    ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading).padding(.trailing, 2)
-                }
-                    // Clipped too: the fill's square corners showed outside the rounded border.
-                    .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-                    #if os(macOS)
-                    .anchorPreference(key: ThreadComposerAnchorKey.self, value: .bounds) { $0 }
-                    #endif
-                HStack {
-                    Toggle(direct ? "Also send to conversation" : "Also send to #\(chat.channelName)", isOn: $chat.threadBroadcast).font(CaperTheme.font(11)).disabled(chat.pendingMessage != nil)
                     sendReplyButton
                 }
                 if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID,
@@ -4132,6 +4794,8 @@ private struct MessageRow: View {
     /// Asks the containing view to confirm blocking this message's author.
     var requestBlock: ((ChatAuthor) -> Void)? = nil
     var forwardOpened: (() -> Void)? = nil
+    /// Pins opt in; child links and controls keep their own interactions.
+    var openMessage: (() -> Void)? = nil
     let showReactionPicker: () -> Void
     private var canBlockAuthor: Bool {
         requestBlock != nil && BlockedMessages.canBlock(message.author, viewerID: chat.viewerID, blocked: chat.blockedAuthorIDs)
@@ -4145,9 +4809,9 @@ private struct MessageRow: View {
     @State private var history = false
     @State private var pressing = false
     #if os(macOS)
-    /// Room the first line leaves for the hover actions: 24pt each, 2pt apart
-    /// (Reply in thread, Reply, Add reaction and ⋯), plus a gap.
-    private var actionsInset: CGFloat { inThread ? 82 : 108 }
+    /// Room for the unified hover bar: 24pt controls, 3pt insets and a gap.
+    /// Read-only conversations leave out Reply.
+    private var actionsInset: CGFloat { (inThread ? 82 : 108) - (chat.canInteract ? 0 : 24) }
     @State private var controlsHovered = false
     @State private var actionsTop: CGFloat = 6
     @FocusState private var replyFocused: Bool
@@ -4162,11 +4826,11 @@ private struct MessageRow: View {
         let pills = MentionAutocomplete.pills(in: message.content.text, mentions: message.content.mentions)
         let rendered = messageText
         let row = VStack(alignment: .leading, spacing: 5) {
-            if inPins, let pin = message.pin {
+            if let pin = message.pin {
                 Button { mentionCards.openAuthor?(pin.author) } label: {
                     HStack(spacing: 4) {
                         CaperIcon(name: "pin", size: 12)
-                        Text("Pinned by \(pin.author.name)")
+                        Text("Pinned by \(pin.author.id == currentUserID ? "you" : pin.author.name)")
                     }.contentShape(Rectangle())
                 }
                     .buttonStyle(.plain).font(CaperTheme.font(10, weight: .medium)).foregroundStyle(CaperTheme.muted)
@@ -4259,9 +4923,13 @@ private struct MessageRow: View {
                                 Text("\(summary.replyCount) \(summary.replyCount == 1 ? "reply" : "replies")")
                                     .font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.terracottaBright)
                                     .padding(.leading, 3)
+                                if chat.threadUnread(message.id) {
+                                    Circle().fill(CaperTheme.pinGold).frame(width: 5, height: 5)
+                                    Text("Unread").foregroundStyle(CaperTheme.pinGold)
+                                }
                                 Text("View thread").foregroundStyle(CaperTheme.muted).padding(.leading, 3)
                             } else {
-                                CaperIcon(name: "message-square", size: 14); Text("Replied to a thread · View thread")
+                                CaperIcon(name: "thread", size: 14); Text("Replied to a thread · View thread")
                             }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                     }.buttonStyle(.plain).frame(minHeight: 32)
@@ -4270,7 +4938,7 @@ private struct MessageRow: View {
                         #else
                         .modifier(ControlHover())
                         #endif
-                        .accessibilityLabel("View thread")
+                        .accessibilityLabel(chat.threadUnread(message.threadRootId ?? message.id) ? "View thread, unread" : "View thread")
                 }
                 if let error = chat.reactionErrors[message.id] {
                     HStack(spacing: 8) {
@@ -4303,23 +4971,27 @@ private struct MessageRow: View {
         #if os(iOS)
         row.contentShape(Rectangle())
             .onLongPressGesture(perform: showReactionPicker, onPressingChanged: { pressing = $0 })
+            .gesture(TapGesture().onEnded { if !SwipeTapGuard.swiping { openMessage?() } }, including: openMessage == nil ? .subviews : .all)
             .onDisappear { pressing = false }
             .accessibilityAction(named: Text("Message actions")) { showReactionPicker() }
         #else
         row
             .overlay(alignment: .topTrailing) {
-                HStack(spacing: 2) {
+                HStack(spacing: 0) {
                     if !inThread {
                         Button { Task { await chat.openThread(message.threadRootId ?? message.id) } } label: {
-                            CaperIcon(name: "message-square", size: 14).frame(width: 24, height: 24)
+                            CaperIcon(name: "thread", size: 14).frame(width: 24, height: 24)
                         }.buttonStyle(.plain).focused($replyFocused).help("Reply in thread").accessibilityLabel("Reply in thread")
                             .modifier(ControlHover(isFocused: replyFocused))
                     }
-                    Button { chat.reply(to: message, inThread: inThread && !inPins) } label: {
-                        CaperIcon(name: "reply", size: 14).frame(width: 24, height: 24)
-                    }.buttonStyle(.plain).focused($replyMessageFocused).help("Reply").accessibilityLabel("Reply")
-                        .modifier(ControlHover(isFocused: replyMessageFocused))
-                        .disabled(!chat.canInteract || chat.pendingMessage != nil)
+                    // As on web, read-only conversations hide Reply; Add reaction stays, disabled.
+                    if chat.canInteract {
+                        Button { chat.reply(to: message, inThread: inThread && !inPins) } label: {
+                            CaperIcon(name: "reply", size: 14).frame(width: 24, height: 24)
+                        }.buttonStyle(.plain).focused($replyMessageFocused).help("Reply").accessibilityLabel("Reply")
+                            .modifier(ControlHover(isFocused: replyMessageFocused))
+                            .disabled(chat.pendingMessage != nil)
+                    }
                     Button(action: showReactionPicker) {
                         CaperIcon(name: "smile-plus", size: 14).frame(width: 24, height: 24)
                             .contentShape(Rectangle())
@@ -4340,14 +5012,19 @@ private struct MessageRow: View {
                         .modifier(ControlHover(isFocused: actionsFocused))
                         .help("More actions")
                         .accessibilityLabel("Message options")
-                }.opacity(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
+                }.padding(3)
+                    .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(CaperTheme.border, lineWidth: 1).allowsHitTesting(false) }
+                    .shadow(color: .black.opacity(0.2), radius: 6, y: 4)
+                    .opacity(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
                     .allowsHitTesting(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused)
-                    .padding(.trailing, 18).padding(.top, message.replyTo == nil ? 6 : actionsTop)
+                    .padding(.trailing, 15).padding(.top, message.replyTo == nil ? 3 : max(0, actionsTop - 3))
             }
             // Track the whole row, including its overlay. Entering a message
             // action must not hide that action before the pointer can click it.
             .contentShape(Rectangle())
             .onHover { controlsHovered = $0 }
+            .gesture(TapGesture().onEnded { openMessage?() }, including: openMessage == nil ? .subviews : .all)
             .contextMenu { messageMenuItems }
         #endif
     }
@@ -4410,16 +5087,21 @@ private struct MessageRow: View {
     }
     #endif
     /// The jump target (a link or search result) and the open thread's root
-    /// are selections: terracotta, like web. Gold stays reserved for pins.
+    /// are selections: terracotta, like web. Other people's pins are faded gold.
     private var jumpTarget: Bool { !inPins && chat.focusedMessageID == message.id }
-    private var threadOpen: Bool { !inThread && chat.threadRootID == message.id }
+    private var threadOpen: Bool { !inPins && !inThread && chat.threadRootID == message.id }
     /// Web's inset 3px terracotta bar on selected rows and mentions of you.
-    private func showsAccentBar(mentionsMe: Bool) -> Bool { jumpTarget || threadOpen || mentionsMe }
+    private func showsAccentBar(mentionsMe: Bool) -> Bool { jumpTarget || threadOpen || (message.pin == nil && mentionsMe) }
     private func rowBackground(mentionsMe: Bool) -> Color {
+        // Pins paints the whole card, including its navigation footer.
+        if inPins { return .clear }
         if jumpTarget || threadOpen { return CaperTheme.terracotta.opacity(0.12) }
+        if let pin = message.pin {
+            return pin.author.id == currentUserID ? CaperTheme.terracotta.opacity(0.12) : CaperTheme.pinGold.opacity(0.06)
+        }
         if mentionsMe { return CaperTheme.terracotta.opacity(0.08) }
         if message.replyTo != nil { return CaperTheme.text.opacity(0.03) }
-        return inPins && message.pin != nil ? CaperTheme.pinGold.opacity(0.06) : .clear
+        return .clear
     }
     /// Resolved `@mention` tokens render as pills: #F3F4F5 medium text on 24%
     /// terracotta. SwiftUI `Text` styles an inline run's background but cannot
@@ -4726,6 +5408,10 @@ private struct MentionCardView: View {
     @State private var showingEmojiPicker = false
     @State private var insertEmoji: ((String) -> Void)?
     @State private var showingFiles = false
+    @State private var showingPhotos = false
+    @State private var photoItems: [PhotosPickerItem] = []
+    @State private var photoLoading: Task<Void, Never>?
+    @State private var filesAfterPhotos = false
     @State private var uploadsAvailable = false
     @State private var previewFile: URL?
     @State private var pending: String?
@@ -4735,6 +5421,7 @@ private struct MentionCardView: View {
     /// Space ID -> "Invited" or "Member", so a sent or redundant invitation can't be retried.
     @State private var invited: [String: String] = [:]
     @State private var blockRequested = false
+    @State private var editingProfile = false
     private var blocked: Bool { model.blockedIDs.contains(person.id) }
     private var ownedSpaces: [Space] {
         // Don't offer the open space to someone who is already in it.
@@ -4752,6 +5439,24 @@ private struct MentionCardView: View {
     }
 
     var body: some View {
+        if editingProfile {
+            // Replace the card inside its presentation, so opening the editor
+            // does not race the profile sheet's dismissal on iPhone.
+            ProfileSheet(model: model, close: close)
+                #if os(macOS)
+                .frame(width: 520, height: 620)
+                #else
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(CaperTheme.surface)
+                #endif
+        } else {
+            profileCard
+        }
+    }
+
+    private var profileCard: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 // Identity, then Open conversation and Close at the end, as on web.
@@ -4767,12 +5472,18 @@ private struct MentionCardView: View {
                     }
                     Spacer(minLength: 0)
                     HStack(spacing: 2) {
-                        if !person.isSelf {
+                        if !person.isSelf && (blocked || person.canBlock || (person.username != nil && !ownedSpaces.isEmpty)) {
                             Menu {
-                                Button(blocked ? "Unblock" : "Block") {
-                                    if blocked { Task { await unblock() } }
-                                    else { blockRequested = true; close() }
-                                }.accessibilityIdentifier("mention-card-block")
+                                if !blocked, person.username != nil, !ownedSpaces.isEmpty {
+                                    Button("Invite to space") { choosingSpace.toggle() }
+                                        .accessibilityIdentifier("mention-card-invite")
+                                }
+                                if blocked || person.canBlock {
+                                    Button(blocked ? "Unblock" : "Block") {
+                                        if blocked { Task { await unblock() } }
+                                        else { blockRequested = true; close() }
+                                    }.accessibilityIdentifier("mention-card-block")
+                                }
                             } label: {
                                 // The label must stay an accessibility element: with only
                                 // CaperIcon's hidden image, the menu leaves the tree entirely.
@@ -4803,12 +5514,12 @@ private struct MentionCardView: View {
                 if person.isSelf {
                     Text("You").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
                         .accessibilityIdentifier("mention-card-you")
-                } else {
-                    if !blocked, person.username != nil, !ownedSpaces.isEmpty {
-                        Button("Invite to space") { choosingSpace.toggle() }
-                            .buttonStyle(CaperSecondaryButton(minHeight: 42)).disabled(pending != nil || draft.sending)
-                            .accessibilityIdentifier("mention-card-invite")
+                    if model.account?.id == person.id {
+                        Button("Edit profile") { editingProfile = true }
+                            .buttonStyle(CaperPrimaryButton())
+                            .accessibilityIdentifier("mention-card-edit-profile")
                     }
+                } else {
                     if choosingSpace, !blocked, person.username != nil {
                         VStack(spacing: 6) {
                             ForEach(ownedSpaces) { space in
@@ -4854,6 +5565,44 @@ private struct MentionCardView: View {
         })
         #endif
         .interactiveDismissDisabled(draft.preventsImplicitDismissal)
+        #if os(iOS)
+        .sheet(isPresented: $showingPhotos, onDismiss: {
+            if filesAfterPhotos { filesAfterPhotos = false; showingFiles = true }
+            updateDialogState()
+        }) {
+            MobileAttachmentGallery(existingCount: { draft.files.count },
+                                    valid: { draft.editable && !draft.discarded },
+                                    useFiles: { filesAfterPhotos = true }) { files in
+                draft.add(files)
+            }
+        }
+        #else
+        .photosPicker(isPresented: $showingPhotos, selection: $photoItems,
+                      maxSelectionCount: max(1, AttachmentPolicy.maxAttachments - draft.files.count),
+                      matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
+        .onChange(of: photoItems) { _, items in
+            guard !items.isEmpty else { return }
+            photoItems = []
+            photoLoading = Task { @MainActor in
+                defer { photoLoading = nil; updateDialogState() }
+                var files: [LocalAttachmentFile] = []
+                // Until the draft owns them, cancellation must remove staged copies.
+                defer { files.forEach { AttachmentStaging.remove($0.url) } }
+                for item in items {
+                    guard !Task.isCancelled, !draft.discarded else { return }
+                    if let picked = try? await item.loadTransferable(type: PickedAttachmentMedia.self) {
+                        files.append(picked.file)
+                    }
+                }
+                guard !Task.isCancelled, draft.editable else { return }
+                let failed = files.count < items.count
+                draft.add(files)
+                files = []
+                if failed { draft.error = "Some items couldn’t be added." }
+            }
+            updateDialogState()
+        }
+        #endif
         .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             defer { draft.presentingDialog = false }
             switch result {
@@ -4877,14 +5626,16 @@ private struct MentionCardView: View {
         .sheet(isPresented: $showingEmojiPicker, onDismiss: finishEmojiPicker) { emojiPicker }
         #endif
         .onChange(of: showingFiles) { _, _ in updateDialogState() }
+        .onChange(of: showingPhotos) { _, _ in updateDialogState() }
         .onChange(of: showingEmojiPicker) { _, _ in updateDialogState() }
         .onChange(of: previewFile) { _, _ in updateDialogState() }
         .onChange(of: draft.editable) { _, editable in if !editable { autocomplete.update(nil) } }
         .onDisappear {
+            photoLoading?.cancel()
             draft.presentingDialog = false
             if blockRequested {
                 requestBlock(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId,
-                                         avatarAsset: person.picture?.asset, avatarUrl: person.picture?.url.absoluteString))
+                                         avatarAsset: person.picture?.asset, avatarUrl: person.picture?.url.absoluteString, admin: person.admin, team: person.team))
             }
         }
         // Contain, so this identifier does not replace each child's own.
@@ -4903,26 +5654,58 @@ private struct MentionCardView: View {
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
             }
             if !draft.files.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
+                let failed = draft.files.filter { $0.uploadError != nil }.count
+                if failed > 0 {
+                    Text(failed == 1 ? "1 file failed to upload. Send will retry it, or you can remove it." : "\(failed) files failed to upload. Send will retry them, or you can remove them.")
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
+                        .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(CaperTheme.terracotta.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                }
+                StagedFileLayout() {
                     ForEach(draft.files) { file in
                         StagedFileChip(id: file.id, name: file.local.name,
                                        kind: AttachmentKind.local(contentType: file.local.contentType),
                                        localURL: file.local.url,
-                                       status: AttachmentPolicy.formatBytes(file.local.size),
+                                       status: file.uploadError ?? AttachmentPolicy.formatBytes(file.local.size),
+                                       failed: file.uploadError != nil,
+                                       busyLabel: file.progress != nil ? "Uploading…" : nil,
+                                       progress: file.progress,
                                        removable: draft.editable,
+                                       spoiler: file.spoiler,
                                        preview: { draft.presentingDialog = true; previewFile = file.local.url },
                                        remove: { draft.remove(id: file.id) })
+                            .overlay(alignment: .topLeading) {
+                                Button { draft.toggleSpoiler(id: file.id) } label: {
+                                    Image(systemName: file.spoiler ? "eye.slash.fill" : "eye")
+                                        .frame(minWidth: 44, minHeight: 44)
+                                        .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(CaperTheme.text)
+                                .disabled(!draft.editable)
+                                .accessibilityLabel(file.spoiler ? "Remove spoiler from \(file.local.name)" : "Mark \(file.local.name) as spoiler")
+                                .accessibilityValue(file.spoiler ? "Spoiler" : "Not a spoiler")
+                                .help(file.spoiler ? "Remove spoiler" : "Mark as spoiler")
+                            }
                     }
                 }.accessibilityLabel("Files to send")
             }
             ComposerSuggestionsView(controller: autocomplete).disabled(!draft.editable || pending != nil)
             HStack(alignment: .bottom, spacing: 0) {
-                Button { draft.presentingDialog = true; showingFiles = true } label: {
-                    CaperIcon(name: "paperclip", size: 17).foregroundStyle(CaperTheme.muted)
+                Menu {
+                    Button { draft.presentingDialog = true; showingPhotos = true } label: {
+                        Label("Photos and videos", systemImage: "photo.on.rectangle")
+                    }
+                    Button { draft.presentingDialog = true; showingFiles = true } label: {
+                        Label("Files", systemImage: "doc")
+                    }
+                } label: {
+                    CaperIcon(name: "plus", size: 18).foregroundStyle(CaperTheme.muted)
                         .frame(width: 40, height: 42).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.files.count >= AttachmentPolicy.maxAttachments)
+                .menuStyle(.button).menuOrder(.fixed).buttonStyle(.plain).menuIndicator(.hidden)
+                .fixedSize()
+                .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog || draft.files.count >= AttachmentPolicy.maxAttachments)
                 .opacity(uploadsAvailable ? 1 : 0.4)
                 .help(uploadsAvailable ? "Attach files" : "File uploads are unavailable")
                 .accessibilityLabel("Attach files")
@@ -5001,7 +5784,7 @@ private struct MentionCardView: View {
     }
 
     private func updateDialogState() {
-        draft.presentingDialog = showingFiles || showingEmojiPicker || previewFile != nil
+        draft.presentingDialog = showingFiles || showingPhotos || photoLoading != nil || showingEmojiPicker || previewFile != nil
     }
 
     private func pasteAttachments() -> Bool {
@@ -5260,6 +6043,7 @@ private struct ReactionTooltipBubble: View {
 /// Who reacted, by emoji: tabs in chip order, then each person.
 private struct ReactorsSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Bindable var chat: ChatModel
     let messageID: String
     let viewerID: String?
@@ -5339,7 +6123,7 @@ private struct ReactorsSheet: View {
                 .padding(.horizontal, 12)
             }
             .onAppear { proxy.scrollTo(selected, anchor: .center) }
-            .onChange(of: selected) { _, emoji in withAnimation { proxy.scrollTo(emoji, anchor: .center) } }
+            .onChange(of: selected) { _, emoji in withAnimation(reduceMotion ? nil : .default) { proxy.scrollTo(emoji, anchor: .center) } }
         }
     }
 
@@ -5512,6 +6296,7 @@ private struct MessageActionsSheet: View {
             ForEach(quickReactions, id: \.self) { emoji in
                 Button { quickReaction(emoji) } label: {
                     EmojiArtworkView(emoji: emoji, size: 28).frame(maxWidth: .infinity, minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!canReact)
@@ -5521,6 +6306,7 @@ private struct MessageActionsSheet: View {
             Button { showingEmojiPicker = true } label: {
                 CaperIcon(name: "smile-plus", size: 24)
                     .frame(maxWidth: .infinity, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(!canReact)
@@ -5534,14 +6320,26 @@ private struct MessageActionsSheet: View {
             Button {
                 chat.reply(to: message, inThread: inThread)
                 dismiss()
-            } label: { CaperLabel("Reply", icon: "reply") }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).disabled(!chat.canInteract || chat.pendingMessage != nil)
+            } label: {
+                CaperLabel("Reply", icon: "reply")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+            }.disabled(!chat.canInteract || chat.pendingMessage != nil)
             Divider()
             if chat.canEdit(message) {
-                Button { editing = true } label: { CaperLabel("Edit message", icon: "pencil") }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                Button { editing = true } label: {
+                    CaperLabel("Edit message", icon: "pencil")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
                 Divider()
             }
             if message.forward == nil && (message.revision ?? 1) > 1 {
-                Button { history = true } label: { CaperLabel("Message history", icon: "history") }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                Button { history = true } label: {
+                    CaperLabel("Message history", icon: "history")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
                 Divider()
             }
             if viewReactions != nil, let reaction = message.reactions?.first {
@@ -5550,18 +6348,21 @@ private struct MessageActionsSheet: View {
                     dismiss()
                 } label: {
                     CaperLabel("View reactions", icon: "users").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }.accessibilityIdentifier("message-action-view-reactions")
                 Divider()
             }
             Button(action: togglePin) {
                 CaperLabel(message.pin == nil ? "Pin message" : "Unpin message", icon: message.pin == nil ? "pin" : "pin-off")
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
             }.disabled(!canPin)
             if let reply {
                 Divider()
                 Button(action: reply) {
-                    Label { Text("Reply in thread") } icon: { CaperIcon(name: "message-square") }
+                    Label { Text("Reply in thread") } icon: { CaperIcon(name: "thread") }
                         .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
             }
             if canForward {
@@ -5571,6 +6372,7 @@ private struct MessageActionsSheet: View {
                     dismiss()
                 } label: {
                     CaperLabel("Forward message", icon: "forward").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
             }
             // Attachment-only messages have no text to copy.
@@ -5581,6 +6383,7 @@ private struct MessageActionsSheet: View {
                     dismiss()
                 } label: {
                     CaperLabel("Copy text", icon: "copy").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
             }
             Divider()
@@ -5589,6 +6392,7 @@ private struct MessageActionsSheet: View {
                 dismiss()
             } label: {
                 CaperLabel("Copy message ID", icon: "hash").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             if block != nil {
                 Divider()
@@ -5598,6 +6402,7 @@ private struct MessageActionsSheet: View {
                 } label: {
                     CaperLabel("Block \(message.author.name)", icon: "ban").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         .foregroundStyle(CaperTheme.terracottaBright)
+                        .contentShape(Rectangle())
                 }.accessibilityIdentifier("message-action-block")
             } else if let unblock {
                 Divider()
@@ -5606,6 +6411,7 @@ private struct MessageActionsSheet: View {
                     dismiss()
                 } label: {
                     CaperLabel("Unblock \(message.author.name)", icon: "ban").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
                 }.accessibilityIdentifier("message-action-unblock")
             }
         }
@@ -5690,30 +6496,29 @@ private struct PinnedMessagesView: View {
                 ContentUnavailableView("No pinned messages", systemImage: "pin", description: Text("Pinned messages in this channel will appear here."))
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 0) {
+                    LazyVStack(spacing: 12) {
                         ForEach(chat.displayedPins) { message in
-                            // The row's own bottom padding already separates it from Go to message.
                             VStack(alignment: .leading, spacing: 0) {
                                 MessageRow(message: message, chat: chat, currentUserID: viewerID,
                                     reactors: ReactorContext(viewerID: chat.currentAuthor?.id, sheetOpen: reactorsTarget != nil) { id, emoji in reactorsTarget = ReactorsTarget(messageID: id, emoji: emoji) },
-                                    mentionCards: mentionCards, inThread: true, inPins: true, forwardOpened: close) { actionTarget = message }
-                                Button {
-                                    mentionCard = nil
-                                    Task { if await chat.goToMessage(message) { close() } }
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Text(chat.jumpingToMessage ? "Loading message…" : "Go to message")
-                                        CaperIcon(name: "arrow-right", size: 14)
-                                    }
-                                }.buttonStyle(.plain).font(CaperTheme.font(12, weight: .medium))
-                                    .foregroundStyle(CaperTheme.muted).disabled(chat.jumpingToMessage)
-                                    .frame(minHeight: 44).padding(.leading, 62).padding(.bottom, 8)
-                                    .accessibilityIdentifier("go-to-message-\(message.id)")
+                                    mentionCards: mentionCards, inThread: true, inPins: true, forwardOpened: close,
+                                    openMessage: { goToMessage(message) }) { actionTarget = message }
+                                HStack {
+                                    Spacer()
+                                    Button { goToMessage(message) } label: {
+                                        HStack(spacing: 6) {
+                                            Text(chat.jumpingToMessage ? "Loading message…" : "Go to message")
+                                            CaperIcon(name: "arrow-right", size: 14)
+                                        }
+                                    }.buttonStyle(CaperSecondaryButton(minHeight: 44))
+                                        .disabled(chat.jumpingToMessage)
+                                        .accessibilityIdentifier("go-to-message-\(message.id)")
+                                }.padding(.horizontal, 18).padding(.bottom, 12)
                             }.frame(maxWidth: .infinity, alignment: .leading)
-                                .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                                .background(message.pin?.author.id == viewerID ? CaperTheme.terracotta.opacity(0.12) : CaperTheme.pinGold.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                                 .accessibilityIdentifier("pinned-message-\(message.id)")
                         }
-                    }
+                    }.padding(12)
                 }
             }
         }.background(CaperTheme.conversation)
@@ -5747,6 +6552,12 @@ private struct PinnedMessagesView: View {
             .environment(\.mediaViewer, mediaViewer.map { show in MediaViewerAction { close(); show($0) } })
             #endif
             .accessibilityIdentifier("pinned-messages")
+    }
+
+    private func goToMessage(_ message: ChatMessage) {
+        guard !chat.jumpingToMessage else { return }
+        mentionCard = nil
+        Task { if await chat.goToMessage(message) { close() } }
     }
 }
 
@@ -6206,14 +7017,12 @@ private struct ProfileView: View {
                     .padding(.top, 20)
                 Text("Choose how you show up.").font(CaperTheme.font(28, weight: .bold))
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Your username is unique. Your display name is what people see in conversations.")
-                    .font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).fixedSize(horizontal: false, vertical: true)
                 CaperField(title: "Username", text: $username)
                     .submitLabel(.next).onSubmit { displayNameFocused = true }
-                Text("3-32 lowercase letters, numbers, or underscores.")
+                Text("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
-                Text("Shown to other people. It does not need to be unique.")
+                Text("This is what people see in conversations.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 if let error = model.error {
                     Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
@@ -6243,13 +7052,24 @@ private struct ProfileView: View {
 public struct DesktopUpdateControls {
     public let isChecking: Bool
     public let canApply: Bool
+    public let lastSuccessfulCheck: Date?
+    public let installedVersion: String
+    public let sourceRevision: String?
+    public var commitURL: URL? {
+        sourceRevision.flatMap { WhatsNewSnapshot.validRevision($0) ? URL(string: "https://github.com/joswayski/caper/commit/\($0)") : nil }
+    }
     public let check: (@MainActor () -> Void)?
     public let review: (@MainActor () -> Void)?
 
     public init(isChecking: Bool = false, canApply: Bool = false,
+                lastSuccessfulCheck: Date? = nil, installedVersion: String = "Installed: Development build",
+                sourceRevision: String? = nil,
                 check: (@MainActor () -> Void)? = nil, review: (@MainActor () -> Void)? = nil) {
         self.isChecking = isChecking
         self.canApply = canApply
+        self.lastSuccessfulCheck = lastSuccessfulCheck
+        self.installedVersion = installedVersion
+        self.sourceRevision = sourceRevision
         self.check = check
         self.review = review
     }
@@ -6312,7 +7132,20 @@ extension EnvironmentValues {
                 Rectangle().fill(CaperTheme.border).frame(height: 1)
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Updates").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                    Button(updates.isChecking ? "Checking…" : "Check for updates") { updates.check?() }
+                    HStack(spacing: 4) {
+                        Text(updates.installedVersion).foregroundStyle(CaperTheme.muted)
+                        if let revision = updates.sourceRevision, let url = updates.commitURL {
+                            Text("·").foregroundStyle(CaperTheme.muted)
+                            Link(String(revision.prefix(7)), destination: url)
+                        }
+                    }.font(CaperTheme.font(12))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(updates.isChecking ? "Checking for updates…" : updates.review != nil ? "An update is available." : updates.lastSuccessfulCheck != nil ? "Caper is up to date." : "Not checked yet.")
+                        TimelineView(.periodic(from: .now, by: 10)) { context in
+                            Text(lastCheckedText(now: context.date))
+                        }
+                    }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    Button("Check for updates") { updates.check?() }
                         .disabled(updates.check == nil || updates.isChecking)
                         .accessibilityIdentifier("check-for-updates")
                     Text(updates.check == nil
@@ -6336,6 +7169,14 @@ extension EnvironmentValues {
             WhatsNewSheet(notes: notes, display: notes.presentation ?? display)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in loginItem.refresh() }
+    }
+
+    private func lastCheckedText(now: Date) -> String {
+        guard let date = updates.lastSuccessfulCheck else { return "Last checked: Never" }
+        if now.timeIntervalSince(date) < 10 { return "Last checked: a few seconds ago" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return "Last checked: \(formatter.localizedString(for: date, relativeTo: now))"
     }
 }
 #endif
@@ -6420,8 +7261,7 @@ private struct FeedbackRow: View {
     let rowHeight: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        // The archived list has no waiting count.
-        let waiting = model.showingArchivedFeedback ? 0 : FeedbackInbox.waitingCount(model.feedbackReports)
+        let waiting = model.feedbackWaiting
         Button {
             guard !SwipeTapGuard.swiping else { return }
             // Phones push the inbox; sidebars expand it in place.
@@ -6437,8 +7277,7 @@ private struct FeedbackRow: View {
                 if waiting > 0 {
                     Text("\(waiting)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.text)
                         .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 18)
-                        .background(CaperTheme.raised, in: Capsule())
-                        .overlay(Capsule().stroke(CaperTheme.border))
+                        .background(CaperTheme.terracotta, in: Capsule())
                 }
             }.font(CaperTheme.font(13, weight: .medium))
                 .foregroundStyle(model.visit != nil ? CaperTheme.text : CaperTheme.muted)
@@ -6446,7 +7285,7 @@ private struct FeedbackRow: View {
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).modifier(ControlHover())
             .accessibilityLabel(FeedbackInbox.title)
-            .accessibilityValue(waiting > 0 ? "\(waiting) waiting" : "")
+            .accessibilityValue(waiting > 0 ? "\(waiting) feedback conversations waiting for a reply" : "")
             .accessibilityHint(narrow ? "Opens the feedback inbox" : model.showingFeedback ? "Collapses the inbox" : "Expands the inbox")
             .accessibilityIdentifier("feedback-inbox")
     }
@@ -6729,8 +7568,10 @@ private struct MessageRequestBar: View {
                 Button(pending == "decline" ? "Declining…" : "Decline") { run("decline") { try await model.declineRequest(conversation) } }
                     .buttonStyle(CaperSecondaryButton(minHeight: 42))
                     .accessibilityIdentifier("message-request-decline")
-                Button("Block", role: .destructive, action: block).buttonStyle(CaperSecondaryButton(minHeight: 42))
-                    .accessibilityIdentifier("message-request-block")
+                if conversation.peer.canBlock {
+                    Button("Block", role: .destructive, action: block).buttonStyle(CaperSecondaryButton(minHeight: 42))
+                        .accessibilityIdentifier("message-request-block")
+                }
                 Spacer(minLength: 0)
             }.disabled(pending != nil)
             if let error {
@@ -7341,26 +8182,29 @@ private struct ProfileSheet: View {
     @Bindable var model: AppModel; let close: () -> Void
     @State private var username = ""
     @State private var displayName = ""
+    /// This sheet's own save failure. `model.error` is app-wide (the sidebar
+    /// shows it too), so an unrelated earlier error never shows here.
+    @State private var saveError: String?
     @FocusState private var displayNameFocused: Bool
     var body: some View {
         VStack(spacing: 0) {
             // Web's Edit profile dialog; Log out lives in User Settings.
-            SheetHeader(title: "Edit profile", detail: "Your username is unique. Your display name is what people see in conversations.",
+            SheetHeader(title: "Edit profile",
                         closeLabel: "Close profile", close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     pictureSection
                     CaperField(title: "Username", text: $username)
                         .submitLabel(.next).onSubmit { displayNameFocused = true }
-                    Text("3-32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    Text("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
                         // Return saves: on iPhone an error line can push Save
                         // profile under the keyboard.
                         .submitLabel(.done).onSubmit(save)
-                    Text("Shown to other people. It does not need to be unique.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                    Text(model.error ?? " ").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                    Text("This is what people see in conversations.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    Text(saveError ?? " ").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
-                        .opacity(model.error == nil ? 0 : 1).accessibilityHidden(model.error == nil)
+                        .opacity(saveError == nil ? 0 : 1).accessibilityHidden(saveError == nil)
                     Button(model.busy ? "Saving…" : "Save profile", action: save)
                         .buttonStyle(CaperPrimaryButton())
                         .frame(width: 148)
@@ -7374,19 +8218,29 @@ private struct ProfileSheet: View {
                 username = model.account?.username ?? ""
                 displayName = model.account?.displayName ?? ""
             }
+            // A failed save's message belongs to this sheet: closing it must
+            // not leave the message in the sidebar.
+            .onDisappear {
+                if let saveError, model.error == saveError { model.error = nil }
+            }
     }
 
     private var canSave: Bool {
         !model.busy && ProfileValidation.error(username: username, displayName: displayName) == nil
     }
 
-    /// The current picture, large, with Change and (for a custom one) Remove.
+    /// The current picture in its frame; without one, the mascot asks to be changed.
     @ViewBuilder private var pictureSection: some View {
         if let account = model.account {
+            let name = account.displayName ?? account.username ?? "You"
+            let side = PictureEditor<EmptyView>.side
             PictureEditor(purpose: .avatar, hasPicture: account.avatarAsset != nil,
                           upload: { try await model.changeAvatar($0) }, remove: { try await model.removeAvatar() }) {
-                Avatar(name: account.displayName ?? account.username ?? "You", size: 72, avatarID: account.avatarId,
-                       picture: account.avatarPicture)
+                if account.avatarAsset == nil {
+                    ChangeMeMascot(name: name, avatarID: account.avatarId, size: side)
+                } else {
+                    Avatar(name: name, size: side, avatarID: account.avatarId, picture: account.avatarPicture)
+                }
             }
             Divider().overlay(CaperTheme.border)
         }
@@ -7394,9 +8248,10 @@ private struct ProfileSheet: View {
 
     private func save() {
         guard canSave else { return }
+        saveError = nil
         Task {
             await model.saveProfile(username: username, displayName: displayName)
-            if model.error == nil { close() }
+            if let error = model.error { saveError = error } else { close() }
         }
     }
 }
@@ -7475,9 +8330,23 @@ private struct JoinInviteSheet: View {
 
     private var linkField: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text("Invite link").font(CaperTheme.font(12, weight: .bold))
-            TextField("https://caper.chat/invite/…", text: Binding(get: { link }, set: { if !pending { link = $0; error = nil } }))
+            Text("Paste it below to join!").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            TextField("Invite link", text: Binding(get: { link }, set: { if !pending { link = $0; error = nil } }),
+                      prompt: Text(verbatim: ""))
                 .textFieldStyle(CaperTextFieldStyle())
+                .foregroundStyle(CaperTheme.text)
+                .overlay(alignment: .leading) {
+                    if link.isEmpty {
+                        HStack(spacing: 4) {
+                            Text("it looks like")
+                            CaperIcon(name: "arrow-right", size: 12)
+                            Text(verbatim: "caper.chat/invite/AbCdE12345")
+                        }
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted.opacity(0.65))
+                        .lineLimit(1).padding(.horizontal, 11)
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                }
                 .autocorrectionDisabled()
                 #if os(iOS)
                 .textInputAutocapitalization(.never)
@@ -7982,7 +8851,7 @@ private struct SpaceEditor: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if !inviteOnly {
-                        CaperField(title: "Space name", text: $name, focus: $nameFocused)
+                        CaperField(title: "Space name", text: $name, placeholder: "Gaming nights", focus: $nameFocused)
                             .onChange(of: name) { _, _ in error = nil }
                         Button(pending ? (managing ? "Saving…" : "Creating…") : managing ? "Save name" : "Create space") { run { if managing { try await model.renameSpace(name) } else { try await model.createSpace(name: name); close() } } }.buttonStyle(CaperPrimaryButton())
                             .disabled(pending || (!managing && model.limits != nil && !model.canCreateSpace))
@@ -8067,14 +8936,14 @@ private struct SpaceEditor: View {
             .modifier(ConfirmationPresentation())
         }
     }
-    /// Owners only: the space's icon (or its initial tile), Change and Remove.
+    /// Owners only: the space's icon (or its initial tile) in its frame.
     @ViewBuilder private var iconSection: some View {
         if model.isOwner, let space = model.detail?.space, space.demo != true {
             Divider().overlay(CaperTheme.border)
+            let side = PictureEditor<EmptyView>.side
             PictureEditor(purpose: .spaceIcon, hasPicture: space.iconAsset != nil,
                           upload: { try await model.changeSpaceIcon($0) }, remove: { try await model.removeSpaceIcon() }) {
-                SpaceIconTile(name: space.name, picture: space.iconPicture, size: 64, fontSize: 22, corner: 14)
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(CaperTheme.border))
+                SpaceIconTile(name: space.name, picture: space.iconPicture, size: side, fontSize: 34, corner: 0)
             }
         }
     }

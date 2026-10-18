@@ -7,12 +7,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 
 /**
- * Custom profile pictures and space icons: GIFs upload unchanged so they keep animating; every
- * other picture becomes a centered square of at most 512 px, encoded as WebP. The server
+ * Custom profile pictures and space icons: GIFs keep animating (unchanged when small enough,
+ * else shrunk by [GifShrink]); every other picture becomes a centered square of at most 512 px,
+ * encoded as WebP. The server
  * re-checks size, type and real pixel dimensions before applying one.
  */
 object PicturePolicy {
-    /** A GIF may upload up to 5 MiB. */
+    /** A GIF up to this size (and [MAX_SIDE]) uploads unchanged; a bigger one is shrunk to fit. */
     const val GIF_MAX_BYTES = 5L * 1024 * 1024
     /** Any other picture must end up within 1 MiB. */
     const val STILL_MAX_BYTES = 1024L * 1024
@@ -23,7 +24,7 @@ object PicturePolicy {
     /** WebP quality, then fallbacks for the (unlikely) picture still over [STILL_MAX_BYTES]. */
     val QUALITIES = listOf(90, 75, 60)
 
-    const val GIF_LIMIT = "GIFs can be up to 5 MB and 1024 × 1024."
+    const val GIF_UNREADABLE = "That GIF couldn’t be opened. Try another one."
     const val UNUSABLE = "That picture couldn’t be used. Try another one."
 }
 
@@ -55,12 +56,9 @@ fun gifSize(header: ByteArray): Pair<Int, Int>? {
     return width to height
 }
 
-/** Null when a GIF of [byteSize] bytes and header size [width] × [height] can upload unchanged, else why not. */
-fun gifError(byteSize: Long, width: Int, height: Int): String? = when {
-    width < 1 || height < 1 || byteSize < 1 -> PicturePolicy.UNUSABLE
-    byteSize > PicturePolicy.GIF_MAX_BYTES || width > PicturePolicy.MAX_SIDE || height > PicturePolicy.MAX_SIDE -> PicturePolicy.GIF_LIMIT
-    else -> null
-}
+/** Whether a GIF of [byteSize] bytes and header size [width] × [height] uploads byte for byte; any other GIF is shrunk. */
+fun gifUploadsUnchanged(byteSize: Long, width: Int, height: Int): Boolean =
+    byteSize in 1..PicturePolicy.GIF_MAX_BYTES && width in 1..PicturePolicy.MAX_SIDE && height in 1..PicturePolicy.MAX_SIDE
 
 /** The centered square of a picture: its [left] and [top] offsets and its [side]. */
 data class SquareCrop(val left: Int, val top: Int, val side: Int)
@@ -101,7 +99,7 @@ fun pictureError(error: Throwable, target: PictureTarget): String = when (error)
     is UploadException -> error.message
     is ApiException -> when {
         error.code == "picture_type" -> "Use a PNG, JPEG, WebP or GIF picture."
-        error.code == "picture_too_large" || error.status == 413 -> "GIFs can be up to 5 MB, and other pictures up to 1 MB."
+        error.code == "picture_too_large" || error.status == 413 -> "That picture is too large. Try another one."
         error.code == "picture_invalid" || error.status == 422 -> PicturePolicy.UNUSABLE
         error.code == "picture_rate_limited" || error.status == 429 -> "You’ve changed pictures too many times today. Try again later."
         error.status == 503 -> "Picture uploads aren’t available right now."
@@ -120,8 +118,8 @@ fun pictureError(error: Throwable, target: PictureTarget): String = when (error)
  */
 class PictureUploader(
     private val api: CaperApi,
-    /** Waits between `/complete` attempts while storage reports the upload has not arrived (409). */
-    private val completeRetryDelaysMs: List<Long> = listOf(500, 1_000, 2_000, 4_000),
+    /** Allow ten queued files to finish metadata processing (409 while queued). */
+    private val completeRetryDelaysMs: List<Long> = List(240) { 5_000L },
 ) {
     suspend fun upload(token: String, target: PictureTarget, picture: PreparedPicture): PictureCompletion {
         val size = picture.bytes.size.toLong()

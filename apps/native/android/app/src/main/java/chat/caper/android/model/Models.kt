@@ -36,9 +36,10 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 )
 @Serializable data class SpaceList(val spaces: List<Space>, val invitations: List<Space> = emptyList(), val limits: SpaceLimits)
 @Serializable data class SpaceLimits(val ownedSpaces: Int, val totalSpaces: Int, val channelsPerSpace: Int)
-@Serializable data class UnreadChannel(val id: String, val lastSeq: String)
+@Serializable data class UnreadChannel(val id: String, val lastSeq: String, val readSeq: String? = null)
 @Serializable data class UnreadSpace(val id: String, val channels: List<UnreadChannel>)
-@Serializable data class UnreadSpaces(val spaces: List<UnreadSpace>)
+@Serializable data class UnreadSpaces(val spaces: List<UnreadSpace>, val feedbackWaiting: Int = 0)
+@Serializable data class SpaceVoiceActivity(val spaceIds: List<String>)
 @Serializable data class Channel(
     val id: String,
     val spaceId: String,
@@ -51,7 +52,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class DirectPeer(
     val id: String, val username: String, val displayName: String, val avatarId: Int? = null, val team: Boolean = false,
     val avatarAsset: String? = null, val avatarUrl: String? = null,
-)
+    val admin: Boolean = false,
+) { val canBlock: Boolean get() = !admin && !team }
 /**
  * A DM. [status] is `accepted`, `outgoing` (you asked, they haven't accepted) or
  * `incoming` (a message request to you); old servers omit it, which means
@@ -71,7 +73,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class BlockedAccount(
     val id: String, val username: String, val displayName: String, val avatarId: Int? = null,
     val avatarAsset: String? = null, val avatarUrl: String? = null,
-)
+    val admin: Boolean = false, val team: Boolean = false,
+) { val canBlock: Boolean get() = !admin && !team }
 @Serializable data class BlockList(val blocks: List<BlockedAccount>)
 /** `GET/PUT /api/account/privacy`: `anyone`, `spaces` or `nobody`. */
 @Serializable data class DirectPrivacy(val directMessages: String)
@@ -80,6 +83,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class Person(
     val id: String, val username: String, val displayName: String, val avatarId: Int? = null,
     val avatarAsset: String? = null, val avatarUrl: String? = null,
+    val admin: Boolean = false,
 )
 @Serializable data class PeopleList(val people: List<Person>)
 @Serializable data class PushConfig(val platforms: List<String>)
@@ -139,6 +143,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class Member(
     val id: String, val username: String, val displayName: String, val owner: Boolean, val avatarId: Int? = null,
     val avatarAsset: String? = null, val avatarUrl: String? = null,
+    val admin: Boolean = false,
 )
 @Serializable data class SpaceDetail(
     val space: Space,
@@ -199,6 +204,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val previewUrl: String? = null,
     /** The file was deleted: show a placeholder. */
     val unavailable: Boolean = false,
+    val spoiler: Boolean = false,
 ) {
     /** How to show the file. Unknown future states fall back on whether a URL was delivered. */
     val state: AttachmentState get() = when (status) {
@@ -387,10 +393,14 @@ object MentionListSerializer : JsonTransformingSerializer<List<MessageMention>>(
 )
 @Serializable data class MessageReply(val id: String, val author: ChatAuthor, val text: String, val hasAttachments: Boolean, val threadRootId: String? = null, val fullText: String? = null)
 @Serializable data class ThreadSummary(val replyCount: Int, val participants: List<ChatAuthor>, val seq: String)
+@Serializable data class UnreadThread(val rootId: String, val seq: String)
+@Serializable data class UnreadThreads(val threads: List<UnreadThread>)
 /** [visitor]: read by a feedback team member who is not in the conversation (see [ChatHistory.visitor]). */
 @Serializable data class ThreadHistory(val root: ChatMessage, val messages: List<ChatMessage>, val cursor: String, val hasMore: Boolean, val hasNewer: Boolean = false, val visitor: Boolean = false)
+/** [failedOlder]/[failedNewer]: which page [error] is about, so Retry repeats that page (web). */
 data class ThreadUi(val rootId: String, val loading: Boolean = true, val hasMore: Boolean = false, val before: String? = null, val error: String? = null,
-    val hasNewer: Boolean = false, val after: String? = null, val windowStart: String? = null, val windowEnd: String? = null)
+    val hasNewer: Boolean = false, val after: String? = null, val windowStart: String? = null, val windowEnd: String? = null,
+    val failedOlder: Boolean = false, val failedNewer: Boolean = false)
 @Serializable data class ChatHistory(
     val messages: List<ChatMessage>,
     val cursor: String,
@@ -530,6 +540,9 @@ data class AppUiState(
     val account: Account? = null,
     val spaces: List<Space> = emptyList(),
     val unreadSpaces: List<UnreadSpace> = emptyList(),
+    val voiceActivitySpaceIds: Set<String> = emptySet(),
+    val feedbackWaiting: Int = 0,
+    val unreadThreads: Map<String, String> = emptyMap(),
     val invitations: List<Space> = emptyList(),
     val notificationInvitation: Space? = null,
     val notificationBrowseSpace: String? = null,
@@ -556,6 +569,8 @@ data class AppUiState(
     /** Failed notification saves by setting key (see `data/Notifications.kt`), shown beside that control. */
     val notificationErrors: Map<String, String> = emptyMap(),
     val selectedDirectId: String? = null,
+    /** Immutable unread boundary captured before this channel visit acknowledges history. */
+    val channelVisitUnread: UnreadChannel? = null,
     val messages: List<ChatMessage> = emptyList(),
     val thread: ThreadUi? = null,
     val threadOnlyRows: Set<String> = emptySet(),
@@ -587,6 +602,8 @@ data class AppUiState(
     /** Voice availability by media root ("" is General's demo root); absent while checking. */
     val voiceAvailability: Map<String, Boolean> = emptyMap(),
     val presencePage: Int = 0,
+    /** The private channel [channelGrants] and [pendingChannelInvitations] belong to; read them with [channelGrantsFor]. */
+    val channelGrantsChannelId: String? = null,
     val channelGrants: List<Member> = emptyList(),
     val pendingChannelInvitations: List<Member> = emptyList(),
     val pendingSpaceInvitations: List<Member> = emptyList(),
@@ -631,6 +648,17 @@ data class AppUiState(
 ) {
     val drafts: List<DraftAttachmentUi> get() = selectedChannel?.id?.let { attachmentDrafts[AttachmentDraftTarget(it)] }.orEmpty()
     val attachmentError: String? get() = selectedChannel?.id?.let { attachmentErrors[AttachmentDraftTarget(it)] }
+
+    /** [channelId]'s members and pending invitations; another channel's (or none loaded yet) read as empty. */
+    fun channelGrantsFor(channelId: String): Pair<List<Member>, List<Member>> =
+        if (channelGrantsChannelId == channelId) channelGrants to pendingChannelInvitations else emptyList<Member>() to emptyList()
+
+    /** Applies [change] to [channelId]'s grants only while they are the ones loaded, so a late reply can't land on another channel. */
+    fun withChannelGrants(channelId: String, change: (members: List<Member>, invitations: List<Member>) -> Pair<List<Member>, List<Member>>): AppUiState {
+        if (channelGrantsChannelId != channelId) return this
+        val (members, invitations) = change(channelGrants, pendingChannelInvitations)
+        return copy(channelGrants = members, pendingChannelInvitations = invitations)
+    }
 
     /**
      * Resolve retained identity snapshots from the account without touching conversation state:
@@ -755,6 +783,7 @@ data class DraftAttachmentUi(
     val error: String? = null,
     val attachment: ChatAttachment? = null,
     val uploadedAt: Long? = null,
+    val spoiler: Boolean = false,
 )
 
 /** The [AppUiState.pictureSaves] key for your own profile picture (space icons use the space ID). */

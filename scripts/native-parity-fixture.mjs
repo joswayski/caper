@@ -220,6 +220,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
   const sockets = new Set();
   let holdSends = false;
   const heldSends = new Set();
+  let holdUploads = false;
+  const heldUploads = new Set();
   const identity = (request) =>
     request.headers.authorization === "Bearer fixture-owner-token" ||
     /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? "")
@@ -458,6 +460,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           holdSends = !body.reset && body.holdSends;
           if (!holdSends) for (const release of heldSends) release();
         }
+        if (body.reset || typeof body.holdUploads === "boolean") {
+          holdUploads = !body.reset && body.holdUploads;
+          if (!holdUploads) for (const release of heldUploads) release();
+        }
         if (body.pushPlatforms !== undefined) {
           if (
             !Array.isArray(body.pushPlatforms) ||
@@ -635,6 +641,18 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           }
         }
         return json(response, 200, { fixture: true, heldSends: heldSends.size });
+      }
+      if (path === "/api/assets" && method === "POST" && holdUploads) {
+        await new Promise((resolve) => {
+          const release = () => {
+            heldUploads.delete(release);
+            response.off("close", release);
+            resolve();
+          };
+          heldUploads.add(release);
+          response.once("close", release);
+        });
+        if (response.destroyed) return;
       }
       const failureIndex = state.failures.findIndex(
         (failure) => failure.path === path && (!failure.method || failure.method === method),
@@ -1277,7 +1295,12 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               text: body.text,
               ...(mentions.length ? { mentions } : {}),
               ...(attachmentIds.length
-                ? { attachments: attachmentIds.map((id) => state.assets.get(id).attachment) }
+                ? {
+                    attachments: attachmentIds.map((id) => ({
+                      ...state.assets.get(id).attachment,
+                      ...(body.spoilerAttachmentIds?.includes(id) ? { spoiler: true } : {}),
+                    })),
+                  }
                 : {}),
             },
             createdAt: new Date().toISOString(),

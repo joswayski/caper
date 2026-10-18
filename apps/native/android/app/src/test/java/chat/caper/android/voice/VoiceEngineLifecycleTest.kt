@@ -6,6 +6,7 @@ import chat.caper.android.model.SignalResponse
 import chat.caper.android.model.SignalTrack
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -161,6 +162,26 @@ class VoiceEngineLifecycleTest {
         assertFalse(setup.isAlive); assertFalse(stop.isAlive)
         assertEquals(listOf("constructed", "disposed"), events)
         assertThrows(IllegalStateException::class.java) { gate.use { events += "re-enabled" } }
+    }
+
+    @Test fun `onTrack never waits on WebRTC's signaling thread for a lock whose holder waits on that thread`() {
+        val remoteLock = Any()
+        val signaling = Executors.newSingleThreadExecutor()
+        val tracks = Executors.newSingleThreadExecutor()
+        val mapped = CountDownLatch(1)
+        try {
+            synchronized(remoteLock) {
+                // onTrack arrives while a roster pass holds remoteLock, and that pass's
+                // AudioTrack.setEnabled then waits for the signaling thread.
+                signaling.execute { handOffRemoteTrack(tracks, remoteLock) { mapped.countDown() } }
+                signaling.submit {}.get(2, TimeUnit.SECONDS)
+                // The track is mapped under the lock, once the pass lets go of it.
+                assertFalse(mapped.await(100, TimeUnit.MILLISECONDS))
+            }
+            assertTrue(mapped.await(2, TimeUnit.SECONDS))
+        } finally {
+            signaling.shutdownNow(); tracks.shutdownNow()
+        }
     }
 
     @Test fun `pending ICE offer and ACK survive canceled recovery without sequence or SDP drift`() = runTest {

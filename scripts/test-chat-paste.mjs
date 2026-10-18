@@ -100,8 +100,89 @@ try {
     const sent = history.messages.at(-1);
     assert.equal(sent.content.text, "Keep plain text suffix");
     assert.equal(sent.content.attachments[0].name, "notes-0.txt");
+
+    // A ready file must not be delivered on its own when another upload fails.
+    browser("fill", "#chat-message", "Send both files together");
+    files(1, "#chat-message", "ready");
+    wait('!document.querySelector(".chat-composer .chat-drafts progress")');
+    await control({ failure: { path: "/api/assets", method: "POST", status: 503, persistent: true } });
+    files(1, "#chat-message", "retry");
+    wait('!!document.querySelector(".chat-composer .chat-draft-notice[data-error]")');
+    const warning = evaluate('return document.querySelector(".chat-composer .chat-draft-notice").textContent');
+    assert.equal(warning, "1 file failed to upload. Send will retry it, or you can remove it.");
+    if (artifacts) browser("screenshot", `${artifacts}/upload-retry-failed-${width}.png`);
+    const readMessages = () =>
+      fetch(`${api}/api/chat/channels/chan00000001/messages`, {
+        headers: { authorization: "Bearer fixture-owner-token", connection: "close" },
+      }).then((response) => response.json());
+    const before = (await readMessages()).messages.length;
+    const submit = () => {
+      if (width === 1280) {
+        browser("click", "#chat-message");
+        browser("press", "Enter");
+      } else browser("click", '.chat-composer [aria-label="Send message"]');
+    };
+    for (const succeeds of [false, true]) {
+      await control({ holdUploads: true, clearFailures: succeeds });
+      submit();
+      wait(
+        '!!document.querySelector(".chat-composer .chat-drafts progress") && !document.querySelector(".chat-composer .chat-draft-notice[data-error]")',
+      );
+      assert.equal(
+        evaluate('return document.querySelector(".chat-composer .chat-draft-notice").textContent'),
+        "Uploading 1 file… Your message won’t send until every file is ready.",
+      );
+      assert.equal((await readMessages()).messages.length, before, "uploading blocks delivery of the complete message");
+      if (artifacts && !succeeds) browser("screenshot", `${artifacts}/upload-retry-uploading-${width}.png`);
+      // A second press must share the same attempt, not submit another message.
+      submit();
+      await control({ holdUploads: false });
+      if (!succeeds) {
+        wait('!!document.querySelector(".chat-composer .chat-draft-notice[data-error]")');
+        assert.equal(value(), "Send both files together");
+        assert.equal(count(), 2);
+        assert.equal(
+          (await readMessages()).messages.length,
+          before,
+          "a repeated failure never sends just the ready file",
+        );
+      } else {
+        wait('!document.querySelector(".chat-composer .chat-drafts li, .chat-message-pending")');
+        const after = (await readMessages()).messages;
+        assert.equal(
+          after.length,
+          before + 1,
+          "one Send continues automatically after retry, without duplicate delivery",
+        );
+        assert.deepEqual(
+          after.at(-1).content.attachments.map((file) => file.name),
+          ["ready-0.txt", "retry-0.txt"],
+        );
+        assert.equal(value(), "");
+      }
+    }
+    console.log(
+      `PASS ${width}px upload retries: visible progress, repeated failure retains draft, no subset/duplicate send, automatic completion`,
+    );
     assert.equal(files(11), true);
     assert.equal(count(), 10);
+    const grid = evaluate(`const tray = document.querySelector('.chat-composer .chat-drafts');
+      return { width: tray.clientWidth, scrollWidth: tray.scrollWidth, text: tray.innerText,
+        tiles: [...tray.children].map(tile => {
+          const { x, y, width, height } = tile.getBoundingClientRect();
+          return { x, y, width, height };
+        }) };`);
+    const firstRow = grid.tiles.filter((tile) => Math.abs(tile.y - grid.tiles[0].y) < 1);
+    assert.equal(
+      firstRow.length,
+      width === 1280 ? Math.floor((grid.width + 8) / 112) : 3,
+      "desktop fills the composer width; mobile keeps compact capped rows",
+    );
+    if (width === 1280) assert.ok(firstRow.length > 4, "desktop is not capped at four columns");
+    assert.ok(grid.tiles[firstRow.length].y > grid.tiles[0].y, "extra files wrap vertically");
+    assert.ok(grid.tiles.every((tile) => Math.abs(tile.width - tile.height) < 1 && tile.width <= 104));
+    assert.equal(grid.scrollWidth, grid.width, "the tray never scrolls sideways");
+    assert.ok(!grid.text.includes("notes-"), "filenames are not visible in the upload grid");
     assert.ok(
       evaluate(
         'return document.querySelector(".chat-composer").textContent.includes("Only 10 more files can be attached.")',
@@ -144,7 +225,8 @@ try {
   const headers = { authorization: "Bearer fixture-owner-token", connection: "close" };
   const channelHistory = async () =>
     (await fetch(`${api}/api/chat/channels/chan00000001/messages`, { headers })).json();
-  const roots = (await channelHistory()).messages.slice(0, 2);
+  // Recent roots stay mounted in the virtualized viewport after the upload scenarios above.
+  const roots = (await channelHistory()).messages.slice(-2);
   const threadFiles = () =>
     evaluate('return document.querySelectorAll(".chat-thread-composer .chat-drafts li").length');
   const channelFiles = () => evaluate('return document.querySelectorAll(".chat-panel .chat-drafts li").length');
@@ -181,8 +263,23 @@ try {
     wait("!document.querySelector('.chat-panel [aria-label=\"Attach files\"]').disabled");
     files(1, "#chat-message", "channel-only");
     openThread(roots[0]);
+    if (width === 1280) {
+      files(9, "#chat-message", "split-pane");
+      const split = evaluate(`const tray = document.querySelector('.chat-panel .chat-drafts');
+        return { height: tray.clientHeight, scrollHeight: tray.scrollHeight,
+          width: tray.clientWidth, scrollWidth: tray.scrollWidth,
+          editorBottom: document.querySelector('#chat-message').getBoundingClientRect().bottom,
+          viewportHeight: innerHeight };`);
+      assert.ok(split.editorBottom <= split.viewportHeight, "a full narrow tray never pushes the editor offscreen");
+      assert.ok(split.scrollHeight > split.height, "tall desktop trays scroll vertically within the composer");
+      assert.equal(split.scrollWidth, split.width, "split panes never scroll sideways");
+      while (channelFiles() > 1) browser("click", '.chat-panel .chat-drafts li:last-child [aria-label^="Remove "]');
+    }
     pasteImage("#chat-thread-reply", ".chat-thread-composer");
+    wait('!document.querySelector(".chat-thread-composer .chat-drafts progress")');
+    await control({ failure: { path: "/api/assets", method: "POST", status: 503, persistent: true } });
     files(1, "#chat-thread-reply", "thread-only");
+    wait('!!document.querySelector(".chat-thread-composer .chat-draft-notice[data-error]")');
     assert.equal(threadFiles(), 2);
     assert.equal(channelFiles(), 1);
     if (artifacts) browser("screenshot", `${artifacts}/thread-attachments-${width}.png`);
@@ -213,6 +310,13 @@ try {
     assert.equal(threadFiles(), 2);
     assert.equal(channelFiles(), 1);
     browser("click", '.chat-thread-send-row [aria-label="Send reply"]');
+    wait('!!document.querySelector(".chat-thread-composer .chat-draft-notice[data-error]")');
+    assert.equal(threadFiles(), 2, "a failed Send retains the entire thread selection");
+    await control({ clearFailures: true, holdUploads: true });
+    browser("click", '.chat-thread-send-row [aria-label="Send reply"]');
+    wait('!!document.querySelector(".chat-thread-composer .chat-drafts progress")');
+    if (artifacts) browser("screenshot", `${artifacts}/upload-retry-thread-${width}.png`);
+    await control({ holdUploads: false });
     wait('!document.querySelector(".chat-thread-panel .chat-message-pending, .chat-thread-composer .chat-drafts li")');
     const page = await fetch(`${api}/api/chat/channels/chan00000001/messages/${roots[0].id}/thread`, { headers }).then(
       (response) => response.json(),

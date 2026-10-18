@@ -70,6 +70,117 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    func testSpaceVoiceActivityUsesAuthenticatedLightweightSnapshot() async throws {
+        let api = client()
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/spaces/voice-activity")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            XCTAssertNil(request.value(forHTTPHeaderField: "x-caper-chat-token"))
+            return (200, Data(#"{"spaceIds":["space0000001","space0000002"]}"#.utf8))
+        }
+        let snapshot = try await api.spaceVoiceActivity()
+        XCTAssertEqual(snapshot.spaceIds, ["space0000001", "space0000002"])
+        MockURLProtocol.handler = { _ in (200, Data(#"{"spaceIds":[]}"#.utf8)) }
+        let empty = try await api.spaceVoiceActivity()
+        XCTAssertTrue(empty.spaceIds.isEmpty)
+        MockURLProtocol.handler = { _ in (503, Data(#"{"error":"Unavailable"}"#.utf8)) }
+        do {
+            _ = try await api.spaceVoiceActivity()
+            XCTFail("Failed snapshots must not be accepted")
+        } catch { }
+    }
+
+    func testUnreadThreadContractUsesAuthenticatedGetAndVisibleSequencePut() async throws {
+        let api = client()
+        let root = "root00000000001"
+        let sequence = "9007199254740993"
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            if request.httpMethod == "GET" {
+                XCTAssertEqual(request.url?.path, "/api/chat/channels/chan00000001/threads/unread")
+                return (200, Data("{\"threads\":[{\"rootId\":\"\(root)\",\"seq\":\"\(sequence)\"}]}".utf8))
+            }
+            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.url?.path, "/api/chat/channels/chan00000001/messages/\(root)/thread/read")
+            let body = try XCTUnwrap(requestBodyData(request))
+            XCTAssertEqual(try JSONSerialization.jsonObject(with: body) as? [String: String], ["seq": sequence])
+            return (204, Data())
+        }
+        let rows = try await api.unreadThreads(channelID: "chan00000001")
+        XCTAssertEqual(rows.map(\.rootId), [root])
+        XCTAssertEqual(rows.map(\.seq), [sequence])
+        try await api.markThreadRead(channelID: "chan00000001", rootID: root, seq: sequence)
+    }
+
+    func testUnreadThreadRejectsMalformedSequenceRatherThanClearingBadge() async throws {
+        let api = client()
+        MockURLProtocol.handler = { _ in
+            (200, Data(#"{"threads":[{"rootId":"root00000000001","seq":"invalid"}]}"#.utf8))
+        }
+        do {
+            _ = try await api.unreadThreads(channelID: "chan00000001")
+            XCTFail("Invalid unread state must fail, not become an empty snapshot")
+        } catch let error as APIError { XCTAssertEqual(error.status, 502) }
+        MockURLProtocol.handler = { _ in
+            XCTFail("Invalid visible sequences must never reach the server")
+            return (204, Data())
+        }
+        do {
+            try await api.markThreadRead(channelID: "chan00000001", rootID: "root00000000001", seq: "invalid")
+            XCTFail("Invalid sequence accepted")
+        } catch { }
+    }
+
+    @MainActor
+    func testThreadReadRequiresVisibleLatestReplyAndPreservesLaterUnread() async throws {
+        let channel = "chan00000001", rootID = "Message00000001"
+        let reply = ChatMessage(id: "Message00000003", channelId: channel, seq: "3",
+                                author: ChatAuthor(id: "other", name: "Other", isGuest: false),
+                                content: ChatContent(version: 1, type: "text", text: "Reply"),
+                                createdAt: "now", clientMessageId: "reply", threadRootId: rootID)
+        let history = ChatHistory(space: HistoryIdentity(id: "space0000001", name: "Space"),
+                                  channel: HistoryIdentity(id: channel, name: "general"), messages: [reply], cursor: "3", hasMore: false)
+        var latestUnread = "3"
+        MockURLProtocol.handler = { request in
+            if request.url?.path == "/api/chat/session" {
+                return (200, Data(#"{"token":"chat-secret","author":{"id":"self","name":"Me","isGuest":false}}"#.utf8))
+            }
+            XCTAssertTrue(request.url?.path.hasSuffix("/threads/unread") == true)
+            return (200, Data("{\"threads\":[{\"rootId\":\"\(rootID)\",\"seq\":\"\(latestUnread)\"}]}".utf8))
+        }
+        let chat = ChatModel(api: client())
+        await chat.open(history: history, displayName: "Me")
+        chat.threadRootID = rootID
+        await chat.refreshUnreadThreads()
+        XCTAssertTrue(chat.threadUnread(rootID))
+        chat.acknowledgeVisibleThread() // Merely opening/fetching cannot acknowledge.
+        chat.visibleThreadReply = (rootID, "2")
+        chat.acknowledgeVisibleThread() // A scrolled-away/old reply cannot acknowledge.
+        chat.visibleThreadReply = (rootID, "3")
+        chat.threadHasNewer = true
+        chat.acknowledgeVisibleThread() // An older window cannot acknowledge.
+        await Task.yield()
+        XCTAssertTrue(chat.threadUnread(rootID))
+
+        let started = expectation(description: "visible reply read started")
+        var held: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.httpMethod == "PUT" else { return false }
+            held = request; started.fulfill(); return true
+        }
+        chat.threadHasNewer = false
+        chat.acknowledgeVisibleThread()
+        await fulfillment(of: [started], timeout: 2)
+        latestUnread = "4"
+        await chat.refreshUnreadThreads()
+        held?.respond(status: 204)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(chat.unreadThreads[rootID], "4", "A delayed read must not erase a later reply")
+        await chat.stop()
+        XCTAssertFalse(chat.threadUnread(rootID))
+    }
+
     func testReleaseNotesArePublicBoundedAndPinnedToSourceRevision() async throws {
         let revision = String(repeating: "a", count: 40)
         func body(_ sha: String) -> Data {
@@ -2416,6 +2527,10 @@ final class APIClientTests: XCTestCase {
         draft.text = "Don't lose this"
         for code in ["dm_not_accepted", "dm_blocked"] {
             MockURLProtocol.handler = { request in
+                // Selecting the retained channel reads its unread entry snapshot, independently of Send.
+                if request.httpMethod == "GET", request.url?.path == "/api/spaces/unread" {
+                    return (200, Data(#"{"spaces":[],"feedbackWaiting":0}"#.utf8))
+                }
                 if request.url?.path == "/api/blocks" { return (200, Data(#"{"blocks":[]}"#.utf8)) }
                 if request.httpMethod == "GET", request.url?.path == "/api/dms" { return (200, Data(#"{"conversations":[]}"#.utf8)) }
                 XCTAssertEqual(request.url?.path, "/api/dms", "privacy refusal must happen before upload or send")
@@ -2430,6 +2545,9 @@ final class APIClientTests: XCTestCase {
             XCTAssertEqual(model.chat.draft, "Unrelated draft")
         }
         MockURLProtocol.handler = { request in
+            if request.httpMethod == "GET", request.url?.path == "/api/spaces/unread" {
+                return (200, Data(#"{"spaces":[],"feedbackWaiting":0}"#.utf8))
+            }
             if request.url?.path == "/api/blocks" { return (200, Data(#"{"blocks":[]}"#.utf8)) }
             if request.httpMethod == "GET" { return (200, Data(#"{"conversations":[]}"#.utf8)) }
             return (200, Data(#"{"id":"dm0000000002","peer":{"id":"new000000001","username":"jordan","displayName":"Someone else"},"lastSeq":"0","readSeq":"0"}"#.utf8))
@@ -2459,6 +2577,10 @@ final class APIClientTests: XCTestCase {
             model.directMessages = loaded ? [incoming] : []
             MockURLProtocol.handler = { request in
                 XCTAssertEqual(request.httpMethod, "GET", "must not create, accept, upload or send")
+                // The retained channel's unread snapshot is also read-only; no writes are permitted.
+                if request.url?.path == "/api/spaces/unread" {
+                    return (200, Data(#"{"spaces":[],"feedbackWaiting":0}"#.utf8))
+                }
                 XCTAssertEqual(request.url?.path, "/api/dms")
                 return (200, try JSONEncoder().encode(DirectMessagesResponse(conversations: [incoming])))
             }
@@ -2692,5 +2814,33 @@ final class APIClientTests: XCTestCase {
         await model.logout()
         XCTAssertTrue(model.directMessages.isEmpty)
         XCTAssertNil(model.selectedDirectMessageID)
+    }
+
+    @MainActor
+    func testARefreshedPeerProfileRenamesTheOpenDirectMessage() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "me", username: "me", displayName: "Me")
+        var peerName = "Peer"
+        MockURLProtocol.handler = { request in
+            switch request.url!.path {
+            case "/api/chat/channels/dm0000000001/messages":
+                return (200, Data(#"{"space":{"id":"","name":"Direct messages"},"channel":{"id":"dm0000000001","name":"Peer","direct":true},"messages":[],"cursor":"1","hasMore":false}"#.utf8))
+            case "/api/chat/session": return (200, Data(#"{"token":"chat","author":{"id":"me","name":"Me","isGuest":false}}"#.utf8))
+            case "/api/dms/dm0000000001/read": return (204, Data())
+            case "/api/dms": return (200, Data(#"{"conversations":[{"id":"dm0000000001","peer":{"id":"peer","username":"peer","displayName":"\#(peerName)"},"lastSeq":"1","readSeq":"1"}]}"#.utf8))
+            case "/api/auth/logout": return (204, Data())
+            default: throw URLError(.badURL)
+            }
+        }
+        await model.refreshDirectMessages()
+        let dm = try XCTUnwrap(model.directMessages.first)
+        await model.select(directMessage: dm)
+        XCTAssertEqual(model.chat.channelName, "Peer")
+        // A rename whose live event was missed: the next list refresh repairs the header too.
+        peerName = "Peer Renamed"
+        await model.refreshDirectMessages()
+        XCTAssertEqual(model.directMessages.first?.peer.displayName, "Peer Renamed")
+        XCTAssertEqual(model.chat.channelName, "Peer Renamed")
+        await model.logout()
     }
 }

@@ -257,7 +257,10 @@ internal data class MentionCard(
     /** The person's custom picture, over the [avatarId] mascot. */
     val avatarAsset: String? = null,
     val avatarUrl: String? = null,
+    val admin: Boolean = false,
+    val team: Boolean = false,
 ) {
+    val canBlock: Boolean get() = !admin && !team
     val title: String get() = displayName ?: username?.let { "@$it" } ?: "Profile"
     val subtitle: String? get() = if (displayName != null) username?.let { "@$it" } else null
 }
@@ -267,9 +270,12 @@ internal fun mentionCard(id: String?, username: String?, state: AppUiState): Men
     val selfId = state.account?.id ?: state.chatAuthorId
     val self = if (id != null) id == selfId else username != null && state.account?.username?.equals(username, ignoreCase = true) == true
     if (id != null) {
-        state.selectedSpace?.members?.firstOrNull { it.id == id }?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self, it.avatarAsset, it.avatarUrl) }
-        state.people?.firstOrNull { it.id == id }?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self, it.avatarAsset, it.avatarUrl) }
-        state.directConversations.firstOrNull { it.peer.id == id }?.peer?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self, it.avatarAsset, it.avatarUrl) }
+        val peer = state.directConversations.firstOrNull { it.peer.id == id }?.peer
+        val admin = peer?.admin == true || state.people.orEmpty().any { it.id == id && it.admin } || state.selectedSpace?.members.orEmpty().any { it.id == id && it.admin }
+        val team = peer?.team == true
+        state.selectedSpace?.members?.firstOrNull { it.id == id }?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self, it.avatarAsset, it.avatarUrl, admin, team) }
+        state.people?.firstOrNull { it.id == id }?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self, it.avatarAsset, it.avatarUrl, admin, team) }
+        peer?.let { return MentionCard(id, it.username, it.displayName, it.avatarId, self, it.avatarAsset, it.avatarUrl, admin, team) }
     }
     val account = state.account
     if (self && account?.username != null && account.displayName != null) {
@@ -285,12 +291,13 @@ internal fun mentionCard(id: String?, username: String?, state: AppUiState): Men
 internal fun refreshedCard(card: MentionCard, state: AppUiState): MentionCard {
     val id = card.id ?: return card
     val known = mentionCard(id, card.username, state)
-    return if (known.displayName == null) card else known.copy(self = card.self)
+    return if (known.displayName == null) card else known.copy(self = card.self, admin = known.admin || card.admin, team = known.team || card.team)
 }
 
 /** A pinner has an account id and real name/avatar, but no username in pin metadata. */
 internal fun authorCard(author: ChatAuthor, state: AppUiState): MentionCard {
-    val card = mentionCard(author.id, null, state)
+    val known = mentionCard(author.id, null, state)
+    val card = known.copy(admin = known.admin || author.admin)
     return if (card.username == null) card.copy(displayName = card.displayName ?: author.name, avatarId = author.avatarId, avatarAsset = author.avatarAsset, avatarUrl = author.avatarUrl)
     else card.copy(displayName = card.displayName ?: author.name)
 }

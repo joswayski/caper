@@ -20,6 +20,11 @@ final class MentionCardTests: XCTestCase {
         XCTAssertEqual(resolve(maya, people: [person], peers: [peer]).avatarId, 32)
         XCTAssertEqual(resolve(maya, people: nil, peers: [peer]).displayName, "Maya (DM)", "people not loaded yet")
         XCTAssertNil(resolve(maya, peers: [peer]).avatarId)
+        // A DM peer's saved mascot and picture show on the card, as on web.
+        let pictured = DirectMessagePeer(id: maya.id, username: "maya", displayName: "Maya (DM)", avatarId: 7,
+                                         avatarAsset: "asset-maya", avatarUrl: "https://cdn.example/maya.webp")
+        XCTAssertEqual(resolve(maya, peers: [pictured]).avatarId, 7)
+        XCTAssertEqual(resolve(maya, peers: [pictured]).picture?.asset, "asset-maya")
         // Matching is by id, never by the username typed in the message.
         let other = Member(id: "Other0000001", username: "maya", displayName: "Someone Else", owner: false)
         XCTAssertNil(resolve(maya, members: [other]).displayName)

@@ -16,7 +16,10 @@ Clients compress on the device: screenshots and graphics stay lossless, photos
 are re-encoded at very high quality (AVIF or WebP), and video is converted to
 H.264 up to 1440p so it plays everywhere, which loses some resolution and
 detail from 4K and HDR footage; other files upload unchanged and upload straight
-to storage, within a per-person allowance (10 GB by default). Desktop opens
+to private storage, within a per-person allowance (10 GB by default). Before
+sharing, the server removes location and descriptive metadata from supported
+images, GIFs, video and audio without recompression; media it cannot clean is
+refused. Documents and archives keep their contents. Desktop opens
 video and audio in the system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
 
 Space owners can share invite links like `caper.chat/invite/AbCdE12345`, Discord

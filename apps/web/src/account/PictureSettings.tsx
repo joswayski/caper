@@ -1,7 +1,9 @@
-import { useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { ImageUp, Pencil, Trash2 } from "lucide-react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import Avatar from "../components/Avatar";
 import SpaceIcon from "../components/SpaceIcon";
 import { removeSpaceIcon, SpacesApiError, type Space } from "../spaces/client";
+import { avatarUrl } from "./avatar";
 import { AccountApiError, getRememberedAccount, removeAvatar, subscribeAccount, type Account } from "./client";
 import { PictureError, uploadAvatar, uploadSpaceIcon } from "./picture-upload";
 import { pictureErrorMessage, pictureMessages } from "./pictures";
@@ -14,23 +16,21 @@ function uploadError(error: unknown) {
   return pictureMessages.failed;
 }
 
-/** The large current picture, Change (system picker, GIFs allowed) and Remove, with progress and inline errors. */
+/** The current picture in a frame with an edit badge on it. Without a custom picture the frame opens the
+ * system picker (GIFs allowed); with one it offers a new picture or removal. Progress and errors show beneath. */
 function PictureEditor({
   title,
-  hint,
   preview,
-  changeLabel,
-  removeLabel,
+  noun,
   removable,
   removeFailed,
   onUpload,
   onRemove,
 }: {
   title: string;
-  hint: string;
   preview: ReactNode;
-  changeLabel: string;
-  removeLabel: string;
+  /** "picture" or "icon", for the menu and labels. */
+  noun: string;
   removable: boolean;
   removeFailed: (error: unknown) => string;
   onUpload: (file: File, progress: (fraction: number) => void) => Promise<void>;
@@ -39,13 +39,40 @@ function PictureEditor({
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [error, setError] = useState<string>();
   const [done, setDone] = useState<string>();
+  const [menu, setMenu] = useState(false);
+  const [dropping, setDropping] = useState(false);
   // Uploads are optional server configuration (503): the picker steps back once the server says so.
   const [unavailable, setUnavailable] = useState(false);
   const input = useRef<HTMLInputElement>(null);
-  const titleId = useId();
+  const frame = useRef<HTMLDivElement>(null);
+  const menuId = useId();
   const busy = phase.kind !== "idle";
+  // The edit button is disabled while a request runs and the menu item that
+  // started it is gone, so focus falls to the page. Keyboard users continue
+  // from the edit button instead of the top of the page or dialog.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (busy || !refocus.current) return;
+    refocus.current = false;
+    if (!document.activeElement || document.activeElement === document.body)
+      frame.current?.querySelector<HTMLButtonElement>(".picture-settings-edit")?.focus();
+  }, [busy]);
+  const offersMenu = removable;
+
+  // A click or tap anywhere else closes the menu.
+  useEffect(() => {
+    if (!menu) return;
+    const outside = (event: PointerEvent) => {
+      if (!frame.current?.contains(event.target as Node)) setMenu(false);
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [menu]);
 
   const choose = async (file: File) => {
+    if (busy || unavailable) return;
+    setMenu(false);
+    refocus.current = true;
     setError(undefined);
     setDone(undefined);
     setPhase({ kind: "preparing" });
@@ -53,7 +80,6 @@ function PictureEditor({
       await onUpload(file, (fraction) => setPhase({ kind: "uploading", progress: fraction }));
       setDone(`${title} updated.`);
     } catch (reason) {
-      // The hint then says uploads are unavailable; the error would only repeat it.
       if (reason instanceof PictureError && reason.status === 503) setUnavailable(true);
       else setError(uploadError(reason));
     } finally {
@@ -62,6 +88,7 @@ function PictureEditor({
   };
 
   const remove = async () => {
+    refocus.current = true;
     setError(undefined);
     setDone(undefined);
     setPhase({ kind: "removing" });
@@ -82,52 +109,140 @@ function PictureEditor({
         ? `Uploading… ${Math.round(phase.progress * 100)}%`
         : phase.kind === "removing"
           ? "Removing…"
-          : done;
+          : unavailable
+            ? pictureMessages.unavailable
+            : done;
+  // With uploads unavailable, the frame still offers removal of a custom picture.
+  const disabled = busy || (unavailable && !offersMenu);
 
   return (
-    <section className="picture-settings" aria-labelledby={titleId} aria-busy={busy}>
-      <span className="picture-settings-preview">{preview}</span>
-      <div className="picture-settings-body">
-        <h3 id={titleId}>{title}</h3>
-        <p>{unavailable ? pictureMessages.unavailable : hint}</p>
-        <div className="picture-settings-actions">
-          <button
-            type="button"
-            disabled={busy || unavailable}
-            aria-busy={phase.kind === "preparing" || phase.kind === "uploading"}
-            onClick={() => input.current?.click()}
-          >
-            {phase.kind === "preparing" || phase.kind === "uploading" ? "Uploading…" : changeLabel}
-          </button>
-          {removable && (
-            <button type="button" disabled={busy} aria-busy={phase.kind === "removing"} onClick={() => void remove()}>
-              {phase.kind === "removing" ? "Removing…" : removeLabel}
-            </button>
-          )}
-        </div>
-        <input
-          ref={input}
-          type="file"
-          accept="image/*"
-          hidden
-          tabIndex={-1}
-          onChange={(event) => {
-            const file = event.currentTarget.files?.[0];
-            // Clear it, so choosing the same file again still counts as a change.
-            event.currentTarget.value = "";
+    <section className="picture-settings" aria-label={title} aria-busy={busy}>
+      <div
+        ref={frame}
+        className="picture-settings-frame"
+        onKeyDown={(event) => {
+          // The menu's Escape closes the menu, not the dialog around it.
+          if (event.key !== "Escape" || !menu) return;
+          event.preventDefault();
+          setMenu(false);
+          frame.current?.querySelector<HTMLButtonElement>(".picture-settings-edit")?.focus();
+        }}
+      >
+        <button
+          type="button"
+          className="picture-settings-edit"
+          data-dropping={dropping || undefined}
+          onDragOver={(event) => {
+            if (!event.dataTransfer.types.includes("Files")) return;
+            event.preventDefault();
+            event.stopPropagation();
+            event.dataTransfer.dropEffect = busy || unavailable ? "none" : "copy";
+            setDropping(!busy && !unavailable);
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropping(false);
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setDropping(false);
+            const file = event.dataTransfer.files[0];
             if (file) void choose(file);
           }}
-        />
-        <p className="picture-settings-status" role="status">
-          {status}
-        </p>
+          aria-label={`Change ${title.toLowerCase()}`}
+          title={`Change ${title.toLowerCase()}`}
+          disabled={disabled}
+          aria-haspopup={offersMenu ? "menu" : undefined}
+          aria-expanded={offersMenu ? menu : undefined}
+          aria-controls={offersMenu && menu ? menuId : undefined}
+          onClick={() => {
+            if (offersMenu) setMenu((open) => !open);
+            else input.current?.click();
+          }}
+        >
+          <span className="picture-settings-preview">{preview}</span>
+          <span className="picture-settings-badge" aria-hidden="true">
+            {dropping ? <ImageUp size={15} /> : <Pencil size={15} strokeWidth={2.4} />}
+          </span>
+        </button>
+        {menu && (
+          <div
+            id={menuId}
+            className="picture-settings-menu"
+            role="menu"
+            aria-label={title}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+              event.preventDefault();
+              const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+              const at = items.indexOf(document.activeElement as HTMLButtonElement);
+              const step = event.key === "ArrowDown" ? 1 : -1;
+              items[(at + step + items.length) % items.length]?.focus();
+            }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              autoFocus
+              disabled={unavailable}
+              onClick={() => {
+                setMenu(false);
+                input.current?.click();
+              }}
+            >
+              <ImageUp size={16} aria-hidden="true" />
+              Choose a new {noun}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="picture-settings-remove"
+              onClick={() => {
+                setMenu(false);
+                void remove();
+              }}
+            >
+              <Trash2 size={16} aria-hidden="true" />
+              Remove {noun}
+            </button>
+          </div>
+        )}
       </div>
-      {error && (
+      <input
+        ref={input}
+        type="file"
+        accept="image/*"
+        hidden
+        tabIndex={-1}
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          // Clear it, so choosing the same file again still counts as a change.
+          event.currentTarget.value = "";
+          if (file) void choose(file);
+        }}
+      />
+      {error ? (
         <p className="picture-settings-error" role="alert">
           {error}
         </p>
+      ) : (
+        <p className="picture-settings-status" role="status">
+          {status}
+        </p>
       )}
     </section>
+  );
+}
+
+/** A mascot holding up a "change me!" sign: one picture, drawn in the mascot's 256 × 256 space. */
+function ChangeMe({ avatarId }: { avatarId?: number | null }) {
+  const mascot = avatarUrl(avatarId);
+  if (!mascot) return null;
+  return (
+    <svg className="picture-settings-change-me" viewBox="0 0 256 256" aria-hidden="true" data-avatar-id={avatarId}>
+      <image href={mascot} width="256" height="256" />
+      <image href="/images/avatars/change-me.svg" width="256" height="256" />
+    </svg>
   );
 }
 
@@ -139,7 +254,7 @@ function removalError(error: unknown, purpose: "avatar" | "spaceIcon", fallback:
   return fallback;
 }
 
-/** Profile settings: your picture, shown large, with Change and Remove. */
+/** Profile settings: your picture in its frame; without one, your mascot asks to be changed. */
 export function ProfilePictureSettings({ account: initial }: { account: Account }) {
   const remembered = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
   const account = remembered?.id === initial.id ? remembered : initial;
@@ -147,10 +262,14 @@ export function ProfilePictureSettings({ account: initial }: { account: Account 
   return (
     <PictureEditor
       title="Profile picture"
-      hint="PNG, JPEG, WebP or GIF. GIFs animate for everyone."
-      preview={<Avatar person={account} name={name} />}
-      changeLabel="Change picture"
-      removeLabel="Remove picture"
+      noun="picture"
+      preview={
+        account.avatarAsset || !avatarUrl(account.avatarId) ? (
+          <Avatar person={account} name={name} />
+        ) : (
+          <ChangeMe avatarId={account.avatarId} />
+        )
+      }
       removable={!!account.avatarAsset}
       removeFailed={(error) => removalError(error, "avatar", "Your picture couldn’t be removed. Try again.")}
       onUpload={async (file, progress) => {
@@ -163,19 +282,17 @@ export function ProfilePictureSettings({ account: initial }: { account: Account 
   );
 }
 
-/** Manage space (owners only): the icon or initial tile, with Change and Remove. */
+/** Manage space (owners only): the icon or initial tile in its frame. */
 export function SpaceIconSettings({ space, onChanged }: { space: Space; onChanged: (space: Space) => void }) {
   return (
     <PictureEditor
       title="Space icon"
-      hint="PNG, JPEG, WebP or GIF. Without one, the space shows its initial."
+      noun="icon"
       preview={
         <span className="picture-settings-tile">
           <SpaceIcon space={space} />
         </span>
       }
-      changeLabel="Change icon"
-      removeLabel="Remove icon"
       removable={!!space.iconAsset}
       removeFailed={(error) => removalError(error, "spaceIcon", "The icon couldn’t be removed. Try again.")}
       onUpload={async (file, progress) => onChanged(await uploadSpaceIcon(space.id, file, progress))}

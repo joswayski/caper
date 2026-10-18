@@ -12,7 +12,7 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import { Ban, ChevronDown, Copy, RefreshCw, Settings } from "lucide-react";
+import { ArrowRight, Ban, ChevronDown, Copy, RefreshCw, Settings } from "lucide-react";
 import { Dialog } from "./Dialog";
 import {
   type Channel,
@@ -34,10 +34,7 @@ import {
   revokeInviteLink,
   SpacesApiError,
 } from "./client";
-
-function message(reason: unknown) {
-  return reason instanceof SpacesApiError ? reason.message : "That request did not work.";
-}
+import { friendlyError } from "./errors";
 
 function InviteLinkActions({
   disabled,
@@ -170,7 +167,7 @@ export function InviteLinkManager({
         const result = await listInviteLinks(spaceId);
         if (current) setLinks(result.links);
       } catch (reason) {
-        if (current) setError(message(reason));
+        if (current) setError(friendlyError(reason));
       } finally {
         if (current) setPending(false);
       }
@@ -196,7 +193,7 @@ export function InviteLinkManager({
       setCopied(undefined);
       setLinks((current) => [link, ...(current ?? []).filter((item) => item.code !== link.code)]);
     } catch (reason) {
-      setError(message(reason));
+      setError(friendlyError(reason));
     } finally {
       setPending(false);
     }
@@ -212,7 +209,7 @@ export function InviteLinkManager({
       setNow(Date.now());
       setLinks((current) => [link, ...(current ?? []).filter((item) => item.code !== code)]);
     } catch (reason) {
-      setError(message(reason));
+      setError(friendlyError(reason));
     } finally {
       setPending(false);
     }
@@ -227,7 +224,7 @@ export function InviteLinkManager({
     } catch (reason) {
       if (reason instanceof SpacesApiError && reason.status === 404)
         setLinks((current) => current?.filter((item) => item.code !== code));
-      else setError(message(reason));
+      else setError(friendlyError(reason));
     } finally {
       setPending(false);
     }
@@ -340,7 +337,7 @@ export function InviteLinkManager({
               .then((link) => {
                 setLinks((current) => [link, ...(current ?? [])]);
               })
-              .catch((reason) => setError(message(reason)))
+              .catch((reason) => setError(friendlyError(reason)))
               .finally(() => setPending(false));
           }}
         >
@@ -499,27 +496,36 @@ export function JoinInviteLinkForm({ disabled = false }: { disabled?: boolean })
         void navigate({ to: "/invite/$code", params: { code } });
       }}
     >
-      <div className="dialog-section-heading">
-        <h3>Have an invite link?</h3>
-      </div>
+      <p className="invite-link-example" id={`${id}-example`}>
+        Paste it below to join!
+      </p>
       <div className="member-add">
         <label className="sr-only" htmlFor={id}>
           Invite link
         </label>
-        <input
-          id={id}
-          value={value}
-          autoComplete="off"
-          autoCapitalize="none"
-          autoCorrect="off"
-          spellCheck={false}
-          disabled={disabled}
-          placeholder="https://caper.chat/invite/…"
-          onChange={(event) => {
-            setValue(event.target.value);
-            setError(undefined);
-          }}
-        />
+        <div className="invite-link-input">
+          <input
+            id={id}
+            aria-describedby={`${id}-example`}
+            value={value}
+            autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            disabled={disabled}
+            onChange={(event) => {
+              setValue(event.target.value);
+              setError(undefined);
+            }}
+          />
+          {!value && (
+            <span className="invite-link-placeholder" aria-hidden="true">
+              <span>it looks like</span>
+              <ArrowRight size={14} />
+              <span>caper.chat/invite/AbCdE12345</span>
+            </span>
+          )}
+        </div>
         <button type="submit" disabled={disabled || !value.trim()}>
           Join
         </button>

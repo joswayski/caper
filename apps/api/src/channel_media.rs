@@ -107,9 +107,9 @@ impl AppState {
     /// Removal, privacy changes, deletion and expired/revoked account sessions
     /// end existing calls, not just future joins. Provider cleanup is queued.
     pub(super) async fn revoke_media_access(&self) -> Result<(), ApiError> {
-        if self.media_channel.is_none() {
+        let Some(channel) = &self.media_channel else {
             return Ok(());
-        }
+        };
         let participants = self
             .read(|r| {
                 Ok(r.participants
@@ -118,19 +118,23 @@ impl AppState {
                     .collect::<Vec<_>>())
             })
             .await?;
-        let mut revoked = Vec::new();
-        for (id, session) in participants {
-            let mut account = self.clone();
-            account.media_session = session;
-            if let Err(error) = account.check_media_access().await {
-                // On database outages stop disclosing/control immediately, but
-                // don't mass-delete healthy SFU sessions for a transient error.
-                if error.status.is_server_error() {
-                    return Err(error);
-                }
-                revoked.push(id);
-            }
+        if participants.is_empty() {
+            return Ok(());
         }
+        // `check_media_access` for every participant in one query. On database
+        // outages stop disclosing/control immediately, but don't mass-delete
+        // healthy SFU sessions for a transient error.
+        let pool = self.database.as_ref().ok_or_else(chat::unavailable)?;
+        let sessions: Vec<Vec<u8>> = participants
+            .iter()
+            .filter_map(|(_, session)| session.clone())
+            .collect();
+        let allowed = crate::spaces::space_channel_participants(pool, channel, &sessions).await?;
+        let revoked: Vec<_> = participants
+            .into_iter()
+            .filter(|(_, session)| !session.as_ref().is_some_and(|s| allowed.contains(s)))
+            .map(|(id, _)| id)
+            .collect();
         if !revoked.is_empty() {
             self.update(|r| {
                 for id in &revoked {

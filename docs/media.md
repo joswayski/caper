@@ -186,59 +186,83 @@ Run both Apple parity scripts above and inspect the pending-send captures and
 iPhone send transition before release. No API/configuration/migration change is
 needed; only updated Apple binaries receive this fix.
 
-Voice joins from the conversation header (October 11, 2026, on web, Android,
-iOS/macOS and Rust desktop). After the channel name, the open channel shows up
-to three faces of who is in its voice with a count, then Join voice, Switch here
-(connected elsewhere), Joining…/Leaving…, or Leave when you are connected there;
-a thin divider separates it from Pins and Members. Phones show only the
-conversation below a Slack-style header: the channel name (with "N members · M
-in voice" beneath it) opens the channel's menu of Pins and Members, and one
-bordered group holds icon-only voice buttons (headphones to join or switch;
-mute, deafen and a red disconnect while in voice, also in a DM). While others
-are in a channel's voice and you are not, its Join glows softly (static with
-reduced motion); Leave is a red icon and label, with no fill or border, in every header. Phones show no faces in the
-header: the subtitle already says how many are in voice, and Browse lists them.
-Voice errors appear above the composer, and channels, rosters, the account bar
-and the voice dock stay in Browse.
-Channel rows no longer carry a Join action: empty channels are a single line,
-and only occupied channels add the `N in voice` line with its collapsible
-roster. Fine pointers (desktop web, macOS, Rust desktop) keep a one-click
-headphones shortcut on each channel row, revealed on hover or keyboard focus in
-space reserved beside the `⋯` menu and absent for the connected channel; touch
-joins from the header. The roster opens automatically on connection. Mic,
-deafen and device settings stay in the account footer, including before
-joining. The channel/space status and Leave stay in a dock
-above that footer whenever you are in voice; when navigation hides the active
-channel, its roster pins there too; participant audio menus open upward. Browsing
-other chats, spaces or DMs does not leave voice. That includes a space with no
-joined channel, whose empty state replaces only the conversation, and a pending
-invitation opened from the rail, which opens over the room. Voice still ends
-when its own channel is left, deleted or revoked.
-The row shortcut is neutral until hover/focus, and empty channels have no voice
-status text. Only occupied channels show a voice count. Hover and connection
-updates do not shift channel rows; expanding a roster moves later channels down. The Channels count stays beside its label
-in both owned and shared spaces. Selecting a channel
-opens text without switching voice. Other participant lists start collapsed and
-expand from the voice count. Joined-channel menus offer Leave channel to members;
+Voice lives in the sidebar's channel list (design H, revised October 17, 2026, on
+web, Android, iOS/macOS and Rust desktop). Channels stay text and voice together:
+opening a channel never joins or switches voice, and joining never changes the
+conversation you are reading. A live channel's own row grows into a card, in its
+place in the list, so no channel appears twice and nothing says "Live now".
+Pressing a card anywhere except its controls and `⋯` menu opens that channel's
+chat, like its row.
+
+- Your call's card is green: the channel's row line (name, unread, muted, `⋯`
+  and the selected tint) ends with "You're in · N" (Connecting… or Reconnecting…
+  in amber) and the shared session timer instead of a join. Faces follow, you
+  first and then in join order (speaking never reorders them), with a green
+  speaking ring and mute/deafen badges, in at most two rows: up to ten faces, or
+  nine and a "+N" tile. Then Mute, Deafen and Leave (Cancel while joining).
+  There is no "is speaking" line: the ring shows who talks, so the card never
+  changes size with speech. Faces and "+N" are not separate tap targets. A
+  right-click (pointer), long press (touch) or the accessibility action on them
+  opens the full list ("In #channel · N people") with per-person volume and Mute
+  for me, beside the sidebar on wide layouts and as a bottom sheet on phones; a
+  face opens with that person's controls expanded. On web the context-menu key
+  on the card's row opens it too. Escape, an outside press and Close dismiss it;
+  on web, focus moves into it.
+- Another live room keeps its row (waveform and count) and gains a body beneath
+  it: up to three faces, a one-line summary of names, the shared session timer,
+  and Join (eggshell) or Switch (neutral) when you are in a call elsewhere.
+  Rooms stay in list order; nothing folds away.
+- Voice without a row in the listed space sits above the Channels heading, with
+  no heading of its own: your call when it is in another space (its card names
+  the space and opens that chat there) or in a channel opened from the feedback
+  inbox, and such a visited channel's live room. Starting voice in an empty
+  visited channel is no longer offered.
+- Collapsing Channels hides quiet rows only; live cards stay listed.
+
+Quiet channel rows are one line, with no roster or count expander. Every row
+except your call's keeps a one-click headphones join ("Join voice in #x", or
+"Switch voice to #x"). Fine pointers reveal it on hover or keyboard focus in
+space reserved beside the `⋯` menu. Touch (Android, iPhone, iPad, touch web) and
+Rust desktop at 760px or narrower show it dimmed with a 44px target on quiet rows
+and hide it on live rows, whose cards carry Join. The conversation header
+carries no voice; "N members · M in voice" stays beneath channel names where
+shown. While reading any conversation, phones add a 56px strip under its header:
+your call (channel, the card's faces in the card's order, up to five or four and
+"+N", Connecting…/Reconnecting… while not connected, timer and a 44px Mute; the
+rest opens Browse), or, out of a call, the open channel's live room with Join.
+The strip names no speaker. The bottom dock and its pinned roster are gone;
+voice errors keep their place. Mic, deafen and device settings stay in the
+account bar, including before joining, and mirror the card's Mute and Deafen.
+Speaking rings appear only for your own call, since other rooms carry no audio.
+Browsing other chats, spaces or DMs does not leave voice. That includes a space
+with no joined channel, whose empty state replaces only the conversation (your
+call card remains above it), and a pending invitation opened from the rail,
+which opens over the room. Voice still ends when its own channel is left,
+deleted or revoked. Joined-channel menus offer Leave channel to members;
 owners also have the existing privacy/member settings. Leave channel requires
 confirmation and no longer appears in the chat header on web, Apple or Rust
 desktop; Android already uses its channel menu.
-At the minimum sidebar width, counts take priority over avatars; narrow web
-layouts retain 44px action targets, and phones show one header face without
-the count.
-Run `VOICE_TEST_CHANNEL_ROWS=1 node scripts/test-voice-controls.mjs http://localhost:5174`
-against Vite for mocked desktop/narrow/minimum-width geometry, roster disclosure,
-owner permissions, settings focus return, voice switching and pending/error/cancel
-states. This is browser UI coverage, not live SFU or physical-device validation.
-Run `VOICE_TEST_REDESIGN=1 node scripts/test-voice-controls.mjs` for pre-join
-audio settings, inline/pinned Leave, automatic rosters and chat/space call
-persistence. `VOICE_TEST_PREVIEW=1 node scripts/test-voice-controls.mjs` serves
-the explicitly simulated, interactive UI on port 5180 beside local Vite; it
-does not capture a real microphone or contact the SFU. No production mock route
-is added. The channel-centric redesign is web-only at the owner's request.
-Android, Apple and Rust desktop retain their independent rows and bottom
-disconnect control; no native release or shared protocol/configuration change
-is required. Web can deploy independently; merging does not deploy it.
+Web tooltips follow their control while open, because a card arriving or
+leaving shifts the rows below it.
+
+`VOICE_TEST_CHROME="$PWD/scripts/fine-pointer-chromium.sh" node
+scripts/test-voice-controls.mjs http://localhost:5174` runs the mocked web flow.
+Each `VOICE_TEST_*=1` mode adds a focus:
+
+- `REDESIGN`: live cards in their rows (no heading, fold or duplicate row),
+  pressing a card, right-click and long press for the full list, crowded calls,
+  collapsed lists, the phone strip's faces, join and focus, and row join/switch.
+- `CHANNEL_ROWS`: row geometry, permissions and pending/error/cancel states; run
+  it with stock Chromium too, for the touch rows.
+- `SIDEBAR`: DMs, empty spaces and rail invitations during a call.
+- `DOCK`: the account bar while connected, and the card's links.
+- `TIMERS` and `AVATARS`.
+
+This is browser UI coverage, not live SFU or physical-device validation.
+`VOICE_TEST_PREVIEW=1 node scripts/test-voice-controls.mjs` serves the
+explicitly simulated, interactive UI on port 5180 beside local Vite; it does not
+capture a real microphone or contact the SFU. No production mock route is added,
+and there is no API, protocol, configuration or migration change.
 Browser modals use viewport-bounded, stable-height shells with scrollable overflow;
 errors, pending states and member loading do not resize or recenter them. Channel
 settings reserve the hidden save bar, and profile forms reserve error space so
@@ -1040,8 +1064,12 @@ Joining checks the membership quota under the same
 space lock as invitation acceptance, consumes one use, joins the landing channel,
 and fulfils any pending username invitation. Existing members get the space back
 without consuming a use, so a link doubles as a shortcut. Leaving does not block
-rejoining by link, but an owner removal (`space_invitations.status='removed'`) or
-an owner's block returns 403 until the owner invites the account by username.
+rejoining by link, but an owner removal or an owner's block returns 403 until the
+owner invites the account by username. A removal is recorded in
+`space_invitations.removed_at` (migration `202610140002_space_removals.sql`,
+backfilled from `status='removed'`) and holds until an invitation is accepted:
+a live re-invitation can be fulfilled through a link, but one that was
+cancelled, declined or expired leaves the 403 in place.
 Expired, revoked and exhausted links return the same 404 to outsiders; existing
 members can still preview and open them as shortcuts. Unknown links and deleted
 spaces return 404 for everyone. The preview checks active membership using the
@@ -1257,10 +1285,11 @@ pre-spaces image after migration; complete the forward rollout instead.
 
 ## Uploads and attachments
 
-Signed-in members attach up to 10 files to a message. Bytes never pass through
-AWS: the API reserves quota and presigns one exact upload, the client `PUT`s
-straight to the private R2 bucket, and the `apps/cdn` Worker serves downloads
-from its own domain after checking a signature the API issued.
+Signed-in members attach up to 10 files to a message. The API reserves quota
+and presigns an exact upload to private R2 staging. On completion it streams
+those bytes through temporary disk, removes media metadata without recompression,
+and publishes separate server-written objects. The `apps/cdn` Worker serves
+only published objects after checking a signature the API issued.
 
 ### Data model
 
@@ -1273,6 +1302,7 @@ preview is a fixed derived object beside the original, not another row:
 | --- | --- |
 | Original | `original/{asset id}` |
 | Preview (≤ 640 px, ≤ 512 KiB, WebP/JPEG/PNG) | `preview/{asset id}` |
+| Private upload sources (never a CDN route) | `staging/original/{asset id}`, `staging/preview/{asset id}` |
 
 `message_id`/`position` link a sent file to one message. Message content keeps
 its version 1 `type:"text"` shape and gains an optional `attachments` array
@@ -1288,16 +1318,36 @@ its R2 objects were removed.
    channel access, locks the user row, enforces quota, 30 reservations/minute
    and 20 pending uploads, inserts a pending row, and returns presigned `PUT`
    URLs (15 minutes). The signature covers `content-type`, `content-length`
-   and the download name in `content-disposition`, so R2 rejects other bytes.
+   and the download name in `content-disposition`, so R2 rejects other sizes
+   and headers (the signature does not authenticate the body).
 2. The client uploads the preview, then the original, directly to R2.
 3. `POST /api/assets/{id}/complete`: the API `HEAD`s each object, requires the
    exact reserved size, and for inline types checks magic bytes from a 64-byte
-   ranged `GET`. A mismatch soft-deletes the reservation (`422`).
+   ranged `GET`. It then streams the full source, checks its length and signature
+   again, strips metadata from original and preview, and PUTs the results to
+   distinct CDN keys. A mismatch or unsafe media soft-deletes the reservation
+   (`422`); there is no fallback to the source. Quota and returned sizes use the
+   actual cleaned bytes. A row lock serializes completion and cancellation.
+   Slow jobs continue after a `409`; clients poll completion rather than hold
+   one HTTP request through a proxy timeout.
 4. `POST /api/chat/channels/{id}/messages` accepts `attachmentIds`. Inside the
    send transaction the API locks the sender's ready, unattached uploads for
    that channel, embeds their descriptions and links them. Text may be empty
    only when files are attached. Attachment IDs join the idempotency hash;
    text-only hashes are unchanged.
+
+Attachment spoilers use optional `spoilerAttachmentIds` on that send request:
+distinct IDs from `attachmentIds`. Marked descriptions store `spoiler:true` in
+message JSON; missing means false. The choice is part of the retry hash and
+survives history, edits, forwards and URL refreshes. Each composer offers a
+per-file toggle. Updated clients conceal images and video posters with an
+on-device blur of a still thumbnail (the image original when no preview exists),
+without starting playback. Files without a usable visual preview use a neutral
+cover. Reveal is local UI state, not a database write; opening another image
+does not reveal hidden gallery items. Push notifications
+omit spoiler thumbnails and filenames. This is a presentation preference, not
+access control: authorized clients still receive URLs, and older clients do
+not understand the flag. Text spoilers and slash commands are not implemented.
 
 `GET /api/assets/usage` returns `{used, limit}`. `POST /api/assets/urls`
 returns fresh URLs for visible attachments (like Discord's refresh endpoint)
@@ -1308,7 +1358,7 @@ for tabs open longer than a URL's lifetime.
 - Per person, across every space: `ASSET_QUOTA_BYTES` (default 10 GiB) of stored
   bytes, original plus preview. No separate per-file limit; one file may use
   the whole allowance. Space owners are not charged for members' uploads.
-- Quota counts what is **stored** (after browser compression), and reservations
+- Quota counts what is **stored** (after client compression and metadata removal), and reservations
   count immediately so parallel uploads cannot overshoot.
 - Bytes stay counted until the purge loop successfully deletes the original and
   preview. Late storage writes may briefly recreate uncharged bytes until the
@@ -1425,7 +1475,8 @@ Rules shared by every client:
 - **HDR video** (iPhone/Android HLG, HDR10) is tone mapped to SDR BT.709 (Hable,
   1000-nit peak) where the platform can do it; otherwise the original uploads
   unchanged rather than a washed-out SDR copy.
-- **GIF, SVG, AVIF, audio, documents and other files** upload unchanged.
+- **GIF, AVIF, audio, documents and other files** are not re-encoded locally;
+  the server metadata policy below still applies.
 
 AVIF quality parity. `avifQuality` is libavif's quality scale as of
 libavif 1.0 (`avifenc -q`). On five 9–14 MP photos, quality 85 scored
@@ -1441,9 +1492,51 @@ decoders also store an H.264 rendition, which would defeat the storage saving,
 and browsers cannot use a bundled decoder for `<video>` (Safari plays AV1 only
 on devices with AV1 hardware).
 
-The server never transcodes: it verifies the stored bytes (exact size, and
-magic bytes for inline types) and charges quota for exactly what was stored,
-so a client that skips compression only spends its own allowance faster.
+The server never transcodes, but it independently removes embedded media
+metadata before publication, including when an older client skips stripping.
+Client compression remains optional; server metadata removal does not.
+
+### Metadata privacy on completion
+
+- JPEG, PNG, GIF, WebP, AVIF and HEIC/HEIF use ExifTool to remove EXIF/GPS,
+  XMP, comments and other writable descriptive metadata. Only image orientation
+  and colour-rendering metadata are copied back. GIF/WebP frames, loop settings
+  and delays are not re-encoded.
+- MP4/MOV, WebM, AVI and the supported audio containers (MP3, MP4/M4A, AAC,
+  Ogg, WAV, FLAC, AIFF) are remuxed by FFmpeg with stream copy. Global tags,
+  per-stream tags, capture dates, chapters, cover art and non-audio/video tracks
+  (including GPS/timecode/data/subtitle tracks) are omitted. Audio/video samples,
+  rotation, colour information and playback timing remain.
+- Detection uses bytes, not just filenames or MIME types; labelling a known
+  media file `application/octet-stream` does not bypass cleaning. Unsupported
+  declared media (including SVG, BMP and TIFF originals) is refused rather than
+  shared unchanged. Clients normally convert BMP/TIFF to a supported still format.
+- This is **container metadata removal, not complete anonymisation**: it does
+  not redact visible/audible locations, proprietary information embedded inside
+  copied codec samples, ICC profile contents, or documents/archives and their
+  embedded files. Non-media downloads retain their contents. Already-published
+  uploads are not rewritten by this change.
+- Upload URLs target only staging, so a repeated PUT after completion cannot
+  replace a cleaned file. Sources are erased after success; the bounded purge
+  sweep repeats cleanup after the 15-minute PUT lifetime, including late writes.
+  Rejected/cancelled sources follow the existing purge/reconciliation loop.
+- The Linux API image includes FFmpeg, ExifTool and `prlimit`. One job per pod
+  streams to a private temporary directory, removed on success/error/cancellation.
+  Processes have address-space/heap, CPU, output-size and wall-clock limits,
+  closed stdin, no shell/config-file interpolation and no network protocols.
+  Neither command output nor embedded metadata is logged. The production API
+  needs a disk-backed writable `/tmp` (12 GiB for a 5 GiB R2 PUT plus its result)
+  and 512 MiB memory; infrastructure provisions these before the API release.
+  Storage/process failures fail closed. Cleaning may take up to two minutes
+  per object. `/complete` responds within ten seconds with the result or a
+  retriable `409`, leaving slow work running. Clients allow a queued batch of
+  ten files to finish; a process restart safely restarts from private staging.
+
+Apple's “Location Included” picker/drag badge describes the **selected source**,
+before Caper processes it; it is not an inspection of the shared object. Verify
+privacy by inspecting the downloaded result. Reservations created by the previous
+API during a rolling update may need to be selected/uploaded again (their signed
+PUT used the old final key, not staging).
 
 Web specifics: WebCodecs via Mediabunny (loaded on demand). Google Chrome on
 Linux encodes H.264 but not AAC, so those uploads carry Opus audio in MP4;
@@ -1477,8 +1570,9 @@ Follow-ups:
 
 - Desktop cannot decode HEIC (uploads it unchanged) or AVIF (opens originals
   in the browser; the inline image is the preview).
-- Location written as a timed metadata track or a top-level XMP `uuid` box in
-  MP4 is not removed; WebP originals keep EXIF/XMP chunks.
+- Server metadata stripping regression checks use real FFmpeg/ExifTool on
+  synthetic geotagged fixtures plus a disposable Postgres and fake R2. Live R2,
+  Apple picker/share workflows and physical native-device checks remain separate.
 - HEVC/AV1 delivery once every client can play it; chunked parallel encoding
   if server processing returns.
 - JPEG XL: Chrome 155 (October 2026) decodes it by default, Safari since 17
@@ -1723,6 +1817,15 @@ again, leaving a one-hour margin. Desktop retains an owned copy rather than
 re-reading a picked path that may change. Concurrent triggers share the active
 upload; successful files in a partially failed batch are reused on Retry.
 
+For unsent composer drafts, Send retries failed uploads and continues once the
+entire selected batch is ready. Another failure keeps the text and files in the
+composer instead of sending the successful subset. Failed tiles have a **Retry
+upload** action and a highlighted warning explaining that Send retries; the
+normal uploading status/progress returns during each attempt. There is no new
+continuous retry loop. Native Send attempts are cancelled if their composer or
+destination changes while waiting; profile composers retain their complete
+selection on failure as well.
+
 Send enforces expiry even before cleanup and returns 409 `attachment_unavailable`.
 Clients treat this as a definitive refusal, silently re-upload and send with a
 new message UUID and attachment IDs. Recovery is bounded to one replacement
@@ -1740,6 +1843,16 @@ reserve quota normally; cancelled bytes remain charged until purge succeeds.
 History marks deleted attachments `unavailable` without URLs. No user-facing
 sent-message or sent-file delete exists yet; account deletion should set `deleted_at` on
 the owner's assets when that flow lands.
+
+#### Upload retry feedback validation (October 17, 2026)
+
+| Platform | Local validation boundary |
+| --- | --- |
+| Web | `npm run check` and all 657 `npm test` tests pass. `scripts/test-chat-paste.mjs` and `scripts/test-profile-composer.mjs` pass against the disposable parity fixture: held retries, repeated failure, retained text/files, complete-selection delivery exactly once after recovery, channel/thread isolation, and profile queued-file neutrality. Inspected 1280px/390px DPR-2 Chromium failed/uploading states, thread/profile composers, and a recorded two-image failure/recovery interaction. This is not live R2, Safari, touch or physical-device validation. |
+| Rust desktop | All 555 tests pass; 12 device/audio tests ignored. Formatting, Clippy and Linux binary build pass. Tests cover complete-selection retry, duplicate Send and stale destination/draft guards. Inspected the Linux `parity-attachments` fixture; no live native upload or Windows/macOS render acceptance. |
+| Android | Implementation and Compose regression updated. `:app:testDebugUnitTest :app:compileDebugAndroidTestKotlin` stops during configuration because the Android SDK is absent. No Kotlin build or device rendering verified. |
+| iOS/macOS | Implementation and XCTest updated for retry success/failure, duplicate Send and stale composer protection. Swift/Xcode unavailable; no Apple compilation, tests or rendering verified. |
+| Containers | Docker daemon unavailable. Web production build validated directly; no infrastructure or API changes. |
 
 #### Cancellation validation and rollout (October 11, 2026)
 
@@ -1826,9 +1939,50 @@ npx wrangler deploy --env staging
 | Platform | Send files | Show files |
 | --- | --- | --- |
 | Web (desktop and mobile layouts) | Yes: picker, clipboard files/images, and drag and drop with an overlay | Images, video, audio, file cards; images and videos open in the in-app viewer |
-| Apple (iOS and macOS) | Yes: Photos picker, file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
-| Android | Yes: system photo picker and document picker, clipboard content URIs, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Apple (iOS and macOS) | Yes: Caper photo/video gallery on iOS (awaiting Apple build/device validation), system Photos picker on macOS, file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
+| Android | Yes: Caper photo/video gallery (awaiting device validation) and document picker, clipboard content URIs, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
 | Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux), clipboard files/images, and drag and drop with an overlay, up to 10. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+
+#### Mobile attachment gallery
+
+The iOS and Android attachment **Photos and videos** actions use Caper's own
+three-column gallery, including channel, DM, thread and profile-message drafts.
+Numbered selection badges preserve tap order. The remaining count includes files
+already in the original draft; at ten total, other tiles dim and cannot be selected,
+while chosen tiles remain removable. If the draft grows while picking, Add is blocked
+until the selection fits instead of silently dropping selected items. **Add N** hands
+media to the existing attachment pipeline; it does not send the message. Files and
+single-image profile/space-icon pickers are unchanged. The mobile web app still uses
+the browser's system picker: websites cannot enumerate a phone's photo library.
+
+Unlike the system attachment picker, this gallery needs photo-library permission.
+It asks only after an explicit action inside the sheet and supports limited access;
+it never requires the full library. iOS uses PhotoKit read/write authorization (no
+library edits are made); Android uses version-appropriate read-media permissions,
+including Android 14's selected-photo permission. Both expose access management and
+a Files fallback. Revocation and library changes refresh accessible media and remove
+inaccessible selections. Browsing stays local; only Add imports selected originals.
+iOS may download selected iCloud resources and cancels that request on dismissal.
+No library list, unselected originals or photo identifiers are sent to Caper servers.
+
+Before a Google Play release, submit the new `READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO`
+declaration and obtain approval under the
+[photo/video permissions policy](https://support.google.com/googleplay/android-developer/answer/16935362).
+Google requires justification for why system pickers cannot provide the app's core
+functionality; a custom appearance alone does not establish eligibility. Approval
+has not been checked or obtained for this change. Do not assume automated release
+can publish this permission change; if rejected, Android must retain the system
+media picker (or limit the custom gallery to user-imported files).
+
+Native UI acceptance remains outstanding: render portrait/landscape and large-text
+states, exercise 0/8/10 existing files, select to capacity then replace one, select
+across more than 60 library items, use mixed photos/videos, cancel, deny/restrict/
+limit access, grant more photos, revoke access while backgrounded, switch accounts,
+and verify the original channel/thread/profile draft receives only confirmed media.
+On iOS also exercise edited assets, iCloud offline/error/cancellation and nested
+profile-sheet dismissal. Check VoiceOver/TalkBack selected/disabled announcements.
+These require Apple SDK/device and Android device execution; web tests do not prove
+the native galleries render or that OS permission flows work.
 
 #### File drop overlay
 
@@ -1875,7 +2029,7 @@ without a Swift toolchain and awaits macOS CI (`FileDropTests` covers the shared
 text). Real Finder/Files/Photos drags, iPad and Android split-screen drops,
 Windows/X11 drags and physical devices remain to be checked.
 
-Composer thumbnails and filenames are clickable before sending, including while
+Composer attachment tiles are clickable before sending, including while
 preparing/uploading or after an upload fails. Web images and videos use the
 in-app viewer with local object URLs; audio, PDFs and plain text open in the
 browser, and unsupported/active document formats download instead. Apple uses
@@ -1883,6 +2037,26 @@ Quick Look for the staged local file. Android grants the selected content URI
 to a system preview app; Rust desktop opens the selected file in the system
 browser. Native format support depends on the installed system handlers.
 Remove remains a separate control and never opens a preview.
+
+Draft tiles show video posters with a small translucent play indicator centred
+in the preview area, clear of any progress or retry footer. The whole tile still
+opens the preview; the indicator adds no separate hit target. Web and Apple
+decode a bounded early frame locally; Android reuses its prepared poster;
+Rust desktop uses FFmpeg, including for profile-card files not yet uploaded.
+Undecodable videos retain the play
+indicator. The visible X sits near the top-right corner without shrinking the
+44-point Apple/web touch target or Android's 48dp target. Long press (or desktop
+context click) offers **Remove attachment**, affecting only the unsent draft,
+not the original library file or a sent message. Sending profile-card files
+retain their removal lock. Source byte counts and upload behavior are unchanged.
+
+Validation for these draft controls: Chromium desktop and touch-emulated narrow
+layouts with the local API fixture cover posters, long press, tap preview,
+movement cancellation, removal, retry and unsupported video. Rust desktop was
+built and rendered with its labelled attachment fixture; its removal regression
+and a real FFmpeg-backed staged-video poster test pass. Apple and Android builds
+and physical-device rendering still need verification; browser captures are not
+evidence of native iOS/Android behavior.
 
 Ready draft chips show only the final upload size on Android, iOS and the web's
 mobile/touch layout (up to 760px or a coarse pointer). Desktop web, macOS and Rust
@@ -1997,6 +2171,28 @@ Android, iOS/macOS, and Rust desktop also provide searchable standard-emoji
 pickers, counted chips, own-contribution highlighting, add/remove, and save-error
 retry. Clients preserve per-message reaction revisions independently of the
 channel replay cursor.
+
+Web, macOS and Rust desktop group the message hover actions in one neutral,
+rounded, bordered bar. Controls retain their existing compact targets, individual
+hover/focus feedback and permissions. Web and Rust keep the whole bar visible
+while its menu or picker is open; thread rows omit Reply in thread. Narrow web,
+Android and iPhone retain their existing message-actions sheets instead of the
+desktop bar.
+
+Thread actions use a thread-spool glyph, and Reply uses a longer curved arrow.
+`shared/message-icons.ts` supplies both to web and the native SVG exporter;
+the icon parity test also checks Android's vectors against the same glyphs.
+Action labels, targets and permissions are unchanged.
+
+Hover-bar validation: web check/build/typechecks and 639 web/shared tests pass;
+Rust desktop formatting, application Clippy, Linux build and 536 tests pass
+(12 existing device/audio tests ignored). Inspected labelled Chromium desktop,
+thread, menu/picker, keyboard-focus and 390px layouts, and 2× Linux wide/narrow
+renders. Real CDP touch holds and the reaction suite pass with touch emulation
+re-enabled before each input (this orb's browser commands otherwise reset it).
+The broader Threads and Pins scripts stop at quote-connector and invite-consent
+assertions respectively; both reproduce on unchanged main. No local macOS/Xcode,
+Windows or physical-device validation is claimed.
 
 On macOS, the reaction picker is a 352 × 420-point native popover anchored to
 the fixed conversation header, not the scrolling timeline. Its Cancel button
@@ -2459,8 +2655,11 @@ Pins are channel-wide, not personal bookmarks. Any joined channel member can pin
 or unpin another member's message; the two participants can do the same in a DM.
 Private-channel grants and active space membership still apply. Preview readers
 can see pins but cannot change them, including no-op writes. Actions do not ask
-for confirmation. “Pinned by …” attribution appears only in the Pins view,
-not in the main timeline. The header says Pins without a count.
+for confirmation. “Pinned by …” attribution appears above each pinned message in
+the timeline, threads and Pins. It says “Pinned by you” when the pinner's account
+ID matches the viewer; otherwise it names the pinner, independently of who wrote
+the message. The attribution still opens the pinner's profile. The header says
+Pins without a count.
 Desktop message controls appear on hover or keyboard focus: two 14px glyphs in
 24px targets, separated by 2px. Touch clients retain long-press actions and large
 targets; narrow web reserves text space beside its 44px action target.
@@ -2548,6 +2747,14 @@ otherwise Playwright's newest Chromium).
 Stock headless Chromium reports no hover device. The script verifies the fine
 pointer before checking hover and later checks a 390px narrow browser layout.
 That is not touch emulation or physical-device validation.
+
+Attribution validation (2026-10-15): `npm run check`, all 650 JavaScript tests,
+and `scripts/test-pinned-media.mjs` pass. The browser fixture covers self/other
+labels in chat and Pins at 1280px/390px, live pin changes, pinner profiles,
+unpin removal and thread attribution. Rust desktop passes 545 tests (12 device/
+audio tests ignored), formatting, Clippy and a Linux build; its Pins fixture was
+rendered and inspected. Android compilation stops at the missing Android SDK;
+Apple builds/rendering require Swift/Xcode, unavailable in the Linux orb.
 
 ### Deployment order for pins
 
@@ -2654,6 +2861,48 @@ not change. Summary, reaction and pin revisions remain independent. Clients
 merge summaries monotonically, preserve one broadcast identity, and keep roots
 loaded through thread GET out of channel pagination until channel history loads
 them. Reconnect refetches the active thread and fences obsolete responses.
+
+### Unread thread replies (October 17, 2026)
+
+Web, Android, Apple and Rust desktop show a gold (`#E4C76A`) dot and **Unread**
+beside the terracotta reply count when another account replies in a thread the
+viewer started or replied to. Participation comes from message authorship, not
+the five displayed avatars. Own replies and blocked/deleted authors do not create
+unread state; sending a reply does not implicitly acknowledge earlier replies by
+others.
+
+`GET /api/chat/channels/{channel}/threads/unread` returns
+`{threads:[{rootId,seq}]}`, using the latest qualifying unread reply sequence.
+`PUT /api/chat/channels/{channel}/messages/{root}/thread/read` accepts `{seq}`
+and returns 204. Both use account authentication and existing conversation read
+permissions. The additive `thread_reads` table stores a per-account/root cursor,
+advanced monotonically and clamped to that thread's latest committed reply.
+Personalized state never enters the shared message payload or gateway replay.
+
+Clients acknowledge rendered replies only in an active, visible thread's latest
+window; channel visits, hover prefetch and older windows do not clear the badge.
+Failed acknowledgements retain it for retry, and delayed responses cannot erase
+newer unread replies. Live events refresh the list; the existing 15-second
+foreground refresh reconciles reads made on another device. This does not change
+push notifications or channel unread indicators. Earlier thread visits were not
+recorded, so existing participated threads can initially show **Unread** until
+opened; no migration guesses or backfills past reads.
+
+Validation: `npm run check`, 651 web/shared tests, Rust workspace tests and
+Clippy passed. A disposable Postgres HTTP test covers participation beyond five
+avatars, account-only access, private-channel/DM denial, own/blocked/deleted
+authors, prefetch/channel-read independence and monotonic/thread-clamped cursors.
+Chromium at 1280px and 390px exercised the real local API: hover left read storage
+unchanged, opening a thread persisted its visible sequence and cleared only that
+thread's badge, a background tab kept new replies unread until it regained focus,
+and unread state survived a page reload. Narrow Chromium is not a phone/device
+test. Rust desktop passed its tests and package Clippy, linked against native
+libwebrtc, and rendered the labelled `parity-thread-unread` fixture under
+Linux/Xvfb. That fixture verifies layout, not a live native conversation.
+Android SDK and Swift/Xcode are
+unavailable in this orb, so their new contract tests and native rendering remain
+unverified. Docker has no running daemon; the web production build and API
+compilation were checked, not container images or an API release build.
 
 ### Thread validation boundary
 
@@ -2912,8 +3161,10 @@ and is marked **Caper team has been notified 🫡** for everyone there.
   a pending request nor is affected by the participants' blocks. Removing someone
   from the team (`deleted_at`) ends their access everywhere at once.
 - **Answering.** Team members' messages carry `author.admin`, stamped by the server
-  at send time and badged **ADMIN** on every client. Clients open a report in
-  its thread, so answers default there. Thread participants see them, and an
+  at send time and badged **ADMIN** on every client. Top-level reports open at
+  the message in its conversation, without opening a thread. Reports made in
+  a thread reveal that existing thread so the reported reply is visible. The
+  team can explicitly start a thread; its participants see replies, and an
   @mention reaches the reporter as usual.
 - **Notifications.** Kind `feedback`, title `Sender · Feedback`, for every team
   member, ignoring mutes. See [notifications](notifications.md#who-gets-a-notification).
@@ -2927,6 +3178,14 @@ and is marked **Caper team has been notified 🫡** for everyone there.
   reports). Anyone but the team posting in the thread afterwards brings it back, and
   `?archived=true` lists archived threads. `GET /api/account/me` adds
   `feedbackTeam: true` for team members.
+- **Waiting badge.** `GET /api/spaces/unread` also returns `feedbackWaiting`:
+  the total unarchived conversations waiting for a team reply, grouped by
+  channel/thread using the newest report, independent of inbox pagination.
+  Non-team accounts receive zero. Web, Android, Apple and Rust desktop show a
+  terracotta count on Feedback through their existing unread refresh loop.
+  Opening, collapsing or viewing archived feedback does not clear it; replying
+  or archiving changes it on the next refresh. Failed refreshes retain the last
+  count; zero hides it. This is a shared team backlog, not a personal unread count.
 
 **Messaging Caper.** Any team name in **New message** opens an accepted DM with
 the Caper account (`users.team_account`, username `caper`, no email, so nobody
@@ -2969,6 +3228,7 @@ API image**: an older API keeps working against the new schema.
 | Rust desktop | `cargo fmt --check`, `cargo test` (422 passed) and Clippy with libwebrtc: decoding, pills, autocomplete, open order, inbox paging, notification routing, headless egui inbox/visit flows. No real window or live server |
 | Android | No Android SDK here. Models, `data/*`, push payloads and autocomplete compiled with standalone kotlinc and their JVM tests pass; Compose UI, view model and FCM taps unbuilt |
 | Apple | No Xcode here. Models, `AppModel`, autocomplete, notifications and API client type-checked with Swift 6 on Linux (stubbed Apple-only modules) and their XCTests pass; SwiftUI views, APNs taps and macOS notification clicks unbuilt |
+| Waiting badges (October 18) | Disposable Postgres HTTP regression covers 55 conversations beyond the first page, duplicate reports, team-only counts, archive/answer/reopen and removed channels. Web unit test and Chromium 1280px/390px mocked-response checks cover counts, collapse/archive views, outage retention and zero hiding. Linux desktop fixtures visually inspected; 13 feedback-related tests and the unread-divider integration test pass. Apple/Android decoding tests added but not run: Swift/Xcode and Android SDK unavailable in this orb; no physical-device checks |
 
 ## Message editing
 
@@ -5380,6 +5640,59 @@ a follow-up PR after physical recovery and a complete native build on the
 intended main revision; toggling the repository variable alone does not remove
 it. Roll back a failed recovery to GitHub-hosted routing, not to an unverified PC.
 
+**Live channels in the list, October 17, 2026:** after the owner tried Live now
+on an iPhone, the separate Live now section is superseded on every client by
+live channel rows that grow into cards in place (see the voice section above):
+no "Live now" heading or "N more live" fold, no "is speaking" line (it shifted
+the card), the phone strip shows the card's faces in its order, and pressing a
+card opens its chat while a right-click, long press or accessibility action on
+its faces opens per-person volume. Validation:
+
+- Web: `npm run check` passes, and `npm test` passes 657 of 658 tests (the
+  known Node 22 `noise-assets.test.ts` failure). Every `test-voice-controls.mjs`
+  mode passes at 1280px and 390px in fine-pointer Chromium, and `CHANNEL_ROWS`
+  also passes in stock (touch-style) Chromium; desktop and phone captures were
+  inspected. The long press is exercised with synthetic touch pointer events.
+  All of this uses a mocked API and WebRTC.
+- Android: main, unit-test and androidTest Kotlin compile, the 436 JVM unit
+  tests pass and lint is clean. The 14 voice UI tests passed only under a
+  temporary, uncommitted Robolectric setup. `connectedDebugAndroidTest`,
+  `smoke.py`, `assembleDebug` and devices were not run.
+- Apple: the eight `LiveNow` unit tests pass on a Linux Swift 6.1.2 toolchain
+  and every changed Swift file parses. The SwiftUI views, `ProtocolTests`, the
+  parity UI tests and screenshots need Xcode and were not run here.
+- Rust desktop: fmt, `cargo clippy -p caper-desktop --all-targets --no-deps -D
+  warnings` and 554 tests pass; the wide and narrow `parity-voice-*` fixtures,
+  including the new `parity-voice-elsewhere`, were inspected under Xvfb.
+
+No live SFU, physical-device, touch-hardware or screen-reader validation was
+done, and there is no API, protocol, configuration or migration change.
+
+**Live now, October 17, 2026:** the October 11 header voice below is
+superseded on every client by the sidebar's Live now (see the voice section
+above). Validation:
+
+- Web: `npm run check` passes, and `npm test` passes 655 of 656 tests. The one
+  failure is `noise-assets.test.ts`, which needs Node 24's WebAssembly; this orb
+  has Node 22, and the test fails the same way on unmodified main.
+  `test-voice-controls.mjs` passes in every mode at 1280px and 390px in
+  fine-pointer Chromium, and `CHANNEL_ROWS` also passes in stock (touch-style)
+  Chromium. All of this uses a mocked API and WebRTC.
+- Android: Kotlin and androidTest compile, the 430 JVM unit tests pass, and lint
+  is clean. The ten instrumented voice UI tests passed only under a temporary,
+  uncommitted Robolectric setup, which checks behaviour but not screenshots.
+  `connectedDebugAndroidTest`, `smoke.py` and devices were not run.
+- Apple: the Swift sources parse and the six new `LiveNow` unit tests pass on a
+  Linux Swift 6.1.2 toolchain. The views were type-checked only against a
+  SwiftUI stand-in. Run the parity UI tests (rewritten for Live now) and both
+  parity screenshot scripts with Xcode before release.
+- Rust desktop: fmt, `cargo clippy -p caper-desktop --all-targets --no-deps -D
+  warnings` and 550 tests pass, and its new `parity-voice-*` fixtures were
+  inspected under Xvfb.
+
+No live SFU, physical-device, screen-reader or touch-hardware validation was
+done.
+
 **Header voice, October 11, 2026:** the October 3 voice rows below are
 superseded. Join, Switch here and Leave for the open channel live in the
 conversation header on every client; channel rows show voice only while
@@ -7005,7 +7318,8 @@ uses a resizable egui thread SidePanel (300–480) and is unchanged.
 
 Web (desktop and narrow), Android, iOS/macOS and Rust desktop offer **Block**
 with the existing confirmation and **Unblock** on other people's profile cards.
-Blocked cards hide Message and Invite; your own card only says You. Historical
+Blocked cards hide Message and Invite; your own card says You with **Edit profile**,
+which opens the existing profile editor on every client. Historical
 authors with an account ID but no known username can still be blocked, but cannot
 be messaged or invited by an invented username.
 
@@ -7243,11 +7557,33 @@ DM behavior is unchanged. This is message activity, not a new invitation alert,
 mention counter or notification inbox.
 
 `GET /api/spaces/unread` returns only unread spaces/channels, with decimal-string
-`lastSeq` values. Joined channels count other unblocked, active authors' main
+`lastSeq` and `readSeq` values. Joined channels count other unblocked, active authors' main
 messages and broadcast replies. Accessible unjoined channels and non-broadcast
 thread replies count direct personal mentions only; forwarded mention metadata
 does not notify. Space membership, private grants and soft removals constrain
 every result. Edits, reactions and pins alone do not create unread messages.
+
+Channel visits capture this snapshot before acknowledging history. Web,
+Android, iOS/macOS and Rust desktop place a terracotta **New messages** divider
+before the first incoming, nonblocked channel message after that saved read
+position. The divider breaks author grouping and remains for the visit even
+after badges clear; switching away and returning captures a new boundary.
+Live arrivals on an already-read visit do not introduce a divider. DMs, thread
+panels and feedback visits are unchanged. If older unloaded history may contain
+the boundary, the divider waits for that history rather than labeling the start
+of the latest page; this does not change initial scroll position. Old servers
+without `readSeq` show no divider.
+
+Divider validation (October 18, 2026): web build/typecheck/lint and 659 JS tests
+pass; labelled Chromium desktop/narrow fixtures exercise the read boundary and
+grouping break, including returning after new arrivals and revisiting after
+reading. API workspace tests, Clippy and the unread/read route regression against
+disposable loopback Postgres pass; no migration is needed. Rust desktop passes
+557 tests (12 device/audio tests ignored) and Clippy, with inspected
+desktop/narrow fixture renders. Android SDK and Apple toolchains are unavailable
+here, so their compile, native render
+and device checks remain outstanding. These fixtures are not live-account or
+cross-device acceptance.
 
 `POST /api/spaces/{space}/channels/{channel}/read` accepts `{"seq":"42"}`.
 Read positions are saved per account/channel, advance monotonically, and are
@@ -7712,7 +8048,7 @@ Layout, the same on every client: the header has the avatar, name and
 conversation (speech bubble) and Close icons at the end. Block/Unblock is
 inside that secondary menu and blocking still requires confirmation;
 Invite to space stays below the header. A full-width divider separates the
-composer. The composer reuses the channel composer's shell (Attach/paperclip at the
+composer. The composer reuses the channel composer's shell (Attach/plus at the
 start, then the field, Emoji and an eggshell primary Send) with staged files above it
 as the channel's draft chips, including image thumbnails and sizes. Delivery
 uncertainty is one line ("Delivery isn't confirmed"); web adds Retry and Edit
@@ -7916,9 +8252,12 @@ defers during calls or another modal. Missing publication retries at most once
 per minute while foregrounded; Settings offers immediate retry.
 
 Mac/Windows/Linux expose **Check for updates** in the account menu and Settings.
-Automatic checks advertise a known update through a Caper mascot above the profile;
-they do not take focus. The mascot briefly peeks, waves and walks, then hides for
-a longer rest. Reduced motion/background windows keep a still clickable peek.
+Automatic checks advertise a known update through a persistent **Update available**
+button above the profile/audio controls; they do not take focus. The button has
+its own row, outside the fixed-height account controls, and never animates away.
+A thin rainbow edge stays still while a short light sweep passes every eight
+seconds. Reduce Motion, disabled controls and background windows stop the sweep;
+the decoration never moves the label or intercepts pointer/keyboard input.
 Clicking it or completing a manual check with an available release opens a centered
 modal with **What’s new expanded by default**. Only the notes scroll; restart/Later
 and installer actions stay visible. Later, Escape or the backdrop close the review
@@ -7927,7 +8266,14 @@ blocked. Confirmed restart still leaves a call; non-writable copies use the inst
 
 Desktop clients pass their source revision to the bundled updater, which reads
 current/target exact snapshots and shows the same user-facing highlights for skipped
-releases. Missing editorial metadata never blocks installing the signed update.
+releases. The updater returns them as one stacked list (newest first, repeated
+titles dropped) with the newest release's date, so the review shows a date
+next to the version (linked to its commit on GitHub), bold titles over short
+descriptions and a close button. Installing from the review marks that build's
+highlights read, so the restarted app does not open the same What's new again. After a failed update, the error's "use the installer" links straight to
+the installer; there is no separate footer link. Signed in, **Send this to the
+Caper team** posts the error, installed build and target version as `@feedback`
+in your personal notes (no navigation); the team reads and replies there. Missing editorial metadata never blocks installing the signed update.
 Older clients keep their signed commit-title changelog until updated once. Linux
 fixture rendering and modal regressions cover narrow screens, errors, history gaps,
 call warnings and installer fallback; physical Mac/Windows focus, scrolling, motion
@@ -7967,7 +8313,12 @@ gets a quiet, new sequence. Do not overwrite/delete immutable assets.
 The public API `/api/whats-new?platform=<platform>&revision=<40-lowercase-hex-sha>`
 only reads the requested immutable asset from the fixed Caper repository. Clients
 never read rolling `latest.json`, so an old build cannot announce future features.
-The API has bounded GitHub fetches, coalescing and 60-second success/failure cache.
+The API has bounded GitHub fetches, per-revision coalescing and a 60-second
+success/failure cache. Revisions that loaded (up to 32) are counted apart from
+in-flight and failed lookups (up to 32), so unknown revisions can neither evict
+nor block a working one; once the failure side is full, further unknown
+revisions get `502` until a failure expires. A slow fetch never holds up other
+revisions.
 Each snapshot is at most 64 KiB UTF-8, retains at most 30 chronological releases,
 and has positive JavaScript-safe integer sequences. Titles/bodies are plain text,
 at most 100/500 Unicode code points. Missing metadata fails closed.
@@ -7996,8 +8347,11 @@ at most 100/500 Unicode code points. Missing metadata fails closed.
    `fallbacks: "default"`, so a classifier decline retries on Anthropic's
    recommended model. Optional Caper Actions variables `CAPER_RELEASE_NOTES_MODEL`
    and `CAPER_RELEASE_NOTES_EFFORT` (`low`-`max`) override them. One request per
-   shipped release is roughly 10-40K input tokens, about $0.10-0.50 at Opus 5.5
-   rates. The native workflow uses its own `contents:write` token.
+   shipped release sends at most 400,000 characters (about 100K tokens, under
+   $0.50 at Opus 5.5 rates); a typical release is far smaller. When a long gap
+   between releases exceeds that, server-only diffs are dropped and client
+   diffs shortened evenly (`diffTruncated`); every commit's subject, body and
+   paths are always kept. The native workflow uses its own `contents:write` token.
    No AWS/Cloudflare secret, OpenTofu initialization/plan/apply or new capacity
    is required. No shared credentials were configured during development.
 3. Choose the merged Caper SHA and wait for its immutable web/API images to exist.
@@ -8234,7 +8588,7 @@ user's pictures from storage on account deletion belongs with that future flow.
 | Call | Behavior |
 | --- | --- |
 | `POST /api/assets` `{"purpose":"avatar"\|"spaceIcon", "spaceId"?, filename, contentType, byteSize, width, height}` | Reserves a picture (no `channelId`/`preview`). `spaceIcon` requires owning the space (`404` otherwise). PNG, JPEG, WebP or GIF only (`400 picture_type`); GIFs ≤ 5 MiB and other pictures ≤ 1 MiB (`413 picture_too_large`); 1–1024 px each side. 50 picture uploads per person per day (`429 picture_rate_limited`), plus the usual 30/minute and 20 pending. Returns `{id, kind, upload}`; picture IDs are 20 characters. |
-| `POST /api/assets/{id}/complete` | Checks size and magic bytes as for attachments, then the real pixel size read from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), ≤ 1024 px (`422 picture_invalid`). The first successful completion **applies** the picture and returns `account` (avatar) or `space` (icon); a retry returns the current state without re-applying, so a late retry never undoes a newer picture. |
+| `POST /api/assets/{id}/complete` | Checks size and magic bytes as for attachments, then the real pixel size read from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), ≤ 1024 px (`422 picture_invalid`). The first successful completion **applies** the picture and returns `account` (avatar) or `space` (icon); a retry returns the current state without re-applying, so a late retry never undoes a newer picture. Pictures are ordered by reservation: one that completes after a later-reserved picture already completed is kept but not applied, and the response shows the newer one. |
 | `POST /api/assets/{id}/cancel` | Cancels a picture before completion; `409` afterwards. |
 | `DELETE /api/account/avatar` | Back to the saved mascot; returns the account. |
 | `DELETE /api/spaces/{space}/icon` | Owner only; back to the initial; returns the space. |
@@ -8250,9 +8604,17 @@ image downloads on each platform; follow-up).
 
 ### Clients
 
-Every client applies the same preparation: a GIF (detected by its bytes) uploads
-unchanged so it keeps its animation, and is refused locally above 5 MB or 1024 ×
-1024; anything else the platform decodes is turned upright, center-cropped to a
+Every client applies the same preparation: a GIF (detected by its bytes) keeps
+its animation. Within 5 MB and 1024 × 1024 it uploads unchanged; any bigger GIF
+is shrunk on the device instead of refused: every composited frame is
+center-cropped square and scaled to 512 px with its timing, then, while the
+result is still over 5 MB, to 384, 256, 192 and 128 px, then to every other
+frame (each lasting as long as the ones it replaces). Web
+(`account/gif-shrink.ts`, in a worker) and Android (`GifShrink.kt`) share one
+pure decoder/encoder that gives each frame a palette of only the pixels that
+changed and leaves unchanged pixels showing; Apple uses ImageIO and the Rust
+desktop the `image` crate's GIF codec. The server's 5 MiB GIF ceiling stays: it
+is also what older clients will download. Anything else the platform decodes is turned upright, center-cropped to a
 square, scaled to at most 512 px and re-encoded as WebP (PNG or JPEG where WebP
 encoding is unavailable), which also drops location metadata. Pictures show
 aspect-filled in a rounded square (corner radius 30% of the side, the
@@ -8260,9 +8622,16 @@ aspect-filled in a rounded square (corner radius 30% of the side, the
 speaking rings around them follow that shape. Space icons fill their existing
 tile. The mascot or initial underneath stays visible while loading or if a URL
 fails. Decoded pictures are cached by asset
-ID, since URLs re-sign daily. **Change picture**/**Remove picture** live in the
-profile settings and **Change icon**/**Remove icon** in **Manage space** (owners
-only); a successful change updates the signed-in client everywhere through the
+ID, since URLs re-sign daily. Edit profile and **Manage space** (owners
+only) show the picture or icon in a frame with an edit badge on its corner: the
+frame picks a picture, or, while a custom one is set, opens a menu to choose
+another or remove it. Dropping a file onto the frame uploads it directly using
+the same image preparation and limits. The frame highlights the drop target;
+only the first file is used, and busy or unavailable editors refuse drops.
+This is implemented in the web, Android, Apple and Rust desktop editors.
+Without a custom profile picture, the saved mascot holds
+up a "change me!" sign (`assets/avatars/change-me.svg`, one vector drawn over
+any mascot); a successful change updates the signed-in client everywhere through the
 existing own-profile refresh path.
 
 
@@ -8275,6 +8644,36 @@ existing own-profile refresh path.
 | Android | Gradle stops at the missing SDK. With a standalone Kotlin 2.2.20 compiler, models, data, `PicturePreparer.kt` and `PictureViews.kt` compile against the real libraries, and 201 data/model unit tests pass, including 14 new picture tests. `MainActivity.kt`, `CaperViewModel.kt` and the sheets were not compiled. No emulator or device run. |
 | iOS/macOS | No Xcode. A Linux Swift 6.0.3 toolchain parses every source and test file and type-checks the Foundation-only code with stubs; 10 new picture tests and the existing mention-card tests run and pass there. SwiftUI views, ImageIO/libwebp code and AppModel tests were not compiled. The macOS parity UI tests now scroll until Manage space's Remove and Delete buttons are reachable. No simulator or device run. |
 | Rust desktop | `cargo fmt --check`, application Clippy (`--no-deps`, `-D warnings`) and `cargo test` (527 passed, 12 existing ignored; 18 new, including three UI render tests and a loopback upload) pass on Linux with clang 21. The `parity-pictures` fixtures were captured under Xvfb: the GIF avatar changes between frames, plus the round crop, mascot fallback, rail icon and both settings dialogs. Not Windows, a 2x display or the real file pickers. |
+
+The framed editor and "change me!" sign (same day): web `npm run check` and
+`scripts/test-pictures.mjs` pass at 1280px and 390px (frame opens the picker
+without a picture and a menu with one; Escape closes the menu, not the dialog);
+Rust desktop `cargo test` (536 passed), application Clippy and Xvfb renders of
+both states. Android and Apple were not compiled (no SDK or Xcode here).
+
+Picture-frame file drops (October 18, 2026): web `npm run check`, all 661
+Vitest tests, and `scripts/test-pictures.mjs` pass. The browser regression covers
+first-file selection, replacing a custom icon without the menu, refusing a
+second drop while busy, and preserving the icon on a non-image error. Chromium
+also accepted a native file-drop event at 390px. Desktop/narrow browser screenshots and
+an interaction recording were inspected with labelled API/storage mocks; no
+live upload was made. Rust desktop builds and passes formatting, application
+Clippy and 561 tests (13 ignored); the test harness was built with `cargo rustc
+--tests -- -C linker=clang-21 -C link-arg=-fuse-ld=lld` after the default build
+ran out of memory. Its Manage space fixture renders under Xvfb; native OS file
+drags were not exercised. Apple and Android changes are not compiled or
+device-verified in this orb (no Xcode or Android SDK).
+
+Shrinking oversized GIFs (October 15, 2026): web Vitest decodes, shrinks and
+re-decodes generated GIFs (12 frames over 5 MB → 512 px under 100 KB with every
+delay; tight budgets step down then halve frames keeping total length;
+transparency; truncated files), and `scripts/test-pictures.mjs` uploads a 6 MB,
+1200 px GIF that Chrome's `ImageDecoder` then plays as 12 frames at 512 × 512.
+A 1100 × 800 photo-like GIF shrinks in about 0.5 s to 34 dB PSNR against its
+own frames. `GifShrink.kt` and its JUnit tests compile and pass with a
+standalone Kotlin 2.2.20 compiler on the JVM, with the same output quality; the
+Android app itself was not built (no SDK). Rust desktop `pictures::` tests and
+application Clippy pass. Apple's ImageIO path was not compiled (no Xcode).
 
 Run the browser check against `vite dev` with Playwright installed somewhere
 (the repository has no Playwright dependency):
@@ -8297,10 +8696,16 @@ PLAYWRIGHT_MODULE=/path/to/node_modules/playwright/index.mjs \
 4. Verify on staging/production: upload a still and an animated GIF avatar and a
    space icon; check members, chat, DMs, voice and the rail on a second account;
    reduced motion; remove both and confirm the same mascot and the initial return.
-5. Rollback: older API code ignores the new columns, but its cleanup treats
-   completed pictures as unsent files and purges their objects after 24 hours.
-   For a rollback longer than that, fix forward or clear `users.avatar_asset` and
-   `spaces.icon_asset` first. Leave the migration in place.
+5. Rollback: prefer a forward fix. A pre-pictures API image can't start against
+   the migrated database: startup migration validates the applied history and
+   stops on the unknown `202610140001` version, so the existing pods keep
+   serving (only the API runs the asset purger; the gateway never does). Don't
+   get around that by deleting migration records or setting SQLx's
+   `ignore_missing`: the old purge marks every completed upload with no
+   message as deleted after 24 hours and removes its R2 objects, which would
+   take every applied and kept picture. A reviewed rollback build must keep the
+   migration and the current purge, which skips completed pictures. Leave the
+   migration in place.
 
 ## iOS drawer releases still bounced off the far side (October 14, 2026)
 
@@ -8330,3 +8735,30 @@ Verify on an iPhone: drag from Browse past the middle toward the conversation,
 slowly and with a flick, and let go. The conversation carries on to the left edge
 and stops there, never passing it. Do the same back to Browse and for the member
 list, and check that a finger still catches a moving slide.
+
+## Space-rail voice activity (October 18, 2026)
+
+Web, Android, Apple and Rust desktop show a small speaker on a space's icon:
+white on neutral chrome when voice is occupied, white on green when this
+client is connected there. Browsing a different space does not move the green
+badge. Joining/reconnecting alone never turns it green. Unread and mute marks
+remain separate.
+
+Authenticated `GET /api/spaces/voice-activity` returns `{ "spaceIds": [...] }`.
+It includes only current member spaces with non-monitor participants in
+channels the caller has joined and can access; private grants and revocations
+use the same authorization as joining voice. Reservations and monitor-only
+rooms do not count. No participant identities or channel IDs are returned.
+Clients refresh every 15 seconds (web skips hidden tabs), clear polled activity
+on failure/logout, and derive their own green badge immediately from the local
+connected state. This is a polling hint, not an instantaneous presence feed.
+
+Validation: API HTTP authorization cases pass against disposable Postgres and
+Valkey and the in-memory room backend; SFU responses are mocked. Web checks and
+tests pass; `VOICE_TEST_RAIL=1 node scripts/test-voice-controls.mjs` exercises
+idle/joining/connected, cross-space navigation, outage cleanup and leaving with
+mocked media. Chromium 1280px/390px captures were inspected (not physical-device
+or Safari acceptance). Rust desktop has endpoint, state and rail tests; its
+connected and neutral badges were rendered and inspected in Linux/Xvfb fixtures.
+Android SDK and Apple/Xcode toolchains are unavailable in this Linux orb;
+their new API tests and native rendering still need platform validation.

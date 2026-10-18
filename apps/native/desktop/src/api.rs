@@ -379,6 +379,68 @@ impl Api {
         self.request(Method::GET, "api/spaces/unread", Some(token), None, None)
     }
 
+    pub fn voice_activity(&self, token: &str) -> Result<Vec<String>, ApiError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Activity {
+            space_ids: Vec<String>,
+        }
+        let activity: Activity = self.request(
+            Method::GET,
+            "api/spaces/voice-activity",
+            Some(token),
+            None,
+            None,
+        )?;
+        Ok(activity.space_ids)
+    }
+
+    pub fn unread_threads(
+        &self,
+        token: &str,
+        channel: &str,
+    ) -> Result<BTreeMap<String, String>, ApiError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Thread {
+            root_id: String,
+            seq: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct Threads {
+            threads: Vec<Thread>,
+        }
+        let response: Threads = self.request(
+            Method::GET,
+            &format!("api/chat/channels/{channel}/threads/unread"),
+            Some(token),
+            None,
+            None,
+        )?;
+        Ok(response
+            .threads
+            .into_iter()
+            .map(|thread| (thread.root_id, thread.seq))
+            .collect())
+    }
+
+    pub fn read_thread(
+        &self,
+        token: &str,
+        channel: &str,
+        root: &str,
+        seq: &str,
+    ) -> Result<(), ApiError> {
+        checked(self.raw(
+            Method::PUT,
+            &format!("api/chat/channels/{channel}/messages/{root}/thread/read"),
+            Some(token),
+            None,
+            Some(json!({"seq":seq})),
+        )?)
+        .map(|_| ())
+    }
+
     pub fn read_channel(
         &self,
         token: &str,
@@ -852,6 +914,7 @@ impl Api {
         client_id: &str,
         text: &str,
         attachment_ids: &[String],
+        spoiler_attachment_ids: &[String],
         thread: (Option<&str>, bool),
         reply_to_id: Option<&str>,
     ) -> Result<Message, ApiError> {
@@ -859,6 +922,9 @@ impl Api {
         // Ids join the idempotency hash; the key is present only with files.
         if !attachment_ids.is_empty() {
             body["attachmentIds"] = json!(attachment_ids);
+        }
+        if !spoiler_attachment_ids.is_empty() {
+            body["spoilerAttachmentIds"] = json!(spoiler_attachment_ids);
         }
         if let Some(root) = thread.0 {
             body["threadRootId"] = json!(root);
@@ -1520,6 +1586,64 @@ fn invalid(message: &str) -> ApiError {
 mod tests {
     use super::{Api, friendly_error};
     use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn attachment_spoiler_send_contract_omits_empty_selection() {
+        use std::io::Read;
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for spoiler in [false, true] {
+                let (stream, _) = server.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["attachmentIds"], serde_json::json!(["a", "b"]));
+                if spoiler {
+                    assert_eq!(body["spoilerAttachmentIds"], serde_json::json!(["b"]));
+                } else {
+                    assert!(body.get("spoilerAttachmentIds").is_none());
+                }
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 400 Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+            }
+        });
+        for spoilers in [vec![], vec!["b".into()]] {
+            assert!(
+                api.send(
+                    None,
+                    "chat",
+                    "channel",
+                    "client",
+                    "",
+                    &["a".into(), "b".into()],
+                    &spoilers,
+                    (None, false),
+                    None
+                )
+                .is_err()
+            );
+        }
+        worker.join().unwrap();
+    }
 
     #[test]
     fn whats_new_requests_exact_public_snapshot_and_rejects_mismatch_and_oversize() {

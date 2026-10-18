@@ -34,12 +34,27 @@ public enum ProfileFeedEvent: Equatable, Sendable {
 
 /// A newer picture over a retained snapshot's.
 enum PictureMerge {
-    /// No newer asset means the picture was removed. The snapshot's URL is
-    /// kept while it signs the same asset (it may be the fresher signature).
+    /// No newer asset means the picture was removed. For the same asset the
+    /// signature that expires later wins (ties and unreadable URLs go to the
+    /// newer one), so long sessions never keep an expired URL. Pictures are
+    /// cached by asset, so a fresher URL doesn't reload them.
     static func newer(asset: String?, url: String?, over snapshotAsset: String?, _ snapshotURL: String?) -> (asset: String?, url: String?) {
         guard let asset else { return (nil, nil) }
-        if snapshotAsset == asset, let snapshotURL { return (asset, snapshotURL) }
-        return (asset, url)
+        guard snapshotAsset == asset else { return (asset, url) }
+        return (asset, fresher(url, over: snapshotURL))
+    }
+
+    /// The signed URL that stays valid longer, preferring `url` unless both
+    /// carry an expiry and `snapshotURL`'s is strictly later.
+    static func fresher(_ url: String?, over snapshotURL: String?) -> String? {
+        guard let url else { return snapshotURL }
+        guard let snapshotURL, let later = expiry(snapshotURL), let current = expiry(url) else { return url }
+        return later > current ? snapshotURL : url
+    }
+
+    /// The CDN signature's `exp` (Unix seconds), when present.
+    static func expiry(_ url: String) -> Int64? {
+        URLComponents(string: url)?.queryItems?.first { $0.name == "exp" }?.value.flatMap { Int64($0) }
     }
 }
 
@@ -105,8 +120,7 @@ public struct ProfileDirectory: Equatable, Sendable {
 
     public func apply(_ detail: SpaceDetail) -> SpaceDetail {
         guard !isEmpty else { return detail }
-        return SpaceDetail(space: detail.space, channels: detail.channels, members: detail.members.map { apply($0) },
-                           channelInvitations: detail.channelInvitations)
+        return detail.with(members: detail.members.map { apply($0) })
     }
 
     public func apply(_ report: FeedbackReport) -> FeedbackReport {
@@ -123,13 +137,13 @@ public struct ProfileDirectory: Equatable, Sendable {
 extension Member {
     /// This member's current profile, as a list endpoint returned it.
     var profile: Person {
-        Person(id: id, username: username, displayName: displayName, avatarId: avatarId, avatarAsset: avatarAsset, avatarUrl: avatarUrl)
+        Person(admin: admin, id: id, username: username, displayName: displayName, avatarId: avatarId, avatarAsset: avatarAsset, avatarUrl: avatarUrl)
     }
 }
 
 extension DirectMessagePeer {
     var profile: Person {
-        Person(id: id, username: username, displayName: displayName, avatarId: avatarId, avatarAsset: avatarAsset, avatarUrl: avatarUrl)
+        Person(admin: admin, id: id, username: username, displayName: displayName, avatarId: avatarId, avatarAsset: avatarAsset, avatarUrl: avatarUrl)
     }
 }
 
@@ -166,7 +180,7 @@ extension ChatAuthor {
     func applying(_ person: Person) -> ChatAuthor {
         guard id == person.id, !isGuest else { return self }
         let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
-        return ChatAuthor(id: id, name: person.displayName, isGuest: false, avatarId: person.avatarId ?? avatarId, admin: admin,
+        return ChatAuthor(id: id, name: person.displayName, isGuest: false, avatarId: person.avatarId ?? avatarId, admin: person.admin ?? admin,
                           avatarAsset: picture.asset, avatarUrl: picture.url)
     }
 }
@@ -195,7 +209,7 @@ extension Member {
     func applying(_ person: Person) -> Member {
         guard id == person.id else { return self }
         let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
-        return Member(id: id, username: person.username, displayName: person.displayName, owner: owner, avatarId: person.avatarId ?? avatarId,
+        return Member(admin: person.admin ?? admin, id: id, username: person.username, displayName: person.displayName, owner: owner, avatarId: person.avatarId ?? avatarId,
                       avatarAsset: picture.asset, avatarUrl: picture.url)
     }
 }
@@ -204,7 +218,7 @@ extension Person {
     func applying(_ person: Person) -> Person {
         guard id == person.id else { return self }
         let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
-        return Person(id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId ?? avatarId,
+        return Person(admin: person.admin ?? admin, id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId ?? avatarId,
                       avatarAsset: picture.asset, avatarUrl: picture.url)
     }
 }
@@ -214,7 +228,7 @@ extension DirectMessagePeer {
     func applying(_ person: Person) -> DirectMessagePeer {
         guard id == person.id else { return self }
         let picture = PictureMerge.newer(asset: person.avatarAsset, url: person.avatarUrl, over: avatarAsset, avatarUrl)
-        return DirectMessagePeer(id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId ?? avatarId,
+        return DirectMessagePeer(admin: person.admin ?? admin, id: id, username: person.username, displayName: person.displayName, avatarId: person.avatarId ?? avatarId,
                                  team: team, avatarAsset: picture.asset, avatarUrl: picture.url)
     }
 }
@@ -262,6 +276,26 @@ extension Space {
 extension SpaceDetail {
     func applying(_ update: Space) -> SpaceDetail {
         guard space.id == update.id else { return self }
-        return SpaceDetail(space: space.applying(update), channels: channels, members: members, channelInvitations: channelInvitations)
+        return with(space: space.applying(update))
+    }
+}
+
+extension FeedbackVisit {
+    /// A visit's title follows its space's name.
+    func applying(_ update: Space) -> FeedbackVisit {
+        guard !direct, spaceID == update.id else { return self }
+        return FeedbackVisit(channelID: channelID, spaceID: spaceID, spaceName: update.name, channelName: channelName, direct: direct,
+                             reportID: reportID, reporter: reporter)
+    }
+}
+
+extension FeedbackReport {
+    /// An inbox row's space name follows the space.
+    func applying(_ update: Space) -> FeedbackReport {
+        guard let space, space.id == update.id else { return self }
+        return FeedbackReport(id: id, messageId: messageId, threadRootId: threadRootId, createdAt: createdAt, text: text,
+                              attachments: attachments, reporter: reporter, channel: channel,
+                              space: SpaceReference(id: space.id, name: update.name), replyCount: replyCount,
+                              answered: answered, archived: archived)
     }
 }

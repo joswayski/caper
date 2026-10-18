@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import type { GeneralChatHistory } from "../chat/types";
 import { Route as SpacesRoute } from "../routes/spaces";
 import Call from "./Call";
+import { STRIP_FACES, callCardFaces, liveNames } from "../media/live-now";
 
 test("a direct spaces visit renders a visible server fallback before account data or hydration", () => {
   const Pending = SpacesRoute.options.pendingComponent!;
@@ -29,7 +30,7 @@ test("the signed-in composer reserves a disabled attachment control before uploa
   expect(attach).toContain('title="Checking file uploads…"');
 });
 
-test("audio controls remain available before joining, with Join in the conversation header", () => {
+test("audio controls remain available before joining; joining is a channel row action, not the header", () => {
   const markup = renderToStaticMarkup(<Call />);
   for (const label of ["Mute microphone", "Deafen audio", "Input Options", "Output Options"]) {
     const button = markup.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`))?.[0];
@@ -37,14 +38,50 @@ test("audio controls remain available before joining, with Join in the conversat
     expect(button).not.toContain('disabled=""');
     expect(button).not.toContain('aria-disabled="true"');
   }
+  // Voice lives in the sidebar now: the conversation header carries none of it.
   const header = markup.match(/<header class="chat-heading">(.*?)<\/header>/)?.[1];
-  const join = header?.match(/<button[^>]*aria-label="Join voice"[^>]*>(.*?)<\/button>/)?.[1];
-  expect(join).toContain("Join voice");
-  // The channel row keeps only an unlabelled shortcut that fine pointers reveal.
+  expect(header).toBeDefined();
+  expect(header).not.toContain("Join voice");
+  expect(header).not.toContain("Leave voice");
+  // The channel row keeps a one-click, icon-only join.
   const shortcut = markup.match(/<button[^>]*aria-label="Join voice in #general"[^>]*>(.*?)<\/button>/)?.[1];
   expect(shortcut).toContain("<svg");
-  expect(shortcut).not.toContain("Join voice");
+  expect(shortcut).not.toContain("Join");
+  // Nobody is talking yet, so no row is a live card and there is nothing to leave.
+  expect(markup).not.toContain("live-card");
+  expect(markup).not.toContain('aria-label="Live now"');
   expect(markup).not.toContain('aria-label="Leave voice"');
+});
+
+test.each([
+  [[], ""],
+  [["Maya"], "Maya"],
+  [["Maya", "Alex"], "Maya and Alex"],
+  [["Maya", "Alex", "Sam"], "Maya, Alex and Sam"],
+  [["Rosa", "Ben", "Mina", "Leo", "Ivy", "Omar", "June", "Kai"], "Rosa, Ben and 6 more"],
+])("a live room names its people in one line: %j", (names, line) => {
+  expect(liveNames(names)).toBe(line);
+});
+
+test("your call card shows up to ten faces, then nine and a +N tile", () => {
+  const people = (count: number) => Array.from({ length: count }, (_, index) => index);
+  expect(callCardFaces(people(3))).toEqual({ shown: people(3), hidden: [] });
+  expect(callCardFaces(people(10))).toEqual({ shown: people(10), hidden: [] });
+  const twelve = callCardFaces(people(12));
+  expect(twelve.shown).toEqual(people(9));
+  expect(twelve.hidden).toEqual([9, 10, 11]);
+  expect(callCardFaces(people(50)).shown).toHaveLength(9);
+});
+
+test("the phone strip shows the card's faces in its order, folding after five", () => {
+  const people = (count: number) => Array.from({ length: count }, (_, index) => index);
+  // Up to five, the strip and the card show exactly the same people.
+  for (const count of [1, 2, 3, 5])
+    expect(callCardFaces(people(count), STRIP_FACES).shown).toEqual(callCardFaces(people(count)).shown);
+  const eight = callCardFaces(people(8), STRIP_FACES);
+  expect(eight.shown).toEqual(people(4));
+  expect(eight.hidden).toEqual([4, 5, 6, 7]);
+  expect(callCardFaces(people(8)).shown.slice(0, 4)).toEqual(eight.shown);
 });
 
 test("members start open in the initial markup, before responsive hydration", () => {

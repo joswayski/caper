@@ -30,6 +30,43 @@ class CaperApiTest {
 
     @After fun close() { server.close() }
 
+    @Test fun `space voice activity is an authenticated lightweight snapshot`() = runTest {
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        server.enqueue(MockResponse().setBody("""{"spaceIds":["space0000001","space0000002"]}"""))
+        assertEquals(listOf("space0000001", "space0000002"), api.spaceVoiceActivity("account-secret").spaceIds)
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/api/spaces/voice-activity", request.path)
+        assertEquals("Bearer account-secret", request.headers["Authorization"])
+        assertNull(request.headers["x-caper-chat-token"])
+        server.enqueue(MockResponse().setBody("""{"spaceIds":[]}"""))
+        assertTrue(api.spaceVoiceActivity("account-secret").spaceIds.isEmpty())
+        server.enqueue(MockResponse().setResponseCode(503))
+        assertTrue(runCatching { api.spaceVoiceActivity("account-secret") }.isFailure)
+    }
+
+    @Test fun `thread unread uses account authentication and acknowledges an exact decimal sequence`() = runTest {
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        server.enqueue(MockResponse().setBody("""{"threads":[{"rootId":"message00000001","seq":"9007199254740993"}]}"""))
+        val unread = api.unreadThreads("account-secret", "channel00001")
+        assertEquals("9007199254740993", unread.threads.single().seq)
+        val get = server.takeRequest()
+        assertEquals("GET", get.method)
+        assertEquals("/api/chat/channels/channel00001/threads/unread", get.path)
+        assertEquals("Bearer account-secret", get.headers["Authorization"])
+        assertNull(get.headers["x-caper-chat-token"])
+        server.enqueue(MockResponse().setResponseCode(204))
+        api.markThreadRead("account-secret", "channel00001", "message00000001", unread.threads.single().seq)
+        val put = server.takeRequest()
+        assertEquals("PUT", put.method)
+        assertEquals("/api/chat/channels/channel00001/messages/message00000001/thread/read", put.path)
+        assertEquals("Bearer account-secret", put.headers["Authorization"])
+        assertEquals("{\"seq\":\"9007199254740993\"}", put.body.readUtf8())
+        assertTrue(runCatching { api.markThreadRead("account-secret", "channel00001", "message00000001", "-1") }.isFailure)
+        server.enqueue(MockResponse().setResponseCode(503))
+        assertTrue(runCatching { api.markThreadRead("account-secret", "channel00001", "message00000001", "9") }.isFailure)
+    }
+
     @Test fun `release notes are a bounded public request pinned to the exact source revision`() = runTest {
         val revision = "a".repeat(40)
         val body = """{"schema":1,"platform":"android","revision":"$revision","sequence":3,"releases":[{"sequence":3,"revision":"$revision","publishedAt":"2026-10-11T19:00:00Z","highlights":[]}]}"""

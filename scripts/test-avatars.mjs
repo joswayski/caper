@@ -146,6 +146,16 @@ const browser = (...args) =>
   });
 const evaluate = (code) => JSON.parse(browser("eval", code));
 const wait = (condition) => browser("wait", "--fn", condition);
+// Voice faces have no painted border or halo at rest. Overlapping live card faces are
+// separated by a 2px ring in their own surface's colour: a gap, never a visible frame.
+const unframedVoiceAvatars = `(() => {
+  const faces = [...document.querySelectorAll(".avatar, .live-avatar")];
+  return faces.length > 0 && faces.every(e => {
+    const s = getComputedStyle(e);
+    const surface = getComputedStyle(e.closest(".live-card, .voice-strip") ?? document.body).backgroundColor;
+    return (s.borderTopWidth === "0px" || s.borderTopColor === "rgba(0, 0, 0, 0)") && !e.hasAttribute("data-speaking") && (s.boxShadow === "none" || s.boxShadow === surface + " 0px 0px 0px 2px");
+  });
+})()`;
 const checkDirectDensity = (rowHeight) => {
   const geometry = evaluate(`(() => {
     const rows = [...document.querySelectorAll('.direct-select')];
@@ -181,21 +191,21 @@ const checkDirectDensity = (rowHeight) => {
     assert.ok(Math.abs(geometry.dockNameOffset) < 0.5, "The desktop account dock retains the same name column");
   assert.equal(geometry.rowGap, 2);
   assert.equal(geometry.headingGap, 2);
-  assert.equal(geometry.topPadding, 6);
+  assert.equal(geometry.topPadding, 12, "Direct messages sit 12px below their divider");
   assert.equal(geometry.dockAvatar, 30, "Do not shrink the account dock avatar");
 };
 try {
   browser("open", `${origin}spaces?space=space1234567&channel=channel12345`);
   browser("set", "viewport", "1280", "900", "2");
   wait(
-    '!document.querySelector(".chat-initial-messages") && document.querySelectorAll(".chat-avatar [data-avatar-id]").length === 5 && document.querySelectorAll(".participant-avatar [data-avatar-id]").length === 3',
+    '!document.querySelector(".chat-initial-messages") && document.querySelectorAll(".chat-avatar [data-avatar-id]").length === 5 && document.querySelectorAll(".live-room .live-stack .live-avatar [data-avatar-id]").length === 3',
   );
   assert.deepEqual(
     evaluate('[...document.querySelectorAll(".chat-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))'),
     [0, 31, 32, 799, 143],
   );
-  // The member list starts closed on every client (#414).
-  browser("click", ".member-list-toggle");
+  // Wide layouts show the member list unless it was hidden; phones start without it.
+  if (!evaluate('!!document.querySelector("#space-member-list")')) browser("click", ".member-list-toggle");
   wait('document.querySelectorAll(".member-presence-avatar [data-avatar-id]").length === 5');
   assert.deepEqual(
     evaluate(
@@ -203,11 +213,17 @@ try {
     ),
     [0, 31, 32, 799, 143],
   );
+  // People in voice in a channel you are not in show as faces on its row's live card.
   assert.deepEqual(
     evaluate(
-      '[...document.querySelectorAll(".voice-stack-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))',
+      '[...document.querySelectorAll(".live-room .live-stack .live-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))',
     ),
-    [0, 31],
+    [0, 31, 32],
+  );
+  assert.equal(
+    evaluate('document.querySelector(".live-room .live-names").textContent'),
+    "Alex, Maya and June",
+    "Faces on the card belong to the people it names",
   );
   assert.equal(
     evaluate('document.querySelector(".direct-self .direct-avatar [data-avatar-id]").dataset.avatarId'),
@@ -232,13 +248,7 @@ try {
     true,
     "Image avatars and their containers must have transparent backing",
   );
-  assert.equal(
-    evaluate(
-      '[...document.querySelectorAll(".avatar, .voice-stack-avatar")].every(e => getComputedStyle(e).borderTopColor === "rgba(0, 0, 0, 0)" && getComputedStyle(e).boxShadow === "none")',
-    ),
-    true,
-    "Idle voice avatars must not have a painted border or halo",
-  );
+  assert.equal(evaluate(unframedVoiceAvatars), true, "Idle voice avatars must not have a painted border or halo");
   assert.equal(
     evaluate(
       '[...document.querySelectorAll("[data-avatar-id]")].every(e => getComputedStyle(e).backgroundImage.endsWith(`/images/avatars/v3/${e.dataset.avatarId}.svg")`))',
@@ -280,28 +290,9 @@ try {
   if (artifacts) browser("screenshot", join(artifacts, "avatars-dms-scrolled.png"));
   browser("scroll", "up", "1000", "--selector", ".channel-navigation");
   wait('document.querySelector(".channel-navigation").scrollTop === 0');
-  // Explicit style-state mock: no microphone, transport, or live speaking detection.
-  browser("click", ".voice-stack");
-  wait(
-    'document.querySelector(".voice-occupants[data-open]") && !document.querySelector(".voice-occupants[data-open]").getAnimations({ subtree: true }).some(a => a.playState === "running")',
-  );
-  browser(
-    "eval",
-    '[...document.querySelectorAll(".avatar, .voice-stack-avatar")].forEach(e => e.classList.add("speaking"))',
-  );
-  assert.equal(
-    evaluate(
-      '[...document.querySelectorAll(".avatar, .voice-stack-avatar")].every(e => getComputedStyle(e).borderTopColor === "rgb(99, 122, 67)" && getComputedStyle(e).boxShadow !== "none")',
-    ),
-    true,
-    "Speaking avatars retain their green border and halo",
-  );
-  if (artifacts) browser("screenshot", join(artifacts, "avatars-speaking-style-mock.png"));
-  browser(
-    "eval",
-    '[...document.querySelectorAll(".avatar, .voice-stack-avatar")].forEach(e => e.classList.remove("speaking"))',
-  );
-  browser("click", ".voice-stack");
+  // Rooms you are not in have no expandable roster and no speaking rings (there is no
+  // audio for them). Speaking rings on your call card are covered with real detection
+  // by VOICE_TEST_AVATARS=1 node scripts/test-voice-controls.mjs.
   browser("find", "first", ".chat-add-reaction", "click");
   wait('!!document.querySelector(".chat-reaction-picker input")');
   if (artifacts) browser("screenshot", join(artifacts, "avatars-reaction-picker.png"));
@@ -319,7 +310,8 @@ try {
   browser("click", '[aria-label="Close Manage space"]');
   browser("click", ".account-profile");
   browser("fill", "#display-name", "Renamed Alex");
-  browser("click", 'button[type="submit"]');
+  // The composer's send button (shown on touch screens) is also a submit button.
+  browser("click", '.profile-dialog button[type="submit"]');
   wait('document.querySelector(".account-name")?.textContent === "Renamed Alex"');
   assert.equal(evaluate('document.querySelector(".account-avatar [data-avatar-id]").dataset.avatarId'), "0");
   browser("set", "viewport", "390", "844", "2");
@@ -334,13 +326,14 @@ try {
     ),
     true,
   );
-  assert.equal(
+  // Phones show the open channel's room in a strip under the conversation header.
+  assert.deepEqual(
     evaluate(
-      '[...document.querySelectorAll(".avatar, .voice-stack-avatar")].every(e => getComputedStyle(e).borderTopColor === "rgba(0, 0, 0, 0)" && getComputedStyle(e).boxShadow === "none")',
+      '[...document.querySelectorAll(".voice-strip .live-stack .live-avatar [data-avatar-id]")].map(e => Number(e.dataset.avatarId))',
     ),
-    true,
-    "Narrow idle voice avatars stay unframed",
+    [0, 31, 32],
   );
+  assert.equal(evaluate(unframedVoiceAvatars), true, "Narrow idle voice avatars stay unframed");
   if (artifacts) browser("screenshot", join(artifacts, "avatars-narrow-members.png"));
   browser("click", ".navigation-toggle");
   // Browse buttons slide; clicks during the view transition land on its snapshot.
@@ -358,7 +351,7 @@ try {
   wait(
     '!document.querySelector(".call-room").classList.contains("navigation-open") && !document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")',
   );
-  browser("click", ".member-list-toggle");
+  if (evaluate('!!document.querySelector(".space-member-presence")')) browser("click", ".member-list-toggle");
   wait('!document.querySelector(".space-member-presence")');
   browser("scroll", "up", "1000", "--selector", ".chat-scroller");
   wait('document.querySelector(".chat-scroller").scrollTop === 0');
@@ -463,7 +456,7 @@ try {
   );
   if (artifacts) browser("screenshot", join(artifacts, "avatars-vector-collection.png"));
   console.log(
-    "PASS: saved SVG IDs in chat, members, voice roster/stack and account; transparent backing; missing-response fallback; presence; profile rename; desktop, narrow and enlarged Chromium. Mock API, no live voice.",
+    "PASS: saved SVG IDs in chat, members, live room card, phone voice strip and account; transparent backing; missing-response fallback; presence; profile rename; desktop, narrow and enlarged Chromium. Mock API, no live voice.",
   );
 } catch (error) {
   console.error(browser("snapshot"));

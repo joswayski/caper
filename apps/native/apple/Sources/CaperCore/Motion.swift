@@ -39,6 +39,11 @@ struct Entrance: ViewModifier {
 extension Entrance {
     /// Menus, cards and tooltips anchored to a control rise 4 points.
     static var anchored: Entrance { Entrance(offset: CGSize(width: 0, height: 4), animation: CaperMotion.easeOut(CaperMotion.fast)) }
+    /// `anchored` where `enters`; otherwise the view simply shows (as a live
+    /// card's body arrives beneath a row that was already there).
+    static func anchored(when enters: Bool) -> Entrance {
+        Entrance(enters, offset: CGSize(width: 0, height: 4), animation: CaperMotion.easeOut(CaperMotion.fast))
+    }
     /// Modal dialogs rise 8 points from 98%.
     static var dialog: Entrance { Entrance(offset: CGSize(width: 0, height: 8), scale: 0.98, animation: CaperMotion.easeOut(CaperMotion.base)) }
     /// A dialog's scrim fades in.

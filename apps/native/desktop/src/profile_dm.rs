@@ -1,5 +1,9 @@
 //! Local, per-person profile drafts. Only explicit Send or Open contacts the API.
-use crate::{api::Api, compress::Compression, model, uploads};
+use crate::{
+    api::Api,
+    compress::{self, Compression},
+    model, uploads,
+};
 use eframe::egui;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, atomic::AtomicBool};
@@ -10,9 +14,10 @@ pub struct File {
     /// Pasted images belong to the draft, including while a worker reads them.
     pub scratch: Option<Arc<uploads::Scratch>>,
     pub attachment: Option<model::Attachment>,
+    pub spoiler: bool,
     /// Bytes on disk when staged, for the composer chip.
     pub size: u64,
-    /// An image's decoded preview, filled off the UI thread by [File::thumbnail].
+    /// A local image/video preview, filled off the UI thread by [File::thumbnail].
     pub preview: Arc<OnceLock<Option<egui::ColorImage>>>,
     pub texture: Option<egui::TextureHandle>,
     preview_requested: bool,
@@ -29,14 +34,15 @@ impl File {
             path,
             scratch,
             attachment: None,
+            spoiler: false,
             preview: Arc::default(),
             texture: None,
             preview_requested: false,
         }
     }
 
-    /// The preview texture once decoded. The first call decodes an image
-    /// file's thumbnail in the background; other files keep the file icon.
+    /// The preview texture once decoded. Images and video posters are decoded
+    /// in the background; unsupported files keep the file icon.
     pub fn thumbnail(&mut self, context: &egui::Context) -> Option<&egui::TextureHandle> {
         if !self.preview_requested {
             self.preview_requested = true;
@@ -56,14 +62,29 @@ impl File {
 
     fn load_preview(&self, context: &egui::Context) {
         let is_image = self.scratch.is_some() || image::ImageFormat::from_path(&self.path).is_ok();
-        if self.preview.get().is_some() || !is_image {
+        let is_video = compress::type_from_name(&self.name()).starts_with("video/");
+        if self.preview.get().is_some() || (!is_image && !is_video) {
             return;
         }
         let (path, preview, context) = (self.path.clone(), self.preview.clone(), context.clone());
+        // Pasted files must outlive a draft removed while decoding.
+        let scratch = self.scratch.clone();
         std::thread::spawn(move || {
-            let image = std::fs::read(&path)
-                .ok()
-                .and_then(|bytes| crate::attachments::decode_thumbnail(&bytes));
+            let _scratch = scratch;
+            let image = if is_video {
+                crate::ffmpeg::binary().and_then(|binary| {
+                    let probe = crate::ffmpeg::probe(binary, &path).ok()?;
+                    let poster = crate::ffmpeg::poster(binary, &path, &probe, 320)?;
+                    Some(egui::ColorImage::from_rgb(
+                        [poster.width() as usize, poster.height() as usize],
+                        poster.as_raw(),
+                    ))
+                })
+            } else {
+                std::fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| crate::attachments::decode_thumbnail(&bytes))
+            };
             let _ = preview.set(image);
             context.request_repaint();
         });
@@ -267,6 +288,12 @@ impl Send {
             .iter()
             .filter_map(|file| file.attachment.as_ref().map(|a| a.id.clone()))
             .collect::<Vec<_>>();
+        let spoiler_ids = self
+            .files
+            .iter()
+            .filter(|file| file.spoiler)
+            .filter_map(|file| file.attachment.as_ref().map(|a| a.id.clone()))
+            .collect::<Vec<_>>();
         let message = api
             .send(
                 Some(token),
@@ -275,6 +302,7 @@ impl Send {
                 &self.client_id,
                 &self.text,
                 &ids,
+                &spoiler_ids,
                 (None, false),
                 None,
             )
@@ -480,6 +508,29 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs CAPER_FFMPEG and a fixture FFmpeg with lavfi"]
+    fn staged_videos_get_a_thumbnail_before_upload() {
+        let video = uploads::Scratch::new("mp4");
+        let status = crate::ffmpeg::command(&crate::ffmpeg::fixture_binary())
+            .args(["-y", "-f", "lavfi", "-i", "color=c=red:s=64x32:d=1"])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p"])
+            .arg(video.path())
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "fixture generated");
+        let context = egui::Context::default();
+        let mut file = File::picked(video.path().to_owned());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while file.thumbnail(&context).is_none() {
+            assert!(std::time::Instant::now() < deadline, "video poster decoded");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let texture = file.thumbnail(&context).unwrap();
+        assert_eq!(texture.size(), [64, 32]);
+        assert!(file.attachment.is_none(), "preview needs no upload");
+    }
+
+    #[test]
     fn staged_images_get_a_thumbnail_and_other_files_keep_the_icon() {
         let context = egui::Context::default();
         let image = uploads::Scratch::new("png");
@@ -509,6 +560,7 @@ mod tests {
         let scratch = uploads::Scratch::new("txt");
         std::fs::write(scratch.path(), b"receipt").unwrap();
         let mut operation = operation(vec![File::picked(scratch.path().to_owned())]);
+        operation.files[0].spoiler = true;
         let client_id = operation.client_id.clone();
         let (api, requests) = server(move |base| {
             vec![
@@ -550,7 +602,7 @@ mod tests {
         let sent: Value = serde_json::from_slice(&seen[9].body).unwrap();
         assert_eq!(
             sent,
-            json!({"clientMessageId":operation.client_id,"text":"Receipt 🎉","attachmentIds":["asset1"]})
+            json!({"clientMessageId":operation.client_id,"text":"Receipt 🎉","attachmentIds":["asset1"],"spoilerAttachmentIds":["asset1"]})
         );
         assert_eq!(
             seen.iter()

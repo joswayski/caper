@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { test } from "vitest";
-import { MessageAttachments } from "../chat/Attachments.tsx";
+import { DraftAttachments, MessageAttachments } from "../chat/Attachments.tsx";
 import {
   attachmentView,
   attachmentsOf,
@@ -321,7 +321,7 @@ test("retained drafts coalesce focus and Send, renew after 23 hours, and retry t
   assert.equal(t.puts.length, 2);
   upload.invalidate();
   await assert.rejects(upload.ensure());
-  assert.equal(upload.state.error, "Failed to upload.");
+  assert.equal(upload.state.error, "This file could not be uploaded.");
   await upload.ensure();
   assert.equal(upload.state.error, undefined);
   assert.deepEqual(await Promise.all(t.puts.map(({ body }) => body.text())), Array(4).fill("local source"));
@@ -345,20 +345,24 @@ test("a reserved preview without an upload URL is refused rather than left to fa
   assert.equal(t.puts.length, 0);
 });
 
-test("complete retries 409 with short backoff until the upload is visible; 422 is final", async () => {
+test("complete waits for queued metadata processing, bounds retries, and treats 422 as final", async () => {
   const notYet = () => Response.json({ error: "upload not finished" }, { status: 409 });
-  const t = transport([notYet, notYet, ready]);
+  const t = transport([notYet, notYet, notYet, notYet, notYet, ready]);
   const attachment = await uploadPrepared("c1", prepared(), t.value, () => undefined, new AbortController().signal);
   assert.equal(attachment.id, "f1");
-  assert.deepEqual(t.sleeps, [250, 500]);
-  assert.equal(t.calls.filter((call) => call.endsWith("/complete")).length, 3);
+  assert.deepEqual(t.sleeps, [250, 500, 1_000, 2_000, 5_000]);
+  assert.equal(t.calls.filter((call) => call.endsWith("/complete")).length, 6);
 
-  const stuck = transport(Array.from({ length: 5 }, () => notYet));
+  const stuck = transport(Array.from({ length: 300 }, () => notYet));
   await assert.rejects(
     uploadPrepared("c1", prepared(), stuck.value, () => undefined, new AbortController().signal),
     (error: unknown) => error instanceof UploadError && error.message === "upload not finished",
   );
-  assert.equal(stuck.sleeps.length, 4, "gives up after a few attempts");
+  const paused = stuck.sleeps.reduce((sum, ms) => sum + ms, 0);
+  assert.ok(
+    paused >= 20 * 60_000 && paused < 21 * 60_000,
+    "bounded pauses plus five-second server waits cover a batch",
+  );
 
   const mismatch = transport([
     () => Response.json({ error: "file does not match its declared size or type" }, { status: 422 }),
@@ -368,6 +372,24 @@ test("complete retries 409 with short backoff until the upload is visible; 422 i
     /did not arrive intact/,
   );
   assert.deepEqual(mismatch.sleeps, [], "422 is final");
+
+  const message = "This media could not be cleaned safely. Try another format.";
+  const unsafe = transport([() => Response.json({ error: message, code: "media_metadata" }, { status: 422 })]);
+  const upload = new AttachmentUpload(
+    "c1",
+    new File(["source"], "file.bin"),
+    DEFAULT_COMPRESSION,
+    () => {},
+    unsafe.value,
+  );
+  await assert.rejects(upload.ensure(), (error: unknown) => error instanceof UploadError && error.message === message);
+  assert.equal(upload.state.error, message, "explain the privacy rejection, not a corrupt upload");
+  const html = renderToStaticMarkup(createElement(DraftAttachments, { drafts: [{ ...upload.state, key: "f1" }] }));
+  assert.ok(
+    html.includes(`aria-label="${message}"`),
+    "the failed draft exposes its privacy reason to assistive technology",
+  );
+  assert.deepEqual(unsafe.sleeps, [], "unsafe media is never retried");
 });
 
 test("a full storage allowance surfaces a clear, typed error", async () => {
@@ -405,6 +427,13 @@ test("expired URLs can be refreshed, garbage is dropped, and expiry is readable"
   assert.deepEqual(
     await refreshAttachmentUrls(["f1"], (async () => new Response(null, { status: 503 })) as typeof fetch),
     {},
+  );
+  assert.deepEqual(
+    await refreshAttachmentUrls(["f1"], (async () => {
+      throw new TypeError("Failed to fetch");
+    }) as typeof fetch),
+    {},
+    "an offline refresh is not an unhandled rejection",
   );
 });
 

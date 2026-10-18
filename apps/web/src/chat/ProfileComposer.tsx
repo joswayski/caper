@@ -1,5 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
-import { Paperclip, Send } from "lucide-react";
+import { useEffect, useLayoutEffect, useState, useSyncExternalStore, type RefObject } from "react";
+import { Send } from "lucide-react";
+import AttachmentPicker from "./AttachmentPicker.tsx";
 import { getAccount } from "../account/client.ts";
 import { createDirectConversation, directStatus, listDirectConversations } from "../spaces/client.ts";
 import { directMessageErrors } from "../spaces/direct-errors.ts";
@@ -21,13 +22,15 @@ interface ProfileFile {
   /** Upload progress once Send starts; unset while the file is only staged. */
   progress?: number;
   attachment?: ChatAttachment;
+  error?: string;
+  spoiler?: boolean;
 }
 interface ProfileDraft {
   text: string;
   files: ProfileFile[];
   channelId?: string;
   /** Once POST starts, retries must send this exact command until settled. */
-  command?: { clientMessageId: string; text: string; attachmentIds: string[] };
+  command?: { clientMessageId: string; text: string; attachmentIds: string[]; spoilerAttachmentIds: string[] };
 }
 // Like conversation drafts, these live only in this signed-in page. Closing a
 // card never discards files or an uncertain send; signing out reloads the page.
@@ -75,7 +78,6 @@ export default function ProfileComposer({
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [choosingFile, setChoosingFile] = useState(false);
-  const fileInput = useRef<HTMLInputElement>(null);
   const locked = sending || !!draft.command;
 
   const save = (next: ProfileDraft) => {
@@ -106,15 +108,6 @@ export default function ProfileComposer({
   useEffect(() => {
     onStateChange({ picking: emojiOpen || choosingFile, sending });
   }, [emojiOpen, choosingFile, sending, onStateChange]);
-  useEffect(() => {
-    const element = fileInput.current;
-    const cancel = () => {
-      setChoosingFile(false);
-      requestAnimationFrame(() => input.current?.focus());
-    };
-    element?.addEventListener("cancel", cancel);
-    return () => element?.removeEventListener("cancel", cancel);
-  }, []);
 
   // Grow with the draft, like the channel composer, up to the CSS max-height.
   useLayoutEffect(() => {
@@ -172,6 +165,7 @@ export default function ProfileComposer({
     notify();
     setError(undefined);
     setStatus("Sending…");
+    for (const item of draft.files) item.error = undefined;
     try {
       const account = await getAccount();
       if (!account?.username || !account.displayName) throw new Error("Sign in to send a direct message.");
@@ -194,22 +188,28 @@ export default function ProfileComposer({
         item.progress = 0;
         save({ ...draft });
         const signal = AbortSignal.timeout(120_000);
-        const prepared = await prepareFile(item.file, settings, () => {}, signal);
-        item.attachment = await uploadPrepared(
-          conversation.id,
-          prepared,
-          browserTransport,
-          (progress) => {
-            item.progress = progress;
-            save({ ...draft });
-          },
-          signal,
-        );
+        try {
+          const prepared = await prepareFile(item.file, settings, () => {}, signal);
+          item.attachment = await uploadPrepared(
+            conversation.id,
+            prepared,
+            browserTransport,
+            (progress) => {
+              item.progress = progress;
+              save({ ...draft });
+            },
+            signal,
+          );
+        } catch (reason) {
+          item.error = "Failed to upload.";
+          throw reason;
+        }
       }
       const command = draft.command ?? {
         clientMessageId: crypto.randomUUID(),
         text: draft.text,
         attachmentIds: draft.files.map((item) => item.attachment!.id),
+        spoilerAttachmentIds: draft.files.filter((item) => item.spoiler).map((item) => item.attachment!.id),
       };
       draft.command = command;
       save({ ...draft });
@@ -252,11 +252,13 @@ export default function ProfileComposer({
       save({ ...draft });
       setStatus(undefined);
       setError(
-        reason instanceof TypeError
-          ? "Couldn’t confirm delivery. Check your connection."
-          : reason instanceof Error
-            ? reason.message
-            : "Couldn’t send this message.",
+        draft.files.some((item) => item.error)
+          ? undefined // The upload tray owns this failure and its retry guidance.
+          : reason instanceof TypeError
+            ? "Couldn’t confirm delivery. Check your connection."
+            : reason instanceof Error
+              ? reason.message
+              : "Couldn’t send this message.",
       );
     } finally {
       pending.delete(personId);
@@ -274,6 +276,8 @@ export default function ProfileComposer({
     progress: item.progress ?? 0,
     staged: !item.attachment && item.progress === undefined && !sending,
     attachment: item.attachment,
+    error: item.error,
+    spoiler: item.spoiler,
   }));
   const canSend = !sending && (!!draft.text.trim() || !!draft.files.length);
 
@@ -305,7 +309,19 @@ export default function ProfileComposer({
           </p>
         )
       )}
-      <DraftAttachments drafts={files} onRemove={locked ? undefined : removeFile} />
+      <DraftAttachments
+        drafts={files}
+        onRemove={locked ? undefined : removeFile}
+        onToggleSpoiler={
+          locked
+            ? undefined
+            : (key) =>
+                save({
+                  ...draft,
+                  files: draft.files.map((item) => (item.key === key ? { ...item, spoiler: !item.spoiler } : item)),
+                })
+        }
+      />
       <form
         data-attach
         onSubmit={(event) => {
@@ -313,30 +329,12 @@ export default function ProfileComposer({
           void submit();
         }}
       >
-        <button
-          type="button"
-          className="chat-attach"
-          aria-label="Attach files"
+        <AttachmentPicker
           disabled={locked || !settings || draft.files.length >= MAX_ATTACHMENTS}
           title={settings ? "Attach files" : settingsLoaded ? "File uploads are unavailable" : "Checking file uploads…"}
-          onClick={() => {
-            setChoosingFile(true);
-            fileInput.current?.click();
-          }}
-        >
-          <Paperclip size={17} aria-hidden="true" />
-        </button>
-        <input
-          type="file"
-          ref={fileInput}
-          multiple
-          hidden
-          onChange={(event) => {
-            setChoosingFile(false);
-            addFiles([...(event.target.files ?? [])]);
-            event.target.value = "";
-            restoreFocus();
-          }}
+          onAdd={addFiles}
+          onPickingChange={setChoosingFile}
+          onRestoreFocus={() => input.current?.focus()}
         />
         <label className="sr-only" htmlFor="profile-message">
           Message @{username}

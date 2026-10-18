@@ -403,6 +403,93 @@ async fn invite_links_join_preview_limits_and_exclusions() {
         join(late, &open).await.unwrap_err().status,
         StatusCode::FORBIDDEN
     );
+    // A re-invitation that is cancelled or declined leaves the removal in
+    // force; only a live or accepted invitation lifts it.
+    let reinvite = || {
+        let state = state.clone();
+        let owner = owner.clone();
+        let space = space.clone();
+        let pool = pool.clone();
+        async move {
+            // Past the invitation cooldown and any earlier invitation's expiry.
+            sqlx::query("UPDATE public.space_invitations SET updated_at=now()-interval '8 days' WHERE space_id=$1 AND user_id=$2")
+                .bind(space_id).bind(late.user.id).execute(&pool).await.unwrap();
+            let (status, _) = add_space_member(
+                State(state),
+                Extension(owner),
+                Path(space),
+                Json(MemberInput {
+                    username: "late".into(),
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(status, StatusCode::CREATED);
+        }
+    };
+    reinvite().await;
+    cancel_invitation(
+        State(state.clone()),
+        Extension(owner.clone()),
+        Path((space.clone(), late.user.external_id.clone())),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        join(late, &open).await.unwrap_err().status,
+        StatusCode::FORBIDDEN
+    );
+    reinvite().await;
+    decline_invitation(
+        State(state.clone()),
+        Extension(late.clone()),
+        Path(space.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        join(late, &open).await.unwrap_err().status,
+        StatusCode::FORBIDDEN
+    );
+    reinvite().await;
+    sqlx::query("UPDATE public.space_invitations SET updated_at=now()-interval '8 days' WHERE space_id=$1 AND user_id=$2")
+        .bind(space_id).bind(late.user.id).execute(&pool).await.unwrap();
+    assert_eq!(
+        join(late, &open).await.unwrap_err().status,
+        StatusCode::FORBIDDEN
+    );
+    // A live re-invitation is fulfilled by the link, and once accepted a
+    // later departure keeps link access like any other leaver.
+    reinvite().await;
+    assert_eq!(join(late, &open).await.unwrap()["joined"], true);
+    remove_space_member(
+        State(state.clone()),
+        Extension(late.clone()),
+        Path((space.clone(), late.user.external_id.clone())),
+    )
+    .await
+    .unwrap();
+    assert_eq!(join(late, &open).await.unwrap()["joined"], true);
+    remove_space_member(
+        State(state.clone()),
+        Extension(owner.clone()),
+        Path((space.clone(), late.user.external_id.clone())),
+    )
+    .await
+    .unwrap();
+    // Rows written before `removed_at` existed still bar the link.
+    sqlx::query(
+        "UPDATE public.space_invitations SET removed_at=NULL WHERE space_id=$1 AND user_id=$2",
+    )
+    .bind(space_id)
+    .bind(late.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        join(late, &open).await.unwrap_err().status,
+        StatusCode::FORBIDDEN
+    );
     remove_space_member(
         State(state.clone()),
         Extension(blocked.clone()),
@@ -456,8 +543,8 @@ async fn invite_links_join_preview_limits_and_exclusions() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    // newcomer, late, leaver (twice), blocked, invited.
-    assert_eq!(recorded, 6);
+    // newcomer, late (three times), leaver (twice), blocked, invited.
+    assert_eq!(recorded, 8);
 
     let prepare = |who: &Principal| {
         let state = state.clone();

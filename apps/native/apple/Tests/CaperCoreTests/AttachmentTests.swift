@@ -76,6 +76,25 @@ private let futureExp = 4_102_444_800 // 2100-01-01
 private let channelID = "Chan12345678"
 
 final class AttachmentTests: XCTestCase {
+    func testAttachmentSpoilerDefaultsAndRoundTrips() throws {
+        let original = ChatAttachment(id: "Asset0000009", kind: .file, contentType: "text/plain", name: "notes.txt", size: 5)
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        let legacy = try encoder.encode(original)
+        XCTAssertFalse(try decoder.decode(ChatAttachment.self, from: legacy).spoiler)
+        var hidden = original
+        hidden.spoiler = true
+        XCTAssertTrue(try decoder.decode(ChatAttachment.self, from: encoder.encode(hidden)).spoiler)
+    }
+
+    func testGalleryExcludesSpoilersUntilEachIsRevealed() {
+        let visible = ChatAttachment(id: "visible", kind: .image, contentType: "image/png", name: "image.png", size: 5, url: "https://caper.invalid/image")
+        let hidden = ChatAttachment(id: "hidden", kind: .image, contentType: "image/png", name: "secret.png", size: 5, url: "https://caper.invalid/secret", spoiler: true)
+        let other = ChatAttachment(id: "other", kind: .video, contentType: "video/mp4", name: "secret.mp4", size: 5, url: "https://caper.invalid/other", spoiler: true)
+        XCTAssertEqual(MediaViewerPolicy.items([visible, hidden, other]).map(\.id), ["visible"])
+        XCTAssertEqual(MediaViewerPolicy.items([visible, hidden, other], revealedSpoilerIDs: ["hidden"]).map(\.id), ["visible", "hidden"])
+    }
+
     override func tearDown() {
         AttachmentURLProtocol.reset()
         super.tearDown()
@@ -1505,6 +1524,7 @@ final class AttachmentTests: XCTestCase {
         }
         XCTAssertFalse(AttachmentURLProtocol.requests.contains { $0.url.path.hasSuffix("/complete") })
         XCTAssertEqual(AttachmentPolicy.uploadErrorMessage(APIError(status: 429, message: "x")), "Uploading too quickly. Try again shortly.")
+        XCTAssertEqual(AttachmentPolicy.uploadErrorMessage(APIError(status: 422, message: "Cannot clean this media safely.", code: "media_metadata")), "Cannot clean this media safely.")
     }
 
     private func composerHandler(uniqueAssets: Bool = false) -> (URLRequest, Data?) throws -> (Int, Data) {
@@ -1553,6 +1573,71 @@ final class AttachmentTests: XCTestCase {
     }
 
     @MainActor
+    func testSendRetriesFailedUploadsWithoutSendingSubsetOrLosingDraft() async throws {
+        for outcome in ["success", "failure", "changed", "thread", "removed", "channel", "account"] {
+            AttachmentURLProtocol.reset()
+            let base = composerHandler(uniqueAssets: true)
+            var puts = 0
+            AttachmentURLProtocol.handler = { request, body in
+                if request.httpMethod == "PUT" {
+                    puts += 1
+                    if puts == 1 || outcome == "failure" { return (503, Data()) }
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+                return try base(request, body)
+            }
+            let chat = ChatModel(api: client())
+            await chat.open(channelID: channelID, displayName: "Me")
+            await chat.checkUploadAvailability()
+            await chat.openThread("Root00000001")
+            chat.threadDraft = "keep this text"
+            chat.addAttachments([
+                try AttachmentStaging.stage(data: Data("one".utf8), filename: "one.txt"),
+                try AttachmentStaging.stage(data: Data("two".utf8), filename: "two.txt"),
+            ], inThread: true)
+            await waitUntil("initial uploads settle") {
+                chat.threadAttachmentDrafts.count == 2 && chat.threadAttachmentDrafts.allSatisfy { $0.error != nil || $0.attachment != nil }
+            }
+            XCTAssertTrue(chat.canSubmit(inThread: true))
+            let ids = chat.threadAttachmentDrafts.map(\.id)
+            let send = Task { await chat.send(inThread: true) }
+            if outcome == "success" {
+                await waitUntil("retry starts") { chat.threadAttachmentDrafts.allSatisfy { $0.error == nil } }
+                await chat.send(inThread: true)
+            }
+            if !["success", "failure"].contains(outcome) {
+                await waitUntil("retry starts") { chat.threadAttachmentDrafts.allSatisfy { $0.error == nil } }
+                switch outcome {
+                case "changed": chat.threadDraft = "edited text"
+                case "thread": await chat.openThread("Root00000002")
+                case "removed": chat.removeAttachmentDraft(id: ids[0])
+                case "channel": await chat.open(channelID: "Channel00002", displayName: "Me")
+                default: await chat.stop(discardingDrafts: true)
+                }
+            }
+            await send.value
+            let sends = AttachmentURLProtocol.requests.filter { $0.method == "POST" && $0.url.path.hasSuffix("/messages") }
+            XCTAssertEqual(sends.count, outcome == "success" ? 1 : 0, outcome)
+            if outcome == "success" {
+                XCTAssertEqual((json(sends[0].body)?["attachmentIds"] as? [String])?.count, 2)
+                XCTAssertTrue(chat.threadAttachmentDrafts.isEmpty)
+            } else if outcome == "failure" {
+                XCTAssertEqual(chat.threadDraft, "keep this text")
+                XCTAssertEqual(chat.threadAttachmentDrafts.map(\.id), ids)
+                XCTAssertTrue(chat.threadAttachmentDrafts.contains { $0.error != nil })
+                XCTAssertNil(chat.pendingMessage)
+                XCTAssertTrue(chat.canSubmit(inThread: true))
+                await chat.send(inThread: true)
+                XCTAssertEqual(chat.threadDraft, "keep this text")
+                XCTAssertEqual(chat.threadAttachmentDrafts.map(\.id), ids)
+                XCTAssertTrue(chat.threadAttachmentDrafts.allSatisfy { $0.error != nil })
+                XCTAssertFalse(AttachmentURLProtocol.requests.contains { $0.method == "POST" && $0.url.path.hasSuffix("/messages") })
+            }
+            await chat.stop(discardingDrafts: true)
+        }
+    }
+
+    @MainActor
     func testComposerCompressesUploadsThenSendsFileOnlyMessageWithAttachmentIDs() async throws {
         AttachmentURLProtocol.handler = composerHandler()
         let chat = ChatModel(api: client())
@@ -1568,7 +1653,9 @@ final class AttachmentTests: XCTestCase {
         chat.addAttachments([file])
         XCTAssertEqual(chat.attachmentDrafts.count, 1)
         XCTAssertEqual(chat.attachmentDrafts.first?.statusLabel, "Compressing…")
+        chat.toggleAttachmentSpoiler(id: try XCTUnwrap(chat.attachmentDrafts.first?.id))
         await waitUntil("upload") { chat.attachmentDrafts.first?.attachment != nil }
+        XCTAssertEqual(chat.attachmentDrafts.first?.spoiler, true, "selection survives preparation and upload")
         XCTAssertNil(chat.attachmentDrafts.first?.error)
         XCTAssertEqual(chat.attachmentDrafts.first?.storedSize, 5)
         XCTAssertEqual(chat.attachmentDrafts.first?.attachment?.status, .ready)
@@ -1583,6 +1670,7 @@ final class AttachmentTests: XCTestCase {
         let send = try XCTUnwrap(AttachmentURLProtocol.requests.last { $0.method == "POST" && $0.url.path == "/api/chat/channels/\(channelID)/messages" })
         let body = try XCTUnwrap(json(send.body))
         XCTAssertEqual(body["attachmentIds"] as? [String], ["Asset0000009"])
+        XCTAssertEqual(body["spoilerAttachmentIds"] as? [String], ["Asset0000009"])
         XCTAssertEqual(body["text"] as? String, "")
         XCTAssertEqual(chat.messages.first?.content.attachments?.first?.id, "Asset0000009")
         await chat.stop()
@@ -1728,7 +1816,7 @@ final class AttachmentTests: XCTestCase {
             chat.addAttachments([file], inThread: true)
             if refusal == 409 {
                 await waitUntil("failed initial upload") { chat.threadAttachmentDrafts.first?.error != nil }
-                XCTAssertFalse(chat.canSubmit(inThread: true))
+                XCTAssertTrue(chat.canSubmit(inThread: true))
                 chat.retryAttachmentDraft(id: try XCTUnwrap(chat.threadAttachmentDrafts.first?.id))
             }
             await waitUntil("original upload") { chat.threadAttachmentDrafts.first?.attachment != nil }
@@ -1907,6 +1995,7 @@ final class AttachmentTests: XCTestCase {
 
         let next = try AttachmentStaging.stage(data: Data("hello".utf8), filename: "notes.txt")
         chat.addAttachments([next])
+        chat.toggleAttachmentSpoiler(id: try XCTUnwrap(chat.attachmentDrafts.first?.id))
         await waitUntil("ready again") { chat.attachmentDrafts.first?.attachment != nil }
         chat.draft = "keep this message"
         await chat.send()
@@ -1927,6 +2016,8 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(sends.count, 2)
         XCTAssertNotEqual(sends[0]["clientMessageId"] as? String, sends[1]["clientMessageId"] as? String)
         XCTAssertEqual(sends[1]["attachmentIds"] as? [String], ["Asset0000010"])
+        XCTAssertEqual(sends[0]["spoilerAttachmentIds"] as? [String], sends[0]["attachmentIds"] as? [String])
+        XCTAssertEqual(sends[1]["spoilerAttachmentIds"] as? [String], ["Asset0000010"], "renewal uses the new asset id without losing the spoiler selection")
         XCTAssertTrue(AttachmentURLProtocol.requests.filter { $0.method == "PUT" }.allSatisfy { $0.body == Data("hello".utf8) })
         await chat.stop()
     }
@@ -1944,6 +2035,7 @@ final class AttachmentTests: XCTestCase {
         _ = try await client().send(channelID: channelID, sessionToken: "chat", clientMessageID: "c", text: "hi")
         let body = try XCTUnwrap(json(AttachmentURLProtocol.requests.first?.body))
         XCTAssertNil(body["attachmentIds"], "the key is included only when non-empty")
+        XCTAssertNil(body["spoilerAttachmentIds"])
     }
 
     @MainActor
@@ -1972,6 +2064,46 @@ final class AttachmentTests: XCTestCase {
         await waitUntil("fresh preview") { chat.messages.first?.content.attachments?.first?.previewUrl?.contains("sig=new") == true }
         XCTAssertNil(chat.messages.first?.content.attachments?.first?.url, "only ready files have url")
         await chat.stop()
+    }
+}
+
+final class AttachmentGallerySelectionTests: XCTestCase {
+    func testEightDraftFilesLeaveTwoSlotsAndSelectionRemainsOrderedAtLimit() {
+        let capacity = AttachmentPolicy.maxAttachments - 8
+        XCTAssertEqual(capacity, 2)
+        var selection = AttachmentGallerySelection()
+        XCTAssertFalse(selection.canAdd(capacity: capacity))
+        selection.toggle("a", capacity: capacity)
+        selection.toggle("b", capacity: capacity)
+        selection.toggle("c", capacity: capacity)
+        XCTAssertEqual(selection.ids, ["a", "b"], "A third selection must be rejected, not replace an earlier choice")
+        XCTAssertTrue(selection.canAdd(capacity: capacity))
+        selection.toggle("a", capacity: capacity)
+        XCTAssertEqual(selection.ids, ["b"], "Selected items remain deselectable at the limit")
+        selection.toggle("a", capacity: capacity)
+        XCTAssertEqual(selection.ids, ["b", "a"], "Reselection appends in selection order")
+    }
+
+    func testCapacityChangeDoesNotSilentlyTruncateAndLibraryChangeInvalidatesRemovedIDs() {
+        var selection = AttachmentGallerySelection()
+        selection.toggle("a", capacity: 2)
+        selection.toggle("b", capacity: 2)
+        XCTAssertFalse(selection.canAdd(capacity: 1))
+        XCTAssertEqual(selection.ids, ["a", "b"])
+        selection.toggle("c", capacity: 1)
+        XCTAssertEqual(selection.ids, ["a", "b"])
+        selection.toggle("a", capacity: 1)
+        XCTAssertTrue(selection.canAdd(capacity: 1))
+        selection.retain(["a", "c"])
+        XCTAssertTrue(selection.ids.isEmpty)
+        selection.toggle("c", capacity: 0)
+        XCTAssertTrue(selection.ids.isEmpty)
+        selection.toggle("c", capacity: 2)
+        selection.toggle("a", capacity: 2)
+        selection.retain(["a", "c", "new"])
+        XCTAssertEqual(selection.ids, ["c", "a"], "Library reordering/new arrivals do not reorder selections")
+        selection.retain([])
+        XCTAssertFalse(selection.canAdd(capacity: 2), "Revoked library access leaves nothing importable")
     }
 }
 

@@ -20,23 +20,28 @@ import org.junit.runner.RunWith
 class VoiceNavigationUiTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun connectedDockOpensChannelWhileLeaveRemainsIndependent() {
+    @Test fun callCardOpensItsChannelWhileLeaveRemainsIndependent() {
         var opened = 0
         var left = 0
+        // A call in another space than the one being viewed names its space.
         val voice = VoiceState(phase = VoiceState.Phase.CONNECTED, spaceName = "Fixture Studio", channelName = "Planning")
         compose.setContent {
             CaperTheme {
                 Column(Modifier.width(280.dp)) {
-                    ConnectedVoiceContext(voice, { opened++ }, { left++ })
+                    LiveCallCard(voice, null, otherSpaceName = "Fixture Studio", sessionStartedAt = null, narrow = false,
+                        open = { opened++ }, leave = { left++ })
                 }
             }
         }
 
-        compose.onNodeWithText("Planning / Fixture Studio").assertExists()
-        compose.onNodeWithContentDescription("Open voice channel").performClick()
-        compose.runOnIdle { assertEquals(1, opened); assertEquals(0, left) }
+        compose.onNodeWithText("Fixture Studio", useUnmergedTree = true).assertExists()
+        // The whole card opens the call's chat: its channel, its space's name, its status.
+        compose.onNodeWithText("Planning", useUnmergedTree = true).performClick()
+        compose.onNodeWithText("Fixture Studio", useUnmergedTree = true).performClick()
+        compose.onNodeWithText("0 people", useUnmergedTree = true).performClick()
+        compose.runOnIdle { assertEquals(3, opened); assertEquals(0, left) }
 
         compose.onNodeWithContentDescription("Leave voice").performClick()
-        compose.runOnIdle { assertEquals(1, opened); assertEquals(1, left) }
+        compose.runOnIdle { assertEquals(3, opened); assertEquals(1, left) }
     }
 }

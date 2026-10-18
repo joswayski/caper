@@ -27,6 +27,7 @@ packages=(
   clang-21
   curl
   file
+  ffmpeg
   gnome-keyring
   libasound2
   libasound2-dev
@@ -34,6 +35,7 @@ packages=(
   libegl1-mesa-dev
   libgl1-mesa-dri
   libglib2.0-dev
+  libimage-exiftool-perl
   libpulse0
   librsvg2-bin
   libssl-dev
@@ -50,6 +52,7 @@ packages=(
   postgresql
   openbox
   unzip
+  util-linux
   x11-utils
   xauth
   xdotool
@@ -102,7 +105,7 @@ step "checking Android build tools"
 # Google's Linux build tools target x86_64. Do not install an emulator: orbs
 # have no KVM, and compiling UI tests is not a physical-device check.
 if [[ "$(uname -m)" == x86_64 ]]; then
-  export ANDROID_HOME="${ANDROID_HOME:-$HOME/.local/share/caper/android-sdk}"
+  export ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk}"
   android_tools_version="22.0"
   android_tools="$ANDROID_HOME/cmdline-tools/$android_tools_version"
   if [[ ! -x "$android_tools/bin/sdkmanager" ]]; then
@@ -139,6 +142,10 @@ if [[ "$(uname -m)" == x86_64 ]]; then
     # yes exits on SIGPIPE when sdkmanager is done; preserve sdkmanager's status.
     (set +o pipefail; yes | "$android_tools/bin/sdkmanager" --sdk_root="$ANDROID_HOME" --licenses >/dev/null)
     "$android_tools/bin/sdkmanager" --sdk_root="$ANDROID_HOME" "${android_missing[@]}"
+  fi
+  # Gradle also finds the SDK in shells that do not read the login profile.
+  if [[ ! -f apps/native/android/local.properties ]]; then
+    printf 'sdk.dir=%s\n' "$ANDROID_HOME" > apps/native/android/local.properties
   fi
   # Amp and supervised services use fresh login shells after setup exits.
   # Restrict activation to this checkout and leave a caller's SDK override alone.

@@ -60,14 +60,16 @@
   animation: live-fade 0.5s ease-out backwards;
 }
 .live-stage[data-ready] .live-scene {
-  animation: live-arrive 1.1s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  animation: live-scene-arrive 1.1s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 @keyframes live-fade {
   from {
     opacity: 0;
   }
 }
-@keyframes live-arrive {
+/* Named apart from the app's live-arrive: keyframe names are global, and the
+   homepage's stylesheet stays loaded after navigating into the app. */
+@keyframes live-scene-arrive {
   from {
     translate: 0 40px -80px;
   }
@@ -366,10 +368,9 @@
   border-radius: 0;
 }
 
-/* Keep the only action outside the tilted scene: 3D compositing must not hide
-   the pill, and idle motion must not move its touch target. */
+/* The join pill floats above the window in the same 3D scene, so rotating the
+   demo moves the pill with perspective and parallax, not just an in-place tilt. */
 .live-activator {
-  --counter-scale: 1;
   position: absolute;
   inset: 0;
   z-index: 5;
@@ -383,6 +384,7 @@
   font: inherit;
   text-decoration: none;
   pointer-events: none;
+  transform: translateZ(calc(var(--depth) * 80px));
 }
 .live-invite {
   pointer-events: auto;
@@ -408,7 +410,9 @@
   transition:
     background-color 0.2s ease,
     color 0.2s ease;
-  animation: live-invite-in 0.7s 0.9s cubic-bezier(0.16, 1, 0.3, 1) both;
+  /* Let the base styles own the final pose rather than retaining an animated
+     opacity/transform layer inside the moving 3D scene. */
+  animation: live-invite-in 0.7s 0.9s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 .live-activator:focus-visible .live-invite {
   outline: calc(2px * var(--counter-scale)) solid #fff;
@@ -596,27 +600,17 @@
   width: 30px;
   height: 16px;
 }
+/* Just two rows, one of them #general's live card: keep them whole; on short
+   screens the sidebar scrolls below them, as in the app. */
 .sim-sidebar .sim-channel-list {
-  flex: 1;
-  min-height: 0;
-  align-content: start;
-  overflow-y: auto;
-}
-/* The six-person demo has no reserved voice action, so every preview fits. */
-.sim-sidebar .voice-stack-faces {
-  display: flex;
-}
-.sim-sidebar .voice-stack-avatar + .voice-stack-avatar {
-  display: grid;
+  flex: none;
 }
 .sim-demo
   :is(
     .channel-select,
     .channel-manage,
-    .voice-stack,
     .channel-join,
     .browse-channels,
-    .voice-dock-channel,
     .voice-hangup,
     .account-profile,
     .voice-icon-button,
@@ -624,34 +618,19 @@
     .member-list-toggle,
     .chat-reaction,
     .chat-thread-summary,
-    .chat-edited
+    .chat-edited,
+    .live-card
   ) {
   cursor: inherit;
 }
-.sim-demo
-  :is(.voice-stack-avatar, .direct-avatar, .account-avatar, .chat-avatar, .chat-thread-avatars > span)
-  > .sim-avatar {
+.sim-demo :is(.live-avatar, .direct-avatar, .account-avatar, .chat-avatar, .chat-thread-avatars > span) > .sim-avatar {
   width: 100%;
   height: 100%;
 }
-/* Leave idle SVGs unframed; speaking rings follow their circular artwork. */
-.sim-demo :is(.voice-stack-avatar, .sim-voice-avatar) {
-  border-radius: 50%;
-}
-.sim-demo .voice-stack-avatar:not(.speaking) {
-  border-color: transparent;
-}
-/* Like the app (#451), the 40px account row and its border pixels match the
-   42px single-line composer, so the panel shares the composer's 12px inset. */
+/* Like the app (#451, #644), the 40px account row and its border pixels match
+   the 42px single-line composer, sharing its --workspace-bottom-inset. */
 .sim-voice-panel {
-  margin-bottom: 12px;
-}
-.sim-voice-avatar > .sim-avatar {
-  width: 100%;
-  height: 100%;
-}
-.sim-person {
-  animation: sim-enter 0.35s ease-out both;
+  margin-bottom: var(--workspace-bottom-inset);
 }
 .sim-avatar {
   width: 34px;
@@ -671,7 +650,8 @@
   gap: 7px;
   min-width: 0;
 }
-.sim-chat > .chat-heading > .header-voice {
+/* Voice lives in the sidebar's live cards, as in the app; the header keeps only Members. */
+.sim-chat > .chat-heading > .member-list-toggle {
   margin-left: auto;
 }
 .sim-channel-heading > svg {
@@ -785,57 +765,13 @@
     width: 34px;
     height: 34px;
   }
-  .sim-chat .header-voice {
-    flex: 0 1 auto;
-    gap: 10px;
-    margin-right: 6px;
-    padding: 0 14px 0 0;
-    border: 0;
-    border-right: 1px solid var(--border);
-    border-radius: 0;
-  }
-  .sim-chat .header-voice-people {
-    display: flex;
-  }
-  .sim-chat .voice-leave > span {
-    display: inline;
-  }
-  .sim-chat .header-voice :is(.header-voice-join, .voice-leave) {
-    width: auto;
-    min-height: 34px;
-    height: auto;
-    display: flex;
-    gap: 6px;
-    padding: 0 12px;
-    border-radius: 8px;
-  }
-  .sim-chat .header-voice .header-voice-join {
-    border: 1px solid color-mix(in srgb, var(--terracotta) 65%, var(--border));
-    background: rgb(182 77 50 / 0.14);
-  }
-  .sim-chat .header-voice .header-voice-join svg {
-    width: 16px;
-    height: 16px;
-  }
-  .sim-chat .header-voice .voice-leave svg {
-    width: 17px;
-    height: 17px;
-  }
   /* Decorative rows need desktop sizing, not finger-sized touch targets. */
   .sim-sidebar .channel-select {
     min-height: 38px;
   }
   .sim-direct .channel-select,
-  .sim-direct .channel-section-heading,
-  .sim-sidebar .voice-stack {
+  .sim-direct .channel-section-heading {
     min-height: 28px;
-  }
-  .sim-sidebar .voice-hangup {
-    width: 34px;
-    height: 32px;
-  }
-  .sim-sidebar .voice-occupants .participant {
-    padding-block: 4px;
   }
   .sim-message {
     padding: 10px 18px;
@@ -849,12 +785,34 @@
   }
 }
 
+/* Touch screens see the same scaled desktop canvas: keep the live cards' desktop sizes. */
+@media (hover: none), (pointer: coarse) {
+  .sim-demo .live-join {
+    height: 30px;
+    padding: 0 12px;
+    font-size: 0.78rem;
+  }
+  .sim-demo .live-controls :is(.voice-icon-button, .voice-leave) {
+    height: 34px;
+  }
+  .sim-demo .live-controls .voice-icon-button {
+    width: 34px;
+  }
+  .sim-demo .live-face {
+    width: 36px;
+    height: 36px;
+  }
+  .sim-demo .live-face > .live-avatar {
+    width: 34px;
+    height: 34px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .live-stage[data-ready],
   .live-stage[data-ready] .live-scene,
   .live-invite,
   .live-invite i::after,
-  .sim-person,
   .sim-message,
   .sim-typing i {
     animation: none;

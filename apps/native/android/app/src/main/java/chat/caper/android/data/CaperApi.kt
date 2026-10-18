@@ -49,6 +49,15 @@ class CaperApi(
     suspend fun logout(token: String) { request<Unit>("/api/auth/logout", "POST", token = token) }
     suspend fun spaces(token: String): SpaceList = get("/api/spaces", token)
     suspend fun unreadSpaces(token: String): UnreadSpaces = get("/api/spaces/unread", token)
+    suspend fun spaceVoiceActivity(token: String): SpaceVoiceActivity = get("/api/spaces/voice-activity", token)
+    suspend fun unreadThreads(token: String, channel: String): UnreadThreads =
+        get("/api/chat/channels/${channel.pathId()}/threads/unread", token)
+    suspend fun markThreadRead(token: String, channel: String, root: String, seq: String) {
+        require(messageId.matches(root)) { "Invalid message ID." }
+        require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
+        request<Unit>("/api/chat/channels/${channel.pathId()}/messages/$root/thread/read", "PUT", token,
+            buildJsonObject { put("seq", seq) }.toString())
+    }
     suspend fun markChannelRead(token: String, space: String, channel: String, seq: String) {
         require(Regex("^(0|[1-9][0-9]*)$").matches(seq)) { "Invalid read sequence." }
         request<Unit>("/api/spaces/${space.pathId()}/channels/${channel.pathId()}/read", "POST", token, buildJsonObject { put("seq", seq) }.toString())
@@ -178,14 +187,17 @@ class CaperApi(
         threadRootId: String? = null,
         broadcast: Boolean = false,
         replyToId: String? = null,
+        spoilerAttachmentIds: List<String> = emptyList(),
     ): ChatMessage {
         require(attachmentIds.size <= AttachmentPolicy.MAX_ATTACHMENTS) { "Attach up to 10 files." }
+        require(attachmentIds.containsAll(spoilerAttachmentIds)) { "Spoilers must be attached files." }
         val message: ChatMessage = post(
             "/api/chat/channels/${channel.pathId()}/messages",
             buildJsonObject {
                 put("clientMessageId", clientMessageId.toString()); put("text", text)
                 // Only when non-empty: text-only requests keep their original idempotency hash.
                 if (attachmentIds.isNotEmpty()) putJsonArray("attachmentIds") { attachmentIds.forEach { add(it.assetPathId()) } }
+                if (spoilerAttachmentIds.isNotEmpty()) putJsonArray("spoilerAttachmentIds") { spoilerAttachmentIds.forEach { add(it.assetPathId()) } }
                 if (threadRootId != null) { put("threadRootId", threadRootId); put("broadcast", broadcast) }
                 if (replyToId != null) put("replyToId", replyToId)
             },

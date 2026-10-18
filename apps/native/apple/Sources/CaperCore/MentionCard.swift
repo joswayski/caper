@@ -3,6 +3,9 @@ import Observation
 
 /// What the mention card shows for a person's pill, resolved locally.
 struct MentionCardPerson: Equatable, Sendable {
+    var admin: Bool = false
+    var team: Bool = false
+    var canBlock: Bool { !admin && !team }
     let id: String
     let username: String?
     /// nil when nobody you know matches: the card then titles itself
@@ -53,7 +56,7 @@ enum MentionCard {
     static func resolve(_ author: ChatAuthor, members: [Member], people: [Person]?, peers: [DirectMessagePeer],
                         account: Account?, viewerID: String?) -> MentionCardPerson {
         let person = resolve(id: author.id, username: nil, members: members, people: people, peers: peers, account: account, viewerID: viewerID)
-        return MentionCardPerson(id: author.id, username: person.username, displayName: person.displayName ?? author.name,
+        return MentionCardPerson(admin: author.isAdmin || person.admin, team: person.team, id: author.id, username: person.username, displayName: person.displayName ?? author.name,
                                  avatarId: person.username == nil ? author.avatarId : person.avatarId, isSelf: person.isSelf,
                                  picture: person.username == nil ? author.avatarPicture : person.picture)
     }
@@ -61,9 +64,13 @@ enum MentionCard {
     private static func resolve(id: String, username: String?, members: [Member], people: [Person]?, peers: [DirectMessagePeer],
                                 account: Account?, viewerID: String?) -> MentionCardPerson {
         let isSelf = (viewerID ?? account?.id) == id
+        let admin = members.contains { $0.id == id && $0.admin == true }
+            || people?.contains { $0.id == id && $0.admin == true } == true
+            || peers.contains { $0.id == id && $0.admin == true }
+        let team = peers.contains { $0.id == id && $0.isTeam }
         func person(_ knownUsername: String?, _ displayName: String?, _ avatarId: Int?, _ picture: CaperPicture?) -> MentionCardPerson {
             let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return MentionCardPerson(id: id, username: knownUsername?.isEmpty == false ? knownUsername : username,
+            return MentionCardPerson(admin: admin, team: team, id: id, username: knownUsername?.isEmpty == false ? knownUsername : username,
                                      displayName: name?.isEmpty == false ? name : nil, avatarId: avatarId, isSelf: isSelf, picture: picture)
         }
         if let member = members.first(where: { $0.id == id }) {
@@ -73,7 +80,8 @@ enum MentionCard {
             return person(known.username, known.displayName, known.avatarId, known.avatarPicture)
         }
         if let peer = peers.first(where: { $0.id == id }) {
-            return person(peer.username, peer.displayName, nil, nil)
+            // DM peers carry their saved mascot and picture, as on web.
+            return person(peer.username, peer.displayName, peer.avatarId, peer.avatarPicture)
         }
         if let account, account.id == id {
             return person(account.username, account.displayName, account.avatarId, account.avatarPicture)
@@ -91,6 +99,9 @@ final class ProfileMessageDraft {
         let local: LocalAttachmentFile
         var prepared: PreparedAttachment?
         var attachment: ChatAttachment?
+        var spoiler = false
+        var uploadError: String?
+        var progress: Double?
     }
 
     var text = ""
@@ -131,9 +142,22 @@ final class ProfileMessageDraft {
         if discarded { throw CancellationError() }
     }
 
+    func toggleSpoiler(id: String) {
+        guard editable, let index = files.firstIndex(where: { $0.id == id }) else { return }
+        files[index].spoiler.toggle()
+    }
+
+    private var attachmentsToSend: [ChatAttachment] {
+        files.compactMap { file in
+            guard var attachment = file.attachment else { return nil }
+            attachment.spoiler = file.spoiler
+            return attachment
+        }
+    }
+
     func upload(channelID: String, api: APIClient) async throws -> [ChatAttachment] {
         guard !files.isEmpty else { return [] }
-        if files.allSatisfy({ $0.attachment != nil }) { return files.compactMap(\.attachment) }
+        if files.allSatisfy({ $0.attachment != nil }) { return attachmentsToSend }
         let usage = try await api.assetUsage()
         try checkActive()
         for index in files.indices {
@@ -148,12 +172,32 @@ final class ProfileMessageDraft {
                 }
                 files[index].prepared = prepared
             }
-            progress = "Uploading \(file.name)…"
-            let attachment = try await AttachmentUploader.upload(files[index].prepared!, channelID: channelID, api: api) { _ in }
+            let remaining = files.filter { $0.attachment == nil }.count
+            progress = "Uploading \(remaining) \(remaining == 1 ? "file" : "files")… Your message won’t send until every file is ready."
+            files[index].uploadError = nil
+            files[index].progress = 0
+            let id = files[index].id
+            let attachment: ChatAttachment
+            do {
+                attachment = try await AttachmentUploader.upload(files[index].prepared!, channelID: channelID, api: api) { fraction in
+                    Task { @MainActor [weak self] in
+                        guard let self, !self.discarded,
+                              let current = self.files.firstIndex(where: { $0.id == id }), self.files[current].progress != nil else { return }
+                        self.files[current].progress = fraction
+                    }
+                }
+            } catch {
+                if !discarded, let current = files.firstIndex(where: { $0.id == id }) {
+                    files[current].progress = nil
+                    if !(error is CancellationError) { files[current].uploadError = "Failed to upload." }
+                }
+                throw error
+            }
             try checkActive()
             files[index].attachment = attachment
+            files[index].progress = nil
         }
-        return files.compactMap(\.attachment)
+        return attachmentsToSend
     }
 
     func clear() {

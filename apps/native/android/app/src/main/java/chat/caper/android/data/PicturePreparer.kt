@@ -14,12 +14,13 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
 /**
  * Turns a picked image (a local copy, see [AttachmentPreparer.copy]) into the bytes a profile
- * picture or space icon uploads. A GIF (by magic bytes) stays byte for byte so it keeps
- * animating, within 5 MiB and 1024 × 1024. Anything else the platform decodes is oriented,
+ * picture or space icon uploads. A GIF (by magic bytes) keeps animating: byte for byte within
+ * 5 MiB and 1024 × 1024, else shrunk by [GifShrink] to a square that fits. Anything else the platform decodes is oriented,
  * center-cropped to a square of at most 512 px and encoded as lossy WebP, which also drops EXIF
  * and location metadata. AVIF and HEIC never upload as themselves.
  */
@@ -32,8 +33,17 @@ object PicturePreparer {
             bytes.copyOf(read)
         }
         gifSize(header)?.let { (width, height) ->
-            gifError(file.length(), width, height)?.let { throw PictureException(it) }
-            return@withContext PreparedPicture(file.readBytes(), "image/gif", width, height)
+            if (gifUploadsUnchanged(file.length(), width, height)) {
+                return@withContext PreparedPicture(file.readBytes(), "image/gif", width, height)
+            }
+            val context = currentCoroutineContext()
+            val shrunk = try {
+                GifShrink.shrink(file.readBytes(), PicturePolicy.GIF_MAX_BYTES) { !context.isActive }
+            } catch (failure: GifShrink.Failure) {
+                context.ensureActive()
+                throw PictureException(PicturePolicy.GIF_UNREADABLE)
+            }
+            return@withContext PreparedPicture(shrunk.bytes, "image/gif", shrunk.edge, shrunk.edge)
         }
         val decoded = decode(file) ?: throw PictureException(PicturePolicy.UNUSABLE)
         currentCoroutineContext().ensureActive()

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Paperclip, Send, X } from "lucide-react";
+import { ArrowLeft, Send, X } from "lucide-react";
+import AttachmentPicker from "./AttachmentPicker.tsx";
 import Avatar from "../components/Avatar";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import type { ChatClient, ChatViewState } from "./client.ts";
@@ -24,6 +25,8 @@ const DEFAULT_WIDTH = 340;
 const MIN_WIDTH = 300;
 const MAX_WIDTH = 600;
 const WIDTH_KEY = "caper:thread-panel-width";
+/** Phones and tablets: opening a thread to read it must not raise the keyboard (Reply focuses on purpose). */
+const touchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
 
 export default function ThreadPanel({
   state,
@@ -31,6 +34,7 @@ export default function ThreadPanel({
   channelName,
   direct = false,
   readOnly,
+  readActive = true,
   mentionPeople,
   specialMentions,
   replyTo,
@@ -38,6 +42,7 @@ export default function ThreadPanel({
   localPreviews,
   onSend,
   onReplyChange,
+  onOpenReference,
   blockedIds,
   renderMessage,
   arrivals,
@@ -48,6 +53,7 @@ export default function ThreadPanel({
   channelName: string;
   direct?: boolean;
   readOnly: boolean;
+  readActive?: boolean;
   /** People `@` can suggest, without the author; undefined until loaded. */
   mentionPeople?: MentionCandidate[];
   specialMentions: boolean;
@@ -56,6 +62,8 @@ export default function ThreadPanel({
   localPreviews: Record<string, LocalPreview>;
   onSend: (text: string, broadcast: boolean) => Promise<unknown>;
   onReplyChange: (reference?: ChatReplyReference) => void;
+  /** Jumps to a pending reply's original, like the replies rendered by `renderMessage`. */
+  onOpenReference: (reference: ChatReplyReference) => void;
   blockedIds: ReadonlySet<string>;
   renderMessage: (
     index: number,
@@ -74,8 +82,6 @@ export default function ThreadPanel({
   const [validation, setValidation] = useState<string>();
   const composer = useRef<HTMLTextAreaElement>(null);
   const keyboardDismiss = useTimelineKeyboardDismiss("chat-thread-reply");
-  const fileInput = useRef<HTMLInputElement>(null);
-  const pickerAdd = useRef<ComposerAttachments["onAdd"]>(undefined);
   const canAttach = !!attachments?.enabled;
   const dragDepth = useRef(0);
   const [dropping, setDropping] = useState(false);
@@ -153,6 +159,29 @@ export default function ThreadPanel({
     return (previousReplies.current = next);
   }, [state.messages, rootId, windowStart, windowEnd]);
   const draft = rootId ? (drafts[rootId] ?? { text: "", broadcast: false }) : { text: "", broadcast: false };
+  // Start at one line like the channel composer, growing for typed or wrapped text.
+  useLayoutEffect(() => {
+    const input = composer.current;
+    if (!input) return;
+    const resizeInput = () => {
+      const form = input.closest("form");
+      if (form) form.style.minHeight = `${form.offsetHeight}px`;
+      input.style.height = "0px";
+      input.style.height = `${input.scrollHeight + input.offsetHeight - input.clientHeight}px`;
+      if (form) form.style.minHeight = "";
+      if (follow.current && scroll.current && !state.thread?.hasNewer)
+        scroll.current.scrollTop = scroll.current.scrollHeight;
+    };
+    resizeInput();
+    let width = input.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (input.clientWidth === width) return;
+      width = input.clientWidth;
+      resizeInput();
+    });
+    observer.observe(input);
+    return () => observer.disconnect();
+  }, [draft.text, rootId, readOnly, state.thread?.hasNewer]);
   const update = (change: Partial<typeof draft>) => {
     if (rootId) setDrafts((current) => ({ ...current, [rootId]: { ...draft, ...change } }));
     setValidation(undefined);
@@ -225,7 +254,7 @@ export default function ThreadPanel({
     olderAnchor.current = undefined;
     // A cached "go to message" page keeps the reader at that reply.
     follow.current = !state.thread?.focusMessageId;
-    composer.current?.focus();
+    if (!touchLayout()) composer.current?.focus();
     const escape = (event: KeyboardEvent) => {
       // Escape closes the innermost layer first: a menu, popover or dialog
       // over the thread (including sidebar menus and space dialogs) keeps it open.
@@ -247,7 +276,7 @@ export default function ThreadPanel({
     };
   }, [rootId, onClose]);
   useEffect(() => {
-    if (rootId && !state.thread?.loading && !document.querySelector(".chat-edit-dialog[open]"))
+    if (rootId && !state.thread?.loading && !touchLayout() && !document.querySelector(".chat-edit-dialog[open]"))
       composer.current?.focus();
   }, [rootId, state.thread?.loading]);
   useEffect(() => {
@@ -286,6 +315,45 @@ export default function ThreadPanel({
     scroll.current.scrollTop = olderAnchor.current.top + scroll.current.scrollHeight - olderAnchor.current.height;
     olderAnchor.current = undefined;
   }, [state.thread?.loadingOlder, replies.length]);
+  useEffect(() => {
+    // Measure the newest unread reply, not a later own or collapsed blocked row.
+    const latest = replies.find((message) => message.seq === (rootId ? state.unreadThreads?.[rootId] : undefined));
+    const list = scroll.current;
+    if (!readActive || !rootId || !latest || !list || state.thread?.loading || state.thread?.hasNewer) return;
+    const row = list.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(latest.id)}"]`);
+    if (!row) return;
+    const read = () => {
+      if (document.visibilityState !== "visible" || !document.hasFocus()) return;
+      const viewport = list.getBoundingClientRect(),
+        bounds = row.getBoundingClientRect();
+      const bottom = bounds.bottom - 1;
+      if (
+        bounds.height <= 0 ||
+        bottom < Math.max(viewport.top, 0) ||
+        bounds.bottom > Math.min(viewport.bottom, window.innerHeight)
+      )
+        return;
+      // A covering dialog, mobile navigation, or hidden panel is not being read.
+      const visible = document.elementFromPoint(bounds.left + bounds.width / 2, bottom);
+      if (visible && row.contains(visible)) void client?.markThreadRead(rootId, latest.seq);
+    };
+    const frame = requestAnimationFrame(read);
+    const observer = new ResizeObserver(read);
+    observer.observe(list);
+    observer.observe(row);
+    list.addEventListener("scroll", read);
+    document.addEventListener("visibilitychange", read);
+    window.addEventListener("focus", read);
+    const timer = setInterval(read, 15_000);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      list.removeEventListener("scroll", read);
+      document.removeEventListener("visibilitychange", read);
+      window.removeEventListener("focus", read);
+      clearInterval(timer);
+    };
+  }, [client, rootId, replies, readActive, state.thread?.loading, state.thread?.hasNewer, state.unreadThreads]);
   arrivals.observe(
     "thread",
     rootId ?? "",
@@ -454,7 +522,13 @@ export default function ThreadPanel({
             {state.thread.error}{" "}
             <button
               type="button"
-              onClick={() => void (state.thread?.hasMore ? client?.loadOlderThread() : client?.retryThread())}
+              onClick={() =>
+                void (state.thread?.failedPage === "older"
+                  ? client?.loadOlderThread()
+                  : state.thread?.failedPage === "newer"
+                    ? client?.loadNewerThread()
+                    : client?.retryThread(state.thread?.focusMessageId))
+              }
             >
               Retry
             </button>
@@ -496,7 +570,7 @@ export default function ThreadPanel({
                 motionKey={pending.clientMessageId}
                 reference={pending.replyTo}
                 hidden={blockedIds.has(pending.replyTo.author.id) && pending.replyTo.author.id !== state.author?.id}
-                onOpen={() => void client?.loadMessageContext({ ...pending.replyTo!, channelId: state.channelId! })}
+                onOpen={() => onOpenReference(pending.replyTo!)}
               />
             )}
             <div className="chat-avatar">
@@ -575,50 +649,40 @@ export default function ThreadPanel({
                 drafts={attachments.drafts}
                 onRemove={attachments.onRemove}
                 onRetry={attachments.onRetry}
+                onToggleSpoiler={sending ? undefined : attachments.onToggleSpoiler}
               />
             )}
             <form
+              className="chat-thread-send-row"
               data-attach={!!attachments || undefined}
               onSubmit={(event) => {
                 event.preventDefault();
                 void submit();
               }}
             >
+              <label className="chat-thread-broadcast">
+                <input
+                  type="checkbox"
+                  checked={pending?.broadcast ?? draft.broadcast}
+                  disabled={!!pending}
+                  onChange={(event) => update({ broadcast: event.target.checked })}
+                />
+                <span>
+                  Also send to <strong>{direct ? channelName : `#${channelName}`}</strong>
+                </span>
+              </label>
               {attachments && (
-                <>
-                  <button
-                    type="button"
-                    className="chat-attach"
-                    aria-label="Attach files"
-                    title={
-                      !canAttach
-                        ? (attachments.disabledReason ?? "Checking file uploads…")
-                        : attachments.drafts.length >= MAX_ATTACHMENTS
-                          ? `You can attach up to ${MAX_ATTACHMENTS} files.`
-                          : "Attach files"
-                    }
-                    disabled={!canAttach || attachments.drafts.length >= MAX_ATTACHMENTS}
-                    onClick={() => {
-                      pickerAdd.current = attachments.onAdd;
-                      fileInput.current?.click();
-                    }}
-                  >
-                    <Paperclip size={17} aria-hidden="true" />
-                  </button>
-                  <input
-                    ref={fileInput}
-                    type="file"
-                    multiple
-                    hidden
-                    disabled={!canAttach}
-                    onChange={(event) => {
-                      if (!canAttach) return;
-                      (pickerAdd.current ?? attachments.onAdd)([...(event.target.files ?? [])]);
-                      pickerAdd.current = undefined;
-                      event.target.value = "";
-                    }}
-                  />
-                </>
+                <AttachmentPicker
+                  title={
+                    !canAttach
+                      ? (attachments.disabledReason ?? "Checking file uploads…")
+                      : attachments.drafts.length >= MAX_ATTACHMENTS
+                        ? `You can attach up to ${MAX_ATTACHMENTS} files.`
+                        : "Attach files"
+                  }
+                  disabled={!canAttach || attachments.drafts.length >= MAX_ATTACHMENTS}
+                  onAdd={attachments.onAdd}
+                />
               )}
               <label className="sr-only" htmlFor="chat-thread-reply">
                 Reply to thread
@@ -629,7 +693,7 @@ export default function ThreadPanel({
                 id="chat-thread-reply"
                 people={mentionPeople}
                 specialMentions={specialMentions}
-                rows={3}
+                rows={1}
                 value={draft.text}
                 placeholder="Reply to thread…"
                 enterKeyHint="send"
@@ -659,36 +723,25 @@ export default function ThreadPanel({
                 Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
                 suggestions. Enter to send. Shift+Enter for a new line.
               </span>
-              <div className="chat-thread-send-row">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={pending?.broadcast ?? draft.broadcast}
-                    disabled={!!pending}
-                    onChange={(event) => update({ broadcast: event.target.checked })}
-                  />
-                  {direct ? "Also send to conversation" : `Also send to #${channelName}`}
-                </label>
-                <EmojiButton
-                  disabled={state.phase !== "ready" || state.thread.loading}
-                  onSelect={chooseEmoji}
-                  returnFocus={composer}
-                />
-                <button
-                  type="submit"
-                  disabled={
-                    sending ||
-                    blocked ||
-                    state.sendRejected ||
-                    state.phase !== "ready" ||
-                    state.thread.loading ||
-                    (!pending && !draft.text.trim() && !attachments?.drafts.length)
-                  }
-                  aria-label="Send reply"
-                >
-                  <Send size={18} />
-                </button>
-              </div>
+              <EmojiButton
+                disabled={state.phase !== "ready" || state.thread.loading}
+                onSelect={chooseEmoji}
+                returnFocus={composer}
+              />
+              <button
+                type="submit"
+                disabled={
+                  sending ||
+                  blocked ||
+                  state.sendRejected ||
+                  state.phase !== "ready" ||
+                  state.thread.loading ||
+                  (!pending && !draft.text.trim() && !attachments?.drafts.length)
+                }
+                aria-label="Send reply"
+              >
+                <Send size={18} />
+              </button>
               {count >= COUNTER_START && (
                 <small className="chat-counter" data-tone={counterTone(count)}>
                   {count.toLocaleString()} / 4,000

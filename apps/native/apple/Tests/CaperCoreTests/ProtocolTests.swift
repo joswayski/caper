@@ -168,7 +168,7 @@ final class ProtocolTests: XCTestCase {
     }
 
     @MainActor
-    func testActiveRosterPreviewRequiresLoopbackFixture() throws {
+    func testActiveRosterPreviewRequiresLoopbackFixture() async throws {
         let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
         let channel = Channel(id: "chan00000001", spaceId: "space0000001", name: "general", private: false)
         let space = Space(id: channel.spaceId, name: "Fixture", ownerId: "owner0000001", demo: nil)
@@ -184,6 +184,26 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(model.voice.isSelf(participantID: "fixture-self"))
         XCTAssertFalse(model.voice.isSelf(participantID: "fixture-remote"))
         XCTAssertTrue(model.voice.participants.allSatisfy { !$0.muted || $0.id == "fixture-remote" })
+        XCTAssertEqual(model.voice.speakingParticipants, [])
+        model.voice.leaveImmediately()
+
+        // Seven people with Alex speaking, for the card and phone strip's folds.
+        let crowd = fixture.merging(["CAPER_UI_FIXTURE": "voice-crowd"]) { _, new in new }
+        CaperRuntime.showVoiceRosterPreview(model, environment: crowd.merging(["CAPER_API_BASE_URL": "https://caper.chat"]) { _, new in new })
+        XCTAssertNil(model.voice.context)
+        CaperRuntime.showVoiceRosterPreview(model, environment: crowd)
+        XCTAssertEqual(model.voice.context?.channelID, channel.id)
+        XCTAssertEqual(model.voice.participants.count, 7)
+        XCTAssertEqual(model.voice.speakingParticipants, ["fixture-crowd-alex"])
+        await model.voice.sampleSpeaking()
+        XCTAssertEqual(model.voice.speakingParticipants, ["fixture-crowd-alex"], "No audio level replaces the fixture's speaker")
+        model.voice.leaveImmediately()
+
+        // A call in another space's channel, which has no row in this one.
+        CaperRuntime.showVoiceRosterPreview(model, environment: fixture.merging(["CAPER_UI_FIXTURE": "voice-elsewhere"]) { _, new in new })
+        XCTAssertEqual(model.voice.context?.spaceName, "TEST FIXTURE Elsewhere")
+        XCTAssertNotEqual(model.voice.context?.spaceID, space.id)
+        XCTAssertFalse(LiveNow.hasRow(model.voice.context?.channelID ?? "", rows: model.detail?.channels.map(\.id) ?? []))
         model.voice.leaveImmediately()
     }
 

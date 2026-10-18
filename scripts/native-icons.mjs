@@ -4,8 +4,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import * as icons from "lucide-react";
+import * as lucide from "lucide-react";
+import { Reply, Thread } from "../shared/message-icons.ts";
 
+const icons = { ...lucide, Reply, Thread };
 const names = {
   archive: "Archive",
   "archive-restore": "ArchiveRestore",
@@ -42,7 +44,6 @@ const names = {
   "log-out": "LogOut",
   menu: "Menu",
   "message-circle": "MessageCircle",
-  "message-square": "MessageSquare",
   mic: "Mic",
   "mic-off": "MicOff",
   paperclip: "Paperclip",
@@ -60,6 +61,7 @@ const names = {
   smile: "Smile",
   "smile-plus": "SmilePlus",
   speech: "Speech",
+  thread: "Thread",
   users: "Users",
   "volume-2": "Volume2",
   "volume-x": "VolumeX",

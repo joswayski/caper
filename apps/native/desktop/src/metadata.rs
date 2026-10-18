@@ -1,7 +1,6 @@
-//! Lossless metadata stripping for files uploaded as originals (anything not
-//! re-encoded, including every video, since desktop has no transcoder), so
-//! location and camera metadata never leave the device. Pixels and media
-//! samples are never touched.
+//! Best-effort local metadata stripping for files uploaded as originals.
+//! Pixels and media samples are never touched. The server independently cleans
+//! embedded metadata before sharing, including tags these parsers do not cover.
 //!
 //! - MP4/QuickTime: every `udta` and `meta` box directly under `moov` and
 //!   under each `moov/trak` becomes a zero-filled `free` box of the same size,

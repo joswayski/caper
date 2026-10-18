@@ -361,6 +361,7 @@ interface SendBody {
   clientMessageId: string;
   text: string;
   attachmentIds?: string[];
+  spoilerAttachmentIds?: string[];
   replyToId?: string;
 }
 
@@ -405,7 +406,7 @@ async function sendingFixture(t: TestContext) {
     const body = JSON.parse(String(init?.body)) as SendBody;
     assert.deepEqual(
       Object.keys(body)
-        .filter((key) => key !== "attachmentIds" && key !== "replyToId")
+        .filter((key) => key !== "attachmentIds" && key !== "spoilerAttachmentIds" && key !== "replyToId")
         .sort(),
       ["clientMessageId", "text"],
       "local metadata never enters the wire contract",
@@ -1074,10 +1075,11 @@ test("unknown sends keep original IDs, then a definitive unavailable response si
   const f = await sendingFixture(t);
   const files = retainedUploads();
   const upload = files.create("original bytes");
-  const attachment = await upload.ensure();
+  const attachment = { ...(await upload.ensure()), spoiler: true };
   const parent = committed({ clientMessageId: "parent", text: "Earlier message" }, "1");
   const replyTo = { id: parent.id, author: parent.author, text: parent.content.text, hasAttachments: false };
   const send = f.client.send("keep my text", { attachments: [attachment], uploads: [upload], replyTo });
+  assert.deepEqual(f.posts[0].body.spoilerAttachmentIds, ["asset1"]);
   f.posts[0].reject(new TypeError("offline"));
   assert.equal(await send, false);
   assert.equal(f.client.discardRejected(), undefined);
@@ -1091,6 +1093,8 @@ test("unknown sends keep original IDs, then a definitive unavailable response si
   assert.equal(f.posts.length, 3);
   assert.notEqual(f.posts[2].body.clientMessageId, f.posts[0].body.clientMessageId);
   assert.deepEqual(f.posts[2].body.attachmentIds, ["asset2"]);
+  assert.deepEqual(f.posts[2].body.spoilerAttachmentIds, ["asset2"]);
+  assert.equal(f.state.pendingSend?.attachments?.[0].spoiler, true);
   assert.equal(f.posts[2].body.text, "keep my text");
   assert.equal(f.posts[2].body.replyToId, parent.id);
   assert.deepEqual(f.state.pendingSend?.replyTo, replyTo);
@@ -1765,6 +1769,39 @@ test("prefetch rejects a history payload containing another channel's messages",
   await assert.rejects(loadChatHistory("alphaChannel"), /another channel/);
 });
 
+test("report context preparation requests its root upfront and rejects a missing anchor", async () => {
+  const paths: string[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    paths.push(String(input));
+    return Response.json({
+      space: { id: "space", name: "Studio" },
+      channel: { id: "alphaChannel", name: "general" },
+      messages: [
+        {
+          id: "root",
+          channelId: "alphaChannel",
+          seq: "1",
+          author: { id: "peer", name: "Peer", isGuest: false },
+          content: { version: 1, type: "text", text: "Report root" },
+          createdAt: "2026-09-23T12:00:00Z",
+          clientMessageId: "command-one",
+        },
+      ],
+      cursor: "100",
+      hasMore: true,
+      hasNewer: true,
+    });
+  });
+  const history = await loadChatHistory("alphaChannel", undefined, "root");
+  assert.equal(history.hasNewer, true);
+  assert.equal(history.messages[0].id, "root");
+  await assert.rejects(loadChatHistory("alphaChannel", undefined, "missing"), /invalid message context/);
+  assert.deepEqual(paths, [
+    "/api/chat/channels/alphaChannel/messages?around=root",
+    "/api/chat/channels/alphaChannel/messages?around=missing",
+  ]);
+});
+
 test("a prepared history failure renders once and retries only when requested", async (t) => {
   const sockets = installBrowser(t);
   let requests = 0;
@@ -2153,6 +2190,99 @@ test("old thread parents and broadcast replies do not move channel paging or sur
   );
 });
 
+test("thread unread survives prefetch, older windows and failed reads, without erasing newer replies", async (t) => {
+  const sockets = installBrowser(t);
+  const root = committed({ clientMessageId: "root", text: "Thread" }, "9007199254740992");
+  const reply = (seq: string) => ({
+    ...committed({ clientMessageId: `reply-${seq}`, text: "Reply" }, seq),
+    threadRootId: root.id,
+  });
+  let replies = [reply("9007199254740993")];
+  let unread = replies[0].seq;
+  let hasNewer = false;
+  let holdGet = false;
+  let resolveGet!: (response: Response) => void;
+  const reads: { seq: string; resolve: (response: Response) => void }[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (url === "/api/chat/session")
+      return Response.json({ token: "opaque", author: { ...root.author, isGuest: false } });
+    if (url.endsWith("/threads/unread")) {
+      if (holdGet)
+        return new Promise<Response>((resolve) => {
+          resolveGet = resolve;
+        });
+      return Response.json({ threads: unread ? [{ rootId: root.id, seq: unread }] : [] });
+    }
+    if (url.endsWith("/thread/read")) {
+      assert.equal(init?.method, "PUT");
+      return new Promise<Response>((resolve) => reads.push({ seq: JSON.parse(String(init?.body)).seq, resolve }));
+    }
+    assert.equal(url, `/api/chat/channels/general/messages/${root.id}/thread`);
+    return Response.json({ root, messages: replies, cursor: replies.at(-1)!.seq, hasMore: false, hasNewer });
+  });
+  let state = initialChatView();
+  const client = new ChatClient((next) => {
+    state = next;
+  }, "general");
+  t.onTestFinished(() => client.stop());
+  client.start({
+    space: { id: "space", name: "Space" },
+    channel: { id: "general", name: "general" },
+    messages: [root],
+    cursor: replies[0].seq,
+    hasMore: false,
+  });
+  client.identify(root.author.name, true, root.author.id);
+  await tick();
+  sockets[0].frame({ type: "ready", cursor: replies[0].seq });
+  await client.refreshUnreadThreads();
+  assert.equal(state.unreadThreads?.[root.id], unread);
+  await client.prefetchThread(root.id);
+  await client.markThreadRead(root.id, unread);
+  assert.equal(reads.length, 0, "prefetched but closed threads cannot acknowledge");
+  await client.openThread(root.id);
+  assert.equal(reads.length, 0, "opening alone does not prove the reply is visible");
+  hasNewer = true;
+  await client.retryThread();
+  await client.markThreadRead(root.id, unread);
+  assert.equal(reads.length, 0, "an older window cannot acknowledge the latest replies");
+  hasNewer = false;
+  await client.retryThread();
+  const failed = client.markThreadRead(root.id, unread);
+  reads[0].resolve(new Response(null, { status: 503 }));
+  await failed;
+  assert.equal(state.unreadThreads?.[root.id], unread, "failed read retains its badge");
+
+  const reading = client.markThreadRead(root.id, unread);
+  assert.equal(reads[1].seq, "9007199254740993", "sequence must not round to the previous reply");
+  unread = "9007199254740994";
+  replies = [...replies, reply(unread)];
+  sockets[0].message(replies[1]);
+  await client.refreshUnreadThreads();
+  reads[1].resolve(new Response(null, { status: 204 }));
+  await reading;
+  assert.equal(state.unreadThreads?.[root.id], unread, "a delayed ack cannot erase a later unread reply");
+  await client.markThreadRead(root.id, replies[0].seq);
+  assert.equal(reads.length, 2, "the old visible cursor must not clear the newer reply");
+
+  // The server can exclude a later own/blocked reply: seeing the last unread
+  // reply is sufficient, even when it is not the thread's final message.
+  sockets[0].message(reply("9007199254740995"));
+  holdGet = true;
+  const staleSnapshot = client.refreshUnreadThreads();
+  const latest = client.markThreadRead(root.id, unread);
+  reads[2].resolve(new Response(null, { status: 204 }));
+  await latest;
+  resolveGet(Response.json({ threads: [{ rootId: root.id, seq: unread }] }));
+  await staleSnapshot;
+  assert.deepEqual(state.unreadThreads, {}, "an old GET cannot resurrect acknowledged unread state");
+  holdGet = false;
+  unread = "";
+  await client.refreshUnreadThreads();
+  assert.deepEqual(state.unreadThreads, {});
+});
+
 test("late thread responses cannot reopen a closed or different thread", async (t) => {
   const f = await paginationFixture(t);
   const first = f.client.openThread(f.message(4).id);
@@ -2346,6 +2476,68 @@ test("failed prefetch is silent and does not prevent explicit load and retry", a
   assert.equal(f.state.thread?.error, "try again");
   const retry = f.client.retryThread();
   f.requests[2].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await retry;
+  assert.equal(f.state.thread?.error, undefined);
+  assert.equal(f.state.thread?.loading, false);
+});
+
+test("a failed thread page records which page Retry must repeat, and a failed jump keeps its target", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(-200);
+  const reply = (offset: number) => ({ ...f.message(offset), threadRootId: root.id, broadcast: false });
+  const failedJump = f.client.loadMessageContext(reply(-99));
+  f.requests[0].resolve(Response.json({ error: "try again" }, { status: 503 }));
+  assert.equal(await failedJump, false);
+  assert.equal(f.state.thread?.error, "try again");
+  assert.equal(f.state.thread?.failedPage, undefined);
+  assert.equal(f.state.thread?.focusMessageId, reply(-99).id, "Retry reopens the jump target");
+  const jump = f.client.retryThread(f.state.thread?.focusMessageId);
+  assert.equal(f.requests[1].url, `/api/chat/channels/general/messages/${root.id}/thread?around=${reply(-99).id}`);
+  f.requests[1].resolve(
+    Response.json({ root, messages: [-99].map(reply), cursor: f.history.cursor, hasMore: true, hasNewer: true }),
+  );
+  await jump;
+  assert.equal(f.state.thread?.error, undefined);
+
+  const newer = f.client.loadNewerThread();
+  f.requests[2].resolve(Response.json({ error: "offline" }, { status: 503 }));
+  await newer;
+  assert.equal(f.state.thread?.error, "offline");
+  assert.equal(f.state.thread?.failedPage, "newer", "Retry must not page older just because older pages exist");
+  const older = f.client.loadOlderThread();
+  f.requests[3].resolve(Response.json({ error: "offline" }, { status: 503 }));
+  await older;
+  assert.equal(f.state.thread?.failedPage, "older");
+  const retried = f.client.loadOlderThread();
+  assert.equal(f.state.thread?.failedPage, undefined);
+  f.requests[4].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await retried;
+  assert.equal(f.state.thread?.error, undefined);
+});
+
+test("a thread left loading by a failed refresh offers Retry instead of loading forever", async (t) => {
+  const f = await paginationFixture(t);
+  const root = f.message(4);
+  const open = f.client.openThread(root.id);
+  let finish!: (response: Response) => void;
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    () =>
+      new Promise<Response>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  f.sockets[0].frame({ type: "resync_required" });
+  // The refresh aborts the thread request, so it never settles the panel itself.
+  f.requests[0].resolve(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
+  await open;
+  assert.equal(f.state.thread?.loading, true);
+  finish(Response.json({ error: "Temporary outage" }, { status: 503 }));
+  await tick();
+  assert.equal(f.state.phase, "ready");
+  assert.equal(f.state.thread?.loading, false);
+  assert.equal(f.state.thread?.error, "Thread could not be loaded.");
+  const retry = f.client.retryThread();
+  finish(Response.json({ root, messages: [], cursor: f.history.cursor, hasMore: false }));
   await retry;
   assert.equal(f.state.thread?.error, undefined);
   assert.equal(f.state.thread?.loading, false);

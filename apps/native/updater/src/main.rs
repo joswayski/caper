@@ -62,7 +62,12 @@ fn run(args: &[OsString]) -> Result<()> {
     };
     let options = Options::parse(&args[1..])?;
     match command {
-        "check" => check(&options),
+        "check" => match check(&options) {
+            Err(error) if error.is::<RateLimited>() => {
+                print_json(&serde_json::json!({"update": false, "deferred": true}))
+            }
+            result => result,
+        },
         "apply" => apply(&options, args),
         "sign" => sign(&options),
         "public-key" => public_key(&options),
@@ -139,6 +144,22 @@ struct CheckResult<'a> {
     changelog: Vec<&'a manifest::ChangelogEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     history_complete: Option<bool>,
+    /// Structured highlights for every release being installed, newest first,
+    /// so the app can show titles and bodies with hierarchy. Absent when they
+    /// could not be read; empty for a build with no user-facing changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    highlights: Option<&'a [Highlight]>,
+    /// The newest highlighted release's date (YYYY-MM-DD), shown instead of a
+    /// version number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    released: Option<&'a str>,
+    /// The update's source commit, so the app can link its version to GitHub.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revision: Option<&'a str>,
+    /// The update's highlights snapshot sequence. Installing from the review
+    /// marks it read, so the new build does not show the same highlights again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sequence: Option<u64>,
     /// False when the install cannot be replaced without admin rights, for
     /// example a Linux .deb under /usr; the app offers a download link instead.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,6 +177,10 @@ fn check(options: &Options) -> Result<()> {
             notes: None,
             changelog: Vec::new(),
             history_complete: None,
+            highlights: None,
+            released: None,
+            revision: None,
+            sequence: None,
             can_apply: None,
         });
     };
@@ -181,12 +206,14 @@ fn check(options: &Options) -> Result<()> {
                     &manifest.commit,
                 )
             })();
-            result.unwrap_or_else(|_: Box<dyn std::error::Error>| {
-                (
+            result.unwrap_or_else(|_: Box<dyn std::error::Error>| ReleaseHighlights {
+                notes:
                     "Release highlights aren’t available yet. You can still install this update."
                         .into(),
-                    false,
-                )
+                complete: false,
+                items: None,
+                released: None,
+                sequence: None,
             })
         })
     } else {
@@ -204,7 +231,7 @@ fn check(options: &Options) -> Result<()> {
             notes: Some(
                 highlights
                     .as_ref()
-                    .map(|(notes, _)| notes.as_str())
+                    .map(|highlights| highlights.notes.as_str())
                     .unwrap_or(&manifest.notes),
             ),
             changelog: if highlights.is_some() {
@@ -215,9 +242,19 @@ fn check(options: &Options) -> Result<()> {
             history_complete: Some(
                 highlights
                     .as_ref()
-                    .map(|(_, complete)| *complete)
+                    .map(|highlights| highlights.complete)
                     .unwrap_or_else(|| manifest.history_complete(current)),
             ),
+            highlights: highlights
+                .as_ref()
+                .and_then(|highlights| highlights.items.as_deref()),
+            released: highlights
+                .as_ref()
+                .and_then(|highlights| highlights.released.as_deref()),
+            revision: Some(&manifest.commit),
+            sequence: highlights
+                .as_ref()
+                .and_then(|highlights| highlights.sequence),
             can_apply,
         }),
         None => print_json(&CheckResult {
@@ -228,6 +265,10 @@ fn check(options: &Options) -> Result<()> {
             notes: None,
             changelog: Vec::new(),
             history_complete: None,
+            highlights: None,
+            released: None,
+            revision: None,
+            sequence: None,
             can_apply: None,
         }),
     }
@@ -461,7 +502,7 @@ struct HighlightedRelease {
     highlights: Vec<Highlight>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 struct Highlight {
     title: String,
     body: String,
@@ -474,13 +515,26 @@ fn revision_valid(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+/// Highlights for the releases between the installed build and the update.
+#[derive(Debug, PartialEq)]
+struct ReleaseHighlights {
+    /// Plain-text fallback for apps that predate `items`.
+    notes: String,
+    complete: bool,
+    /// `None` when the highlights could not be read.
+    items: Option<Vec<Highlight>>,
+    released: Option<String>,
+    /// The target snapshot's sequence.
+    sequence: Option<u64>,
+}
+
 fn release_highlights_from(
     client: &reqwest::blocking::Client,
     url: &str,
     platform: &str,
     current_revision: &str,
     target_revision: &str,
-) -> Result<(String, bool)> {
+) -> Result<ReleaseHighlights> {
     if !matches!(platform, "macos" | "windows" | "linux")
         || !revision_valid(current_revision)
         || !revision_valid(target_revision)
@@ -553,14 +607,39 @@ fn release_highlights_from(
         })
         .collect();
     let complete = target.releases[0].sequence <= current.sequence + 1;
-    Ok((
-        if notes.is_empty() {
+    // People install one update, not a list of versions: stack every skipped
+    // release's highlights newest first, dropping a title repeated later on.
+    let newer: Vec<_> = target
+        .releases
+        .iter()
+        .rev()
+        .filter(|release| release.sequence > current.sequence)
+        .collect();
+    let mut items: Vec<Highlight> = Vec::new();
+    for item in newer.iter().flat_map(|release| &release.highlights) {
+        let title = item.title.trim().to_lowercase();
+        if !items
+            .iter()
+            .any(|seen| seen.title.trim().to_lowercase() == title)
+        {
+            items.push(item.clone());
+        }
+    }
+    let released = newer
+        .iter()
+        .find(|release| !release.highlights.is_empty())
+        .map(|release| release.published_at[..10].to_owned());
+    Ok(ReleaseHighlights {
+        notes: if notes.is_empty() {
             "No user-facing changes in this build.".into()
         } else {
             notes.join("\n\n")
         },
         complete,
-    ))
+        items: Some(items),
+        released,
+        sequence: Some(target.sequence),
+    })
 }
 
 fn fetch_manifest_from(
@@ -595,11 +674,20 @@ fn fetch_manifest_from(
 }
 
 fn fetch_limited(client: &reqwest::blocking::Client, url: &str, limit: u64) -> Result<Vec<u8>> {
-    let response = client
-        .get(url)
-        .timeout(Duration::from_secs(15))
-        .send()?
-        .error_for_status()?;
+    let response = client.get(url).timeout(Duration::from_secs(15)).send()?;
+    // GitHub uses 403 for some throttles, but a plain forbidden response is
+    // still an error. Never hide authentication or signature failures.
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (response.status() == reqwest::StatusCode::FORBIDDEN
+            && (response.headers().contains_key("retry-after")
+                || response
+                    .headers()
+                    .get("x-ratelimit-remaining")
+                    .is_some_and(|value| value == "0")))
+    {
+        return Err(Box::new(RateLimited));
+    }
+    let response = response.error_for_status()?;
     let mut bytes = Vec::new();
     response.take(limit + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > limit {
@@ -607,6 +695,17 @@ fn fetch_limited(client: &reqwest::blocking::Client, url: &str, limit: u64) -> R
     }
     Ok(bytes)
 }
+
+#[derive(Debug)]
+struct RateLimited;
+
+impl std::fmt::Display for RateLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("update check deferred by rate limiting")
+    }
+}
+
+impl std::error::Error for RateLimited {}
 
 fn download(url: &str, size: u64, target: &Path) -> Result<()> {
     if size > MAX_ARCHIVE_BYTES {
@@ -805,7 +904,20 @@ mod tests {
             if invalid {
                 assert!(result.is_err());
             } else {
-                assert_eq!(result.unwrap(), ("2026-10-11\nNewest update\nA useful change.\n\n2026-10-11\nSkipped update\nA useful change.".into(), true));
+                let result = result.unwrap();
+                assert_eq!(
+                    result.notes,
+                    "2026-10-11\nNewest update\nA useful change.\n\n2026-10-11\nSkipped update\nA useful change."
+                );
+                assert!(result.complete);
+                let titles: Vec<_> = result
+                    .items
+                    .unwrap()
+                    .into_iter()
+                    .map(|item| item.title)
+                    .collect();
+                assert_eq!(titles, ["Newest update", "Skipped update"]);
+                assert_eq!(result.released.as_deref(), Some("2026-10-11"));
             }
             server.join().unwrap();
         }
@@ -832,9 +944,108 @@ mod tests {
                 &target_revision
             )
             .unwrap(),
-            ("No user-facing changes in this build.".into(), false)
+            ReleaseHighlights {
+                notes: "No user-facing changes in this build.".into(),
+                complete: false,
+                items: Some(Vec::new()),
+                released: None,
+                sequence: Some(4),
+            }
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn skipped_releases_stack_into_one_list_without_repeated_titles() {
+        use serde_json::json;
+        let current_revision = "a".repeat(40);
+        let target_revision = "c".repeat(40);
+        let entry = |sequence, revision: &str, date: &str, items: &[(&str, &str)]| {
+            json!({
+                "sequence": sequence, "revision": revision, "publishedAt": format!("{date}T12:00:00Z"),
+                "highlights": items.iter().map(|(title, body)| json!({"title": title, "body": body})).collect::<Vec<_>>()
+            })
+        };
+        let current = json!({"schema":1,"platform":"windows","revision":current_revision,"sequence":1,
+            "releases":[entry(1,&current_revision,"2026-10-10",&[])]});
+        let target = json!({"schema":1,"platform":"windows","revision":target_revision,"sequence":3,
+            "releases":[entry(1,&current_revision,"2026-10-10",&[]),
+                entry(2,&"b".repeat(40),"2026-10-12",&[("Voice in the channel list","Older words."),("Clearer pins","Pins say who pinned them.")]),
+                entry(3,&target_revision,"2026-10-14",&[("Voice in the Channel List ","Newest words.")])]});
+        let (url, server) = serve_metadata(vec![
+            (
+                "/notes?platform=windows&revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                200,
+                serde_json::to_vec(&current).unwrap(),
+            ),
+            (
+                "/notes?platform=windows&revision=cccccccccccccccccccccccccccccccccccccccc",
+                200,
+                serde_json::to_vec(&target).unwrap(),
+            ),
+        ]);
+        let result = release_highlights_from(
+            &reqwest::blocking::Client::new(),
+            &format!("{url}/notes"),
+            "windows",
+            &current_revision,
+            &target_revision,
+        )
+        .unwrap();
+        server.join().unwrap();
+        let items: Vec<_> = result
+            .items
+            .unwrap()
+            .into_iter()
+            .map(|item| (item.title, item.body))
+            .collect();
+        assert_eq!(
+            items,
+            [
+                (
+                    "Voice in the Channel List ".to_owned(),
+                    "Newest words.".to_owned()
+                ),
+                (
+                    "Clearer pins".to_owned(),
+                    "Pins say who pinned them.".to_owned()
+                ),
+            ]
+        );
+        assert_eq!(result.released.as_deref(), Some("2026-10-14"));
+        assert_eq!(result.sequence, Some(3));
+    }
+
+    #[test]
+    fn only_confirmed_http_throttles_defer_checks() {
+        let client = reqwest::blocking::Client::new();
+        for (status, headers, deferred) in [
+            (429, "", true),
+            (403, "Retry-After: 120\r\n", true),
+            (403, "X-RateLimit-Remaining: 0\r\n", true),
+            (403, "X-RateLimit-Remaining: 10\r\n", false),
+            (403, "", false),
+            (500, "Retry-After: 120\r\n", false),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let server = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                write!(stream, "HTTP/1.1 {status} Test\r\n{headers}Content-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            });
+            let error = fetch_limited(&client, &url, 1024).unwrap_err();
+            assert_eq!(error.is::<RateLimited>(), deferred, "{status} {headers}");
+            server.join().unwrap();
+        }
     }
 
     #[test]
@@ -857,6 +1068,7 @@ mod tests {
         for (status, cached, fallback) in [
             (200, valid, false),
             (502, b"unavailable".to_vec(), true),
+            (429, b"rate limited".to_vec(), true),
             (200, b"{}".to_vec(), true),
             (200, mixed, true),
             (200, oversized, true),

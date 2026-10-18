@@ -23,7 +23,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-/// GIFs upload unchanged up to this size; the API's limit.
+/// GIFs upload unchanged up to this size (the API's limit); bigger ones are
+/// shrunk to fit it.
 pub const MAX_GIF_BYTES: usize = 5 * 1024 * 1024;
 /// Every other picture is re-encoded to at most this size.
 pub const MAX_STILL_BYTES: usize = 1024 * 1024;
@@ -43,7 +44,8 @@ pub const PICKER_EXTENSIONS: &[&str] = &[
     "avif",
 ];
 
-pub const GIF_TOO_LARGE: &str = "GIFs can be up to 5 MB and 1024 × 1024.";
+/// Output edges for a shrunk GIF, largest first: the first that fits wins.
+const SHRINK_EDGES: [u32; 5] = [512, 384, 256, 192, 128];
 pub const UNREADABLE: &str = "Caper can’t read that file. Choose a PNG, JPEG, WebP or GIF.";
 pub const UNSUPPORTED: &str =
     "HEIC and AVIF pictures can’t be used on this computer. Choose a PNG, JPEG, WebP or GIF.";
@@ -67,6 +69,11 @@ const RELOAD_AFTER: Duration = Duration::from_secs(60);
 /// Decoded pictures kept; each texture is at most 64 KiB.
 const MAX_ENTRIES: usize = 400;
 const MAX_FETCHES: usize = 4;
+/// A load that failed on the network or a server error (a laptop waking,
+/// say) tries the same URL again after this, doubling up to [`RETRY_MAX`].
+/// Undecodable pictures and other 4xx answers wait for a re-signed URL.
+const RETRY_FIRST: Duration = Duration::from_secs(30);
+const RETRY_MAX: Duration = Duration::from_secs(5 * 60);
 
 pub type Frames = Vec<(egui::ColorImage, Duration)>;
 
@@ -202,8 +209,9 @@ fn heif_family(bytes: &[u8]) -> bool {
     bytes.get(4..8) == Some(b"ftyp")
 }
 
-/// Prepare picked bytes for upload (contract "Client preparation"). GIFs go
-/// up unchanged so they keep animating; everything else is decoded upright,
+/// Prepare picked bytes for upload (contract "Client preparation"). GIFs keep
+/// animating: unchanged within 5 MiB and 1024 × 1024, else shrunk to a square
+/// that fits ([`shrink_gif`]); everything else is decoded upright,
 /// cropped to a centred square, scaled to at most 512 px and re-encoded as
 /// lossy WebP (JPEG only if WebP fails), which drops location metadata.
 pub fn prepare(bytes: Vec<u8>) -> Result<Prepared, String> {
@@ -212,7 +220,7 @@ pub fn prepare(bytes: Vec<u8>) -> Result<Prepared, String> {
             .filter(|(width, height)| *width > 0 && *height > 0)
             .ok_or(INVALID)?;
         if bytes.len() > MAX_GIF_BYTES || width > MAX_DIMENSION || height > MAX_DIMENSION {
-            return Err(GIF_TOO_LARGE.into());
+            return shrink_gif(&bytes, MAX_GIF_BYTES);
         }
         return Ok(Prepared {
             bytes,
@@ -314,12 +322,113 @@ impl Failure {
     }
 }
 
+/// Shrink a GIF too large to upload unchanged, as the web's `gif-shrink.ts`
+/// does: every composited frame cropped to a centred square and scaled down,
+/// keeping its timing. 512 px first, then smaller edges, then fewer frames
+/// (each lasting as long as the ones it replaces).
+pub fn shrink_gif(bytes: &[u8], budget: usize) -> Result<Prepared, String> {
+    let (width, height) = gif_dimensions(bytes)
+        .filter(|(width, height)| *width > 0 && *height > 0)
+        .ok_or(INVALID)?;
+    let short = width.min(height);
+    let mut edges: Vec<u32> = SHRINK_EDGES
+        .into_iter()
+        .filter(|edge| *edge <= short)
+        .collect();
+    if edges.is_empty() {
+        edges.push(short);
+    }
+    let frames = gif_frame_count(bytes).unwrap_or(1);
+    let (mut edge, mut step) = (edges[0], 1);
+    loop {
+        let output = encode_shrunk(bytes, edge, step)?;
+        if output.len() <= budget {
+            return Ok(Prepared {
+                bytes: output,
+                content_type: "image/gif",
+                width: edge,
+                height: edge,
+            });
+        }
+        // Jump straight to the edge the size suggests, else halve the frames.
+        let target = f64::from(edge) * (budget as f64 / output.len() as f64).sqrt();
+        let below: Vec<u32> = edges
+            .iter()
+            .copied()
+            .filter(|candidate| *candidate < edge)
+            .collect();
+        if let Some(smaller) = below
+            .iter()
+            .copied()
+            .find(|candidate| f64::from(*candidate) <= target)
+            .or(below.last().copied())
+        {
+            edge = smaller;
+        } else if step * 2 < frames {
+            step *= 2;
+        } else {
+            return Err("That GIF is too large. Try another one.".into());
+        }
+    }
+}
+
+/// An `edge`-pixel square GIF of every `step`th composited frame.
+fn encode_shrunk(bytes: &[u8], edge: u32, step: usize) -> Result<Vec<u8>, String> {
+    use image::AnimationDecoder;
+    use image::codecs::gif::{GifDecoder, GifEncoder, Repeat};
+    let mut decoder = GifDecoder::new(std::io::Cursor::new(bytes)).map_err(|_| UNREADABLE)?;
+    decoder.set_limits(limits()).map_err(|_| UNREADABLE)?;
+    let mut output = Vec::new();
+    {
+        let mut encoder = GifEncoder::new_with_speed(&mut output, 10);
+        encoder.set_repeat(Repeat::Infinite).map_err(|_| INVALID)?;
+        // A kept frame waits until the frames it stands in for add their time.
+        let mut pending: Option<(image::RgbaImage, u32)> = None;
+        let flush = |encoder: &mut GifEncoder<&mut Vec<u8>>,
+                     (image, ms): (image::RgbaImage, u32)| {
+            encoder
+                .encode_frame(image::Frame::from_parts(
+                    image,
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(ms, 1),
+                ))
+                .map_err(|_| INVALID.to_string())
+        };
+        for (index, frame) in decoder.into_frames().enumerate() {
+            let frame = frame.map_err(|_| UNREADABLE)?;
+            let (numer, denom) = frame.delay().numer_denom_ms();
+            let ms = numer / denom.max(1);
+            if index % step != 0 {
+                if let Some((_, total)) = pending.as_mut() {
+                    *total += ms;
+                }
+                continue;
+            }
+            if let Some(ready) = pending.take() {
+                flush(&mut encoder, ready)?;
+            }
+            let buffer = frame.into_buffer();
+            let (x, y, side) = square_crop(buffer.width(), buffer.height());
+            let square = image::imageops::crop_imm(&buffer, x, y, side, side).to_image();
+            let scaled =
+                image::imageops::resize(&square, edge, edge, image::imageops::FilterType::Triangle);
+            pending = Some((scaled, ms));
+        }
+        match pending.take() {
+            Some(ready) => flush(&mut encoder, ready)?,
+            None => return Err(UNREADABLE.into()),
+        }
+    }
+    Ok(output)
+}
+
 /// The API's picture errors as sentences (contract "Uploading a picture").
 pub fn failure(status: Option<u16>, code: Option<&str>, message: &str, target: &Target) -> Failure {
     let text = match (code, status) {
         (Some("picture_type"), _) => "Choose a PNG, JPEG, WebP or GIF picture.",
         (Some("picture_too_large"), _) | (_, Some(413)) => {
-            "Pictures can be up to 1 MB, or 5 MB for GIFs."
+            "That picture is too large. Try another one."
         }
         (Some("picture_rate_limited"), _) | (_, Some(429)) => {
             "You’ve changed pictures too often today. Try again later."
@@ -586,6 +695,9 @@ struct Entry {
     loading: Option<String>,
     /// The URL that failed; another (re-signed) URL tries again.
     failed: Option<String>,
+    /// After a transient failure: when the same URL may load again, and the
+    /// wait that set it.
+    retry: Option<(Instant, Duration)>,
     used: Option<Instant>,
 }
 
@@ -600,6 +712,13 @@ struct Fetched {
     asset: String,
     url: String,
     frames: Option<Frames>,
+    /// The download failed in a way worth trying again.
+    transient: bool,
+}
+
+/// Network failures (no status) and server errors are worth retrying.
+fn transient(status: Option<u16>) -> bool {
+    status.is_none_or(|status| status >= 500 || matches!(status, 408 | 429))
 }
 
 /// Decoded pictures by asset id. Shared through the egui context so every
@@ -663,7 +782,8 @@ impl Pictures {
         if entry.loading.is_none()
             && let Some(url) = source.url
         {
-            let missing = entry.texture.is_none() && entry.failed.as_deref() != Some(url);
+            let due = entry.retry.is_some_and(|(at, _)| now >= at);
+            let missing = entry.texture.is_none() && (entry.failed.as_deref() != Some(url) || due);
             let reload = playing
                 && room
                 && entry.texture.is_some()
@@ -698,6 +818,18 @@ impl Pictures {
             }
             texture.id()
         });
+        // A transient failure repaints when it may load again.
+        if texture.is_none()
+            && request.is_none()
+            && entry.loading.is_none()
+            && entry
+                .failed
+                .as_deref()
+                .is_some_and(|failed| source.url == Some(failed))
+            && let Some((at, _)) = entry.retry
+        {
+            wait = Some(at.saturating_duration_since(now));
+        }
         if let Some(request) = request {
             self.waiting.push_back(request);
         }
@@ -727,6 +859,7 @@ impl Pictures {
         }
         entry.released = None;
         entry.failed = None;
+        entry.retry = None;
         entry.loading = None;
         entry.used.get_or_insert(now);
     }
@@ -769,7 +902,16 @@ impl Pictures {
                 }
                 // A failed reload keeps its still and stops trying.
                 _ if entry.texture.is_some() => entry.released = None,
-                _ => entry.failed = Some(fetched.url),
+                _ => {
+                    entry.retry = fetched.transient.then(|| {
+                        let wait = entry
+                            .retry
+                            .filter(|_| entry.failed.as_ref() == Some(&fetched.url))
+                            .map_or(RETRY_FIRST, |(_, wait)| (wait * 2).min(RETRY_MAX));
+                        (now + wait, wait)
+                    });
+                    entry.failed = Some(fetched.url);
+                }
             }
         }
         while self.in_flight < MAX_FETCHES
@@ -784,15 +926,16 @@ impl Pictures {
             let context = context.clone();
             let generation = self.generation;
             std::thread::spawn(move || {
-                let frames = api
-                    .fetch_media(&request.url)
-                    .ok()
-                    .and_then(|bytes| decode(&bytes, request.animate));
+                let (frames, transient) = match api.fetch_media(&request.url) {
+                    Ok(bytes) => (decode(&bytes, request.animate), false),
+                    Err(status) => (None, transient(status)),
+                };
                 let _ = sender.send(Fetched {
                     generation,
                     asset: request.asset,
                     url: request.url,
                     frames,
+                    transient,
                 });
                 context.request_repaint();
             });
@@ -887,29 +1030,29 @@ impl Shared {
             .as_ref()
             .map(egui::TextureHandle::id)
     }
-
-    /// Loads are queued or running.
-    pub fn busy(&self) -> bool {
-        let pictures = self.lock();
-        !pictures.waiting.is_empty()
-    }
 }
 
-/// Animations play unless the system asks for less motion (then the first
-/// frame shows), as inline GIFs do.
+/// Animations play unless the system asks for less motion or the window is
+/// in the background (then the first frame shows and nothing repaints), as
+/// inline GIFs do.
 pub fn playing(ui: &egui::Ui) -> bool {
-    !crate::motion::reduced() && ui.style().animation_time > 0.0
+    crate::looping(ui) && ui.style().animation_time > 0.0
 }
 
 /// The texture to draw for `source` in `ui`, loading it if needed; `None`
 /// means draw the mascot or initial instead.
 pub fn texture(ui: &egui::Ui, source: Source<'_>) -> Option<egui::TextureId> {
     let shared = Shared::of(ui.ctx());
-    let (texture, wait) = shared.lock().texture(source, playing(ui), Instant::now());
+    let mut pictures = shared.lock();
+    let queued = pictures.waiting.len();
+    let (texture, wait) = pictures.texture(source, playing(ui), Instant::now());
+    // A new load starts at the next frame's poll; fetches repaint when done.
+    let queued = pictures.waiting.len() > queued;
+    drop(pictures);
     if let Some(wait) = wait {
         ui.ctx().request_repaint_after(wait);
     }
-    if texture.is_none() && shared.busy() {
+    if queued {
         ui.ctx().request_repaint();
     }
     texture
@@ -997,13 +1140,65 @@ mod tests {
         assert_eq!(prepared.content_type, "image/gif");
         assert_eq!((prepared.width, prepared.height), (48, 32));
         assert_eq!(prepared.filename(&Target::Avatar), "avatar.gif");
-        // The header decides, before any upload.
-        let mut wide = bytes.clone();
-        wide[6..8].copy_from_slice(&1025_u16.to_le_bytes());
-        assert_eq!(prepare(wide), Err(GIF_TOO_LARGE.into()));
+        // Over 5 MiB: shrunk (to its 32 px short edge), never refused.
         let mut large = bytes;
         large.resize(MAX_GIF_BYTES + 1, 0);
-        assert_eq!(prepare(large), Err(GIF_TOO_LARGE.into()));
+        let shrunk = prepare(large).unwrap();
+        assert_eq!(
+            (shrunk.content_type, shrunk.width, shrunk.height),
+            ("image/gif", 32, 32)
+        );
+        assert_eq!(gif_frame_count(&shrunk.bytes), Some(2));
+    }
+
+    #[test]
+    fn oversized_gifs_shrink_to_a_512_px_square_keeping_frames_and_timing() {
+        use image::AnimationDecoder;
+        // Over 1024 px wide: a 512 px square, centre-cropped, every frame and delay.
+        let wide = gif(
+            &[
+                ([255, 0, 0, 255], 80),
+                ([0, 0, 255, 255], 120),
+                ([0, 255, 0, 255], 40),
+            ],
+            1100,
+            700,
+        );
+        let prepared = prepare(wide).unwrap();
+        assert_eq!((prepared.width, prepared.height), (512, 512));
+        assert_eq!(gif_dimensions(&prepared.bytes), Some((512, 512)));
+        let decoder =
+            image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&prepared.bytes)).unwrap();
+        let frames: Vec<_> = decoder.into_frames().map(Result::unwrap).collect();
+        let delays: Vec<u32> = frames
+            .iter()
+            .map(|frame| frame.delay().numer_denom_ms().0)
+            .collect();
+        assert_eq!(delays, [80, 120, 40]);
+        assert_eq!(frames[1].buffer().get_pixel(256, 256).0, [0, 0, 255, 255]);
+        // A tight budget: smaller, then fewer frames lasting as long.
+        let source = gif(
+            &[
+                ([255, 0, 0, 255], 50),
+                ([0, 0, 255, 255], 50),
+                ([0, 255, 0, 255], 50),
+                ([9, 9, 9, 255], 50),
+            ],
+            600,
+            600,
+        );
+        assert_eq!(shrink_gif(&source, MAX_GIF_BYTES).unwrap().width, 512);
+        let tight = shrink_gif(&source, 700).unwrap();
+        assert!(tight.bytes.len() <= 700);
+        assert_eq!(gif_frame_count(&tight.bytes), Some(2));
+        assert_eq!(tight.width, 128);
+        let decoder =
+            image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&tight.bytes)).unwrap();
+        let total: u32 = decoder
+            .into_frames()
+            .map(|frame| frame.unwrap().delay().numer_denom_ms().0)
+            .sum();
+        assert_eq!(total, 200, "the animation keeps its length");
     }
 
     #[test]
@@ -1093,7 +1288,7 @@ mod tests {
         );
         assert_eq!(
             message(Some(413), Some("picture_too_large")),
-            "Pictures can be up to 1 MB, or 5 MB for GIFs."
+            "That picture is too large. Try another one."
         );
         assert_eq!(message(Some(422), Some("picture_invalid")), INVALID);
         assert_eq!(
@@ -1176,6 +1371,7 @@ mod tests {
                 asset: "a1".into(),
                 url: first.clone(),
                 frames: decode(&bytes, true),
+                transient: false,
             })
             .unwrap();
         pictures.poll(&context, start);
@@ -1211,6 +1407,7 @@ mod tests {
                 asset: "a2".into(),
                 url: first.clone(),
                 frames: None,
+                transient: false,
             })
             .unwrap();
         pictures.poll(&context, start);
@@ -1222,6 +1419,33 @@ mod tests {
         };
         assert_eq!(pictures.texture(fresh, true, start), (None, None));
         assert_eq!(pictures.waiting.len(), 1, "a fresh URL retries");
+        // A network failure retries the same URL, backing off to 5 minutes.
+        pictures.poll(&context, start);
+        let mut at = start;
+        for wait in [30, 60, 120, 240, 300, 300] {
+            pictures
+                .sender
+                .send(Fetched {
+                    generation: pictures.generation,
+                    asset: "a2".into(),
+                    url: second.clone(),
+                    frames: None,
+                    transient: true,
+                })
+                .unwrap();
+            pictures.poll(&context, at);
+            let wait = Duration::from_secs(wait);
+            assert_eq!(
+                pictures.texture(fresh, true, at),
+                (None, Some(wait)),
+                "the fallback shows and a repaint is due when it may retry"
+            );
+            assert!(pictures.waiting.is_empty());
+            at += wait;
+            assert_eq!(pictures.texture(fresh, true, at), (None, None));
+            assert_eq!(pictures.waiting.len(), 1, "retried after {wait:?}");
+            pictures.poll(&context, at);
+        }
         // Logout forgets everything; late results are ignored.
         pictures.clear();
         pictures
@@ -1231,6 +1455,7 @@ mod tests {
                 asset: "a1".into(),
                 url: second.clone(),
                 frames: decode(&bytes, true),
+                transient: false,
             })
             .unwrap();
         pictures.poll(&context, start);

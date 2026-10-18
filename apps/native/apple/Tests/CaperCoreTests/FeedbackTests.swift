@@ -41,6 +41,22 @@ private func feedbackBody(_ request: URLRequest) throws -> Data {
 }
 
 final class FeedbackTests: XCTestCase {
+    func testUnreadPollingIncludesExactWaitingCountAndSupportsOlderServers() async throws {
+        for (payload, expected) in [
+            (#"{"spaces":[],"feedbackWaiting":137}"#, 137),
+            (#"{"spaces":[],"feedbackWaiting":0}"#, 0),
+            (#"{"spaces":[]}"#, 0),
+        ] {
+            FeedbackMockURLProtocol.handler = { request in
+                XCTAssertEqual(request.url?.path, "/api/spaces/unread")
+                return (200, Data(payload.utf8))
+            }
+            let response = try await client().unreadSpaces()
+            XCTAssertTrue(response.spaces.isEmpty)
+            XCTAssertEqual(response.feedbackWaiting, expected)
+        }
+    }
+
     private let selfID = "Team00000001"
     private let channelID = "Chan00000001"
     private let rootID = "Root00000000001"
@@ -326,6 +342,16 @@ final class FeedbackTests: XCTestCase {
                                      direct: false, reportID: rootID).title, "#plans · Studio")
         XCTAssertEqual(FeedbackVisit(channelID: "Dm0000000001", spaceID: "", spaceName: "Direct messages", channelName: "Alice & Bob",
                                      direct: true, reportID: rootID).title, "Alice & Bob")
+
+        // `space.updated` renames that space on visits and inbox rows only.
+        let renamed = Space(id: "Space0000001", name: "Friends", ownerId: "Owner0000001")
+        let visit = FeedbackVisit(channelID: channelID, spaceID: "Space0000001", spaceName: "Studio", channelName: "Plans",
+                                  direct: false, reportID: rootID)
+        XCTAssertEqual(visit.applying(renamed).title, "#plans · Friends")
+        XCTAssertEqual(visit.applying(Space(id: "Other0000001", name: "Other", ownerId: "x")), visit)
+        XCTAssertEqual(page.reports[0].applying(renamed).space?.name, "Friends")
+        XCTAssertEqual(page.reports[0].applying(renamed).text, page.reports[0].text)
+        XCTAssertEqual(page.reports[0].applying(Space(id: "Other0000001", name: "Other", ownerId: "x")), page.reports[0])
     }
 
     // MARK: Notifications
@@ -452,7 +478,7 @@ final class FeedbackTests: XCTestCase {
 
     @MainActor
     func testOpeningAReportVisitsWithItsThreadOpen() async throws {
-        let history = """
+        var history = """
         {"space":{"id":"Space0000001","name":"Studio"},"channel":{"id":"\(channelID)","name":"plans"},
          "messages":[{"id":"\(rootID)","channelId":"\(channelID)","seq":"5","author":{"id":"Alice0000001","name":"Alice","isGuest":false},
            "content":{"version":1,"type":"text","text":"uploads fail"},"createdAt":"now","clientMessageId":"r",
@@ -504,6 +530,34 @@ final class FeedbackTests: XCTestCase {
         XCTAssertTrue(model.chat.threadMessages.contains { $0.id == replyID })
         XCTAssertTrue(model.isShowing(.feedback(FeedbackTarget(channelID: channelID, spaceID: nil, messageID: replyID, threadRootID: nil))))
         XCTAssertFalse(paths.contains { $0.contains("/read") }, "no read markers for visitors")
+        model.receiveProfileFeed(["type": "space.updated", "space": ["id": "Space0000001", "name": "Friends", "ownerId": "Owner0000001"]])
+        XCTAssertEqual(model.visit?.title, "#plans · Friends", "a visited space's rename reaches the title")
+
+        // Inbox roots can name themselves as threadRootID; notification roots
+        // may omit it. Neither should turn a timeline jump into a thread action.
+        for reportedRoot in [nil, rootID] as [String?] {
+            paths = []
+            await model.openFeedback(FeedbackTarget(channelID: channelID, spaceID: "Space0000001",
+                                                    messageID: rootID, threadRootID: reportedRoot))
+            XCTAssertEqual(paths.first, "/api/chat/channels/\(channelID)/messages?around=\(rootID)")
+            XCTAssertNil(model.chat.threadRootID)
+            XCTAssertEqual(model.chat.focusedMessageID, rootID)
+            XCTAssertTrue(model.chat.messages.contains { $0.id == rootID })
+            XCTAssertFalse(paths.contains { $0.contains("/thread") })
+        }
+        await model.chat.openThread(rootID)
+        XCTAssertEqual(model.chat.threadRootID, rootID, "manual thread actions are unchanged")
+
+        history = history.replacingOccurrences(of: #""id":"Space0000001","name":"Studio""#,
+                                               with: #""id":"","name":"Direct messages""#)
+            .replacingOccurrences(of: #""name":"plans""#, with: #""name":"Alice","direct":true"#)
+        paths = []
+        await model.openFeedback(FeedbackTarget(channelID: channelID, spaceID: nil,
+                                                messageID: rootID, threadRootID: rootID))
+        XCTAssertEqual(model.visit?.direct, true)
+        XCTAssertNil(model.chat.threadRootID, "DM roots also stay in the conversation")
+        XCTAssertEqual(model.chat.focusedMessageID, rootID)
+        XCTAssertFalse(paths.contains { $0.contains("/thread") })
 
         await model.closeVisit()
         XCTAssertNil(model.visit, "with nothing before it, closing leaves an empty stage")

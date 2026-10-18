@@ -97,10 +97,12 @@ class AttachmentUploaderTest {
         // The message carries the ids; text may be empty for a file-only send.
         server.enqueue(MockResponse().setBody("""{"id":"message00001","channelId":"channel00001","seq":"9","author":{"id":"account00001","name":"Jose","isGuest":false},"content":{"version":1,"type":"text","text":"","attachments":[{"id":"$id","kind":"image","contentType":"image/png","name":"shot.png","size":1500,"url":"https://cdn.caper.chat/original/$id?exp=1790000000&sig=s"}]},"createdAt":"2026-10-03T00:00:00Z","clientMessageId":"00000000-0000-4000-8000-000000000009"}"""))
         val sent = api.sendMessage("account-secret", "chat-secret", "channel00001", ChatAuthor("account00001", "Jose", false),
-            UUID.fromString("00000000-0000-4000-8000-000000000009"), "", listOf(id))
+            UUID.fromString("00000000-0000-4000-8000-000000000009"), "", listOf(id), spoilerAttachmentIds = listOf(id))
         assertEquals(id, sent.content.attachments.single().id)
         val send = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
         assertEquals(listOf(id), send["attachmentIds"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(listOf(id), send["spoilerAttachmentIds"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertFalse(sent.content.attachments.single().spoiler)
     }
 
     @Test fun `no preview reservation means a single storage put and text-only sends omit ids`() = runTest {

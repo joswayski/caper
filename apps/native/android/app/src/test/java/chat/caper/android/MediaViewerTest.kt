@@ -11,6 +11,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaViewerTest {
+    @Test fun `galleries exclude spoilers until each attachment is explicitly revealed`() {
+        val files = listOf(file("a"), file("hidden").copy(spoiler = true), file("other").copy(spoiler = true))
+        assertEquals(listOf("a"), viewerPages(files, "a")!!.ids)
+        assertNull(viewerPages(files, "hidden"))
+        assertEquals(listOf("a", "hidden"), viewerPages(files, "hidden", setOf("hidden"))!!.ids)
+        assertNull(viewerPages(files, "other", setOf("hidden")))
+    }
+
     private fun file(
         id: String, kind: String = "image", status: String? = null, url: Boolean = true, unavailable: Boolean = false, animated: Boolean = false,
     ) = ChatAttachment(

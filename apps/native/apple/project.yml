@@ -287,6 +287,8 @@ targets:
         NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel.
         # The media viewer's share sheet can save photos and videos to the library.
         NSPhotoLibraryAddUsageDescription: Caper saves photos and videos you choose to your library.
+        NSPhotoLibraryUsageDescription: Caper shows photos and videos you allow so you can choose attachments. Only items you add are imported.
+        PHPhotoLibraryPreventAutomaticLimitedAccessAlert: true
         CaperAPNsEnvironment: $(CAPER_APNS_ENVIRONMENT)
         # caper://invite/<code>; https://caper.chat/invite/<code> opens through
         # the Associated Domains entitlement (universal links).
@@ -381,6 +383,7 @@ targets:
       - Tests/CaperCoreTests/WhatsNewTests.swift
       - Tests/CaperCoreTests/ProfilePictureTests.swift
       - Tests/CaperCoreTests/ProfileUpdatesTests.swift
+      - Tests/CaperCoreTests/LiveNowTests.swift
     dependencies:
       - target: CaperCoreIOS
       - target: CaperRTCBridgeIOS

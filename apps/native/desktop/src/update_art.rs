@@ -1,54 +1,125 @@
-//! Original Caper SVG layers, with a short greeting followed by a long rest.
-//! Keep the choreography equivalent to Apple's UpdateMascot in UpdateViews.swift.
+//! The update notice and decorative SVG layers used in its review.
 
 use eframe::egui;
 
-fn ease(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
+/// Match UpdateButtonShine on macOS: a still prismatic edge and one short
+/// light sweep every eight seconds. Never animate the label or hit target.
+fn shine(ui: &egui::Ui, response: &egui::Response) {
+    if !ui.is_enabled() {
+        return;
+    }
+    let rect = response.rect;
+    let colors = [
+        [167.0, 128.0, 242.0],
+        [104.0, 175.0, 236.0],
+        [99.0, 210.0, 193.0],
+        [215.0, 205.0, 130.0],
+        [229.0, 139.0, 183.0],
+    ];
+    let mut corners = Vec::new();
+    egui::epaint::tessellator::path::rounded_rectangle(
+        &mut corners,
+        rect,
+        egui::epaint::CornerRadiusF32::same(8.0),
+    );
+    // The stroke colors interpolate between vertices, so sample the long
+    // straight edges as well as the corners to retain every rainbow stop.
+    let mut outline = Vec::new();
+    for (&a, &b) in corners.iter().zip(corners.iter().cycle().skip(1)) {
+        let steps = (a.distance(b) / 8.0).ceil().max(1.0) as usize;
+        for step in 0..steps {
+            outline.push(a.lerp(b, step as f32 / steps as f32));
+        }
+    }
+    // Preserve the button's own keyboard focus indication.
+    if !response.has_focus() {
+        for (width, alpha) in [(4.0, 31), (1.0, 191)] {
+            let stroke = egui::epaint::PathStroke::new_uv(width, move |_, point| {
+                let t = ((point.x - rect.left()) / rect.width()).clamp(0.0, 1.0) * 4.0;
+                let index = (t as usize).min(3);
+                let rgb = std::array::from_fn::<_, 3, _>(|channel| {
+                    egui::lerp(
+                        colors[index][channel]..=colors[index + 1][channel],
+                        t - index as f32,
+                    )
+                    .round() as u8
+                });
+                egui::Color32::from_rgba_unmultiplied(rgb[0], rgb[1], rgb[2], alpha)
+            })
+            .inside();
+            ui.painter()
+                .add(egui::Shape::closed_line(outline.clone(), stroke));
+        }
+    }
+    if !crate::looping(ui) {
+        return;
+    }
+    let duration = f64::from(crate::motion::SLOW) * 6.0;
+    let time = ui.input(|input| input.time);
+    let start = ui.ctx().data_mut(|data| {
+        *data.get_temp_mut_or_insert_with(response.id.with("shine-start"), || time)
+    });
+    let phase = (time - start).rem_euclid(8.0);
+    if phase >= duration {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64(8.0 - phase));
+        return;
+    }
+    let progress = crate::motion::ease_out((phase / duration) as f32);
+    let center = rect.left() - 52.0 + (rect.width() + 160.0) * progress;
+    let mut mesh = egui::Mesh::default();
+    // Clip the band to rounded corners in its geometry, not the rectangular
+    // painter clip, so no light leaks outside the button as it enters/leaves.
+    let height = rect.height();
+    for y in [
+        0.0,
+        2.0,
+        4.0,
+        8.0,
+        height - 8.0,
+        height - 4.0,
+        height - 2.0,
+        height,
+    ] {
+        let corner = (8.0 - y.min(height - y)).max(0.0);
+        let inset = 8.0 - (64.0 - corner * corner).sqrt();
+        let left = rect.left() + inset;
+        let right = rect.right() - inset;
+        let x = center - (y - height / 2.0) * 18.0_f32.to_radians().tan();
+        for column in [
+            left,
+            (x - 28.0).clamp(left, right),
+            x.clamp(left, right),
+            (x + 28.0).clamp(left, right),
+            right,
+        ] {
+            let alpha = (1.0 - (column - x).abs() / 28.0).max(0.0) * 41.0;
+            mesh.colored_vertex(
+                egui::pos2(column, rect.top() + y),
+                egui::Color32::from_white_alpha(alpha.round() as u8),
+            );
+        }
+    }
+    for row in 0..7 {
+        for column in 0..4 {
+            let i = row * 5 + column;
+            mesh.add_triangle(i, i + 1, i + 5);
+            mesh.add_triangle(i + 1, i + 6, i + 5);
+        }
+    }
+    ui.painter().add(mesh);
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(33));
 }
 
-/// Travel across the profile, hide depth, waving arm angle and walking bounce.
-fn pose(elapsed: f32) -> (f32, f32, f32, f32) {
-    let t = elapsed % 24.0;
-    let travel = if t < 2.8 {
-        0.0
-    } else if t < 6.0 {
-        ease((t - 2.8) / 3.2)
-    } else if t < 7.6 {
-        1.0
-    } else {
-        1.0 - ease((t - 7.6) / 2.0)
-    };
-    let dip = if t < 0.7 {
-        56.0 * (1.0 - ease(t / 0.7))
-    } else {
-        56.0 * ease((t - 9.6) / 0.8)
-    };
-    let waving = (0.7..2.8).contains(&t) || (6.0..7.6).contains(&t);
-    let walking = (2.8..6.0).contains(&t) || (7.6..9.6).contains(&t);
-    (
-        travel,
-        dip,
-        if waving { (t * 10.0).sin() * 0.28 } else { 0.0 },
-        if walking {
-            (t * 14.0).sin().abs() * -2.0
-        } else {
-            0.0
-        },
-    )
-}
-
-pub fn paint(ui: &egui::Ui, rect: egui::Rect, wave: f32, step: f32) {
+pub fn paint(ui: &egui::Ui, rect: egui::Rect) {
     egui::Image::new(egui::include_image!(
         "../../../../assets/update-caper/feet.svg"
     ))
-    .rotate(step * 0.06, egui::vec2(0.5, 0.84))
     .paint_at(ui, rect);
     egui::Image::new(egui::include_image!(
         "../../../../assets/update-caper/wave.svg"
     ))
-    .rotate(wave, egui::vec2(0.8, 0.66))
     .paint_at(ui, rect);
     egui::Image::new(egui::include_image!(
         "../../../../assets/update-caper/body.svg"
@@ -56,76 +127,25 @@ pub fn paint(ui: &egui::Ui, rect: egui::Rect, wave: f32, step: f32) {
     .paint_at(ui, rect);
 }
 
-/// A stable keyboard/click target even while Caper is hiding. The tiny dot
-/// remains discoverable; audio/profile controls below are never covered.
-pub fn dock(ui: &mut egui::Ui, version: &str, reviewing: bool) -> egui::Response {
-    let now = ui.input(|input| input.time);
-    let active = !reviewing && ui.is_enabled() && crate::looping(ui);
-    let start_id = ui.id().with(("update-mascot-start", version));
-    let elapsed = ui.ctx().data_mut(|data| {
-        if active {
-            (now - *data.get_temp_mut_or_insert_with(start_id, || now)) as f32
-        } else {
-            data.remove::<f64>(start_id);
-            0.0
-        }
-    });
-    // Keep the profile and channel list stationary throughout the greeting/rest.
-    let height = 56.0;
-    let (slot, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), height),
-        egui::Sense::hover(),
-    );
-    let profile_width = (slot.width() - 122.0).max(48.0);
-    let target = egui::Rect::from_min_size(slot.min, egui::vec2(profile_width, height));
-    let response = ui.interact(target, ui.id().with("update-mascot"), egui::Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
-            ui.is_enabled(),
-            "Review Caper update",
+/// A labelled, always-visible review action, separate from profile/audio controls.
+pub fn dock(ui: &mut egui::Ui, version: &str) -> egui::Response {
+    let response = ui
+        .allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 36.0),
+            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+            |ui| {
+                crate::toned(
+                    ui,
+                    crate::SECONDARY_TONE,
+                    true,
+                    egui::Button::new(crate::bold("Update available").size(12.0)),
+                )
+            },
         )
-    });
-    let (travel, mut dip, wave, step) = if active {
-        pose(elapsed)
-    } else {
-        (0.0, 22.0, 0.0, 0.0)
-    };
-    if response.hovered() || response.has_focus() {
-        dip = 0.0;
-    }
-    let x = slot.left() + 28.0 + travel * (profile_width - 60.0).clamp(0.0, 80.0);
-    let rect = egui::Rect::from_min_size(
-        egui::pos2(x - 28.0, slot.bottom() - 60.0 + dip + step),
-        egui::vec2(60.0, 60.0),
-    );
-    let mut painter = ui.painter().clone();
-    painter.set_clip_rect(slot.intersect(ui.clip_rect()));
-    let mut art_ui = ui.new_child(egui::UiBuilder::new().max_rect(slot));
-    art_ui.set_clip_rect(slot.intersect(ui.clip_rect()));
-    paint(&art_ui, rect, wave, step);
-    painter.circle_filled(
-        egui::pos2(slot.left() + 14.0, slot.bottom() - 3.0),
-        2.5,
-        crate::TERRACOTTA_BRIGHT,
-    );
-    if response.has_focus() {
-        painter.rect_stroke(
-            target.shrink(1.0),
-            8.0,
-            egui::Stroke::new(1.0, crate::TERRACOTTA),
-            egui::StrokeKind::Inside,
-        );
-    }
-    if active {
-        let rest = elapsed % 24.0;
-        ui.ctx().request_repaint_after(if rest >= 10.4 {
-            std::time::Duration::from_secs_f32(24.0 - rest)
-        } else {
-            std::time::Duration::from_millis(33)
-        });
-    }
+        .inner;
+    shine(ui, &response);
+    ui.add_space(8.0);
     response.on_hover_text(format!(
-        "Caper {version} is ready. Click to see what’s new."
+        "Caper {version} is available. Review the update before restarting."
     ))
 }

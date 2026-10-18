@@ -38,7 +38,7 @@ public struct PictureCreateInput: Encodable, Equatable, Sendable {
     }
 }
 
-/// The bytes that will be uploaded: an unchanged GIF, or a re-encoded square still.
+/// The bytes that will be uploaded: an unchanged or shrunk GIF, or a re-encoded square still.
 public struct PreparedPicture: Equatable, Sendable {
     public let data: Data
     public let contentType: String
@@ -56,17 +56,15 @@ public struct PreparedPicture: Equatable, Sendable {
 
 /// Why a picked file can't become a picture, before anything is uploaded.
 public enum PictureError: Error, Equatable, Sendable {
-    /// A GIF over 5 MiB or with a logical screen over 1024 × 1024.
-    case gifTooLarge
     /// Not a picture this device can decode.
     case unreadable
-    /// Still over 1 MiB after re-encoding.
+    /// Still over its limit after re-encoding (1 MiB, or 5 MiB for a shrunk GIF).
     case tooLarge
 }
 
 /// Pure picture decisions, kept separate from ImageIO and views for unit tests.
 public enum ProfilePicturePolicy {
-    /// GIFs upload unchanged up to this size (5 MiB).
+    /// GIFs upload unchanged up to this size (5 MiB); bigger ones are shrunk to fit it.
     public static let gifMaxBytes = 5 * 1_024 * 1_024
     /// Every other picture after re-encoding (1 MiB).
     public static let stillMaxBytes = 1_024 * 1_024
@@ -86,12 +84,14 @@ public enum ProfilePicturePolicy {
     static let maxAnimationBytes = 16 * 1_024 * 1_024
     static let cacheBytes = 96 * 1_024 * 1_024
     static let cacheCount = 400
+    /// Downloaded files kept so an evicted or resized picture (an animation's
+    /// frames are the large part) decodes again without downloading.
+    static let fileCacheBytes = 24 * 1_024 * 1_024
     /// A downloaded picture is never larger than the biggest allowed GIF.
     static let maxDownloadBytes = 6 * 1_024 * 1_024
     /// A failed picture is retried with a fresh URL at once, else after this.
     static let retryAfter: TimeInterval = 120
 
-    public static let gifLimitMessage = "GIFs can be up to 5 MB and 1024 × 1024."
     public static let unusableMessage = "That picture couldn’t be used. Try another one."
     public static let unavailableMessage = "Picture uploads aren’t available right now."
 
@@ -110,11 +110,10 @@ public enum ProfilePicturePolicy {
         return (Int(header[6]) | Int(header[7]) << 8, Int(header[8]) | Int(header[9]) << 8)
     }
 
-    /// Why a GIF can't upload unchanged, or nil when it can.
-    public static func gifError(_ data: Data) -> PictureError? {
-        guard let size = gifSize(data), size.width > 0, size.height > 0 else { return .unreadable }
-        if data.count > gifMaxBytes || size.width > maxDimension || size.height > maxDimension { return .gifTooLarge }
-        return nil
+    /// Whether a GIF uploads byte for byte; any other GIF is shrunk first.
+    public static func gifUploadsUnchanged(_ data: Data) -> Bool {
+        guard let size = gifSize(data) else { return false }
+        return data.count <= gifMaxBytes && (1...maxDimension).contains(size.width) && (1...maxDimension).contains(size.height)
     }
 
     // MARK: Stills
@@ -185,7 +184,6 @@ public enum ProfilePicturePolicy {
     public static func message(for error: Error, purpose: PicturePurpose) -> String {
         if let error = error as? PictureError {
             switch error {
-            case .gifTooLarge: return gifLimitMessage
             case .unreadable: return unusableMessage
             case .tooLarge: return "That picture is too large. Try another one."
             }
@@ -193,7 +191,7 @@ public enum ProfilePicturePolicy {
         if let error = error as? APIError {
             if error.code == "picture_invalid" || error.status == 422 { return unusableMessage }
             if error.code == "picture_too_large" || error.status == 413 {
-                return "That picture is too large. GIFs can be up to 5 MB and other pictures up to 1 MB."
+                return "That picture is too large. Try another one."
             }
             if error.code == "picture_type" { return "Use a PNG, JPEG, WebP or GIF picture." }
             if error.code == "picture_rate_limited" || error.status == 429 {
@@ -221,9 +219,9 @@ public enum ProfilePicturePolicy {
 /// Turns picked bytes into an uploadable picture (contract "Client
 /// preparation"). Synchronous ImageIO work: call it off the main actor.
 public enum ProfilePicturePreparer {
-    /// GIFs (by magic bytes) upload unchanged within their limits so the
-    /// animation survives. Anything else ImageIO decodes (PNG, JPEG, HEIC,
-    /// WebP, AVIF, BMP…) becomes an oriented, centre-cropped square of at
+    /// GIFs (by magic bytes) keep animating: unchanged within 5 MiB and
+    /// 1024 × 1024, else shrunk by `GIFShrink` to a square that fits.
+    /// Anything else ImageIO decodes (PNG, JPEG, HEIC, WebP, AVIF, BMP…) becomes an oriented, centre-cropped square of at
     /// most 512 px, as lossy WebP (PNG/JPEG if WebP fails), at most 1 MiB.
     /// Re-encoding drops EXIF/GPS metadata; HEIC and AVIF are never uploaded.
     public static func prepare(_ data: Data) throws -> PreparedPicture {
@@ -232,7 +230,9 @@ public enum ProfilePicturePreparer {
     }
 
     static func prepareGIF(_ data: Data) throws -> PreparedPicture {
-        if let error = ProfilePicturePolicy.gifError(data) { throw error }
+        if !ProfilePicturePolicy.gifUploadsUnchanged(data) {
+            return try GIFShrink.shrink(data, budget: ProfilePicturePolicy.gifMaxBytes)
+        }
         guard let size = ProfilePicturePolicy.gifSize(data),
               let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               CGImageSourceGetCount(source) > 0 else { throw PictureError.unreadable }
@@ -390,14 +390,16 @@ enum ProfilePictureDecoder {
 /// Decoded pictures cached by asset id and decode size, never by URL:
 /// signed URLs change daily while the asset stays the same. `NSCache`
 /// bounds memory for long member lists; concurrent requests for one picture
-/// share a single download and decode.
+/// share a single download and decode. The downloaded files are cached by
+/// asset too (the session is ephemeral), within a smaller budget.
 @MainActor
 final class ProfilePictureLoader {
     static let shared = ProfilePictureLoader()
 
     private let cache = NSCache<NSString, ProfilePictureFrames>()
+    private let files = NSCache<NSString, NSData>()
     private let session: URLSession
-    private var loading: [String: Task<ProfilePictureFrames?, Never>] = [:]
+    private var loading: [String: Task<(frames: ProfilePictureFrames, data: Data)?, Never>] = [:]
     /// The URL whose load last failed for a key, and when.
     private var failures: [String: (url: URL, at: Date)] = [:]
 
@@ -408,6 +410,7 @@ final class ProfilePictureLoader {
         session = URLSession(configuration: configuration)
         cache.totalCostLimit = ProfilePicturePolicy.cacheBytes
         cache.countLimit = ProfilePicturePolicy.cacheCount
+        files.totalCostLimit = ProfilePicturePolicy.fileCacheBytes
     }
 
     nonisolated static func key(asset: String, pixelSize: Int) -> String { "\(asset):\(pixelSize)" }
@@ -421,22 +424,88 @@ final class ProfilePictureLoader {
         if let hit = cached(key) { return hit }
         if let failure = failures[key],
            !ProfilePicturePolicy.retries(failedURL: failure.url, failedAt: failure.at, url: url, now: Date()) { return nil }
-        if let running = loading[key] { return await running.value }
+        if let running = loading[key] { return await running.value?.frames }
         let session = self.session
-        let task = Task.detached(priority: .utility) { () -> ProfilePictureFrames? in
-            guard let data = try? await ProfilePictureDecoder.fetch(url, session: session) else { return nil }
-            return try? ProfilePictureDecoder.decode(data, pixelSize: pixelSize)
+        let downloaded = files.object(forKey: asset as NSString).map { $0 as Data }
+        let task = Task.detached(priority: .utility) { () -> (frames: ProfilePictureFrames, data: Data)? in
+            // `??` can't await on its right-hand side, so the download is its own step.
+            var bytes = downloaded
+            if bytes == nil { bytes = try? await ProfilePictureDecoder.fetch(url, session: session) }
+            guard let data = bytes, let frames = try? ProfilePictureDecoder.decode(data, pixelSize: pixelSize) else { return nil }
+            return (frames, data)
         }
         loading[key] = task
-        let frames = await task.value
+        let result = await task.value
         loading[key] = nil
-        if let frames {
-            cache.setObject(frames, forKey: key as NSString, cost: frames.cost)
+        if let result {
+            cache.setObject(result.frames, forKey: key as NSString, cost: result.frames.cost)
+            files.setObject(result.data as NSData, forKey: asset as NSString, cost: result.data.count)
             failures[key] = nil
         } else {
             if failures.count >= 512 { failures.removeAll() }
             failures[key] = (url, Date())
         }
-        return frames
+        return result?.frames
+    }
+}
+
+/// Shrinking a GIF too large to upload unchanged, as the web's
+/// `gif-shrink.ts` and Android's `GifShrink.kt` do, with ImageIO decoding,
+/// compositing and choosing each frame's palette: every frame centre-cropped
+/// square and scaled down with its timing. 512 px first, then smaller edges,
+/// then fewer frames (each lasting as long as the ones it replaces).
+enum GIFShrink {
+    static let edges = [512, 384, 256, 192, 128]
+
+    static func shrink(_ data: Data, budget: Int) throws -> PreparedPicture {
+        guard let size = ProfilePicturePolicy.gifSize(data), size.width > 0, size.height > 0,
+              let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetCount(source) > 0 else { throw PictureError.unreadable }
+        let count = CGImageSourceGetCount(source)
+        let delays = (0..<count).map { frameDelay(source, at: $0) }
+        let short = min(size.width, size.height)
+        let fitting = edges.filter { $0 <= short }
+        let candidates = fitting.isEmpty ? [short] : fitting
+        var edge = candidates[0]
+        var step = 1
+        while true {
+            guard let output = encode(source, count: count, delays: delays, edge: edge, step: step) else { throw PictureError.unreadable }
+            if output.count <= budget { return PreparedPicture(data: output, contentType: "image/gif", width: edge, height: edge) }
+            // Jump straight to the edge the size suggests, else halve the frames.
+            let target = Double(edge) * (Double(budget) / Double(output.count)).squareRoot()
+            let below = candidates.filter { $0 < edge }
+            if let smaller = below.first(where: { Double($0) <= target }) ?? below.last {
+                edge = smaller
+            } else if step * 2 < count {
+                step *= 2
+            } else {
+                throw PictureError.tooLarge
+            }
+        }
+    }
+
+    /// A frame's delay in seconds, unclamped where ImageIO has it.
+    static func frameDelay(_ source: CGImageSource, at index: Int) -> Double {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
+              let gif = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any] else { return 0.1 }
+        return (gif[kCGImagePropertyGIFUnclampedDelayTime] as? Double) ?? (gif[kCGImagePropertyGIFDelayTime] as? Double) ?? 0.1
+    }
+
+    /// An `edge`-pixel square GIF of every `step`th composited frame.
+    static func encode(_ source: CGImageSource, count: Int, delays: [Double], edge: Int, step: Int) -> Data? {
+        let kept = (count + step - 1) / step
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output as CFMutableData, UTType.gif.identifier as CFString, kept, nil) else { return nil }
+        CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+        for first in stride(from: 0, to: count, by: step) {
+            guard let frame = CGImageSourceCreateImageAtIndex(source, first, [kCGImageSourceShouldCache: false] as CFDictionary),
+                  let square = frame.cropping(to: ProfilePicturePolicy.squareCrop(width: frame.width, height: frame.height)),
+                  let image = ProfilePicturePreparer.render(square, edge: edge) else { return nil }
+            let delay = delays[first..<min(first + step, count)].reduce(0, +)
+            let gif: [CFString: Any] = [kCGImagePropertyGIFDelayTime: delay, kCGImagePropertyGIFUnclampedDelayTime: delay]
+            CGImageDestinationAddImage(destination, image, [kCGImagePropertyGIFDictionary: gif] as CFDictionary)
+        }
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
     }
 }

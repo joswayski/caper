@@ -53,6 +53,8 @@ export interface ThreadViewState {
   focusMessageId?: string;
   before?: string;
   error?: string;
+  /** The page `error` belongs to, so Retry repeats it; undefined reloads the thread. */
+  failedPage?: "older" | "newer";
 }
 
 export interface ChatViewState {
@@ -81,6 +83,8 @@ export interface ChatViewState {
   attachmentProgress: Record<string, number>;
   error?: string;
   thread?: ThreadViewState;
+  /** Personalized state stays outside shared/cached message payloads. */
+  unreadThreads?: Record<string, string>;
 }
 
 const initialState: ChatViewState = {
@@ -97,6 +101,17 @@ const initialState: ChatViewState = {
 };
 
 /** Ids of attachments the server is still processing. */
+/** The same list when `map` keeps every item, so unchanged timelines keep their identity. */
+function sameOrMapped<T>(items: T[], map: (item: T) => T) {
+  let changed = false;
+  const mapped = items.map((item) => {
+    const next = map(item);
+    if (next !== item) changed = true;
+    return next;
+  });
+  return changed ? mapped : items;
+}
+
 function processingIds(messages: ChatMessage[]) {
   const ids = new Set<string>();
   for (const message of messages)
@@ -187,8 +202,14 @@ export class ChatHistoryError extends Error {
   }
 }
 
-export async function loadChatHistory(channelId?: string, signal?: AbortSignal): Promise<GeneralChatHistory> {
-  const path = channelId ? `/api/chat/channels/${encodeURIComponent(channelId)}/messages` : "/api/chat/general";
+export async function loadChatHistory(
+  channelId?: string,
+  signal?: AbortSignal,
+  around?: string,
+): Promise<GeneralChatHistory> {
+  const path = channelId
+    ? `/api/chat/channels/${encodeURIComponent(channelId)}/messages${around ? `?around=${encodeURIComponent(around)}` : ""}`
+    : "/api/chat/general";
   const response = await fetch(path, {
     cache: "no-store",
     signal: AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(10_000)]),
@@ -202,6 +223,8 @@ export async function loadChatHistory(channelId?: string, signal?: AbortSignal):
     throw new Error("The chat service returned messages from another channel.");
   if (history.pinnedMessages?.some((message) => message.channelId !== history.channel.id))
     throw new Error("The chat service returned pins from another channel.");
+  if (around && !history.messages.some((message) => message.id === around))
+    throw new Error("The chat service returned invalid message context.");
   return history;
 }
 
@@ -370,6 +393,11 @@ export class ChatClient {
   private contextWindow?: { start: bigint; end?: bigint };
   private readonly threadPages = new Map<string, ThreadViewState>();
   private readonly threadRequests = new Map<string, { promise: Promise<void>; controller: AbortController }>();
+  private threadUnreadRequest?: Promise<void>;
+  private threadUnreadDirty = false;
+  private threadUnreadRevision = 0;
+  private threadUnreadTimer?: ReturnType<typeof setTimeout>;
+  private readonly threadReadsPending = new Set<string>();
   // Fetching a thread's older rows must not insert them into the channel page
   // or move the channel's exclusive pagination boundary past a history gap.
   private readonly threadOnlyRows = new Set<string>();
@@ -418,7 +446,12 @@ export class ChatClient {
 
   identify(name: string, signedIn = false, accountId?: string) {
     this.name = name;
+    if (this.accountId !== (signedIn ? accountId : undefined)) {
+      ++this.threadUnreadRevision;
+      this.update({ unreadThreads: {} });
+    }
     this.accountId = signedIn ? accountId : undefined;
+    this.scheduleThreadUnread();
     if (signedIn && accountId && this.state.author?.id === accountId)
       this.update({ author: { ...this.state.author, name } });
     const saved = storedSession();
@@ -436,6 +469,7 @@ export class ChatClient {
     this.releaseUploads();
     clearTimeout(this.typingIdleTimer);
     clearTimeout(this.typingExpiryTimer);
+    clearTimeout(this.threadUnreadTimer);
     this.connection?.stop();
   }
 
@@ -535,6 +569,112 @@ export class ChatClient {
     void this.createSession();
   }
 
+  private scheduleThreadUnread() {
+    if (!this.accountId || this.threadUnreadTimer || this.controller.signal.aborted) return;
+    this.threadUnreadTimer = setTimeout(() => {
+      this.threadUnreadTimer = undefined;
+      void this.refreshUnreadThreads();
+    }, 300);
+  }
+
+  /** Coalesced live updates plus the foreground poll repair cross-device reads. */
+  refreshUnreadThreads(): Promise<void> {
+    if (!this.accountId || !this.state.channelId || this.controller.signal.aborted) return Promise.resolve();
+    this.threadUnreadDirty = true;
+    if (this.threadUnreadRequest) return this.threadUnreadRequest;
+    this.threadUnreadRequest = (async () => {
+      while (this.threadUnreadDirty && !this.controller.signal.aborted) {
+        this.threadUnreadDirty = false;
+        const channel = this.state.channelId,
+          account = this.accountId;
+        const generation = this.generation,
+          revision = this.threadUnreadRevision;
+        if (!channel || !account) return;
+        try {
+          const response = await fetch(`/api/chat/channels/${encodeURIComponent(channel)}/threads/unread`, {
+            cache: "no-store",
+            signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+          });
+          if (!response.ok) return;
+          const body: unknown = await response.json();
+          const rows = (body as { threads?: unknown })?.threads;
+          if (!Array.isArray(rows)) return;
+          const unreadThreads: Record<string, string> = {};
+          for (const row of rows) {
+            if (!row || typeof row.rootId !== "string" || !row.rootId || typeof row.seq !== "string") return;
+            sequence(row.seq);
+            unreadThreads[row.rootId] = row.seq;
+          }
+          if (
+            !this.controller.signal.aborted &&
+            generation === this.generation &&
+            revision === this.threadUnreadRevision &&
+            account === this.accountId &&
+            channel === this.state.channelId
+          )
+            this.update({ unreadThreads });
+        } catch {
+          // An outage is not a read. Keep the badge and retry on the next refresh.
+        }
+      }
+    })().finally(() => {
+      this.threadUnreadRequest = undefined;
+    });
+    return this.threadUnreadRequest;
+  }
+
+  /** The rendered thread supplies the last visible reply, never a channel/history cursor. */
+  async markThreadRead(rootId: string, seq: string) {
+    const channel = this.state.channelId,
+      account = this.accountId,
+      generation = this.generation;
+    const thread = this.state.thread;
+    const unread = this.state.unreadThreads?.[rootId];
+    if (
+      !channel ||
+      !account ||
+      this.controller.signal.aborted ||
+      thread?.rootId !== rootId ||
+      thread.loading ||
+      thread.error ||
+      thread.hasNewer ||
+      !unread ||
+      sequence(seq) < sequence(unread)
+    )
+      return;
+    if (!this.state.messages.some((message) => message.threadRootId === rootId && message.seq === seq)) return;
+    const key = `${account}:${rootId}`;
+    if (this.threadReadsPending.has(key)) return;
+    this.threadReadsPending.add(key);
+    try {
+      const response = await fetch(
+        `/api/chat/channels/${encodeURIComponent(channel)}/messages/${encodeURIComponent(rootId)}/thread/read`,
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ seq }),
+          signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(10_000)]),
+        },
+      );
+      if (
+        !response.ok ||
+        this.controller.signal.aborted ||
+        generation !== this.generation ||
+        account !== this.accountId
+      )
+        return;
+      ++this.threadUnreadRevision;
+      const unreadThreads = { ...this.state.unreadThreads };
+      if (unreadThreads[rootId] && sequence(unreadThreads[rootId]) <= sequence(seq)) delete unreadThreads[rootId];
+      this.update({ unreadThreads });
+      this.scheduleThreadUnread();
+    } catch {
+      // The visibility check retries; only a confirmed acknowledgement clears it.
+    } finally {
+      this.threadReadsPending.delete(key);
+    }
+  }
+
   closeThread() {
     this.update({ thread: undefined });
   }
@@ -607,6 +747,7 @@ export class ChatClient {
         thread: {
           ...thread,
           error: undefined,
+          failedPage: undefined,
           loading: !older && !newer,
           loadingOlder: older,
           loadingNewer: newer,
@@ -685,6 +826,9 @@ export class ChatClient {
               loadingOlder: false,
               loadingNewer: false,
               error: error instanceof Error ? error.message : "Thread could not be loaded.",
+              failedPage: older ? "older" : newer ? "newer" : undefined,
+              // Retry reopens the same context rather than the latest replies.
+              ...(around ? { focusMessageId: around } : {}),
             },
           });
       }
@@ -928,13 +1072,18 @@ export class ChatClient {
         for (let recovery = 0; ; recovery++) {
           if (this.uploadsNeedRefresh) {
             if (!this.pendingUploads.length) throw new Error("Failed to upload.");
-            const attachments = await Promise.all(this.pendingUploads.map((upload) => upload.ensure()));
+            const attachments = (await Promise.all(this.pendingUploads.map((upload) => upload.ensure()))).map(
+              (attachment, index) => ({ ...attachment, spoiler: pending.attachments?.[index]?.spoiler }),
+            );
             if (!current() || controller.signal.aborted) throw new DOMException("Cancelled", "AbortError");
             pending = { ...pending, clientMessageId: crypto.randomUUID(), attachments };
             this.uploadsNeedRefresh = false;
             this.update({ pendingSend: pending });
           }
           const attachmentIds = (pending.attachments ?? []).map((attachment) => attachment.id);
+          const spoilerAttachmentIds = (pending.attachments ?? [])
+            .filter((attachment) => attachment.spoiler)
+            .map((attachment) => attachment.id);
           const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages`, {
             method: "POST",
             headers: {
@@ -945,6 +1094,7 @@ export class ChatClient {
               clientMessageId: pending.clientMessageId,
               text: pending.text,
               ...(attachmentIds.length ? { attachmentIds } : {}),
+              ...(spoilerAttachmentIds.length ? { spoilerAttachmentIds } : {}),
               ...(pending.replyTo ? { replyToId: pending.replyTo.id } : {}),
               ...(pending.threadRootId
                 ? {
@@ -1007,6 +1157,7 @@ export class ChatClient {
       if (!current()) return false;
       this.releaseUploads();
       this.timeline.mergeSent(message);
+      if (message.threadRootId) this.scheduleThreadUnread();
       this.update({
         messages: this.timeline.messages,
         pendingSend: undefined,
@@ -1275,6 +1426,7 @@ export class ChatClient {
     const visible = new Set(this.timeline.messages.map((item) => item.id));
     const result = this.timeline.applyEvent(event);
     if (!("type" in event)) {
+      if (event.threadRootId) this.scheduleThreadUnread();
       const typer = this.typers.get(event.author.id);
       if (typer && result !== "duplicate") {
         typer.typing = false;
@@ -1408,10 +1560,14 @@ export class ChatClient {
       });
       this.connection.start();
       this.loadingHistory = false;
+      this.scheduleThreadUnread();
       if (this.state.thread) void this.retryThread();
     } catch (error) {
       if (!this.controller.signal.aborted && generation === this.generation) {
         const denied = error instanceof ChatHistoryError && [401, 403, 404].includes(error.status);
+        // The refresh aborted any thread request; a panel still waiting on one needs Retry.
+        const thread = this.state.thread;
+        const stalled = !denied && thread && (thread.loading || thread.loadingOlder || thread.loadingNewer);
         if (denied) {
           this.timeline.reset([], "0");
           this.spaceId = undefined;
@@ -1425,6 +1581,19 @@ export class ChatClient {
                 pinnedMessages: [],
                 channelId: undefined,
                 thread: undefined,
+                unreadThreads: {},
+              }
+            : {}),
+          ...(stalled
+            ? {
+                thread: {
+                  ...thread,
+                  loading: false,
+                  loadingOlder: false,
+                  loadingNewer: false,
+                  failedPage: undefined,
+                  error: "Thread could not be loaded.",
+                },
               }
             : {}),
           error: error instanceof Error ? error.message : "Messages are unavailable.",
@@ -1523,16 +1692,22 @@ export class ChatClient {
     const self = own && !own.isGuest ? own : undefined;
     if (self || profiles.size) {
       const author = (value: ChatAuthor) =>
-        self && value.id === self.id ? { ...value, name: self.name } : withAuthorProfile(value, profiles.get(value.id));
+        self && value.id === self.id
+          ? value.name === self.name
+            ? value
+            : { ...value, name: self.name }
+          : withAuthorProfile(value, profiles.get(value.id));
       const message = (value: ChatMessage) => withMessageAuthors(value, author);
       change = {
         ...change,
         ...(change.author ? { author: author(change.author) } : {}),
-        ...(change.messages ? { messages: change.messages.map(message) } : {}),
-        ...(change.pinnedMessages ? { pinnedMessages: change.pinnedMessages.map(message) } : {}),
+        ...(change.messages ? { messages: sameOrMapped(change.messages, message) } : {}),
+        ...(change.pinnedMessages ? { pinnedMessages: sameOrMapped(change.pinnedMessages, message) } : {}),
       };
       const pending = "pendingSend" in change ? change.pendingSend : this.state.pendingSend;
-      if (pending?.author) change.pendingSend = { ...pending, author: author(pending.author) };
+      const pendingAuthor = pending?.author && author(pending.author);
+      if (pending && pendingAuthor && pendingAuthor !== pending.author)
+        change.pendingSend = { ...pending, author: pendingAuthor };
     }
     this.state = { ...this.state, ...change };
     if (change.messages)

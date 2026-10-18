@@ -114,8 +114,13 @@ const stillAvatar = png(96, 96, (x, y) => (((x >> 4) + (y >> 4)) % 2 ? palette.e
 const stillIcon = png(64, 64, (x, y) => (Math.hypot(x - 32, y - 32) < 20 ? palette.eggshell : palette.blackout));
 // A landscape photo-like PNG: the client must crop it square and re-encode it.
 const landscape = png(800, 600, (x, y) => [Math.round((x / 800) * 255), Math.round((y / 600) * 255), 120]);
-const oversizedGif = gif(16, 16, colors, quadrantFrames(16, 0, 2));
-oversizedGif.writeUInt16LE(2000, 6);
+// Over 5 MB and 1024 px wide (this writer barely compresses): shrunk, never refused.
+const oversizedGif = gif(
+  1200,
+  800,
+  colors,
+  quadrantFrames(1200, 0, 2).concat(quadrantFrames(1200, 1, 3), quadrantFrames(1200, 2, 0)),
+);
 
 // ---- In-page API and gateway mock ------------------------------------------------
 
@@ -416,20 +421,35 @@ async function checkSquares(target, label) {
   }
 }
 
-/** Speaking rings (green border and halo) keep the rounded square around pictures. */
-async function checkRings(target) {
-  const rings = await target.evaluate(() => {
-    const avatars = [...document.querySelectorAll(".voice-occupants .avatar, .voice-stack-avatar")].filter((element) =>
+/**
+ * People in voice in a room you are not in show as overlapping faces (its row's live card,
+ * or the phone strip). Picture faces are clipped rounded squares, and the ring that
+ * separates them from their neighbours (their surface's own colour) follows that square.
+ * These rooms carry no speaking rings: there is no audio for a call you are not in.
+ */
+async function checkFaces(target, scope) {
+  const faces = await target.evaluate((scope) => {
+    const avatars = [...document.querySelectorAll(`${scope} .live-stack .live-avatar`)].filter((element) =>
       element.querySelector("[data-avatar-asset] > .caper-picture"),
     );
-    avatars.forEach((element) => element.classList.add("speaking"));
     return avatars.map((element) => {
       const style = getComputedStyle(element);
-      return [style.borderTopColor, style.borderTopLeftRadius, style.boxShadow !== "none"];
+      const surface = getComputedStyle(element.closest(".live-card, .voice-strip")).backgroundColor;
+      return [
+        element.querySelector("[data-avatar-asset]").dataset.avatarAsset,
+        style.borderTopLeftRadius,
+        style.overflow,
+        style.boxShadow === `${surface} 0px 0px 0px 2px`,
+        element.hasAttribute("data-speaking"),
+      ];
     });
-  });
-  assert.ok(rings.length > 0, "speaking pictures to check");
-  for (const ring of rings) assert.deepEqual(ring, ["rgb(99, 122, 67)", "30%", true]);
+  }, scope);
+  assert.deepEqual(
+    faces.map(([asset]) => asset).sort(),
+    ["gifpicture01", "stillpictur1"],
+    `${scope}: animated and still picture faces`,
+  );
+  for (const [asset, ...face] of faces) assert.deepEqual(face, ["30%", "hidden", true, false], `${scope}: ${asset}`);
 }
 
 const browser = await chromium.launch();
@@ -471,7 +491,7 @@ try {
   await page.waitForFunction(loaded('.member-presence-avatar [data-avatar-asset="gifpicture01"]'));
   await page.waitForFunction(
     loaded(
-      '.participant-avatar [data-avatar-asset="stillpictur1"], .voice-stack-avatar [data-avatar-asset="gifpicture01"]',
+      '.live-room .live-avatar [data-avatar-asset="stillpictur1"], .live-room .live-avatar [data-avatar-asset="gifpicture01"]',
     ),
   );
   await shot(page, "pictures-desktop.png");
@@ -485,22 +505,19 @@ try {
   await shot(page.locator(".space-rail"), "pictures-rail-desktop.png");
   await checkSquares(page, "desktop");
 
-  // Speaking rings around pictures follow the same rounded square (explicit style-state mock).
-  await page.locator(".channel-navigation .voice-stack").first().click();
-  await page.waitForFunction(loaded('.voice-occupants .participant-avatar [data-avatar-asset="gifpicture01"]'));
-  await checkRings(page);
-  await shot(page.locator(".channel-navigation"), "pictures-speaking-desktop.png");
-  await page.evaluate(() =>
-    document
-      .querySelectorAll(".avatar, .voice-stack-avatar")
-      .forEach((element) => element.classList.remove("speaking")),
-  );
+  // The room's faces on its live card keep the pictures' rounded squares.
+  await checkFaces(page, ".live-room");
+  await shot(page.locator(".live-room"), "pictures-live-room-desktop.png");
 
   // ---- Profile picture: upload a still (cropped, WebP), then a GIF (unchanged), then remove ----
   await page.locator(".account-profile").click();
   const dialog = page.locator(".profile-dialog");
-  await dialog.getByRole("button", { name: "Change picture" }).waitFor();
-  assert.equal(await dialog.getByRole("button", { name: "Remove picture" }).count(), 0);
+  // Without a custom picture, the mascot holds up "change me!" and the frame opens the picker directly.
+  const editPicture = dialog.getByRole("button", { name: "Change profile picture" });
+  await editPicture.waitFor();
+  await dialog.locator('.picture-settings-change-me[data-avatar-id="0"]').waitFor();
+  assert.equal(await editPicture.getAttribute("aria-haspopup"), null);
+  await page.waitForTimeout(300); // Let the sign's vector arrive.
   await shot(dialog, "pictures-profile-mascot.png");
   await dialog.locator('.picture-settings input[type="file"]').setInputFiles({
     name: "landscape-photo.png",
@@ -520,8 +537,15 @@ try {
     `[...document.querySelectorAll(${JSON.stringify(ownAvatars)})].length >= 3 && [...document.querySelectorAll(${JSON.stringify(ownAvatars)})].every((element) => element.dataset.avatarAsset === "upload000001" && element.querySelector(".caper-picture")?.dataset.state !== "loading")`,
   );
   await page.waitForFunction(loaded('.member-presence-avatar [data-avatar-asset="upload000001"]'));
-  await dialog.getByRole("button", { name: "Remove picture" }).waitFor();
+  // With one, the frame offers a new picture or removal; the sign steps aside.
+  assert.equal(await editPicture.getAttribute("aria-haspopup"), "menu");
+  assert.equal(await dialog.locator(".picture-settings-change-me").count(), 0);
+  await editPicture.click();
+  await dialog.getByRole("menuitem", { name: "Remove picture" }).waitFor();
   await shot(dialog, "pictures-profile-uploaded.png");
+  await page.keyboard.press("Escape");
+  await dialog.getByRole("menu").waitFor({ state: "detached" });
+  assert.ok(await dialog.isVisible(), "Escape closes the menu, not the dialog");
   await dialog.locator('.picture-settings input[type="file"]').setInputFiles({
     name: "party.gif",
     mimeType: "image/gif",
@@ -540,7 +564,26 @@ try {
     mimeType: "image/gif",
     buffer: oversizedGif,
   });
-  await dialog.getByText("GIFs can be up to 5 MB and 1024 × 1024.").waitFor();
+  assert.ok(oversizedGif.length > 5 * 1024 * 1024);
+  await page.waitForFunction(() => window.pictureFixture.completes === 3, undefined, { timeout: 60_000 });
+  const shrunk = await page.evaluate(() => window.pictureFixture.reservations.at(-1));
+  assert.deepEqual(
+    [shrunk.contentType, shrunk.filename, shrunk.width, shrunk.height],
+    ["image/gif", "avatar.gif", 512, 512],
+  );
+  assert.ok(shrunk.byteSize <= 5 * 1024 * 1024);
+  // Chrome's own decoder plays the shrunk upload: every frame, square.
+  const shrunkBody = stored.get("upload000003").body;
+  assert.equal(shrunkBody.length, shrunk.byteSize);
+  const playback = await page.evaluate(async (base64) => {
+    const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+    const decoder = new ImageDecoder({ data: bytes, type: "image/gif" });
+    await decoder.tracks.ready;
+    const { image } = await decoder.decode({ frameIndex: 0 });
+    return { frames: decoder.tracks.selectedTrack.frameCount, width: image.displayWidth, height: image.displayHeight };
+  }, shrunkBody.toString("base64"));
+  assert.deepEqual(playback, { frames: 12, width: 512, height: 512 });
+  await page.waitForFunction(loaded('.account-avatar [data-avatar-asset="upload000003"]'));
   await dialog.locator('.picture-settings input[type="file"]').setInputFiles({
     name: "photo.heic",
     mimeType: "image/heic",
@@ -557,31 +600,43 @@ try {
   });
   await dialog.getByText("You’ve changed pictures too many times today. Try again tomorrow.").waitFor();
   await shot(dialog, "pictures-profile-error.png");
-  await dialog.getByRole("button", { name: "Remove picture" }).click();
+  await editPicture.click();
+  await dialog.getByRole("menuitem", { name: "Remove picture" }).click();
   await dialog.getByText("Profile picture removed.").waitFor();
   await page.waitForFunction(
     `[...document.querySelectorAll(${JSON.stringify(ownAvatars)})].every((element) => !element.dataset.avatarAsset && !element.querySelector(".caper-picture") && element.dataset.avatarId === "0")`,
   );
-  assert.equal(await dialog.getByRole("button", { name: "Remove picture" }).count(), 0);
+  await dialog.locator(".picture-settings-change-me").waitFor();
+  assert.equal(await editPicture.getAttribute("aria-haspopup"), null);
   await dialog.getByRole("button", { name: "Close profile" }).click();
 
   // ---- Space icon: remove, then upload a new one; the rail follows ----
   await page.locator(".space-menu summary").click();
   await page.getByRole("button", { name: "Space settings" }).click();
   const manage = page.locator(".space-dialog");
-  await manage.locator(".space-icon-section").getByRole("button", { name: "Change icon" }).waitFor();
+  await manage.locator(".space-icon-section").getByRole("button", { name: "Change space icon" }).waitFor();
   await page.waitForFunction(loaded(".space-icon-section .picture-settings-tile"));
   await shot(manage.locator(".space-icon-section"), "pictures-space-icon-settings.png");
-  await manage.getByRole("button", { name: "Remove icon" }).click();
+  await manage.getByRole("button", { name: "Change space icon" }).click();
+  await manage.getByRole("menuitem", { name: "Remove icon" }).click();
   await manage.getByText("Space icon removed.").waitFor();
   await page.waitForFunction(
     '!document.querySelector(".space-rail-item:first-child .caper-picture") && document.querySelector(".space-rail-item:first-child button > span").textContent === "T"',
   );
-  await manage.locator('.space-icon-section input[type="file"]').setInputFiles({
-    name: "icon.png",
-    mimeType: "image/png",
-    buffer: stillIcon,
-  });
+  const iconButton = manage.getByRole("button", { name: "Change space icon" });
+  const drop = await page.evaluateHandle(
+    (bytes) => {
+      const data = new DataTransfer();
+      data.items.add(new File([new Uint8Array(bytes)], "icon.png", { type: "image/png" }));
+      // A picture editor uses the first file, not the last or every file.
+      data.items.add(new File(["not a picture"], "notes.txt", { type: "text/plain" }));
+      return data;
+    },
+    [...stillIcon],
+  );
+  await iconButton.dispatchEvent("dragover", { dataTransfer: drop });
+  await shot(manage.locator(".space-icon-section"), "pictures-space-drop-target.png");
+  await iconButton.dispatchEvent("drop", { dataTransfer: drop });
   await manage.getByText("Space icon updated.").waitFor();
   const iconReservation = await page.evaluate(() => window.pictureFixture.reservations.at(-1));
   assert.deepEqual(
@@ -590,6 +645,39 @@ try {
   );
   await page.waitForFunction(loaded(".space-rail-item:first-child button"));
   await shot(manage, "pictures-space-dialog.png");
+  // Replacement bypasses the menu, and invalid files keep the existing picture.
+  let releaseUpload;
+  const uploadHeld = new Promise((resolve) => (releaseUpload = resolve));
+  await page.route("https://r2.test/put/**", async (route) => {
+    await uploadHeld;
+    await route.fallback();
+  });
+  const beforeReplacement = await page.evaluate(() => window.pictureFixture.reservations.length);
+  await iconButton.click();
+  await iconButton.dispatchEvent("drop", { dataTransfer: drop });
+  await manage.locator('.picture-settings[aria-busy="true"]').waitFor();
+  await iconButton.dispatchEvent("drop", { dataTransfer: drop });
+  releaseUpload();
+  await manage.getByText("Space icon updated.").waitFor();
+  await page.unroute("https://r2.test/put/**");
+  assert.equal(
+    await page.evaluate(() => window.pictureFixture.reservations.length),
+    beforeReplacement + 1,
+    "a second drop during preparation/upload must not start another upload",
+  );
+  assert.equal(await manage.getByRole("menu").count(), 0);
+  const reservations = await page.evaluate(() => window.pictureFixture.reservations.length);
+  const invalid = await page.evaluateHandle(() => {
+    const data = new DataTransfer();
+    data.items.add(new File(["not a picture"], "notes.txt", { type: "text/plain" }));
+    return data;
+  });
+  await iconButton.dispatchEvent("drop", { dataTransfer: invalid });
+  await manage.locator(".picture-settings-error").waitFor();
+  assert.equal(await page.evaluate(() => window.pictureFixture.reservations.length), reservations);
+  await page.waitForFunction(loaded(".space-rail-item:first-child button"));
+  await drop.dispose();
+  await invalid.dispose();
   await manage.getByRole("button", { name: "Close Manage space" }).click();
   await shot(page.locator(".space-rail"), "pictures-rail-updated.png");
 
@@ -673,6 +761,13 @@ try {
   const phone = await narrow.newPage();
   await phone.goto(new URL("/spaces?space=space1234567&channel=channel12345", origin).href);
   await phone.waitForFunction(loaded('.chat-avatar [data-avatar-asset="gifpicture01"]'));
+  // Phones show the open channel's room in a strip under the conversation header.
+  await phone.waitForFunction(
+    loaded(
+      '.voice-strip .live-avatar [data-avatar-asset="stillpictur1"], .voice-strip .live-avatar [data-avatar-asset="gifpicture01"]',
+    ),
+  );
+  await checkFaces(phone, ".voice-strip");
   await shot(phone, "pictures-narrow-conversation.png");
   await phone.getByRole("button", { name: "Back to Browse" }).first().click();
   await phone.waitForFunction('!!document.querySelector(".spaces-room.navigation-open")');
@@ -680,18 +775,16 @@ try {
   await phone.waitForTimeout(400);
   await shot(phone, "pictures-narrow-browse.png");
   await checkSquares(phone, "narrow");
-  await phone.locator(".channel-navigation .voice-stack").first().click();
-  await phone.waitForFunction(loaded('.voice-occupants .participant-avatar [data-avatar-asset="gifpicture01"]'));
-  await checkRings(phone);
-  await phone.waitForTimeout(300);
-  await shot(phone, "pictures-speaking-narrow.png");
+  // Browse shows the same room as a live card in its row.
+  await phone.waitForFunction(loaded('.live-room .live-avatar [data-avatar-asset="gifpicture01"]'));
+  await checkFaces(phone, ".live-room");
   await narrow.close();
 
   // ---- Phone-width profile page and invite page ----
   const pages = await context(browser, { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   const profile = await pages.newPage();
   await profile.goto(new URL("/profile", origin).href);
-  await profile.getByRole("button", { name: "Change picture" }).waitFor();
+  await profile.getByRole("button", { name: "Change profile picture" }).waitFor();
   await shot(profile, "pictures-profile-page-narrow.png");
   await profile.goto(new URL("/invite/FIXTURE123", origin).href);
   await profile.waitForFunction(loaded("main [data-avatar-asset]"));
@@ -721,7 +814,7 @@ try {
   await shot(quiet, "pictures-reduced-motion.png");
   await calm.close();
   console.log(
-    "PASS: animated, still, broken and absent pictures; rounded squares and speaking rings; upload, GIF, errors and removal; space icons; live profile and space updates; narrow; reduced motion.",
+    "PASS: animated, still, broken and absent pictures; rounded squares, including live room card and phone voice strip faces; upload, GIF, errors and removal; space icons; live profile and space updates; narrow; reduced motion.",
   );
 } finally {
   await browser.close();

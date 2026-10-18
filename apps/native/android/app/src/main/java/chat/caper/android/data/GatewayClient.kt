@@ -264,7 +264,8 @@ class GatewayClient(
                 onTyping(author, typing, revision)
             }
             "ready" -> { val checkpoint = event["cursor"]?.jsonPrimitive?.content ?: return; require(checkpoint == s.chatPosition); s.chatReady = true; maybePromote(s) }
-            "resync_required" -> if (s === active) { fail(s, true); onResync() } else fail(s, false)
+            // The cursor is too old to replay: stop this stream and reload history. Access is unchanged.
+            "resync_required" -> if (s === active) { fail(s, true, revoked = false); onResync() } else fail(s, false)
         } else if (id == PROFILES_SUBSCRIPTION) {
             // No replay and idempotent: only the live stream applies them, so a handoff can't reorder them.
             if (s === active) profileEvent(event, json)?.let(onProfile)
@@ -318,7 +319,8 @@ class GatewayClient(
         if (!s.socket.close(1000, reason) || !graceful) s.socket.cancel()
     }
 
-    @Synchronized private fun fail(s: Stream, terminal: Boolean) {
+    /** [terminal] stops reconnecting; [revoked] also reports lost access (a terminal resync does not). */
+    @Synchronized private fun fail(s: Stream, terminal: Boolean, revoked: Boolean = terminal) {
         if (s !== active && s !== candidate) return
         if (s === candidate) {
             candidate = null
@@ -329,8 +331,8 @@ class GatewayClient(
         active = null; dispose(s, "stream failed")
         if (candidate != null && !terminal) { /* candidate remains isolated until it catches up */ return }
         if (terminal) { candidate?.let { dispose(it, "access ended") }; candidate = null }
-        mediaRevisions.clear(); onMediaDisconnected(); mutableStatus.value = if (terminal) GatewayStatus.ERROR else GatewayStatus.DISCONNECTED
-        if (terminal) onAccessDenied() else if (!closed) scheduleActive()
+        mediaRevisions.clear(); onMediaDisconnected(); mutableStatus.value = if (revoked) GatewayStatus.ERROR else GatewayStatus.DISCONNECTED
+        if (revoked) onAccessDenied() else if (!terminal && !closed) scheduleActive()
     }
     private fun scheduleCandidate() { if (reconnect?.isActive == true) return; reconnect = scope.launch { delay(backoff()); synchronized(this@GatewayClient) { reconnect = null }; open(true) } }
     private fun scheduleActive() { if (reconnect?.isActive == true) return; reconnect = scope.launch { delay(backoff()); synchronized(this@GatewayClient) { reconnect = null }; open(false) } }

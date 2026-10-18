@@ -73,9 +73,13 @@ final class ProfileUpdatesTests: XCTestCase {
         XCTAssertEqual(profiles.apply(report).reporter.displayName, "Maya R")
         XCTAssertEqual(profiles.apply(report).text, "Hi")
 
-        let detail = profiles.apply(SpaceDetail(space: Space(id: "Space1234567", name: "Studio", ownerId: maya.id), channels: [], members: [member, other]))
-        XCTAssertEqual(detail.members.map(\.displayName), ["Maya R", "Other"])
-        XCTAssertEqual(MentionCandidate(detail.members[0]).picture?.asset, "Pic0000000000000new1", "suggestions follow the members")
+        let detail = profiles.apply(SpaceDetail(space: Space(id: "Space1234567", name: "Studio", ownerId: maya.id), channels: [], members: [other, member],
+                                                channelMembers: ["Priv12345678": [maya.id]]))
+        XCTAssertEqual(detail.members.map(\.displayName), ["Other", "Maya R"])
+        // A private channel's readers keep leading its member list.
+        XCTAssertEqual(detail.channelMembers, ["Priv12345678": [maya.id]])
+        XCTAssertEqual(detail.memberOrder(channelID: "Priv12345678").map(\.displayName), ["Maya R", "Other"])
+        XCTAssertEqual(MentionCandidate(detail.members[1]).picture?.asset, "Pic0000000000000new1", "suggestions follow the members")
     }
 
     func testRemovingAPictureClearsItAndTheSavedMascotStays() {
@@ -85,9 +89,38 @@ final class ProfileUpdatesTests: XCTestCase {
         let updated = removed.apply(member)
         XCTAssertNil(updated.avatarPicture)
         XCTAssertEqual(updated.avatarId, 31, "an event without avatarId keeps the saved mascot")
-        // The same picture keeps a snapshot's (possibly fresher) signature.
+        // The same picture takes whichever signature expires later.
         let same = Member(id: maya.id, username: "maya", displayName: "Maya", owner: false, avatarAsset: "Pic0000000000000new1", avatarUrl: oldURL)
-        XCTAssertEqual(directory.apply(same).avatarUrl, oldURL)
+        XCTAssertEqual(directory.apply(same).avatarUrl, newURL, "an expired snapshot URL gives way to the event's")
+        let resigned = "https://cdn.caper.chat/assets/Pic0000000000000new1?exp=9&sig=later"
+        let fresher = Member(id: maya.id, username: "maya", displayName: "Maya", owner: false, avatarAsset: "Pic0000000000000new1", avatarUrl: resigned)
+        XCTAssertEqual(directory.apply(fresher).avatarUrl, resigned, "a snapshot signed later is kept")
+    }
+
+    func testPictureMergeKeepsTheLaterSignature() {
+        let asset = "Pic0000000000000new1"
+        let day1 = "https://cdn.caper.chat/assets/\(asset)?exp=172800&sig=a"
+        let day2 = "https://cdn.caper.chat/assets/\(asset)?exp=259200&sig=b"
+        XCTAssertEqual(PictureMerge.expiry(day2), 259200)
+        XCTAssertNil(PictureMerge.expiry("https://cdn.caper.chat/assets/\(asset)?exp=soon"))
+        XCTAssertEqual(PictureMerge.newer(asset: asset, url: day2, over: asset, day1).url, day2)
+        XCTAssertEqual(PictureMerge.newer(asset: asset, url: day1, over: asset, day2).url, day2)
+        XCTAssertEqual(PictureMerge.newer(asset: asset, url: day1, over: asset, "https://cdn.caper.chat/assets/\(asset)?exp=x").url, day1,
+                       "an unreadable expiry goes to the newer URL")
+        XCTAssertEqual(PictureMerge.newer(asset: asset, url: "https://cdn.caper.chat/assets/\(asset)", over: asset, day2).url,
+                       "https://cdn.caper.chat/assets/\(asset)")
+        XCTAssertEqual(PictureMerge.newer(asset: asset, url: nil, over: asset, day1).url, day1)
+        XCTAssertEqual(PictureMerge.newer(asset: asset, url: day1, over: "Pic0000000000000old1", day2).url, day1, "another asset never lends its URL")
+        XCTAssertNil(PictureMerge.newer(asset: nil, url: nil, over: asset, day2).asset)
+
+        // Your own picture over a message's author snapshot follows the same rule.
+        let own = ChatAuthor(id: maya.id, name: "Maya", isGuest: false, avatarAsset: asset, avatarUrl: day2)
+        var message = ChatMessage(id: "Message00000001", channelId: "Chan12345678", seq: "1",
+                                  author: ChatAuthor(id: maya.id, name: "Maya", isGuest: false, avatarAsset: asset, avatarUrl: day1),
+                                  content: ChatContent(version: 1, type: "text", text: "hi"), createdAt: "now", clientMessageId: "c1")
+        XCTAssertEqual(message.withProfile(own).author.avatarUrl, day2)
+        message.author.avatarUrl = "https://cdn.caper.chat/assets/\(asset)?exp=345600&sig=c"
+        XCTAssertEqual(message.withProfile(own).author.avatarUrl, message.author.avatarUrl)
     }
 
     func testMessageAuthorsUpdateIncludingNestedCopiesButNeverText() {
@@ -118,6 +151,21 @@ final class ProfileUpdatesTests: XCTestCase {
         let guest = ChatAuthor(id: maya.id, name: "Guest", isGuest: true)
         XCTAssertEqual(directory.apply(guest), guest)
         XCTAssertEqual(ProfileDirectory().apply(message), message)
+    }
+
+    func testYourOwnMessagesTakeYourProfileAndKeepTheirAdminBadge() {
+        let stamped = ChatAuthor(id: maya.id, name: "Maya", isGuest: false, avatarId: 31, admin: true)
+        let own = ChatAuthor(id: maya.id, name: "Maya R", isGuest: false, avatarId: 31)
+        var message = ChatMessage(id: "Message00000001", channelId: "Chan12345678", seq: "9", author: stamped,
+                                  content: ChatContent(version: 1, type: "text", text: "Answered"), createdAt: "now", clientMessageId: "c9")
+        message.pin = MessagePin(author: stamped, createdAt: "now")
+        let updated = message.withProfile(own)
+        XCTAssertEqual(updated.author.name, "Maya R")
+        XCTAssertEqual(updated.author.admin, true, "the server's admin stamp survives your own profile")
+        XCTAssertEqual(updated.pin?.author.admin, true)
+        let plain = ChatMessage(id: "Message00000002", channelId: "Chan12345678", seq: "10", author: own,
+                                content: ChatContent(version: 1, type: "text", text: "Hi"), createdAt: "now", clientMessageId: "c10")
+        XCTAssertNil(plain.withProfile(own).author.admin)
     }
 
     func testYourOwnAccountTakesAnUpdateFromAnotherDevice() {
@@ -189,9 +237,31 @@ final class ProfileUpdatesTests: XCTestCase {
 
         let removed = renamed[0].applying(Space(id: "Space1234567", name: "Friends", ownerId: "Owner0000001"))
         XCTAssertNil(removed.iconPicture, "absent icon fields mean the icon was removed")
-        let detail = SpaceDetail(space: studio, channels: [Channel(id: "Chan12345678", spaceId: studio.id, name: "general", private: false)], members: [])
+        let detail = SpaceDetail(space: studio, channels: [Channel(id: "Chan12345678", spaceId: studio.id, name: "general", private: false)], members: [],
+                                 channelMembers: ["Priv12345678": ["Owner0000001"]])
         XCTAssertEqual(detail.applying(update).space.name, "Friends")
         XCTAssertEqual(detail.applying(update).channels.count, 1)
+        XCTAssertEqual(detail.applying(update).channelMembers, ["Priv12345678": ["Owner0000001"]])
+    }
+
+    func testSpaceAndProfileUpdatesKeepPrivateChannelMembers() {
+        let studio = Space(id: "Space1234567", name: "Studio", ownerId: maya.id)
+        let secret = Channel(id: "Chan12345678", spaceId: studio.id, name: "secret", private: true)
+        let member = Member(id: maya.id, username: "maya", displayName: "Maya", owner: true)
+        let other = Member(id: "Other0000001", username: "other", displayName: "Other", owner: false)
+        let invitation = ChannelInvitation(channel: secret, inviter: Inviter(username: "maya", displayName: "Maya"))
+        let detail = SpaceDetail(space: studio, channels: [secret], members: [member, other], channelInvitations: [invitation],
+                                 channelMembers: [secret.id: [maya.id]])
+        let update = Space(id: studio.id, name: "Friends", ownerId: maya.id)
+
+        for rebuilt in [detail.applying(update), directory.apply(detail), detail.with(space: update), detail.withProfile(nil)] {
+            XCTAssertEqual(rebuilt.channelMembers, [secret.id: [maya.id]])
+            XCTAssertEqual(rebuilt.channelInvitations, [invitation])
+            XCTAssertEqual(rebuilt.memberGroups(channelID: secret.id)?.inChannel.map(\.id), [maya.id])
+            XCTAssertEqual(rebuilt.memberGroups(channelID: secret.id)?.others.map(\.id), [other.id])
+        }
+        XCTAssertEqual(directory.apply(detail).members.first?.displayName, "Maya R")
+        XCTAssertEqual(detail.with(members: [other]).channelMembers, detail.channelMembers)
     }
 
     func testCustomPicturesAreRoundedSquares() {

@@ -8,14 +8,19 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Signed-out first launch opens passwordless email request/verification and
   first-account profile onboarding, with no Guest/General fallback.
 - Packaged releases check for signed updates 20 seconds after launch and every
-  minute. **User Settings → Check for updates** checks immediately and opens
-  Settings with progress and success/failure feedback; the Updates section keeps
-  the same check action. A known release adds a smiling Caper above the profile:
-  it peeks, waves and takes a short walk, then hides for a longer rest. Reduced
-  motion/background windows keep a still clickable peek. Clicking it or finding
-  an update manually opens a centered modal with **What’s new expanded** and fixed
-  actions. **Later**, Escape and backdrop dismissal retain the mascot without
-  installing or checking again. Writable installs offer a restart to update;
+  minute. **User Settings → Check for updates** checks in that menu, with inline
+  progress and success/failure feedback; it does not open Settings. The Updates
+  section in Settings keeps the same check action, shows the last successful check
+  time, and links the installed source revision to GitHub. Confirmed rate limits
+  quietly defer to the next check without discarding known updates. Opening Settings
+  does not start another check. A known release adds a persistent
+  **Update available** button above the profile/audio row, with a thin rainbow edge
+  and occasional shine.
+  The label never moves; Reduce Motion/background windows keep the edge still.
+  Clicking it or finding an update manually opens a centered modal with
+  **What’s new expanded** and fixed actions. **Later**, Escape and backdrop dismissal
+  retain the update button without installing or checking again. Writable installs
+  offer a restart to update;
   the `.deb` offers a download for manual installation.
 - **Settings… → Updates → What’s new** reopens shipped release highlights for
   the exact running source revision. First successful load quietly establishes
@@ -50,6 +55,11 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Account spaces, private-channel grants, pagination, typing,
   paginated member presence, owner space/channel/member management, and confirmed
   non-owner leave-space with immediate call teardown and conversation clearing.
+- Resizable channel and Members sidebars in desktop layouts. Drag the divider
+  beside either pane, or click it and use Left/Right (10px), Home or End.
+  Double-click resets the width (280px channels, 220px Members). Widths save
+  locally; Members ranges from 220–440px, constrained to keep room for chat.
+  Narrow-window mobile-style drawers keep their existing sizing.
 - Invite links: owners create links in Manage space (expiry, use limit and an
   optional public landing channel; the new link is copied at once), then copy or
   revoke live ones. Anyone signed in can paste a link or bare code into **Join with
@@ -116,11 +126,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   and no Caper credentials, confirms (retrying while storage has not seen it
   yet), and sends. Chips show the name, saving ("1.6 MB → 143 KB"), progress,
   errors such as storage full, and remove, with a local thumbnail the sent
-  message keeps. The conversation composer does not paste images. Profile
-  composers' Attach menu has **Paste from clipboard** for native copied files
+  message keeps. Channel, thread and profile composers attach copied files
+  and images pasted with Ctrl+V; profile composers' Attach menu also has
+  **Paste from clipboard**. Pasting works for native copied files
   and images on Windows and X11/XWayland, and on Wayland compositors with the
-  data-control clipboard protocol: egui delivers no event for an image-only
-  Ctrl+V. Channel, thread and profile composers have an Emoji button beside
+  data-control clipboard protocol (an image-only Ctrl+V, which egui-winit
+  swallows, is re-sent on key release). Channel, thread and profile composers have an Emoji button beside
   the `:name:` shortcut.
 - Global two-person direct messages, including exact-username conversation
   creation, unread state, account-wide read cursors, paging, typing, retry, and gateway
@@ -137,8 +148,8 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   pending invitees stay listed as "Already invited". Rows, like `@` popup rows, show the avatar and display name with
   `@username` beneath it. Clicking or Enter fills the exact username without
   submitting; Up/Down move and Escape closes the list, not the dialog.
-- The channel/DM composer suggests after `:` (emoji) and `@` (people) in one
-  popup; the thread reply box and message editor do not yet. Space channels
+- The channel/DM and thread reply composers suggest after `:` (emoji) and `@`
+  (people) in one popup; the message editor does not, as on web. Space channels
   offer the open space's loaded members except you, then `@everyone`/`@here`.
   DMs, self-notes included, offer the people you share a space or DM with
   (`GET /api/people`, fetched when a DM opens); until that loads, only the
@@ -150,7 +161,7 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   their avatar, name and `@username` from loaded data, Open conversation and
   Close icons, and an inline DM composer in the channel composer's shell
   (Attach, Emoji, Send; staged files with image thumbnails above it). Enter
-  sends (your own card says "You"). Close retains the per-person draft; populated cards resist
+  sends (your own card says "You", with **Edit profile**). Close retains the per-person draft; populated cards resist
   outside clicks, and sending prevents dismissal. Drafts survive dialogs until
   logout. Only Send resolves the DM, prepares/uploads files and sends; success opens it,
   while errors retain the draft and uncertain retries reuse the exact payload
@@ -175,18 +186,23 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   and "Caper team has been notified 🫡" sits under the message. Messages with
   `author.admin` show a gold ADMIN badge. Accounts with `feedbackTeam` get a
   **Feedback** row by the DMs that opens the inbox (`GET /api/feedback`,
-  refreshed on open, by Refresh and after a reply; older pages on demand):
-  reporter, "#channel · Space" or "DM · …", preview or "Sent N files", age,
-  and "Answered" (the team wrote last in the thread) or "Waiting". A hover
-  Archive button archives the report's whole thread for the team
+  refreshed on open, by Refresh and after a reply; older pages on demand).
+  Its terracotta count is the unarchived conversations waiting for a team
+  reply, not unread messages. Unread polling refreshes it; opening the inbox
+  does not clear it, and older servers omit it (zero).
+  The inbox shows reporter, "#channel · Space" or "DM · …", preview or
+  "Sent N files", age, and "Answered" (the team wrote last in the thread) or
+  "Waiting". A hover Archive button archives the report's whole thread for the team
   (`PUT /api/feedback/archive`; it leaves the list at once, then the list
   reloads, keeping any error). "Show archived" at the bottom lists archived
   threads (`?archived=true`) under "Archived feedback", without a status and
   with Restore ("Restore to the inbox"); "Back to feedback" returns. A report, or a `feedback` notification click,
-  opens the conversation by channel id at the message and in its thread.
+  opens the conversation by channel id at the message. Only a reported reply
+  opens its existing thread; top-level reports leave thread creation to you.
+  The inbox stays visible until the reported message is ready.
   Without membership (`visitor: true`) the team takes part like a member
-  (replies, files, reactions, typing, pins, forwarding, and a visited space
-  channel's voice from its header, as for any channel), but there is no member list,
+  (replies, files, reactions, typing, pins, forwarding, and joining a visited
+  space channel's live call from its card above the channels or the narrow strip), but there is no member list,
   read marker, join/leave, settings or notification menu. Back returns to
   the inbox (or the conversation a notification interrupted). Conversations
   the team member already belongs to open normally.
@@ -201,9 +217,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   about** sets the account level. Settings load after sign-in and when
   Settings or a menu opens; changes apply at once and revert with an inline
   error if saving fails.
-- Custom profile pictures and space icons: **Change picture**/**Remove picture**
-  in Edit profile and **Change icon**/**Remove icon** in Manage space (owners),
-  through the native file dialog. GIFs upload unchanged (≤ 5 MB, ≤ 1024 px);
+- Custom profile pictures and space icons: Edit profile and Manage space
+  (owners) show the picture in a frame with an edit badge on its corner. The
+  frame opens the native file dialog, or with a custom picture set a menu to
+  choose another or remove it; without one, your mascot holds up a
+  "change me!" sign. GIFs upload unchanged up to 5 MB and
+  1024 px, and bigger ones are shrunk to a square that fits (frames and timing kept);
   other images become a 512 px square WebP; HEIC/AVIF are refused locally.
   Pictures replace the mascot in every avatar and icons fill rail tiles, cached by
   asset ID (≤ 128 px, 64 MiB of frames). GIFs animate; reduced motion shows the
@@ -216,11 +235,21 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   snapshots, TURN refresh and replay-safe ICE restart/ACK. Browsing leaves the
   active call running; explicit replacement, logout and access denial silence
   locally. Mute/deafen and input/output selection use native ADM.
+- Voice in the channel list: your call's row grows in place into a green card
+  (status and timer on the row, then faces, Mute, Deafen and Leave), and other
+  live rows gain faces, names, the session timer and Join/Switch, in list order.
+  A click anywhere else on a card opens its chat; right-click or long-touch a
+  face (or "+N") for the full list with per-person volume (Shift+F10 on your
+  call's row opens it too). A call with no row in the listed space (another
+  space, a feedback visit) and a visited channel's live room sit above
+  Channels; collapsing Channels hides quiet rows only. Narrow windows' strip
+  shows the card's first five faces (four and "+N" beyond), with no speaker name.
 - Prejoin device discovery, saved device/output-volume preferences, per-person
   local mute and 0–200% software playback gain, and aggregate connection
   statistics. Participant mute survives microphone-track replacement and takes
   effect locally even while signaling is waiting for HTTP.
-- Speaking rings in your own call's roster and voice stack, from the web
+- Speaking rings on your own call's faces (call card, full list and narrow
+  strip), from the web
   client's rule (32 ms RMS ≥ 0.004, 180 ms release, never while muted) applied
   to your published microphone PCM and each subscription's decoded PCM.
 - Persisted 0–200% input gain and voice-contour strength, with on-device DPDFNet-8
@@ -412,11 +441,20 @@ For deterministic visual inspection without live accounts, launch
 `caper-desktop --fixture login` or `--fixture parity-channel`. These are
 explicitly labeled static previews; the chat fixture at loopback port 3001
 does not provide live SFU media. Use normal `--api-url` for networked chat tests.
-`parity-voice-joining` and `parity-voice-connected` preview Cancel/Leave and the
-audio bar without starting a media transport; `parity-voice-speaking` adds fixed
-speaking rings for you and Maya.
-`parity-voice-error` and `parity-audio-error` preview capture failure guidance in
-the voice dock and Audio test dialog without starting capture or a transport.
+`parity-new-messages` previews a retained channel unread boundary between two
+messages by the same author, including the divider's grouping break.
+`parity-voice-joining` and `parity-voice-connected` preview your call's card in
+#general's place in the list (Cancel/Leave) and the audio bar without starting a
+media transport; `parity-voice-speaking` adds fixed speaking rings for you and
+Maya. `parity-voice-elsewhere` previews a call in another space, whose card sits
+above Channels. `parity-voice-crowded` (and `-narrow`) previews a twelve-person call
+folding into `+3` and four other live rooms' cards in list order;
+`parity-voice-list` (and `-narrow`) opens the full list at Maya's audio
+controls; `parity-voice-strip-narrow` and `parity-voice-join-narrow` preview the
+strip under a narrow chat header in and outside a call.
+`parity-voice-error` and `parity-audio-error` preview capture failure guidance
+above the account bar and in the Audio test dialog without starting capture or a
+transport.
 `parity-direct` and `parity-direct-new` preview a two-person DM and its
 exact-username dialog without a live account or notification provider.
 `parity-mentions` previews mention pills, an unresolved `@name`, and rows that
@@ -442,6 +480,8 @@ DM with unread messages (no dot) and a DM with notifications off (still
 dotted); it sends no notification requests.
 `parity-reactions` adds reaction chips whose hover cards name the labelled
 fixture members locally instead of requesting who reacted.
+`parity-feedback` previews the team inbox with a 12-conversation waiting
+badge; `parity-feedback-zero` previews the same inbox without a badge.
 `parity-thread` opens a thread with an admin parent, reply count and one reply;
 `parity-thread-loading` shows its loading state. Check the 300px minimum panel,
 long channel names, multiline drafts and the message-actions menu. The reply
@@ -453,9 +493,10 @@ shared Rust layout, not Windows display scaling or a live send.
 retained history and a labelled fixture draft; `parity-opening-error` previews
 retry, and `parity-loading` previews the initial history skeleton.
 These previews do not start a navigation request or a media transport.
-`parity-settings`, `parity-settings-checking`, `parity-settings-current`, and
-`parity-settings-offline` preview the update control and check feedback. These
-are static states: their check buttons are disabled and no updater process runs.
+`parity-settings`, `parity-settings-checking`, `parity-settings-current`,
+`parity-settings-deferred`, and `parity-settings-offline` preview the update
+control and check feedback. These are static states: their check buttons are
+disabled and no updater process runs.
 `parity-update` and `parity-update-narrow` preview long, version-grouped release
 notes under **What’s new**, collapsed by default, with a fixed restart/Later footer.
 `parity-update-download` shows the

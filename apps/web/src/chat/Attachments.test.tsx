@@ -88,10 +88,44 @@ test("without a viewer (the sender's pending row) files keep their links and inl
   expect(markup).not.toContain("in viewer");
 });
 
-test("a video with a stored size fills a frame of that shape", () => {
+test("spoilers show only still masked previews, never players, links, or filenames", () => {
+  const hidden = [
+    ...files,
+    file("processing", "secret.png", { status: "processing" }),
+    file("original", "secret.gif", { contentType: "image/gif" }),
+    file("poster", "secret.mp4", { kind: "video", animated: true, previewUrl: "https://cdn.test/poster" }),
+    file("removed", "removed.png", { unavailable: true }),
+    file("failed", "failed.png", { status: "failed" }),
+  ].map((attachment) => ({
+    ...attachment,
+    spoiler: true,
+  }));
+  const markup = renderToStaticMarkup(
+    <MessageAttachments attachments={hidden} localPreviews={{ processing: { url: "blob:secret", video: false } }} />,
+  );
+  expect(markup.match(/aria-label="Reveal spoiler attachment"/g)).toHaveLength(hidden.length);
+  expect(markup).not.toMatch(/<(?:video|audio|a)\b/);
+  for (const attachment of hidden) expect(markup).not.toContain(attachment.name);
+  expect(markup.match(/class="chat-spoiler-preview"/g)).toHaveLength(4);
+  expect(markup.match(/data-still="true"/g)).toHaveLength(4);
+  expect(markup).toContain('src="https://cdn.test/preview/photo"');
+  expect(markup).toContain('src="blob:secret"');
+  expect(markup).toContain('src="https://cdn.test/original/original"');
+  expect(markup).toContain('src="https://cdn.test/poster"');
+  for (const id of ["photo", "clip", "gif", "voice", "notes", "removed", "failed"])
+    expect(markup).not.toContain(`https://cdn.test/original/${id}`);
+  const mixed = renderToStaticMarkup(<MessageAttachments attachments={[hidden[0], files[1]]} />);
+  expect(mixed).toContain("Reveal spoiler attachment");
+  expect(mixed).toContain('aria-label="clip.mp4"');
+});
+
+test("a video with a stored size reserves its shape without fixing the responsive height", () => {
   const sized = file("sized", "sized.mp4", { kind: "video", contentType: "video/mp4", width: 1080, height: 1920 });
   const markup = renderToStaticMarkup(<MessageAttachments attachments={[sized]} />);
-  expect(markup).toMatch(/<div class="chat-media chat-video" style="width:\d+px;height:\d+px"><video/);
+  const ratio = markup.match(
+    /<div class="chat-media chat-video" style="width:\d+px;aspect-ratio:([\d.]+)"><video/,
+  )?.[1];
+  expect(Number(ratio)).toBeCloseTo(9 / 16, 2);
 });
 
 test("draft files can be previewed before uploading finishes, with removal separate from preview", () => {
@@ -128,4 +162,49 @@ test("draft files can be previewed before uploading finishes, with removal separ
   expect(markup).toContain('href="blob:notes" target="_blank" rel="noopener noreferrer" aria-label="Open notes.pdf"');
   expect(markup).not.toContain('aria-label="Preview missing.zip"');
   expect(markup).not.toContain('aria-label="Open missing.zip"');
+  // Filenames remain in accessible action labels, not in the compact tiles.
+  const visibleText = markup.replace(/<[^>]*>/g, "");
+  for (const draft of drafts) expect(visibleText).not.toContain(draft.name);
+  expect(visibleText).toContain("Preparing…");
+  expect(visibleText).toContain("Uploading 40%");
+  expect(visibleText).toContain("Retry upload");
+  expect(visibleText).toContain("1 file failed to upload. Send will retry it, or you can remove it.");
+  expect(markup).toContain('title="Upload failed"');
+  expect(markup).toContain('src="https://cdn.test/preview/photo"');
+
+  const retrying = drafts.map((draft) => ({ ...draft, error: undefined }));
+  const uploading = renderToStaticMarkup(<DraftAttachments drafts={retrying} />);
+  expect(uploading).toContain('role="status"');
+  expect(uploading).toContain("Uploading 5 files… Your message won’t send until every file is ready.");
+  expect(uploading).not.toContain("failed to upload");
+  const staged = renderToStaticMarkup(
+    <DraftAttachments drafts={retrying.map((draft) => ({ ...draft, staged: true }))} />,
+  );
+  expect(staged).not.toContain('role="status"');
+});
+
+test("a draft video keeps its poster and spoiler state, and cannot be removed while sending", () => {
+  const draft: DraftAttachment = {
+    key: "clip",
+    name: "clip.mp4",
+    sourceSize: 80000,
+    progress: 1,
+    localUrl: "blob:clip",
+    localKind: "video",
+    attachment: { ...files[1], previewUrl: "https://cdn.test/preview/clip" },
+  };
+  for (const removable of [true, false]) {
+    for (const spoiler of [true, false]) {
+      const markup = renderToStaticMarkup(
+        <DraftAttachments drafts={[{ ...draft, spoiler }]} onRemove={removable ? () => {} : undefined} />,
+      );
+      expect(markup).toContain('src="https://cdn.test/preview/clip"');
+      expect(markup.includes('aria-label="Video"')).toBe(!spoiler);
+      expect(markup.includes('data-spoiler="true"')).toBe(spoiler);
+      expect(markup.includes(">Spoiler</span>")).toBe(spoiler);
+      expect(markup).toContain('aria-label="Preview clip.mp4"');
+      expect(markup.includes('aria-label="Remove clip.mp4"')).toBe(removable);
+      expect(markup).not.toContain("Remove attachment");
+    }
+  }
 });

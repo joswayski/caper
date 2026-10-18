@@ -1,6 +1,6 @@
-// Lossless metadata stripping for files uploaded as originals (nothing was
-// re-encoded, so nothing else dropped their EXIF/GPS). Pixels and media
-// samples are never touched; on anything unexpected the input is returned.
+// Best-effort local metadata stripping for files uploaded as originals. Pixels
+// and media samples are never touched; on anything unexpected the input is
+// returned. The server independently cleans container metadata before sharing.
 
 const ascii = (bytes: Uint8Array, offset: number, text: string) =>
   offset + text.length <= bytes.length && [...text].every((char, i) => bytes[offset + i] === char.charCodeAt(0));

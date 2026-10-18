@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type FocusEvent,
+  type FormEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import {
   ArrowLeft,
   Ban,
@@ -14,6 +24,7 @@ import {
   Plus,
   Search,
   Settings,
+  Volume2,
   X,
 } from "lucide-react";
 import {
@@ -95,6 +106,7 @@ import {
   listPeople,
   readDirectConversation,
   listUnreadSpaces,
+  listSpaceVoiceActivity,
   readChannel,
   directStatus,
   directUnread,
@@ -133,10 +145,32 @@ import "./spaces.css";
 /** Readable text for server and network failures; native clients share the same sentences. */
 const errorMessage = friendlyError;
 
+/** JSON with object keys sorted, so snapshots that differ only in key order compare equal. */
+function canonicalJson(value: unknown) {
+  return JSON.stringify(value, (_key, item: unknown) =>
+    item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : item,
+  );
+}
+
+/** A state setter's update that keeps the held value when a poll brings the same data, so nothing re-renders. */
+function unlessSame<T>(next: T) {
+  return (current: T) => (canonicalJson(current) === canonicalJson(next) ? current : next);
+}
+
 /** Closes a disclosure menu and focuses its summary, so a dialog opened from it returns focus there. */
 function closeMenu(menu: HTMLDetailsElement) {
   menu.open = false;
   menu.querySelector("summary")?.focus();
+}
+
+/** Closes a disclosure menu when keyboard focus moves somewhere else. Safari
+ * blurs a focused summary without focusing the clicked or tapped item, so a
+ * blur to nowhere keeps the item mounted until its click; outside presses
+ * close menus through the page's pointer handler instead. */
+function leaveMenu(event: FocusEvent<HTMLDetailsElement>) {
+  if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
 }
 
 /** Row menus open upward when the scrolling sidebar has no room below them. */
@@ -325,13 +359,14 @@ function NameField({
           autoFocus={focus}
           data-initial-focus={focus || undefined}
           value={value}
-          maxLength={80}
+          // Channel names are ASCII; a space name counts characters like the server, so emoji aren't cut short.
+          maxLength={channel ? 80 : undefined}
           autoComplete="off"
           spellCheck={!channel}
-          placeholder={channel ? "project-updates" : "Studio"}
+          placeholder={channel ? "project-updates" : "Gaming nights"}
           onChange={(event) => {
             const input = event.currentTarget;
-            if (!channel) return onChange(input.value);
+            if (!channel) return onChange(Array.from(input.value).slice(0, 80).join(""));
             const caret = normalizeChannelName(input.value.slice(0, input.selectionStart ?? input.value.length)).length;
             onChange(normalizeChannelName(input.value));
             requestAnimationFrame(() => input.setSelectionRange(caret, caret));
@@ -341,6 +376,22 @@ function NameField({
       </span>
     </label>
   );
+}
+
+/**
+ * Saving disables a settings form, which drops focus from its button (and a
+ * channel's save bar hides once nothing is unsaved). Set the returned flag on
+ * submit; when the save settles, focus continues in the form's name field.
+ */
+function useNameRefocus(form: RefObject<HTMLFormElement | null>, pending: boolean) {
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (pending || !refocus.current) return;
+    refocus.current = false;
+    if (!document.activeElement || document.activeElement === document.body)
+      form.current?.querySelector<HTMLInputElement>("input:not([type])")?.focus();
+  }, [pending, form]);
+  return refocus;
 }
 
 function ChannelPrivacy({
@@ -827,7 +878,11 @@ function MemberManager({
                 <button
                   type="button"
                   disabled={pending}
-                  onClick={() => void onCancel?.(member).catch((reason) => setError(errorMessage(reason)))}
+                  onClick={() => {
+                    // This row (and its button) goes; continue in the username field.
+                    refocus.current = true;
+                    void onCancel?.(member).catch((reason) => setError(errorMessage(reason)));
+                  }}
                 >
                   Cancel invite
                 </button>
@@ -862,6 +917,8 @@ function ManageSpaceDialog({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
+  const nameForm = useRef<HTMLFormElement>(null);
+  const refocusName = useNameRefocus(nameForm, pending);
   useEffect(() => {
     let current = true;
     void listSpaceInvitations(detail.space.id)
@@ -899,10 +956,12 @@ function ManageSpaceDialog({
     >
       {!inviteOnly && (
         <form
+          ref={nameForm}
           onSubmit={(event) => {
             event.preventDefault();
             const invalid = spaceNameError(name);
             if (invalid) return setError(invalid);
+            refocusName.current = true;
             void run(async () => {
               const space = await updateSpace(detail.space.id, name);
               setName(space.name);
@@ -1023,6 +1082,8 @@ function ManageChannelDialog({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
+  const overview = useRef<HTMLFormElement>(null);
+  const refocusName = useNameRefocus(overview, pending);
   const dirty = name !== channel.name || privateChannel !== channel.private;
   const run = async (action: () => Promise<void>) => {
     setPending(true);
@@ -1055,6 +1116,7 @@ function ManageChannelDialog({
   return (
     <Dialog title="Channel settings" onClose={onClose} width="wide" dismissOnBackdrop={!dirty && !pending}>
       <form
+        ref={overview}
         id="channel-overview"
         onSubmit={(event) => {
           event.preventDefault();
@@ -1062,6 +1124,7 @@ function ManageChannelDialog({
           const channelName = name.replace(/-$/, "");
           const invalid = channelNameError(channelName);
           if (invalid) return setError(invalid);
+          refocusName.current = true;
           void run(async () => {
             const updated = await updateChannel(detail.space.id, channel.id, channelName, privateChannel);
             setName(updated.name);
@@ -1338,9 +1401,11 @@ function RequestBar({
         <button type="button" className="secondary" disabled={!!pending} onClick={() => run("decline", onDecline)}>
           {pending === "decline" ? "Declining…" : "Decline"}
         </button>
-        <button type="button" className="danger-outline" disabled={!!pending} onClick={onBlock}>
-          Block
-        </button>
+        {!conversation.peer.admin && !conversation.peer.team && (
+          <button type="button" className="danger-outline" disabled={!!pending} onClick={onBlock}>
+            Block
+          </button>
+        )}
       </div>
       {error && <p role="alert">{error}</p>}
     </div>
@@ -1679,6 +1744,7 @@ export default function Spaces({
   const [spaces, setSpaces] = useState<Space[]>(initialSpaceList?.spaces ?? []);
   const [invitations, setInvitations] = useState<Space[]>(initialSpaceList?.invitations ?? []);
   const [unreadSpaces, setUnreadSpaces] = useState<UnreadSpace[]>([]);
+  const [feedbackWaiting, setFeedbackWaiting] = useState(0);
   const unreadRevision = useRef(0);
   const channelReads = useRef(new Map<string, string>());
   const unreadAccount = useRef(account?.id);
@@ -1689,7 +1755,10 @@ export default function Spaces({
     const revision = ++unreadRevision.current;
     try {
       const result = await listUnreadSpaces();
-      if (unreadAccount.current === accountId && unreadRevision.current === revision) setUnreadSpaces(result.spaces);
+      if (unreadAccount.current === accountId && unreadRevision.current === revision) {
+        setUnreadSpaces(result.spaces);
+        setFeedbackWaiting(result.feedbackWaiting ?? 0);
+      }
     } catch {
       /* Keep the last known indicators during an outage. */
     }
@@ -1698,6 +1767,7 @@ export default function Spaces({
     unreadRevision.current++;
     channelReads.current.clear();
     setUnreadSpaces([]);
+    setFeedbackWaiting(0);
     const refresh = () => {
       if (!document.hidden) void refreshUnread();
     };
@@ -1791,6 +1861,22 @@ export default function Spaces({
       setSpaces((current) => withSpaceUpdates(current, update));
       setInvitations((current) => withSpaceUpdates(current, update));
       setRailInvitation((current) => current && withSpaceUpdate(current, update));
+      // The feedback team sees space names on inbox rows and on the conversation being visited.
+      setFeedback((current) =>
+        current?.reports.some((report) => report.space?.id === update.id)
+          ? {
+              ...current,
+              reports: current.reports.map((report) =>
+                report.space?.id === update.id ? { ...report, space: { ...report.space, name: update.name } } : report,
+              ),
+            }
+          : current,
+      );
+      setVisitView((current) =>
+        current?.history?.space.id === update.id
+          ? { ...current, history: { ...current.history, space: { ...current.history.space, name: update.name } } }
+          : current,
+      );
       setView((current) => {
         if (!current || current.detail.space.id !== update.id) return current;
         const updated = {
@@ -1802,10 +1888,12 @@ export default function Spaces({
       });
     });
   }, [account?.id]);
-  // The rendered detail, for the poll below whose effect tracks only the space id.
-  const shownDetail = useRef(detail);
+  // The shown detail as the server sent it, for the poll below whose effect
+  // tracks only the space id. Not `detail`: applying the saved account and live
+  // profiles reorders picture fields, so it never equals a fresh response.
+  const shownDetail = useRef(detailSnapshot);
   useEffect(() => {
-    shownDetail.current = detail;
+    shownDetail.current = detailSnapshot;
   });
   const [selected, setSelected] = useState<Selection>(() =>
     embedded ? {} : { ...selectedFromUrl(), ...initialSelection },
@@ -1890,6 +1978,8 @@ export default function Spaces({
       window.removeEventListener("focus", refresh);
     };
   }, [refreshFeedback, feedbackTeam]);
+  // Set below, once navigation is defined; read when a notification is clicked.
+  const openNotification = useRef<(location: string) => boolean>(() => false);
   useEffect(() => {
     if (account?.id)
       return watchBrowserNotifications(
@@ -1899,6 +1989,7 @@ export default function Spaces({
           void refreshUnread();
           void refreshFeedback();
         },
+        (location) => openNotification.current(location),
       );
   }, [account?.id, refreshUnread, refreshFeedback]);
   const changeNavigation = useCallback((open: boolean) => {
@@ -1970,7 +2061,7 @@ export default function Spaces({
       dmId === selected.dmId &&
       sameVisit(visit, selected.visit)
     ) {
-      setNavigationOpen(false);
+      if (channelId || dmId || visit) setNavigationOpen(false);
       // Previewing the channel already on screen from Browse still closes it.
       setBrowseOpen(false);
       return;
@@ -1997,12 +2088,42 @@ export default function Spaces({
       threadRootId: report.threadRootId,
       reporter: report.reporter,
     });
-    setNavigationOpen(false);
+    // On phones, keep the report list visible until its context is ready.
   };
 
   const openDirect = (conversation: DirectConversation) => {
     choose(detail?.space.id || undefined, undefined, false, conversation.id);
     setNavigationOpen(false);
+  };
+
+  // A clicked notification opens its conversation in place, like the sidebar
+  // does: loading the page again would end a voice call and drop drafts.
+  // Invitations, and conversations this page doesn't know yet, still load the
+  // page, which reads them fresh.
+  openNotification.current = (location) => {
+    if (embedded || loading) return false;
+    const url = new URL(location, window.location.origin);
+    const query = url.searchParams;
+    if (url.pathname !== "/spaces" || query.has("invite")) return false;
+    const feedback = query.get("feedback");
+    const dm = query.get("dm");
+    const spaceId = query.get("space");
+    const channelId = query.get("channel");
+    const conversation = dm ? directs.find((item) => item.id === dm) : undefined;
+    if (feedback && feedbackTeam)
+      choose(detail?.space.id || undefined, undefined, false, undefined, {
+        channelId: feedback,
+        messageId: query.get("message") ?? undefined,
+        threadRootId: query.get("thread") ?? undefined,
+      });
+    else if (conversation) choose(detail?.space.id || undefined, undefined, false, conversation.id);
+    else if (spaceId && channelId && spaces.some((space) => space.id === spaceId)) choose(spaceId, channelId);
+    else return false;
+    // As Back does: dialogs belong to the view being left.
+    setDialog(undefined);
+    setManageChannel(undefined);
+    setNavigationOpen(false);
+    return true;
   };
 
   const selfDirect = directs.find((conversation) => conversation.peer.id === account?.id);
@@ -2040,7 +2161,7 @@ export default function Spaces({
       void listDirectConversations()
         .then((result) => {
           if (current) {
-            setDirects(result.conversations);
+            setDirects(unlessSame(result.conversations));
             setDirectError(undefined);
           }
         })
@@ -2113,7 +2234,7 @@ export default function Spaces({
     return () => controller.abort();
   }, [selected.dmId, loading, directsLoading, directAccessible]);
 
-  // A visit loads the latest page, then focuses the report and opens its thread.
+  // Prepare the report's root context before replacing the visible conversation.
   const visit = selected.visit;
   useEffect(() => {
     if (!visit) {
@@ -2121,20 +2242,20 @@ export default function Spaces({
       return;
     }
     const controller = new AbortController();
-    setDirectView(undefined);
-    // The previous conversation stays on screen until this one is ready.
-    setVisitView((shown) => (shown?.target.channelId === visit.channelId ? { ...shown, target: visit } : shown));
-    if (visit.messageId)
-      setFocusMessage({
-        id: visit.messageId,
-        channelId: visit.channelId,
-        threadRootId: visit.threadRootId !== visit.messageId ? visit.threadRootId : undefined,
-      });
-    void loadChatHistory(visit.channelId, controller.signal)
+    // Keep the previous target and its messages together until context is ready.
+    void loadChatHistory(visit.channelId, controller.signal, visit.threadRootId ?? visit.messageId)
       .then((history) => {
         if (controller.signal.aborted) return;
-        setVisitView((shown) =>
-          shown?.target.channelId === visit.channelId && shown.history ? shown : { target: visit, history },
+        setDirectView(undefined);
+        setVisitView({ target: visit, history });
+        setFocusMessage(
+          visit.messageId
+            ? {
+                id: visit.messageId,
+                channelId: visit.channelId,
+                threadRootId: visit.threadRootId !== visit.messageId ? visit.threadRootId : undefined,
+              }
+            : undefined,
         );
         setNavigationOpen(false);
       })
@@ -2147,6 +2268,7 @@ export default function Spaces({
               ? "This conversation is no longer available."
               : errorMessage(reason),
         });
+        setNavigationOpen(false);
       });
     return () => controller.abort();
   }, [visit?.channelId, visit?.messageId, visit?.threadRootId]);
@@ -2305,13 +2427,21 @@ export default function Spaces({
     setError(undefined);
     setPending(true);
     const cached = navigation.current.peek(selected.spaceId, selected.channelId);
+    // Space tiles switch the channel list in Browse; revealing a conversation
+    // requires an explicit channel/DM/visit selection, including cached loads.
+    const openConversation = !!(selected.channelId || selected.dmId || selected.visit);
     if (cached) {
       setView(cached);
       if (!selected.dmId) setDirectView(undefined);
-      setNavigationOpen(false);
+      if (openConversation) setNavigationOpen(false);
     }
-    void navigation.current
-      .take(selected.spaceId, selected.channelId)
+    // A report prepares its own context; only the surrounding space metadata
+    // is needed here, never a competing latest-page conversation.
+    void (
+      selected.visit
+        ? getSpace(selected.spaceId).then((detail) => ({ detail }) as PreparedSpace)
+        : navigation.current.take(selected.spaceId, selected.channelId)
+    )
       .then((next) => {
         if (!current) return;
         // Commit the channel list and first history together. Until this point,
@@ -2320,7 +2450,7 @@ export default function Spaces({
         setView(next);
         if (!selected.dmId) setDirectView(undefined);
         setPending(false);
-        setNavigationOpen(false);
+        if (openConversation) setNavigationOpen(false);
         const query = new URLSearchParams({ space: next.detail.space.id });
         if (next.channelId) query.set("channel", next.channelId);
         if (selected.dmId) {
@@ -2358,6 +2488,36 @@ export default function Spaces({
     };
   }, [selected, loading, invitation?.id]);
 
+  const [voiceActivity, setVoiceActivity] = useState<string[]>([]);
+  useEffect(() => {
+    setVoiceActivity([]);
+    if (!account) return;
+    let current = true;
+    let refreshing = false;
+    const refresh = async () => {
+      if (document.hidden || refreshing) return;
+      refreshing = true;
+      try {
+        const result = await listSpaceVoiceActivity();
+        if (current) setVoiceActivity(unlessSame(result.spaceIds));
+      } catch {
+        if (current) setVoiceActivity([]);
+      } finally {
+        refreshing = false;
+      }
+    };
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 15_000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      current = false;
+      clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [account?.id]);
+
   // Membership can change in another account/tab while this page is open.
   // Reconcile the rail on focus and every 15s; transport authorization still
   // enforces access independently of this UI refresh.
@@ -2374,8 +2534,8 @@ export default function Spaces({
         if (!current) return;
         const available = new Set(result.spaces.map((space) => space.id));
         for (const space of spaces) if (!available.has(space.id)) navigation.current.forget(space.id);
-        setSpaces(result.spaces);
-        setInvitations(result.invitations ?? []);
+        setSpaces(unlessSame(result.spaces));
+        setInvitations(unlessSame(result.invitations ?? []));
         if (detail?.space.id && !available.has(detail.space.id)) {
           setView(undefined);
           setDialog(undefined);
@@ -2393,7 +2553,7 @@ export default function Spaces({
             current &&
             revision === membershipRevision.current &&
             activeSpace.current === next.space.id &&
-            JSON.stringify(next) !== JSON.stringify(shownDetail.current)
+            canonicalJson(next) !== canonicalJson(shownDetail.current)
           )
             replaceDetail(next);
         }
@@ -2419,6 +2579,7 @@ export default function Spaces({
     ? (directs.find((conversation) => conversation.id === directView.conversation.id) ?? directView.conversation)
     : undefined;
   const directBlocked = !!currentDirect && blockedIds.has(currentDirect.peer.id);
+  const directCanBlock = !!currentDirect && !currentDirect.peer.admin && !currentDirect.peer.team;
   const directLocked = !!currentDirect && (directBlocked || directStatus(currentDirect) === "incoming");
   const acceptRequest = async (request: DirectConversation) => {
     const accepted = await acceptDirectRequest(request.id);
@@ -2434,6 +2595,7 @@ export default function Spaces({
     currentDirect &&
     currentDirect.peer.id !== account?.id &&
     !directBlocked &&
+    directCanBlock &&
     directStatus(currentDirect) !== "incoming" ? (
       <button type="button" aria-haspopup="dialog" onClick={() => setBlockTarget(directPeer(currentDirect))}>
         <Ban aria-hidden="true" />
@@ -2451,7 +2613,7 @@ export default function Spaces({
         onDecline={() => declineRequest(currentDirect)}
         onBlock={() => setBlockTarget(directPeer(currentDirect))}
       />
-    ) : (
+    ) : directCanBlock ? (
       <Tooltip content={`Block @${currentDirect.peer.username}`}>
         <button
           type="button"
@@ -2462,7 +2624,7 @@ export default function Spaces({
           <Ban aria-hidden="true" />
         </button>
       </Tooltip>
-    );
+    ) : undefined;
   const visitHistory = visitView?.history;
   const channel = visitView
     ? {
@@ -2472,7 +2634,13 @@ export default function Spaces({
         private: true,
       }
     : directView
-      ? { id: directView.conversation.id, name: directView.conversation.peer.displayName, spaceId: "", private: true }
+      ? // The listed copy carries the peer's latest name, as the sidebar shows it.
+        {
+          id: directView.conversation.id,
+          name: (currentDirect ?? directView.conversation).peer.displayName,
+          spaceId: "",
+          private: true,
+        }
       : detail?.channels.find((item) => item.id === view?.channelId);
   const owner = !!account && detail?.space.ownerId === account.id;
   const ownedCount = account ? spaces.filter((space) => space.ownerId === account.id).length : 0;
@@ -2569,10 +2737,14 @@ export default function Spaces({
     );
     void archiveFeedback(report.channel.id, report.threadRootId, archived)
       .catch((reason) => setFeedbackError(errorMessage(reason)))
-      .finally(() => void refreshFeedback());
+      .finally(() => {
+        void refreshFeedback();
+        void refreshUnread();
+      });
   };
   const feedbackNavigation = feedbackTeam && (
     <FeedbackInbox
+      waiting={feedbackWaiting}
       reports={(feedback?.reports ?? []).map((report) => ({
         ...report,
         reporter: withLatestProfile(report.reporter, account, profiles),
@@ -2729,9 +2901,7 @@ export default function Spaces({
                         event.currentTarget.querySelector("summary")?.focus();
                       }
                     }}
-                    onBlur={(event) => {
-                      if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
-                    }}
+                    onBlur={leaveMenu}
                   >
                     <summary
                       className="channel-manage"
@@ -2969,18 +3139,28 @@ export default function Spaces({
     </>
   );
 
-  const rail = (
+  const rail = (connectedSpaceId: string | undefined) => (
     <nav className="space-rail" aria-label="Spaces">
       {spaces.map((space) => {
         const muted = isMuted(overrideFor(notifications, { spaceId: space.id })?.mutedUntil);
         const unread = unreadSpaces.some((item) => item.id === space.id);
-        const label = [space.name, unread && "unread activity", muted && "muted"].filter(Boolean).join(", ");
+        const connected = connectedSpaceId === space.id;
+        const voiceActive = connected || voiceActivity.includes(space.id);
+        const label = [
+          space.name,
+          unread && "unread activity",
+          muted && "muted",
+          voiceActive && (connected ? "connected to voice" : "voice active"),
+        ]
+          .filter(Boolean)
+          .join(", ");
         return (
           <div
             className="space-rail-item"
             key={space.id}
             data-active={space.id === detail.space.id}
             data-muted={muted ? "" : undefined}
+            data-voice={voiceActive ? "" : undefined}
           >
             <button
               type="button"
@@ -2995,6 +3175,9 @@ export default function Spaces({
               <SpaceIcon space={space} />
               {unread && <i className="space-unread" aria-hidden="true" />}
               {muted && <BellOff className="space-rail-muted" aria-hidden="true" />}
+              {voiceActive && (
+                <Volume2 className="space-rail-voice" data-connected={connected ? "" : undefined} aria-hidden="true" />
+              )}
             </button>
           </div>
         );
@@ -3044,7 +3227,7 @@ export default function Spaces({
       </button>
     </p>
   );
-  const channelNavigation = (voiceFor: (channelId: string) => VoiceSlot | null) => (
+  const channelNavigation = (voiceFor: (channelId: string) => VoiceSlot | null, liveNow: ReactNode) => (
     <nav
       ref={channelNavigationRef}
       className="channel-navigation"
@@ -3066,9 +3249,7 @@ export default function Spaces({
                   event.currentTarget.querySelector("summary")?.focus();
                 }
               }}
-              onBlur={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
-              }}
+              onBlur={leaveMenu}
             >
               <summary aria-label={`${detail.space.name} actions${spaceMuted ? ", muted" : ""}`}>
                 <h1 title={detail.space.name}>{detail.space.name}</h1>
@@ -3138,6 +3319,8 @@ export default function Spaces({
         </header>
       )}
       {notificationAlert(`space:${detail.space.id}`)}
+      {/* Voice without a row below: your call in another space, or a visited room. */}
+      {liveNow}
       {!!detail.space.id && !detail.space.demo && (
         <div className="channel-section-heading">
           <button
@@ -3174,9 +3357,7 @@ export default function Spaces({
                     event.currentTarget.querySelector("summary")?.focus();
                   }
                 }}
-                onBlur={(event) => {
-                  if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
-                }}
+                onBlur={leaveMenu}
               >
                 <summary aria-label="Channel options" title="Channel options">
                   <MoreHorizontal aria-hidden="true" />
@@ -3215,106 +3396,111 @@ export default function Spaces({
           const voice = voiceFor(item.id);
           const itemNotifications = overrideFor(notifications, { spaceId: detail.space.id, channelId: item.id });
           const itemMuted = isMuted(itemNotifications?.mutedUntil);
-          return (
-            <li key={item.id} data-voice={voice ? "" : undefined} data-muted={itemMuted || spaceMuted ? "" : undefined}>
-              <div className="channel-line">
-                <button
-                  className="channel-select"
-                  type="button"
-                  aria-current={item.id === channel?.id ? "page" : undefined}
-                  aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
-                  onMouseEnter={() => prefetch(detail.space.id, item.id)}
-                  onFocus={() => prefetch(detail.space.id, item.id)}
-                  onClick={() => choose(detail.space.id, item.id)}
+          const line = (
+            <div className="channel-line">
+              <button
+                className="channel-select"
+                type="button"
+                aria-current={item.id === channel?.id ? "page" : undefined}
+                aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
+                onMouseEnter={() => prefetch(detail.space.id, item.id)}
+                onFocus={() => prefetch(detail.space.id, item.id)}
+                onClick={() => choose(detail.space.id, item.id)}
+              >
+                {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
+                <span>{item.name}</span>
+                {unreadSpaces.some((space) => space.channels.some((entry) => entry.id === item.id)) && (
+                  <>
+                    <i className="channel-unread" aria-hidden="true" />
+                    <span className="sr-only">, unread activity</span>
+                  </>
+                )}
+                {itemMuted && (
+                  <>
+                    <BellOff className="muted-icon" aria-hidden="true" />
+                    <span className="sr-only">, muted</span>
+                  </>
+                )}
+                {voice?.live}
+              </button>
+              {voice?.join}
+              {!detail.space.demo && (
+                <details
+                  className="channel-menu"
+                  onToggle={(event) => trackMenu(event.currentTarget)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape" && event.currentTarget.open) {
+                      // Handled here, so an open thread does not also close.
+                      event.preventDefault();
+                      event.currentTarget.open = false;
+                      event.currentTarget.querySelector("summary")?.focus();
+                    }
+                  }}
+                  onBlur={leaveMenu}
                 >
-                  {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
-                  <span>{item.name}</span>
-                  {unreadSpaces.some((space) => space.channels.some((entry) => entry.id === item.id)) && (
-                    <>
-                      <i className="channel-unread" aria-hidden="true" />
-                      <span className="sr-only">, unread activity</span>
-                    </>
-                  )}
-                  {itemMuted && (
-                    <>
-                      <BellOff className="muted-icon" aria-hidden="true" />
-                      <span className="sr-only">, muted</span>
-                    </>
-                  )}
-                  {voice?.timer}
-                </button>
-                {voice?.join}
-                {!detail.space.demo && (
-                  <details
-                    className="channel-menu"
-                    onToggle={(event) => trackMenu(event.currentTarget)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape" && event.currentTarget.open) {
-                        // Handled here, so an open thread does not also close.
-                        event.preventDefault();
-                        event.currentTarget.open = false;
-                        event.currentTarget.querySelector("summary")?.focus();
-                      }
-                    }}
-                    onBlur={(event) => {
-                      if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
-                    }}
+                  <summary
+                    className="channel-manage"
+                    aria-label={`Manage ${item.name}`}
+                    title={`Channel actions for ${item.name}`}
                   >
-                    <summary
-                      className="channel-manage"
-                      aria-label={`Manage ${item.name}`}
-                      title={`Channel actions for ${item.name}`}
-                    >
-                      <MoreHorizontal aria-hidden="true" />
-                    </summary>
-                    <div className="space-actions">
-                      <LevelNotificationItems
-                        noun="channel"
-                        loaded={notifications.loaded}
-                        level={itemNotifications?.level ?? null}
-                        inherited={inheritedLevel(notifications, { spaceId: detail.space.id, channelId: item.id })}
-                        mutedUntil={itemNotifications?.mutedUntil ?? null}
-                        mutedWithSpace={spaceMuted}
-                        onChange={(change) => {
-                          const spaceId = detail.space.id;
-                          saveNotifications(`channel:${item.id}`, () =>
-                            changeChannelNotifications(spaceId, item.id, change),
-                          );
-                        }}
-                      />
-                      {owner && (
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            const menu = event.currentTarget.closest("details")!;
-                            menu.open = false;
-                            menu.querySelector("summary")?.focus();
-                            setManageChannel(item);
-                          }}
-                        >
-                          <Settings aria-hidden="true" />
-                          Channel settings
-                        </button>
-                      )}
+                    <MoreHorizontal aria-hidden="true" />
+                  </summary>
+                  <div className="space-actions">
+                    <LevelNotificationItems
+                      noun="channel"
+                      loaded={notifications.loaded}
+                      level={itemNotifications?.level ?? null}
+                      inherited={inheritedLevel(notifications, { spaceId: detail.space.id, channelId: item.id })}
+                      mutedUntil={itemNotifications?.mutedUntil ?? null}
+                      mutedWithSpace={spaceMuted}
+                      onChange={(change) => {
+                        const spaceId = detail.space.id;
+                        saveNotifications(`channel:${item.id}`, () =>
+                          changeChannelNotifications(spaceId, item.id, change),
+                        );
+                      }}
+                    />
+                    {owner && (
                       <button
                         type="button"
-                        disabled={membershipPending}
                         onClick={(event) => {
                           const menu = event.currentTarget.closest("details")!;
                           menu.open = false;
                           menu.querySelector("summary")?.focus();
-                          setLeavingChannel(item);
+                          setManageChannel(item);
                         }}
                       >
-                        <LogOut aria-hidden="true" />
-                        Leave channel
+                        <Settings aria-hidden="true" />
+                        Channel settings
                       </button>
-                    </div>
-                  </details>
-                )}
-                {voice?.summary}
-              </div>
-              {voice?.list}
+                    )}
+                    <button
+                      type="button"
+                      disabled={membershipPending}
+                      onClick={(event) => {
+                        const menu = event.currentTarget.closest("details")!;
+                        menu.open = false;
+                        menu.querySelector("summary")?.focus();
+                        setLeavingChannel(item);
+                      }}
+                    >
+                      <LogOut aria-hidden="true" />
+                      Leave channel
+                    </button>
+                  </div>
+                </details>
+              )}
+            </div>
+          );
+          return (
+            <li
+              key={item.id}
+              data-voice={voice ? "" : undefined}
+              data-live={voice?.card ? "" : undefined}
+              data-muted={itemMuted || spaceMuted ? "" : undefined}
+            >
+              {/* A live channel's row grows into its card: your call, or a room to join. */}
+              {voice ? voice.frame(line) : line}
               {notificationAlert(`channel:${item.id}`)}
             </li>
           );
@@ -3408,6 +3594,7 @@ export default function Spaces({
     openDirect(conversation);
   };
   const blockAuthor = (author: ChatAuthor) =>
+    !author.admin &&
     setBlockTarget({
       id: author.id,
       username: "",
@@ -3454,7 +3641,8 @@ export default function Spaces({
         }
         stage={emptyStage || undefined}
         space={{ id: detail.space.id, name: detail.space.name, demo: detail.space.demo }}
-        voiceChannels={joinedChannels.map((item) => ({ id: item.id, name: item.name }))}
+        voiceChannels={joinedChannels.map((item) => ({ id: item.id, name: item.name, private: item.private }))}
+        onOpenChannel={(spaceId, channelId) => choose(spaceId ?? detail.space.id, channelId)}
         headerMenuItems={visitView ? undefined : directMenuItems}
         channelActions={
           visitView ? undefined : currentDirect ? (
@@ -3543,7 +3731,9 @@ export default function Spaces({
           return true;
         }}
         focusMessage={focusMessage}
-        focusThread={!!visitView}
+        // Reports focus the conversation; actual replies still reveal their thread.
+        // Forwarded conversations retain their explicit source-thread behavior.
+        focusThread={!visit}
         // A reply from the team answers the report in the inbox.
         onSent={visitView ? () => void refreshFeedback() : undefined}
         onHistoryChange={(history) => {

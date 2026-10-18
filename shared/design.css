@@ -26,6 +26,8 @@
   /* Errors and destructive actions: readable on every dark surface. */
   --error-text: #ff9b82;
   --radius: 8px;
+  /* The account dock and message field share one bottom edge. */
+  --workspace-bottom-inset: 16px;
   /* Motion: things arrive, they never teleport. Short, decelerating and
      transform/opacity only, so layout never waits on an animation. */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);

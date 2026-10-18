@@ -13,7 +13,24 @@ use std::{
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
+    thread,
+    time::Duration,
 };
+
+/// Waits between rename attempts, about 14 seconds in all. Windows refuses to
+/// rename a folder while anything holds a file inside it, and antivirus scans
+/// or the app that just quit can hold one for a few seconds.
+const RENAME_RETRY_DELAYS: [Duration; 9] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(2),
+    Duration::from_secs(2),
+    Duration::from_secs(2),
+    Duration::from_secs(2),
+    Duration::from_secs(2),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layout {
@@ -172,13 +189,39 @@ fn only_child(folder: &Path, extension: Option<&str>) -> io::Result<PathBuf> {
 pub fn swap(install: &Path, replacement: &Path) -> io::Result<PathBuf> {
     let old = sibling(install, "old")?;
     remove_if_present(&old)?;
-    fs::rename(install, &old)?;
-    if let Err(error) = fs::rename(replacement, install) {
+    rename(install, &old)?;
+    if let Err(error) = rename(replacement, install) {
         // Put the working copy back before reporting the failure.
-        fs::rename(&old, install)?;
+        rename(&old, install)?;
         return Err(error);
     }
     Ok(old)
+}
+
+fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    retry(|| fs::rename(from, to), &RENAME_RETRY_DELAYS, held_open)
+}
+
+/// ERROR_ACCESS_DENIED and ERROR_SHARING_VIOLATION: another process has a file
+/// in the folder open. Other errors, and these codes elsewhere, fail at once.
+fn held_open(error: &io::Error) -> bool {
+    cfg!(windows) && matches!(error.raw_os_error(), Some(5 | 32))
+}
+
+/// Runs `operation`, waiting and trying again while it fails with an error
+/// `transient` accepts, once per delay; the last attempt's result is returned.
+fn retry(
+    mut operation: impl FnMut() -> io::Result<()>,
+    delays: &[Duration],
+    transient: fn(&io::Error) -> bool,
+) -> io::Result<()> {
+    for delay in delays {
+        match operation() {
+            Err(error) if transient(&error) => thread::sleep(*delay),
+            result => return result,
+        }
+    }
+    operation()
 }
 
 pub fn remove_if_present(path: &Path) -> io::Result<()> {
@@ -279,6 +322,60 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(old.join("Caper.exe")).unwrap(), "old");
         assert!(!replacement.exists());
+    }
+
+    #[test]
+    fn retry_waits_out_a_briefly_held_folder() {
+        let mut attempts = 0;
+        let result = retry(
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(io::Error::from_raw_os_error(32))
+                } else {
+                    Ok(())
+                }
+            },
+            &[Duration::ZERO; 5],
+            |error| error.raw_os_error() == Some(32),
+        );
+        assert!(result.is_ok());
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn retry_gives_up_after_the_last_delay_and_on_other_errors() {
+        let held = |error: &io::Error| error.raw_os_error() == Some(32);
+        let mut attempts = 0;
+        let result = retry(
+            || {
+                attempts += 1;
+                Err(io::Error::from_raw_os_error(32))
+            },
+            &[Duration::ZERO; 2],
+            held,
+        );
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(32));
+        assert_eq!(attempts, 3);
+
+        let mut attempts = 0;
+        let result = retry(
+            || {
+                attempts += 1;
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            },
+            &[Duration::ZERO; 5],
+            held,
+        );
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(attempts, 1);
+    }
+
+    #[test]
+    fn only_windows_lock_errors_are_retried() {
+        assert_eq!(held_open(&io::Error::from_raw_os_error(32)), cfg!(windows));
+        assert_eq!(held_open(&io::Error::from_raw_os_error(5)), cfg!(windows));
+        assert!(!held_open(&io::Error::from(io::ErrorKind::NotFound)));
     }
 
     #[test]

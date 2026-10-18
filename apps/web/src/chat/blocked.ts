@@ -4,6 +4,15 @@ export interface BlockedRun {
   count: number;
 }
 
+/** Messages from an account you blocked stay hidden; guests and your own never are. */
+export function blockedAuthor(
+  author: { id: string; isGuest?: boolean } | undefined,
+  blocked: ReadonlySet<string>,
+  ownId: string | undefined,
+) {
+  return !!author && !author.isGuest && author.id !== ownId && blocked.has(author.id);
+}
+
 /**
  * Maps each hidden message's key to its run. Guests and your own messages
  * never collapse, and a run is keyed by its first message so "Show" survives
@@ -16,8 +25,7 @@ export function blockedRuns<T extends { clientMessageId: string; author?: { id: 
 ) {
   const runs = new Map<string, BlockedRun>();
   if (!blocked.size) return runs;
-  const hidden = (message: T) =>
-    !!message.author && !message.author.isGuest && message.author.id !== ownId && blocked.has(message.author.id);
+  const hidden = (message: T) => blockedAuthor(message.author, blocked, ownId);
   for (let start = 0; start < messages.length;) {
     if (!hidden(messages[start])) {
       start++;

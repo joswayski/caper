@@ -14,16 +14,13 @@ import {
   previewInvite,
   SpacesApiError,
 } from "./client";
+import { friendlyError } from "./errors";
 
 type State =
   | { status: "loading" }
   | { status: "invalid" }
   | { status: "unavailable" }
   | { status: "ready"; preview: InvitePreview; account: Account | null };
-
-function sentence(message: string) {
-  return message.charAt(0).toUpperCase() + message.slice(1).replace(/([^.!?])$/, "$1.");
-}
 
 /** The public landing page for `caper.chat/invite/<code>`, like Discord's invite page. */
 export default function InvitePage({ code }: { code: string }) {
@@ -58,10 +55,7 @@ export default function InvitePage({ code }: { code: string }) {
       await navigate({ href: invitedSpacePath(joined.space.id, joined.channelId) });
     } catch (reason) {
       if (reason instanceof SpacesApiError && reason.status === 404) setState({ status: "invalid" });
-      else
-        setError(
-          reason instanceof SpacesApiError ? sentence(reason.message) : "Something went wrong. Please try again.",
-        );
+      else setError(friendlyError(reason));
       setPending(false);
     }
   };

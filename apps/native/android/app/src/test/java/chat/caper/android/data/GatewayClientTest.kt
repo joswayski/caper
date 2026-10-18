@@ -300,9 +300,10 @@ class GatewayClientTest {
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
         }))
         val resync = CountDownLatch(1)
+        val denied = AtomicInteger()
         val gateway = GatewayClient(
             baseUrl = server.url("/").toString().trimEnd('/'), token = "account-secret",
-            channelId = "channel00001", initialCursor = "7", onMessage = {}, onAccessDenied = {},
+            channelId = "channel00001", initialCursor = "7", onMessage = {}, onAccessDenied = { denied.incrementAndGet() },
             onResync = { resync.countDown() },
         )
         try {
@@ -318,6 +319,9 @@ class GatewayClientTest {
             assertNull("client must wait for its own 10s cadence", incoming.poll(400, TimeUnit.MILLISECONDS))
             socket.send("""{"type":"event","id":"$id","event":{"type":"resync_required"}}""")
             assertTrue(resync.await(2, TimeUnit.SECONDS))
+            // A stale cursor reloads history; it never closes the channel as lost access.
+            assertEquals(0, denied.get())
+            assertEquals(GatewayStatus.DISCONNECTED, gateway.status.value)
             val handshake = server.takeRequest(2, TimeUnit.SECONDS)!!
             assertEquals("Bearer account-secret", handshake.headers["Authorization"])
             assertNull(handshake.requestUrl?.query)

@@ -134,7 +134,7 @@ struct ForwardPickerView: View {
                                 self.error = "\(confirmed > 0 ? "Forwarded to \(confirmed) \(confirmed == 1 ? "destination" : "destinations"). " : "")\(rejected ? "Remaining forwards not sent." : "Remaining forwards not confirmed. Retry checks the same forwards.") \(error.localizedDescription)"
                             }
                         }
-                    }.buttonStyle(CaperSecondaryButton()).disabled(selected.isEmpty || sending || note.unicodeScalars.count > 4000)
+                    }.buttonStyle(CaperPrimaryButton()).disabled(selected.isEmpty || sending || note.unicodeScalars.count > 4000)
                 }.padding(16)
             }
         }.background(CaperTheme.raised).foregroundStyle(CaperTheme.text)

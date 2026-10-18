@@ -26,6 +26,22 @@ final class MessageRequestsTests: XCTestCase {
 
     // MARK: Decoding
 
+    func testProtectedPeersKeepTheirBlockPolicyThroughConversion() throws {
+        let decoder = JSONDecoder()
+        let legacy = try decoder.decode(DirectMessagePeer.self, from: Data(#"{"id":"a","username":"alex","displayName":"Alex"}"#.utf8))
+        XCTAssertTrue(legacy.canBlock)
+        var admin = legacy
+        admin.admin = true
+        XCTAssertFalse(admin.canBlock)
+        XCTAssertFalse(BlockTarget(peer: admin).canBlock)
+        var team = legacy
+        team.team = true
+        XCTAssertFalse(team.canBlock)
+        XCTAssertFalse(BlockTarget(peer: team).canBlock)
+        let card = MentionCard.resolve(ChatAuthor(id: "a", name: "Alex", isGuest: false), members: [], people: [], peers: [admin], account: nil, viewerID: "me")
+        XCTAssertFalse(card.canBlock)
+    }
+
     func testConversationsTolerateMissingStatusAndBlocked() throws {
         let json = #"""
         {"conversations":[
@@ -149,6 +165,11 @@ final class MessageRequestsTests: XCTestCase {
     }
 
     func testWhoCanBeBlockedFromMessageActions() {
+        var admin = alex
+        admin.admin = true
+        XCTAssertFalse(BlockedMessages.canBlock(admin, viewerID: me, blocked: []))
+        XCTAssertTrue(BlockedMessages.canUnblock(admin, viewerID: me, blocked: [admin.id]))
+        XCTAssertFalse(BlockTarget(author: admin).canBlock)
         XCTAssertTrue(BlockedMessages.canBlock(alex, viewerID: me, blocked: []))
         XCTAssertFalse(BlockedMessages.canBlock(alex, viewerID: me, blocked: [alex.id]), "already blocked")
         XCTAssertFalse(BlockedMessages.canBlock(ChatAuthor(id: me, name: "Me", isGuest: false), viewerID: me, blocked: []), "not yourself")

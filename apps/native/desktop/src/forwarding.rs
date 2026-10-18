@@ -454,6 +454,15 @@ impl Forwarding {
 pub fn original(ui: &mut egui::Ui, message: &Message, textures: &mut crate::emoji::Textures) {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
+        // Web's 24 px author avatar: their picture, else their mascot.
+        let (avatar, _) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
+        crate::paint_avatar(
+            ui,
+            avatar,
+            &message.author.name,
+            message.author.avatar_id,
+            message.author.picture(),
+        );
         ui.label(RichText::new(&message.author.name).strong().size(13.0));
         if message.author.admin {
             crate::admin_badge(ui);

@@ -16,20 +16,39 @@ const init = join(directory, "fixture.js");
 
 function fixture() {
   if (location.protocol === "about:") return;
-  const account = { id: "member123456", username: "member", displayName: "TEST FIXTURE member" };
+  const query = new URLSearchParams(location.search);
+  const feedbackMode = query.has("feedback") || query.has("feedbackTest");
+  const account = {
+    id: "member123456",
+    username: "member",
+    displayName: "TEST FIXTURE member",
+    feedbackTeam: feedbackMode,
+  };
   const space = { id: "space1234567", name: "TEST FIXTURE navigation", ownerId: "owner1234567" };
   const channels = [
     { id: "general12345", spaceId: space.id, name: "general", private: false, joined: true },
     { id: "design123456", spaceId: space.id, name: "design", private: false, joined: true },
   ];
   const members = [{ ...account, owner: false }];
+  const forwardedRoot = {
+    id: "message-general12345",
+    channelId: "general12345",
+    seq: "1",
+    clientMessageId: "00000000-0000-4000-8000-000000000001",
+    createdAt: "2026-10-04T12:00:00Z",
+    author: { id: account.id, name: account.displayName, isGuest: false },
+    content: { version: 1, type: "text", text: "TEST FIXTURE forwarded conversation" },
+  };
   const control = (window.navigationFixture = {
     historyReads: {},
+    requests: [],
     presenceSubscribes: 0,
     releases: [],
     holdDesign: true,
     directReleases: [],
     directError: "dm_not_accepted",
+    holdFeedback: query.has("feedbackTest"),
+    feedbackReleases: [],
   });
   const NativeSocket = window.WebSocket;
   window.WebSocket = class extends EventTarget {
@@ -59,7 +78,9 @@ function fixture() {
   };
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (input, options = {}) => {
-    const path = new URL(typeof input === "string" ? input : input.url, location.href).pathname;
+    const requestUrl = new URL(typeof input === "string" ? input : input.url, location.href);
+    const path = requestUrl.pathname;
+    control.requests.push(path + requestUrl.search);
     if (!path.startsWith("/api/")) return originalFetch(input, options);
     if (path === "/api/account/me") return Response.json(account);
     if (path === "/api/spaces")
@@ -69,6 +90,28 @@ function fixture() {
         limits: { ownedSpaces: 20, totalSpaces: 100, channelsPerSpace: 100 },
       });
     if (path === `/api/spaces/${space.id}`) return Response.json({ space, channels, members });
+    if (path === "/api/feedback") {
+      const id = query.get("feedback") ?? "direct123456";
+      return Response.json({
+        reports: [
+          {
+            id: `report-${id}`,
+            messageId: `message-${id}`,
+            threadRootId: `message-${id}`,
+            reporter: account,
+            channel: { id, name: "TEST FIXTURE conversation", direct: id.startsWith("direct") },
+            space: id.startsWith("direct") ? null : space,
+            text: "TEST FIXTURE reported message",
+            attachments: 0,
+            replyCount: 0,
+            answered: false,
+            archived: false,
+            createdAt: "2026-10-04T12:00:00Z",
+          },
+        ],
+        cursor: null,
+      });
+    }
     if (path === "/api/dms") {
       if (options.method !== "POST") return Response.json({ conversations: [] });
       await new Promise((resolve) => control.directReleases.push(resolve));
@@ -77,14 +120,58 @@ function fixture() {
     if (path === "/api/chat/session")
       return Response.json({ token: "fixture", author: { id: account.id, name: account.displayName, isGuest: false } });
     if (path.endsWith("/media/status")) return Response.json({ enabled: false });
+    if (path.includes("/forwards/"))
+      return Response.json({
+        root: forwardedRoot,
+        source: { spaceId: space.id, message: forwardedRoot },
+        cursor: "1",
+        hasMore: false,
+        messages: [],
+      });
+    const threadMatch = path.match(/\/api\/chat\/channels\/([^/]+)\/messages\/([^/]+)\/thread$/);
+    if (threadMatch) {
+      const channelId = threadMatch[1];
+      const root = {
+        id: threadMatch[2],
+        channelId,
+        seq: "1",
+        clientMessageId: "00000000-0000-4000-8000-000000000001",
+        createdAt: "2026-10-04T12:00:00Z",
+        author: { id: account.id, name: account.displayName, isGuest: false },
+        content: { version: 1, type: "text", text: "TEST FIXTURE report root" },
+      };
+      return Response.json({
+        root,
+        cursor: "2",
+        hasMore: false,
+        messages: requestUrl.searchParams.has("around")
+          ? [
+              {
+                ...root,
+                id: `reply-${channelId}`,
+                seq: "2",
+                threadRootId: root.id,
+                clientMessageId: "00000000-0000-4000-8000-000000000003",
+                content: { version: 1, type: "text", text: "TEST FIXTURE reported reply" },
+              },
+            ]
+          : [],
+      });
+    }
     const match = path.match(/\/api\/chat\/channels\/([^/]+)\/messages$/);
     if (match) {
-      const channel = channels.find((item) => item.id === match[1]);
+      const channel = channels.find((item) => item.id === match[1]) ?? {
+        id: match[1],
+        name: "TEST FIXTURE DM",
+        direct: true,
+      };
       control.historyReads[channel.id] = (control.historyReads[channel.id] ?? 0) + 1;
+      if (requestUrl.searchParams.has("around") && control.holdFeedback)
+        await new Promise((resolve) => control.feedbackReleases.push(resolve));
       if (channel.id === "design123456" && control.holdDesign)
         await new Promise((resolve) => control.releases.push(resolve));
       return Response.json({
-        space,
+        space: channel.direct ? { id: "", name: "" } : space,
         channel,
         cursor: "1",
         hasMore: false,
@@ -97,6 +184,7 @@ function fixture() {
             createdAt: "2026-10-04T12:00:00Z",
             author: { id: account.id, name: account.displayName, isGuest: false },
             content: { version: 1, type: "text", text: `TEST FIXTURE ${channel.name} history` },
+            ...(query.has("forward") ? { forward: { message: forwardedRoot, seq: "1" } } : {}),
           },
         ],
       });
@@ -125,22 +213,121 @@ const screenshot = (name) => {
 let socket;
 
 try {
+  if (process.env.NAVIGATION_TEST_FEEDBACK) {
+    const pending = new URL(url);
+    pending.searchParams.set("feedbackTest", "1");
+    browser("open", pending.toString());
+    browser("set", "viewport", "390", "844", "2");
+    wait('!!document.querySelector(".feedback-select") && !!document.querySelector(".chat-message")');
+    browser("click", ".navigation-toggle");
+    browser("click", ".feedback-select");
+    wait("navigationFixture.feedbackReleases.length > 0");
+    assert.equal(
+      evaluate('document.querySelector(".spaces-room").classList.contains("navigation-open")'),
+      true,
+      "the phone report list stays visible until context is ready",
+    );
+    evaluate(
+      "navigationFixture.holdFeedback = false; navigationFixture.feedbackReleases.splice(0).forEach(release => release())",
+    );
+    wait('!document.querySelector(".spaces-room").classList.contains("navigation-open")');
+    assert.equal(evaluate('!!document.querySelector(".chat-thread-panel")'), false);
+    for (const width of [1280, 390]) {
+      for (const id of ["general12345", "direct123456"]) {
+        const target = new URL(base);
+        target.search = new URLSearchParams({ feedback: id, message: `message-${id}`, thread: `message-${id}` });
+        browser("open", target.toString());
+        browser("set", "viewport", String(width), "844", "2");
+        wait(
+          'document.querySelector(".chat-message") && document.querySelector("#chat-message") && !document.querySelector("#chat-message").disabled',
+        );
+        wait(`navigationFixture.requests.some(path => path.includes('around=message-${id}'))`);
+        assert.equal(
+          evaluate('!!document.querySelector(".chat-thread-panel")'),
+          false,
+          "root report stays in conversation",
+        );
+        const reads = evaluate(
+          "navigationFixture.requests.filter(path => path.includes('/chat/channels/') && path.includes('/messages'))",
+        );
+        assert.ok(
+          reads.length > 0 && reads.every((path) => path.includes("?around=")),
+          `prepare root context, never latest history: ${JSON.stringify(reads)}`,
+        );
+        evaluate(
+          "document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))",
+        );
+        screenshot(`feedback-root-${id}-${width}`);
+        // Headless Chromium uses the no-hover actions menu at both widths.
+        // Wait for report focus/scrolling to settle before hitting its action.
+        wait(`(() => {
+          const button = document.querySelector('.chat-panel .chat-message-actions-trigger');
+          const rect = button.getBoundingClientRect();
+          return button.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+        })()`);
+        browser("click", ".chat-panel .chat-message-actions-trigger");
+        browser("find", "role", "button", "click", "--name", "Reply in thread", "--exact");
+        wait('document.querySelector(".chat-thread-status")?.textContent.includes("No replies yet")');
+        screenshot(`feedback-explicit-thread-${id}-${width}`);
+        target.searchParams.set("message", `reply-${id}`);
+        browser("open", target.toString());
+        wait('document.querySelector(".chat-thread-panel")?.textContent.includes("TEST FIXTURE reported reply")');
+        screenshot(`feedback-reply-${id}-${width}`);
+      }
+    }
+    const forwarded = new URL(base);
+    forwarded.search = new URLSearchParams({ feedback: "general12345", message: "message-general12345", forward: "1" });
+    browser("open", forwarded.toString());
+    browser("set", "viewport", "1280", "844", "2");
+    wait('!!document.querySelector(".chat-forward-card button")');
+    browser("click", ".chat-forward-card button");
+    wait('!!document.querySelector(".chat-thread-panel")');
+    assert.equal(evaluate('new URL(location.href).searchParams.has("feedback")'), false);
+    console.log(
+      "PASS: mocked channel/DM reports prepare context; roots stay in conversation, replies and explicit thread/forward actions open threads at desktop/narrow widths",
+    );
+    browser("close");
+    rmSync(directory, { recursive: true, force: true });
+    process.exit(0);
+  }
   browser("open", "about:blank");
   browser("set", "viewport", "1280", "900", "2");
   browser("open", url.toString());
   wait('document.querySelector("#chat-message") && !document.querySelector("#chat-message").disabled');
-  assert.deepEqual(
-    evaluate(`(() => {
-      const panel = document.querySelector(".voice-panel");
-      const account = panel.getBoundingClientRect();
-      const field = document.querySelector("#chat-message").getBoundingClientRect();
-      const composer = document.querySelector(".chat-composer").getBoundingClientRect();
-      const dividerTop = account.top + parseFloat(getComputedStyle(panel).borderTopWidth)
-        + parseFloat(getComputedStyle(panel, "::before").top);
-      return [account.top - field.top, account.bottom - field.bottom, dividerTop - composer.top];
-    })()`),
-    [0, 0, 0],
-    "Account and composer outlines and their upper dividers must align",
+  evaluate("document.fonts.ready.then(() => true)");
+  for (const width of [900, 1920, 1280]) {
+    browser("set", "viewport", String(width), "900", "2");
+    for (const draft of ["", "One line", "First line\nSecond line\nThird line"]) {
+      if (draft) browser("fill", "#chat-message", draft);
+      else {
+        browser("click", "#chat-message");
+        browser("press", "Control+a");
+        browser("press", "Backspace");
+      }
+      evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      assert.equal(evaluate('document.querySelector("#chat-message").value'), draft);
+      const bounds = evaluate(`(() => {
+        const panel = document.querySelector(".voice-panel");
+        const account = panel.getBoundingClientRect();
+        const field = document.querySelector("#chat-message").getBoundingClientRect();
+        const composer = document.querySelector(".chat-composer").getBoundingClientRect();
+        const dividerTop = account.top + parseFloat(getComputedStyle(panel).borderTopWidth)
+          + parseFloat(getComputedStyle(panel, "::before").top);
+        return [account.top - field.top, account.bottom - field.bottom, dividerTop - composer.top];
+      })()`);
+      if (draft.includes("\n")) {
+        assert.equal(bounds[1], 0, `Multiline input keeps the account bar's bottom edge at ${width}px`);
+        assert.ok(bounds[0] > 0, "Multiline input must still grow upward");
+        if (width === 1280) screenshot("desktop-composer-multiline");
+      } else {
+        assert.deepEqual(bounds, [0, 0, 0], `Account/input outlines and upper dividers align at ${width}px`);
+        if (draft === "") screenshot(`desktop-composer-aligned-${width}`);
+      }
+    }
+  }
+  browser("fill", "#chat-message", "");
+  console.log(
+    "PASS: account/input top, bottom and divider offsets are 0px at 900px, 1280px and 1920px; multiline grows upward without moving their bottom edge.",
   );
   // Wide layouts show the member list by default.
   assert.equal(evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded")'), "true");
@@ -223,26 +410,26 @@ try {
   browser("set", "viewport", "390", "844", "2");
   evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
   assert.equal(evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
-  // Close the member panel carried across from the desktop layout.
-  browser("click", ".member-list-close");
+  // Narrowing closes the desktop member column instead of opening a phone drawer.
   wait('!document.querySelector(".space-member-presence")');
   assert.equal(evaluate('document.body.textContent.includes("TEST FIXTURE design history")'), true);
   assert.equal(
-    evaluate('document.querySelector(".chat-channel-menu")'),
-    null,
-    "The mobile channel title has no dropdown",
+    evaluate('getComputedStyle(document.querySelector(".chat-title-menu")).display'),
+    "block",
+    "The mobile channel title opens the channel menu",
   );
-  assert.ok(
+  assert.deepEqual(
     evaluate(
-      '["chat-pins-toggle", "member-list-toggle"].map(name => document.querySelector(`.chat-heading .${name}`).getBoundingClientRect().left).reduce((pins, members) => members > pins)',
+      '["chat-pins-toggle", "member-list-toggle"].map(name => getComputedStyle(document.querySelector(`.chat-heading .${name}`)).display)',
     ),
-    "Mobile Members is a header button right of Pins",
+    ["none", "none"],
+    "Mobile Pins and Members move into the channel menu",
   );
-  // Pins is an icon-only header control on every layout (#363).
+  // The desktop Pins control stays mounted but is hidden on phones.
   assert.equal(
     evaluate('document.querySelectorAll(".chat-heading .chat-pins-toggle").length'),
     1,
-    "Mobile Pins is one header control",
+    "There is only one desktop Pins control",
   );
   assert.equal(evaluate('document.querySelector(".navigation-toggle").getAttribute("aria-label")'), "Back to Browse");
   assert.equal(evaluate('document.querySelector(".navigation-toggle").getBoundingClientRect().width'), 44);
@@ -422,7 +609,8 @@ try {
     evaluate('document.querySelector(".chat-heading .chat-pins-toggle").getAttribute("aria-label")'),
     "Pins",
   );
-  browser("click", ".chat-heading .chat-pins-toggle");
+  browser("click", ".chat-title-menu > summary");
+  browser("click", ".chat-header-menu button:first-child");
   wait('document.querySelector(".chat-pins")?.textContent.includes("No pinned messages.")');
   screenshot("mobile-empty-pins");
   await swipe(p.x - 60, p.y, 100);
@@ -440,9 +628,18 @@ try {
   const drawerOpen = () => evaluate(`!!document.querySelector("${drawer}:not([inert])")`);
   const drawerSettled = () => wait(`!document.querySelector("${drawer}")?.getAnimations().length`);
   const drawerGone = () => wait(`!document.querySelector("${drawer}")`);
+  browser("click", ".chat-title-menu > summary");
+  // Safari may leave focus nowhere when a menu item is tapped. That blur must
+  // not hide the item before the click has a chance to open Members.
+  evaluate('document.querySelector(".chat-title-menu > summary").focus(); document.activeElement.blur()');
+  assert.equal(
+    evaluate('document.querySelector(".chat-title-menu").open'),
+    true,
+    "A null-focus blur keeps the menu open",
+  );
   assert.equal(
     evaluate(`(async () => {
-      document.querySelector(".chat-heading .member-list-toggle").click();
+      document.querySelector(".chat-header-menu button[aria-expanded]").click();
       await new Promise((resolve) => setTimeout(resolve));
       return document.querySelector("${drawer}").getAnimations().length;
     })()`),
@@ -450,8 +647,9 @@ try {
     "Members slides in",
   );
   drawerSettled();
+  assert.equal(evaluate('document.querySelector(".chat-title-menu").open'), false, "Choosing Members closes the menu");
   assert.equal(
-    evaluate('document.querySelector(".chat-heading .member-list-toggle").getAttribute("aria-expanded")'),
+    evaluate('document.querySelector(".chat-header-menu button[aria-expanded]").getAttribute("aria-expanded")'),
     "true",
   );
   screenshot("mobile-members");
@@ -545,7 +743,8 @@ try {
   );
   browser("set", "viewport", "320", "568", "2");
   evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
-  browser("click", ".chat-heading .member-list-toggle");
+  browser("click", ".chat-title-menu > summary");
+  browser("click", ".chat-header-menu button[aria-expanded]");
   drawerSettled();
   assert.equal(
     evaluate("document.documentElement.scrollWidth <= innerWidth"),

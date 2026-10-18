@@ -1,5 +1,14 @@
 import Foundation
 
+public struct UnreadThread: Codable, Equatable, Sendable {
+    public let rootId: String
+    public let seq: String
+}
+
+public struct UnreadThreadsResponse: Codable, Sendable {
+    public let threads: [UnreadThread]
+}
+
 public enum CaperAvatar {
     public static func index(for avatarID: Int?) -> Int? { avatarID.flatMap { (0...799).contains($0) ? $0 : nil } }
 }
@@ -46,8 +55,8 @@ public struct Account: Codable, Equatable, Sendable {
     public var isFeedbackTeam: Bool { feedbackTeam == true }
 
     /// The account's own picture for a retained snapshot of the same person:
-    /// the snapshot's URL while it signs the same asset (it may be newer),
-    /// otherwise the account's. No account picture means the mascot.
+    /// for the same asset, whichever URL expires later (the snapshot may be
+    /// newer), otherwise the account's. No account picture means the mascot.
     func ownPicture(asset snapshotAsset: String?, url snapshotURL: String?) -> (asset: String?, url: String?) {
         PictureMerge.newer(asset: avatarAsset, url: avatarUrl, over: snapshotAsset, snapshotURL)
     }
@@ -104,6 +113,7 @@ public struct ChannelInvitation: Codable, Equatable, Identifiable, Sendable {
 public struct UnreadChannel: Codable, Equatable, Sendable {
     public let id: String
     public let lastSeq: String
+    public var readSeq: String? = nil
 }
 
 public struct UnreadSpace: Codable, Equatable, Sendable {
@@ -111,11 +121,25 @@ public struct UnreadSpace: Codable, Equatable, Sendable {
     public var channels: [UnreadChannel]
 }
 
+public struct SpaceVoiceActivityResponse: Codable, Sendable {
+    public let spaceIds: [String]
+}
+
 public struct UnreadSpacesResponse: Codable, Sendable {
     public let spaces: [UnreadSpace]
+    public let feedbackWaiting: Int
+
+    private enum CodingKeys: String, CodingKey { case spaces, feedbackWaiting }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        spaces = try values.decode([UnreadSpace].self, forKey: .spaces)
+        feedbackWaiting = try values.decodeIfPresent(Int.self, forKey: .feedbackWaiting) ?? 0
+    }
 }
 
 public struct DirectMessagePeer: Codable, Equatable, Sendable {
+    public var admin: Bool? = nil
     public let id: String
     public let username: String
     public let displayName: String
@@ -127,6 +151,7 @@ public struct DirectMessagePeer: Codable, Equatable, Sendable {
     public var avatarUrl: String? = nil
 
     public var isTeam: Bool { team == true }
+    public var canBlock: Bool { admin != true && !isTeam }
 }
 
 extension DirectMessagePeer: AvatarPictureCarrying {}
@@ -176,6 +201,7 @@ public struct DirectMessagesResponse: Codable, Sendable {
 /// An account that shares an active space or a DM with you, from
 /// `GET /api/people` (you excluded, ordered by username, at most 500).
 public struct Person: Codable, Equatable, Identifiable, Sendable {
+    public var admin: Bool? = nil
     public let id: String
     public let username: String
     public let displayName: String
@@ -195,6 +221,7 @@ public struct PushConfiguration: Codable, Equatable, Sendable {
 }
 
 public struct Member: Codable, Equatable, Identifiable, Sendable {
+    public var admin: Bool? = nil
     public let id: String
     public let username: String
     public let displayName: String
@@ -206,7 +233,7 @@ public struct Member: Codable, Equatable, Identifiable, Sendable {
     func withProfile(_ account: Account?) -> Member {
         guard let account, id == account.id, let username = account.username, let name = account.displayName else { return self }
         let picture = account.ownPicture(asset: avatarAsset, url: avatarUrl)
-        return Member(id: id, username: username, displayName: name, owner: owner, avatarId: avatarId,
+        return Member(admin: admin, id: id, username: username, displayName: name, owner: owner, avatarId: avatarId,
                       avatarAsset: picture.asset, avatarUrl: picture.url)
     }
 }
@@ -244,8 +271,16 @@ public struct SpaceDetail: Codable, Sendable {
     /// Private channels you can read: who can read each (owner and grants).
     public let channelMembers: [String: [String]]
 
+    /// A copy with the given parts replaced and every other field kept, so a
+    /// new field can't be dropped by a partial rebuild.
+    func with(space: Space? = nil, channels: [Channel]? = nil, members: [Member]? = nil,
+              channelInvitations: [ChannelInvitation]? = nil, channelMembers: [String: [String]]? = nil) -> SpaceDetail {
+        SpaceDetail(space: space ?? self.space, channels: channels ?? self.channels, members: members ?? self.members,
+                    channelInvitations: channelInvitations ?? self.channelInvitations, channelMembers: channelMembers ?? self.channelMembers)
+    }
+
     func withProfile(_ account: Account?) -> SpaceDetail {
-        SpaceDetail(space: space, channels: channels, members: members.map { $0.withProfile(account) }, channelInvitations: channelInvitations, channelMembers: channelMembers)
+        with(members: members.map { $0.withProfile(account) })
     }
 
     /// The member list for a channel: a private channel's readers first, then
@@ -555,7 +590,9 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
             guard value.id == own.id else { return value }
             // A snapshot's signature for the same picture may be newer.
             var result = own
-            if value.avatarAsset == own.avatarAsset, let url = value.avatarUrl { result.avatarUrl = url }
+            if value.avatarAsset == own.avatarAsset { result.avatarUrl = PictureMerge.fresher(own.avatarUrl, over: value.avatarUrl) }
+            // The admin badge is stamped per message by the server; the profile has none.
+            result.admin = value.admin
             return result
         }
         var result = self

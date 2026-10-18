@@ -305,8 +305,15 @@ import kotlinx.coroutines.delay
             val field = remember { FocusRequester() }
             // An opened link is already loading; the keyboard would only cover its preview.
             LaunchedEffect(Unit) { if (opened == null) runCatching { field.requestFocus() } }
-            OutlinedTextField(input, { input = it; error = null }, label = { Text("Invite link") }, placeholder = { Text("https://caper.chat/invite/…") },
-                modifier = Modifier.fillMaxWidth().focusRequester(field), singleLine = true, readOnly = checking,
+            Text("Paste it below to join!", color = TextMuted, fontSize = 12.sp)
+            OutlinedTextField(input, { input = it; error = null }, placeholder = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("it looks like", color = TextMuted.copy(alpha = 0.65f), fontSize = 12.sp)
+                    Icon(painterResource(R.drawable.lucide_arrow_right), null, Modifier.size(12.dp), tint = TextMuted.copy(alpha = 0.65f))
+                    Text("caper.chat/invite/AbCdE12345", color = TextMuted.copy(alpha = 0.65f), fontSize = 12.sp, maxLines = 1)
+                }
+            },
+                modifier = Modifier.fillMaxWidth().focusRequester(field).semantics { contentDescription = "Invite link" }, singleLine = true, readOnly = checking,
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
                 keyboardActions = KeyboardActions(onGo = { if (!checking && input.isNotBlank()) submit() }))
             error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }

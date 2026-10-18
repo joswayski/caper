@@ -186,7 +186,7 @@ export class AppGateway {
     };
     this.subscriptions.set(id, subscription);
     callbacks.status?.(false);
-    clearTimeout(this.idleTimer);
+    this.cancelIdleClose();
     this.ensureConnected();
     if (this.active?.hello) this.sendSubscription(this.active, subscription);
     if (this.candidate?.hello) this.sendSubscription(this.candidate, subscription);
@@ -232,7 +232,7 @@ export class AppGateway {
         request.signal.addEventListener("abort", pending.abort, { once: true });
       }
       this.commands.set(id, pending);
-      clearTimeout(this.idleTimer);
+      this.cancelIdleClose();
       this.ensureConnected();
       if (this.active?.hello) this.sendCommand(this.active, pending);
     });
@@ -672,6 +672,12 @@ export class AppGateway {
   private sendCommand(stream: Stream, command: PendingCommand) {
     command.frame.issuedAt ??= Math.round(Date.now() + stream.serverOffsetMs);
     this.send(stream, command.frame);
+  }
+
+  /** Forget the handle too: a cleared but remembered timer would block every later idle close. */
+  private cancelIdleClose() {
+    clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
   }
 
   private scheduleIdleClose() {

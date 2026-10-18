@@ -425,22 +425,46 @@ def main() -> None:
     menu = find(desktop, description="general channel menu")
     assert general is not None and menu is not None, "General must expose its channel menu"
     assert abs(center(general)[1] - center(menu)[1]) <= 4, "Channel name and menu must share the top row"
-    # Web: voice joins from the open channel's header, so empty channels stay a single line.
-    assert find(desktop, contains="Join voice in #") is None, "Channel rows must not repeat a Join voice action"
-    # The fixture can show people in #design's voice; #general's row is the empty one.
-    assert find(desktop, contains="in voice in general") is None, "Empty channels must not show a voice row"
-    header = wait_for(description="Join voice")
-    join = find(header, description="Join voice")
-    pins = find(header, description="Pins")
-    show_members = find(header, description="Show member list")
+    # Voice lives in the channel list (design H, revised): the fixture's #design occupants grow
+    # #design's own row into a room card (who is there, the room's timer and Join) in its place
+    # under the Channels heading. Nothing sits above the channels and nothing says "Live now".
+    # Joining never changes the chat being read.
+    wait_for(description="Join voice in #design")
+    live = wait_for(description="Join voice in #general")
+    channels_heading = find(live, text="Channels")
+    design_row = find(live, text="design")
+    room_names = find(live, text="TEST FIXTURE Maya and TEST FIXTURE Alex")
+    room_join = find(live, description="Join voice in #design")
+    assert channels_heading is not None and design_row is not None, "The sidebar lists #design under Channels"
+    assert room_names is not None and room_join is not None, "#design's card names who is in voice and offers Join"
+    assert find(live, text="Live now") is None, "No Live now heading"
+    assert center(channels_heading)[1] < center(design_row)[1] < center(room_names)[1], (
+        "#design's room card grows from its own row, under the Channels heading"
+    )
+    assert abs(center(room_names)[1] - center(room_join)[1]) <= 8, "Join sits in the card's body, beside the names"
+    assert find(live, description="Voice session duration") is not None, "The room card keeps its timer"
+    # Live rows end with a waveform and count instead of a roster; quiet rows keep a one-tap
+    # headphones join, always shown on touch.
+    assert find(live, contains="2 in voice") is not None, "#design's row counts who is in voice"
+    assert find(live, contains="Show who is in voice") is None, "Channel rows no longer expand a roster"
+    assert sum(1 for node in nodes(live) if node.get("content-desc") == "Join voice in #design") == 1, (
+        "A live row leaves Join to its card's body"
+    )
+    general_row = find(live, text="general")
+    row_join = find(live, description="Join voice in #general")
+    assert abs(center(row_join)[1] - center(general_row)[1]) <= 4, "The headphones join belongs to #general's row"
+    left, top, right, bottom = bounds(row_join)
+    # viewport() sets density 320: 44dp is 88 physical pixels.
+    assert right - left >= 88 and bottom - top >= 88, "The row join must have a 44dp touch target"
+    # The conversation header carries no voice (faces, Join, Switch, Leave); Pins and Members stay.
+    pins = find(live, description="Pins")
+    show_members = find(live, description="Show member list")
     assert pins is not None and show_members is not None, "The chat header must keep Pins and Members"
-    # Web: voice follows the channel name, then a thin rule, then Pins and Members.
-    assert center(join)[0] < center(pins)[0] < center(show_members)[0], "Join voice sits before Pins and Members"
-    assert find(header, description="More channel options") is None, "Wide layouts keep Pins and Members as buttons"
-    assert abs(center(join)[1] - center(pins)[1]) <= 4, "Join voice belongs to the chat header row"
-    left, top, right, bottom = map(int, re.findall(r"\d+", join.attrib["bounds"]))
-    # viewport() sets density 320: 48dp is 96 physical pixels.
-    assert right - left >= 96 and bottom - top >= 96, "Join voice must have a 48dp touch target"
+    assert center(pins)[0] < center(show_members)[0], "Members follows Pins"
+    assert find(live, description="More channel options") is None, "Wide layouts keep Pins and Members as buttons"
+    for retired in ("Join voice", "Switch here", "Leave voice"):
+        assert find(live, description=retired) is None, f"The chat header must not offer {retired!r}"
+    assert find(live, contains="are in voice") is None, "The chat header shows no voice faces"
 
     # Hide the list while reading a non-default channel: collapsing must not
     # silently select General, disconnect chat, or expose hidden row actions.
@@ -451,9 +475,15 @@ def main() -> None:
     assert find(options, text="Create channel") is not None
     tap(text="Collapse channels")
     collapsed = capture("caper-android-channels-collapsed", "Expand channels")
-    for hidden in ("general", "design", "planning"):
+    for hidden in ("general", "planning"):
         assert find(collapsed, text=hidden) is None
-    assert find(collapsed, description="design channel menu") is None
+    assert find(collapsed, description="Join voice in #general") is None, "Collapsed rows take their joins with them"
+    # Collapsing hides quiet rows only: #design's room card stays listed, with its row and menu.
+    assert find(collapsed, text="TEST FIXTURE Maya and TEST FIXTURE Alex") is not None, (
+        "Collapsing Channels must keep live rooms"
+    )
+    assert find(collapsed, description="design channel menu") is not None, "A live room keeps its row's menu"
+    assert find(collapsed, description="Join voice in #design") is not None
     assert find(collapsed, contains="Message #design") is not None
     assert find(collapsed, text="Create channel") is None, "The action must close its menu"
     tap(description="Channel options")
@@ -462,7 +492,7 @@ def main() -> None:
     tap(description="Collapse channels")
     wait_for(description="Expand channels")
     tap(description="Expand channels")
-    wait_for(description="design channel menu")
+    wait_for(text="general")
     tap(text="general")
     wait_for(contains="Message #general")
 
@@ -605,13 +635,16 @@ def main() -> None:
     assert bottom - top >= 96, "The channel title must have a 48dp touch target"
     send = find(narrow, description="Send")
     assert send is not None and send.get("enabled") == "false", "Empty composer must not send"
-    # Phones fold Pins and Members into the title's menu, leaving room for voice; there is no separate More button.
+    # Phones fold Pins and Members into the title's menu; there is no separate More button.
     assert find(narrow, description="Pins") is None, "Phone header has no separate Pins button"
     assert find(narrow, description="Show member list") is None, "Phone header has no separate Members button"
     assert find(narrow, description="More channel options") is None, "The channel name is the phone menu trigger"
     # Below the header, phones show only the conversation; the account bar stays in Browse.
     for browse_only in ("User Settings", "Mute microphone", "Deafen audio"):
         assert find(narrow, description=browse_only) is None, f"{browse_only!r} belongs in Browse on phones"
+    # Nobody is in #general's voice and you are not in a call: no strip under the header, no header voice.
+    assert find(narrow, contains="talking") is None, "No voice strip while nobody is in voice here"
+    assert find(narrow, contains="Join voice") is None, "The phone header carries no voice action"
     tap(description="#general options")
     menu = wait_for(text="Members")
     assert find(menu, text="Pins") is not None, "The title menu opens Pins"
@@ -695,53 +728,79 @@ def main() -> None:
         }
     )
     wait_for(description="Close navigation")  # Audio preferences closed back into Browse.
-    initial_roster = capture("caper-android-voice-roster-initial", "4 in voice in design. Show who is in voice")
-    assert find(initial_roster, text="Fixture Voice 1") is None, "Occupied rosters must start collapsed"
-    assert find(initial_roster, text="4 in voice") is not None, "Occupied channels show their occupancy"
-    assert find(initial_roster, contains="in voice in general") is None, "Empty channels must not show a voice row"
-    assert find(initial_roster, contains="Join voice in #") is None, "Channel rows must not offer Join voice"
-    tap(description="4 in voice in design. Show who is in voice")
-    roster = capture("caper-android-voice-roster-expanded", "4 in voice in design. Hide who is in voice")
-    assert find(roster, text="Fixture Voice 1") is not None
-    assert find(roster, text="Fixture Voice 4") is not None
-    assert find(roster, text="4 in voice") is not None
-    assert find(roster, text="4 in voice in design") is None, "Voice count belongs in accessibility, not visible copy"
-    assert find(roster, description="Audio controls for Fixture Voice 1") is None, (
+    names = "Fixture Voice 1, Fixture Voice 2 and 2 more"
+    wait_for(text=names)
+    # Join reads "Checking voice availability…" until the channel's media status answers.
+    live_browse = capture("caper-android-voice-live-now", "Join voice in #design")
+    room_names = find(live_browse, text=names)
+    assert room_names is not None, "The room card names who is in voice"
+    # In Browse, #design's own row grows its card (who is there and Join, 40dp on phones) under
+    # the Channels heading, with no "Live now" heading above.
+    assert find(live_browse, text="Live now") is None
+    channels_heading = find(live_browse, text="Channels")
+    design_row = find(live_browse, text="design")
+    assert channels_heading is not None and design_row is not None
+    assert center(channels_heading)[1] < center(design_row)[1] < center(room_names)[1], (
+        "#design's card sits in its row's place"
+    )
+    card_join = find(live_browse, description="Join voice in #design")
+    assert card_join is not None, "A live room offers Join on its card"
+    left, top, right, bottom = bounds(card_join)
+    assert bottom - top >= 80, "A room card's Join must be at least 40dp tall on phones"
+    assert find(live_browse, contains="4 in voice") is not None, "#design's row counts who is in voice"
+    # Rows no longer carry a roster; the card names occupants in one line.
+    assert find(live_browse, text="Fixture Voice 1") is None, "Channel rows must not list who is in voice"
+    assert find(live_browse, contains="Show who is in voice") is None
+    assert find(live_browse, description="Audio controls for Fixture Voice 1") is None, (
         "Spectators must not get local audio controls"
     )
-    assert find(roster, text="User volume") is None
-    assert find(roster, text="Mute") is None
-    assert find(roster, contains="Message #general") is None  # conversation is behind narrow navigation
-    tap(description="4 in voice in design. Hide who is in voice")
-    collapsed = capture("caper-android-voice-roster-collapsed", "4 in voice in design. Show who is in voice")
-    assert find(collapsed, text="Fixture Voice 1") is None, "Collapsed roster still exposed occupants"
-    # Phones count who is in voice under the channel name; the header's voice group has no faces.
-    tap(text="design")
+    assert find(live_browse, text="User volume") is None
+    # Touch keeps a quiet row's headphones join in view; the live row leaves Join to its card.
+    general_join = find(live_browse, description="Join voice in #general")
+    assert general_join is not None, "Quiet rows keep a headphones join on phones"
+    left, top, right, bottom = bounds(general_join)
+    assert right - left >= 88 and bottom - top >= 88, "The row join must have a 44dp touch target"
+    assert sum(1 for node in nodes(live_browse) if node.get("content-desc") == "Join voice in #design") == 1
+    assert find(live_browse, contains="Message #general") is None  # conversation is behind narrow navigation
+    # A tap anywhere on the card but Join opens its chat (here, the names). Phones then show who is
+    # talking, with Join, in a strip under the header; the title's subtitle still counts who is in voice.
+    tap(text=names)
     wait_for(contains="Message #design")
-    wait_for(description="Join voice")
-    occupied = capture("caper-android-voice-header-occupied", "#design options")
+    wait_for(text="4 talking")
+    occupied = capture("caper-android-voice-strip-occupied", "Join voice in #design")
     title = find(occupied, description="#design options")
     subtitle = find(occupied, contains="4 in voice")
     # The subtitle is its own node inside the title's bounds, not the title's text.
     assert title is not None and subtitle is not None and within(subtitle, title), (
         "The phone title's subtitle counts who is in voice"
     )
-    assert find(occupied, contains="are in voice") is None, "Phone header voice shows no faces"
+    strip = find(occupied, text="4 talking")
+    strip_join = find(occupied, description="Join voice in #design")
+    assert strip is not None and strip_join is not None, "Phones show who is talking here, with Join"
+    assert center(title)[1] < center(strip)[1], "The voice strip sits under the chat header"
+    assert abs(center(strip)[1] - center(strip_join)[1]) <= 8, "Join belongs to the strip"
+    left, top, right, bottom = bounds(strip_join)
+    assert bottom - top >= 80, "The strip's Join must be at least 40dp tall"
+    for retired in ("Leave voice", "Mute microphone", "Deafen audio"):
+        assert find(occupied, description=retired) is None, f"{retired!r} must not show outside a call"
     tap(description="Back to Browse")
     tap(text="general")
     wait_for(contains="Message #general")
+    assert find(hierarchy(), contains="talking") is None, "Quiet channels have no voice strip"
     tap(description="Back to Browse")
-    tap(description="4 in voice in design. Show who is in voice")
-    wait_for(text="Fixture Voice 1")
+    wait_for(text=names)
     fixture({"mediaAccessDenied": {"channelId": "chan00000002"}})
     try:
         gone = hierarchy()
         for _ in range(25):
             gone = hierarchy()
-            if find(gone, text="Fixture Voice 1") is None:
+            if find(gone, contains="Fixture Voice 1") is None:
                 break
             time.sleep(0.2)
-        assert find(gone, text="Fixture Voice 1") is None, "Revoked spectator remained visible"
+        assert find(gone, contains="Fixture Voice 1") is None, "Revoked spectators remained visible"
+        assert find(gone, text=names) is None and find(gone, contains="4 in voice") is None, (
+            "#design's card turns back into a quiet row once no one is in voice"
+        )
     finally:
         fixture({"mediaAccessDenied": {"channelId": "chan00000002", "denied": False}})
     tap(description="Close navigation")
@@ -792,23 +851,27 @@ def main() -> None:
     # Exercise the actual default voice entry and Android permission controller.
     # Only notifications are pre-granted; microphone denial and approval happen
     # through the system UI. The loopback fixture rejects join, never fakes audio.
-    # Web joins voice from the open channel's header; channel rows carry no Join.
-    join = "Join voice"
-    voice_ready = wait_for(description=join)
-    capture("caper-android-voice-ready", "Message #general")
-    action = find(voice_ready, description=join)
-    left, top, right, bottom = map(int, re.findall(r"\d+", action.attrib["bounds"]))
-    # viewport() sets density 320: 48dp is 96 physical pixels.
-    assert right - left >= 96 and bottom - top >= 96, "The header voice action must have a 48dp touch target"
-    title = find(voice_ready, description="#general options")
-    assert title is not None and center(title)[0] < center(action)[0], "Join voice follows the channel name"
-    # Phones show the voice action as an icon; its label stays as the accessible name.
-    assert find(voice_ready, text="Join voice") is None, "Phone header voice has no text label"
-    assert find(voice_ready, description="Pins") is None and find(voice_ready, description="Show member list") is None
-    assert find(voice_ready, description="Mute microphone") is None, "Phones show header mute only during a call"
+    # Phones join from a quiet row's headphones in Browse; the header carries no voice.
+    join = "Join voice in #general"
+    conversation = hierarchy()
+    assert find(conversation, contains="Join voice") is None, "The phone header carries no voice action"
+    assert find(conversation, contains="talking") is None, "No voice strip while nobody is in voice here"
+    assert find(conversation, description="Mute microphone") is None, "Phones show Mute in the strip only during a call"
     tap(description="Back to Browse")
-    browse_voice = wait_for(description="Mute microphone")
-    assert find(browse_voice, contains="Join voice in #") is None, "Channel rows must not offer Join voice"
+    voice_ready = capture("caper-android-voice-ready", join)
+    action = find(voice_ready, description=join)
+    left, top, right, bottom = bounds(action)
+    # viewport() sets density 320: 44dp is 88 physical pixels.
+    assert right - left >= 88 and bottom - top >= 88, "The row join must have a 44dp touch target"
+    general_row = find(voice_ready, text="general")
+    assert general_row is not None and abs(center(general_row)[1] - center(action)[1]) <= 4, (
+        "The headphones join belongs to #general's row"
+    )
+    # Live rooms expose a count; joined calls expose Leave (join shortcuts match neither).
+    live = re.compile(r"\d+ in voice|Leave voice")
+    assert not any(live.search(node.get("text", "") + node.get("content-desc", "")) for node in nodes(voice_ready)), (
+        "No room is live: no voice cards or counts"
+    )
     # Web's mute and deafen work before joining, without starting a call.
     tap(description="Mute microphone")
     muted = wait_for(description="Unmute microphone")
@@ -820,8 +883,6 @@ def main() -> None:
     assert find(restored, description="Unmute microphone") is not None, "Undeafen keeps an explicit mute"
     tap(description="Unmute microphone")
     wait_for(description="Mute microphone")
-    tap(description="Close navigation")
-    wait_for(description=join)
     adb("shell", "pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS")
     tap(description=join)
     deny = "com.android.permissioncontroller:id/permission_deny_button"
@@ -830,35 +891,36 @@ def main() -> None:
     tap(resource_id=deny)
     denied = capture("caper-android-voice-permission-denied", "Microphone permission is required")
     assert find(denied, description=join) is not None and find(denied, description="Leave voice") is None
+    # Joining leaves Browse open; it never changes what you were reading.
+    assert find(denied, description="Close navigation") is not None, "Joining must not close Browse"
     tap(description=join)
     tap(resource_id="com.android.permissioncontroller:id/permission_allow_foreground_only_button")
     failed = capture("caper-android-voice-fixture-error", "TEST FIXTURE: no real media engine or SFU is connected.")
     assert find(failed, description=join) is not None and find(failed, description="Leave voice") is None
     assert find(failed, contains="Microphone permission is required") is None
-    # Phones show the dock's voice error in the conversation, above the composer, with its own dismiss.
-    assert find(failed, contains="Message #general") is not None, "The voice error must not leave the conversation"
-    inline_error = find(failed, contains="TEST FIXTURE: no real media engine or SFU is connected.")
-    composer = next((node for node in nodes(failed) if node.get("class") == "android.widget.EditText"), None)
-    assert inline_error is not None and composer is not None
+    assert find(failed, description="Cancel joining voice") is None, "A failed join leaves no call card"
+    # Browse keeps voice errors in the sidebar panel above the account bar, with a dismiss.
+    assert find(failed, description="Dismiss voice error") is not None, "Browse can dismiss the voice error"
+    # Phones also show the error in the conversation, above the composer, with its own dismiss.
+    tap(description="Close navigation")
+    inline = capture("caper-android-voice-fixture-error-inline", "Message #general")
+    inline_error = find(inline, contains="TEST FIXTURE: no real media engine or SFU is connected.")
+    composer = next((node for node in nodes(inline) if node.get("class") == "android.widget.EditText"), None)
+    assert inline_error is not None and composer is not None, "The voice error must follow into the conversation"
     assert center(inline_error)[1] < center(composer)[1], "The voice error sits above the composer"
-    assert find(failed, description="Dismiss voice error") is not None, "Phones can dismiss the voice error in place"
+    assert find(inline, contains="talking") is None, "A failed join leaves no voice strip"
+    assert find(inline, description="Dismiss voice error") is not None, "Phones can dismiss the voice error in place"
     tap(description="Dismiss voice error")
     assert find(hierarchy(), contains="TEST FIXTURE: no real media engine or SFU is connected.") is None
+    tap(description="Back to Browse")
     wait_for(description=join)
     tap(description=join)
     retried = capture("caper-android-voice-fixture-retry", "TEST FIXTURE: no real media engine or SFU is connected.")
     assert find(retried, description=join) is not None, "A failed same-channel call must remain retryable"
-    assert find(retried, contains="Message #general") is not None, "Phones keep the voice error visible outside Browse"
-    # Browse still carries it in the dock.
-    tap(description="Back to Browse")
-    dock = wait_for(description="Dismiss voice error")
-    assert find(dock, contains="TEST FIXTURE: no real media engine or SFU is connected.") is not None, (
-        "Web shows voice errors in the dock"
-    )
     tap(description="Dismiss voice error")
     assert find(hierarchy(), contains="TEST FIXTURE: no real media engine or SFU is connected.") is None
     tap(description="Close navigation")
-    wait_for(description=join)
+    wait_for(contains="Message #general")
     print(f"PASS: fixture parity captures and interactions written to {OUTPUT}")
 
 

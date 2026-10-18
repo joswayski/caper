@@ -90,6 +90,8 @@ public final class VoiceClient {
     /// People currently speaking, from WebRTC audio levels (web's VoiceActivity).
     public private(set) var speakingParticipants: Set<String> = []
     @ObservationIgnored private var lastLoud: [String: Date] = [:]
+    /// The loopback UI fixture's roster, whose speakers no audio level replaces.
+    @ObservationIgnored private var rosterPreview = false
     public var error: String?
     public var availableInputs: [AudioDevice] = []
     public var availableOutputs: [AudioDevice] = []
@@ -400,10 +402,12 @@ public final class VoiceClient {
 
     // Loopback UI fixture only: displays controls without opening capture,
     // constructing a peer, or sending media to the fixture's 503-only endpoint.
-    func displayRosterPreview(context: VoiceContext, selfID: String, participants: [VoiceParticipant]) {
+    func displayRosterPreview(context: VoiceContext, selfID: String, participants: [VoiceParticipant], speaking: Set<String> = []) {
         self.context = context
         self.selfID = selfID
         self.participants = participants
+        speakingParticipants = speaking
+        rosterPreview = true
         phase = .connected
     }
 
@@ -421,6 +425,7 @@ public final class VoiceClient {
         let oldToken = token
         let oldChannelID = channelID
         phase = .idle
+        rosterPreview = false
         detachLocal()
         Task { [api] in
             if let oldToken { try? await api.media(channelID: oldChannelID, operation: "leave", token: oldToken, body: EmptyBody()) }
@@ -945,7 +950,10 @@ public final class VoiceClient {
 
     /// Samples inbound (per participant) and local microphone audio levels once.
     public func sampleSpeaking() async {
-        guard phase == .connected, let peer else { clearSpeaking(); return }
+        guard phase == .connected, let peer else {
+            if !rosterPreview { clearSpeaking() }
+            return
+        }
         let attempt = generation
         let report: RTCStatisticsReport = await withCheckedContinuation { continuation in
             peer.statistics { continuation.resume(returning: $0) }
