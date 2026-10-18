@@ -23,13 +23,16 @@
 .whats-new-title h2 {
   font-size: 1.25rem;
 }
-/* Versions are muted underlined links that brighten on hover or focus. */
+/* Versions stay quiet at rest, with pointer, press, and keyboard feedback. */
 .whats-new-build,
 .whats-new-source {
   color: var(--text-muted);
   text-decoration: underline;
+  text-decoration-thickness: 1px;
   text-underline-offset: 3px;
   overflow-wrap: anywhere;
+  border-radius: 2px;
+  cursor: pointer;
 }
 .whats-new-build {
   margin-top: 2px;
@@ -41,12 +44,22 @@
 .whats-new-build:focus-visible,
 .whats-new-source:focus-visible {
   color: var(--text);
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 @media (hover: hover) {
   .whats-new-build:hover,
   .whats-new-source:hover {
-    color: var(--text);
+    color: var(--action-hover);
+    background: rgb(182 77 50 / 12%);
+    text-decoration-thickness: 2px;
   }
+}
+.whats-new-build:active,
+.whats-new-source:active {
+  color: var(--terracotta-bright);
+  background: rgb(182 77 50 / 24%);
+  text-decoration-thickness: 2px;
 }
 .whats-new-entry {
   margin-top: 20px;

@@ -121,27 +121,47 @@ struct WhatsNewDisplay: Identifiable {
     }
 }
 
-/// A muted, underlined link to a release's source that brightens on hover, so it
-/// reads as clickable. Used wherever a version is shown.
+/// A muted release-source link with pointer, press, and keyboard feedback.
+/// Used wherever a version is shown.
 struct ReleaseLink: View {
     let label: String
     let url: URL
     var size: CGFloat = 13
-    @State private var hovered = false
 
     var body: some View {
         Link(destination: url) {
-            Text(label).underline().font(CaperTheme.font(size))
-                .foregroundStyle(hovered ? CaperTheme.text : CaperTheme.muted)
+            Text(label).font(CaperTheme.font(size))
         }
-        .onHover { inside in
-            hovered = inside
-            #if os(macOS)
-            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-            #endif
-        }
+        .buttonStyle(ReleaseLinkStyle())
         .help("View this version on GitHub")
         .accessibilityHint("View this version on GitHub")
+    }
+}
+
+/// Keep commit links quiet at rest without inheriting the sheet's filled button style.
+private struct ReleaseLinkStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.underline()
+            .modifier(ReleaseLinkFeedback(pressed: configuration.isPressed))
+    }
+}
+
+private struct ReleaseLinkFeedback: ViewModifier {
+    let pressed: Bool
+    @Environment(\.isFocused) private var focused
+    @State private var hovered = false
+
+    func body(content: Content) -> some View {
+        content.foregroundStyle(pressed ? CaperTheme.terracottaBright : hovered ? CaperTheme.actionHover : CaperTheme.muted)
+            .background(CaperTheme.terracotta.opacity(pressed ? 0.24 : hovered ? 0.12 : 0))
+            .overlay {
+                RoundedRectangle(cornerRadius: 2)
+                    .stroke(CaperTheme.terracotta, lineWidth: 2).padding(-3)
+                    .opacity(focused ? 1 : 0).allowsHitTesting(false)
+            }
+            .focusEffectDisabled()
+            .onHover { hovered = $0 }
+            .modifier(ControlPointer())
     }
 }
 

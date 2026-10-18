@@ -26852,28 +26852,52 @@ fn copy_items(ui: &mut egui::Ui, message: &model::Message) {
     }
 }
 
-/// Web's `.chat-thread-summary`: the reply count in bold terracotta, then a
-/// quiet "View thread", without a button frame.
-/// A muted, underlined link to a release's source that brightens on hover or
-/// keyboard focus, so it reads as clickable. Used wherever a version is shown.
+/// Muted release links keep real hyperlink behavior, with visible pointer and keyboard feedback.
 fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::Response {
     let galley =
         ui.painter()
             .layout_no_wrap(label.to_owned(), egui::FontId::proportional(size), MUTED);
     let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::click());
-    let color = if response.hovered() || response.has_focus() {
+    let pressed = response.is_pointer_button_down_on();
+    let color = if pressed {
+        TERRACOTTA_BRIGHT
+    } else if response.hovered() {
+        ACTION_HOVER
+    } else if response.has_focus() {
         TEXT
     } else {
         MUTED
     };
     if ui.is_rect_visible(rect) {
+        if response.hovered() || pressed {
+            ui.painter().rect_filled(
+                rect.expand(2.0),
+                2.0,
+                TERRACOTTA.gamma_multiply(if pressed { 0.24 } else { 0.12 }),
+            );
+        }
         ui.painter()
             .galley_with_override_text_color(rect.min, galley, color);
         ui.painter().hline(
             rect.x_range(),
             rect.bottom() - 0.5,
-            Stroke::new(1.0, color.gamma_multiply(0.7)),
+            Stroke::new(
+                if response.hovered() || pressed {
+                    2.0
+                } else {
+                    1.0
+                },
+                color.gamma_multiply(0.7),
+            ),
         );
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                rect.expand(3.0),
+                2.0,
+                Stroke::new(2.0, TERRACOTTA),
+                egui::StrokeKind::Outside,
+            );
+        }
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, label));
     let response = response
@@ -26885,6 +26909,8 @@ fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::R
     response
 }
 
+/// Web's `.chat-thread-summary`: the reply count in bold terracotta, then a
+/// quiet "View thread", without a button frame.
 fn thread_summary_link(ui: &mut egui::Ui, replies: u64, unread: bool) -> egui::Response {
     let mut job = egui::text::LayoutJob::default();
     let count = format!(
@@ -30854,6 +30880,11 @@ mod tests {
                             ],
                         );
                         if !pressed {
+                            assert_eq!(
+                                output.platform_output.cursor_icon,
+                                egui::CursorIcon::PointingHand,
+                                "{label} advertises its link action under the pointer"
+                            );
                             assert!(output.platform_output.commands.iter().any(|command| matches!(command,
                                 egui::OutputCommand::OpenUrl(url)
                                     if url.url == format!("https://github.com/joswayski/caper/commit/{revision}"))),
