@@ -88,12 +88,22 @@ try {
     // Removing an image leaves the other attachment and draft unchanged.
     browser("click", '.chat-composer .chat-drafts li:first-child [aria-label^="Remove "]');
     assert.equal(count(), 1);
+    await control({ holdSends: true });
     browser("press", "Control+End");
     browser("click", "#chat-message");
     browser("press", "Enter");
+    wait('!!document.querySelector(".chat-message-pending .chat-attachments")');
+    const pendingLayout = evaluate(`const row = document.querySelector('.chat-message-pending');
+      const box = row.querySelector('.chat-attachments').getBoundingClientRect();
+      return { key: row.dataset.messageKey, x: box.x, width: box.width };`);
+    await control({ holdSends: false });
     wait(
       'document.querySelector("#chat-message").value === "" && !document.querySelector(".chat-composer .chat-drafts li, .chat-message-pending")',
     );
+    const sentLayout = evaluate(`const row = document.querySelector('[data-message-key="${pendingLayout.key}"]');
+      const box = row.querySelector('.chat-attachments').getBoundingClientRect();
+      return { key: row.dataset.messageKey, x: box.x, width: box.width };`);
+    assert.deepEqual(sentLayout, pendingLayout, "confirmation never narrows or shifts attachment space");
     const history = await fetch(`${api}/api/chat/channels/chan00000001/messages`, {
       headers: { authorization: "Bearer fixture-owner-token", connection: "close" },
     }).then((response) => response.json());
