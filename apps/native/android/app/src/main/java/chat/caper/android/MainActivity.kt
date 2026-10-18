@@ -1356,7 +1356,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
             // Filled before the insets, so the bar and keyboard areas aren't left showing the dimmed scrim.
             ThreadConversation(state, viewModel, pickFiles, Modifier.swipeCancelsPresses().entrance(MOTION_BASE, dx = 12.dp).fillMaxSize()
-                .background(SurfaceConversation).systemBarsPadding().imePadding())
+                .background(SurfaceConversation).systemBarsPadding().imePadding(), swipeToClose = true)
         }
     }
 }
@@ -1389,6 +1389,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 
 @Composable private fun ThreadConversation(
     state: AppUiState, viewModel: CaperViewModel, pickFiles: (AttachmentDraftTarget, Boolean) -> Unit, modifier: Modifier,
+    swipeToClose: Boolean = false,
 ) {
     val thread = state.thread ?: return
     val channel = state.selectedChannel ?: return
@@ -1418,36 +1419,40 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
     Box(modifier.attachmentDrop(canAttach, target, viewModel, dropping)) {
         Column(Modifier.fillMaxSize().background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
-            Row(Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Thread · $conversation", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                TextButton(viewModel::closeThread, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text(if (direct) "Back to conversation" else "Back to channel") }
-            }
-            HorizontalDivider(color = Border)
-            thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread(older = thread.failedOlder, newer = thread.failedNewer) }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
-            if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
-            // Remembered: every keystroke in the reply draft recomposes this panel.
-            val rows = remember(state.messages, thread.rootId, thread.windowStart, thread.windowEnd) {
-                state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
-                    (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
-                    (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
-            }
-            MessageTimeline(state.copy(messages = rows, pendingMessage = pending, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
-                pending?.error?.let { error ->
-                    Text(error, color = ErrorText)
-                    if (pending.rejected) Row {
-                        TextButton({
-                            viewModel.discardPending(restoreFiles = true)?.let {
-                                draft = TextFieldValue(it, TextRange(it.length)); broadcast = pending.broadcast
-                            }
-                        }, enabled = canEditRejectedMessage(draft.text, pending.text), shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Edit") }
-                        TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Dismiss") }
-                    } else TextButton(::send, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry send") }
+            Column(Modifier.weight(1f).fillMaxWidth().threadBackSwipe(swipeToClose, viewModel::closeThread)) {
+                Row(Modifier.fillMaxWidth().height(53.dp).padding(start = 4.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(viewModel::closeThread, Modifier.size(48.dp)) {
+                        Icon(painterResource(R.drawable.lucide_chevron_left), if (direct) "Back to conversation" else "Back to channel", Modifier.size(20.dp), tint = TextMuted)
+                    }
+                    Text("Thread · $conversation", Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
+                HorizontalDivider(color = Border)
+                thread.error?.let { Text(it, Modifier.padding(12.dp), color = ErrorText); TextButton({ viewModel.loadThread(older = thread.failedOlder, newer = thread.failedNewer) }, shape = MaterialTheme.shapes.small) { Text("Retry") } }
+                if (thread.hasMore) HistoryRow { HistoryButton("Load older replies", !thread.loading) { viewModel.loadThread(older = true) } }
+                // Remembered: every keystroke in the reply draft recomposes this panel.
+                val rows = remember(state.messages, thread.rootId, thread.windowStart, thread.windowEnd) {
+                    state.messages.filter { it.id == thread.rootId || it.threadRootId == thread.rootId &&
+                        (thread.windowStart == null || it.seq.toBigInteger() >= thread.windowStart.toBigInteger()) &&
+                        (thread.windowEnd == null || it.seq.toBigInteger() <= thread.windowEnd.toBigInteger()) }
+                }
+                MessageTimeline(state.copy(messages = rows, pendingMessage = pending, messagesLoading = false, messagesError = null), viewModel, Modifier.weight(1f), inThread = true) {
+                    pending?.error?.let { error ->
+                        Text(error, color = ErrorText)
+                        if (pending.rejected) Row {
+                            TextButton({
+                                viewModel.discardPending(restoreFiles = true)?.let {
+                                    draft = TextFieldValue(it, TextRange(it.length)); broadcast = pending.broadcast
+                                }
+                            }, enabled = canEditRejectedMessage(draft.text, pending.text), shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Edit") }
+                            TextButton({ viewModel.discardPending() }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Dismiss") }
+                        } else TextButton(::send, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry send") }
+                    }
+                }
+                if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
+                // A failed load shows its error and Retry instead (web).
+                if (!thread.loading && thread.error == null && rows.none { it.threadRootId == thread.rootId })
+                    Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
             }
-            if (thread.hasNewer) HistoryRow { HistoryButton("Load newer replies", !thread.loading) { viewModel.loadThread(newer = true) } }
-            // A failed load shows its error and Retry instead (web).
-            if (!thread.loading && thread.error == null && rows.none { it.threadRootId == thread.rootId })
-                Text(if (state.canParticipate) "No replies yet. Start the thread." else "No replies yet.", Modifier.padding(18.dp), color = TextMuted)
             if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) {
                 state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
                 state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }

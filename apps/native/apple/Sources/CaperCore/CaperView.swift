@@ -4335,6 +4335,52 @@ private struct ThreadBroadcastToggleStyle: ToggleStyle {
     }
 }
 
+#if os(iOS)
+/// Deliberately not a drawer: only a completed rightward drag navigates.
+/// Gesture state resets on cancellation; vertical/left starts stay rejected.
+private struct ThreadBackSwipe: ViewModifier {
+    let enabled: Bool
+    let close: () -> Void
+    @GestureState private var direction = 0
+
+    /// Leave text selection, controls and nested horizontal scrollers alone.
+    private func reservedStart(_ point: CGPoint) -> Bool {
+        let window = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows).first(where: \.isKeyWindow)
+        var view = window?.hitTest(point, with: nil)
+        while let current = view {
+            if current is UIControl || current is UITextView { return true }
+            if let scroll = current as? UIScrollView,
+               scroll.contentSize.width > scroll.bounds.width + 1 { return true }
+            view = current.superview
+        }
+        return false
+    }
+
+    func body(content: Content) -> some View {
+        content.contentShape(Rectangle()).simultaneousGesture(
+            DragGesture(minimumDistance: 16, coordinateSpace: .global)
+                .updating($direction) { value, direction, _ in
+                    if direction == 0 {
+                        direction = enabled && !reservedStart(value.startLocation) &&
+                            value.translation.width > abs(value.translation.height) * 1.5 ? 1 : -1
+                    }
+                }
+                .onChanged { _ in
+                    if direction == 1 { SwipeTapGuard.follow() }
+                }
+                .onEnded { value in
+                    guard direction == 1 else { return }
+                    SwipeTapGuard.release()
+                    guard enabled, value.translation.width >= 72,
+                          value.translation.width > abs(value.translation.height) * 1.5 else { return }
+                    close()
+                }
+        )
+    }
+}
+#endif
+
 private struct NativeThreadView: View {
     @Bindable var chat: ChatModel
     /// For the mention card: names from loaded members/people/DMs, and Message.
@@ -4449,22 +4495,36 @@ private struct NativeThreadView: View {
             reactorsTarget = ReactorsTarget(messageID: messageID, emoji: emoji)
         }
     }
+    #if os(iOS)
+    private var canSwipeBack: Bool {
+        reactionMessage == nil && !showingEmojiPicker && reactorsTarget == nil && mentionCard == nil &&
+        blockTarget == nil && forwardMessage == nil && !fileDropTargeted
+    }
+    #endif
     var body: some View {
         VStack(spacing: 0) {
             HStack {
+                #if os(iOS)
+                Button(action: SwipeTapGuard.unlessSwiping { chat.closeThread() }) {
+                    CaperIcon(name: "arrow-left", size: 20)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }.buttonStyle(.plain)
+                    .accessibilityLabel(direct ? "Back to conversation" : "Back to channel")
+                #endif
                 VStack(alignment: .leading, spacing: 3) { Text("Thread").font(CaperTheme.font(15, weight: .bold)); Text(direct ? "with \(chat.channelName)" : "in #\(chat.channelName)").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted).lineLimit(1) }
                 Spacer()
+                #if os(macOS)
                 Button { chat.closeThread() } label: {
                     Text(direct ? "Back to conversation" : "Back to channel")
-                        #if os(iOS)
-                        .frame(minHeight: 44)
-                        #else
                         .frame(minHeight: 28)
-                        #endif
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).font(CaperTheme.font(12)).modifier(ControlHover())
+                #endif
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                #if os(iOS)
+                .modifier(ThreadBackSwipe(enabled: canSwipeBack, close: { chat.closeThread() }))
+                #endif
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
                     // Read once per render, never per scroll frame in the geometry below.
@@ -4523,6 +4583,7 @@ private struct NativeThreadView: View {
                 }
                 #if os(iOS)
                 .scrollDismissesKeyboard(.immediately)
+                .modifier(ThreadBackSwipe(enabled: canSwipeBack, close: { chat.closeThread() }))
                 #endif
                 #if os(macOS)
                 .accessibilityIdentifier("thread-timeline")
