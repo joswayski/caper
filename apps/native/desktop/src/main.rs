@@ -13041,12 +13041,16 @@ impl CaperApp {
                 if self.focus_user_settings {
                     settings.request_focus();
                 }
+                // Keep the result visible when a check removes the update notice.
+                let settings_menu =
+                    egui::Popup::menu(&settings).id(ui.make_persistent_id("account-settings-menu"));
                 if settings.clicked() {
-                    self.effects.toggle(!egui::Popup::menu(&settings).is_open());
+                    self.effects.toggle(!settings_menu.is_open());
                 }
-                egui::Popup::menu(&settings)
+                settings_menu
                     .align(egui::RectAlign::TOP_END)
                     .width(232.0)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                     .show(|ui| {
                         if ui.button("Settings…").clicked() {
                             self.open_settings();
@@ -13063,14 +13067,34 @@ impl CaperApp {
                                 }),
                             )
                             .on_hover_text(if self.updates.can_check() {
-                                "Check now and show the result in Settings."
+                                "Check now without leaving this menu."
                             } else {
                                 "Update checks are available in packaged release builds."
                             })
                             .clicked()
                         {
                             self.updates.check_now();
-                            self.open_settings();
+                        }
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            match self.updates.status() {
+                                updates::Status::UpToDate => {
+                                    ui.label(
+                                        RichText::new("No newer published release is available.")
+                                            .color(MUTED),
+                                    );
+                                }
+                                updates::Status::Failed(error) => {
+                                    ui.colored_label(
+                                        ERROR,
+                                        format!("Could not check for updates: {error}"),
+                                    );
+                                }
+                                updates::Status::Idle
+                                | updates::Status::Checking
+                                | updates::Status::Available => {}
+                            }
+                        });
+                        if self.updates.available().is_some() {
                             ui.close();
                         }
                         ui.separator();
@@ -27423,13 +27447,18 @@ mod tests {
 
     #[test]
     fn account_update_action_survives_later_and_reopens_review_without_installing() {
-        for (fixture, sidebar_width) in [
+        for (fixture, sidebar_width, scale) in [
             ("parity-update", 220.0),
             ("parity-update", 440.0),
             ("parity-update-download", 220.0),
             ("parity-update-download", 440.0),
-        ] {
+        ]
+        .into_iter()
+        .flat_map(|(fixture, width)| {
+            [1.0, 1.25, 1.5, 2.0].map(move |scale| (fixture, width, scale))
+        }) {
             let context = egui::Context::default();
+            context.set_pixels_per_point(scale);
             context.enable_accesskit();
             let mut app = CaperApp::new(
                 &context,
@@ -27483,10 +27512,13 @@ mod tests {
                         && shape.clip_rect.contains_rect(egui::Rect::from_min_size(text.pos, text.galley.size()))
                 )), "update label clipped at {time}s");
                 let button_center = ((current.x0 + current.x1) / 2.0) as f32;
-                assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
-                    egui::Shape::Text(text) if text.galley.job.text == "Update available"
-                        && (text.pos.x + text.galley.size().x / 2.0 - button_center).abs() <= 1.0
-                )), "update label is not centered at sidebar width {sidebar_width}, {time}s");
+                assert!(
+                    output.shapes.iter().any(|shape| matches!(&shape.shape,
+                        egui::Shape::Text(text) if text.galley.job.text == "Update available"
+                            && (text.visual_bounding_rect().center().x - button_center).abs() <= 1.0
+                    )),
+                    "update glyphs are not centered at sidebar width {sidebar_width}, scale {scale}, {time}s"
+                );
                 for label in [
                     "Edit profile for Fixture Owner",
                     "Mute microphone",

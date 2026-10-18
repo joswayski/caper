@@ -1,6 +1,6 @@
 //! The update notice and decorative SVG layers used in its review.
 
-use eframe::egui::{self, AtomExt as _};
+use eframe::egui;
 
 /// Match UpdateButtonShine on macOS: a still prismatic edge and one short
 /// light sweep every eight seconds. Never animate the label or hit target.
@@ -129,13 +129,20 @@ pub fn paint(ui: &egui::Ui, rect: egui::Rect) {
 
 /// A labelled, always-visible review action, separate from profile/audio controls.
 pub fn dock(ui: &mut egui::Ui, version: &str) -> egui::Response {
-    let response = crate::toned(
-        ui,
-        crate::SECONDARY_TONE,
-        true,
-        egui::Button::new(crate::bold("Update available").size(12.0).atom_grow(true))
-            .min_size(egui::vec2(ui.available_width(), 36.0)),
-    );
+    let response = ui
+        .allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 36.0),
+            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+            |ui| {
+                crate::toned(
+                    ui,
+                    crate::SECONDARY_TONE,
+                    true,
+                    egui::Button::new(crate::bold("Update available").size(12.0)),
+                )
+            },
+        )
+        .inner;
     shine(ui, &response);
     ui.add_space(8.0);
     response.on_hover_text(format!(

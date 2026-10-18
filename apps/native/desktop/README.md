@@ -8,10 +8,11 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - Signed-out first launch opens passwordless email request/verification and
   first-account profile onboarding, with no Guest/General fallback.
 - Packaged releases check for signed updates 20 seconds after launch and every
-  minute. **User Settings → Check for updates** checks immediately and opens
-  Settings with progress and success/failure feedback; the Updates section keeps
-  the same check action. A known release adds a persistent **Update available**
-  button above the profile/audio row, with a thin rainbow edge and occasional shine.
+  minute. **User Settings → Check for updates** checks in that menu, with inline
+  progress and success/failure feedback; it does not open Settings. The Updates
+  section in Settings keeps the same check action. A known release adds a persistent
+  **Update available** button above the profile/audio row, with a thin rainbow edge
+  and occasional shine.
   The label never moves; Reduce Motion/background windows keep the edge still.
   Clicking it or finding an update manually opens a centered modal with
   **What’s new expanded** and fixed actions. **Later**, Escape and backdrop dismissal
