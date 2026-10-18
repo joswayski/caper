@@ -94,13 +94,15 @@ final class AppUpdaterTests: XCTestCase {
     }
 
     func testStructuredHighlightsShowADateInsteadOfAVersion() throws {
-        let data = Data(#"{"update":true,"version":"0.1.82","notes":"plain","history_complete":true,"highlights":[{"title":"Voice in the channel list","body":"Hop in with one click."}],"released":"2026-10-18","can_apply":true}"#.utf8)
+        let data = Data(#"{"update":true,"version":"0.1.82","notes":"plain","history_complete":true,"highlights":[{"title":"Voice in the channel list","body":"Hop in with one click."}],"released":"2026-10-18","revision":"377205cd7c68e109b0d77f31a97c2cb3b2d40c39","sequence":4,"can_apply":true}"#.utf8)
         let update = try XCTUnwrap(AppUpdater.parse(data))
         XCTAssertEqual(update.highlights, [DesktopUpdate.Highlight(title: "Voice in the channel list", body: "Hop in with one click.")])
         XCTAssertEqual(update.released, "2026-10-18")
         let label = try XCTUnwrap(update.releasedLabel)
         XCTAssertTrue(label.contains("2026"))
         XCTAssertFalse(label.contains("0.1.82"))
+        XCTAssertEqual(update.sequence, 4)
+        XCTAssertEqual(update.commitURL?.absoluteString, "https://github.com/joswayski/caper/commit/377205cd7c68e109b0d77f31a97c2cb3b2d40c39")
     }
 
     @MainActor

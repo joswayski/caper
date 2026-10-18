@@ -153,6 +153,13 @@ struct CheckResult<'a> {
     /// version number.
     #[serde(skip_serializing_if = "Option::is_none")]
     released: Option<&'a str>,
+    /// The update's source commit, so the app can link its version to GitHub.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revision: Option<&'a str>,
+    /// The update's highlights snapshot sequence. Installing from the review
+    /// marks it read, so the new build does not show the same highlights again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sequence: Option<u64>,
     /// False when the install cannot be replaced without admin rights, for
     /// example a Linux .deb under /usr; the app offers a download link instead.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -172,6 +179,8 @@ fn check(options: &Options) -> Result<()> {
             history_complete: None,
             highlights: None,
             released: None,
+            revision: None,
+            sequence: None,
             can_apply: None,
         });
     };
@@ -204,6 +213,7 @@ fn check(options: &Options) -> Result<()> {
                 complete: false,
                 items: None,
                 released: None,
+                sequence: None,
             })
         })
     } else {
@@ -241,6 +251,10 @@ fn check(options: &Options) -> Result<()> {
             released: highlights
                 .as_ref()
                 .and_then(|highlights| highlights.released.as_deref()),
+            revision: Some(&manifest.commit),
+            sequence: highlights
+                .as_ref()
+                .and_then(|highlights| highlights.sequence),
             can_apply,
         }),
         None => print_json(&CheckResult {
@@ -253,6 +267,8 @@ fn check(options: &Options) -> Result<()> {
             history_complete: None,
             highlights: None,
             released: None,
+            revision: None,
+            sequence: None,
             can_apply: None,
         }),
     }
@@ -508,6 +524,8 @@ struct ReleaseHighlights {
     /// `None` when the highlights could not be read.
     items: Option<Vec<Highlight>>,
     released: Option<String>,
+    /// The target snapshot's sequence.
+    sequence: Option<u64>,
 }
 
 fn release_highlights_from(
@@ -620,6 +638,7 @@ fn release_highlights_from(
         complete,
         items: Some(items),
         released,
+        sequence: Some(target.sequence),
     })
 }
 
@@ -930,6 +949,7 @@ mod tests {
                 complete: false,
                 items: Some(Vec::new()),
                 released: None,
+                sequence: Some(4),
             }
         );
         server.join().unwrap();
@@ -993,6 +1013,7 @@ mod tests {
             ]
         );
         assert_eq!(result.released.as_deref(), Some("2026-10-14"));
+        assert_eq!(result.sequence, Some(3));
     }
 
     #[test]

@@ -1584,6 +1584,8 @@ impl CaperApp {
                     .to_vec(),
                 ),
                 released: Some("2026-10-18".into()),
+                revision: Some("377205cd7c68e109b0d77f31a97c2cb3b2d40c39".into()),
+                sequence: Some(4),
                 can_apply: name != "parity-update-download",
                 last_error: (name == "parity-update-error").then(|| "Could not replace the installed app: Access denied (os error 5)".into()),
             });
@@ -8776,11 +8778,22 @@ impl CaperApp {
             let (hovered, under) = context.interaction_snapshot(|snapshot| {
                 (snapshot.hovered.clone(), snapshot.contains_pointer.clone())
             });
+            // A floating panel's own background (a dialog absorbing clicks so they
+            // never reach the backdrop) senses clicks but is not a control: it
+            // fills its area exactly. Without this every gap in a dialog showed a hand.
+            let background = |response: &egui::Response| {
+                context
+                    .memory(|memory| memory.area_rect(response.layer_id.id))
+                    .is_some_and(|area| area == response.rect)
+            };
             let clickable: Vec<_> = hovered
                 .into_iter()
                 .filter_map(|id| context.read_response(id))
                 .filter(|response| {
-                    response.enabled() && response.hovered() && response.sense.senses_click()
+                    response.enabled()
+                        && response.hovered()
+                        && response.sense.senses_click()
+                        && !background(response)
                 })
                 .collect();
             let disabled_on_top = under
@@ -8842,18 +8855,35 @@ impl CaperApp {
                     });
                 });
                 ui.label(bold("A fresh Caper is ready").size(20.0));
-                // People know when they updated, not which build: date, no version.
-                if let Some(date) = update
+                // "Version 0.1.82 · October 18, 2026"; the version opens its commit.
+                let date = update
                     .released
                     .as_deref()
                     .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
-                {
-                    ui.label(
-                        RichText::new(date.format("%B %-d, %Y").to_string())
-                            .color(MUTED)
-                            .size(13.0),
-                    );
-                }
+                    .map(|date| date.format("%B %-d, %Y").to_string());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let version = RichText::new(format!("Version {}", update.version))
+                        .color(MUTED)
+                        .size(13.0);
+                    match update.revision.as_deref().and_then(updates::commit_url) {
+                        Some(url) => {
+                            let link = ui
+                                .add(egui::Link::new(version))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .on_hover_text("View this version on GitHub");
+                            if link.clicked() {
+                                context.open_url(egui::OpenUrl::new_tab(url));
+                            }
+                        }
+                        None => {
+                            ui.label(version);
+                        }
+                    }
+                    if let Some(date) = date {
+                        ui.label(RichText::new(format!(" · {date}")).color(MUTED).size(13.0));
+                    }
+                });
                 ui.add_space(12.0);
                 let mut report_request = None;
                 let error = self.updates.error.as_ref().or(update.last_error.as_ref());
@@ -9024,6 +9054,10 @@ impl CaperApp {
                                 "Restart to update"
                             };
                             if primary_button(ui, label, true).clicked() && self.updates.apply() {
+                                // Saved on close: the new build will not repeat these.
+                                if let Some(sequence) = update.sequence {
+                                    self.whats_new.mark_read(sequence);
+                                }
                                 context.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
                         } else if primary_button(ui, "Download", true).clicked() {
@@ -20122,7 +20156,10 @@ impl CaperApp {
                             if filler > 0.0 { ui.add_space(filler); }
                             ui.separator();
                             egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 10)).show(ui, |ui| {
-                                if primary_button(ui, "Done", true).clicked() { close = true; }
+                                // Right-aligned, as on web, Apple and Android.
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if primary_button(ui, "Done", true).clicked() { close = true; }
+                                });
                             });
                         }
                         if let Some(id) = save_bar {
@@ -20221,11 +20258,9 @@ impl CaperApp {
                     let published = DateTime::parse_from_rfc3339(&release.published_at)
                         .expect("validated publication date");
                     let date = published.format("%B %-d, %Y");
-                    ui.label(
-                        bold(format!("{date} · Release {}", release.sequence))
-                            .size(12.0)
-                            .color(MUTED),
-                    );
+                    // The date alone, as on every other client; the feed's sequence
+                    // number means nothing to people.
+                    ui.label(bold(date.to_string()).size(12.0).color(MUTED));
                     for highlight in release.highlights {
                         ui.add_space(10.0);
                         ui.label(bold(highlight.title).size(16.0));
@@ -28359,6 +28394,31 @@ mod tests {
             frame(&mut app, vec![]);
         }
         let output = frame(&mut app, vec![]);
+        let version = text_position(&output, "Version 0.1.42");
+        frame(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(version),
+                egui::Event::PointerButton {
+                    pos: version,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        let opened = frame(
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: version,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(opened.platform_output.commands.iter().any(|command| matches!(command,
+            egui::OutputCommand::OpenUrl(url)
+                if url.url == "https://github.com/joswayski/caper/commit/377205cd7c68e109b0d77f31a97c2cb3b2d40c39")));
         let close = text_position(&output, "Close update review");
         for pressed in [true, false] {
             frame(
@@ -28507,10 +28567,10 @@ mod tests {
                     "notes start expanded"
                 );
                 assert!(
-                    visible(&initial, "October 18, 2026"),
-                    "date replaces the version"
+                    visible(&initial, "Version 0.1.42"),
+                    "version links to GitHub"
                 );
-                assert!(!visible(&initial, "0.1.42"), "no version numbers");
+                assert!(visible(&initial, " · October 18, 2026"), "with its date");
                 assert!(
                     !visible(&initial, "Having issues? Download installer instead"),
                     "the installer lives in the error sentence only"
@@ -28624,6 +28684,39 @@ mod tests {
                 "unread snapshot retained for blocker {blocker}"
             );
         }
+    }
+
+    #[test]
+    fn plain_text_gaps_do_not_show_a_pointing_hand() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-whats-new"),
+        );
+        for _ in 0..4 {
+            render(&mut app, &context, vec![]);
+        }
+        let output = render(&mut app, &context, vec![]);
+        let title = text_position(&output, "Edit your messages");
+        for offset in [-9.0, -6.0, 22.0, 25.0] {
+            let pos = title + egui::vec2(10.0, offset);
+            render(&mut app, &context, vec![egui::Event::PointerMoved(pos)]);
+            let output = render(&mut app, &context, vec![egui::Event::PointerMoved(pos)]);
+            assert_ne!(
+                output.platform_output.cursor_icon,
+                egui::CursorIcon::PointingHand,
+                "{offset} points from the title"
+            );
+        }
+        let done = text_position(&output, "Done");
+        render(&mut app, &context, vec![egui::Event::PointerMoved(done)]);
+        let output = render(&mut app, &context, vec![egui::Event::PointerMoved(done)]);
+        assert_eq!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand,
+            "buttons keep the hand"
+        );
     }
 
     #[test]

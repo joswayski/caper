@@ -33,6 +33,10 @@ pub struct Available {
     pub highlights: Option<Vec<Highlight>>,
     /// The newest highlighted release's date (YYYY-MM-DD).
     pub released: Option<String>,
+    /// The update's source commit, linked from its version.
+    pub revision: Option<String>,
+    /// The update's highlights sequence, marked read when it is installed.
+    pub sequence: Option<u64>,
     pub last_error: Option<String>,
     /// False when the updater cannot replace this install, e.g. the .deb.
     pub can_apply: bool,
@@ -67,6 +71,10 @@ struct CheckOutput {
     highlights: Option<Vec<Highlight>>,
     #[serde(default)]
     released: Option<String>,
+    #[serde(default)]
+    revision: Option<String>,
+    #[serde(default)]
+    sequence: Option<u64>,
     #[serde(default)]
     last_error: Option<String>,
     #[serde(default)]
@@ -302,6 +310,15 @@ fn build_number() -> Option<u64> {
         .filter(|build| *build > 0)
 }
 
+/// A build's source on GitHub, or `None` for anything but a full commit SHA.
+pub fn commit_url(revision: &str) -> Option<String> {
+    (revision.len() == 40
+        && revision
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+    .then(|| format!("https://github.com/joswayski/caper/commit/{revision}"))
+}
+
 /// The installed app, not the latest release returned by the update server.
 pub fn installed_version() -> String {
     let version = match build_number() {
@@ -373,6 +390,8 @@ fn parse(stdout: &[u8]) -> Result<Outcome, String> {
         history_complete: output.history_complete,
         highlights: output.highlights,
         released: output.released,
+        revision: output.revision,
+        sequence: output.sequence,
         last_error: output.last_error,
         can_apply: output.can_apply,
     })))
@@ -400,6 +419,8 @@ mod tests {
             history_complete: false,
             highlights: None,
             released: None,
+            revision: None,
+            sequence: None,
             last_error: None,
             can_apply: true,
         }
@@ -764,6 +785,8 @@ mod tests {
                 history_complete: false,
                 highlights: None,
                 released: None,
+                revision: None,
+                sequence: None,
                 last_error: None,
                 can_apply: true,
             }))
@@ -801,7 +824,7 @@ mod tests {
 
     #[test]
     fn parses_structured_highlights_and_their_date() {
-        let output = br#"{"update":true,"version":"0.1.82","notes":"plain","history_complete":true,"highlights":[{"title":"Voice in the channel list","body":"Hop in with one click."}],"released":"2026-10-18","can_apply":true}"#;
+        let output = br#"{"update":true,"version":"0.1.82","notes":"plain","history_complete":true,"highlights":[{"title":"Voice in the channel list","body":"Hop in with one click."}],"released":"2026-10-18","revision":"377205cd7c68e109b0d77f31a97c2cb3b2d40c39","sequence":4,"can_apply":true}"#;
         let available = parsed_update(output).unwrap();
         assert_eq!(
             available.highlights,
@@ -811,5 +834,10 @@ mod tests {
             }])
         );
         assert_eq!(available.released.as_deref(), Some("2026-10-18"));
+        assert_eq!(
+            available.revision.as_deref(),
+            Some("377205cd7c68e109b0d77f31a97c2cb3b2d40c39")
+        );
+        assert_eq!(available.sequence, Some(4));
     }
 }

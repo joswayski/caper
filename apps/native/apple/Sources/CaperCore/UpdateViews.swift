@@ -26,13 +26,26 @@ public struct DesktopUpdate: Equatable, Sendable {
     public let highlights: [Highlight]?
     /// The newest highlighted release's date (YYYY-MM-DD).
     public let released: String?
+    /// The update's source commit, linked from its version.
+    public let revision: String?
+    /// The update's highlights sequence, marked read when it is installed.
+    public let sequence: Int64?
 
     public init(version: String, notes: String, changelog: [ChangelogEntry],
                 historyComplete: Bool, canApply: Bool, lastError: String?,
-                highlights: [Highlight]? = nil, released: String? = nil) {
+                highlights: [Highlight]? = nil, released: String? = nil,
+                revision: String? = nil, sequence: Int64? = nil) {
         self.version = version; self.notes = notes; self.changelog = changelog
         self.historyComplete = historyComplete; self.canApply = canApply; self.lastError = lastError
         self.highlights = highlights; self.released = released
+        self.revision = revision; self.sequence = sequence
+    }
+
+    /// This version's commit on GitHub, only for a full source SHA.
+    public var commitURL: URL? {
+        guard let revision, revision.count == 40,
+              revision.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else { return nil }
+        return URL(string: "https://github.com/joswayski/caper/commit/\(revision)")
     }
 
     /// People know when they updated, not which build: "October 18, 2026".
@@ -154,9 +167,16 @@ private struct UpdateButtonSweep: View, Animatable {
                         UpdateCharacter().frame(width: 40, height: 40).accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 5) {
                             Text("A fresh Caper is ready").font(CaperTheme.font(20, weight: .bold))
-                            if let date = update.releasedLabel {
-                                Text(date).font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
-                            }
+                            // "Version 0.1.82 · October 18, 2026"; the version opens its commit.
+                            HStack(spacing: 0) {
+                                if let url = update.commitURL {
+                                    Link("Version \(update.version)", destination: url)
+                                        .help("View this version on GitHub")
+                                } else {
+                                    Text("Version \(update.version)")
+                                }
+                                if let date = update.releasedLabel { Text(" · \(date)") }
+                            }.font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted).tint(CaperTheme.muted)
                         }
                         Spacer(minLength: 0)
                         Button(action: close) { CaperIcon(name: "x", size: 18) }

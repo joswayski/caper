@@ -78,7 +78,11 @@ private struct CaperWindow: View {
             if let update = updater.offeredUpdate {
                 DesktopUpdateReview(update: update,
                     inCall: model.voice.phase != .idle && model.voice.phase != .failed,
-                    close: updater.dismissReview, restart: updater.applyReviewedUpdate,
+                    close: updater.dismissReview,
+                    restart: {
+                        if let sequence = update.sequence { model.whatsNew.markRead(sequence) }
+                        updater.applyReviewedUpdate()
+                    },
                     download: updater.download,
                     report: model.canSendUpdateReport ? { [installed = updater.installedVersion] error in
                         await model.sendUpdateReport(error: error,
