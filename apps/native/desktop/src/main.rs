@@ -14038,6 +14038,7 @@ impl CaperApp {
     }
 
     fn input_processing(&mut self, ui: &mut egui::Ui) {
+        ui.spacing_mut().interact_size.y = 32.0;
         let mut gain = self.voice.preferences.input_percent;
         let mut strength = self.voice.preferences.processing_strength;
         let gain_label = ui.label(bold("Input volume").size(13.0));
@@ -14074,6 +14075,7 @@ impl CaperApp {
         ui.add_space(6.0);
         let changed = ui
             .scope(|ui| {
+                ui.spacing_mut().interact_size.y = 32.0;
                 ui.spacing_mut().slider_width = ui.available_width();
                 ui.add(
                     egui::Slider::new(&mut gain, 0..=200)
@@ -14283,6 +14285,7 @@ impl CaperApp {
                     .inner;
                 let changed = ui
                     .add_enabled_ui(recording.is_none(), |ui| {
+                        ui.spacing_mut().interact_size.y = 32.0;
                         ui.spacing_mut().slider_width = ui.available_width();
                         ui.add(
                             egui::Slider::new(&mut strength, 0..=100)
@@ -27175,6 +27178,7 @@ fn volume_slider(ui: &mut egui::Ui, name: &str, value: &mut u16) -> bool {
         .inner;
     ui.add_space(5.0);
     ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = 32.0;
         ui.spacing_mut().slider_width = ui.available_width();
         ui.add(
             egui::Slider::new(value, 0..=200)
