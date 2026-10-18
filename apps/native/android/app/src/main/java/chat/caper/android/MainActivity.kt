@@ -1465,7 +1465,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             if (state.canParticipate) Column(Modifier.padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp)) {
                 state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
                 state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
-                DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft)
+                DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
                 val broadcastChecked = pending?.broadcast ?: broadcast
                 // The label toggles too, as one checkbox control.
                 Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
@@ -1735,7 +1735,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 }
                 state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
-                DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft)
+                DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
                 val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
                 fun sendDraft() {
                     if (hasContent && state.pendingMessage == null) {

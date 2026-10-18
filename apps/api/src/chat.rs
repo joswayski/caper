@@ -594,6 +594,9 @@ struct SendInput {
     /// Uploaded files from `POST /api/assets`, in display order.
     #[serde(default)]
     attachment_ids: Vec<String>,
+    /// Per-message spoiler choices; a subset of attachment_ids.
+    #[serde(default)]
+    spoiler_attachment_ids: Vec<String>,
     thread_root_id: Option<String>,
     #[serde(default)]
     broadcast: bool,
@@ -769,13 +772,14 @@ async fn send(
     Json(input): Json<SendInput>,
 ) -> Result<Json<Value>, ApiError> {
     let chat = enabled(&state)?;
-    let payload = send_message(
+    let payload = send_message_with_spoilers(
         &chat.pool,
         &channel,
         sender_token(&headers)?,
         input.client_message_id,
         &input.text,
         &input.attachment_ids,
+        &input.spoiler_attachment_ids,
         input.thread_root_id.as_deref(),
         input.broadcast,
         input.reply_to_id.as_deref(),
@@ -960,6 +964,7 @@ async fn persist_message(
     .await
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_message(
     pool: &PgPool,
@@ -972,6 +977,44 @@ pub(crate) async fn send_message(
     broadcast: bool,
     reply_to: Option<&str>,
 ) -> Result<Value, ApiError> {
+    send_message_with_spoilers(
+        pool,
+        channel,
+        token,
+        client_id,
+        text,
+        attachment_ids,
+        &[],
+        root,
+        broadcast,
+        reply_to,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn send_message_with_spoilers(
+    pool: &PgPool,
+    channel: &str,
+    token: &str,
+    client_id: Uuid,
+    text: &str,
+    attachment_ids: &[String],
+    spoiler_attachment_ids: &[String],
+    root: Option<&str>,
+    broadcast: bool,
+    reply_to: Option<&str>,
+) -> Result<Value, ApiError> {
+    if spoiler_attachment_ids
+        .iter()
+        .enumerate()
+        .any(|(i, id)| !attachment_ids.contains(id) || spoiler_attachment_ids[..i].contains(id))
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "spoiler files must be distinct attached files",
+        ));
+    }
     if attachment_ids.len() > assets::MAX_PER_MESSAGE
         || attachment_ids
             .iter()
@@ -1036,9 +1079,24 @@ pub(crate) async fn send_message(
     if let (None, Some(user_id)) = (space_id, user_id) {
         crate::direct::authorize_send(&mut tx, channel_id, user_id).await?;
     }
-    // Preserve existing text-only retry hashes; replies are also bound to their
-    // destination and broadcast choice below, and files to their ids.
-    let hash = if attachment_ids.is_empty() {
+    // Preserve all existing nonspoiler retry hashes; replies are also bound to
+    // their destination and broadcast choice below, and files to their ids.
+    let hash = if !spoiler_attachment_ids.is_empty() {
+        // Canonical attachment order makes the spoiler list a set, not a sequence.
+        let spoilers: Vec<_> = attachment_ids
+            .iter()
+            .filter(|id| spoiler_attachment_ids.contains(id))
+            .collect();
+        let mut hash = Sha256::new();
+        // Domain separation also prevents a text-only request containing the
+        // serialized tuple from sharing this hash. Text cannot contain NUL.
+        hash.update(b"\0attachment-spoilers\0");
+        hash.update(
+            serde_json::to_vec(&(text, attachment_ids, spoilers))
+                .expect("serializable send request"),
+        );
+        hash.finalize().to_vec()
+    } else if attachment_ids.is_empty() {
         Sha256::digest(text.as_bytes()).to_vec()
     } else {
         Sha256::digest(format!("{text}\0{}", attachment_ids.join(",")).as_bytes()).to_vec()
@@ -1123,6 +1181,17 @@ pub(crate) async fn send_message(
             user_id.ok_or_else(|| ApiError::new(StatusCode::FORBIDDEN, "sign in to send files"))?;
         content["attachments"] =
             Value::Array(assets::attach(&mut tx, attachment_ids, owner, channel_id).await?);
+        for file in content["attachments"]
+            .as_array_mut()
+            .expect("attachment array")
+        {
+            if file["id"]
+                .as_str()
+                .is_some_and(|id| spoiler_attachment_ids.iter().any(|spoiler| spoiler == id))
+            {
+                file["spoiler"] = Value::Bool(true);
+            }
+        }
     }
     let admin = crate::feedback::team_member(&mut tx, user_id).await?;
     let mut found = mentions::parse(text, space_id.is_some());

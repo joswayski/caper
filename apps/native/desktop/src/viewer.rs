@@ -1373,6 +1373,7 @@ mod tests {
 
     fn attachment(id: &str, kind: AttachmentKind) -> Attachment {
         Attachment {
+            spoiler: false,
             id: id.into(),
             kind,
             content_type: "image/png".into(),

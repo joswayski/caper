@@ -1312,6 +1312,7 @@ mod tests {
                 "client",
                 "",
                 &["asset0001".into()],
+                &[],
                 (None, false),
                 None,
             )
@@ -1323,6 +1324,7 @@ mod tests {
             "chan",
             "client",
             "hi",
+            &[],
             &[],
             (None, false),
             None,

@@ -237,6 +237,7 @@ pub enum Command {
         reply_to_id: Option<String>,
         /// Resent unchanged on retry: ids join the idempotency hash.
         attachment_ids: Vec<String>,
+        spoiler_attachment_ids: Vec<String>,
     },
     /// Whether uploads are configured, and the compression settings.
     AssetUsage {
@@ -1887,6 +1888,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             client_id,
             text,
             attachment_ids,
+            spoiler_attachment_ids,
             thread_root_id,
             broadcast,
             reply_to_id,
@@ -1902,6 +1904,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                     &client_id,
                     &text,
                     &attachment_ids,
+                    &spoiler_attachment_ids,
                     (thread_root_id.as_deref(), broadcast),
                     reply_to_id.as_deref(),
                 )

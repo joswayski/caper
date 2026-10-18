@@ -1277,6 +1277,19 @@ its R2 objects were removed.
    only when files are attached. Attachment IDs join the idempotency hash;
    text-only hashes are unchanged.
 
+Attachment spoilers use optional `spoilerAttachmentIds` on that send request:
+distinct IDs from `attachmentIds`. Marked descriptions store `spoiler:true` in
+message JSON; missing means false. The choice is part of the retry hash and
+survives history, edits, forwards and URL refreshes. Each composer offers a
+per-file toggle. Updated clients conceal images and video posters with an
+on-device blur of a still thumbnail (the image original when no preview exists),
+without starting playback. Files without a usable visual preview use a neutral
+cover. Reveal is local UI state, not a database write; opening another image
+does not reveal hidden gallery items. Push notifications
+omit spoiler thumbnails and filenames. This is a presentation preference, not
+access control: authorized clients still receive URLs, and older clients do
+not understand the flag. Text spoilers and slash commands are not implemented.
+
 `GET /api/assets/usage` returns `{used, limit}`. `POST /api/assets/urls`
 returns fresh URLs for visible attachments (like Discord's refresh endpoint)
 for tabs open longer than a URL's lifetime.

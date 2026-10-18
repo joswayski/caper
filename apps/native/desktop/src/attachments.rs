@@ -259,6 +259,25 @@ pub fn gallery_rects(count: usize, width: f32) -> Vec<egui::Rect> {
     }
 }
 
+/// Blur a bounded still on the CPU; never retain animation frames in the cover.
+pub fn blur_thumbnail(image: &egui::ColorImage) -> egui::ColorImage {
+    let bytes: Vec<u8> = image
+        .pixels
+        .iter()
+        .flat_map(|pixel| pixel.to_srgba_unmultiplied())
+        .collect();
+    let rgba = image::RgbaImage::from_raw(image.size[0] as u32, image.size[1] as u32, bytes)
+        .expect("thumbnail dimensions");
+    let small = image::imageops::thumbnail(&rgba, 32, 32);
+    let blurred = image::imageops::blur(&small, 8.0);
+    egui::ColorImage::from_rgba_unmultiplied(
+        [blurred.width() as usize, blurred.height() as usize],
+        blurred.as_raw(),
+    )
+}
+
+const BLUR_KEY: &str = "spoiler-cover:";
+
 /// Display size that reserves layout space before an image loads.
 pub fn frame_size(attachment: &Attachment) -> egui::Vec2 {
     match (attachment.width, attachment.height) {
@@ -499,6 +518,37 @@ impl Media {
     /// Show a locally decoded image for an attachment (own uploads), so the
     /// pending row and the confirmed message need no download.
     pub fn insert_local(&mut self, context: &egui::Context, id: &str, image: egui::ColorImage) {
+        self.local_spoiler(context, id, &image);
+        // A late local thumbnail must not replace an already loading/playing GIF.
+        self.insert_original(context, id, image);
+    }
+
+    pub fn local_spoiler(
+        &mut self,
+        context: &egui::Context,
+        id: &str,
+        image: &egui::ColorImage,
+    ) -> ImageState {
+        let cover_id = format!("{BLUR_KEY}{id}");
+        if !self.images.contains_key(&cover_id) {
+            let texture = context.load_texture(
+                &cover_id,
+                blur_thumbnail(image),
+                egui::TextureOptions::LINEAR,
+            );
+            self.images.insert(
+                cover_id.clone(),
+                Entry::Ready {
+                    texture,
+                    used: self.frame,
+                    animation: None,
+                },
+            );
+        }
+        self.image_request(&cover_id, None, false)
+    }
+
+    fn insert_original(&mut self, context: &egui::Context, id: &str, image: egui::ColorImage) {
         // A late local thumbnail must not replace an already loading/playing GIF.
         if matches!(
             self.images.get(id),
@@ -530,6 +580,27 @@ impl Media {
     /// The image for an attachment id, starting a load from `url` if needed.
     pub fn image(&mut self, id: &str, url: Option<&str>) -> ImageState {
         self.image_request(id, url, false)
+    }
+
+    /// A separate static texture, so revealing always uses the untouched original.
+    pub fn spoiler(&mut self, attachment: &Attachment) -> ImageState {
+        if attachment.unavailable
+            || attachment.status == AttachmentStatus::Failed
+            || !matches!(
+                attachment.kind,
+                AttachmentKind::Image | AttachmentKind::Video
+            )
+        {
+            return ImageState::Failed;
+        }
+        self.image_request(
+            &format!("{BLUR_KEY}{}", attachment.id),
+            attachment
+                .preview_url
+                .as_deref()
+                .or_else(|| inline_source(attachment)),
+            false,
+        )
     }
 
     /// Called only for a visible, ready GIF tile. A local first-frame preview
@@ -668,7 +739,8 @@ impl Media {
                     let retry = action == FailureAction::RefreshThenRetry;
                     if retry {
                         self.retried.insert(fetched.id.clone());
-                        self.refresher.force(&fetched.id);
+                        self.refresher
+                            .force(fetched.id.strip_prefix(BLUR_KEY).unwrap_or(&fetched.id));
                     }
                     self.images.insert(
                         fetched.id,
@@ -697,7 +769,14 @@ impl Media {
                     if gif {
                         decode_gif(&bytes)
                     } else {
-                        decode_thumbnail(&bytes).map(|image| vec![(image, Duration::ZERO)])
+                        decode_thumbnail(&bytes).map(|image| {
+                            let image = if id.starts_with(BLUR_KEY) {
+                                blur_thumbnail(&image)
+                            } else {
+                                image
+                            };
+                            vec![(image, Duration::ZERO)]
+                        })
                     }
                     .ok_or(None)
                 });
@@ -768,6 +847,7 @@ mod tests {
 
     fn attachment(url: Option<&str>) -> Attachment {
         Attachment {
+            spoiler: false,
             id: "asset1".into(),
             kind: AttachmentKind::Image,
             content_type: "image/png".into(),
@@ -848,6 +928,47 @@ mod tests {
         let resolved = resolve(&ready, Some(&poster));
         assert_eq!(resolved.url, ready.url);
         assert_eq!(resolved.preview_url, ready.preview_url);
+    }
+
+    #[test]
+    fn spoiler_covers_are_blurred_static_cached_and_separate_from_originals() {
+        let context = egui::Context::default();
+        let mut media = Media::new(None);
+        let mut image = egui::ColorImage::filled([64, 64], egui::Color32::RED);
+        for y in 0..64 {
+            for x in 32..64 {
+                image[(x, y)] = egui::Color32::BLUE;
+            }
+        }
+        let blurred = blur_thumbnail(&image);
+        assert_eq!(blurred.size, [32, 32]);
+        assert!(blurred[(15, 16)].r() > 0 && blurred[(15, 16)].b() > 0);
+        media.insert_local(&context, "asset1", image);
+        let mut photo = attachment(Some(&signed(NOW)));
+        photo.spoiler = true;
+        let ImageState::Ready(cover) = media.spoiler(&photo) else {
+            panic!("local cover")
+        };
+        let ImageState::Ready(original) = media.image("asset1", None) else {
+            panic!("original")
+        };
+        assert_ne!(cover, original);
+        assert!(matches!(media.spoiler(&photo), ImageState::Ready(id) if id == cover));
+        photo.unavailable = true;
+        assert!(matches!(media.spoiler(&photo), ImageState::Failed));
+
+        let mut remote = Media::new(None);
+        photo.unavailable = false;
+        photo.content_type = "image/gif".into();
+        assert!(matches!(remote.spoiler(&photo), ImageState::Loading));
+        assert_eq!(
+            remote.waiting.front().unwrap().1,
+            photo.preview_url.unwrap()
+        );
+        assert!(
+            !remote.waiting.front().unwrap().2,
+            "hidden GIFs decode only a still"
+        );
     }
 
     #[test]

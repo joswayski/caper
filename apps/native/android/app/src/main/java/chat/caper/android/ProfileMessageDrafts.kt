@@ -136,8 +136,10 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
             }
             writable(conversation)
             if (draft.uncertain) check(tracker.retrying(conversation.id, author) != null) { "The conversation changed. The previous send is still unconfirmed." }
-            operation = tracker.begin(conversation.id, author, draft.text, get(person).files.map { requireNotNull(it.attachment).id }) {}
-            val message = api.sendMessage(token, capability, conversation.id, author, operation.id, operation.text, operation.attachmentIds)
+            operation = tracker.begin(conversation.id, author, draft.text, get(person).files.map { requireNotNull(it.attachment).id },
+                spoilerAttachmentIds = get(person).files.filter { it.spoiler }.map { requireNotNull(it.attachment).id }) {}
+            val message = api.sendMessage(token, capability, conversation.id, author, operation.id, operation.text, operation.attachmentIds,
+                spoilerAttachmentIds = operation.spoilerAttachmentIds)
             current()
             tracker.confirm(message)
             draft.files.forEach { prepared.remove(it.key) }

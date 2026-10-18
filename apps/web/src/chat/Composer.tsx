@@ -23,6 +23,7 @@ export interface ComposerAttachments {
   onAdd: (files: File[]) => void;
   onRemove: (key: string) => void;
   onRetry: (key: string) => void;
+  onToggleSpoiler?: (key: string) => void;
 }
 
 export interface ComposerHandle {
@@ -203,7 +204,12 @@ export default function Composer({
         </p>
       )}
       {attachments && (
-        <DraftAttachments drafts={attachments.drafts} onRemove={attachments.onRemove} onRetry={attachments.onRetry} />
+        <DraftAttachments
+          drafts={attachments.drafts}
+          onRemove={attachments.onRemove}
+          onRetry={attachments.onRetry}
+          onToggleSpoiler={sending ? undefined : attachments.onToggleSpoiler}
+        />
       )}
       <form
         data-attach={!!attachments || undefined}

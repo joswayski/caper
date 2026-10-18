@@ -5670,8 +5670,22 @@ private struct MentionCardView: View {
                                        busyLabel: file.progress != nil ? "Uploading…" : nil,
                                        progress: file.progress,
                                        removable: draft.editable,
+                                       spoiler: file.spoiler,
                                        preview: { draft.presentingDialog = true; previewFile = file.local.url },
                                        remove: { draft.remove(id: file.id) })
+                            .overlay(alignment: .topLeading) {
+                                Button { draft.toggleSpoiler(id: file.id) } label: {
+                                    Image(systemName: file.spoiler ? "eye.slash.fill" : "eye")
+                                        .frame(minWidth: 44, minHeight: 44)
+                                        .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(CaperTheme.text)
+                                .disabled(!draft.editable)
+                                .accessibilityLabel(file.spoiler ? "Remove spoiler from \(file.local.name)" : "Mark \(file.local.name) as spoiler")
+                                .accessibilityValue(file.spoiler ? "Spoiler" : "Not a spoiler")
+                                .help(file.spoiler ? "Remove spoiler" : "Mark as spoiler")
+                            }
                     }
                 }.accessibilityLabel("Files to send")
             }

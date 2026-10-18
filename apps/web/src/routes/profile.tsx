@@ -25,7 +25,10 @@ function Profile() {
     if (account || failed) return;
     void getAccount()
       .then((result) => {
-        if (!result) return void navigate({ to: "/login", replace: true });
+        if (!result) {
+          const invite = inviteFromSearch(window.location.search);
+          return void navigate({ href: invite ? `/login?invite=${invite}` : "/login", replace: true });
+        }
         setAccount(result);
       })
       .catch(() => setFailed(true));

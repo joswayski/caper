@@ -33,6 +33,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -130,6 +131,7 @@ internal fun durationLabel(durationMs: Long?): String? {
     if (attachments.isEmpty()) return
     var viewer by remember { mutableStateOf<ViewerPages?>(null) }
     var playing by remember { mutableStateOf<String?>(null) }
+    var revealed by remember(attachments.map { it.id to it.spoiler }) { mutableStateOf(emptySet<String>()) }
     val uriHandler = LocalUriHandler.current
     val still = reducedMotion()
     // The system browser downloads or shows the file and handles `Content-Encoding: gzip` itself.
@@ -137,7 +139,7 @@ internal fun durationLabel(durationMs: Long?): String? {
     val host = LocalMediaViewerHost.current
     val view: (ChatAttachment) -> (() -> Unit)? = { attachment ->
         if (pending) null else ({
-            val pages = viewerPages(attachments, attachment.id)
+            val pages = viewerPages(attachments, attachment.id, revealed)
             if (host != null) host.open = pages?.let { OpenViewer(it, caption) } else viewer = pages
         })
     }
@@ -151,6 +153,21 @@ internal fun durationLabel(durationMs: Long?): String? {
             else -> null
         }
         when {
+            attachment.spoiler && attachment.id !in revealed -> Surface(
+                modifier = modifier.then(if (modifier == Modifier) Modifier.fillMaxWidth().height(if (visual) 180.dp else 64.dp) else Modifier)
+                    .clip(shape).clickable(role = Role.Button, onClickLabel = "Reveal spoiler attachment") {
+                        revealed = revealed + attachment.id
+                    },
+                color = Surface, shape = shape, border = BorderStroke(1.dp, Border),
+            ) {
+                val source = if (visual && !attachment.unavailable && attachment.state != AttachmentState.FAILED) {
+                    attachment.previewUrl ?: if (attachment.kind == "image") attachment.url else null
+                } else null
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    SpoilerThumbnail(source, "${attachment.id}:spoiler") { onLoadFailed(attachment, it.httpStatus()) }
+                    Text("SPOILER · Tap to reveal", Modifier.background(Blackout.copy(alpha = 0.8f), MaterialTheme.shapes.small).padding(12.dp), color = Text, fontSize = 12.sp)
+                }
+            }
             visual && status != null -> MediaFrame(attachment, null, description = "${attachment.name}, $status", modifier = modifier, shape = shape) {
                 Column(Modifier.align(Alignment.Center).padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(attachment.name, color = TextMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -391,6 +408,7 @@ internal fun durationLabel(durationMs: Long?): String? {
 @Composable internal fun DraftAttachmentStrip(
     drafts: List<DraftAttachmentUi>, remove: (String) -> Unit, retry: ((String) -> Unit)? = null,
     enabled: Boolean = true, uploadOnSend: Boolean = false, sending: Boolean = false,
+    toggleSpoiler: ((String) -> Unit)? = null,
 ) {
     if (drafts.isEmpty()) return
     val context = LocalContext.current
@@ -437,14 +455,23 @@ internal fun durationLabel(durationMs: Long?): String? {
                                 draft.compressing -> if (draft.progress > 0f) "Prep ${(draft.progress * 100).toInt()}%" else "Preparing…"
                                 else -> "Uploading ${(draft.progress * 100).toInt()}%"
                             }
+                            val accessibleName = if (draft.spoiler) "spoiler attachment" else draft.name
                             Box(Modifier.fillMaxSize().combinedClickable(
-                                enabled = url != null || enabled, role = Role.Button, onClickLabel = "Preview ${draft.name}",
+                                enabled = url != null || enabled, role = Role.Button, onClickLabel = "Preview $accessibleName",
                                 onClick = { url?.let(open) },
                                 onLongClickLabel = "Attachment options",
                                 onLongClick = if (enabled) ({ menuOpen = true }) else null,
-                            ).semantics { contentDescription = listOfNotNull(draft.name, draft.error ?: status).joinToString(", ") }, contentAlignment = Alignment.Center) {
+                            ).semantics { contentDescription = listOfNotNull(accessibleName, if (draft.spoiler) status else draft.error ?: status).joinToString(", ") }, contentAlignment = Alignment.Center) {
                                 val thumbnail = draft.thumbnail
-                                if (thumbnail != null) AsyncImage(
+                                if (draft.spoiler) {
+                                    val visual = draft.kind == "image" || draft.kind == "video"
+                                    val source = if (visual && draft.error == null && draft.attachment?.unavailable != true) {
+                                        thumbnail ?: if (draft.kind == "image") draft.pickedImage ?: draft.localUrl ?: draft.pickedUri else null
+                                    } else null
+                                    SpoilerThumbnail(source, "draft:${draft.key}:$source:spoiler")
+                                    Text("SPOILER", Modifier.background(Blackout.copy(alpha = 0.8f)).padding(4.dp), color = Text, fontSize = 11.sp)
+                                }
+                                else if (thumbnail != null) AsyncImage(
                                     model = remember(thumbnail) { AttachmentImages.request(context, thumbnail, "draft:${draft.key}") },
                                     contentDescription = null, imageLoader = AttachmentImages.loader(context), modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop,
                                 ) else if (draft.kind != "video") Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -454,7 +481,7 @@ internal fun durationLabel(durationMs: Long?): String? {
                             }
                             Column(Modifier.fillMaxSize()) {
                                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                                    if (draft.kind == "video") {
+                                    if (draft.kind == "video" && !draft.spoiler) {
                                         Box(Modifier.size(32.dp).background(Blackout.copy(alpha = 0.32f), CircleShape), contentAlignment = Alignment.Center) {
                                             Icon(painterResource(R.drawable.lucide_play), "Video", Modifier.size(16.dp), tint = Text.copy(alpha = 0.72f))
                                         }
@@ -462,7 +489,7 @@ internal fun durationLabel(durationMs: Long?): String? {
                                 }
                                 if (status != null) Column(Modifier.fillMaxWidth().background(Blackout.copy(alpha = 0.9f)).padding(horizontal = 4.dp, vertical = if (draft.error != null && retry != null) 0.dp else 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                     if (draft.error != null && retry != null) {
-                                        Button({ retry(draft.key) }, Modifier.heightIn(min = 44.dp).semantics { contentDescription = "Retry uploading ${draft.name}" }, enabled = enabled,
+                                        Button({ retry(draft.key) }, Modifier.heightIn(min = 44.dp).semantics { contentDescription = "Retry uploading $accessibleName" }, enabled = enabled,
                                             colors = ButtonDefaults.buttonColors(containerColor = Action, contentColor = OnAction),
                                             shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 4.dp)) {
                                             Text("Retry upload", fontSize = 10.sp)
@@ -477,8 +504,17 @@ internal fun durationLabel(durationMs: Long?): String? {
                                     )
                                 }
                             }
+                            toggleSpoiler?.let { toggle ->
+                                TextButton({ toggle(draft.key) }, Modifier.align(Alignment.TopStart).width(tileSize - 48.dp).background(Blackout.copy(alpha = 0.9f))
+                                    .semantics {
+                                        contentDescription = "${if (draft.spoiler) "Remove spoiler from" else "Mark as spoiler:"} $accessibleName"
+                                        stateDescription = if (draft.spoiler) "Spoiler enabled" else "Spoiler disabled"
+                                    }, enabled = enabled, contentPadding = PaddingValues(0.dp)) {
+                                    Text(if (draft.spoiler) "Spoiler ✓" else "Spoiler", fontSize = 10.sp)
+                                }
+                            }
                             Box(Modifier.align(Alignment.TopEnd)) {
-                                Box(Modifier.size(48.dp).clip(MaterialTheme.shapes.small).clickable(enabled = enabled, role = Role.Button, onClick = { if (enabled) remove(draft.key) }).semantics { contentDescription = "Remove ${draft.name}" }) {
+                                Box(Modifier.size(48.dp).clip(MaterialTheme.shapes.small).clickable(enabled = enabled, role = Role.Button, onClick = { if (enabled) remove(draft.key) }).semantics { contentDescription = "Remove $accessibleName" }) {
                                     Box(Modifier.align(Alignment.TopEnd).padding(4.dp).size(24.dp).background(Blackout.copy(alpha = 0.9f), CircleShape), contentAlignment = Alignment.Center) {
                                         Icon(painterResource(R.drawable.lucide_x), null, Modifier.size(14.dp), tint = Text)
                                     }

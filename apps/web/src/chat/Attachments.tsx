@@ -11,7 +11,7 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import { FileText, FileWarning, Maximize2, Play, X } from "lucide-react";
+import { Eye, EyeOff, FileText, FileWarning, Maximize2, Play, X } from "lucide-react";
 import GifImage from "./GifImage.tsx";
 import MediaViewer from "./MediaViewer.tsx";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
@@ -279,6 +279,7 @@ export function MessageAttachments({
 }) {
   // Ask for fresh URLs once per attachment if a long-open tab outlives them.
   const reported = useRef(new Set<string>());
+  const [revealed, setRevealed] = useState<ReadonlySet<string>>(() => new Set());
   if (!attachments.length) return null;
   const expired = (attachment: ChatAttachment) => {
     if (reported.current.has(attachment.id)) return;
@@ -288,6 +289,36 @@ export function MessageAttachments({
   const renderAttachment = (attachment: ChatAttachment) => {
     const size = frame(attachment);
     const view = attachmentView(attachment);
+    if (attachment.spoiler && !revealed.has(attachment.id)) {
+      const hiddenSize = size ?? DEFAULT_FRAME;
+      const local = localPreviews[attachment.id];
+      const visual = attachment.kind === "image" || attachment.kind === "video";
+      const thumbnail =
+        visual && !attachment.unavailable && attachment.status !== "failed"
+          ? (attachment.previewUrl ??
+            (local && !local.video ? local.url : undefined) ??
+            (attachment.kind === "image" ? attachment.url : undefined))
+          : undefined;
+      return (
+        <button
+          key={attachment.id}
+          type="button"
+          className="chat-media chat-spoiler"
+          style={{ width: hiddenSize.width, aspectRatio: hiddenSize.width / hiddenSize.height }}
+          aria-label="Reveal spoiler attachment"
+          onClick={() => setRevealed((current) => new Set([...current, attachment.id]))}
+        >
+          {thumbnail && (
+            <span className="chat-spoiler-preview" aria-hidden="true">
+              <MediaPreviewContext value={true}>
+                <GifImage src={thumbnail} alt="" onError={() => expired(attachment)} />
+              </MediaPreviewContext>
+            </span>
+          )}
+          <span className="chat-spoiler-label">Spoiler</span>
+        </button>
+      );
+    }
     if (view === "processing")
       return (
         <Processing
@@ -406,6 +437,7 @@ export function MessageAttachments({
 
 export interface DraftAttachment extends UploadState {
   key: string;
+  spoiler?: boolean;
   /** A thread's files stay separate from the channel and other thread drafts. */
   threadRootId?: string;
   /** Kept locally until Send, which prepares and uploads it (profile cards). */
@@ -506,13 +538,14 @@ function DraftAttachmentTile({
       <li
         ref={refs.setReference}
         data-error={draft.error ? true : undefined}
+        data-spoiler={draft.spoiler || undefined}
         title={draft.error ?? draft.name}
         onPointerDown={(event) => {
           cancelPress();
           suppressClick.current = false;
           if (!onRemove || !event.isPrimary || event.button !== 0) return;
           const target = event.target as HTMLElement;
-          if (target.closest(".chat-draft-remove, .chat-draft-retry")) return;
+          if (target.closest(".chat-draft-remove, .chat-draft-retry, .chat-draft-spoiler")) return;
           returnFocus.current = event.currentTarget.querySelector<HTMLElement>(".chat-draft-preview");
           press.current = {
             x: event.clientX,
@@ -590,10 +623,12 @@ export function DraftAttachments({
   drafts,
   onRemove,
   onRetry,
+  onToggleSpoiler,
 }: {
   drafts: DraftAttachment[];
   onRemove?: (key: string) => void;
   onRetry?: (key: string) => void;
+  onToggleSpoiler?: (key: string) => void;
 }) {
   const [viewing, setViewing] = useState<{ key: string; anchor: HTMLElement }>();
   const closeViewer = useCallback(() => setViewing(undefined), []);
@@ -654,7 +689,13 @@ export function DraftAttachments({
               {kind === "video" ? (
                 <DraftVideoThumbnail url={url} poster={draft.attachment?.previewUrl} />
               ) : thumbnail ? (
-                <img src={thumbnail} alt="" draggable={false} />
+                draft.spoiler ? (
+                  <MediaPreviewContext value={true}>
+                    <GifImage src={thumbnail} alt="" draggable={false} />
+                  </MediaPreviewContext>
+                ) : (
+                  <img src={thumbnail} alt="" draggable={false} />
+                )
               ) : (
                 <span className="chat-draft-kind" aria-hidden="true">
                   {kind === "audio" ? <Play size={24} /> : <FileText size={24} />}
@@ -691,7 +732,7 @@ export function DraftAttachments({
                   {content}
                 </div>
               )}
-              {kind === "video" && (
+              {kind === "video" && !draft.spoiler && (
                 <span
                   className="chat-draft-video-play"
                   role="img"
@@ -717,6 +758,19 @@ export function DraftAttachments({
                   onClick={() => onRetry(draft.key)}
                 >
                   Retry upload
+                </button>
+              )}
+              {draft.spoiler && <span className="chat-draft-spoiler-label">Spoiler</span>}
+              {onToggleSpoiler && (
+                <button
+                  type="button"
+                  className="chat-draft-spoiler"
+                  aria-label={`Spoiler attachment: ${draft.name}`}
+                  aria-pressed={!!draft.spoiler}
+                  title={draft.spoiler ? "Remove spoiler" : "Mark as spoiler"}
+                  onClick={() => onToggleSpoiler(draft.key)}
+                >
+                  {draft.spoiler ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}
                 </button>
               )}
               {onRemove && (

@@ -759,7 +759,8 @@ public final class AppModel {
             draft.progress = "Sending…"
             attemptedSend = true
             let message = try await api.send(channelID: conversation.id, sessionToken: session.token, clientMessageID: command.id,
-                                             text: command.text, attachmentIDs: command.attachmentIDs)
+                                             text: command.text, attachmentIDs: command.attachmentIDs,
+                                             spoilerAttachmentIDs: command.attachments.filter(\.spoiler).map(\.id))
             try draft.checkActive()
             guard generation == attempt else { throw CancellationError() }
             guard MessageValidation.acceptsResponse(message, channelID: conversation.id, command: command, authorID: account.id),
@@ -3350,6 +3351,7 @@ public final class ChatModel {
             attachment.animated = false
             attachment.url = item.localURL.absoluteString
             attachment.previewUrl = nil
+            attachment.spoiler = item.spoiler
             return attachment
         } : []
         var command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast, replyTo: replyTargets[rootID ?? "channel"])
@@ -3390,6 +3392,7 @@ public final class ChatModel {
                         var attachment = try await uploadAttachmentDraft(id: file.id)
                         attachment.kind = file.kind; attachment.status = .ready; attachment.animated = false
                         attachment.url = file.localURL.absoluteString; attachment.previewUrl = nil
+                        attachment.spoiler = file.spoiler
                         attachments.append(attachment)
                     }
                     guard self.channelID == channelID,
@@ -3401,7 +3404,7 @@ public final class ChatModel {
                 }
                 do {
                     message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text,
-                                                 attachmentIDs: command.attachmentIDs, threadRootId: command.threadRootId, broadcast: command.broadcast, replyToId: command.replyTo?.id)
+                                                 attachmentIDs: command.attachmentIDs, spoilerAttachmentIDs: command.attachments.filter(\.spoiler).map(\.id), threadRootId: command.threadRootId, broadcast: command.broadcast, replyToId: command.replyTo?.id)
                     break
                 } catch let refusal as APIError where refusal.status == 409 && refusal.code == "attachment_unavailable" {
                     guard self.channelID == channelID, delivery.pending?.id == command.id else { return }
@@ -4179,6 +4182,10 @@ public final class ChatModel {
             attachmentNotices[target] = nil
             return
         }
+    }
+
+    public func toggleAttachmentSpoiler(id: String) {
+        updateDraft(id) { $0.spoiler.toggle() }
     }
 
     private func updateDraft(_ id: String, _ change: (inout AttachmentDraft) -> Void) {

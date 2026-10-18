@@ -864,6 +864,10 @@ export default function Chat({
   const updateDraft = useCallback((key: string, change: Partial<DraftAttachment>) => {
     setDrafts((current) => current.map((item) => (item.key === key ? { ...item, ...change } : item)));
   }, []);
+  const toggleSpoiler = (key: string) => {
+    if (state.pendingSend) return;
+    setDrafts((current) => current.map((item) => (item.key === key ? { ...item, spoiler: !item.spoiler } : item)));
+  };
   useEffect(() => {
     showStagedFiles(updateDraft);
     return () => showStagedFiles(undefined);
@@ -1220,7 +1224,10 @@ export default function Chat({
     setAttachError(undefined, threadRootId);
     let attachments: ChatAttachment[];
     try {
-      attachments = await Promise.all(sources.map((upload) => upload.ensure()));
+      attachments = (await Promise.all(sources.map((upload) => upload.ensure()))).map((attachment, index) => ({
+        ...attachment,
+        spoiler: latestDrafts.current.find((draft) => draft.key === files[index].key)?.spoiler,
+      }));
     } catch {
       return;
     } // The file chip owns the upload error and its Retry action.
@@ -2382,6 +2389,7 @@ export default function Chat({
                       onAdd: addFiles,
                       onRemove: removeDraft,
                       onRetry: retryUpload,
+                      onToggleSpoiler: toggleSpoiler,
                     }
                   : undefined
               }
@@ -2414,6 +2422,7 @@ export default function Chat({
                 onAdd: (files) => addFiles(files, state.thread?.rootId),
                 onRemove: removeDraft,
                 onRetry: retryUpload,
+                onToggleSpoiler: toggleSpoiler,
               }
             : undefined
         }

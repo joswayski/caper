@@ -58,19 +58,21 @@ public struct ChatAttachment: Codable, Equatable, Identifiable, Sendable {
     public var previewUrl: String?
     /// The file was deleted; show a "File removed" placeholder.
     public var unavailable: Bool
+    public var spoiler: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, contentType, name, size, width, height, durationMs, preview, status, animated, url, previewUrl, unavailable
+        case id, kind, contentType, name, size, width, height, durationMs, preview, status, animated, url, previewUrl, unavailable, spoiler
     }
     private struct PreviewMarker: Codable {}
 
     public init(id: String, kind: AttachmentKind, contentType: String, name: String, size: Int, width: Int? = nil, height: Int? = nil,
                 durationMs: Int? = nil, hasPreview: Bool = false, status: AttachmentStatus = .ready, animated: Bool = false,
-                url: String? = nil, previewUrl: String? = nil, unavailable: Bool = false) {
+                url: String? = nil, previewUrl: String? = nil, unavailable: Bool = false, spoiler: Bool = false) {
         self.id = id; self.kind = kind; self.contentType = contentType; self.name = name; self.size = size
         self.width = width; self.height = height; self.durationMs = durationMs; self.hasPreview = hasPreview
         self.status = status; self.animated = animated
         self.url = url; self.previewUrl = previewUrl; self.unavailable = unavailable
+        self.spoiler = spoiler
     }
 
     /// Strict for one entry (like web's `isChatAttachment`); `ChatContent`
@@ -90,6 +92,7 @@ public struct ChatAttachment: Codable, Equatable, Identifiable, Sendable {
         url = try values.decodeIfPresent(String.self, forKey: .url)
         previewUrl = try values.decodeIfPresent(String.self, forKey: .previewUrl)
         unavailable = try values.decodeIfPresent(Bool.self, forKey: .unavailable) ?? false
+        spoiler = try values.decodeIfPresent(Bool.self, forKey: .spoiler) ?? false
         animated = (try? values.decodeIfPresent(Bool.self, forKey: .animated)) ?? false
         if let raw = try? values.decodeIfPresent(String.self, forKey: .status) {
             // An unknown future state renders like processing until it has a URL.
@@ -119,6 +122,7 @@ public struct ChatAttachment: Codable, Equatable, Identifiable, Sendable {
         try values.encodeIfPresent(url, forKey: .url)
         try values.encodeIfPresent(previewUrl, forKey: .previewUrl)
         if unavailable { try values.encode(true, forKey: .unavailable) }
+        if spoiler { try values.encode(true, forKey: .spoiler) }
     }
 
     static func isWebURL(_ value: String) -> Bool {
@@ -597,9 +601,9 @@ public enum MediaViewerPolicy {
         return ChatAttachment.isWebURL(url)
     }
 
-    /// The viewer's set: the message's viewable files, in message order.
-    public static func items(_ attachments: [ChatAttachment]) -> [ChatAttachment] {
-        attachments.filter(isViewable)
+    /// Hidden spoilers never enter the viewer's set, even when another image opens it.
+    public static func items(_ attachments: [ChatAttachment], revealedSpoilerIDs: Set<String> = []) -> [ChatAttachment] {
+        attachments.filter { isViewable($0) && (!$0.spoiler || revealedSpoilerIDs.contains($0.id)) }
     }
 
     /// The latest copy of each file in the set, matched by id: refreshed URLs
@@ -698,6 +702,7 @@ public struct AttachmentDraft: Identifiable, Equatable, Sendable {
     public var storedSize: Int?
     /// Compression is still running.
     public var preparing = true
+    public var spoiler = false
     public var progress: Double = 0
     public var error: String?
     /// The confirmed upload.

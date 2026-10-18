@@ -186,7 +186,15 @@ fn file_notifications_use_one_original_and_keep_text_without_media() {
     oversized["size"] = json!(50_000_001);
     let mut deleted = photo.clone();
     deleted["unavailable"] = json!(true);
+    let mut spoiler_photo = photo.clone();
+    spoiler_photo["spoiler"] = json!(true);
+    let mut spoiler_document = document.clone();
+    spoiler_document["spoiler"] = json!(true);
     for (text, files, expected, media) in [
+        ("", vec![spoiler_photo.clone()], "Sent a file", false),
+        ("", vec![spoiler_document], "Sent a file", false),
+        ("caption", vec![spoiler_photo.clone()], "caption", false),
+        ("", vec![spoiler_photo, photo.clone()], "Sent 2 files", true),
         ("", vec![photo.clone()], "Sent a photo", true),
         (
             "Sent a message",
@@ -261,6 +269,18 @@ fn file_notifications_use_one_original_and_keep_text_without_media() {
         assert_eq!(apns["attachmentSize"], 321);
         assert_eq!(fcm["attachmentUrl"], apns["attachmentUrl"]);
         assert_eq!(fcm["attachmentSize"], "321");
+        let mut hidden = message;
+        let pointer = if forwarded {
+            "/forward/message/content/attachments/0"
+        } else {
+            "/content/attachments/0"
+        };
+        // The marker is per-message, including forwarded source snapshots.
+        let attachment = hidden.pointer_mut(pointer).unwrap();
+        attachment["spoiler"] = json!(true);
+        let hidden = apns::payload(&channel_alert("").with_content(&hidden, Some(&signer)));
+        assert_eq!(hidden["aps"]["alert"]["body"], "Sent a file");
+        assert!(hidden.get("attachmentUrl").is_none());
     }
     let without_poster = json!({"content":{"attachments":[{"id":"video1","kind":"video","contentType":"video/mp4","size":400}]}});
     let fallback = apns::payload(&channel_alert("").with_content(&without_poster, Some(&signer)));

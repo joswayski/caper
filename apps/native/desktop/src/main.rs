@@ -808,11 +808,13 @@ struct UploadSendIntent {
     broadcast: bool,
     reply: Option<String>,
     files: Vec<u64>,
+    spoilers: Vec<bool>,
 }
 
 /// A file in the composer: preparing, uploading, uploaded or failed.
 struct DraftUpload {
     key: u64,
+    spoiler: bool,
     channel: String,
     /// None belongs to the conversation composer, Some to this thread only.
     thread_root_id: Option<String>,
@@ -845,6 +847,13 @@ struct DraftUpload {
 }
 
 impl DraftUpload {
+    fn send_attachment(&self) -> Option<model::Attachment> {
+        self.attachment.clone().map(|mut attachment| {
+            attachment.spoiler = self.spoiler;
+            attachment
+        })
+    }
+
     fn needs_upload(&self) -> bool {
         self.attachment.is_none()
             || self.upload_expired
@@ -1713,8 +1722,16 @@ impl CaperApp {
                     app.timeline
                         .reset(messages, "4")
                         .expect("valid reply fixture");
-                } else if name == "parity-attachments" {
+                } else if name == "parity-attachments" || name == "parity-attachments-spoilers" {
                     app.install_attachments_fixture();
+                    if name == "parity-attachments-spoilers" {
+                        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                        messages[2].content.attachments[0].spoiler = true;
+                        app.timeline
+                            .reset(messages, "4")
+                            .expect("valid spoiler fixture");
+                        app.draft_files[0].spoiler = true;
+                    }
                 } else if name.starts_with("parity-file-drop") {
                     // Holds the drop overlay open for rendering checks; no file is dragged.
                     app.install_attachments_fixture();
@@ -3018,6 +3035,7 @@ impl CaperApp {
         self.uploads = Some(compress::Compression::default());
         let url = |kind: &str, id: &str| format!("https://fixture.invalid/{kind}/{id}");
         let file = |id: &str, kind, content_type: &str, name: &str, size| model::Attachment {
+            spoiler: false,
             id: id.into(),
             kind,
             content_type: content_type.into(),
@@ -3141,6 +3159,7 @@ impl CaperApp {
         let channel = self.selected_channel.clone().unwrap_or_default();
         let draft = |key, name: &str, size, progress, error: Option<&str>| DraftUpload {
             key,
+            spoiler: false,
             channel: channel.clone(),
             thread_root_id: None,
             name: name.into(),
@@ -7203,6 +7222,15 @@ impl CaperApp {
                 })
                 .map(|file| file.key)
                 .collect(),
+            spoilers: self
+                .draft_files
+                .iter()
+                .filter(|file| {
+                    Some(&file.channel) == self.selected_channel.as_ref()
+                        && file.thread_root_id == root
+                })
+                .map(|file| file.spoiler)
+                .collect(),
             root,
         }
     }
@@ -7303,7 +7331,7 @@ impl CaperApp {
             }
             drafts
                 .iter()
-                .filter_map(|draft| draft.attachment.clone())
+                .filter_map(|draft| draft.send_attachment())
                 .collect()
         };
         let count = text.chars().count();
@@ -7365,6 +7393,12 @@ impl CaperApp {
         let thread_root_id = pending.thread_root_id.clone();
         let broadcast = pending.broadcast;
         let reply_to_id = pending.reply_to.as_ref().map(|reply| reply.id.clone());
+        let spoiler_attachment_ids = pending
+            .attachments
+            .iter()
+            .filter(|file| file.spoiler)
+            .map(|file| file.id.clone())
+            .collect();
         self.pending = Some(pending);
         self.pending_recovered = false;
         self.error = None;
@@ -7381,6 +7415,7 @@ impl CaperApp {
             client_id: id,
             text,
             attachment_ids,
+            spoiler_attachment_ids,
             thread_root_id,
             broadcast,
             reply_to_id,
@@ -7528,6 +7563,7 @@ impl CaperApp {
             let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let draft = DraftUpload {
                 key: self.draft_keys,
+                spoiler: false,
                 channel: channel.clone(),
                 thread_root_id: root.clone(),
                 name: file.name(),
@@ -7594,6 +7630,7 @@ impl CaperApp {
             self.draft_keys += 1;
             self.draft_files.push(DraftUpload {
                 key: self.draft_keys,
+                spoiler: attachment.spoiler,
                 channel: channel.clone(),
                 thread_root_id: root.clone(),
                 name: attachment.name.clone(),
@@ -7801,7 +7838,7 @@ impl CaperApp {
         pending.attachments = self
             .pending_files
             .iter()
-            .filter_map(|file| file.attachment.clone())
+            .filter_map(DraftUpload::send_attachment)
             .collect();
         self.pending_needs_upload = false;
         self.worker.send(Command::Send {
@@ -7811,6 +7848,12 @@ impl CaperApp {
             channel: channel.clone(),
             client_id: pending.id.clone(),
             text: pending.text.clone(),
+            spoiler_attachment_ids: pending
+                .attachments
+                .iter()
+                .filter(|file| file.spoiler)
+                .map(|file| file.id.clone())
+                .collect(),
             attachment_ids: pending
                 .attachments
                 .iter()
@@ -17286,6 +17329,14 @@ impl CaperApp {
         }
         let unix_now = chrono::Utc::now().timestamp();
         let now = Instant::now();
+        let reveal_scope = ui.id();
+        let hidden = |attachment: &model::Attachment, ui: &egui::Ui| {
+            attachment.spoiler
+                && !ui.ctx().data_mut(|data| {
+                    data.get_temp::<bool>(reveal_scope.with(("attachment-spoiler", &attachment.id)))
+                        .unwrap_or(false)
+                })
+        };
         let resolved: Vec<(model::Attachment, bool)> = attachments
             .iter()
             .map(|attachment| {
@@ -17333,42 +17384,96 @@ impl CaperApp {
                             .filter(|(_, inline)| *inline == tiles)
                             .enumerate()
                         {
+                            let placed = if tiles {
+                                gallery
+                                    .map(|bounds| {
+                                        let rect = layout[index].translate(bounds.min.to_vec2());
+                                        let left = rect.left() == bounds.left();
+                                        let right = (rect.right() - bounds.right()).abs() < 0.1;
+                                        let top = rect.top() == bounds.top();
+                                        let bottom = (rect.bottom() - bounds.bottom()).abs() < 0.1;
+                                        (
+                                            rect,
+                                            CornerRadius {
+                                                nw: if left && top { 12 } else { 1 },
+                                                ne: if right && top { 12 } else { 1 },
+                                                sw: if left && bottom { 12 } else { 1 },
+                                                se: if right && bottom { 12 } else { 1 },
+                                            },
+                                        )
+                                    })
+                                    .or_else(|| {
+                                        let frame = attachments::frame_size(attachment);
+                                        let size = frame
+                                            * (ui.max_rect().width() / frame.x).clamp(0.1, 1.0);
+                                        let (rect, _) =
+                                            ui.allocate_exact_size(size, egui::Sense::hover());
+                                        Some((rect, CornerRadius::same(8)))
+                                    })
+                            } else {
+                                None
+                            };
+                            if hidden(attachment, ui) {
+                                let radius =
+                                    placed.map_or(CornerRadius::same(8), |(_, radius)| radius);
+                                let (rect, response) = if let Some((rect, _)) = placed {
+                                    (
+                                        rect,
+                                        ui.interact(
+                                            rect,
+                                            ui.id().with(&attachment.id),
+                                            egui::Sense::click(),
+                                        ),
+                                    )
+                                } else {
+                                    ui.allocate_exact_size(
+                                        egui::vec2(180.0, 100.0),
+                                        egui::Sense::click(),
+                                    )
+                                };
+                                ui.painter().rect_filled(rect, radius, SURFACE);
+                                if let attachments::ImageState::Ready(texture) =
+                                    self.media.spoiler(attachment)
+                                {
+                                    egui::Image::new((texture, rect.size()))
+                                        .corner_radius(radius)
+                                        .paint_at(ui, rect);
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        radius,
+                                        Color32::from_black_alpha(70),
+                                    );
+                                }
+                                ui.painter().text(
+                                    rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    "SPOILER",
+                                    egui::FontId::proportional(12.0),
+                                    TEXT,
+                                );
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        true,
+                                        "Reveal spoiler attachment",
+                                    )
+                                });
+                                if response
+                                    .on_hover_text("Reveal spoiler attachment")
+                                    .clicked()
+                                {
+                                    ui.ctx().data_mut(|data| {
+                                        data.insert_temp(
+                                            reveal_scope
+                                                .with(("attachment-spoiler", &attachment.id)),
+                                            true,
+                                        )
+                                    });
+                                }
+                                continue;
+                            }
                             let progress = self.attachment_progress.get(&attachment.id).copied();
                             let clicked = if tiles {
-                                let placed = gallery.map(|bounds| {
-                                    let rect = layout[index].translate(bounds.min.to_vec2());
-                                    let radius = CornerRadius {
-                                        nw: if rect.left() == bounds.left()
-                                            && rect.top() == bounds.top()
-                                        {
-                                            12
-                                        } else {
-                                            1
-                                        },
-                                        ne: if (rect.right() - bounds.right()).abs() < 0.1
-                                            && rect.top() == bounds.top()
-                                        {
-                                            12
-                                        } else {
-                                            1
-                                        },
-                                        sw: if rect.left() == bounds.left()
-                                            && (rect.bottom() - bounds.bottom()).abs() < 0.1
-                                        {
-                                            12
-                                        } else {
-                                            1
-                                        },
-                                        se: if (rect.right() - bounds.right()).abs() < 0.1
-                                            && (rect.bottom() - bounds.bottom()).abs() < 0.1
-                                        {
-                                            12
-                                        } else {
-                                            1
-                                        },
-                                    };
-                                    (rect, radius)
-                                });
                                 self.media_tile(ui, attachment, pending, progress, placed)
                             } else {
                                 file_card(ui, attachment, pending, progress)
@@ -17378,6 +17483,7 @@ impl CaperApp {
                                     // This message's images and videos, starting here.
                                     let items: Vec<_> = resolved
                                         .iter()
+                                        .filter(|(item, _)| !hidden(item, ui))
                                         .map(|(item, _)| item.clone())
                                         .filter(viewer::viewable)
                                         .collect();
@@ -17653,7 +17759,25 @@ impl CaperApp {
                         egui::TextureOptions::LINEAR,
                     ));
                 }
-                if let Some(texture) = &draft.thumbnail {
+                if draft.spoiler {
+                    if let Some(image) = &draft.thumbnail_image {
+                        let id = format!("draft-cover-{}", draft.key);
+                        if let attachments::ImageState::Ready(texture) =
+                            self.media.local_spoiler(ui.ctx(), &id, image)
+                        {
+                            egui::Image::new((texture, thumb.size()))
+                                .corner_radius(6)
+                                .paint_at(ui, thumb);
+                        }
+                    }
+                    painter.text(
+                        thumb.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "SPOILER",
+                        egui::FontId::proportional(11.0),
+                        MUTED,
+                    );
+                } else if let Some(texture) = &draft.thumbnail {
                     // Centre-crop the local preview into the square.
                     let [width, height] = texture.size().map(|value| value.max(1) as f32);
                     let side = width.min(height);
@@ -17752,7 +17876,7 @@ impl CaperApp {
                     Stroke::new(1.0, if draft.error.is_some() { ERROR } else { BORDER }),
                     egui::StrokeKind::Inside,
                 );
-                if draft.kind == model::AttachmentKind::Video {
+                if draft.kind == model::AttachmentKind::Video && !draft.spoiler {
                     paint_draft_video_play(&painter, rect, uploading || draft.error.is_some());
                 }
                 let close = egui::Rect::from_center_size(
@@ -17831,6 +17955,29 @@ impl CaperApp {
                     if response.on_hover_text(label).clicked() {
                         retry = Some(draft.key);
                     }
+                }
+                let toggle_rect = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(4.0, 4.0),
+                    egui::vec2(rect.width() - 38.0, 22.0),
+                );
+                let response = ui.place(
+                    toggle_rect,
+                    egui::Button::new("Spoiler")
+                        .selected(draft.spoiler)
+                        .fill(SURFACE)
+                        .small()
+                        .truncate(),
+                );
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::Checkbox,
+                        true,
+                        draft.spoiler,
+                        format!("Mark {} as spoiler", draft.name),
+                    )
+                });
+                if response.clicked() {
+                    draft.spoiler = !draft.spoiler;
                 }
                 // Each file pops into the composer, as on web.
                 motion::settle(
@@ -19589,6 +19736,8 @@ impl CaperApp {
                     if removed {
                         remove = Some(index);
                     }
+                    ui.add_enabled(editable, egui::Checkbox::new(&mut file.spoiler, "Spoiler"))
+                        .on_hover_text(format!("Mark {name} as spoiler"));
                 }
             });
             if let Some(index) = remove {
@@ -38375,6 +38524,7 @@ mod tests {
             app.draft = "Keep my channel draft".into();
             app.restore_drafts(
                 vec![model::Attachment {
+                    spoiler: false,
                     id: "channel-file".into(),
                     kind: model::AttachmentKind::File,
                     content_type: "text/plain".into(),
@@ -38493,6 +38643,7 @@ mod tests {
         app.draft = "Keep my channel draft".into();
         app.restore_drafts(
             vec![model::Attachment {
+                spoiler: false,
                 id: "channel-file".into(),
                 kind: model::AttachmentKind::File,
                 content_type: "text/plain".into(),
@@ -41853,6 +42004,168 @@ mod tests {
     }
 
     #[test]
+    fn attachment_spoilers_survive_retry_and_restore_and_fence_send_intents() {
+        let (_, mut app) = fixture("parity-attachments");
+        app.session = Some(session());
+        app.token = Some("fixture-token".into());
+        app.draft_files.truncate(1);
+        let original = app.draft_files[0].attachment.clone().unwrap();
+        let before = app.upload_send_snapshot(None);
+        app.draft_files[0].spoiler = true;
+        assert!(before != app.upload_send_snapshot(None));
+        app.upload_update(
+            1,
+            crate::worker::UploadUpdate::Finished(Ok(original.clone())),
+        );
+        app.send_message();
+        let pending = app.pending.as_ref().unwrap();
+        assert!(pending.attachments[0].spoiler);
+        let id = pending.id.clone();
+        app.send_message();
+        assert_eq!(app.pending.as_ref().unwrap().id, id);
+        assert!(app.pending.as_ref().unwrap().attachments[0].spoiler);
+        let attachments = app.pending.take().unwrap().attachments;
+        app.restore_drafts(attachments.clone(), None);
+        assert!(app.draft_files[0].spoiler);
+        app.draft_files.clear();
+        app.restore_drafts(attachments, None);
+        assert!(app.draft_files[0].spoiler);
+        assert!(app.draft_files[0].send_attachment().unwrap().spoiler);
+    }
+
+    #[test]
+    fn attachment_spoilers_require_reveal_and_are_excluded_from_gallery() {
+        for visual_count in [1, 2] {
+            let (context, mut app) = fixture("parity-attachments");
+            context.enable_accesskit();
+            let mut files: Vec<_> = app
+                .timeline
+                .messages()
+                .flat_map(|message| message.content.attachments.clone())
+                .filter(crate::viewer::viewable)
+                .take(2)
+                .collect();
+            assert_eq!(files.len(), 2);
+            files.truncate(visual_count);
+            files[0].spoiler = true;
+            for kind in [
+                crate::model::AttachmentKind::Audio,
+                crate::model::AttachmentKind::File,
+            ] {
+                let mut file = files[0].clone();
+                file.id = format!("hidden-{kind:?}");
+                file.kind = kind;
+                files.insert(0, file);
+            }
+            // File order must not affect visual slot order or gallery counts.
+            let visual = 2;
+            let draw = |app: &mut CaperApp, events| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440.0, 900.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| {
+                            app.attachment_list(ui, &files, false);
+                        });
+                    },
+                )
+            };
+            draw(&mut app, vec![]);
+            let output = draw(&mut app, vec![]);
+            let covers: Vec<_> = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    (node.label() == Some("Reveal spoiler attachment"))
+                        .then(|| node.bounds())
+                        .flatten()
+                })
+                .map(|rect| {
+                    egui::Rect::from_min_max(
+                        egui::pos2(rect.x0 as f32, rect.y0 as f32),
+                        egui::pos2(rect.x1 as f32, rect.y1 as f32),
+                    )
+                })
+                .collect();
+            assert_eq!(covers.len(), 3);
+            let cover = covers
+                .iter()
+                .copied()
+                .min_by(|a, b| a.top().total_cmp(&b.top()))
+                .unwrap();
+            for card in covers.iter().filter(|rect| **rect != cover) {
+                assert!(
+                    card.top() >= cover.bottom(),
+                    "hidden audio/files stay below media"
+                );
+            }
+            assert!(node_bounds(&output, &format!("View {}", files[visual].name)).is_none());
+            let visible_before = if visual_count == 2 {
+                let rect = node_bounds(
+                    &output,
+                    &format!("Play animation {}", files[visual + 1].name),
+                )
+                .unwrap();
+                assert!((rect.top() - cover.top()).abs() < 0.1);
+                assert!((rect.left() - cover.right() - 4.0).abs() < 0.1);
+                Some(rect)
+            } else {
+                None
+            };
+            let click = |app: &mut CaperApp, pos| {
+                for pressed in [true, false] {
+                    draw(
+                        app,
+                        vec![
+                            egui::Event::PointerMoved(pos),
+                            egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                    );
+                }
+            };
+            if let Some(rect) = visible_before {
+                click(&mut app, rect.center());
+                assert_eq!(app.viewer.take().unwrap().len(), 1);
+            }
+            click(&mut app, cover.center());
+            assert!(app.viewer.is_none(), "reveal is not an open action");
+            let output = draw(&mut app, vec![]);
+            let revealed = node_bounds(&output, &format!("View {}", files[visual].name)).unwrap();
+            assert_eq!(
+                revealed, cover,
+                "reveal preserves the natural/gallery frame"
+            );
+            if let Some(rect) = visible_before {
+                assert_eq!(
+                    node_bounds(
+                        &output,
+                        &format!("Play animation {}", files[visual + 1].name)
+                    )
+                    .unwrap(),
+                    rect
+                );
+            }
+            click(&mut app, revealed.center());
+            assert_eq!(app.viewer.take().unwrap().len(), visual_count);
+        }
+    }
+
+    #[test]
     fn attachments_render_by_status_and_open_in_the_viewer_or_browser() {
         let context = egui::Context::default();
         context.enable_accesskit();
@@ -42377,6 +42690,7 @@ mod tests {
             "progress never goes back"
         );
         let attachment = model::Attachment {
+            spoiler: false,
             id: "uploaded".into(),
             kind: model::AttachmentKind::Image,
             content_type: "image/png".into(),

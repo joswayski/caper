@@ -649,6 +649,7 @@ export default function ThreadPanel({
                 drafts={attachments.drafts}
                 onRemove={attachments.onRemove}
                 onRetry={attachments.onRetry}
+                onToggleSpoiler={sending ? undefined : attachments.onToggleSpoiler}
               />
             )}
             <form
