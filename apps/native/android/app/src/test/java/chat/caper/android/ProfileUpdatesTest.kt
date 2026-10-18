@@ -1,10 +1,18 @@
 package chat.caper.android
 
 import chat.caper.android.model.*
+import kotlinx.serialization.json.Json
 import org.junit.Assert.*
 import org.junit.Test
 
 class ProfileUpdatesTest {
+    @Test fun `appearance permission is opt-in and decodes the server flag`() {
+        val shared = """{"id":"space","name":"Studio","ownerId":"owner"}"""
+        assertFalse(Json.decodeFromString<Space>(shared).canEditAppearance == true)
+        assertEquals(true, Json.decodeFromString<Space>(shared.dropLast(1) + """, "canEditAppearance":true}""").canEditAppearance)
+        assertEquals(false, Json.decodeFromString<Space>(shared.dropLast(1) + """, "canEditAppearance":false}""").canEditAppearance)
+    }
+
     private val maya = "maya00000001"
     private val self = "self00000001"
     private val oldAsset = "OldPicture0000000001"
@@ -166,7 +174,7 @@ class ProfileUpdatesTest {
 
     @Test fun `a space update renames and re-icons that space everywhere, and ignores others`() {
         val icon = "https://cdn.caper.chat/assets/$newAsset?sig=i"
-        val studio = Space("space0000001", "Studio", self, iconAsset = oldAsset, iconUrl = "x")
+        val studio = Space("space0000001", "Studio", self, iconAsset = oldAsset, iconUrl = "x", canEditAppearance = true)
         val invited = Space("space0000002", "Invited", "ann000000001")
         val state = AppUiState(
             spaces = listOf(studio, Space("space0000003", "Other", self)), invitations = listOf(invited),
@@ -185,12 +193,16 @@ class ProfileUpdatesTest {
         assertEquals(state.spaces[1], renamed.spaces[1])
         assertEquals("Friends", renamed.selectedSpace!!.space.name)
         assertEquals(newAsset, renamed.selectedSpace!!.space.iconAsset)
+        assertEquals(true, renamed.spaces[0].canEditAppearance)
+        assertEquals(true, renamed.selectedSpace!!.space.canEditAppearance)
         assertEquals("Friends", renamed.visit!!.spaceName)
         assertEquals("Feedback reports take the new name", listOf("Friends", "Other"), renamed.feedback.reports.map { it.space?.name })
 
         val cleared = renamed.withSpace(Space("space0000001", "Friends", self))
         assertNull(cleared.spaces[0].iconAsset)
         assertNull(cleared.selectedSpace!!.space.iconUrl)
+        assertEquals(true, cleared.selectedSpace!!.space.canEditAppearance)
+        assertEquals(false, cleared.withSpace(Space("space0000001", "Friends", self, canEditAppearance = false)).selectedSpace!!.space.canEditAppearance)
         assertEquals("invitations take icons too", newAsset,
             state.withSpace(Space("space0000002", "Invited", "ann000000001", iconAsset = newAsset, iconUrl = icon)).invitations[0].iconAsset)
         assertEquals("a space you don't have changes nothing", state, state.withSpace(Space("space0000009", "Elsewhere", "x")))

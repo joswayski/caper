@@ -7,6 +7,7 @@ export interface Space extends SpaceIcon {
   id: string;
   name: string;
   ownerId: string;
+  canEditAppearance?: boolean;
   inviter?: { username: string; displayName: string };
   demo?: boolean;
 }

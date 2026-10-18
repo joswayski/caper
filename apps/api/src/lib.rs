@@ -87,6 +87,7 @@ pub struct Config {
     pub enabled: bool,
     pub bind: SocketAddr,
     space_limits: spaces::Limits,
+    admin_editable_space_ids: Vec<String>,
     app_id: Option<String>,
     app_secret: Option<String>,
     turn_key_id: Option<String>,
@@ -105,6 +106,14 @@ impl Config {
         let config = Self {
             enabled,
             space_limits: spaces::Limits::from_env(environment)?,
+            admin_editable_space_ids: environment
+                .get("ADMIN_EDITABLE_SPACE_IDS")
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .collect(),
             bind: environment
                 .get("MEDIA_BIND")
                 .unwrap_or_else(|| "0.0.0.0:3001".into())
@@ -140,6 +149,7 @@ impl Config {
             enabled,
             bind: "127.0.0.1:0".parse().unwrap(),
             space_limits: spaces::Limits::default(),
+            admin_editable_space_ids: Vec::new(),
             app_id: Some("app".into()),
             app_secret: Some("secret".into()),
             turn_key_id: Some("turn".into()),

@@ -34,6 +34,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class Space(
     val id: String, val name: String, val ownerId: String = "", val demo: Boolean = false, val inviter: Inviter? = null,
     val iconAsset: String? = null, val iconUrl: String? = null,
+    // Only true grants editing; null distinguishes a shared summary from an explicit revocation.
+    val canEditAppearance: Boolean? = null,
 )
 @Serializable data class SpaceList(val spaces: List<Space>, val invitations: List<Space> = emptyList(), val limits: SpaceLimits)
 @Serializable data class SpaceLimits(val ownedSpaces: Int, val totalSpaces: Int, val channelsPerSpace: Int)

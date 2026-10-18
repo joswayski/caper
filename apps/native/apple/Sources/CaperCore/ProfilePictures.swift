@@ -200,7 +200,7 @@ public enum ProfilePicturePolicy {
             switch error.status {
             case 400: return "Pictures can be up to 1024 × 1024."
             case 404:
-                return purpose == .spaceIcon ? "Only the space owner can change its icon." : "Your picture couldn’t be saved. Try again."
+                return purpose == .spaceIcon ? "You can’t change this space’s icon." : "Your picture couldn’t be saved. Try again."
             case 409: return "The upload didn’t finish. Try again."
             case 503: return unavailableMessage
             default: return FriendlyError.message(for: error)

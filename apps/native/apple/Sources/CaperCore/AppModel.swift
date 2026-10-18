@@ -1511,6 +1511,9 @@ public final class AppModel {
     var navigationCacheCounts: (prefetches: Int, visited: Int) { (prefetches.count, visited.count) }
 
     public var isOwner: Bool { account?.id == detail?.space.ownerId }
+    public var canEditSpaceAppearance: Bool {
+        account != nil && detail?.space.demo != true && (isOwner || detail?.space.canEditAppearance == true)
+    }
     public var canCreateSpace: Bool {
         guard account != nil, let limits else { return false }
         return spaces.filter { $0.ownerId == account?.id }.count < limits.ownedSpaces
@@ -1534,30 +1537,31 @@ public final class AppModel {
 
     public func renameSpace(_ name: String) async throws {
         membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
-        guard let detail else { return }
+        guard canEditSpaceAppearance, let detail else { return }
         clearNavigationCache()
         let attempt = generation
         if let error = WorkspaceValidation.spaceNameError(name) { throw APIError(status: 400, message: error) }
-        let updated = try await api.updateSpace(id: detail.space.id, name: name)
+        var updated = try await api.updateSpace(id: detail.space.id, name: name)
         guard generation == attempt, self.detail?.space.id == detail.space.id else { throw CancellationError() }
+        updated.canEditAppearance = updated.canEditAppearance ?? self.detail?.space.canEditAppearance
         replace(detail: detail.with(space: updated))
     }
 
-    /// Owner only: uploads a prepared picture as the open space's icon,
+    /// Appearance editors: uploads a prepared picture as the open space's icon,
     /// then shows it in the rail, list and header.
     public func changeSpaceIcon(_ picture: PreparedPicture) async throws {
         membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
-        guard let detail else { return }
+        guard canEditSpaceAppearance, let detail else { return }
         clearNavigationCache()
         let attempt = generation
         let updated = try await ProfilePictureUploader.uploadSpaceIcon(picture, spaceID: detail.space.id, api: api)
         applySpaceIcon(updated, to: detail, attempt: attempt)
     }
 
-    /// Owner only: back to the space's initial.
+    /// Appearance editors: back to the space's initial.
     public func removeSpaceIcon() async throws {
         membershipChanges += 1; defer { membershipChanges -= 1; membershipRevision += 1 }
-        guard let detail else { return }
+        guard canEditSpaceAppearance, let detail else { return }
         clearNavigationCache()
         let attempt = generation
         let updated = try await api.removeSpaceIcon(spaceID: detail.space.id)
@@ -1572,6 +1576,7 @@ public final class AppModel {
             var space = space
             space.iconAsset = updated.iconAsset
             space.iconUrl = updated.iconUrl
+            space.canEditAppearance = updated.canEditAppearance ?? space.canEditAppearance
             return space
         }
         if let current = self.detail, current.space.id == updated.id {

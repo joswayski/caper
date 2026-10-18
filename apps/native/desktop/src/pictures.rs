@@ -437,7 +437,7 @@ pub fn failure(status: Option<u16>, code: Option<&str>, message: &str, target: &
         (_, Some(400)) => "Pictures can be up to 1024 × 1024.",
         (_, Some(404)) => match target {
             Target::Avatar => "That’s no longer available.",
-            Target::SpaceIcon(_) => "Only the space owner can change its icon.",
+            Target::SpaceIcon(_) => "You can’t change this space’s icon.",
         },
         (_, Some(409)) => "The upload didn’t finish. Try again.",
         (_, Some(503)) => UNAVAILABLE,
@@ -1297,7 +1297,7 @@ mod tests {
         );
         assert_eq!(
             message(Some(404), None),
-            "Only the space owner can change its icon."
+            "You can’t change this space’s icon."
         );
         assert_eq!(message(Some(500), None), "server text");
         let unavailable = failure(Some(503), None, "x", &Target::Avatar);

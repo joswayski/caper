@@ -13,6 +13,16 @@ mod invite_links;
 mod joining;
 mod unread;
 mod voice_activity;
+// Only appearance operations may use this predicate. All other management
+// continues to require the real owner. $2 is the viewer, $3 the configured IDs.
+macro_rules! appearance_access_sql {
+    () => {
+        "(s.owner_id=$2 OR (s.external_id=ANY($3::text[])
+          AND EXISTS(SELECT 1 FROM public.feedback_team f WHERE f.user_id=$2 AND f.deleted_at IS NULL)
+          AND EXISTS(SELECT 1 FROM public.space_members sm WHERE sm.space_id=s.id AND sm.user_id=$2 AND sm.deleted_at IS NULL)))"
+    };
+}
+pub(crate) use appearance_access_sql;
 pub(crate) use invite_links::{accept as accept_invite_link, preview as preview_invite_link};
 pub(crate) use joining::channel_participation;
 use joining::{add_channel_member, remove_channel_member};
@@ -239,6 +249,8 @@ struct Space {
     owner_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     icon_asset: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    can_edit_appearance: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -381,25 +393,34 @@ async fn list_spaces(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
 ) -> Result<Json<Value>, ApiError> {
-    let spaces: Vec<Space> = sqlx::query_as::<_, (String, String, String, Option<String>)>(
-        "SELECT s.external_id, s.name, owner.external_id, s.icon_asset
+    let spaces: Vec<Space> =
+        sqlx::query_as::<_, (String, String, String, Option<String>, bool)>(concat!(
+            "SELECT s.external_id, s.name, owner.external_id, s.icon_asset, ",
+            appearance_access_sql!(),
+            "
          FROM public.space_members sm JOIN public.spaces s ON s.id = sm.space_id
          JOIN public.users owner ON owner.id = s.owner_id
          WHERE sm.user_id = $1 AND sm.deleted_at IS NULL AND s.deleted_at IS NULL AND NOT s.demo
-         ORDER BY lower(s.name), s.id",
-    )
-    .bind(principal.user.id)
-    .fetch_all(pool(&state)?)
-    .await
-    .map_err(database_error)?
-    .into_iter()
-    .map(|(id, name, owner_id, icon_asset)| Space {
-        id,
-        name,
-        owner_id,
-        icon_asset,
-    })
-    .collect();
+         ORDER BY lower(s.name), s.id"
+        ))
+        .bind(principal.user.id)
+        // Keep parameter numbering shared with the appearance mutation predicate.
+        .bind(principal.user.id)
+        .bind(&state.config.admin_editable_space_ids)
+        .fetch_all(pool(&state)?)
+        .await
+        .map_err(database_error)?
+        .into_iter()
+        .map(
+            |(id, name, owner_id, icon_asset, can_edit_appearance)| Space {
+                id,
+                name,
+                owner_id,
+                icon_asset,
+                can_edit_appearance: Some(can_edit_appearance),
+            },
+        )
+        .collect();
     // Owners are the only inviters; share their public identity, never the member list.
     let invitations: Vec<Value> = sqlx::query_as::<_, (String, String, String, String, String, Option<String>)>(
         "SELECT s.external_id,s.name,o.external_id,o.username,o.display_name,s.icon_asset FROM public.space_invitations i
@@ -488,6 +509,7 @@ async fn create_space(
             name,
             owner_id: principal.user.external_id,
             icon_asset: None,
+            can_edit_appearance: None,
         }),
     ))
 }
@@ -498,14 +520,15 @@ async fn get_space(
     Path(space): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let pool = pool(&state)?;
-    let row: (i64, String, String, String, Option<String>) = sqlx::query_as(
-        "SELECT s.id,s.name,s.external_id,o.external_id,s.icon_asset FROM public.spaces s
+    let row: (i64, String, String, String, Option<String>, bool) = sqlx::query_as(
+        concat!("SELECT s.id,s.name,s.external_id,o.external_id,s.icon_asset, ", appearance_access_sql!(), " FROM public.spaces s
          JOIN public.users o ON o.id=s.owner_id
          WHERE s.external_id=$1 AND s.deleted_at IS NULL AND NOT s.demo
-           AND EXISTS (SELECT 1 FROM public.space_members WHERE space_id=s.id AND user_id=$2 AND deleted_at IS NULL)",
+           AND EXISTS (SELECT 1 FROM public.space_members WHERE space_id=s.id AND user_id=$2 AND deleted_at IS NULL)"),
     )
     .bind(&space)
     .bind(principal.user.id)
+    .bind(&state.config.admin_editable_space_ids)
     .fetch_optional(pool)
     .await
     .map_err(database_error)?
@@ -560,7 +583,7 @@ async fn get_space(
     .map(|(channel, ids)| (channel, json!(ids)))
     .collect();
     Ok(Json(
-        json!({"space":Space{id:row.2,name:row.1,owner_id:row.3,icon_asset:row.4},"channels":channels,"members":members,"channelMembers":channel_members,"channelInvitations":invitations}),
+        json!({"space":Space{id:row.2,name:row.1,owner_id:row.3,icon_asset:row.4,can_edit_appearance:Some(row.5)},"channels":channels,"members":members,"channelMembers":channel_members,"channelInvitations":invitations}),
     ))
 }
 
@@ -572,10 +595,11 @@ async fn rename_space(
 ) -> Result<Json<Space>, ApiError> {
     let name = space_name(&input.name)?;
     let row: Option<(i64, String, String, Option<String>)> = sqlx::query_as(
-        "UPDATE public.spaces SET name=$3 WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo RETURNING id,external_id,(SELECT external_id FROM public.users WHERE id=$2),icon_asset",
+        concat!("UPDATE public.spaces s SET name=$4 WHERE external_id=$1 AND ", appearance_access_sql!(), " AND deleted_at IS NULL AND NOT demo RETURNING id,external_id,(SELECT external_id FROM public.users WHERE id=s.owner_id),icon_asset"),
     )
     .bind(&space)
     .bind(principal.user.id)
+    .bind(&state.config.admin_editable_space_ids)
     .bind(&name)
     .fetch_optional(pool(&state)?)
     .await
@@ -587,6 +611,7 @@ async fn rename_space(
         name,
         owner_id,
         icon_asset,
+        can_edit_appearance: None,
     }))
 }
 
@@ -607,6 +632,7 @@ pub(crate) async fn summary(pool: &PgPool, space: i64) -> Result<Value, ApiError
         name,
         owner_id,
         icon_asset,
+        can_edit_appearance: None,
     }))
 }
 
@@ -925,6 +951,7 @@ async fn accept_invitation(
         name,
         owner_id,
         icon_asset,
+        can_edit_appearance: None,
     }))
 }
 

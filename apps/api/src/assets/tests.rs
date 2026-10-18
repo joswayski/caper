@@ -2201,6 +2201,256 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
     assert!(cleared.get("iconAsset").is_none());
     assert_eq!(cleared["name"], "Friends");
 
+    // Appearance delegation never grants ownership. Exercise the real space
+    // routes and picture reservation/completion, including revocation in flight.
+    let mut delegated = state.clone();
+    delegated.config.admin_editable_space_ids = vec![space_external.clone()];
+    let request = |state: AppState, who: Principal, method: &str, path: String, body: Value| {
+        let method = method.to_owned();
+        async move {
+            use tower::ServiceExt;
+            let response = crate::spaces::routes()
+                .layer(Extension(who))
+                .with_state(state)
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(method.as_str())
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+    sqlx::query("INSERT INTO public.feedback_team(user_id) VALUES($1)")
+        .bind(outsider.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Listed admins without membership are not editors.
+    assert_eq!(
+        create(
+            State(delegated.clone()),
+            Extension(outsider.clone()),
+            Json(picture("spaceIcon", "image/png", 100, 100))
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    let (status, _) = request(
+        delegated.clone(),
+        outsider.clone(),
+        "PATCH",
+        format!("/api/spaces/{space_external}"),
+        json!({"name":"No membership"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        crate::pictures::remove_icon(
+            State(delegated.clone()),
+            Extension(outsider.clone()),
+            Path(space_external.clone())
+        )
+        .await
+        .unwrap_err()
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+        .bind(space_id)
+        .bind(outsider.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (configured, active_admin, expected) in [
+        (false, true, false),
+        (true, false, false),
+        (true, true, true),
+    ] {
+        sqlx::query("UPDATE public.feedback_team SET deleted_at=CASE WHEN $2 THEN NULL ELSE now() END WHERE user_id=$1")
+            .bind(outsider.user.id).bind(active_admin).execute(&pool).await.unwrap();
+        let current = if configured {
+            delegated.clone()
+        } else {
+            state.clone()
+        };
+        let (status, body) = request(
+            current.clone(),
+            outsider.clone(),
+            "GET",
+            format!("/api/spaces/{space_external}"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["space"]["canEditAppearance"], expected);
+        assert_eq!(body["space"]["ownerId"], owner.user.external_id);
+        let (_, list) = request(
+            current.clone(),
+            outsider.clone(),
+            "GET",
+            "/api/spaces".into(),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(list["spaces"][0]["canEditAppearance"], expected);
+        let (status, renamed) = request(
+            current.clone(),
+            outsider.clone(),
+            "PATCH",
+            format!("/api/spaces/{space_external}"),
+            json!({"name":"Friends"}),
+        )
+        .await;
+        assert_eq!(
+            status,
+            if expected {
+                StatusCode::OK
+            } else {
+                StatusCode::NOT_FOUND
+            }
+        );
+        if expected {
+            assert_eq!(renamed["ownerId"], owner.user.external_id);
+            assert!(renamed.get("canEditAppearance").is_none());
+        }
+        let removed = crate::pictures::remove_icon(
+            State(current.clone()),
+            Extension(outsider.clone()),
+            Path(space_external.clone()),
+        )
+        .await;
+        assert_eq!(removed.is_ok(), expected);
+        let reserved = create(
+            State(current),
+            Extension(outsider.clone()),
+            Json(picture("spaceIcon", "image/png", icon_bytes.len(), 256)),
+        )
+        .await;
+        assert_eq!(reserved.is_ok(), expected);
+    }
+    // No membership, channel, invitation or deletion privileges come with it.
+    for (method, suffix, body) in [
+        ("DELETE", "", Value::Null),
+        (
+            "POST",
+            "/channels",
+            json!({"name":"admin-channel","private":false}),
+        ),
+        ("POST", "/members", json!({"username":"owner"})),
+    ] {
+        let (status, _) = request(
+            delegated.clone(),
+            outsider.clone(),
+            method,
+            format!("/api/spaces/{space_external}{suffix}"),
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+    // Every kind of revocation after reservation prevents completion.
+    for revocation in ["allowlist", "admin", "membership", "none"] {
+        let (_, Json(upload)) = create(
+            State(delegated.clone()),
+            Extension(outsider.clone()),
+            Json(picture("spaceIcon", "image/png", icon_bytes.len(), 256)),
+        )
+        .await
+        .unwrap();
+        put(&upload, "upload", &icon_bytes).await;
+        if revocation == "admin" {
+            sqlx::query("UPDATE public.feedback_team SET deleted_at=now() WHERE user_id=$1")
+                .bind(outsider.user.id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        if revocation == "membership" {
+            sqlx::query("UPDATE public.space_members SET deleted_at=now() WHERE space_id=$1 AND user_id=$2 AND deleted_at IS NULL").bind(space_id).bind(outsider.user.id).execute(&pool).await.unwrap();
+        }
+        let completion_state = if revocation == "allowlist" {
+            state.clone()
+        } else {
+            delegated.clone()
+        };
+        let result = complete(
+            State(completion_state),
+            Extension(outsider.clone()),
+            Path(upload["id"].as_str().unwrap().to_owned()),
+        )
+        .await;
+        if revocation == "none" {
+            let body = result.unwrap().0;
+            assert_eq!(body["space"]["iconAsset"], upload["id"]);
+            assert_eq!(body["space"]["ownerId"], owner.user.external_id);
+            assert!(body["space"].get("canEditAppearance").is_none());
+            // Even the idempotent completion response rechecks access.
+            assert_eq!(
+                complete(
+                    State(state.clone()),
+                    Extension(outsider.clone()),
+                    Path(upload["id"].as_str().unwrap().to_owned())
+                )
+                .await
+                .unwrap_err()
+                .status,
+                StatusCode::NOT_FOUND
+            );
+        } else {
+            assert_eq!(result.unwrap_err().status, StatusCode::NOT_FOUND);
+            let icon: Option<String> =
+                sqlx::query_scalar("SELECT icon_asset FROM public.spaces WHERE id=$1")
+                    .bind(space_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert!(icon.is_none());
+        }
+        sqlx::query("UPDATE public.feedback_team SET deleted_at=NULL WHERE user_id=$1")
+            .bind(outsider.user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        if revocation == "membership" {
+            sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+                .bind(space_id)
+                .bind(outsider.user.id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
+    assert!(
+        crate::spaces::summary(&pool, space_id)
+            .await
+            .unwrap()
+            .get("canEditAppearance")
+            .is_none()
+    );
+    let (_, owner_detail) = request(
+        state.clone(),
+        owner.clone(),
+        "GET",
+        format!("/api/spaces/{space_external}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(owner_detail["space"]["canEditAppearance"], true);
+
     // Picture changes are limited per day, separately from file uploads.
     sqlx::query("UPDATE public.assets SET created_at=now() WHERE owner_id=$1")
         .bind(owner.user.id)

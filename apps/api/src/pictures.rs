@@ -206,8 +206,8 @@ pub(crate) enum Outcome {
     /// A picture reserved after this one already completed, so this one is
     /// kept like a replaced picture without undoing the newer choice.
     Superseded,
-    /// The space is no longer the uploader's (or their account is gone), so
-    /// the caller discards the upload.
+    /// The uploader can no longer edit the space (or their account is gone),
+    /// so the caller discards the upload.
     Gone,
 }
 
@@ -218,6 +218,7 @@ pub(crate) async fn apply(
     asset: &str,
     owner: i64,
     space: Option<i64>,
+    admin_editable_space_ids: &[String],
 ) -> Result<Outcome, sqlx::Error> {
     // Lock the account or space first: concurrent completions then check for a
     // newer picture one after another, each seeing the other's committed row.
@@ -228,13 +229,18 @@ pub(crate) async fn apply(
                 .fetch_optional(&mut *tx)
                 .await?
         }
-        (Purpose::SpaceIcon, Some(space)) => sqlx::query(
-            "SELECT 1 FROM public.spaces WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo FOR UPDATE",
-        )
-        .bind(space)
-        .bind(owner)
-        .fetch_optional(&mut *tx)
-        .await?,
+        (Purpose::SpaceIcon, Some(space)) => {
+            sqlx::query(concat!(
+                "SELECT 1 FROM public.spaces s WHERE id=$1 AND ",
+                crate::spaces::appearance_access_sql!(),
+                " AND deleted_at IS NULL AND NOT demo FOR UPDATE"
+            ))
+            .bind(space)
+            .bind(owner)
+            .bind(admin_editable_space_ids)
+            .fetch_optional(&mut *tx)
+            .await?
+        }
         _ => None,
     };
     if locked.is_none() {
@@ -245,7 +251,7 @@ pub(crate) async fn apply(
     // after it must not be undone either.
     let newer: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM public.assets n JOIN public.assets a ON a.external_id=$1
-         WHERE n.owner_id=$2 AND n.purpose=a.purpose AND n.space_id IS NOT DISTINCT FROM a.space_id
+         WHERE (a.purpose='space_icon' OR n.owner_id=$2) AND n.purpose=a.purpose AND n.space_id IS NOT DISTINCT FROM a.space_id
            AND n.uploaded_at IS NOT NULL AND n.deleted_at IS NULL
            AND (n.created_at,n.id) > (a.created_at,a.id))",
     )
@@ -265,11 +271,12 @@ pub(crate) async fn apply(
         .execute(&mut *tx)
         .await?,
         (Purpose::SpaceIcon, Some(space)) => sqlx::query(
-            "UPDATE public.spaces SET icon_asset=$1 WHERE id=$2 AND owner_id=$3 AND deleted_at IS NULL AND NOT demo",
+            concat!("UPDATE public.spaces s SET icon_asset=$4 WHERE id=$1 AND ", crate::spaces::appearance_access_sql!(), " AND deleted_at IS NULL AND NOT demo"),
         )
-        .bind(asset)
         .bind(space)
         .bind(owner)
+        .bind(admin_editable_space_ids)
+        .bind(asset)
         .execute(&mut *tx)
         .await?,
         _ => return Ok(Outcome::Gone),
@@ -347,11 +354,14 @@ pub(crate) async fn remove_icon(
     Path(space): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
     let pool = pool(&state)?;
-    let id: i64 = sqlx::query_scalar(
-        "UPDATE public.spaces SET icon_asset=NULL WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo RETURNING id",
-    )
+    let id: i64 = sqlx::query_scalar(concat!(
+        "UPDATE public.spaces s SET icon_asset=NULL WHERE external_id=$1 AND ",
+        crate::spaces::appearance_access_sql!(),
+        " AND deleted_at IS NULL AND NOT demo RETURNING id"
+    ))
     .bind(&space)
     .bind(principal.user.id)
+    .bind(&state.config.admin_editable_space_ids)
     .fetch_optional(pool)
     .await
     .map_err(|_| crate::assets::unavailable())?

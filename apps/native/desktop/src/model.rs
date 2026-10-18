@@ -228,6 +228,7 @@ impl Space {
         self.name.clone_from(&update.name);
         self.icon_asset.clone_from(&update.icon_asset);
         self.icon_url.clone_from(&update.icon_url);
+        self.can_edit_appearance = update.can_edit_appearance.or(self.can_edit_appearance);
         true
     }
 }
@@ -299,6 +300,9 @@ pub struct Space {
     pub id: String,
     pub name: String,
     pub owner_id: String,
+    /// Only Some(true) grants editing; None keeps viewer state on shared summaries.
+    #[serde(default)]
+    pub can_edit_appearance: Option<bool>,
     pub inviter: Option<Inviter>,
     #[serde(default)]
     pub demo: bool,

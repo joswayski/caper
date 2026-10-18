@@ -560,7 +560,7 @@ pub(crate) async fn accept(
     };
     tx.commit().await.map_err(database_error)?;
     Ok(Json(json!({
-        "space": Space { id: space, name, owner_id, icon_asset },
+        "space": Space { id: space, name, owner_id, icon_asset, can_edit_appearance: None },
         "channelId": channel,
         "joined": !member,
     })))

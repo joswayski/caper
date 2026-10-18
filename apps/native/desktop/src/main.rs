@@ -2149,6 +2149,7 @@ impl CaperApp {
                     // channel, a muted DM with unread messages (no dot) and
                     // a DM with notifications off (still dotted).
                     let quiet = model::Space {
+                        can_edit_appearance: None,
                         icon_asset: None,
                         icon_url: None,
                         id: "space0000002".into(),
@@ -2202,6 +2203,7 @@ impl CaperApp {
                     }
                 } else if matches!(name, "parity-invitation" | "parity-invitation-narrow") {
                     let invitation = model::Space {
+                        can_edit_appearance: None,
                         icon_asset: None,
                         icon_url: None,
                         id: "invite000001".into(),
@@ -2862,6 +2864,7 @@ impl CaperApp {
     fn install_fixture(&mut self) {
         use model::{Channel, Content, Message, Space};
         let demo = Space {
+            can_edit_appearance: None,
             icon_asset: None,
             icon_url: None,
             id: "demo00000002".into(),
@@ -2871,6 +2874,7 @@ impl CaperApp {
             demo: true,
         };
         let space = Space {
+            can_edit_appearance: None,
             icon_asset: None,
             icon_url: None,
             id: "space0000001".into(),
@@ -5503,6 +5507,9 @@ impl CaperApp {
     }
 
     fn open_manage_space(&mut self) {
+        if !self.can_edit_space_appearance() {
+            return;
+        }
         self.form_name = self
             .detail
             .as_ref()
@@ -5518,6 +5525,11 @@ impl CaperApp {
         self.member_refocus = false;
         self.member_status = None;
         self.reset_invite_links();
+        if !self.owner() {
+            self.managed_members.clear();
+            self.dialog = Some(Dialog::ManageSpace);
+            return;
+        }
         if let (Some(token), Some(space)) = (self.token.clone(), self.selected_space.clone()) {
             self.invite_links.loading = true;
             self.account_op(AccountOperation::LoadInviteLinks {
@@ -5797,6 +5809,7 @@ impl CaperApp {
         }
         if general {
             let demo = model::Space {
+                can_edit_appearance: None,
                 icon_asset: None,
                 icon_url: None,
                 id: history.space.id.clone(),
@@ -8425,10 +8438,18 @@ impl CaperApp {
             }
             AdminResult::SpaceUpdated(space) => {
                 if let Some(item) = self.spaces.iter_mut().find(|item| item.id == space.id) {
+                    let capability = space.can_edit_appearance.or(item.can_edit_appearance);
                     *item = space.clone();
+                    item.can_edit_appearance = capability;
                 }
-                if let Some(detail) = &mut self.detail {
+                if let Some(detail) = &mut self.detail
+                    && detail.space.id == space.id
+                {
+                    let capability = space
+                        .can_edit_appearance
+                        .or(detail.space.can_edit_appearance);
                     detail.space = space;
+                    detail.space.can_edit_appearance = capability;
                 }
                 self.dialog = None;
             }
@@ -11064,22 +11085,19 @@ impl CaperApp {
                                     self.notification_items(ui, scope, "space");
                                     ui.separator();
                                 }
-                                if self.can_leave_space() {
-                                    if ui
+                                if self.can_leave_space() && ui
                                         .button(RichText::new("Leave space…").color(ERROR))
                                         .clicked()
-                                    {
-                                        if let Some(detail) = &self.detail {
-                                            self.dialog = Some(Dialog::LeaveSpace {
-                                                id: detail.space.id.clone(),
-                                                name: detail.space.name.clone(),
-                                            });
-                                        }
-                                        ui.close();
+                                {
+                                    if let Some(detail) = &self.detail {
+                                        self.dialog = Some(Dialog::LeaveSpace {
+                                            id: detail.space.id.clone(),
+                                            name: detail.space.name.clone(),
+                                        });
                                     }
-                                    return;
+                                    ui.close();
                                 }
-                                if ui
+                                if self.can_edit_space_appearance() && ui
                                     .add(
                                         egui::Button::image_and_text(
                                             egui::Image::new(egui::include_image!(
@@ -20721,6 +20739,14 @@ impl CaperApp {
             })
     }
 
+    fn can_edit_space_appearance(&self) -> bool {
+        self.owner()
+            || self.account.is_some()
+                && self.detail.as_ref().is_some_and(|detail| {
+                    !detail.space.demo && detail.space.can_edit_appearance == Some(true)
+                })
+    }
+
     fn dialogs(&mut self, context: &egui::Context, dialog_was_open: bool) {
         let Some(dialog) = self.dialog.clone() else {
             self.dialog_shown = None;
@@ -20920,7 +20946,7 @@ impl CaperApp {
                                         if matches!(dialog, Dialog::ManageSpace) {
                                             ui.add_space(5.0);
                                             ui.label(
-                                                RichText::new("Only the owner can change this space and its membership.")
+                                                RichText::new(if self.owner() { "Manage this space’s name, icon and membership." } else { "Change this space’s name and icon." })
                                                     .size(12.0)
                                                     .color(MUTED),
                                             );
@@ -21936,8 +21962,12 @@ impl CaperApp {
     }
 
     fn space_dialog(&mut self, ui: &mut egui::Ui, manage: bool) {
+        if manage && !self.can_edit_space_appearance() {
+            self.dialog = None;
+            return;
+        }
         if manage
-            && self.owner()
+            && self.can_edit_space_appearance()
             && let Some(space) = self.detail.as_ref().map(|detail| {
                 // The rail's copy changes first; the open space follows.
                 self.spaces
@@ -22015,7 +22045,7 @@ impl CaperApp {
                 }
             }
         }
-        if manage {
+        if manage && self.owner() {
             ui.separator();
             self.invite_link_section(ui);
             ui.add_space(14.0);
@@ -37281,6 +37311,7 @@ mod tests {
         app.token = Some("fixture-token".into());
         let open = app.detail.clone().unwrap();
         let invited = Space {
+            can_edit_appearance: None,
             icon_asset: None,
             icon_url: None,
             id: "space0000002".into(),
@@ -38728,6 +38759,7 @@ mod tests {
         use crate::gateway::ProfileEvent;
         let (_context, mut app) = fixture("parity-pictures");
         let space = |id: &str, icon: Option<&str>| model::Space {
+            can_edit_appearance: None,
             id: id.into(),
             name: "Renamed Studio".into(),
             owner_id: "fixture-owner".into(),
@@ -38923,6 +38955,60 @@ mod tests {
         app.account.as_mut().unwrap().id = "fixture-maya".into();
         let output = render(&mut app, &context, vec![]);
         assert!(labelled_center(&output, "Change space icon").is_none());
+    }
+
+    #[test]
+    fn appearance_editors_keep_leave_without_owner_controls_and_survive_shared_summaries() {
+        let (context, mut app) = fixture("parity-pictures-space");
+        app.account.as_mut().unwrap().id = "fixture-maya".into();
+        assert!(!app.can_edit_space_appearance());
+        for flag in [Some(false), None] {
+            app.detail.as_mut().unwrap().space.can_edit_appearance = flag;
+            app.dialog = None;
+            app.open_manage_space();
+            assert!(app.dialog.is_none());
+        }
+        app.detail.as_mut().unwrap().space.can_edit_appearance = Some(true);
+        app.spaces[1].can_edit_appearance = Some(true);
+        assert!(!app.owner());
+        assert!(app.can_leave_space());
+        app.open_manage_space();
+        assert!(matches!(app.dialog, Some(Dialog::ManageSpace)));
+        assert!(!app.invite_links.loading);
+        assert!(app.managed_members.is_empty());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(labelled_center(&output, "Change space icon").is_some());
+        assert!(shows(&output, "Save name"));
+        let bounds =
+            context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+        for hidden in [
+            "Pending invitations",
+            "Members",
+            "Delete space",
+            "Invite links",
+        ] {
+            // The ordinary member sidebar behind the modal remains available to members.
+            assert!(
+                !output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text)
+                    if text.galley.job.text == hidden && bounds.contains(text.pos))
+                }),
+                "{hidden} management is owner-only"
+            );
+        }
+        let mut summary = app.detail.as_ref().unwrap().space.clone();
+        summary.can_edit_appearance = None;
+        summary.name = "Renamed studio".into();
+        app.admin_result(crate::worker::AdminResult::SpaceUpdated(summary.clone()));
+        app.space_icon_changed(&summary);
+        assert!(app.can_edit_space_appearance());
+        assert_eq!(app.spaces[1].can_edit_appearance, Some(true));
+        assert!(!app.owner());
+        assert!(app.can_leave_space());
+        summary.can_edit_appearance = Some(false);
+        app.admin_result(crate::worker::AdminResult::SpaceUpdated(summary));
+        assert!(!app.can_edit_space_appearance());
     }
 
     #[test]
@@ -39153,6 +39239,7 @@ mod tests {
         app.token = Some("account-token".into());
         app.spaces.extend([
             model::Space {
+                can_edit_appearance: None,
                 icon_asset: None,
                 icon_url: None,
                 id: "another-space".into(),
@@ -39162,6 +39249,7 @@ mod tests {
                 demo: false,
             },
             model::Space {
+                can_edit_appearance: None,
                 icon_asset: None,
                 icon_url: None,
                 id: "someone-elses-space".into(),
@@ -39171,6 +39259,7 @@ mod tests {
                 demo: false,
             },
             model::Space {
+                can_edit_appearance: None,
                 icon_asset: None,
                 icon_url: None,
                 id: "demo-space".into(),
@@ -39398,6 +39487,7 @@ mod tests {
         );
         app.token = Some("account-token".into());
         app.spaces.push(model::Space {
+            can_edit_appearance: None,
             icon_asset: None,
             icon_url: None,
             id: "another-space".into(),
@@ -46547,6 +46637,7 @@ mod tests {
         let api = crate::api::Api::new("http://127.0.0.1:9").unwrap();
         let mut app = CaperApp::new(&context, api, Some("signed-out"));
         let first = Space {
+            can_edit_appearance: None,
             icon_asset: None,
             icon_url: None,
             id: "first-account-space".into(),
@@ -46592,6 +46683,7 @@ mod tests {
             account(true),
             Spaces {
                 spaces: vec![Space {
+                    can_edit_appearance: None,
                     icon_asset: None,
                     icon_url: None,
                     id: "first-account-space".into(),
@@ -46766,6 +46858,7 @@ mod tests {
             .collect();
         let detail = SpaceDetail {
             space: Space {
+                can_edit_appearance: None,
                 icon_asset: None,
                 icon_url: None,
                 id: "space".into(),

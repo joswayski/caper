@@ -897,6 +897,7 @@ function MemberManager({
 
 function ManageSpaceDialog({
   detail,
+  owner,
   inviteOnly = false,
   inviteChannelId,
   people,
@@ -905,6 +906,7 @@ function ManageSpaceDialog({
   onDeleted,
 }: {
   detail: SpaceDetail;
+  owner: boolean;
   inviteOnly?: boolean;
   inviteChannelId?: string;
   /** Known accounts (`GET /api/people`) the invite field suggests; undefined until loaded. */
@@ -922,6 +924,7 @@ function ManageSpaceDialog({
   const nameForm = useRef<HTMLFormElement>(null);
   const refocusName = useNameRefocus(nameForm, pending);
   useEffect(() => {
+    if (!owner) return;
     let current = true;
     void listSpaceInvitations(detail.space.id)
       .then((result) => {
@@ -933,7 +936,7 @@ function ManageSpaceDialog({
     return () => {
       current = false;
     };
-  }, [detail.space.id]);
+  }, [detail.space.id, owner]);
   const run = async (action: () => Promise<void>) => {
     setPending(true);
     setError(undefined);
@@ -949,7 +952,9 @@ function ManageSpaceDialog({
       description={
         inviteOnly
           ? "Share a link or invite someone by username."
-          : "Only the owner can change this space and its membership."
+          : owner
+            ? "Only the owner can change this space and its membership."
+            : "Admins can change this release-review space’s name and icon. Membership stays owner-only."
       }
       onClose={onClose}
       width="wide"
@@ -967,7 +972,7 @@ function ManageSpaceDialog({
             void run(async () => {
               const space = await updateSpace(detail.space.id, name);
               setName(space.name);
-              onChanged({ ...detail, space, members });
+              onChanged({ ...detail, space: withSpaceIcon(detail.space, space), members });
             }).catch((reason) => setError(errorMessage(reason)));
           }}
         >
@@ -1002,45 +1007,49 @@ function ManageSpaceDialog({
           />
         </div>
       )}
-      <InviteLinkManager
-        key={`${detail.space.id}-${inviteChannelId ?? "default"}`}
-        spaceId={detail.space.id}
-        channels={detail.channels}
-        prepareDefault={inviteOnly}
-        channelId={inviteChannelId}
-      />
-      <MemberManager
-        inviteOnly={inviteOnly}
-        members={members}
-        invitations={invitations}
-        suggestions={withInvited(excludePeople(people ?? [], members, invitations), invitations)}
-        pending={pending}
-        onAdd={(username) =>
-          run(async () => {
-            const member = await addSpaceMember(detail.space.id, username);
-            setInvitations((current) => [...current.filter((item) => item.id !== member.id), member]);
-          })
-        }
-        onCancel={(member) =>
-          run(async () => {
-            await cancelSpaceInvitation(detail.space.id, member.id);
-            setInvitations((current) => current.filter((item) => item.id !== member.id));
-          })
-        }
-        removalCopy={(member) => ({
-          title: `Remove ${member.displayName}?`,
-          description: `They’ll lose access to ${detail.space.name} and its channels and can’t rejoin with an invite link. You can invite them again by username later.`,
-        })}
-        onRemove={async (member) =>
-          run(async () => {
-            await removeSpaceMember(detail.space.id, member.id);
-            const next = members.filter((item) => item.id !== member.id);
-            setMembers(next);
-            onChanged({ ...detail, members: next });
-          })
-        }
-      />
-      {!inviteOnly && (
+      {owner && (
+        <InviteLinkManager
+          key={`${detail.space.id}-${inviteChannelId ?? "default"}`}
+          spaceId={detail.space.id}
+          channels={detail.channels}
+          prepareDefault={inviteOnly}
+          channelId={inviteChannelId}
+        />
+      )}
+      {owner && (
+        <MemberManager
+          inviteOnly={inviteOnly}
+          members={members}
+          invitations={invitations}
+          suggestions={withInvited(excludePeople(people ?? [], members, invitations), invitations)}
+          pending={pending}
+          onAdd={(username) =>
+            run(async () => {
+              const member = await addSpaceMember(detail.space.id, username);
+              setInvitations((current) => [...current.filter((item) => item.id !== member.id), member]);
+            })
+          }
+          onCancel={(member) =>
+            run(async () => {
+              await cancelSpaceInvitation(detail.space.id, member.id);
+              setInvitations((current) => current.filter((item) => item.id !== member.id));
+            })
+          }
+          removalCopy={(member) => ({
+            title: `Remove ${member.displayName}?`,
+            description: `They’ll lose access to ${detail.space.name} and its channels and can’t rejoin with an invite link. You can invite them again by username later.`,
+          })}
+          onRemove={async (member) =>
+            run(async () => {
+              await removeSpaceMember(detail.space.id, member.id);
+              const next = members.filter((item) => item.id !== member.id);
+              setMembers(next);
+              onChanged({ ...detail, members: next });
+            })
+          }
+        />
+      )}
+      {owner && !inviteOnly && (
         <section className="danger-zone">
           <h3>Delete space</h3>
           <p>Delete this space and all its channels for every member.</p>
@@ -3297,7 +3306,7 @@ export default function Spaces({
                     saveNotifications(`space:${spaceId}`, () => changeSpaceNotifications(spaceId, change));
                   }}
                 />
-                {owner ? (
+                {(owner || detail.space.canEditAppearance) && (
                   <>
                     <button
                       type="button"
@@ -3310,7 +3319,8 @@ export default function Spaces({
                       Space settings
                     </button>
                   </>
-                ) : (
+                )}
+                {!owner && (
                   <button
                     type="button"
                     className="leave-space"
@@ -3820,10 +3830,12 @@ export default function Spaces({
           }}
         />
       )}
-      {(dialog === "manage-space" || dialog === "invite-people") && (
+      {((dialog === "manage-space" && (owner || detail.space.canEditAppearance)) ||
+        (dialog === "invite-people" && owner)) && (
         <ManageSpaceDialog
           key={`${detail.space.id}-${dialog}`}
           detail={detail}
+          owner={owner}
           inviteOnly={dialog === "invite-people"}
           inviteChannelId={dialog === "invite-people" ? inviteChannelId : undefined}
           people={people}

@@ -245,7 +245,7 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertEqual(message(APIError(status: 400, message: "invalid dimensions")), "Pictures can be up to 1024 × 1024.")
         XCTAssertEqual(message(APIError(status: 429, message: "x", code: "picture_rate_limited")),
                        "You’ve changed pictures too many times today. Try again tomorrow.")
-        XCTAssertEqual(message(APIError(status: 404, message: "x"), .spaceIcon), "Only the space owner can change its icon.")
+        XCTAssertEqual(message(APIError(status: 404, message: "x"), .spaceIcon), "You can’t change this space’s icon.")
         XCTAssertEqual(message(APIError(status: 409, message: "upload not finished")), "The upload didn’t finish. Try again.")
         XCTAssertEqual(message(APIError(status: 503, message: "x")), "Picture uploads aren’t available right now.")
         XCTAssertTrue(ProfilePicturePolicy.uploadsUnavailable(APIError(status: 503, message: "x")))
@@ -564,6 +564,45 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertNil(model.detail?.space.iconPicture)
         XCTAssertEqual(model.spaces.map { $0.iconPicture?.asset }, [nil, nil])
         XCTAssertEqual(model.spaces.first?.name, "Studio")
+    }
+
+    @MainActor
+    func testAppearanceEditorCanRenameAndRemoveIconWithoutOwnershipAndKeepsCapability() async throws {
+        PictureURLProtocol.handler = { request in
+            switch (request.httpMethod ?? "GET", request.url?.path ?? "") {
+            case ("PATCH", "/api/spaces/\(spaceID)"), ("DELETE", "/api/spaces/\(spaceID)/icon"):
+                return (200, Data(#"{"id":"\#(spaceID)","name":"Renamed","ownerId":"owner"}"#.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let model = AppModel(api: client())
+        model.account = Account(id: "self", username: "me", displayName: "Me")
+        var studio = Space(id: spaceID, name: "Studio", ownerId: "owner")
+        model.spaces = [studio]
+        model.detail = SpaceDetail(space: studio, channels: [], members: [])
+        XCTAssertFalse(model.canEditSpaceAppearance, "missing means no permission")
+        studio.canEditAppearance = true
+        model.spaces = [studio]
+        model.detail = SpaceDetail(space: studio, channels: [], members: [])
+        XCTAssertTrue(model.canEditSpaceAppearance)
+        XCTAssertFalse(model.isOwner)
+        XCTAssertFalse(model.canCreateChannel)
+        try await model.loadSpaceInvitations()
+        let links = try await model.loadInviteLinks()
+        XCTAssertTrue(links.isEmpty)
+        XCTAssertTrue(PictureURLProtocol.requests.isEmpty, "appearance editing must not fetch owner resources")
+        try await model.renameSpace("Renamed")
+        try await model.removeSpaceIcon()
+        XCTAssertEqual(model.detail?.space.name, "Renamed")
+        XCTAssertEqual(model.detail?.space.canEditAppearance, true)
+        XCTAssertEqual(model.spaces.first?.canEditAppearance, true)
+        XCTAssertFalse(model.isOwner)
+        var update = Space(id: spaceID, name: "Live rename", ownerId: "owner")
+        model.applySpaceUpdate(update)
+        XCTAssertTrue(model.canEditSpaceAppearance, "shared gateway summaries keep the viewer grant")
+        update.canEditAppearance = false
+        model.applySpaceUpdate(update)
+        XCTAssertFalse(model.canEditSpaceAppearance)
     }
 
     @MainActor

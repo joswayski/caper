@@ -1230,9 +1230,9 @@ private struct ChannelSidebar: View {
             if let space = model.detail?.space, space.demo != true {
                 Button("Invite people…") { sheet = .invitePeople(spaceID: space.id, channelID: nil) }
             }
-            Button("Space settings") { sheet = .manageSpace }
         }
-        else if model.account != nil && model.detail?.space.demo != true { Button("Leave space…", role: .destructive) { sheet = .leaveSpace } }
+        if model.canEditSpaceAppearance { Button("Space settings") { sheet = .manageSpace } }
+        if !model.isOwner && model.account != nil && model.detail?.space.demo != true { Button("Leave space…", role: .destructive) { sheet = .leaveSpace } }
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -7365,7 +7365,11 @@ private struct WorkspaceSheetView: View {
                 }
                 .onChange(of: model.selectedSpaceID) { _, _ in close() }
                 .onChange(of: model.isOwner) { _, owner in if !owner { close() } }
-            case .manageSpace: SpaceEditor(model: model, close: close, managing: true)
+            case .manageSpace:
+                Group {
+                    if model.canEditSpaceAppearance { SpaceEditor(model: model, close: close, managing: true) }
+                }
+                .onChange(of: model.canEditSpaceAppearance) { _, allowed in if !allowed { close() } }
             case .manageChannel(let channel): ChannelEditor(model: model, channel: channel, close: close)
             case .invitation(let space): InvitationSheet(model: model, invitation: space, close: close)
             case .channelInvitation(let invitation): ChannelInvitationSheet(model: model, invitation: invitation, close: close)
@@ -9019,7 +9023,7 @@ private struct SpaceEditor: View {
     }
     var body: some View {
         VStack(spacing: 0) {
-            SheetHeader(title: inviteOnly ? "Invite people" : managing ? "Manage space" : "Create a space", detail: inviteOnly ? model.detail?.space.name : managing ? "Only the owner can change this space and its membership." : nil, closeDisabled: creating, close: close)
+            SheetHeader(title: inviteOnly ? "Invite people" : managing ? "Manage space" : "Create a space", detail: inviteOnly ? model.detail?.space.name : managing ? (model.isOwner ? "Manage this space’s name, icon and membership." : "Change this space’s name and icon.") : nil, closeDisabled: creating, close: close)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     if !inviteOnly {
@@ -9029,11 +9033,11 @@ private struct SpaceEditor: View {
                             .disabled(pending || (!managing && model.limits != nil && !model.canCreateSpace))
                         if !managing { createFooter }
                     }
-                    if managing {
+                    if managing && !inviteOnly { iconSection }
+                    if managing && model.isOwner {
                         if inviteOnly {
                             DefaultInviteLinkSection(model: model, channelID: inviteChannelID).id(model.detail?.space.id)
                         } else {
-                            iconSection
                             Divider().overlay(CaperTheme.border)
                             InviteLinksSection(model: model, mutationPending: .constant(false)).id(model.detail?.space.id)
                         }
@@ -9089,9 +9093,9 @@ private struct SpaceEditor: View {
         }.background(CaperTheme.surface).onAppear { name = managing ? model.detail?.space.name ?? "" : ""; if !managing { nameFocused = true } }
         .onChange(of: pending) { _, running in if !running && refocusMember { refocusMember = false; memberFocused = true } }
         .interactiveDismissDisabled(creating).preference(key: DialogDismissDisabled.self, value: creating)
-        .task(id: model.detail?.space.id) { if managing { do { try await model.loadSpaceInvitations() } catch { self.error = FriendlyError.message(for: error) } } }
+        .task(id: model.detail?.space.id) { if managing && model.isOwner { do { try await model.loadSpaceInvitations() } catch { self.error = FriendlyError.message(for: error) } } }
         // Invite suggestions; a refresh keeps the previous list until it lands.
-        .task { if managing { await model.refreshPeople() } }
+        .task { if managing && model.isOwner { await model.refreshPeople() } }
         .sheet(isPresented: $confirmDelete) {
             ConfirmationSheet(title: "Delete space", detail: "Delete \(model.detail?.space.name ?? name) for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", action: "Delete space", close: { confirmDelete = false }) {
                 try await model.deleteCurrentSpace()
@@ -9108,9 +9112,9 @@ private struct SpaceEditor: View {
             .modifier(ConfirmationPresentation())
         }
     }
-    /// Owners only: the space's icon (or its initial tile) in its frame.
+    /// Appearance editors: the space's icon (or its initial tile) in its frame.
     @ViewBuilder private var iconSection: some View {
-        if model.isOwner, let space = model.detail?.space, space.demo != true {
+        if model.canEditSpaceAppearance, let space = model.detail?.space, space.demo != true {
             Divider().overlay(CaperTheme.border)
             let side = PictureEditor<EmptyView>.side
             PictureEditor(purpose: .spaceIcon, hasPicture: space.iconAsset != nil,

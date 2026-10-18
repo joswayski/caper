@@ -25,7 +25,13 @@ function fixture() {
     avatarId: 0,
     debugEnabled: new URL(location.href).searchParams.has("debug"),
   };
-  const space = { id: "space1234567", name: "Disposable UI fixture", ownerId: account.id };
+  const appearance = new URL(location.href).searchParams.get("appearance");
+  const space = {
+    id: "space1234567",
+    name: "Disposable UI fixture",
+    ownerId: appearance ? "otherowner12" : account.id,
+    ...(appearance ? { canEditAppearance: appearance === "allowed" } : {}),
+  };
   const channel = {
     id: "channel12345",
     spaceId: space.id,
@@ -43,6 +49,7 @@ function fixture() {
     })),
   ];
   const control = (window.spaceControlFixture = {
+    requests: [],
     deletes: [],
     updates: [],
     memberAdds: [],
@@ -111,6 +118,7 @@ function fixture() {
   window.fetch = async (input, options = {}) => {
     const path = new URL(typeof input === "string" ? input : input.url, location.href).pathname;
     if (!path.startsWith("/api/")) return originalFetch(input, options);
+    control.requests.push(path);
     if (path === "/api/notifications/settings")
       return Response.json({ level: "all", mobile: "whenInactive", overrides: [] });
     if (path === "/api/account/privacy") return Response.json({ directMessages: "anyone" });
@@ -144,7 +152,8 @@ function fixture() {
       control.updates.push({ path, body });
       const target = path.includes("/channels/") ? channel : space;
       Object.assign(target, body);
-      return Response.json(target);
+      const { canEditAppearance: _capability, ...summary } = target;
+      return Response.json(summary);
     }
     if (options.method === "DELETE") {
       control.deletes.push(path);
@@ -590,12 +599,55 @@ function testModalGeometry() {
       : "PASS: desktop/narrow/short modal geometry, centered settings, editable exact-username add/Enter/pending guard, mobile inset navigation/account alignment, and member Close/outside dismissal (mock API/gateway).",
   );
 }
+function testAppearanceAccess() {
+  for (const width of [1280, 390]) {
+    browser("set", "viewport", String(width), "900", "2");
+    for (const permission of ["allowed", "denied"]) {
+      browser("open", `${url}?space=space1234567&channel=channel12345&appearance=${permission}`);
+      wait('!!document.querySelector(".channel-navigation")');
+      if (width < 760) openBrowse();
+      browser("click", ".space-menu summary");
+      const menu = evaluate('document.querySelector(".space-menu").textContent');
+      assert.match(menu, /Leave space/);
+      assert.doesNotMatch(menu, /Invite people/);
+      assert.equal(menu.includes("Space settings"), permission === "allowed");
+      if (permission === "denied") continue;
+      browser("find", "role", "button", "click", "--name", "Space settings", "--exact");
+      wait('!!document.querySelector(".space-dialog[open] .space-icon-section")');
+      assert.doesNotMatch(
+        evaluate('document.querySelector(".space-dialog[open]").textContent'),
+        /Delete space|Invite links|Add member/,
+      );
+      assert.equal(
+        evaluate("window.spaceControlFixture.requests.some(path => /invitations|invite-links/.test(path))"),
+        false,
+      );
+      screenshot(`admin-appearance-${width}`);
+      browser("fill", ".space-dialog[open] .space-field input", "Review publishing fixture");
+      browser("find", "role", "button", "click", "--name", "Save name", "--exact");
+      wait('document.querySelector(".inline-save button")?.disabled');
+      assert.equal(evaluate("window.spaceControlFixture.updates.at(-1).body.name"), "Review publishing fixture");
+      browser("press", "Escape");
+      browser("click", ".space-menu summary");
+      assert.match(evaluate('document.querySelector(".space-menu").textContent'), /Space settings/);
+    }
+  }
+  console.log(
+    "PASS: allowlisted appearance editor can rename and reopen settings, sees icon controls and Leave, cannot manage membership/delete; denied member has no settings (desktop/narrow mocked API).",
+  );
+}
 try {
   browser("open", "about:blank");
   browser("set", "viewport", "1280", "900", "2");
-  if (process.env.KEYBOARD_ONLY) testModalKeyboard();
+  if (process.env.APPEARANCE_ONLY) testAppearanceAccess();
+  else if (process.env.KEYBOARD_ONLY) testModalKeyboard();
   else testModalGeometry();
-  if (!process.env.KEYBOARD_ONLY && !process.env.MODALS_ONLY && !process.env.SETTINGS_ONLY) {
+  if (
+    !process.env.APPEARANCE_ONLY &&
+    !process.env.KEYBOARD_ONLY &&
+    !process.env.MODALS_ONLY &&
+    !process.env.SETTINGS_ONLY
+  ) {
     for (const [viewport, saved, expected] of [
       [1280, "240", 240],
       [1280, "440", 440],

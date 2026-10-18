@@ -37,7 +37,7 @@ export const pictureMessages = {
   rateLimited: "You’ve changed pictures too many times today. Try again tomorrow.",
   invalid: "That picture couldn’t be used. Try another one.",
   unavailable: "Picture uploads aren’t available right now.",
-  notOwner: "Only the space owner can change its icon.",
+  notOwner: "You don’t have permission to change this space’s icon.",
   signedOut: "You’re signed out. Sign in again to continue.",
   failed: "Your picture couldn’t be uploaded. Try again.",
 } as const;

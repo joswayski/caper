@@ -428,7 +428,7 @@ internal data class VoiceJoinIntent(
         is Overlay.Invitation -> InvitationDialog(shown.space, state.busy, state.error, { overlay = null },
             { viewModel.acceptInvitation(shown.space) { overlay = null } },
             { viewModel.declineInvitation(shown.space) { overlay = null } })
-        Overlay.ManageSpace -> state.selectedSpace?.let { detail -> ManageSpaceDialog(state, detail, viewModel, { overlay = null }) }
+        Overlay.ManageSpace -> state.selectedSpace?.takeIf { !it.space.demo && state.account != null && (it.space.ownerId == state.account?.id || it.space.canEditAppearance == true) }?.let { detail -> ManageSpaceDialog(state, detail, viewModel, { overlay = null }) }
         is Overlay.InvitePeople -> state.selectedSpace?.takeIf { it.space.ownerId == state.account?.id }?.let { detail ->
             key(detail.space.id, shown.initialChannelId) {
                 InvitePeopleDialog(state, detail, viewModel, shown.initialChannelId, { overlay = null })
@@ -807,9 +807,9 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                             },
                             after = {
                                 if (owner) DropdownMenuItem({ Text("Invite people…") }, { closeSpaceMenu(); show(Overlay.InvitePeople()) })
-                                if (owner) DropdownMenuItem({ Text("Space settings") }, { closeSpaceMenu(); show(Overlay.ManageSpace) },
+                                if (owner || detail.space.canEditAppearance == true) DropdownMenuItem({ Text("Space settings") }, { closeSpaceMenu(); show(Overlay.ManageSpace) },
                                     leadingIcon = { Icon(painterResource(R.drawable.lucide_settings), null, Modifier.size(16.dp)) })
-                                else DropdownMenuItem({ Text("Leave space…", color = ErrorText) }, { closeSpaceMenu(); show(Overlay.LeaveSpace) },
+                                if (!owner) DropdownMenuItem({ Text("Leave space…", color = ErrorText) }, { closeSpaceMenu(); show(Overlay.LeaveSpace) },
                                     leadingIcon = { Icon(painterResource(R.drawable.lucide_log_out), null, Modifier.size(16.dp), tint = ErrorText) })
                             },
                         )
@@ -3533,13 +3533,14 @@ internal fun counterTone(count: Int): Color = when {
 }
 
 @Composable private fun ManageSpaceDialog(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel, close: () -> Unit) {
+    val owner = state.account != null && state.account.id == detail.space.ownerId
     var name by remember(detail.space.id) { mutableStateOf(detail.space.name) }
     var nameError by remember(detail.space.id) { mutableStateOf<String?>(null) }
     var confirmingDelete by remember { mutableStateOf(false) }
     var removing by remember(detail.space.id) { mutableStateOf<Member?>(null) }
     // Invite suggestions come from `/api/people`; the previous list stays while it refreshes.
-    LaunchedEffect(detail.space.id) { viewModel.loadSpaceInvitations(); viewModel.refreshPeople() }
-    CaperDialog("Manage space", close, wide = true, description = "Only the owner can change this space and its membership.") {
+    LaunchedEffect(detail.space.id, owner) { if (owner) { viewModel.loadSpaceInvitations(); viewModel.refreshPeople() } }
+    CaperDialog("Manage space", close, wide = true, description = if (owner) "Manage this space’s name, icon and membership." else "Change this space’s name and icon.") {
         state.error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         SpaceIconSection(state, detail, viewModel)
         val canRename = !state.busy && name.isNotBlank() && name.trim() != detail.space.name
@@ -3550,18 +3551,20 @@ internal fun counterTone(count: Int): Color = when {
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { if (canRename) rename() }))
         nameError?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         Button(::rename, enabled = canRename, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Save name") }
-        HorizontalDivider(color = Border)
-        InviteLinkSettingsDisclosure(state, detail, viewModel)
-        HorizontalDivider(color = Border)
-        InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
-            { removing = it }, viewModel::cancelSpaceInvitation, channel = false,
-            suggestions = spaceInviteCandidates(state.people, detail.members, state.pendingSpaceInvitations))
-        HorizontalDivider(color = Border)
-        DangerZone("Delete space", "Delete this space and all its channels for every member.", state.busy) { confirmingDelete = true }
+        if (owner) {
+            HorizontalDivider(color = Border)
+            InviteLinkSettingsDisclosure(state, detail, viewModel)
+            HorizontalDivider(color = Border)
+            InviteManager(detail.members, state.pendingSpaceInvitations, state.busy, viewModel::addSpaceMember,
+                { removing = it }, viewModel::cancelSpaceInvitation, channel = false,
+                suggestions = spaceInviteCandidates(state.people, detail.members, state.pendingSpaceInvitations))
+            HorizontalDivider(color = Border)
+            DangerZone("Delete space", "Delete this space and all its channels for every member.", state.busy) { confirmingDelete = true }
+        }
     }
-    if (confirmingDelete) ConfirmDialog("Delete space", "Delete ${detail.space.name} for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", "Delete space", state.busy, { confirmingDelete = false }, warn = true, error = state.error) { viewModel.deleteCurrentSpace { CaperEffects.play(CaperEffects.Effect.Delete); close() } }
+    if (owner && confirmingDelete) ConfirmDialog("Delete space", "Delete ${detail.space.name} for everyone? All its channels and their messages will disappear from the space. This cannot be undone.", "Delete space", state.busy, { confirmingDelete = false }, warn = true, error = state.error) { viewModel.deleteCurrentSpace { CaperEffects.play(CaperEffects.Effect.Delete); close() } }
     // Manage space stays open behind the confirmation, with the member gone once it succeeds.
-    removing?.let { member ->
+    removing?.takeIf { owner }?.let { member ->
         key(member.id) {
             ConfirmDialog("Remove ${member.displayName}?", "They’ll lose access to ${detail.space.name} and its channels. You can invite them again later.", "Remove", state.busy,
                 { removing = null }, pendingLabel = "Removing…", error = state.error, focusCancel = true) { viewModel.removeSpaceMember(member) { removing = null } }

@@ -269,7 +269,8 @@ extension Space {
     func applying(_ update: Space) -> Space {
         guard id == update.id else { return self }
         let icon = PictureMerge.newer(asset: update.iconAsset, url: update.iconUrl, over: iconAsset, iconUrl)
-        return Space(id: id, name: update.name, ownerId: ownerId, demo: demo, inviter: inviter, iconAsset: icon.asset, iconUrl: icon.url)
+        return Space(id: id, name: update.name, ownerId: ownerId, demo: demo, inviter: inviter, iconAsset: icon.asset, iconUrl: icon.url,
+                     canEditAppearance: update.canEditAppearance ?? canEditAppearance)
     }
 }
 

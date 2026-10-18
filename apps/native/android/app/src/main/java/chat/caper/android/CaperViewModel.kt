@@ -2867,7 +2867,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val context = AdminMutationContext(request, detail.space.id)
         val space = api.updateSpace(requireAccountToken(), detail.space.id, name)
         if (!context.isCurrent(accountGeneration, mutable.value.selectedSpace)) return@launchAction
-        replaceDetail(detail.copy(space = space)); done()
+        replaceDetail(detail.copy(space = space.copy(canEditAppearance = space.canEditAppearance ?: mutable.value.selectedSpace?.space?.canEditAppearance))); done()
     }
 
     // --- Profile pictures and space icons -------------------------------------------------------

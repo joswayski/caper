@@ -960,6 +960,21 @@ existing resources or access; it blocks new creates/additions until below that
 limit. Quota checks and creation run under database locks to prevent racing
 requests exceeding those limits.
 
+`ADMIN_EDITABLE_SPACE_IDS` is a comma-separated, whitespace-trimmed allowlist of
+exact, case-sensitive external space IDs (empty by default), loaded through the
+API environment or Secrets Manager. Restart all API replicas after changing it.
+An active `feedback_team` admin who is also an active member of a listed space
+may rename it or reserve, complete, and remove its icon. Completion rechecks the
+current configuration, admin status and membership; an upload reservation does
+not retain permission. True owners retain their existing appearance permissions.
+This does not confer ownership, access to private channels, or any channel,
+membership, invitation or deletion management rights. Deleted/demo spaces remain
+ineligible. `/api/spaces` and space detail include viewer-specific
+`Space.canEditAppearance` booleans. Shared/broadcast summaries and mutation
+responses omit this optional field; clients must preserve a previously loaded
+capability on mutation responses, and treat an unknown capability as false
+(while continuing to recognize the true owner).
+
 Space and channel external IDs use the existing 12-character cryptographically
 random alphanumeric generator with database uniqueness constraints; internal
 joins use bigint IDs. Names are not authorization tokens. Space names contain

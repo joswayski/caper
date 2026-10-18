@@ -239,7 +239,8 @@ fun ChatHistory.withPerson(person: ProfilePerson, keepSignedUrls: Boolean = fals
  */
 fun AppUiState.withSpace(changed: Space): AppUiState {
     fun merge(space: Space) = if (space.id != changed.id) space
-        else space.copy(name = changed.name, iconAsset = changed.iconAsset, iconUrl = changed.iconUrl)
+        else space.copy(name = changed.name, iconAsset = changed.iconAsset, iconUrl = changed.iconUrl,
+            canEditAppearance = changed.canEditAppearance ?: space.canEditAppearance)
     return copy(
         spaces = spaces.map(::merge),
         invitations = invitations.map(::merge),

@@ -104,7 +104,7 @@ fun pictureError(error: Throwable, target: PictureTarget): String = when (error)
         error.code == "picture_rate_limited" || error.status == 429 -> "You’ve changed pictures too many times today. Try again later."
         error.status == 503 -> "Picture uploads aren’t available right now."
         error.status == 409 -> "The upload didn’t finish. Try again."
-        error.status == 404 && target is PictureTarget.SpaceIcon -> "Only the space owner can change its icon."
+        error.status == 404 && target is PictureTarget.SpaceIcon -> "You can’t change this space’s icon."
         error.status == 400 -> "Pictures can be up to 1024 × 1024."
         else -> friendlyError(error)
     }

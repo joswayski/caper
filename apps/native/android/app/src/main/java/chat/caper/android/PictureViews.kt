@@ -155,10 +155,10 @@ private val FrameSide = 112.dp
     }
 }
 
-/** Manage space's icon (owner only): the icon or initial tile in its frame. */
+/** Manage space's icon: the icon or initial tile in its frame. */
 @Composable internal fun SpaceIconSection(state: AppUiState, detail: SpaceDetail, viewModel: CaperViewModel) {
     val space = detail.space
-    if (space.demo || state.account?.id != space.ownerId) return
+    if (space.demo || state.account == null || (state.account.id != space.ownerId && space.canEditAppearance != true)) return
     val save = state.pictureSaves[space.id]
     val epoch = viewModel.accountEpoch
     LaunchedEffect(space.id) { viewModel.dismissPictureError(space.id) }

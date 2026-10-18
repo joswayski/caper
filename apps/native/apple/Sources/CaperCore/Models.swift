@@ -78,6 +78,8 @@ public struct Space: Codable, Equatable, Identifiable, Sendable {
     /// The owner's custom icon (`iconAsset`/`iconUrl`); absent for the initial.
     public var iconAsset: String? = nil
     public var iconUrl: String? = nil
+    /// Viewer-specific; absent on shared mutation summaries (not an ownership grant).
+    public var canEditAppearance: Bool? = nil
 
     /// The space's icon, or nil for its initial. The demo space never has one.
     public var iconPicture: CaperPicture? { demo == true ? nil : CaperPicture(asset: iconAsset, url: iconUrl) }

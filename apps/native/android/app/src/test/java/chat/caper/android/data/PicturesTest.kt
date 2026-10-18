@@ -86,7 +86,7 @@ class PicturesTest {
         assertEquals("That picture couldn’t be used. Try another one.", pictureError(ApiException(422, "bad", "picture_invalid"), icon))
         assertEquals("You’ve changed pictures too many times today. Try again later.", pictureError(ApiException(429, "slow down", "picture_rate_limited"), avatar))
         assertEquals("Picture uploads aren’t available right now.", pictureError(ApiException(503, "uploads unavailable"), avatar))
-        assertEquals("Only the space owner can change its icon.", pictureError(ApiException(404, "resource not found"), icon))
+        assertEquals("You can’t change this space’s icon.", pictureError(ApiException(404, "resource not found"), icon))
         assertEquals("That’s no longer available.", pictureError(ApiException(404, "resource not found"), avatar))
         assertEquals("The upload didn’t finish. Try again.", pictureError(ApiException(409, "upload not finished"), avatar))
         assertEquals(PicturePolicy.GIF_UNREADABLE, pictureError(PictureException(PicturePolicy.GIF_UNREADABLE), avatar))

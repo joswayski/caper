@@ -839,11 +839,14 @@ async fn create(
             let space = match &input.space_id {
                 None => None,
                 Some(space) => Some(
-                    sqlx::query_scalar::<_, i64>(
-                        "SELECT id FROM public.spaces WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND NOT demo",
-                    )
+                    sqlx::query_scalar::<_, i64>(concat!(
+                        "SELECT id FROM public.spaces s WHERE external_id=$1 AND ",
+                        crate::spaces::appearance_access_sql!(),
+                        " AND deleted_at IS NULL AND NOT demo"
+                    ))
                     .bind(space)
                     .bind(principal.user.id)
+                    .bind(&state.config.admin_editable_space_ids)
                     .fetch_optional(&assets.pool)
                     .await
                     .map_err(database_error)?
@@ -1010,6 +1013,22 @@ async fn complete_inner(
     .ok_or_else(not_found)?;
     let purpose = Purpose::from_column(&row.purpose);
     if row.uploaded_at.is_some() {
+        // A completion retry must not return a space after the uploader lost
+        // access. Pending uploads are checked again by apply, just before use.
+        if purpose == Purpose::SpaceIcon {
+            sqlx::query(concat!(
+                "SELECT 1 FROM public.spaces s WHERE id=$1 AND ",
+                crate::spaces::appearance_access_sql!(),
+                " AND deleted_at IS NULL AND NOT demo"
+            ))
+            .bind(row.space_id)
+            .bind(principal.user.id)
+            .bind(&state.config.admin_editable_space_ids)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(database_error)?
+            .ok_or_else(crate::spaces::not_found)?;
+        }
         tx.commit().await.map_err(database_error)?;
         return completed(&state, assets, &row, principal.user.id).await;
     }
@@ -1131,9 +1150,16 @@ async fn complete_inner(
     // earlier upload can undo a newer change.
     let applied = if first && purpose.is_picture() {
         Some(
-            pictures::apply(&mut tx, purpose, &asset, principal.user.id, row.space_id)
-                .await
-                .map_err(database_error)?,
+            pictures::apply(
+                &mut tx,
+                purpose,
+                &asset,
+                principal.user.id,
+                row.space_id,
+                &state.config.admin_editable_space_ids,
+            )
+            .await
+            .map_err(database_error)?,
         )
     } else {
         None

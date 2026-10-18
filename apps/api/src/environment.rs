@@ -19,6 +19,7 @@ const SECRET_KEYS: &[&str] = &[
     "SPACE_OWNED_LIMIT",
     "SPACE_MEMBERSHIP_LIMIT",
     "SPACE_CHANNEL_LIMIT",
+    "ADMIN_EDITABLE_SPACE_IDS",
     "NOTIFICATIONS_WEBHOOK_URL",
     "NOTIFICATIONS_ENABLED",
     "PUSH_PLATFORMS",
@@ -129,7 +130,9 @@ impl RuntimeEnvironment {
                 object
                     .get(*key)
                     .and_then(Value::as_str)
-                    .filter(|value| !value.is_empty())
+                    // An explicitly empty appearance allowlist disables the
+                    // delegation even if the process has an older setting.
+                    .filter(|value| !value.is_empty() || *key == "ADMIN_EDITABLE_SPACE_IDS")
                     .map(|value| (*key, value.to_owned()))
             })
             .collect();
@@ -154,6 +157,30 @@ impl RuntimeEnvironment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admin_editable_spaces_load_from_secrets_and_trim_without_case_folding() {
+        let environment = RuntimeEnvironment::from_secret_json(
+            r#"{"ADMIN_EDITABLE_SPACE_IDS":" AbC123, ,def456, "}"#,
+        )
+        .unwrap();
+        let config = crate::Config::from_env(&environment).unwrap();
+        assert_eq!(config.admin_editable_space_ids, ["AbC123", "def456"]);
+        let empty =
+            RuntimeEnvironment::from_secret_json(r#"{"ADMIN_EDITABLE_SPACE_IDS":""}"#).unwrap();
+        assert_eq!(
+            empty
+                .secret_values
+                .get("ADMIN_EDITABLE_SPACE_IDS")
+                .map(String::as_str),
+            Some("")
+        );
+        assert!(
+            crate::Config::test(false)
+                .admin_editable_space_ids
+                .is_empty()
+        );
+    }
 
     #[test]
     fn space_limits_accept_secret_settings_with_distinct_values() {
