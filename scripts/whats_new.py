@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -35,6 +36,11 @@ DEFAULT_EFFORT = "high"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 NON_ANSWER_BLOCKS = ("thinking", "redacted_thinking", "fallback")
 PROVIDER_TIMEOUT_SECONDS = 300
+# Overload, rate-limit and gateway errors usually clear within seconds. Retry
+# them so one blip does not leave a shipped build without notes; timeouts are
+# not retried because the workflow cannot afford another 300 seconds.
+PROVIDER_RETRY_STATUSES = frozenset((408, 429, 500, 502, 503, 504, 529))
+PROVIDER_RETRY_DELAYS = (10, 30)
 SHA = re.compile(r"[0-9a-f]{40}")
 SECRET_PATH = re.compile(
     r"(?:^|/)(?:\.env[^/]*|secrets?|credentials?|private[-_]keys?)(?:[./_-]|$)"
@@ -414,11 +420,31 @@ def ask_claude(prompt):
             "Content-Type": "application/json",
         },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=PROVIDER_TIMEOUT_SECONDS) as response:
-            raw = response.read(MAX_RESPONSE_BYTES + 1)
-    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException, ValueError):
-        raise GenerationError("Claude request failed; no snapshots published") from None
+    for delay in (*PROVIDER_RETRY_DELAYS, None):
+        try:
+            with urllib.request.urlopen(request, timeout=PROVIDER_TIMEOUT_SECONDS) as response:
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+            break
+        except urllib.error.HTTPError as error:
+            # Only the status and error type are logged: messages may echo
+            # request content.
+            status = error.code
+            try:
+                kind = json.loads(error.read(4096))["error"]["type"]
+            except (OSError, http.client.HTTPException, ValueError, TypeError, KeyError):
+                kind = None
+            finally:
+                error.close()
+            if not isinstance(kind, str) or not re.fullmatch(r"[a-z_]{1,64}", kind):
+                kind = "unknown_error"
+            if delay is None or status not in PROVIDER_RETRY_STATUSES:
+                raise GenerationError(f"Claude request failed (HTTP {status} {kind}); no snapshots published") from None
+        except (urllib.error.URLError, ConnectionError) as error:
+            if delay is None or isinstance(getattr(error, "reason", None), TimeoutError):
+                raise GenerationError("Claude request failed; no snapshots published") from None
+        except (TimeoutError, OSError, http.client.HTTPException, ValueError):
+            raise GenerationError("Claude request failed; no snapshots published") from None
+        time.sleep(delay)
     if len(raw) > MAX_RESPONSE_BYTES:
         raise GenerationError("Claude response exceeds the size limit")
     message = parse_json(raw)

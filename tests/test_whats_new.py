@@ -406,9 +406,56 @@ class HighlightsTests(unittest.TestCase):
         self.provider_error = urllib.error.HTTPError(
             "https://example.test", 500, "secret error body", {}, io.BytesIO(b"secret")
         )
-        self.assert_cli_failure(newest, "Claude request failed")
+        with patch.object(notes.time, "sleep") as sleep:
+            self.assert_cli_failure(newest, "Claude request failed (HTTP 500 unknown_error)")
+        self.assertEqual([call.args for call in sleep.call_args_list], [(10,), (30,)])
+        self.assertEqual(len(self.requests), 3)
+        self.requests.clear()
         self.provider_error = TimeoutError("secret timeout body")
         self.assert_cli_failure(newest, "Claude request failed")
+        self.assertEqual(len(self.requests), 1)
+
+    def test_transient_provider_errors_retry_before_publishing(self):
+        self.seed()
+        newest = self.commit("Improve channel controls")
+        self.response = {
+            "highlights": [
+                {
+                    "title": "Clearer channel controls",
+                    "body": "Channel controls are easier to find.",
+                    "platforms": ["web"],
+                    "commits": [newest],
+                }
+            ]
+        }
+        failures = [
+            urllib.error.HTTPError("https://example.test", 529, "overloaded", {}, io.BytesIO(b"")),
+            urllib.error.URLError(ConnectionResetError("reset")),
+        ]
+        provider = self.provider
+
+        def flaky(request, timeout):
+            if failures:
+                self.requests.append(json.loads(request.data))
+                raise failures.pop(0)
+            return provider(request, timeout)
+
+        with patch.object(notes.urllib.request, "urlopen", side_effect=flaky), patch.object(notes.time, "sleep"):
+            feeds = self.generate(newest)
+        self.assertEqual(len(self.requests), 3)
+        self.assertEqual(feeds["web"]["releases"][-1]["highlights"][0]["title"], "Clearer channel controls")
+
+    def test_permanent_provider_errors_do_not_retry(self):
+        self.seed()
+        newest = self.commit("Improve channel controls")
+        body = {"type": "error", "error": {"type": "invalid_request_error", "message": "secret echo"}}
+        self.provider_error = urllib.error.HTTPError(
+            "https://example.test", 400, "secret error body", {}, io.BytesIO(encoded(body))
+        )
+        with patch.object(notes.time, "sleep") as sleep:
+            self.assert_cli_failure(newest, "Claude request failed (HTTP 400 invalid_request_error)")
+        sleep.assert_not_called()
+        self.assertEqual(len(self.requests), 1)
 
     def assert_cli_failure(self, revision, expected):
         before = {path.relative_to(self.output): path.read_bytes() for path in self.output.rglob("*.json")}
