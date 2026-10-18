@@ -927,13 +927,20 @@ try {
       assert.deepEqual(
         evaluate(`const card = document.querySelector('.live-call');
           return [!!card.closest('#space-channel-list > li'), card.querySelector('.channel-select > span').textContent,
-            card.querySelector('.live-status').textContent, !!card.querySelector('[role="timer"]'),
+            card.querySelector('.live-people-count').textContent.trim(), !!card.querySelector('[role="timer"]'),
             [...card.querySelectorAll('.live-face')].map(face => face.getAttribute('aria-label')),
             document.querySelectorAll('.live-room').length, document.querySelectorAll('[aria-label="Leave voice"]').length,
             [...document.querySelectorAll('.people-panel .channel-select > span')].filter(name => name.textContent === 'alpha').length,
             card.querySelectorAll('button.live-face, button.live-more, .live-speaker').length];`),
-        [true, "alpha", "You’re in · 3", true, ["UI fixture (you), deafened", "Maya", "Alex, muted"], 0, 1, 1, 0],
+        [true, "alpha", "3 people", true, ["UI fixture (you), deafened", "Maya", "Alex, muted"], 0, 1, 1, 0],
         "Your call's row is its card: channel, count, timer, you first with badges, one Leave, no duplicate row or speaker line",
+      );
+      assert.ok(
+        evaluate(`const card = document.querySelector('.live-call'), count = card.querySelector('.live-people-count');
+          return !card.querySelector('.live-status') && !card.textContent.includes('You’re in') &&
+            count.getBoundingClientRect().top >= card.querySelector('.live-faces').getBoundingClientRect().bottom &&
+            card.querySelector('[role="timer"]').getBoundingClientRect().bottom < count.getBoundingClientRect().top;`),
+        "The connected heading keeps only the timer; a labelled count sits with the faces below it",
       );
       assert.equal(evaluate(`return voiceFixture.devices.at(-1);`), "headset");
       assert.deepEqual(
@@ -1093,8 +1100,8 @@ try {
     wait(`document.querySelectorAll('.live-call .live-face').length === 9`);
     assert.deepEqual(
       evaluate(`const more = document.querySelector('.live-call .live-more'), tops = new Set([...document.querySelectorAll('.live-call .live-faces > li')].map(li => Math.round(li.getBoundingClientRect().top)));
-        return [more.textContent, more.getAttribute('aria-label'), tops.size, document.querySelector('.live-call .live-status').textContent];`),
-      ["+4", "4 more: Crowd 9, Crowd 10 and 2 more", 2, "You’re in · 13"],
+        return [more.textContent, more.getAttribute('aria-label'), tops.size, document.querySelector('.live-call .live-people-count').textContent.trim()];`),
+      ["+4", "4 more: Crowd 9, Crowd 10 and 2 more", 2, "13 people"],
       "Thirteen people fit two rows: nine faces and +4",
     );
     rightClick(".live-call .live-more");

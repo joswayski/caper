@@ -2143,6 +2143,10 @@
   -webkit-user-select: none;
   user-select: none;
 }
+.live-people-count {
+  color: var(--text-muted);
+  font-size: 11px;
+}
 .live-face,
 .live-more {
   position: relative;

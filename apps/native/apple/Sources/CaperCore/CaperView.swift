@@ -1665,20 +1665,19 @@ private struct ChannelSidebarItem: View {
     /// Your call's row ends with its status and time when they fit beside the
     /// name; otherwise with the time, and the status drops beneath the name.
     private var callLine: some View {
-        let count = model.voice.participants.count
         return ViewThatFits(in: .horizontal) {
-            line(live: true) { callMark(count: count, status: true) }
+            line(live: true) { callMark(status: true) }
             VStack(alignment: .leading, spacing: 0) {
-                line(live: true) { callMark(count: count, status: false) }
+                line(live: true) { callMark(status: false) }
                 // Under the name: the label's 9-point inset, the icon and its gap.
-                CallStatusText(voice: model.voice, count: count).padding(.leading, 33)
+                CallStatusText(voice: model.voice).padding(.leading, 33)
             }
         }
     }
 
-    private func callMark(count: Int, status: Bool) -> some View {
+    private func callMark(status: Bool) -> some View {
         HStack(spacing: 6) {
-            if status { CallStatusText(voice: model.voice, count: count) }
+            if status { CallStatusText(voice: model.voice) }
             if let startedAt = callStartedAt(model) { VoiceTimer(startedAt: startedAt).allowsHitTesting(false) }
         }
         .padding(.horizontal, 4)
@@ -2039,19 +2038,18 @@ private struct LiveNowSection: View {
     }
 }
 
-/// Your call's participant count (including you) in voice green, or
 /// Connecting… and Reconnecting… in amber. Not a control: a tap on it opens
 /// the chat like the rest of the card.
 private struct CallStatusText: View {
     @Bindable var voice: VoiceClient
-    let count: Int
     var body: some View {
-        let pending = callPending(voice)
-        Text(pending ?? "\(count)").font(CaperTheme.font(12, weight: .bold))
-            .foregroundStyle(pending == nil ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
-            .lineLimit(1).fixedSize()
-            .allowsHitTesting(false)
-            .accessibilityIdentifier("voice-call-status")
+        if let pending = callPending(voice) {
+            Text(pending).font(CaperTheme.font(12, weight: .bold))
+                .foregroundStyle(LiveNowPalette.connecting)
+                .lineLimit(1).fixedSize()
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("voice-call-status")
+        }
     }
 }
 
@@ -2076,7 +2074,7 @@ private struct CallHeading: View {
     private var title: some View {
         let icon = CaperIcon(name: "audio-lines", size: 14)
             .foregroundStyle(callPending(voice) == nil ? CaperTheme.voiceSessionGreen : LiveNowPalette.connecting)
-        let state = CallStatusText(voice: voice, count: voice.participants.count)
+        let state = CallStatusText(voice: voice)
         return ViewThatFits(in: .horizontal) {
             HStack(spacing: 6) { icon; channelButton; state; Spacer(minLength: 6); timer }
             VStack(alignment: .leading, spacing: 2) {
@@ -2206,6 +2204,9 @@ private struct VoiceCallCard<Heading: View>: View {
             heading.padding([.horizontal, .top], row ? 3 : 12)
             VStack(alignment: .leading, spacing: 10) {
                 faces(split.shown, folded: split.folded)
+                Text(LiveNow.people(people.count)).font(CaperTheme.font(11))
+                    .foregroundStyle(CaperTheme.muted)
+                    .accessibilityIdentifier("voice-call-count")
                 controls
             }
             .padding([.horizontal, .bottom], 12)

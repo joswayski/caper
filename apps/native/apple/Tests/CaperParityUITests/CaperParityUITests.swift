@@ -1630,9 +1630,10 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(voiceAboveChannels(in: app), "Both live channels have rows: nothing above the channels")
         XCTAssertEqual(staticTexts("Live now", in: app).count, 0, "Nothing visible says Live now")
         XCTAssertFalse(app.descendants(matching: .any)["voice-call-channel"].exists, "The row, not a second heading, names the call")
-        // The joined row ends with the participant count, including you.
+        // The participant count lives with the faces, not beside the timer.
         XCTAssertFalse(app.descendants(matching: .any)["voice-count-chan00000001"].exists, "Your call's row shows its status, not a count")
-        assertElement("voice-call-status", label: "2", in: app)
+        assertElement("voice-call-count", label: "2 people", in: app)
+        XCTAssertFalse(app.descendants(matching: .any)["voice-call-status"].exists)
         // Faces: you first, then join order.
         let me = app.descendants(matching: .any)["voice-face-fixture-self"]
         let maya = app.descendants(matching: .any)["voice-face-fixture-remote"]
@@ -1740,7 +1741,7 @@ final class CaperParityUITests: XCTestCase {
         open.tap()
         #endif
         try require(app.descendants(matching: .any)["voice-call-card"], timeout: 10, "Your call's row grows into its card")
-        assertElement("voice-call-status", label: "7", in: app)
+        assertElement("voice-call-count", label: "7 people", in: app)
         let order = ["fixture-self", "fixture-remote", "fixture-crowd-alex", "fixture-crowd-sam", "fixture-crowd-jo", "fixture-crowd-ri", "fixture-crowd-kai"]
         let faces = order.map { app.descendants(matching: .any)["voice-face-\($0)"] }
         for (id, face) in zip(order, faces) { XCTAssertTrue(face.exists, "Up to ten: the card shows everyone (\(id))") }
@@ -1775,7 +1776,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(staticTexts("Live now", in: app).count, 0, "Nothing visible says Live now")
         XCTAssertLessThan(card.frame.maxY, channels.frame.minY, "Above the Channels heading")
         assertElement("voice-call-channel", label: "#lobby in TEST FIXTURE Elsewhere", in: app)
-        assertElement("voice-call-status", label: "2", in: app)
+        assertElement("voice-call-count", label: "2 people", in: app)
         XCTAssertTrue(app.descendants(matching: .any)["voice-face-fixture-remote"].exists, "The card keeps its faces")
         XCTAssertTrue(app.buttons["voice-call-leave"].exists, "and its controls")
         let general = app.buttons["channel-chan00000001"]

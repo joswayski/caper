@@ -435,12 +435,7 @@ export default function LiveWindow({ preloadSpace = false }: { preloadSpace?: bo
                               </span>
                             )}
                           </div>
-                          {inCall && (
-                            <span className="live-call-status">
-                              <span className="live-status">{voicePeople.length}</span>
-                              {voiceTimer}
-                            </span>
-                          )}
+                          {inCall && <span className="live-call-status">{voiceTimer}</span>}
                           <span className="channel-manage" aria-hidden="true">
                             <MoreHorizontal />
                           </span>
@@ -458,6 +453,9 @@ export default function LiveWindow({ preloadSpace = false }: { preloadSpace?: bo
                                 </li>
                               ))}
                             </ul>
+                            <span className="live-people-count">
+                              {voicePeople.length} {voicePeople.length === 1 ? "person" : "people"}
+                            </span>
                             <div className="live-controls">
                               <span className="voice-icon-button live-toggle">
                                 <Mic aria-hidden="true" />
