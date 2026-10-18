@@ -107,6 +107,8 @@ pub struct Voice {
     pub activity: VoiceActivity,
     pub inputs: Vec<(String, String)>,
     pub outputs: Vec<(String, String)>,
+    pub default_input: Option<String>,
+    pub default_output: Option<String>,
     pub preferences: Preferences,
     pub device_error: Option<String>,
     pub refreshing_devices: bool,
@@ -150,7 +152,12 @@ enum Report {
     Diagnostics(u64, media::Diagnostics),
     Timing(u64, JoinTimes),
     Activity(u64, VoiceActivity),
-    Devices(u64, Result<media::AudioDevices, String>),
+    Devices(
+        u64,
+        Result<media::AudioDevices, String>,
+        Option<String>,
+        Option<String>,
+    ),
     Microphone(u64, Result<MicrophoneState, String>),
     MicPlayed(u64, Recorded),
     MicPrepared(u64, Recorded),
@@ -185,6 +192,8 @@ impl Voice {
             activity: VoiceActivity::default(),
             inputs: vec![],
             outputs: vec![],
+            default_input: None,
+            default_output: None,
             preferences: Preferences::default(),
             device_error: None,
             refreshing_devices: false,
@@ -766,10 +775,32 @@ impl Voice {
         let events = self.events.clone();
         let repaint = self.repaint.clone();
         std::thread::spawn(move || {
+            let devices = media::enumerate_audio_devices();
+            // WASAPI's eConsole default matches our ADM selection. The ADM's
+            // special name index instead returns the communications default.
+            #[cfg(target_os = "windows")]
+            let (input, output) = {
+                use rodio::cpal::traits::{DeviceTrait, HostTrait};
+                let host = rodio::cpal::default_host();
+                (
+                    host.default_input_device()
+                        .and_then(|device| device.name().ok()),
+                    host.default_output_device()
+                        .and_then(|device| device.name().ok()),
+                )
+            };
+            // Our Linux ADM exposes the system-default route at index zero.
+            #[cfg(not(target_os = "windows"))]
+            let (input, output) = devices.as_ref().map_or((None, None), |devices| {
+                (
+                    devices.inputs.first().map(|device| device.name.clone()),
+                    devices.outputs.first().map(|device| device.name.clone()),
+                )
+            });
             report(
                 &events,
                 &repaint,
-                Report::Devices(request, media::enumerate_audio_devices()),
+                Report::Devices(request, devices, input, output),
             );
         });
     }
@@ -1022,8 +1053,12 @@ impl Voice {
                     self.stop_speaker_test();
                     self.speaker_failed = true;
                 }
-                Report::Devices(request, result) if request == self.device_request => {
+                Report::Devices(request, result, input, output)
+                    if request == self.device_request =>
+                {
                     self.refreshing_devices = false;
+                    self.default_input = input.filter(|name| !name.is_empty());
+                    self.default_output = output.filter(|name| !name.is_empty());
                     match result {
                         Ok(devices) => {
                             self.inputs = devices
