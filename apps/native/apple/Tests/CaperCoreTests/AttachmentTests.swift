@@ -2067,46 +2067,6 @@ final class AttachmentTests: XCTestCase {
     }
 }
 
-final class AttachmentGallerySelectionTests: XCTestCase {
-    func testEightDraftFilesLeaveTwoSlotsAndSelectionRemainsOrderedAtLimit() {
-        let capacity = AttachmentPolicy.maxAttachments - 8
-        XCTAssertEqual(capacity, 2)
-        var selection = AttachmentGallerySelection()
-        XCTAssertFalse(selection.canAdd(capacity: capacity))
-        selection.toggle("a", capacity: capacity)
-        selection.toggle("b", capacity: capacity)
-        selection.toggle("c", capacity: capacity)
-        XCTAssertEqual(selection.ids, ["a", "b"], "A third selection must be rejected, not replace an earlier choice")
-        XCTAssertTrue(selection.canAdd(capacity: capacity))
-        selection.toggle("a", capacity: capacity)
-        XCTAssertEqual(selection.ids, ["b"], "Selected items remain deselectable at the limit")
-        selection.toggle("a", capacity: capacity)
-        XCTAssertEqual(selection.ids, ["b", "a"], "Reselection appends in selection order")
-    }
-
-    func testCapacityChangeDoesNotSilentlyTruncateAndLibraryChangeInvalidatesRemovedIDs() {
-        var selection = AttachmentGallerySelection()
-        selection.toggle("a", capacity: 2)
-        selection.toggle("b", capacity: 2)
-        XCTAssertFalse(selection.canAdd(capacity: 1))
-        XCTAssertEqual(selection.ids, ["a", "b"])
-        selection.toggle("c", capacity: 1)
-        XCTAssertEqual(selection.ids, ["a", "b"])
-        selection.toggle("a", capacity: 1)
-        XCTAssertTrue(selection.canAdd(capacity: 1))
-        selection.retain(["a", "c"])
-        XCTAssertTrue(selection.ids.isEmpty)
-        selection.toggle("c", capacity: 0)
-        XCTAssertTrue(selection.ids.isEmpty)
-        selection.toggle("c", capacity: 2)
-        selection.toggle("a", capacity: 2)
-        selection.retain(["a", "c", "new"])
-        XCTAssertEqual(selection.ids, ["c", "a"], "Library reordering/new arrivals do not reorder selections")
-        selection.retain([])
-        XCTAssertFalse(selection.canAdd(capacity: 2), "Revoked library access leaves nothing importable")
-    }
-}
-
 private final class FractionLog: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: [Double] = []

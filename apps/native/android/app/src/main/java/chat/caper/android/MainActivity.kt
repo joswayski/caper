@@ -13,6 +13,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.LinearEasing
@@ -504,35 +505,18 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     var pickingChannel by rememberSaveable { mutableStateOf<String?>(null) }
     var pickingThread by rememberSaveable { mutableStateOf<String?>(null) }
     var pickingEpoch by rememberSaveable { mutableLongStateOf(0L) }
-    var galleryOpen by rememberSaveable { mutableStateOf(false) }
     fun picked(uris: List<android.net.Uri>) {
         pickingChannel?.let { viewModel.addAttachments(uris, AttachmentDraftTarget(it, pickingThread), pickingEpoch) }
         pickingChannel = null; pickingThread = null
     }
+    val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS), ::picked)
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments(), ::picked)
     fun pickFiles(target: AttachmentDraftTarget, photos: Boolean) {
         pickingChannel = target.channelId; pickingThread = target.threadRootId; pickingEpoch = viewModel.accountEpoch
         runCatching {
-            if (photos) galleryOpen = true
+            if (photos) media.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
             else documents.launch(arrayOf("*/*"))
         }.onFailure { pickingChannel = null; pickingThread = null }
-    }
-    LaunchedEffect(viewModel.accountEpoch) {
-        if (pickingEpoch != viewModel.accountEpoch) { galleryOpen = false; pickingChannel = null; pickingThread = null }
-    }
-    if (galleryOpen && pickingEpoch == viewModel.accountEpoch) {
-        pickingChannel?.let { channel ->
-            val target = AttachmentDraftTarget(channel, pickingThread)
-            AttachmentGallery(
-                remaining = (AttachmentPolicy.MAX_ATTACHMENTS - state.attachmentDrafts[target].orEmpty().size).coerceAtLeast(0),
-                dismiss = { galleryOpen = false; pickingChannel = null; pickingThread = null },
-                files = {
-                    galleryOpen = false
-                    runCatching { documents.launch(arrayOf("*/*")) }.onFailure { pickingChannel = null; pickingThread = null }
-                },
-                add = ::picked,
-            )
-        }
     }
     val context = LocalContext.current
     val latestState by rememberUpdatedState(state)
@@ -3093,25 +3077,17 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
     paste: (() -> Unit)? = null,
     /** Conversation launchers live outside transient thread panels and retain their original target. */
     pick: ((Boolean) -> Unit)? = null,
-    remaining: Int = 0,
 ) {
     val enabled = disabledReason == null
     var open by remember { mutableStateOf(false) }
     var picking by rememberSaveable { mutableStateOf(false) }
-    var galleryOpen by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(open, picking, galleryOpen) { interaction(open || picking || galleryOpen) }
+    LaunchedEffect(picking) { interaction(open || picking) }
+    val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS)) {
+        add(it); picking = false; interaction(open)
+    }
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
         add(it); picking = false; interaction(open)
     }
-    if (galleryOpen) AttachmentGallery(
-        remaining = remaining,
-        dismiss = { galleryOpen = false; picking = false; interaction(false) },
-        files = {
-            galleryOpen = false; picking = true
-            runCatching { documents.launch(arrayOf("*/*")) }.onFailure { picking = false; interaction(false) }
-        },
-        add = add,
-    )
     Box {
         IconButton({ open = true; interaction(true) }, Modifier.size(48.dp).semantics {
             contentDescription = "Attach files"
@@ -3119,10 +3095,12 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
         }, enabled = enabled) {
             Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
         }
-        DropdownMenu(open, { open = false; interaction(picking || galleryOpen) }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
+        DropdownMenu(open, { open = false; interaction(picking) }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
             DropdownMenuItem(text = { Text("Photos and videos", fontSize = 13.sp) }, onClick = {
                 if (pick != null) { open = false; pick(true); return@DropdownMenuItem }
-                open = false; galleryOpen = true
+                open = false; picking = true
+                runCatching { media.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }
+                    .onFailure { picking = false; interaction(false) }
             })
             DropdownMenuItem(text = { Text("Files", fontSize = 13.sp) }, onClick = {
                 if (pick != null) { open = false; pick(false); return@DropdownMenuItem }
