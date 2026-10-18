@@ -109,6 +109,10 @@ pub enum Command {
         visit: Option<u64>,
         token: String,
     },
+    LoadVoiceActivity {
+        epoch: u64,
+        token: String,
+    },
     ThreadUnread {
         scope: (u64, u64, String),
         revision: u64,
@@ -620,6 +624,10 @@ pub enum Event {
         revision: u64,
         visit: Option<u64>,
         result: Result<crate::model::UnreadSpaces, String>,
+    },
+    VoiceActivityLoaded {
+        epoch: u64,
+        result: Result<Vec<String>, String>,
     },
     ThreadUnread {
         scope: (u64, u64, String),
@@ -1594,6 +1602,12 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             visit,
             result: api.unread_spaces(&token).map_err(|error| error.to_string()),
         },
+        Command::LoadVoiceActivity { epoch, token } => Event::VoiceActivityLoaded {
+            epoch,
+            result: api
+                .voice_activity(&token)
+                .map_err(|error| error.to_string()),
+        },
         Command::ThreadUnread {
             scope,
             revision,
@@ -2526,6 +2540,35 @@ mod tests {
                 }
                 _ => panic!("expected unread result"),
             }
+        }
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn voice_activity_uses_the_member_endpoint_and_preserves_account_epoch() {
+        let (api, worker, _) = serve(vec![(
+            "GET /api/spaces/voice-activity",
+            "200 OK",
+            r#"{"spaceIds":["space-one","space-two"]}"#,
+        )]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        super::execute(
+            &api,
+            super::Command::LoadVoiceActivity {
+                epoch: 7,
+                token: "account".into(),
+            },
+            &sender,
+            &eframe::egui::Context::default(),
+        );
+        match receiver.recv().unwrap() {
+            super::Event::VoiceActivityLoaded {
+                epoch: 7,
+                result: Ok(ids),
+            } => {
+                assert_eq!(ids, ["space-one", "space-two"]);
+            }
+            _ => panic!("expected voice activity result"),
         }
         worker.join().unwrap();
     }

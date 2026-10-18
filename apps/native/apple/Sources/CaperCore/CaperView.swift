@@ -1130,9 +1130,11 @@ private struct SpaceRailButton: View {
     private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
     private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
     private var unread: Bool { model.unreadSpaces.contains { $0.id == space.id } }
+    private var connected: Bool { model.account != nil && model.voice.phase == .connected && model.voice.context?.spaceID == space.id }
+    private var voiceActive: Bool { model.account != nil && (connected || model.voiceActivitySpaceIDs.contains(space.id)) }
     private var state: String {
         let base: String = model.openingSpaceID == space.id ? "Opening" : selected ? "Selected" : ""
-        return [base, unread ? "Unread activity" : "", muted ? "Muted" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
+        return [base, unread ? "Unread activity" : "", muted ? "Muted" : "", connected ? "Connected to voice" : voiceActive ? "Voice active" : ""].filter { !$0.isEmpty }.joined(separator: ", ")
     }
 
     var body: some View {
@@ -1143,10 +1145,20 @@ private struct SpaceRailButton: View {
                 .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
                 .overlay(alignment: .bottomTrailing) { mutedBadge }
                 .overlay(alignment: .topTrailing) {
+                    if voiceActive {
+                        CaperIcon(name: "volume-2", size: 11)
+                            .foregroundStyle(CaperTheme.text)
+                            .frame(width: 18, height: 18)
+                            .background(Circle().fill(connected ? CaperTheme.voiceSessionGreen : CaperTheme.blackout))
+                            .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
+                            .offset(x: 3, y: -3).accessibilityHidden(true)
+                    }
+                }
+                .overlay(alignment: .topLeading) {
                     if unread {
                         Circle().fill(CaperTheme.text).frame(width: 8, height: 8)
                             .overlay(Circle().stroke(CaperTheme.blackout, lineWidth: 2))
-                            .offset(x: 2, y: -2).accessibilityHidden(true)
+                            .offset(x: -2, y: -2).accessibilityHidden(true)
                     }
                 }
         }
@@ -3605,7 +3617,7 @@ private struct ChatView: View {
         if conversation.blocked || model.blockedIDs.contains(conversation.peer.id) {
             Button("Unblock @\(conversation.peer.username)") { unblock(conversation.peer.id) }
                 .accessibilityIdentifier("dm-unblock")
-        } else {
+        } else if conversation.peer.canBlock {
             Button("Block @\(conversation.peer.username)…", role: .destructive) { blockTarget = BlockTarget(peer: conversation.peer) }
                 .accessibilityIdentifier("dm-block")
         }
@@ -5398,6 +5410,7 @@ private struct MentionCardView: View {
     @State private var showingPhotos = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var photoLoading: Task<Void, Never>?
+    @State private var filesAfterPhotos = false
     @State private var uploadsAvailable = false
     @State private var previewFile: URL?
     @State private var pending: String?
@@ -5458,16 +5471,18 @@ private struct MentionCardView: View {
                     }
                     Spacer(minLength: 0)
                     HStack(spacing: 2) {
-                        if !person.isSelf {
+                        if !person.isSelf && (blocked || person.canBlock || (person.username != nil && !ownedSpaces.isEmpty)) {
                             Menu {
                                 if !blocked, person.username != nil, !ownedSpaces.isEmpty {
                                     Button("Invite to space") { choosingSpace.toggle() }
                                         .accessibilityIdentifier("mention-card-invite")
                                 }
-                                Button(blocked ? "Unblock" : "Block") {
-                                    if blocked { Task { await unblock() } }
-                                    else { blockRequested = true; close() }
-                                }.accessibilityIdentifier("mention-card-block")
+                                if blocked || person.canBlock {
+                                    Button(blocked ? "Unblock" : "Block") {
+                                        if blocked { Task { await unblock() } }
+                                        else { blockRequested = true; close() }
+                                    }.accessibilityIdentifier("mention-card-block")
+                                }
                             } label: {
                                 // The label must stay an accessibility element: with only
                                 // CaperIcon's hidden image, the menu leaves the tree entirely.
@@ -5549,6 +5564,18 @@ private struct MentionCardView: View {
         })
         #endif
         .interactiveDismissDisabled(draft.preventsImplicitDismissal)
+        #if os(iOS)
+        .sheet(isPresented: $showingPhotos, onDismiss: {
+            if filesAfterPhotos { filesAfterPhotos = false; showingFiles = true }
+            updateDialogState()
+        }) {
+            MobileAttachmentGallery(existingCount: { draft.files.count },
+                                    valid: { draft.editable && !draft.discarded },
+                                    useFiles: { filesAfterPhotos = true }) { files in
+                draft.add(files)
+            }
+        }
+        #else
         .photosPicker(isPresented: $showingPhotos, selection: $photoItems,
                       maxSelectionCount: max(1, AttachmentPolicy.maxAttachments - draft.files.count),
                       matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
@@ -5574,6 +5601,7 @@ private struct MentionCardView: View {
             }
             updateDialogState()
         }
+        #endif
         .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             defer { draft.presentingDialog = false }
             switch result {
@@ -5606,7 +5634,7 @@ private struct MentionCardView: View {
             draft.presentingDialog = false
             if blockRequested {
                 requestBlock(BlockTarget(id: person.id, username: person.username, displayName: person.title, avatarId: person.avatarId,
-                                         avatarAsset: person.picture?.asset, avatarUrl: person.picture?.url.absoluteString))
+                                         avatarAsset: person.picture?.asset, avatarUrl: person.picture?.url.absoluteString, admin: person.admin, team: person.team))
             }
         }
         // Contain, so this identifier does not replace each child's own.
@@ -7009,13 +7037,24 @@ private struct ProfileView: View {
 public struct DesktopUpdateControls {
     public let isChecking: Bool
     public let canApply: Bool
+    public let lastSuccessfulCheck: Date?
+    public let installedVersion: String
+    public let sourceRevision: String?
+    public var commitURL: URL? {
+        sourceRevision.flatMap { WhatsNewSnapshot.validRevision($0) ? URL(string: "https://github.com/joswayski/caper/commit/\($0)") : nil }
+    }
     public let check: (@MainActor () -> Void)?
     public let review: (@MainActor () -> Void)?
 
     public init(isChecking: Bool = false, canApply: Bool = false,
+                lastSuccessfulCheck: Date? = nil, installedVersion: String = "Installed: Development build",
+                sourceRevision: String? = nil,
                 check: (@MainActor () -> Void)? = nil, review: (@MainActor () -> Void)? = nil) {
         self.isChecking = isChecking
         self.canApply = canApply
+        self.lastSuccessfulCheck = lastSuccessfulCheck
+        self.installedVersion = installedVersion
+        self.sourceRevision = sourceRevision
         self.check = check
         self.review = review
     }
@@ -7078,7 +7117,20 @@ extension EnvironmentValues {
                 Rectangle().fill(CaperTheme.border).frame(height: 1)
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Updates").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                    Button(updates.isChecking ? "Checking…" : "Check for updates") { updates.check?() }
+                    HStack(spacing: 4) {
+                        Text(updates.installedVersion).foregroundStyle(CaperTheme.muted)
+                        if let revision = updates.sourceRevision, let url = updates.commitURL {
+                            Text("·").foregroundStyle(CaperTheme.muted)
+                            Link(String(revision.prefix(7)), destination: url)
+                        }
+                    }.font(CaperTheme.font(12))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(updates.isChecking ? "Checking for updates…" : updates.review != nil ? "An update is available." : updates.lastSuccessfulCheck != nil ? "Caper is up to date." : "Not checked yet.")
+                        TimelineView(.periodic(from: .now, by: 10)) { context in
+                            Text(lastCheckedText(now: context.date))
+                        }
+                    }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    Button("Check for updates") { updates.check?() }
                         .disabled(updates.check == nil || updates.isChecking)
                         .accessibilityIdentifier("check-for-updates")
                     Text(updates.check == nil
@@ -7102,6 +7154,14 @@ extension EnvironmentValues {
             WhatsNewSheet(notes: notes, display: notes.presentation ?? display)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in loginItem.refresh() }
+    }
+
+    private func lastCheckedText(now: Date) -> String {
+        guard let date = updates.lastSuccessfulCheck else { return "Last checked: Never" }
+        if now.timeIntervalSince(date) < 10 { return "Last checked: a few seconds ago" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return "Last checked: \(formatter.localizedString(for: date, relativeTo: now))"
     }
 }
 #endif
@@ -7492,8 +7552,10 @@ private struct MessageRequestBar: View {
                 Button(pending == "decline" ? "Declining…" : "Decline") { run("decline") { try await model.declineRequest(conversation) } }
                     .buttonStyle(CaperSecondaryButton(minHeight: 42))
                     .accessibilityIdentifier("message-request-decline")
-                Button("Block", role: .destructive, action: block).buttonStyle(CaperSecondaryButton(minHeight: 42))
-                    .accessibilityIdentifier("message-request-block")
+                if conversation.peer.canBlock {
+                    Button("Block", role: .destructive, action: block).buttonStyle(CaperSecondaryButton(minHeight: 42))
+                        .accessibilityIdentifier("message-request-block")
+                }
                 Spacer(minLength: 0)
             }.disabled(pending != nil)
             if let error {

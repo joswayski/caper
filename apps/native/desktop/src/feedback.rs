@@ -157,7 +157,7 @@ impl Report {
         }
     }
 
-    /// Opens at the report, in its thread, so replies land there by default.
+    /// Opens at the report, revealing its thread only when the report is a reply.
     pub fn target(&self) -> VisitTarget {
         VisitTarget {
             channel: self.channel.id.clone(),
@@ -302,9 +302,8 @@ pub struct ThreadFocus {
 }
 
 impl VisitTarget {
-    /// The main history's anchor, then the thread. A top-level report opens
-    /// around itself and then its own thread; a reply opens around its root
-    /// and then the thread around the reply.
+    /// A top-level report stays in the conversation. A reported reply needs
+    /// its root's context and the existing thread around the reply.
     pub fn plan(&self) -> (String, Option<ThreadFocus>) {
         match &self.thread {
             Some(root) if *root != self.message => (
@@ -314,14 +313,7 @@ impl VisitTarget {
                     anchor: Some(self.message.clone()),
                 }),
             ),
-            Some(root) => (
-                self.message.clone(),
-                Some(ThreadFocus {
-                    root: root.clone(),
-                    anchor: None,
-                }),
-            ),
-            None => (self.message.clone(), None),
+            _ => (self.message.clone(), None),
         }
     }
 }
@@ -461,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn plans_open_the_report_and_then_its_thread() {
+    fn plans_open_threads_only_for_reported_replies() {
         let target = |message: &str, thread: Option<&str>| VisitTarget {
             channel: "c".into(),
             message: message.into(),
@@ -470,14 +462,8 @@ mod tests {
         };
         assert_eq!(
             target("m1", Some("m1")).plan(),
-            (
-                "m1".into(),
-                Some(ThreadFocus {
-                    root: "m1".into(),
-                    anchor: None
-                })
-            ),
-            "a top-level report opens around itself, then its own thread"
+            ("m1".into(), None),
+            "a top-level report stays in its conversation"
         );
         assert_eq!(
             target("m2", Some("m1")).plan(),

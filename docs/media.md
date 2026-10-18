@@ -1867,9 +1867,50 @@ npx wrangler deploy --env staging
 | Platform | Send files | Show files |
 | --- | --- | --- |
 | Web (desktop and mobile layouts) | Yes: picker, clipboard files/images, and drag and drop with an overlay | Images, video, audio, file cards; images and videos open in the in-app viewer |
-| Apple (iOS and macOS) | Yes: Photos picker, file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
-| Android | Yes: system photo picker and document picker, clipboard content URIs, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
+| Apple (iOS and macOS) | Yes: Caper photo/video gallery on iOS (awaiting Apple build/device validation), system Photos picker on macOS, file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
+| Android | Yes: Caper photo/video gallery (awaiting device validation) and document picker, clipboard content URIs, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
 | Rust desktop (Windows, Linux) | Yes: file dialog (Win32; XDG desktop portal on Linux), clipboard files/images, and drag and drop with an overlay, up to 10. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+
+#### Mobile attachment gallery
+
+The iOS and Android attachment **Photos and videos** actions use Caper's own
+three-column gallery, including channel, DM, thread and profile-message drafts.
+Numbered selection badges preserve tap order. The remaining count includes files
+already in the original draft; at ten total, other tiles dim and cannot be selected,
+while chosen tiles remain removable. If the draft grows while picking, Add is blocked
+until the selection fits instead of silently dropping selected items. **Add N** hands
+media to the existing attachment pipeline; it does not send the message. Files and
+single-image profile/space-icon pickers are unchanged. The mobile web app still uses
+the browser's system picker: websites cannot enumerate a phone's photo library.
+
+Unlike the system attachment picker, this gallery needs photo-library permission.
+It asks only after an explicit action inside the sheet and supports limited access;
+it never requires the full library. iOS uses PhotoKit read/write authorization (no
+library edits are made); Android uses version-appropriate read-media permissions,
+including Android 14's selected-photo permission. Both expose access management and
+a Files fallback. Revocation and library changes refresh accessible media and remove
+inaccessible selections. Browsing stays local; only Add imports selected originals.
+iOS may download selected iCloud resources and cancels that request on dismissal.
+No library list, unselected originals or photo identifiers are sent to Caper servers.
+
+Before a Google Play release, submit the new `READ_MEDIA_IMAGES`/`READ_MEDIA_VIDEO`
+declaration and obtain approval under the
+[photo/video permissions policy](https://support.google.com/googleplay/android-developer/answer/16935362).
+Google requires justification for why system pickers cannot provide the app's core
+functionality; a custom appearance alone does not establish eligibility. Approval
+has not been checked or obtained for this change. Do not assume automated release
+can publish this permission change; if rejected, Android must retain the system
+media picker (or limit the custom gallery to user-imported files).
+
+Native UI acceptance remains outstanding: render portrait/landscape and large-text
+states, exercise 0/8/10 existing files, select to capacity then replace one, select
+across more than 60 library items, use mixed photos/videos, cancel, deny/restrict/
+limit access, grant more photos, revoke access while backgrounded, switch accounts,
+and verify the original channel/thread/profile draft receives only confirmed media.
+On iOS also exercise edited assets, iCloud offline/error/cancellation and nested
+profile-sheet dismissal. Check VoiceOver/TalkBack selected/disabled announcements.
+These require Apple SDK/device and Android device execution; web tests do not prove
+the native galleries render or that OS permission flows work.
 
 #### File drop overlay
 
@@ -3066,8 +3107,10 @@ and is marked **Caper team has been notified 🫡** for everyone there.
   a pending request nor is affected by the participants' blocks. Removing someone
   from the team (`deleted_at`) ends their access everywhere at once.
 - **Answering.** Team members' messages carry `author.admin`, stamped by the server
-  at send time and badged **ADMIN** on every client. Clients open a report in
-  its thread, so answers default there. Thread participants see them, and an
+  at send time and badged **ADMIN** on every client. Top-level reports open at
+  the message in its conversation, without opening a thread. Reports made in
+  a thread reveal that existing thread so the reported reply is visible. The
+  team can explicitly start a thread; its participants see replies, and an
   @mention reaches the reporter as usual.
 - **Notifications.** Kind `feedback`, title `Sender · Feedback`, for every team
   member, ignoring mutes. See [notifications](notifications.md#who-gets-a-notification).
@@ -8165,7 +8208,14 @@ blocked. Confirmed restart still leaves a call; non-writable copies use the inst
 
 Desktop clients pass their source revision to the bundled updater, which reads
 current/target exact snapshots and shows the same user-facing highlights for skipped
-releases. Missing editorial metadata never blocks installing the signed update.
+releases. The updater returns them as one stacked list (newest first, repeated
+titles dropped) with the newest release's date, so the review shows a date
+next to the version (linked to its commit on GitHub), bold titles over short
+descriptions and a close button. Installing from the review marks that build's
+highlights read, so the restarted app does not open the same What's new again. After a failed update, the error's "use the installer" links straight to
+the installer; there is no separate footer link. Signed in, **Send this to the
+Caper team** posts the error, installed build and target version as `@feedback`
+in your personal notes (no navigation); the team reads and replies there. Missing editorial metadata never blocks installing the signed update.
 Older clients keep their signed commit-title changelog until updated once. Linux
 fixture rendering and modal regressions cover narrow screens, errors, history gaps,
 call warnings and installer fallback; physical Mac/Windows focus, scrolling, motion
@@ -8517,7 +8567,11 @@ fails. Decoded pictures are cached by asset
 ID, since URLs re-sign daily. Edit profile and **Manage space** (owners
 only) show the picture or icon in a frame with an edit badge on its corner: the
 frame picks a picture, or, while a custom one is set, opens a menu to choose
-another or remove it. Without a custom profile picture, the saved mascot holds
+another or remove it. Dropping a file onto the frame uploads it directly using
+the same image preparation and limits. The frame highlights the drop target;
+only the first file is used, and busy or unavailable editors refuse drops.
+This is implemented in the web, Android, Apple and Rust desktop editors.
+Without a custom profile picture, the saved mascot holds
 up a "change me!" sign (`assets/avatars/change-me.svg`, one vector drawn over
 any mascot); a successful change updates the signed-in client everywhere through the
 existing own-profile refresh path.
@@ -8538,6 +8592,19 @@ The framed editor and "change me!" sign (same day): web `npm run check` and
 without a picture and a menu with one; Escape closes the menu, not the dialog);
 Rust desktop `cargo test` (536 passed), application Clippy and Xvfb renders of
 both states. Android and Apple were not compiled (no SDK or Xcode here).
+
+Picture-frame file drops (October 18, 2026): web `npm run check`, all 661
+Vitest tests, and `scripts/test-pictures.mjs` pass. The browser regression covers
+first-file selection, replacing a custom icon without the menu, refusing a
+second drop while busy, and preserving the icon on a non-image error. Chromium
+also accepted a native file-drop event at 390px. Desktop/narrow browser screenshots and
+an interaction recording were inspected with labelled API/storage mocks; no
+live upload was made. Rust desktop builds and passes formatting, application
+Clippy and 561 tests (13 ignored); the test harness was built with `cargo rustc
+--tests -- -C linker=clang-21 -C link-arg=-fuse-ld=lld` after the default build
+ran out of memory. Its Manage space fixture renders under Xvfb; native OS file
+drags were not exercised. Apple and Android changes are not compiled or
+device-verified in this orb (no Xcode or Android SDK).
 
 Shrinking oversized GIFs (October 15, 2026): web Vitest decodes, shrinks and
 re-decodes generated GIFs (12 frames over 5 MB → 512 px under 100 KB with every
@@ -8610,3 +8677,30 @@ Verify on an iPhone: drag from Browse past the middle toward the conversation,
 slowly and with a flick, and let go. The conversation carries on to the left edge
 and stops there, never passing it. Do the same back to Browse and for the member
 list, and check that a finger still catches a moving slide.
+
+## Space-rail voice activity (October 18, 2026)
+
+Web, Android, Apple and Rust desktop show a small speaker on a space's icon:
+white on neutral chrome when voice is occupied, white on green when this
+client is connected there. Browsing a different space does not move the green
+badge. Joining/reconnecting alone never turns it green. Unread and mute marks
+remain separate.
+
+Authenticated `GET /api/spaces/voice-activity` returns `{ "spaceIds": [...] }`.
+It includes only current member spaces with non-monitor participants in
+channels the caller has joined and can access; private grants and revocations
+use the same authorization as joining voice. Reservations and monitor-only
+rooms do not count. No participant identities or channel IDs are returned.
+Clients refresh every 15 seconds (web skips hidden tabs), clear polled activity
+on failure/logout, and derive their own green badge immediately from the local
+connected state. This is a polling hint, not an instantaneous presence feed.
+
+Validation: API HTTP authorization cases pass against disposable Postgres and
+Valkey and the in-memory room backend; SFU responses are mocked. Web checks and
+tests pass; `VOICE_TEST_RAIL=1 node scripts/test-voice-controls.mjs` exercises
+idle/joining/connected, cross-space navigation, outage cleanup and leaving with
+mocked media. Chromium 1280px/390px captures were inspected (not physical-device
+or Safari acceptance). Rust desktop has endpoint, state and rail tests; its
+connected and neutral badges were rendered and inspected in Linux/Xvfb fixtures.
+Android SDK and Apple/Xcode toolchains are unavailable in this Linux orb;
+their new API tests and native rendering still need platform validation.

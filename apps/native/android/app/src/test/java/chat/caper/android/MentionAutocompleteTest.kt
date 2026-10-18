@@ -24,6 +24,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MentionAutocompleteTest {
+    @Test fun `protected peers and authors never offer block and legacy peers still do`() {
+        val legacy = Json.decodeFromString<DirectPeer>("""{"id":"a","username":"a","displayName":"A"}""")
+        assertTrue(legacy.canBlock)
+        assertFalse(legacy.copy(admin = true).canBlock)
+        assertFalse(legacy.copy(team = true).canBlock)
+        val state = AppUiState(people = listOf(Person("a", "a", "A", admin = true)))
+        assertFalse(mentionCard("a", "a", state).canBlock)
+        assertFalse(authorCard(ChatAuthor("b", "B", false, admin = true), AppUiState()).canBlock)
+        assertFalse(refreshedCard(authorCard(ChatAuthor("a", "A", false, admin = true), AppUiState()), state).canBlock)
+    }
     private fun atEnd(text: String) = TextFieldValue(text, TextRange(text.length))
     private fun person(username: String, displayName: String = username) = MentionCandidate(username, displayName)
     private fun space(vararg people: MentionCandidate) = MentionSource(people.toList(), specials = true)

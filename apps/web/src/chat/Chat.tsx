@@ -2261,7 +2261,10 @@ export default function Chat({
             }}
             onViewReactions={(emoji) => showReactors(actionMessage.id, emoji, actionTarget.anchor)}
             block={
-              onBlockAuthor && !actionMessage.author.isGuest && actionMessage.author.id !== state.author?.id
+              onBlockAuthor &&
+              !actionMessage.author.isGuest &&
+              actionMessage.author.id !== state.author?.id &&
+              (!actionMessage.author.admin || blockedIds.has(actionMessage.author.id))
                 ? {
                     blocked: blockedIds.has(actionMessage.author.id),
                     name: actionMessage.author.name,

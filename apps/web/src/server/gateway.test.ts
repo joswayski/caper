@@ -862,7 +862,9 @@ test("browser alerts show the sender avatar, suppress reading/disabled/stale mes
   assert.equal(shown[1].options.icon, undefined, "accounts without an avatar retain the OS fallback");
   shown[1].onclick?.();
   assert.equal(destination, "/spaces?dm=dm0000000001");
-  emit(9);
+  const customAvatar = "https://cdn.test/original/Avatar000000001?exp=123&sig=test";
+  emit(9, { senderAvatarUrl: customAvatar });
+  assert.equal(shown[2].options.icon, customAvatar, "the uploaded picture wins over the preset mascot");
   const media = {
     attachmentUrl: "https://cdn.test/original/photo1?exp=123&sig=test",
     attachmentContentType: "image/png",
@@ -878,8 +880,15 @@ test("browser alerts show the sender avatar, suppress reading/disabled/stale mes
   assert.equal(destination, "/spaces?space=space0000001");
   emit(12, { kind: "space.invitation", notificationId: "91", messageId: undefined, channelId: undefined });
   assert.equal(shown.length, 5, "invitation replay is deduplicated independently of messages");
-  emit(13, { kind: "channel.invitation", notificationId: "92", messageId: undefined, channelId: "chan00000001" });
+  emit(13, {
+    kind: "channel.invitation",
+    notificationId: "92",
+    messageId: undefined,
+    channelId: "chan00000001",
+    senderAvatarUrl: "javascript:invalid",
+  });
   assert.equal(shown.length, 6, "reading a channel does not suppress an invitation");
+  assert.equal(shown[5].options.icon, "/images/avatars/v3/317.svg", "invalid picture URLs retain the mascot");
   shown[5].onclick?.();
   assert.equal(destination, "/spaces?space=space0000001&invite=chan00000001");
   emit(14, { kind: "space.invitation", notificationId: "93" });

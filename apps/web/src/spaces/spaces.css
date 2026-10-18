@@ -94,6 +94,25 @@
   border-radius: 50%;
   background: var(--text);
 }
+.space-rail-item[data-voice] .space-unread {
+  right: auto;
+  left: -3px;
+}
+.space-rail .space-rail-voice {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 20px;
+  height: 20px;
+  padding: 3px;
+  border: 2px solid var(--blackout);
+  border-radius: 50%;
+  color: var(--text);
+  background: var(--blackout);
+}
+.space-rail .space-rail-voice[data-connected] {
+  background: var(--voice-session-green);
+}
 .channel-select .channel-unread,
 .channel-directory .channel-unread {
   flex: 0 0 6px;

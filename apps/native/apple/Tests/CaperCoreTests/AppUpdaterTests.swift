@@ -65,7 +65,13 @@ final class AppUpdaterTests: XCTestCase {
         try data.write(to: contents.appendingPathComponent("Info.plist"))
         let bundle = try XCTUnwrap(Bundle(url: folder))
         let updater = AppUpdater(bundle: bundle, environment: ["CAPER_TEST_MODE": "parity"])
-        XCTAssertEqual(updater.installedVersion, "Installed: Caper 0.2.7 (build 42) · abcdef0")
+        XCTAssertEqual(updater.installedVersion, "Installed: Caper 0.2.7 (build 42)")
+        XCTAssertEqual(updater.controls.installedVersion, updater.installedVersion)
+        XCTAssertEqual(updater.controls.sourceRevision, info["CaperSourceRevision"])
+        XCTAssertEqual(updater.controls.commitURL?.absoluteString,
+                       "https://github.com/joswayski/caper/commit/\(info["CaperSourceRevision"]!)")
+        XCTAssertNil(DesktopUpdateControls(sourceRevision: "not-a-revision").commitURL)
+        XCTAssertNil(DesktopUpdateControls().commitURL)
         XCTAssertFalse(updater.isAvailable, "Showing the installed version must not enable update checks")
     }
 
@@ -84,6 +90,19 @@ final class AppUpdaterTests: XCTestCase {
         let failed = try XCTUnwrap(AppUpdater.parse(Data(#"{"update":true,"version":"0.1.7","last_error":"Access denied"}"#.utf8)))
         XCTAssertEqual(failed.lastError, "Access denied")
         XCTAssertNil(AppUpdater.parse(Data(#"{"update":false}"#.utf8)))
+        XCTAssertNil(legacy.highlights)
+    }
+
+    func testStructuredHighlightsShowADateInsteadOfAVersion() throws {
+        let data = Data(#"{"update":true,"version":"0.1.82","notes":"plain","history_complete":true,"highlights":[{"title":"Voice in the channel list","body":"Hop in with one click."}],"released":"2026-10-18","revision":"377205cd7c68e109b0d77f31a97c2cb3b2d40c39","sequence":4,"can_apply":true}"#.utf8)
+        let update = try XCTUnwrap(AppUpdater.parse(data))
+        XCTAssertEqual(update.highlights, [DesktopUpdate.Highlight(title: "Voice in the channel list", body: "Hop in with one click.")])
+        XCTAssertEqual(update.released, "2026-10-18")
+        let label = try XCTUnwrap(update.releasedLabel)
+        XCTAssertTrue(label.contains("2026"))
+        XCTAssertFalse(label.contains("0.1.82"))
+        XCTAssertEqual(update.sequence, 4)
+        XCTAssertEqual(update.commitURL?.absoluteString, "https://github.com/joswayski/caper/commit/377205cd7c68e109b0d77f31a97c2cb3b2d40c39")
     }
 
     @MainActor
@@ -97,6 +116,42 @@ final class AppUpdaterTests: XCTestCase {
         XCTAssertEqual(update.entries.last?.notes, "Skipped change")
         XCTAssertTrue(update.historyNotice.contains("Earlier release notes aren’t available"))
         XCTAssertEqual(update.lastError, "Access denied")
+    }
+
+    @MainActor
+    func testDeferredChecksPreserveSuccessfulTimeAndKnownAndOfferedUpdates() throws {
+        let updater = AppUpdater(environment: ["CAPER_TEST_MODE": "parity"])
+        let deferred = Data(#"{"update":false,"deferred":true}"#.utf8)
+        updater.finish(.success(deferred))
+        XCTAssertNil(updater.lastSuccessfulCheck)
+        XCTAssertNil(updater.controls.review)
+
+        let before = Date()
+        updater.finish(.success(Data(#"{"update":true,"version":"0.1.42","can_apply":true}"#.utf8)))
+        let checked = try XCTUnwrap(updater.lastSuccessfulCheck)
+        XCTAssertGreaterThanOrEqual(checked, before)
+        XCTAssertLessThanOrEqual(checked, Date())
+        XCTAssertEqual(updater.controls.lastSuccessfulCheck, checked)
+        updater.finish(.success(deferred))
+        XCTAssertNil(updater.offeredUpdate)
+        try XCTUnwrap(updater.controls.review)()
+        let request = updater.reviewRequest
+        updater.finish(.success(deferred))
+        XCTAssertEqual(updater.offeredUpdate?.version, "0.1.42")
+        XCTAssertTrue(updater.controls.canApply)
+        XCTAssertEqual(updater.reviewRequest, request)
+        XCTAssertEqual(updater.lastSuccessfulCheck, checked)
+        XCTAssertFalse(updater.checking)
+        updater.finish(.failure(NSError(domain: "test", code: 1)))
+        updater.finish(.success(Data("invalid JSON".utf8)))
+        XCTAssertEqual(updater.lastSuccessfulCheck, checked)
+        XCTAssertEqual(updater.offeredUpdate?.version, "0.1.42")
+
+        let beforeNoUpdate = Date()
+        updater.finish(.success(Data(#"{"update":false}"#.utf8)))
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(updater.controls.lastSuccessfulCheck), beforeNoUpdate)
+        XCTAssertNil(updater.controls.review)
+        XCTAssertNil(updater.offeredUpdate)
     }
 
     @MainActor

@@ -13,7 +13,6 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.core.LinearEasing
@@ -503,18 +502,35 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     var pickingChannel by rememberSaveable { mutableStateOf<String?>(null) }
     var pickingThread by rememberSaveable { mutableStateOf<String?>(null) }
     var pickingEpoch by rememberSaveable { mutableLongStateOf(0L) }
+    var galleryOpen by rememberSaveable { mutableStateOf(false) }
     fun picked(uris: List<android.net.Uri>) {
         pickingChannel?.let { viewModel.addAttachments(uris, AttachmentDraftTarget(it, pickingThread), pickingEpoch) }
         pickingChannel = null; pickingThread = null
     }
-    val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS), ::picked)
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments(), ::picked)
     fun pickFiles(target: AttachmentDraftTarget, photos: Boolean) {
         pickingChannel = target.channelId; pickingThread = target.threadRootId; pickingEpoch = viewModel.accountEpoch
         runCatching {
-            if (photos) media.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+            if (photos) galleryOpen = true
             else documents.launch(arrayOf("*/*"))
         }.onFailure { pickingChannel = null; pickingThread = null }
+    }
+    LaunchedEffect(viewModel.accountEpoch) {
+        if (pickingEpoch != viewModel.accountEpoch) { galleryOpen = false; pickingChannel = null; pickingThread = null }
+    }
+    if (galleryOpen && pickingEpoch == viewModel.accountEpoch) {
+        pickingChannel?.let { channel ->
+            val target = AttachmentDraftTarget(channel, pickingThread)
+            AttachmentGallery(
+                remaining = (AttachmentPolicy.MAX_ATTACHMENTS - state.attachmentDrafts[target].orEmpty().size).coerceAtLeast(0),
+                dismiss = { galleryOpen = false; pickingChannel = null; pickingThread = null },
+                files = {
+                    galleryOpen = false
+                    runCatching { documents.launch(arrayOf("*/*")) }.onFailure { pickingChannel = null; pickingThread = null }
+                },
+                add = ::picked,
+            )
+        }
     }
     val context = LocalContext.current
     val latestState by rememberUpdatedState(state)
@@ -620,7 +636,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                             // Browse, account bar included, stays still beneath the conversation, which slides off to reveal it.
                             if (navigationOpen || browseUncovered) Column(Modifier.fillMaxSize().then(if (navigationOpen) Modifier else Modifier.clearAndSetSemantics {})) {
                                 Row(Modifier.weight(1f).browseSwipeRegion(drawer, enabled = state.selectedChannel != null || state.selectedDirectId != null || state.feedbackShown)) {
-                                    SpaceRail(state, viewModel, show, Modifier.width(60.dp))
+                                    SpaceRail(state, voice, viewModel, show, Modifier.width(60.dp))
                                     ChannelSidebar(state, voice, viewModel, show,
                                         Modifier.weight(1f).padding(top = 8.dp, end = 8.dp).clip(RoundedCornerShape(16.dp)),
                                         channelsExpanded, { channelsExpanded = it }, browsing, { browsing = it }, pendingVoiceJoin, voicePermissionError,
@@ -660,7 +676,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         }
                     }
                 } else Row {
-                    SpaceRail(state, viewModel, show, Modifier.width(60.dp))
+                    SpaceRail(state, voice, viewModel, show, Modifier.width(60.dp))
                     ChannelSidebar(state, voice, viewModel, show, Modifier.width(280.dp), channelsExpanded, { channelsExpanded = it }, browsing, { browsing = it }, pendingVoiceJoin, voicePermissionError, { voicePermissionError = null },
                         joinVoice, leaveVoice)
                     if (medium) Box(Modifier.weight(1f).fillMaxHeight()) {
@@ -678,13 +694,15 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     }
 }
 
-@Composable private fun SpaceRail(state: AppUiState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
+@Composable private fun SpaceRail(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit, modifier: Modifier = Modifier) {
     val now = rememberMuteClock(state.notificationSettings)
     Column(modifier.fillMaxHeight().background(Blackout).verticalScroll(rememberScrollState()).padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         state.spaces.forEach { space ->
             val selected = state.selectedSpace?.space?.id == space.id
             val muted = state.notificationSettings?.spaceMuted(space.id, now) == true
             val unread = state.unreadSpaces.any { it.id == space.id }
+            val connected = state.account != null && voice.phase == VoiceState.Phase.CONNECTED && voice.spaceId == space.id
+            val voiceActive = state.account != null && (connected || space.id in state.voiceActivitySpaceIds)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.width(3.dp).height(if (selected) 24.dp else 0.dp).background(if (selected) TerracottaBright else Color.Transparent))
                 Spacer(Modifier.width(3.dp))
@@ -692,12 +710,15 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     Surface(
                         // Clipped first, so the press ripple keeps the tile's corners.
                         Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clip(MaterialTheme.shapes.medium).clickable { viewModel.selectSpace(space.id) }
-                            .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread activity" else null, if (muted) "Muted" else null).joinToString(", ") },
+                            .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread activity" else null, if (muted) "Muted" else null, if (connected) "Connected to voice" else if (voiceActive) "Voice active" else null).joinToString(", ") },
                         color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
                         border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
                     ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, if (selected) Color.White else TextMuted) }
                     if (muted) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
-                    if (unread) Box(Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp).size(10.dp).background(Blackout, CircleShape).padding(2.dp).background(Text, CircleShape).clearAndSetSemantics {})
+                    if (voiceActive) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp).size(18.dp).background(if (connected) VoiceSessionGreen else Blackout, CircleShape).border(2.dp, Blackout, CircleShape).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
+                        Icon(painterResource(R.drawable.lucide_volume_2), null, Modifier.size(11.dp), tint = Text)
+                    }
+                    if (unread) Box(Modifier.align(Alignment.TopStart).offset(x = (-2).dp, y = (-2).dp).size(10.dp).background(Blackout, CircleShape).padding(2.dp).background(Text, CircleShape).clearAndSetSemantics {})
                 }
             }
         }
@@ -1531,7 +1552,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     // A 1:1 DM (not your notes) offers Block / Unblock; a request does so in its own bar.
     val direct = state.selectedDirect?.takeIf { channel.direct && it.peer.id != state.account?.id && !it.incoming }
     var confirmBlock by remember(channel.id) { mutableStateOf(false) }
-    if (confirmBlock && direct != null) BlockConfirmDialog(BlockedAccount(direct.peer.id, direct.peer.username, direct.peer.displayName, direct.peer.avatarId, direct.peer.avatarAsset, direct.peer.avatarUrl), viewModel, { confirmBlock = false })
+    if (confirmBlock && direct != null) BlockConfirmDialog(BlockedAccount(direct.peer.id, direct.peer.username, direct.peer.displayName, direct.peer.avatarId, direct.peer.avatarAsset, direct.peer.avatarUrl, direct.peer.admin, direct.peer.team), viewModel, { confirmBlock = false })
     fun toggleBlock() { if (direct == null) return; if (direct.blocked) viewModel.unblock(direct.peer.id) else confirmBlock = true }
     // Files dragged in from another app (split screen, freeform windows, desktop mode, ChromeOS).
     val canAttach = joined && state.uploadsEnabled && state.chatAuthorId != null && !state.messagesLoading && state.messagesError == null && state.sessionError == null
@@ -1599,7 +1620,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
                             Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
                     }
-                    if (!narrow && direct != null) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
+                    if (!narrow && direct != null && (direct.blocked || direct.peer.canBlock)) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
                         Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                     if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Join channel") }
@@ -1620,7 +1641,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         onClick = { channelMenuOpen = false; toggleMembers() },
                     )
                     // A 1:1 DM keeps Block / Unblock here on phones.
-                    if (direct != null) DropdownMenuItem(
+                    if (direct != null && (direct.blocked || direct.peer.canBlock)) DropdownMenuItem(
                         text = { Text(if (direct.blocked) "Unblock" else "Block", fontSize = 14.sp, color = if (direct.blocked) Text else ErrorText) },
                         leadingIcon = { Spacer(Modifier.size(18.dp)) },
                         onClick = { channelMenuOpen = false; toggleBlock() },
@@ -2220,7 +2241,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
             onHistory = { actionTarget = null; historyTarget = presented },
             onViewReactions = { presented.reactions.firstOrNull()?.let { reactorsTarget = presented.id to it.emoji }; actionTarget = null },
-            blockLabel = presented.author.takeIf { state.account != null && !it.isGuest && it.id != selfId }?.let { author ->
+            blockLabel = presented.author.takeIf { state.account != null && !it.isGuest && it.id != selfId && (it.id in blocked || viewModel.blockTarget(it).canBlock) }?.let { author ->
                 val target = viewModel.blockTarget(author)
                 val name = if (target.username.isNotBlank()) "@${target.username}" else target.displayName
                 if (author.id in blocked) "Unblock $name" else "Block $name"
@@ -3062,17 +3083,25 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
     paste: (() -> Unit)? = null,
     /** Conversation launchers live outside transient thread panels and retain their original target. */
     pick: ((Boolean) -> Unit)? = null,
+    remaining: Int = 0,
 ) {
     val enabled = disabledReason == null
     var open by remember { mutableStateOf(false) }
     var picking by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(picking) { interaction(open || picking) }
-    val media = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(AttachmentPolicy.MAX_ATTACHMENTS)) {
-        add(it); picking = false; interaction(open)
-    }
+    var galleryOpen by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(open, picking, galleryOpen) { interaction(open || picking || galleryOpen) }
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
         add(it); picking = false; interaction(open)
     }
+    if (galleryOpen) AttachmentGallery(
+        remaining = remaining,
+        dismiss = { galleryOpen = false; picking = false; interaction(false) },
+        files = {
+            galleryOpen = false; picking = true
+            runCatching { documents.launch(arrayOf("*/*")) }.onFailure { picking = false; interaction(false) }
+        },
+        add = add,
+    )
     Box {
         IconButton({ open = true; interaction(true) }, Modifier.size(48.dp).semantics {
             contentDescription = "Attach files"
@@ -3080,12 +3109,10 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
         }, enabled = enabled) {
             Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
         }
-        DropdownMenu(open, { open = false; interaction(picking) }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
+        DropdownMenu(open, { open = false; interaction(picking || galleryOpen) }, containerColor = SurfaceRaised, border = BorderStroke(1.dp, Border)) {
             DropdownMenuItem(text = { Text("Photos and videos", fontSize = 13.sp) }, onClick = {
                 if (pick != null) { open = false; pick(true); return@DropdownMenuItem }
-                open = false; picking = true
-                runCatching { media.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }
-                    .onFailure { picking = false; interaction(false) }
+                open = false; galleryOpen = true
             })
             DropdownMenuItem(text = { Text("Files", fontSize = 13.sp) }, onClick = {
                 if (pick != null) { open = false; pick(false); return@DropdownMenuItem }

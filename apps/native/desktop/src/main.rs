@@ -1011,6 +1011,9 @@ struct CaperApp {
     spaces: Vec<model::Space>,
     directs: Vec<model::DirectConversation>,
     unread_spaces: Vec<model::UnreadSpace>,
+    voice_activity_spaces: BTreeSet<String>,
+    voice_activity_refreshing: bool,
+    voice_activity_refreshed: Instant,
     feedback_waiting: u64,
     unread_revision: u64,
     unread_visit: Option<String>,
@@ -1289,6 +1292,21 @@ struct CaperApp {
     /// A member's own space channel reopens the normal way; this navigation
     /// then lands on the report.
     report_focus: Option<(u64, feedback::VisitTarget)>,
+    /// A failed update's error, sent to the Caper team from the update review.
+    update_report: Option<UpdateReport>,
+}
+
+/// The failed-update error posted as `@feedback` in your personal notes.
+struct UpdateReport {
+    error: String,
+    client_id: String,
+    state: ReportState,
+}
+
+enum ReportState {
+    Sending,
+    Sent,
+    Failed(String),
 }
 
 impl CaperApp {
@@ -1349,6 +1367,9 @@ impl CaperApp {
             spaces: Vec::new(),
             directs: Vec::new(),
             unread_spaces: Vec::new(),
+            voice_activity_spaces: BTreeSet::new(),
+            voice_activity_refreshing: false,
+            voice_activity_refreshed: now - Duration::from_secs(15),
             feedback_waiting: 0,
             unread_revision: 0,
             unread_visit: None,
@@ -1541,6 +1562,7 @@ impl CaperApp {
             visit: None,
             report_thread: None,
             report_focus: None,
+            update_report: None,
         };
         if let Some(name) = fixture.filter(|name| name.starts_with("parity-update")) {
             app.updates = updates::Updates::preview(updates::Available {
@@ -1554,6 +1576,22 @@ impl CaperApp {
                     })
                     .collect(),
                 history_complete: name != "parity-update-incomplete",
+                highlights: Some(
+                    [
+                        ("Voice moves into the channel list", "Live rooms grow into cards you can join in one click."),
+                        ("Custom profile pictures and space icons", "Upload your own, GIFs included. Everyone sees changes instantly."),
+                        ("Unread thread replies stand out", "A little dot tells you a thread has news."),
+                        ("Smoother, more private uploads", "Failed uploads retry by themselves, and photo metadata stays private."),
+                        ("Clearer pinned messages", "See who pinned what, and jump right to it."),
+                        ("Update checks stay in the menu", "Check for updates without losing your place."),
+                        ("Forwarded messages open in their thread", "View conversation takes you to the original thread."),
+                    ]
+                    .map(|(title, body)| updates::Highlight { title: title.into(), body: body.into() })
+                    .to_vec(),
+                ),
+                released: Some("2026-10-18".into()),
+                revision: Some("377205cd7c68e109b0d77f31a97c2cb3b2d40c39".into()),
+                sequence: Some(4),
                 can_apply: name != "parity-update-download",
                 last_error: (name == "parity-update-error").then(|| "Could not replace the installed app: Access denied (os error 5)".into()),
             });
@@ -1610,6 +1648,7 @@ impl CaperApp {
                     app.updates = updates::Updates::preview_status(match name {
                         "parity-settings-checking" => updates::Status::Checking,
                         "parity-settings-current" => updates::Status::UpToDate,
+                        "parity-settings-deferred" => updates::Status::Deferred,
                         "parity-settings-offline" => {
                             updates::Status::Failed("Offline. Try again when connected.".into())
                         }
@@ -1774,6 +1813,7 @@ impl CaperApp {
                 } else if name.starts_with("parity-feedback") {
                     // A feedback team member, with labelled sample reports as
                     // `GET /api/feedback` answers them.
+                    app.token = Some("fixture-account".into());
                     if let Some(account) = &mut app.account {
                         account.feedback_team = true;
                     }
@@ -1887,6 +1927,7 @@ impl CaperApp {
                     // Labelled previews of message requests and blocking.
                     let peer =
                         |id: &str, username: &str, name: &str, avatar: i32| model::DirectPeer {
+                            admin: false,
                             id: id.into(),
                             username: username.into(),
                             display_name: format!("TEST FIXTURE {name}"),
@@ -1986,6 +2027,7 @@ impl CaperApp {
                     app.directs = vec![model::DirectConversation {
                         id: id.clone(),
                         peer: model::DirectPeer {
+                            admin: false,
                             id: "fixture-maya".into(),
                             username: "maya".into(),
                             display_name: "TEST FIXTURE Maya".into(),
@@ -2013,6 +2055,7 @@ impl CaperApp {
                             .iter()
                             .filter(|member| member.id != "fixture-owner")
                             .map(|member| model::Person {
+                                admin: member.admin,
                                 id: member.id.clone(),
                                 username: member.username.clone(),
                                 display_name: member.display_name.clone(),
@@ -2048,6 +2091,7 @@ impl CaperApp {
                     let direct = |id: &str, peer: &str, name: &str| model::DirectConversation {
                         id: id.into(),
                         peer: model::DirectPeer {
+                            admin: false,
                             id: peer.into(),
                             username: name.to_lowercase(),
                             display_name: format!("TEST FIXTURE {name}"),
@@ -2142,6 +2186,7 @@ impl CaperApp {
                         .map_or_else(Vec::new, |detail| detail.members.clone());
                     if name == "parity-admin-invitations" {
                         app.managed_invitations.push(Member {
+                            admin: false,
                             id: "invited00001".into(),
                             avatar_id: None,
                             avatar_asset: None,
@@ -2163,6 +2208,7 @@ impl CaperApp {
                             ("invited00001", "fixture_invitee", "TEST FIXTURE invitee"),
                         ]
                         .map(|(id, username, display_name)| model::Person {
+                            admin: false,
                             id: id.into(),
                             username: username.into(),
                             display_name: display_name.into(),
@@ -2237,6 +2283,7 @@ impl CaperApp {
                 } else if name == "parity-browse" {
                     app.navigation_open = true;
                 } else if matches!(name, "parity-voice-rosters" | "parity-voice-rosters-narrow") {
+                    app.voice_activity_spaces.insert("space0000001".into());
                     app.channel_rosters.insert(
                         "chan00000002".into(),
                         vec![
@@ -2793,6 +2840,7 @@ impl CaperApp {
             channels,
             members: vec![
                 Member {
+                    admin: false,
                     id: "fixture-owner".into(),
                     avatar_id: Some(0),
                     avatar_asset: None,
@@ -2802,6 +2850,7 @@ impl CaperApp {
                     owner: true,
                 },
                 Member {
+                    admin: false,
                     id: "fixture-maya".into(),
                     avatar_id: Some(15),
                     avatar_asset: None,
@@ -2811,6 +2860,7 @@ impl CaperApp {
                     owner: false,
                 },
                 Member {
+                    admin: false,
                     id: "fixture-alex".into(),
                     avatar_id: Some(16),
                     avatar_asset: None,
@@ -3263,6 +3313,29 @@ impl CaperApp {
                         draft.status = Some(status);
                     }
                 }
+                // The update review's report: stays in the dialog, no navigation.
+                Event::ProfileSent {
+                    epoch,
+                    send,
+                    result,
+                    ..
+                } if epoch == self.account_epoch
+                    && self
+                        .update_report
+                        .as_ref()
+                        .is_some_and(|report| report.client_id == send.client_id) =>
+                {
+                    if let Some(direct) = result.as_ref().ok().or(send.direct.as_ref()) {
+                        self.directs.retain(|item| item.id != direct.id);
+                        self.directs.push(direct.clone());
+                    }
+                    if let Some(report) = &mut self.update_report {
+                        report.state = match result {
+                            Ok(_) => ReportState::Sent,
+                            Err(error) => ReportState::Failed(error.message),
+                        };
+                    }
+                }
                 Event::ProfileSent {
                     epoch,
                     person,
@@ -3454,6 +3527,10 @@ impl CaperApp {
                                 Some(Instant::now() + Duration::from_secs(2));
                         }
                     }
+                }
+                Event::VoiceActivityLoaded { epoch, result } if epoch == self.account_epoch => {
+                    self.voice_activity_refreshing = false;
+                    self.voice_activity_spaces = result.unwrap_or_default().into_iter().collect();
                 }
                 Event::UnreadLoaded {
                     epoch,
@@ -3689,9 +3766,10 @@ impl CaperApp {
                     self.context_loading = false;
                     let main = root.is_none() && !newer;
                     self.accept_context(root, &anchor, newer, result);
-                    // A report lands in its thread once the history around it is in.
+                    // Only a reported reply needs its existing thread revealed.
                     if main
                         && self.selected_channel.is_some()
+                        && self.error.is_none()
                         && let Some((_, thread)) = self
                             .report_thread
                             .take_if(|(expected, _)| *expected == anchor)
@@ -3700,6 +3778,11 @@ impl CaperApp {
                             Some(reply) => self.load_context(Some(thread.root), reply, false),
                             None => self.open_thread(thread.root),
                         }
+                    }
+                    // Keep the inbox over the previous conversation until the
+                    // report (including a reported reply) can actually be shown.
+                    if !self.context_loading {
+                        self.feedback_open = false;
                     }
                 }
                 Event::ThreadLoaded {
@@ -4319,6 +4402,9 @@ impl CaperApp {
         self.composer_emoji = None;
         self.profile_navigation = None;
         self.unread_spaces.clear();
+        self.voice_activity_spaces.clear();
+        self.voice_activity_refreshing = false;
+        self.voice_activity_refreshed = Instant::now() - Duration::from_secs(15);
         self.unread_visit = None;
         self.unread_visit_pending = false;
         self.unread_boundary = None;
@@ -4398,6 +4484,17 @@ impl CaperApp {
         if !self.feedback_team() {
             return;
         }
+        // Returning to the inbox cancels an in-flight report jump.
+        self.navigation += 1;
+        self.opening = false;
+        self.navigation_target = None;
+        self.navigation_prefetch = None;
+        self.visit_request = None;
+        self.report_focus = None;
+        self.history_request += 1;
+        self.context_loading = false;
+        self.loading_older = false;
+        self.report_thread = None;
         self.feedback_open = true;
         self.navigation_open = false;
         self.showing_pins = false;
@@ -4463,7 +4560,7 @@ impl CaperApp {
     }
 
     /// Opens a report's conversation by channel id, even one outside the
-    /// space and DM lists, at the report and in its thread.
+    /// space and DM lists, at the reported message.
     fn open_report(&mut self, target: feedback::VisitTarget, from_inbox: bool) {
         if self.token.is_none() {
             return;
@@ -4473,13 +4570,24 @@ impl CaperApp {
         } else {
             self.report_origin()
         };
-        self.feedback_open = false;
+        if !from_inbox {
+            self.feedback_open = false;
+        }
+        // A second report must supersede a context request still in flight.
+        self.history_request += 1;
+        self.context_loading = false;
+        self.loading_older = false;
+        self.report_thread = None;
         self.navigation_open = false;
-        if self.selected_channel.as_deref() == Some(target.channel.as_str())
-            && !self.opening
-            && self.navigation_error.is_none()
-        {
+        if self.selected_channel.as_deref() == Some(target.channel.as_str()) {
             // Already open, as a visit or as a member: land on the report.
+            self.navigation += 1;
+            self.opening = false;
+            self.navigation_target = None;
+            self.navigation_prefetch = None;
+            self.navigation_error = None;
+            self.visit_request = None;
+            self.report_focus = None;
             if self.visiting().is_some()
                 && let Some(visit) = &mut self.visit
             {
@@ -4499,7 +4607,7 @@ impl CaperApp {
         });
     }
 
-    /// History around the report, then its thread.
+    /// History around the report; only reported replies open a thread.
     fn focus_report(&mut self, target: &feedback::VisitTarget) {
         let (anchor, thread) = target.plan();
         self.report_thread = thread.map(|thread| (anchor.clone(), thread));
@@ -4563,10 +4671,32 @@ impl CaperApp {
             .collect()
     }
 
+    /// Server-stamped Caper identities, never space ownership or display names.
+    fn protected_account(&self, id: &str) -> bool {
+        self.directs
+            .iter()
+            .any(|direct| direct.peer.id == id && (direct.peer.admin || direct.peer.team))
+            || self
+                .people
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|person| person.id == id && person.admin)
+            || self
+                .detail
+                .iter()
+                .flat_map(|detail| &detail.members)
+                .any(|member| member.id == id && member.admin)
+    }
+
     /// Someone else's signed-in account behind a message, for Block/Unblock.
     fn blockable_author(&self, author: &Author) -> Option<model::BlockedAccount> {
         let me = self.account.as_ref().map(|account| account.id.as_str());
-        if author.is_guest || Some(author.id.as_str()) == me {
+        if author.is_guest
+            || Some(author.id.as_str()) == me
+            || (!self.is_blocked(&author.id)
+                && (author.admin || self.protected_account(&author.id)))
+        {
             return None;
         }
         let username = self
@@ -4605,6 +4735,9 @@ impl CaperApp {
 
     /// Blocking always confirms first; unblocking does not.
     fn confirm_block(&mut self, account: model::BlockedAccount, request: Option<String>) {
+        if self.protected_account(&account.id) {
+            return;
+        }
         self.block_error = None;
         self.dialog = Some(Dialog::Block { account, request });
     }
@@ -5664,9 +5797,15 @@ impl CaperApp {
         }
         // Before the cache fills in the space's remembered channel.
         let reveals = target.channel.is_some();
-        // Any conversation replaces the feedback inbox; only the visit's own
-        // navigation keeps its request.
-        self.feedback_open = false;
+        // A report keeps the inbox visible while preparing its conversation.
+        // Other navigation dismisses it immediately.
+        if self
+            .visit_request
+            .as_ref()
+            .is_none_or(|request| target.channel.as_ref() != Some(&request.target.channel))
+        {
+            self.feedback_open = false;
+        }
         // Like web, Browse channels belongs to the space it was opened in.
         if target
             .space
@@ -5925,7 +6064,9 @@ impl CaperApp {
                         channel: Some(history.channel.id.clone()),
                     };
                     let focus = request.target.clone();
+                    let inbox_open = self.feedback_open;
                     self.navigate(target);
+                    self.feedback_open = inbox_open;
                     self.report_focus = Some((self.navigation, focus));
                     return;
                 }
@@ -6031,6 +6172,7 @@ impl CaperApp {
                     self.clear_channel(&error.message);
                 }
                 self.navigation_error = Some(error.message);
+                self.feedback_open = false;
             }
         }
     }
@@ -8307,6 +8449,22 @@ impl CaperApp {
 
     fn periodic(&mut self, context: &egui::Context) {
         let now = Instant::now();
+        if let Some(token) = self.token.clone() {
+            let waited = now.duration_since(self.voice_activity_refreshed);
+            if !self.voice_activity_refreshing && waited >= Duration::from_secs(15) {
+                self.voice_activity_refreshing = true;
+                self.voice_activity_refreshed = now;
+                self.worker.send(Command::LoadVoiceActivity {
+                    epoch: self.account_epoch,
+                    token,
+                });
+            }
+            context.request_repaint_after(
+                Duration::from_secs(15)
+                    .saturating_sub(now.duration_since(self.voice_activity_refreshed))
+                    .max(Duration::from_secs(1)),
+            );
+        }
         if let Some(target) = self.navigation_prefetch.clone() {
             if !self.navigation_target_matches(&target) {
                 self.navigation_prefetch = None;
@@ -8722,11 +8880,22 @@ impl CaperApp {
             let (hovered, under) = context.interaction_snapshot(|snapshot| {
                 (snapshot.hovered.clone(), snapshot.contains_pointer.clone())
             });
+            // A floating panel's own background (a dialog absorbing clicks so they
+            // never reach the backdrop) senses clicks but is not a control: it
+            // fills its area exactly. Without this every gap in a dialog showed a hand.
+            let background = |response: &egui::Response| {
+                context
+                    .memory(|memory| memory.area_rect(response.layer_id.id))
+                    .is_some_and(|area| area == response.rect)
+            };
             let clickable: Vec<_> = hovered
                 .into_iter()
                 .filter_map(|id| context.read_response(id))
                 .filter(|response| {
-                    response.enabled() && response.hovered() && response.sense.senses_click()
+                    response.enabled()
+                        && response.hovered()
+                        && response.sense.senses_click()
+                        && !background(response)
                 })
                 .collect();
             let disabled_on_top = under
@@ -8775,17 +8944,91 @@ impl CaperApp {
                     .inner_margin(16),
             )
             .show(context, |ui| {
-                ui.set_width((viewport.width() - 48.0).min(420.0));
-                let (mascot, _) =
-                    ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
-                update_art::paint(ui, mascot);
+                let content_width = (viewport.width() - 48.0).min(420.0);
+                ui.set_width(content_width);
+                let mut close = false;
+                ui.horizontal(|ui| {
+                    let (mascot, _) =
+                        ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
+                    update_art::paint(ui, mascot);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        close =
+                            drawn_icon_button(ui, NavIcon::Close, "Close update review").clicked();
+                    });
+                });
                 ui.label(bold("A fresh Caper is ready").size(20.0));
-                ui.label(RichText::new(format!("Version {}", update.version)).color(MUTED));
+                // "Version 0.1.82 · October 18, 2026"; the version opens its commit.
+                let date = update
+                    .released
+                    .as_deref()
+                    .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+                    .map(|date| date.format("%B %-d, %Y").to_string());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let version = RichText::new(format!("Version {}", update.version))
+                        .color(MUTED)
+                        .size(13.0);
+                    match update.revision.as_deref().and_then(updates::commit_url) {
+                        Some(url) => {
+                            let link = ui
+                                .add(egui::Link::new(version))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .on_hover_text("View this version on GitHub");
+                            if link.clicked() {
+                                context.open_url(egui::OpenUrl::new_tab(url));
+                            }
+                        }
+                        None => {
+                            ui.label(version);
+                        }
+                    }
+                    if let Some(date) = date {
+                        ui.label(RichText::new(format!(" · {date}")).color(MUTED).size(13.0));
+                    }
+                });
                 ui.add_space(12.0);
+                let mut report_request = None;
                 let error = self.updates.error.as_ref().or(update.last_error.as_ref());
                 if let Some(error) = error {
                     ui.label(bold("The last update didn’t finish").color(ERROR));
-                    ui.label(RichText::new("Try again, or use the installer below.").color(MUTED));
+                    if update.can_apply {
+                        // The installer link sits in the sentence; no separate footer link.
+                        // A measured single row instead of horizontal_wrapped, which settles
+                        // a frame late and makes the dialog jump as it opens.
+                        let lead = "Try again using the button below, or ";
+                        let font = egui::TextStyle::Body.resolve(ui.style());
+                        let width = ui
+                            .painter()
+                            .layout_no_wrap(format!("{lead}use the installer."), font, MUTED)
+                            .size()
+                            .x;
+                        let sentence = |ui: &mut egui::Ui, lead: &str| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.label(RichText::new(lead).color(MUTED));
+                            let installer = ui
+                                .add(egui::Link::new(
+                                    RichText::new("use the installer").color(TEXT).underline(),
+                                ))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand);
+                            if installer.clicked() {
+                                context.open_url(egui::OpenUrl::new_tab(updates::DOWNLOAD_URL));
+                            }
+                            ui.label(RichText::new(".").color(MUTED));
+                        };
+                        // The dialog's fixed width, not available_width(), which differs
+                        // during egui's first sizing pass.
+                        if width + 4.0 <= content_width {
+                            ui.horizontal(|ui| sentence(ui, lead));
+                        } else {
+                            ui.label(RichText::new(lead.trim_end()).color(MUTED));
+                            ui.horizontal(|ui| sentence(ui, ""));
+                        }
+                    } else {
+                        ui.label(
+                            RichText::new("Download the installer with the button below.")
+                                .color(MUTED),
+                        );
+                    }
                     // Long OS/network errors must not push the actions offscreen.
                     egui::ScrollArea::vertical()
                         .id_salt("update-error")
@@ -8793,66 +9036,117 @@ impl CaperApp {
                         .show(ui, |ui| {
                             ui.label(RichText::new(error).color(MUTED).size(12.0));
                         });
+                    // One click posts this error to the Caper team from your notes.
+                    if self.token.is_some()
+                        && self
+                            .account
+                            .as_ref()
+                            .is_some_and(|account| account.username.is_some())
+                    {
+                        ui.add_space(6.0);
+                        let state = self
+                            .update_report
+                            .as_ref()
+                            .filter(|report| report.error == *error)
+                            .map(|report| &report.state);
+                        match state {
+                            Some(ReportState::Sent) => {
+                                ui.label(
+                                    RichText::new("Sent. The Caper team will reply in your notes.")
+                                        .color(MUTED)
+                                        .size(12.0),
+                                );
+                            }
+                            Some(ReportState::Sending) => {
+                                secondary_button(ui, "Sending to the Caper team…", false);
+                            }
+                            failed => {
+                                if let Some(ReportState::Failed(message)) = failed {
+                                    ui.label(RichText::new(message).color(ERROR).size(12.0));
+                                }
+                                if secondary_button(ui, "Send this to the Caper team", true)
+                                    .clicked()
+                                {
+                                    report_request = Some(error.clone());
+                                }
+                            }
+                        }
+                    }
                     ui.add_space(8.0);
                 }
-                ui.separator();
-                ui.label(bold("What’s new"));
+                if let Some(error) = report_request.take() {
+                    self.send_update_report(error, &update.version);
+                }
+                ui.horizontal(|ui| {
+                    ui.label(
+                        bold("WHAT’S NEW")
+                            .size(11.0)
+                            .color(MUTED)
+                            .extra_letter_spacing(0.8),
+                    );
+                    let (rule, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 11.0),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter()
+                        .hline(rule.x_range(), rule.center().y, Stroke::new(1.0, BORDER));
+                });
+                ui.add_space(8.0);
                 egui::ScrollArea::vertical()
                     .id_salt("update-notes")
-                    .max_height((viewport.height() - 420.0).clamp(64.0, 260.0))
+                    .max_height((viewport.height() - 400.0).clamp(64.0, 300.0))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         if !update.history_complete {
                             ui.label(
                                 RichText::new("Earlier release notes aren’t available.")
-                                    .color(MUTED),
+                                    .color(MUTED)
+                                    .size(13.0),
                             );
-                            ui.add_space(8.0);
+                            ui.add_space(10.0);
                         }
-                        let fallback = updates::ChangelogEntry {
-                            version: update.version.clone(),
-                            notes: update.notes.clone(),
-                        };
-                        let entries = if update.changelog.is_empty() {
-                            std::slice::from_ref(&fallback)
-                        } else {
-                            &update.changelog
-                        };
-                        for (index, entry) in entries.iter().enumerate() {
-                            if index > 0 {
-                                ui.add_space(6.0);
-                                ui.separator();
-                                ui.add_space(6.0);
-                            }
-                            ui.label(bold(&entry.version).size(14.0));
-                            if entry.notes.trim().is_empty() {
+                        match &update.highlights {
+                            Some(items) if items.is_empty() => {
                                 ui.label(
-                                    RichText::new(
-                                        "Release notes aren’t available for this version.",
-                                    )
-                                    .color(MUTED),
+                                    RichText::new("Behind-the-scenes fixes this time.")
+                                        .color(MUTED),
                                 );
                             }
-                            for line in entry.notes.lines().filter(|line| !line.trim().is_empty()) {
-                                ui.label(RichText::new(line).color(MUTED).size(14.0));
+                            Some(items) => {
+                                for (index, item) in items.iter().enumerate() {
+                                    if index > 0 {
+                                        ui.add_space(14.0);
+                                    }
+                                    update_highlight(ui, &item.title, &item.body);
+                                }
+                            }
+                            // Highlights could not be read: the updater's
+                            // plain notes and the signed changelog, unversioned.
+                            None => {
+                                ui.label(RichText::new(&update.notes).color(MUTED));
+                                for line in update
+                                    .changelog
+                                    .iter()
+                                    .flat_map(|entry| entry.notes.lines())
+                                    .filter(|line| !line.trim().is_empty())
+                                {
+                                    ui.label(RichText::new(line).color(MUTED).size(14.0));
+                                }
                             }
                         }
                     });
+                ui.add_space(4.0);
                 ui.separator();
+                if !update.can_apply {
+                    ui.add_space(12.0);
+                    ui.label(
+                        RichText::new("Download the installer to update this copy manually.")
+                            .color(MUTED)
+                            .size(13.0),
+                    );
+                }
                 ui.add_space(12.0);
                 let in_call = !matches!(self.voice.state.phase, Phase::Idle);
-                ui.label(
-                    RichText::new(if !update.can_apply {
-                        "Download the installer to update this copy manually."
-                    } else if in_call {
-                        "Caper will restart and leave your voice call."
-                    } else {
-                        "Caper will restart to install the update."
-                    })
-                    .color(MUTED)
-                    .size(13.0),
-                );
-                ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if update.can_apply {
@@ -8862,6 +9156,10 @@ impl CaperApp {
                                 "Restart to update"
                             };
                             if primary_button(ui, label, true).clicked() && self.updates.apply() {
+                                // Saved on close: the new build will not repeat these.
+                                if let Some(sequence) = update.sequence {
+                                    self.whats_new.mark_read(sequence);
+                                }
                                 context.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
                         } else if primary_button(ui, "Download", true).clicked() {
@@ -8872,16 +9170,12 @@ impl CaperApp {
                             later.request_focus();
                         }
                         if later.clicked() {
-                            self.updates.dismiss();
+                            close = true;
                         }
                     });
                 });
-                if update.can_apply {
-                    ui.add_space(8.0);
-                    ui.hyperlink_to(
-                        RichText::new("Download installer instead").color(MUTED),
-                        updates::DOWNLOAD_URL,
-                    );
+                if close {
+                    self.updates.dismiss();
                 }
             });
         if modal.should_close() {
@@ -10073,43 +10367,64 @@ impl CaperApp {
                             if let Some(texture) = icon {
                                 paint_rail_icon(ui, &response, texture, muted.is_some());
                             }
-                            // A muted space gets a bell-slash badge and says so on hover.
-                            let response = match &muted {
-                                Some(label) => {
-                                    let badge = egui::Rect::from_center_size(
-                                        response.rect.right_bottom() - egui::vec2(3.0, 3.0),
-                                        egui::vec2(18.0, 18.0),
+                            let connected = self.voice.active_space.as_deref() == Some(&id)
+                                && matches!(self.voice.state.phase, Phase::Connected(_));
+                            let voice_active =
+                                connected || self.voice_activity_spaces.contains(&id);
+                            let mut description = name.clone();
+                            if let Some(label) = &muted {
+                                description.push_str(&format!("\n{label}"));
+                                let badge = egui::Rect::from_center_size(
+                                    response.rect.right_bottom() - egui::vec2(3.0, 3.0),
+                                    egui::vec2(18.0, 18.0),
+                                );
+                                ui.painter().circle_filled(badge.center(), 9.0, BLACKOUT);
+                                paint_icon(
+                                    ui.painter(),
+                                    badge.shrink(3.0),
+                                    NavIcon::BellOff,
+                                    MUTED,
+                                );
+                            }
+                            if voice_active {
+                                let badge = egui::Rect::from_center_size(
+                                    response.rect.right_top() + egui::vec2(-3.0, 3.0),
+                                    egui::vec2(18.0, 18.0),
+                                );
+                                ui.painter().circle_filled(badge.center(), 9.0, BLACKOUT);
+                                if connected {
+                                    ui.painter().circle_filled(
+                                        badge.center(),
+                                        7.0,
+                                        VOICE_SESSION_GREEN,
                                     );
-                                    ui.painter().circle_filled(badge.center(), 9.0, BLACKOUT);
-                                    paint_icon(
-                                        ui.painter(),
-                                        badge.shrink(3.0),
-                                        NavIcon::BellOff,
-                                        MUTED,
-                                    );
-                                    response.on_hover_text(format!(
-                                        "{name}\n{label}{}",
-                                        if unread { "\nUnread activity" } else { "" }
-                                    ))
                                 }
-                                None => response.on_hover_text(if unread {
-                                    format!("{name}\nUnread activity")
+                                paint_icon(ui.painter(), badge.shrink(3.0), NavIcon::Volume, TEXT);
+                                description.push_str(if connected {
+                                    "\nConnected to voice in this space"
                                 } else {
-                                    name.clone()
-                                }),
-                            };
-                            if unread {
-                                let center = response.rect.right_top() + egui::vec2(-1.0, 1.0);
-                                ui.painter().circle_filled(center, 5.0, BLACKOUT);
-                                ui.painter().circle_filled(center, 3.0, TEXT);
-                                response.widget_info(|| {
-                                    egui::WidgetInfo::labeled(
-                                        egui::WidgetType::Button,
-                                        true,
-                                        format!("{name}, unread activity"),
-                                    )
+                                    "\nVoice active in this space"
                                 });
                             }
+                            if unread {
+                                // Leave the speaker and mute badges unobscured.
+                                let center = if voice_active {
+                                    response.rect.left_top() + egui::vec2(1.0, 1.0)
+                                } else {
+                                    response.rect.right_top() + egui::vec2(-1.0, 1.0)
+                                };
+                                ui.painter().circle_filled(center, 5.0, BLACKOUT);
+                                ui.painter().circle_filled(center, 3.0, TEXT);
+                                description.push_str("\nUnread activity");
+                            }
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    true,
+                                    description.replace('\n', ", "),
+                                )
+                            });
+                            let response = response.on_hover_text(description);
                             if active {
                                 ui.painter().rect_filled(
                                     egui::Rect::from_min_size(
@@ -11240,7 +11555,9 @@ impl CaperApp {
                 self.request_error = None;
                 self.account_op(AccountOperation::Decline(direct.id.clone()));
             }
-            if secondary_button(ui, "Block", !busy).clicked() {
+            if !self.protected_account(&direct.peer.id)
+                && secondary_button(ui, "Block", !busy).clicked()
+            {
                 self.confirm_block(Self::peer_account(&direct.peer), Some(direct.id.clone()));
             }
         });
@@ -11558,6 +11875,9 @@ impl CaperApp {
                 self.admin(AdminOperation::JoinChannel { space, channel });
             }
         } else if let Some(direct) = self.selected_direct_conversation().cloned()
+            && (direct.blocked
+                || self.is_blocked(&direct.peer.id)
+                || !self.protected_account(&direct.peer.id))
             && self
                 .account
                 .as_ref()
@@ -13216,11 +13536,7 @@ impl CaperApp {
                         if ui
                             .add_enabled(
                                 self.updates.can_check() && !checking,
-                                egui::Button::new(if checking {
-                                    "Checking…"
-                                } else {
-                                    "Check for updates"
-                                }),
+                                egui::Button::new("Check for updates"),
                             )
                             .on_hover_text(if self.updates.can_check() {
                                 "Check now without leaving this menu."
@@ -13232,23 +13548,7 @@ impl CaperApp {
                             self.updates.check_now();
                         }
                         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                            match self.updates.status() {
-                                updates::Status::UpToDate => {
-                                    ui.label(
-                                        RichText::new("No newer published release is available.")
-                                            .color(MUTED),
-                                    );
-                                }
-                                updates::Status::Failed(error) => {
-                                    ui.colored_label(
-                                        ERROR,
-                                        format!("Could not check for updates: {error}"),
-                                    );
-                                }
-                                updates::Status::Idle
-                                | updates::Status::Checking
-                                | updates::Status::Available => {}
-                            }
+                            self.update_check_status(ui);
                         });
                         if self.updates.available().is_some() {
                             ui.close();
@@ -13974,7 +14274,7 @@ impl CaperApp {
                     ui.painter().set(tint, egui::Shape::rect_filled(response.rect, 8.0, SURFACE_HOVER));
                 }
                 if response.clicked() {
-                    self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, avatar_asset: member.avatar_asset, avatar_url: member.avatar_url, is_guest: false, admin: false }, &response, true);
+                    self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, avatar_asset: member.avatar_asset, avatar_url: member.avatar_url, is_guest: false, admin: member.admin }, &response, true);
                 }
 
             }
@@ -14140,6 +14440,11 @@ impl CaperApp {
                                 self.navigation_open = true;
                             }
                             ui.label(RichText::new(title).size(13.76));
+                            if self.opening || self.context_loading {
+                                ui.label(
+                                    RichText::new("Opening message…").size(11.52).color(MUTED),
+                                );
+                            }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -14570,7 +14875,8 @@ impl CaperApp {
                                         .auto_shrink([false, true])
                                         .show(ui, |ui| egui::TextEdit::multiline(&mut draft.0)
                                             .id(composer_id).desired_rows(1).desired_width(f32::INFINITY).char_limit(4000)
-                                            .min_size(egui::vec2(0.0, 18.0))
+                                            .min_size(egui::vec2(0.0, 28.0))
+                                            .vertical_align(egui::Align::Center)
                                             .font(egui::FontId::proportional(13.6))
                                             .margin(egui::vec2(0.0, 5.0))
                                             .frame(false)
@@ -14681,7 +14987,7 @@ impl CaperApp {
                             });
                     }
                 }
-                if let Some(error) = error {
+                if let Some(error) = &error {
                     ui.colored_label(ERROR, error);
                     // The page that failed, as on web: an older page again,
                     // not a reload of the latest replies.
@@ -14705,12 +15011,20 @@ impl CaperApp {
                 if loading && replies.is_empty() {
                     ui.allocate_ui(egui::vec2(ui.available_width(), 196.0), message_skeleton);
                 }
-                if replies.is_empty() && !loading {
-                    ui.label(if read_only {
-                        "No replies yet."
-                    } else {
-                        "No replies yet. Start the thread."
-                    });
+                if replies.is_empty() && !loading && error.is_none() {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::symmetric(18, 12))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(if read_only {
+                                    "No replies yet."
+                                } else {
+                                    "No replies yet. Start the thread."
+                                })
+                                .size(12.0)
+                                .color(MUTED),
+                            );
+                        });
                 }
                 self.messages_or_blocked(ui, &replies);
                 // Pending replies belong in the scrolling history, not above
@@ -15034,6 +15348,7 @@ impl CaperApp {
                             .layouter(&mut layouter)
                             .desired_width(f32::INFINITY)
                             .min_size(egui::vec2(0.0, 42.0))
+                            .vertical_align(egui::Align::Center)
                             .desired_rows(1)
                             .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter)))
                             .font(egui::FontId::proportional(13.6))
@@ -15148,7 +15463,7 @@ impl CaperApp {
                 return;
             }
             let empty = self.timeline.messages().next().is_none() && self.pending.is_none();
-            if self.loading && empty {
+            if (self.loading || self.context_loading) && empty {
                 message_skeleton(ui);
                 return;
             }
@@ -18670,6 +18985,7 @@ impl CaperApp {
                 .map(|direct| &direct.peer)
                 .filter(|peer| !known.iter().any(|person| person.id == peer.id))
                 .map(|peer| model::Person {
+                    admin: peer.admin,
                     id: peer.id.clone(),
                     username: peer.username.clone(),
                     display_name: peer.display_name.clone(),
@@ -18803,6 +19119,13 @@ impl CaperApp {
             )
         };
         let mut message = false;
+        let protected = card.author.as_ref().is_some_and(|author| author.admin)
+            || card
+                .pill
+                .entry
+                .id
+                .as_deref()
+                .is_some_and(|id| self.protected_account(id));
         let blocked = card.pill.entry.id.as_deref().is_some_and(|id| {
             self.is_blocked(id)
                 || self
@@ -18897,7 +19220,8 @@ impl CaperApp {
                             ui.add_space(4.0);
                             let can_block = !profile.me
                                 && card.pill.entry.id.is_some()
-                                && self.account.is_some();
+                                && self.account.is_some()
+                                && (blocked || !protected || can_invite);
                             let actions = 30.0
                                 * (1 + usize::from(can_message) + usize::from(can_block)) as f32;
                             ui.allocate_ui_with_layout(
@@ -18981,9 +19305,10 @@ impl CaperApp {
                                             toggle_spaces = true;
                                             ui.close();
                                         }
-                                        if ui
-                                            .button(if blocked { "Unblock" } else { "Block" })
-                                            .clicked()
+                                        if (blocked || !protected)
+                                            && ui
+                                                .button(if blocked { "Unblock" } else { "Block" })
+                                                .clicked()
                                         {
                                             block_action = true;
                                             ui.close();
@@ -19370,6 +19695,7 @@ impl CaperApp {
                                                 )
                                                 .desired_width(f32::INFINITY)
                                                 .min_size(egui::vec2(0.0, 42.0))
+                                                .vertical_align(egui::Align::Center)
                                                 .desired_rows(1)
                                                 .return_key(Some(egui::KeyboardShortcut::new(
                                                     egui::Modifiers::SHIFT,
@@ -19515,6 +19841,54 @@ impl CaperApp {
     }
 
     /// Only explicit Send/Open resolves the canonical DM; Open never writes a message.
+    /// Posts a failed update's error as `@feedback` in your personal notes,
+    /// where the Caper team can read it and reply.
+    fn send_update_report(&mut self, error: String, target_version: &str) {
+        let (Some(token), Some(account)) = (self.token.clone(), self.account.as_ref()) else {
+            return;
+        };
+        let Some(username) = account.username.clone() else {
+            return;
+        };
+        let (person, name) = (
+            account.id.clone(),
+            account.display_name.clone().unwrap_or_default(),
+        );
+        let platform = match std::env::consts::OS {
+            "windows" => "Windows",
+            "macos" => "macOS",
+            _ => "Linux",
+        };
+        let text = format!(
+            "@feedback My Caper update didn’t finish.\n\n{error}\n\n{} → Caper {target_version} on {platform}",
+            updates::installed_version().trim_start_matches("Installed: "),
+        );
+        let client_id = uuid::Uuid::new_v4().to_string();
+        self.update_report = Some(UpdateReport {
+            error,
+            client_id: client_id.clone(),
+            state: ReportState::Sending,
+        });
+        self.worker.send(Command::SendProfile {
+            epoch: self.account_epoch,
+            person: person.clone(),
+            token,
+            send: Box::new(profile_dm::Send {
+                person,
+                username,
+                name,
+                client_id,
+                text,
+                files: Vec::new(),
+                settings: self.uploads.clone(),
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                retrying: false,
+                open_only: false,
+                direct: None,
+            }),
+        });
+    }
+
     fn profile_action(&mut self, person: &str, username: &str, open_only: bool) {
         if self.profile_sending() || self.profile_picker.is_some() || self.is_blocked(person) {
             return;
@@ -19775,6 +20149,7 @@ impl CaperApp {
             Dialog::Settings
             | Dialog::Profile
             | Dialog::WhatsNew
+            | Dialog::CreateChannel
             | Dialog::StartDirect
             | Dialog::JoinInvite => true,
             Dialog::ManageSpace => self
@@ -19941,7 +20316,8 @@ impl CaperApp {
                                             Dialog::ManageChannel(id) => self.channel_dialog(ui, Some(id)),
                                             Dialog::Block { account, request } => {
                                                 ui.label("You won't see their messages unless you choose to, and they can't send you DMs or requests.");
-                                                let (cancel, block) = dialog_buttons(ui, "Cancel", if self.block_busy { "Blocking…" } else { "Block" }, DANGER_TONE, !self.block_busy, !self.block_busy);
+                                                let allowed = !self.block_busy && !self.protected_account(&account.id);
+                                                let (cancel, block) = dialog_buttons(ui, "Cancel", if self.block_busy { "Blocking…" } else { "Block" }, DANGER_TONE, !self.block_busy, allowed);
                                                 if cancel.clicked() { close = true; }
                                                 if block.clicked() {
                                                     self.block_busy = true;
@@ -20019,7 +20395,10 @@ impl CaperApp {
                             if filler > 0.0 { ui.add_space(filler); }
                             ui.separator();
                             egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 10)).show(ui, |ui| {
-                                if primary_button(ui, "Done", true).clicked() { close = true; }
+                                // Right-aligned, as on web, Apple and Android.
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if primary_button(ui, "Done", true).clicked() { close = true; }
+                                });
                             });
                         }
                         if let Some(id) = save_bar {
@@ -20118,11 +20497,9 @@ impl CaperApp {
                     let published = DateTime::parse_from_rfc3339(&release.published_at)
                         .expect("validated publication date");
                     let date = published.format("%B %-d, %Y");
-                    ui.label(
-                        bold(format!("{date} · Release {}", release.sequence))
-                            .size(12.0)
-                            .color(MUTED),
-                    );
+                    // The date alone, as on every other client; the feed's sequence
+                    // number means nothing to people.
+                    ui.label(bold(date.to_string()).size(12.0).color(MUTED));
                     for highlight in release.highlights {
                         ui.add_space(10.0);
                         ui.label(bold(highlight.title).size(16.0));
@@ -20189,34 +20566,30 @@ impl CaperApp {
         ui.add_space(18.0);
         ui.label(bold("Updates").size(12.0).color(MUTED));
         ui.add_space(6.0);
-        ui.label(RichText::new(updates::installed_version()).color(MUTED));
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(updates::installed_version()).color(MUTED));
+            ui.hyperlink_to(
+                RichText::new(&whats_new::REVISION[..7])
+                    .color(TEXT)
+                    .underline(),
+                format!(
+                    "https://github.com/joswayski/caper/commit/{}",
+                    whats_new::REVISION
+                ),
+            );
+        });
         let status = self.updates.status();
         let checking = status == updates::Status::Checking;
-        let label = if checking {
-            "Checking…"
-        } else {
-            "Check for updates"
-        };
-        if secondary_button(ui, label, self.updates.can_check() && !checking).clicked() {
+        if secondary_button(
+            ui,
+            "Check for updates",
+            self.updates.can_check() && !checking,
+        )
+        .clicked()
+        {
             self.updates.check_now();
         }
-        match &status {
-            updates::Status::UpToDate => {
-                ui.label(RichText::new("No newer published release is available.").color(MUTED));
-            }
-            updates::Status::Available => {
-                ui.label(
-                    RichText::new(
-                        "Select Update available above your profile to review the update.",
-                    )
-                    .color(MUTED),
-                );
-            }
-            updates::Status::Failed(error) => {
-                ui.colored_label(ERROR, format!("Could not check for updates: {error}"));
-            }
-            updates::Status::Idle | updates::Status::Checking => {}
-        }
+        self.update_check_status(ui);
         ui.label(
             RichText::new(
                 if !self.updates.can_check() && status == updates::Status::Idle {
@@ -20248,6 +20621,34 @@ impl CaperApp {
             ui.add_space(14.0);
             delete_account_settings(ui);
         }
+    }
+
+    fn update_check_status(&self, ui: &mut egui::Ui) {
+        // Both Settings and the account menu keep their status rows mounted,
+        // so even a check that finishes within one frame cannot move controls.
+        let (message, color) = match self.updates.status() {
+            updates::Status::UpToDate => ("No newer published release is available.".into(), MUTED),
+            updates::Status::Available => ("An update is available to review.".into(), MUTED),
+            updates::Status::Deferred if self.updates.known_available().is_some() => {
+                ("An update is available to review.".into(), MUTED)
+            }
+            updates::Status::Deferred => {
+                ("No new updates. Will check again shortly.".into(), MUTED)
+            }
+            updates::Status::Failed(error) => {
+                (format!("Could not check for updates: {error}"), ERROR)
+            }
+            updates::Status::Checking => ("Checking for updates…".into(), MUTED),
+            updates::Status::Idle => ("Updates are checked automatically.".into(), MUTED),
+        };
+        ui.add(egui::Label::new(RichText::new(&message).color(color)).truncate())
+            .on_hover_text(message);
+        ui.label(
+            RichText::new(self.updates.last_checked())
+                .size(12.0)
+                .color(MUTED),
+        );
+        ui.ctx().request_repaint_after(Duration::from_secs(10));
     }
 
     /// "Notify me about", saved as soon as it changes and reverted with an
@@ -20665,6 +21066,27 @@ impl CaperApp {
         let rect = egui::Rect::from_min_size(outer.min, egui::vec2(side, side));
         let corner = picture_corner(side);
         let hovered = enabled && response.hovered();
+        let over_frame = ui.input(|input| {
+            input
+                .pointer
+                .latest_pos()
+                .is_some_and(|pos| outer.contains(pos))
+        });
+        let dropping = idle
+            && !unavailable
+            && over_frame
+            && ui.input(|input| !input.raw.hovered_files.is_empty());
+        let dropped = if idle && !unavailable && over_frame {
+            ui.input(|input| {
+                input
+                    .raw
+                    .dropped_files
+                    .first()
+                    .and_then(|file| file.path.clone())
+            })
+        } else {
+            None
+        };
         ui.painter().rect_filled(rect, corner, RAISED);
         face(ui, rect);
         if busy.is_some() {
@@ -20674,7 +21096,16 @@ impl CaperApp {
         ui.painter().rect_stroke(
             rect,
             corner,
-            Stroke::new(1.0, if hovered { MUTED } else { BORDER }),
+            Stroke::new(
+                if dropping { 2.0 } else { 1.0 },
+                if dropping {
+                    TERRACOTTA
+                } else if hovered {
+                    MUTED
+                } else {
+                    BORDER
+                },
+            ),
             egui::StrokeKind::Inside,
         );
         // The badge sits over the frame's corner, cut out by a ring of the dialog.
@@ -20736,7 +21167,9 @@ impl CaperApp {
         } else if unavailable {
             ui.label(RichText::new(pictures::UNAVAILABLE).size(12.0).color(MUTED));
         }
-        if change {
+        if let Some(path) = dropped {
+            self.change_picture(target, Some(path));
+        } else if change {
             self.pick_picture(ui.ctx(), target);
         } else if remove {
             self.change_picture(target, None);
@@ -22093,6 +22526,24 @@ fn drawn_icon_button_sized(
 /// Web's `.chat-reaction-picker-heading` on floating panels (the emoji
 /// picker, Reactions, the forward dialog): a bold title and a Lucide close
 /// in place of egui's title bar. True when Close was clicked.
+/// One release highlight in the update review: a bullet, a bold title and a
+/// muted, wrapping description.
+fn update_highlight(ui: &mut egui::Ui, title: &str, body: &str) {
+    ui.horizontal_top(|ui| {
+        let (bullet, _) = ui.allocate_exact_size(egui::vec2(14.0, 20.0), egui::Sense::hover());
+        ui.painter().circle_filled(
+            egui::pos2(bullet.min.x + 4.0, bullet.center().y),
+            2.5,
+            MUTED,
+        );
+        ui.vertical(|ui| {
+            ui.add(egui::Label::new(bold(title).size(15.0).color(TEXT)).wrap());
+            ui.add_space(2.0);
+            ui.add(egui::Label::new(RichText::new(body).color(MUTED).size(14.0)).wrap());
+        });
+    });
+}
+
 fn floating_heading(ui: &mut egui::Ui, title: &str, close_label: &str, enabled: bool) -> bool {
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), 30.0),
@@ -22558,6 +23009,7 @@ fn carries_identities(event: &Event) -> bool {
             | Event::NotificationActivity { .. }
             | Event::NotificationError { .. }
             | Event::UnreadLoaded { .. }
+            | Event::VoiceActivityLoaded { .. }
             | Event::ThreadUnread { .. }
             | Event::ChannelRead { .. }
             | Event::CodeRequested { .. }
@@ -28065,10 +28517,203 @@ mod tests {
     }
 
     #[test]
+    fn failed_update_error_is_sent_to_the_caper_team_from_your_notes() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-update-error"),
+        );
+        // Fixtures never sign in; the report needs a session like the real app.
+        app.token = Some("fixture-token".into());
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        let frame = |app: &mut CaperApp, events| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |context| app.update_notice(context),
+            )
+        };
+        let shows = |output: &egui::FullOutput, label: &str| {
+            output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label)
+            })
+        };
+        for _ in 0..5 {
+            frame(&mut app, vec![]);
+        }
+        let output = frame(&mut app, vec![]);
+        let button = text_position(&output, "Send this to the Caper team");
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(button),
+                    egui::Event::PointerButton {
+                        pos: button,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        let report = app.update_report.as_ref().expect("report started");
+        assert!(matches!(report.state, crate::ReportState::Sending));
+        let client_id = report.client_id.clone();
+        let own = app.account.as_ref().unwrap().id.clone();
+        assert!(shows(
+            &frame(&mut app, vec![]),
+            "Sending to the Caper team…"
+        ));
+
+        let send = |client_id: &str| {
+            Box::new(crate::profile_dm::Send {
+                person: own.clone(),
+                username: "owner".into(),
+                name: "Owner".into(),
+                client_id: client_id.into(),
+                text: String::new(),
+                files: Vec::new(),
+                settings: None,
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                retrying: false,
+                open_only: false,
+                direct: None,
+            })
+        };
+        events
+            .send(crate::worker::Event::ProfileSent {
+                epoch: app.account_epoch,
+                person: own.clone(),
+                send: send(&client_id),
+                result: Err(crate::profile_dm::Failure {
+                    message: "Local test refusal".into(),
+                    uncertain: false,
+                }),
+            })
+            .unwrap();
+        app.receive();
+        let output = frame(&mut app, vec![]);
+        assert!(shows(&output, "Local test refusal"));
+        assert!(shows(&output, "Send this to the Caper team"), "can retry");
+        assert!(
+            app.profile_drafts.is_empty(),
+            "no profile draft side effects"
+        );
+
+        app.send_update_report(
+            "Could not replace the installed app: Access denied (os error 5)".into(),
+            "0.1.42",
+        );
+        let client_id = app.update_report.as_ref().unwrap().client_id.clone();
+        let notes: crate::model::DirectConversation = serde_json::from_value(serde_json::json!({
+            "id": "dm-notes", "peer": {"id": own, "username": "owner", "displayName": "Owner"},
+            "lastSeq": "1", "readSeq": "1", "status": "accepted"
+        }))
+        .unwrap();
+        events
+            .send(crate::worker::Event::ProfileSent {
+                epoch: app.account_epoch,
+                person: own.clone(),
+                send: send(&client_id),
+                result: Ok(notes),
+            })
+            .unwrap();
+        app.receive();
+        assert!(shows(
+            &frame(&mut app, vec![]),
+            "Sent. The Caper team will reply in your notes."
+        ));
+        assert!(app.updates.available().is_some(), "the review stays open");
+        assert!(
+            app.selected_direct.is_none(),
+            "no navigation behind the dialog"
+        );
+        assert!(app.directs.iter().any(|direct| direct.id == "dm-notes"));
+    }
+
+    #[test]
+    fn update_review_close_button_dismisses_like_later() {
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-update"),
+        );
+        let frame = |app: &mut CaperApp, events| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1440.0, 900.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |context| app.update_notice(context),
+            )
+        };
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let output = frame(&mut app, vec![]);
+        let version = text_position(&output, "Version 0.1.42");
+        frame(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(version),
+                egui::Event::PointerButton {
+                    pos: version,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        let opened = frame(
+            &mut app,
+            vec![egui::Event::PointerButton {
+                pos: version,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(opened.platform_output.commands.iter().any(|command| matches!(command,
+            egui::OutputCommand::OpenUrl(url)
+                if url.url == "https://github.com/joswayski/caper/commit/377205cd7c68e109b0d77f31a97c2cb3b2d40c39")));
+        let close = text_position(&output, "Close update review");
+        for pressed in [true, false] {
+            frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(close),
+                    egui::Event::PointerButton {
+                        pos: close,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(app.updates.available().is_none());
+    }
+
+    #[test]
     fn update_download_button_opens_the_platform_installer() {
         for (fixture, label) in [
             ("parity-update-download", "Download"),
-            ("parity-update-error", "Download installer instead"),
+            ("parity-update-error", "use the installer"),
         ] {
             let context = egui::Context::default();
             let mut app = CaperApp::new(
@@ -28169,7 +28814,8 @@ mod tests {
                         }
                     })
                 };
-                for _ in 0..3 {
+                // The modal and its two nested scroll areas take a few frames to size.
+                for _ in 0..5 {
                     frame(vec![]);
                 }
                 let initial = frame(vec![]);
@@ -28188,12 +28834,22 @@ mod tests {
                     visible(&initial, "Later"),
                     "{fixture} {size:?}: Later clipped"
                 );
-                assert!(visible(&initial, "0.1.42"), "notes start expanded");
-                if fixture != "parity-update-download" {
-                    assert!(visible(&initial, "Download installer instead"));
-                }
+                assert!(
+                    visible(&initial, "Voice moves into the channel list"),
+                    "notes start expanded"
+                );
+                assert!(
+                    visible(&initial, "Version 0.1.42"),
+                    "version links to GitHub"
+                );
+                assert!(visible(&initial, " · October 18, 2026"), "with its date");
+                assert!(
+                    !visible(&initial, "Having issues? Download installer instead"),
+                    "the installer lives in the error sentence only"
+                );
                 if fixture == "parity-update-error" {
                     assert!(visible(&initial, "The last update didn’t finish"));
+                    assert!(visible(&initial, "use the installer"));
                 }
                 let expanded = initial;
                 assert!(
@@ -28201,12 +28857,12 @@ mod tests {
                     "expanded action clipped: {fixture} {size:?}"
                 );
                 let action_pos = text_position(&expanded, action);
-                let notes_pos = text_position(&expanded, "0.1.42");
+                let notes_pos = text_position(&expanded, "Voice moves into the channel list");
                 let mut scrolled = expanded;
                 // At narrow widths a single entry is taller than the notes
                 // viewport; scrolling straight to the bottom hides its heading.
                 for _ in 0..100 {
-                    if visible(&scrolled, "0.1.36") {
+                    if visible(&scrolled, "Forwarded messages open in their thread") {
                         break;
                     }
                     frame(vec![
@@ -28222,14 +28878,14 @@ mod tests {
                     }
                 }
                 assert!(
-                    visible(&scrolled, "0.1.36"),
-                    "{fixture} {size:?}: skipped version cannot be reached"
+                    visible(&scrolled, "Forwarded messages open in their thread"),
+                    "{fixture} {size:?}: last highlight cannot be reached"
                 );
                 assert!(visible(&scrolled, action));
                 assert_eq!(
                     text_position(&scrolled, action),
                     action_pos,
-                    "scroll moved the action footer"
+                    "{fixture} {size:?}: scroll moved the action footer"
                 );
                 let later = text_position(&scrolled, "Later");
                 for pressed in [true, false] {
@@ -28303,6 +28959,39 @@ mod tests {
     }
 
     #[test]
+    fn plain_text_gaps_do_not_show_a_pointing_hand() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-whats-new"),
+        );
+        for _ in 0..4 {
+            render(&mut app, &context, vec![]);
+        }
+        let output = render(&mut app, &context, vec![]);
+        let title = text_position(&output, "Edit your messages");
+        for offset in [-9.0, -6.0, 22.0, 25.0] {
+            let pos = title + egui::vec2(10.0, offset);
+            render(&mut app, &context, vec![egui::Event::PointerMoved(pos)]);
+            let output = render(&mut app, &context, vec![egui::Event::PointerMoved(pos)]);
+            assert_ne!(
+                output.platform_output.cursor_icon,
+                egui::CursorIcon::PointingHand,
+                "{offset} points from the title"
+            );
+        }
+        let done = text_position(&output, "Done");
+        render(&mut app, &context, vec![egui::Event::PointerMoved(done)]);
+        let output = render(&mut app, &context, vec![egui::Event::PointerMoved(done)]);
+        assert_eq!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::PointingHand,
+            "buttons keep the hand"
+        );
+    }
+
+    #[test]
     fn whats_new_dismissals_acknowledge_and_settings_reopens_newest_first() {
         for route in ["Done", "Close What’s new", "Escape", "backdrop"] {
             let context = egui::Context::default();
@@ -28337,8 +29026,8 @@ mod tests {
             for _ in 0..3 {
                 render(&mut app, &context, vec![]);
             }
-            let output = render(&mut app, &context, vec![]);
-            click(&mut app, &context, text_position(&output, "What’s new"));
+            let pos = scrolled_text_position(&mut app, &context, "What’s new");
+            click(&mut app, &context, pos);
             assert!(matches!(app.dialog, Some(Dialog::WhatsNew)));
             for _ in 0..3 {
                 render(&mut app, &context, vec![]);
@@ -28542,9 +29231,33 @@ mod tests {
         app.token = Some("account-token".into());
         app.directs[1].last_seq = "9".into();
         app.directs[1].read_seq = "0".into();
+        for (admin, team) in [(true, false), (false, true)] {
+            let peer = &mut app
+                .directs
+                .iter_mut()
+                .find(|direct| direct.id == "dm0000000003")
+                .unwrap()
+                .peer;
+            peer.admin = admin;
+            peer.team = team;
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let labels = texts(&output);
+            assert!(!labels.contains(&"Block"), "protected request: {labels:?}");
+            assert!(labels.contains(&"Accept") && labels.contains(&"Decline"));
+        }
+        let peer = &mut app
+            .directs
+            .iter_mut()
+            .find(|direct| direct.id == "dm0000000003")
+            .unwrap()
+            .peer;
+        peer.admin = false;
+        peer.team = false;
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let labels = texts(&output);
+        assert!(labels.contains(&"Block"), "regular request: {labels:?}");
         assert!(labels.contains(&"Message requests"), "{labels:?}");
         assert!(
             labels.contains(&"TEST FIXTURE Jordan @jordan"),
@@ -28606,6 +29319,7 @@ mod tests {
         app.directs.push(model::DirectConversation {
             id: "dm0000000005".into(),
             peer: model::DirectPeer {
+                admin: false,
                 id: "stranger0003".into(),
                 username: "kim".into(),
                 display_name: "TEST FIXTURE Kim".into(),
@@ -28713,6 +29427,18 @@ mod tests {
         let mut guest = messages[3].author.clone();
         guest.is_guest = true;
         assert!(app.blockable_author(&guest).is_none(), "guests");
+        let mut admin = messages[3].author.clone();
+        admin.is_guest = false;
+        admin.admin = false;
+        assert!(app.blockable_author(&admin).is_some(), "regular author");
+        admin.admin = true;
+        assert!(app.blockable_author(&admin).is_none(), "ADMIN author");
+        let mut admin = messages[1].author.clone();
+        admin.admin = true;
+        assert!(
+            app.blockable_author(&admin).is_some(),
+            "existing Unblock survives"
+        );
     }
 
     #[test]
@@ -28725,6 +29451,8 @@ mod tests {
             Some("parity-blocked-dm"),
         );
         app.token = Some("account-token".into());
+        app.directs[0].peer.admin = true;
+        app.directs[0].peer.team = true;
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let labels = texts(&output);
@@ -28740,6 +29468,7 @@ mod tests {
         assert!(app.selected_is_joined());
         let output = render(&mut app, &context, vec![]);
         assert!(texts(&output).contains(&"Message TEST FIXTURE Maya"));
+        assert!(!texts(&output).contains(&"Block"), "protected accepted DM");
         assert!(
             seen.lock()
                 .unwrap()
@@ -29712,6 +30441,46 @@ mod tests {
             app.dialog.is_none(),
             "outside click did not dismiss direct-message dialog"
         );
+    }
+
+    #[test]
+    fn create_channel_backdrop_dismisses_unless_creation_is_pending() {
+        for name in ["", "project-updates"] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-create-channel"),
+            );
+            app.form_name = name.into();
+            for _ in 0..3 {
+                render(&mut app, &context, vec![]);
+            }
+            let bounds =
+                context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+            click(
+                &mut app,
+                &context,
+                bounds.left_top() + egui::vec2(10.0, 10.0),
+            );
+            assert!(
+                matches!(app.dialog, Some(Dialog::CreateChannel)),
+                "inside click dismissed create-channel dialog"
+            );
+            app.loading = true;
+            click(&mut app, &context, egui::pos2(5.0, 5.0));
+            assert!(
+                matches!(app.dialog, Some(Dialog::CreateChannel)),
+                "outside click dismissed pending creation"
+            );
+            app.loading = false;
+            click(&mut app, &context, egui::pos2(5.0, 5.0));
+            assert!(
+                app.dialog.is_none(),
+                "outside click did not dismiss create-channel dialog"
+            );
+            assert!(!app.loading, "dismissal must not create a channel");
+        }
     }
 
     #[test]
@@ -30738,6 +31507,7 @@ mod tests {
         );
         let count = owner.detail.as_ref().unwrap().members.len();
         owner.admin_result(crate::worker::AdminResult::InvitationCreated(Member {
+            admin: false,
             id: "invited00001".into(),
             avatar_id: None,
             avatar_asset: None,
@@ -32096,6 +32866,7 @@ mod tests {
         app.directs = vec![crate::model::DirectConversation {
             id: id.clone(),
             peer: crate::model::DirectPeer {
+                admin: false,
                 id: "fixture-maya".into(),
                 username: "maya".into(),
                 display_name: "TEST FIXTURE Maya".into(),
@@ -33171,8 +33942,8 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         let nodes = output.platform_output.accesskit_update.unwrap().nodes;
         for label in [
-            "C",
-            "F",
+            "General",
+            "Fixture Studio",
             "design",
             "Channel options for design",
             "Join voice in #design",
@@ -34703,6 +35474,7 @@ mod tests {
         let detail = app.detail.as_mut().unwrap();
         detail.members = (0..30)
             .map(|index| model::Member {
+                admin: false,
                 id: format!("member-{index}"),
                 avatar_id: Some(index),
                 avatar_asset: None,
@@ -34877,6 +35649,7 @@ mod tests {
             .send(crate::worker::Event::Admin {
                 generation: app.generation,
                 result: Ok(crate::worker::AdminResult::InvitationCreated(Member {
+                    admin: false,
                     id: "invited00002".into(),
                     avatar_id: None,
                     avatar_asset: None,
@@ -35050,6 +35823,86 @@ mod tests {
         assert_eq!(app.member_username, "alex");
         assert!(!app.loading, "selecting never opens the conversation");
         assert!(matches!(app.dialog, Some(Dialog::StartDirect)));
+    }
+
+    #[test]
+    fn update_settings_keep_controls_still_and_link_the_installed_commit() {
+        use crate::{updates, whats_new};
+        for width in [440.0, 320.0] {
+            let context = egui::Context::default();
+            context.enable_accesskit();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-settings"),
+            );
+            app.account = None;
+            let frame = |app: &mut CaperApp, events| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 900.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| app.settings_dialog(ui));
+                    },
+                )
+            };
+            let mut positions = None;
+            for status in [
+                updates::Status::Checking,
+                updates::Status::UpToDate,
+                updates::Status::Deferred,
+                updates::Status::Failed("Offline. Try again when connected.".into()),
+            ] {
+                app.updates = updates::Updates::preview_status(status);
+                frame(&mut app, vec![]);
+                let output = frame(&mut app, vec![]);
+                let current = (
+                    text_position(&output, "Check for updates"),
+                    text_position(&output, "What’s new"),
+                );
+                if let Some(positions) = positions {
+                    assert_eq!(current, positions, "width {width}");
+                }
+                positions = Some(current);
+                assert!(
+                    texts(&output)
+                        .iter()
+                        .any(|text| text.starts_with("Last checked:"))
+                );
+            }
+            let output = frame(&mut app, vec![]);
+            let pos = node_center(&output, &whats_new::REVISION[..7]);
+            let mut opened = None;
+            for pressed in [true, false] {
+                let output = frame(
+                    &mut app,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+                opened = opened.or_else(|| opened_url(&output).map(str::to_owned));
+            }
+            assert_eq!(
+                opened,
+                Some(format!(
+                    "https://github.com/joswayski/caper/commit/{}",
+                    whats_new::REVISION
+                )),
+                "width {width}"
+            );
+        }
     }
 
     #[test]
@@ -35395,6 +36248,7 @@ mod tests {
         );
 
         let person = |id: &str, username: &str| model::Person {
+            admin: false,
             id: id.into(),
             username: username.into(),
             display_name: username.to_uppercase(),
@@ -35432,6 +36286,7 @@ mod tests {
             "stale or failed refreshes keep the list"
         );
         app.directs[0].peer = model::DirectPeer {
+            admin: false,
             id: "fixture-new".into(),
             username: "newbie".into(),
             display_name: "Newbie".into(),
@@ -35510,6 +36365,122 @@ mod tests {
             Some(name),
         );
         (context, app)
+    }
+
+    #[test]
+    fn voice_activity_rail_distinguishes_connected_from_browsing_and_connecting() {
+        let (context, mut app) = fixture("parity-feedback-zero");
+        context.enable_accesskit();
+        let space = app.spaces.iter().find(|space| !space.demo).unwrap().clone();
+        app.voice_activity_spaces.insert(space.id.clone());
+        let call = crate::state::CallContext {
+            channel_id: "voice-channel".into(),
+            channel_name: "Voice".into(),
+            space_name: space.name.clone(),
+        };
+        app.voice.active_space = Some(space.id.clone());
+        for phase in [
+            Phase::Idle,
+            Phase::Joining(call.clone()),
+            Phase::Reconnecting(call.clone()),
+            Phase::Failed(call.clone()),
+            Phase::Connected(call.clone()),
+        ] {
+            let connected = matches!(phase, Phase::Connected(_));
+            app.voice.state.phase = phase;
+            let output = context.run(egui::RawInput::default(), |context| {
+                egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+            });
+            let label = format!(
+                "{}, {}",
+                space.name,
+                if connected {
+                    "Connected to voice in this space"
+                } else {
+                    "Voice active in this space"
+                }
+            );
+            assert!(node_bounds(&output, &label).is_some(), "{label}");
+        }
+        // Local connection does not wait for (or depend on) a successful poll.
+        app.voice_activity_spaces.clear();
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+        });
+        assert!(
+            node_bounds(
+                &output,
+                &format!("{}, Connected to voice in this space", space.name)
+            )
+            .is_some()
+        );
+        app.voice.state.phase = Phase::Idle;
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+        });
+        assert!(node_bounds(&output, &space.name).is_some());
+    }
+
+    #[test]
+    fn voice_activity_rail_preserves_unread_and_muted_badges() {
+        let (context, mut app) = fixture("parity-unread");
+        context.enable_accesskit();
+        let space = app
+            .spaces
+            .iter()
+            .find(|space| space.id == "space0000002")
+            .unwrap()
+            .clone();
+        app.voice_activity_spaces.insert(space.id.clone());
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+        });
+        let label = format!(
+            "{}, {}, Voice active in this space, Unread activity",
+            space.name,
+            app.muted_label(&crate::notifications::Scope::Space(space.id))
+                .unwrap()
+        );
+        let rect = node_bounds(&output, &label).expect("all badge descriptions remain accessible");
+        for center in [
+            rect.left_top() + egui::vec2(1.0, 1.0),
+            rect.right_top() + egui::vec2(-3.0, 3.0),
+            rect.right_bottom() - egui::vec2(3.0, 3.0),
+        ] {
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Circle(circle) if circle.fill == super::BLACKOUT && circle.center == center
+            )), "badge backing remains visible at {center:?}");
+        }
+    }
+
+    #[test]
+    fn voice_activity_results_clear_on_error_and_logout_and_fence_old_accounts() {
+        let (_context, mut app) = fixture("parity-feedback-zero");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        for (epoch, result, expected) in [
+            (app.account_epoch, Ok(vec!["space-one".into()]), true),
+            (app.account_epoch + 1, Ok(vec![]), true),
+            (app.account_epoch, Err("offline".into()), false),
+        ] {
+            sender
+                .send(crate::worker::Event::VoiceActivityLoaded { epoch, result })
+                .unwrap();
+            app.receive();
+            assert_eq!(app.voice_activity_spaces.contains("space-one"), expected);
+        }
+        let old_epoch = app.account_epoch;
+        app.voice_activity_spaces.insert("space-one".into());
+        app.reset_account_state();
+        assert!(app.voice_activity_spaces.is_empty());
+        sender
+            .send(crate::worker::Event::VoiceActivityLoaded {
+                epoch: old_epoch,
+                result: Ok(vec!["space-one".into()]),
+            })
+            .unwrap();
+        app.receive();
+        assert!(app.voice_activity_spaces.is_empty());
     }
 
     #[test]
@@ -35660,6 +36631,7 @@ mod tests {
                 let mut direct = model::DirectConversation {
                     id: "dm0000000001".into(),
                     peer: model::DirectPeer {
+                        admin: false,
                         id: "fixture-maya".into(),
                         username: "maya".into(),
                         display_name: "TEST FIXTURE Maya".into(),
@@ -35780,20 +36752,63 @@ mod tests {
         assert!(app.browse_covers_conversation(), "no reads under the inbox");
         let report = app.feedback.reports[0].clone();
         click_at(&mut app, &context, text_position(&output, &report.text));
-        assert!(!app.feedback_open, "a report replaces the inbox");
-        // The fixture already shows that channel: land on the report and
-        // then open its own thread.
-        assert_eq!(
-            app.report_thread,
-            Some((
-                report.message_id.clone(),
-                crate::feedback::ThreadFocus {
-                    root: report.thread_root_id.clone(),
-                    anchor: None
-                }
-            ))
+        assert!(
+            app.feedback_open,
+            "retain the inbox until the report is ready"
+        );
+        assert!(
+            app.report_thread.is_none(),
+            "root reports stay in the conversation"
         );
         assert!(app.context_loading);
+        let rows = app.timeline.messages().cloned().collect();
+        app.timeline.reset(vec![], "4").unwrap();
+        let loading = render(&mut app, &context, vec![]);
+        assert!(!texts(&loading).contains(&"No messages yet."));
+        assert!(texts(&loading).contains(&"Opening message…"));
+        assert!(texts(&loading).contains(&"Waiting"));
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        events
+            .send(crate::worker::Event::ContextLoaded {
+                generation: app.generation,
+                request: app.history_request,
+                channel: report.channel.id.clone(),
+                root: None,
+                anchor: report.message_id.clone(),
+                newer: false,
+                result: Ok(model::MessageContext {
+                    messages: rows,
+                    root: None,
+                    has_more: false,
+                    has_newer: false,
+                }),
+            })
+            .unwrap();
+        app.receive();
+        assert!(
+            !app.feedback_open,
+            "show the report once its context is ready"
+        );
+        assert_eq!(
+            app.focused_message.as_deref(),
+            Some(report.message_id.as_str())
+        );
+        assert!(
+            app.thread_view.is_none(),
+            "opening a root report must not start a thread"
+        );
+        let opened = render(&mut app, &context, vec![]);
+        assert!(
+            texts(&opened)
+                .iter()
+                .any(|text| text.contains("uploads stall"))
+        );
+        app.open_thread(report.message_id.clone());
+        assert!(
+            app.thread_view.is_some(),
+            "explicit thread actions still work"
+        );
 
         // Another conversation opens by id as a visit request.
         let mut other = report.target();
@@ -35810,6 +36825,15 @@ mod tests {
         // Any other navigation drops it.
         app.select_channel("chan00000001".into(), false);
         assert!(app.visit_request.is_none());
+        app.open_feedback();
+        app.open_report(other, true);
+        app.open_report(report.target(), true);
+        assert!(
+            !app.opening,
+            "a report in the loaded chat supersedes pending navigation"
+        );
+        assert!(app.visit_request.is_none());
+        assert!(app.feedback_open && app.context_loading);
     }
 
     #[test]
@@ -36264,6 +37288,7 @@ mod tests {
         let (context, mut app) = fixture("parity-pictures");
         let url = "https://cdn.caper.chat/assets/maya-new?exp=1&sig=x".to_owned();
         let maya = |picture: Option<&str>| model::Person {
+            admin: false,
             id: "fixture-maya".into(),
             username: "maya_r".into(),
             display_name: "Maya R".into(),
@@ -36273,6 +37298,7 @@ mod tests {
         };
         // Copies of Maya the client already holds, beyond the fixture's.
         app.people = Some(vec![model::Person {
+            admin: false,
             id: "fixture-maya".into(),
             username: "maya".into(),
             display_name: "Maya".into(),
@@ -36354,6 +37380,7 @@ mod tests {
         );
         // Your own profile from another device updates the account first.
         app.profile_event(ProfileEvent::Person(model::Person {
+            admin: false,
             id: "fixture-owner".into(),
             username: "owner_two".into(),
             display_name: "Owner Two".into(),
@@ -36961,6 +37988,36 @@ mod tests {
             Some("parity-mentions"),
         );
         app.token = Some("account-token".into());
+        // A space owner is not a Caper admin. Only the server's admin flag
+        // suppresses the action; opening a profile preserves that distinction.
+        let alex = app
+            .detail
+            .as_mut()
+            .unwrap()
+            .members
+            .iter_mut()
+            .find(|member| member.id == "fixture-alex")
+            .unwrap();
+        alex.admin = true;
+        alex.owner = true;
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click_at(
+            &mut app,
+            &context,
+            pill_center(&output, ALEX_MESSAGE, "@alex"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        assert!(!shows(&output, "Block") && !shows(&output, "More profile actions"));
+        app.mention_card = None;
+        app.detail
+            .as_mut()
+            .unwrap()
+            .members
+            .iter_mut()
+            .find(|member| member.id == "fixture-alex")
+            .unwrap()
+            .admin = false;
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let alex = pill_center(&output, ALEX_MESSAGE, "@alex");
@@ -36979,6 +38036,14 @@ mod tests {
         assert!(!app.is_blocked("fixture-alex"));
         click_at(&mut app, &context, last_text_position(&output, "Block"));
         receive_until(&mut app, |app| app.is_blocked("fixture-alex"));
+        app.detail
+            .as_mut()
+            .unwrap()
+            .members
+            .iter_mut()
+            .find(|member| member.id == "fixture-alex")
+            .unwrap()
+            .admin = true;
         let output = render(&mut app, &context, vec![]);
         click_at(
             &mut app,
@@ -37401,6 +38466,7 @@ mod tests {
         let existing = model::DirectConversation {
             id: "dm0000000009".into(),
             peer: model::DirectPeer {
+                admin: false,
                 id: "fixture-alex".into(),
                 username: "alex".into(),
                 display_name: "Alex".into(),
@@ -37749,6 +38815,15 @@ mod tests {
                     .any(|(_, node)| node.label() == Some("Loading messages"))
             );
             let root = app.thread_view.as_ref().unwrap().root.clone();
+            app.thread_view.as_mut().unwrap().loading = false;
+            frame(&mut app);
+            let empty = frame(&mut app);
+            let note = text_position(&empty, "No replies yet. Start the thread.");
+            let heading = text_position(&empty, "Thread");
+            assert!(
+                note.x >= if size.x > 760.0 { heading.x } else { 12.0 },
+                "empty-thread text must stay inside the panel inset"
+            );
             let mut reply = app.timeline.messages().nth(1).unwrap().clone();
             reply.thread_root_id = Some(root);
             reply.content.text = "TEST FIXTURE — Visible reply".into();
@@ -38780,6 +39855,89 @@ mod tests {
     }
 
     #[test]
+    fn composer_text_and_placeholders_are_vertically_centered() {
+        for name in [
+            "parity-desktop",
+            "parity-direct",
+            "parity-thread",
+            "parity-mentions",
+        ] {
+            let (context, mut app) = fixture(name);
+            context.all_styles_mut(|style| style.animation_time = 0.0);
+            if name == "parity-mentions" {
+                render(&mut app, &context, vec![]);
+                let output = render(&mut app, &context, vec![]);
+                click_at(
+                    &mut app,
+                    &context,
+                    pill_center(&output, ALEX_MESSAGE, "@alex"),
+                );
+                render(&mut app, &context, vec![]);
+            }
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                context.set_pixels_per_point(scale);
+                for draft in ["", "welcome :)", "First line\nSecond line\nThird line"] {
+                    let expected = if name == "parity-mentions" {
+                        app.profile_drafts.get_mut("fixture-alex").unwrap().text = draft.into();
+                        "Message @alex".to_owned()
+                    } else if name == "parity-thread" {
+                        let root = app.thread_view.as_ref().unwrap().root.clone();
+                        app.thread_drafts.entry(root).or_default().0 = draft.into();
+                        "Reply to thread…".to_owned()
+                    } else {
+                        app.draft = draft.into();
+                        format!(
+                            "Message {}{}",
+                            if app.conversation_is_direct() {
+                                ""
+                            } else {
+                                "#"
+                            },
+                            app.channel_name()
+                        )
+                    };
+                    let expected = if draft.is_empty() {
+                        expected.as_str()
+                    } else {
+                        draft
+                    };
+                    render(&mut app, &context, vec![]);
+                    let output = render(&mut app, &context, vec![]);
+                    let text = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) if text.galley.job.text == expected => {
+                                Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| panic!("{name}: missing {expected:?}"));
+                    let field = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Rect(rect)
+                                if rect.fill == super::COMPOSER
+                                    && rect.rect.contains_rect(text) =>
+                            {
+                                Some(rect.rect)
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| {
+                            panic!("{name}, {scale}x: no message-box surface contains {text:?}")
+                        });
+                    assert!(
+                        (text.center().y - field.center().y).abs() <= 1.0 / scale,
+                        "{name}, {scale}x, {draft:?}: text {text:?} must be centered in {field:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn composer_grows_and_shift_enter_does_not_send_after_shift_is_released() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -39555,6 +40713,7 @@ mod tests {
         let self_direct = model::DirectConversation {
             id: "self-notes".into(),
             peer: model::DirectPeer {
+                admin: false,
                 id: account.id,
                 username: account.username.unwrap(),
                 display_name: account.display_name.unwrap(),
@@ -39615,6 +40774,7 @@ mod tests {
         let notes = model::DirectConversation {
             id: "self-notes".into(),
             peer: model::DirectPeer {
+                admin: false,
                 id: account.id.clone(),
                 username: account.username.clone().unwrap(),
                 display_name: account.display_name.clone().unwrap(),
@@ -42587,6 +43747,7 @@ mod tests {
     fn member_presence_pages_use_current_web_page_size() {
         let members = (0..26)
             .map(|index| Member {
+                admin: false,
                 id: format!("member-{index}"),
                 avatar_id: Some(index),
                 avatar_asset: None,
@@ -43388,6 +44549,7 @@ mod tests {
         app.directs = vec![crate::model::DirectConversation {
             id: app.selected_channel.clone().unwrap(),
             peer: crate::model::DirectPeer {
+                admin: false,
                 id: "peer".into(),
                 username: "peer".into(),
                 display_name: "TEST FIXTURE peer".into(),

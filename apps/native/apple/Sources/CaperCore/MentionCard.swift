@@ -3,6 +3,9 @@ import Observation
 
 /// What the mention card shows for a person's pill, resolved locally.
 struct MentionCardPerson: Equatable, Sendable {
+    var admin: Bool = false
+    var team: Bool = false
+    var canBlock: Bool { !admin && !team }
     let id: String
     let username: String?
     /// nil when nobody you know matches: the card then titles itself
@@ -53,7 +56,7 @@ enum MentionCard {
     static func resolve(_ author: ChatAuthor, members: [Member], people: [Person]?, peers: [DirectMessagePeer],
                         account: Account?, viewerID: String?) -> MentionCardPerson {
         let person = resolve(id: author.id, username: nil, members: members, people: people, peers: peers, account: account, viewerID: viewerID)
-        return MentionCardPerson(id: author.id, username: person.username, displayName: person.displayName ?? author.name,
+        return MentionCardPerson(admin: author.isAdmin || person.admin, team: person.team, id: author.id, username: person.username, displayName: person.displayName ?? author.name,
                                  avatarId: person.username == nil ? author.avatarId : person.avatarId, isSelf: person.isSelf,
                                  picture: person.username == nil ? author.avatarPicture : person.picture)
     }
@@ -61,9 +64,13 @@ enum MentionCard {
     private static func resolve(id: String, username: String?, members: [Member], people: [Person]?, peers: [DirectMessagePeer],
                                 account: Account?, viewerID: String?) -> MentionCardPerson {
         let isSelf = (viewerID ?? account?.id) == id
+        let admin = members.contains { $0.id == id && $0.admin == true }
+            || people?.contains { $0.id == id && $0.admin == true } == true
+            || peers.contains { $0.id == id && $0.admin == true }
+        let team = peers.contains { $0.id == id && $0.isTeam }
         func person(_ knownUsername: String?, _ displayName: String?, _ avatarId: Int?, _ picture: CaperPicture?) -> MentionCardPerson {
             let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return MentionCardPerson(id: id, username: knownUsername?.isEmpty == false ? knownUsername : username,
+            return MentionCardPerson(admin: admin, team: team, id: id, username: knownUsername?.isEmpty == false ? knownUsername : username,
                                      displayName: name?.isEmpty == false ? name : nil, avatarId: avatarId, isSelf: isSelf, picture: picture)
         }
         if let member = members.first(where: { $0.id == id }) {

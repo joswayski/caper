@@ -65,6 +65,13 @@ struct WhatsNewDisplay: Identifiable {
         guard presentation == nil, !history.unread.isEmpty else { return }
         presentation = WhatsNewDisplay(sequence: history.snapshot?.sequence, releases: history.unread, automatic: true)
     }
+    /// The desktop update review already showed this build's highlights;
+    /// installing from it marks them read so the new build does not repeat them.
+    public func markRead(_ sequence: Int64) {
+        guard (1...WhatsNewSnapshot.maximumSequence).contains(sequence) else { return }
+        history.acknowledge(sequence)
+    }
+
     func dismiss(_ display: WhatsNewDisplay) {
         if let sequence = display.sequence { history.acknowledge(sequence) }
         if presentation?.id == display.id { presentation = nil }

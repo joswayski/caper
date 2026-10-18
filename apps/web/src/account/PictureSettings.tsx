@@ -40,6 +40,7 @@ function PictureEditor({
   const [error, setError] = useState<string>();
   const [done, setDone] = useState<string>();
   const [menu, setMenu] = useState(false);
+  const [dropping, setDropping] = useState(false);
   // Uploads are optional server configuration (503): the picker steps back once the server says so.
   const [unavailable, setUnavailable] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -69,6 +70,8 @@ function PictureEditor({
   }, [menu]);
 
   const choose = async (file: File) => {
+    if (busy || unavailable) return;
+    setMenu(false);
     refocus.current = true;
     setError(undefined);
     setDone(undefined);
@@ -128,6 +131,24 @@ function PictureEditor({
         <button
           type="button"
           className="picture-settings-edit"
+          data-dropping={dropping || undefined}
+          onDragOver={(event) => {
+            if (!event.dataTransfer.types.includes("Files")) return;
+            event.preventDefault();
+            event.stopPropagation();
+            event.dataTransfer.dropEffect = busy || unavailable ? "none" : "copy";
+            setDropping(!busy && !unavailable);
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropping(false);
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setDropping(false);
+            const file = event.dataTransfer.files[0];
+            if (file) void choose(file);
+          }}
           aria-label={`Change ${title.toLowerCase()}`}
           title={`Change ${title.toLowerCase()}`}
           disabled={disabled}
@@ -141,7 +162,7 @@ function PictureEditor({
         >
           <span className="picture-settings-preview">{preview}</span>
           <span className="picture-settings-badge" aria-hidden="true">
-            <Pencil size={15} strokeWidth={2.4} />
+            {dropping ? <ImageUp size={15} /> : <Pencil size={15} strokeWidth={2.4} />}
           </span>
         </button>
         {menu && (

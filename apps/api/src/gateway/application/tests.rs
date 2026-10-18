@@ -685,6 +685,33 @@ async fn account_notifications_skip_history_replay_gaps_and_recheck_private_acce
     assert_eq!(event["senderAvatarId"], 317);
     assert_eq!(event["channelId"], external);
     assert_eq!(event["body"], "private preview");
+    assert!(event.get("senderAvatarUrl").is_none());
+    // Resolve the current profile at delivery, not a picture frozen on the message.
+    let picture = crate::auth::random_id(crate::pictures::ID_LENGTH);
+    sqlx::query("INSERT INTO public.assets(external_id,owner_id,purpose,kind,content_type,filename,byte_size,uploaded_at) VALUES($1,$2,'avatar','image','image/png','avatar.png',10,now())")
+        .bind(&picture).bind(sender).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE public.users SET avatar_asset=$1 WHERE id=$2")
+        .bind(&picture)
+        .bind(sender)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let signer = crate::assets::CdnSigner::new("https://cdn.test".into(), vec![5; 32]);
+    let alerts = crate::push::live::read(&pool, recipient, historical, live, Some(&signer))
+        .await
+        .unwrap();
+    let url = reqwest::Url::parse(
+        alerts[0].1.as_ref().unwrap()["senderAvatarUrl"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(url.host_str(), Some("cdn.test"));
+    assert_eq!(url.path(), format!("/assets/{picture}"));
+    assert!(
+        url.query_pairs()
+            .any(|(key, value)| key == "sig" && !value.is_empty())
+    );
     assert_eq!(
         next(&mut socket, "event", Some("alerts")).await["event"],
         json!({"type":"ready","cursor":live.to_string()})
@@ -872,7 +899,7 @@ async fn profile_and_space_changes_reach_only_people_who_can_see_them(pool: sqlx
     assert_eq!(
         update,
         json!({"type":"profile.updated","person":{"id":users[0].1,"username":"changer",
-            "displayName":"Renamed","avatarId":317,"avatarAsset":picture,"avatarUrl":signed}})
+            "displayName":"Renamed","avatarId":317,"avatarAsset":picture,"avatarUrl":signed,"admin":false}})
     );
     crate::profiles::publish_space(&state, space).await.unwrap();
     let space_update = next(&mut watcher, "event", Some("profiles")).await["event"].clone();

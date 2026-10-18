@@ -70,6 +70,27 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    func testSpaceVoiceActivityUsesAuthenticatedLightweightSnapshot() async throws {
+        let api = client()
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/spaces/voice-activity")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            XCTAssertNil(request.value(forHTTPHeaderField: "x-caper-chat-token"))
+            return (200, Data(#"{"spaceIds":["space0000001","space0000002"]}"#.utf8))
+        }
+        let snapshot = try await api.spaceVoiceActivity()
+        XCTAssertEqual(snapshot.spaceIds, ["space0000001", "space0000002"])
+        MockURLProtocol.handler = { _ in (200, Data(#"{"spaceIds":[]}"#.utf8)) }
+        let empty = try await api.spaceVoiceActivity()
+        XCTAssertTrue(empty.spaceIds.isEmpty)
+        MockURLProtocol.handler = { _ in (503, Data(#"{"error":"Unavailable"}"#.utf8)) }
+        do {
+            _ = try await api.spaceVoiceActivity()
+            XCTFail("Failed snapshots must not be accepted")
+        } catch { }
+    }
+
     func testUnreadThreadContractUsesAuthenticatedGetAndVisibleSequencePut() async throws {
         let api = client()
         let root = "root00000000001"
@@ -2453,6 +2474,10 @@ final class APIClientTests: XCTestCase {
         draft.text = "Don't lose this"
         for code in ["dm_not_accepted", "dm_blocked"] {
             MockURLProtocol.handler = { request in
+                // Selecting the retained channel reads its unread entry snapshot, independently of Send.
+                if request.httpMethod == "GET", request.url?.path == "/api/spaces/unread" {
+                    return (200, Data(#"{"spaces":[],"feedbackWaiting":0}"#.utf8))
+                }
                 if request.url?.path == "/api/blocks" { return (200, Data(#"{"blocks":[]}"#.utf8)) }
                 if request.httpMethod == "GET", request.url?.path == "/api/dms" { return (200, Data(#"{"conversations":[]}"#.utf8)) }
                 XCTAssertEqual(request.url?.path, "/api/dms", "privacy refusal must happen before upload or send")
@@ -2467,6 +2492,9 @@ final class APIClientTests: XCTestCase {
             XCTAssertEqual(model.chat.draft, "Unrelated draft")
         }
         MockURLProtocol.handler = { request in
+            if request.httpMethod == "GET", request.url?.path == "/api/spaces/unread" {
+                return (200, Data(#"{"spaces":[],"feedbackWaiting":0}"#.utf8))
+            }
             if request.url?.path == "/api/blocks" { return (200, Data(#"{"blocks":[]}"#.utf8)) }
             if request.httpMethod == "GET" { return (200, Data(#"{"conversations":[]}"#.utf8)) }
             return (200, Data(#"{"id":"dm0000000002","peer":{"id":"new000000001","username":"jordan","displayName":"Someone else"},"lastSeq":"0","readSeq":"0"}"#.utf8))
@@ -2496,6 +2524,10 @@ final class APIClientTests: XCTestCase {
             model.directMessages = loaded ? [incoming] : []
             MockURLProtocol.handler = { request in
                 XCTAssertEqual(request.httpMethod, "GET", "must not create, accept, upload or send")
+                // The retained channel's unread snapshot is also read-only; no writes are permitted.
+                if request.url?.path == "/api/spaces/unread" {
+                    return (200, Data(#"{"spaces":[],"feedbackWaiting":0}"#.utf8))
+                }
                 XCTAssertEqual(request.url?.path, "/api/dms")
                 return (200, try JSONEncoder().encode(DirectMessagesResponse(conversations: [incoming])))
             }

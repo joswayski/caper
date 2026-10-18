@@ -87,6 +87,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val pinWorkers = mutableMapOf<String, Job>()
     private var reactionIntentVersion = 0L
     private var directRefresh: Job? = null
+    private var voiceActivityRefresh: Job? = null
     private var peopleRefresh: Job? = null
     private var pendingDirectIntent: String? = null
     private var pendingChannelIntent: Pair<String, String>? = null
@@ -315,6 +316,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         channelReads.clear(); ++unreadRevision
         pendingFeedback = null; pendingFocus = null; lastVisit = null; ++feedbackRequest
         directRefresh?.cancel(); directRefresh = null
+        voiceActivityRefresh?.cancel(); voiceActivityRefresh = null
+        mutable.value = mutable.value.copy(voiceActivitySpaceIds = emptySet())
         peopleRefresh?.cancel(); peopleRefresh = null
         tokens.clear()
         drafts.clear()
@@ -564,7 +567,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     api.unreadSpaces(requireAccountToken()).spaces.flatMap { it.channels }
                         .firstOrNull { it.id == channel.id }
                 }.getOrElse { if (it is CancellationException) throw it else null } else null
-                val history = conversationHistories[channel.id] ?: api.history(accountToken, channel.id)
+                val report = pendingFocus?.takeIf { it.channelId == channel.id }
+                val history = if (report != null) api.history(accountToken, channel.id, around = report.thread)
+                    else conversationHistories[channel.id] ?: api.history(accountToken, channel.id)
                 if (request != generation || accountRequest != accountGeneration || navigation != conversationOpeningRevision) return@launch
                 require(history.channel?.id == channel.id && history.space?.id == channel.spaceId) { "Caper returned another conversation." }
                 rememberConversationHistory()
@@ -578,7 +583,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 installHistoryPins(history)
                 mutable.value = mutable.value.copy(messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore, busy = false, messagesLoading = false, restoring = false)
                 openGateway(channel.id, history.cursor, committed, channel.joined)
-                applyPendingFocus(channel.id)
+                applyPendingFocus(channel.id, history)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -609,7 +614,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value = mutable.value.copy(error = null)
         conversationHistoryJob = viewModelScope.launch {
             try {
-                val history = conversationHistories[conversation.id] ?: api.history(requireAccountToken(), conversation.id)
+                val report = pendingFocus?.takeIf { it.channelId == conversation.id }
+                val history = if (report != null) api.history(requireAccountToken(), conversation.id, around = report.thread)
+                    else conversationHistories[conversation.id] ?: api.history(requireAccountToken(), conversation.id)
                 if (request != generation || accountRequest != accountGeneration || navigation != conversationOpeningRevision) return@launch
                 require(history.space?.id == "" && history.channel?.id == conversation.id && history.channel?.direct == true) { "Caper returned another conversation." }
                 rememberConversationHistory()
@@ -624,7 +631,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 mutable.value = mutable.value.copy(messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore, busy = false, messagesLoading = false, restoring = false)
                 openGateway(conversation.id, history.cursor, committed)
                 refreshPeople()
-                applyPendingFocus(conversation.id)
+                applyPendingFocus(conversation.id, history)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -832,7 +839,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** An inbox row: visit its conversation at the report, with the report's thread open. */
+    /** An inbox row: visit its conversation at the reported message. */
     fun openFeedbackReport(report: FeedbackReport) { feedbackTarget(report)?.let(::openFeedbackConversation) }
 
     /**
@@ -840,7 +847,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
      * `visitor` flag means you are not in it: it opens as a visit, where you take part like a
      * member (typing, pins, voice in space channels) but have no member list, membership,
      * settings or read markers. A conversation you are in after all opens the usual
-     * way when your lists have it. Either way the report's message and thread are focused.
+     * way when your lists have it. Only a reported reply opens its existing thread.
      */
     private fun openFeedbackConversation(target: FeedbackTarget) {
         val token = accountToken ?: return
@@ -859,7 +866,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         )
         viewModelScope.launch {
             try {
-                val history = api.history(token, target.channelId)
+                val history = api.history(token, target.channelId, around = target.thread)
                 if (request != generation || accountRequest != accountGeneration) return@launch
                 val room = requireNotNull(history.channel) { "Conversation is unavailable." }
                 require(room.id == target.channelId) { "Caper returned another conversation." }
@@ -876,7 +883,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 // Visitors take part like members: live updates, typing and (space channels) voice rosters.
                 openGateway(channel.id, history.cursor, request)
-                focusReport(target)
+                focusReport(target, history)
             } catch (error: CancellationException) { throw error }
             catch (error: Throwable) {
                 if (request != generation || accountRequest != accountGeneration) return@launch
@@ -906,15 +913,27 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Focuses a report waiting for [channelId] to open (see [openAsMember]); any other conversation drops it. */
-    private fun applyPendingFocus(channelId: String) {
+    private fun applyPendingFocus(channelId: String, history: ChatHistory) {
         val target = pendingFocus ?: return
         pendingFocus = null
-        if (target.channelId == channelId) focusReport(target)
+        if (target.channelId == channelId) focusReport(target, history)
     }
 
-    /** Loads the report's context and opens its thread, so replies land there by default. */
-    private fun focusReport(target: FeedbackTarget) {
-        goToMessage(target.channelId, target.messageId, target.replyRoot, onFailed = { openThread(target.thread) }) { openThread(target.thread) }
+    /** Root reports stay in the conversation; only reported replies open a thread. */
+    private fun focusReport(target: FeedbackTarget, history: ChatHistory) {
+        mutable.value = mutable.value.copy(
+            contextStart = history.messages.firstOrNull()?.seq,
+            contextEnd = if (history.hasNewer) history.messages.lastOrNull()?.seq else null,
+            hasNewerMessages = history.hasNewer,
+        )
+        if (target.replyRoot != null) {
+            goToMessage(target.channelId, target.messageId, target.replyRoot) {}
+        } else if (history.messages.any { it.id == target.messageId }) {
+            mutable.value = mutable.value.copy(thread = null, focusedMessageId = target.messageId,
+                focusRevision = mutable.value.focusRevision + 1)
+        } else {
+            mutable.value = mutable.value.copy(messagesError = "Message context is unavailable.")
+        }
     }
 
     /** Back from a visit: the Feedback inbox, refreshed. */
@@ -1014,14 +1033,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Who a message's author is, for blocking: the best name this client already has. */
     fun blockTarget(author: ChatAuthor): BlockedAccount {
-        val state = mutable.value
-        state.selectedSpace?.members?.firstOrNull { it.id == author.id }?.let { return BlockedAccount(it.id, it.username, it.displayName, it.avatarId, it.avatarAsset, it.avatarUrl) }
-        state.directConversations.firstOrNull { it.peer.id == author.id }?.peer?.let { return BlockedAccount(it.id, it.username, it.displayName, it.avatarId, it.avatarAsset, it.avatarUrl) }
-        return BlockedAccount(author.id, "", author.name, author.avatarId, author.avatarAsset, author.avatarUrl)
+        val card = authorCard(author, mutable.value)
+        return BlockedAccount(author.id, card.username.orEmpty(), card.displayName ?: author.name,
+            card.avatarId, card.avatarAsset, card.avatarUrl, card.admin, card.team)
     }
 
     /** Blocks [account] everywhere you share; a pending request from them is declined too. */
     fun block(account: BlockedAccount, done: () -> Unit, failed: (String) -> Unit) = accountRequest(failed) { token, request ->
+        require(account.canBlock) { "Caper admins and the Caper team can't be blocked." }
         api.block(token, account.id)
         if (request != accountGeneration) return@accountRequest
         val current = mutable.value
@@ -1146,7 +1165,23 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun startDirectRefresh() {
         directRefresh?.cancel()
         refreshUnreadSpaces()
-        directRefresh = viewModelScope.launch { while (true) { delay(15_000); refreshDirectConversations(); refreshUnreadSpaces(); refreshMembership() } }
+        refreshVoiceActivity()
+        directRefresh = viewModelScope.launch { while (true) { delay(15_000); refreshVoiceActivity(); refreshDirectConversations(); refreshUnreadSpaces(); refreshMembership() } }
+    }
+
+    private fun refreshVoiceActivity() {
+        val token = accountToken ?: return
+        if (voiceActivityRefresh?.isActive == true) return
+        val account = accountGeneration
+        voiceActivityRefresh = viewModelScope.launch {
+            try {
+                val snapshot = api.spaceVoiceActivity(token)
+                if (account == accountGeneration) mutable.value = mutable.value.copy(voiceActivitySpaceIds = snapshot.spaceIds.toSet())
+            } catch (error: CancellationException) { throw error }
+            catch (_: Throwable) {
+                if (account == accountGeneration) mutable.value = mutable.value.copy(voiceActivitySpaceIds = emptySet())
+            }
+        }
     }
 
     /** Pushes refresh unread state between polls; a burst coalesces into one request about a second after the first. */
@@ -1321,6 +1356,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         mutable.value.pendingMessage?.takeIf { it.uploadFailed }?.let { send(it.text, threadRootId = it.threadRootId, broadcast = it.broadcast) }
         refreshMembership()
         refreshUnreadSpaces()
+        refreshVoiceActivity()
         val current = mutable.value
         if (!current.messagesLoading) current.selectedChannel?.id?.let { markConversationRead(it, durableReplayCursor) }
     }

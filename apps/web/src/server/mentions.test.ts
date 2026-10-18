@@ -179,6 +179,13 @@ test("profile cards prefer the most specific local match and flag yourself", () 
   });
   assert.equal(mentionCardPerson({ id: "u-me", username: "me" }, directory, "u-me").self, true);
   assert.equal(mentionCardPerson({ id: "u-me", username: "me" }, directory, undefined).self, false);
+  assert.equal(mentionCardPerson({ id: "u-maya", admin: true }, directory, "u-me").admin, true);
+  assert.equal(
+    mentionCardPerson({ id: "u-maya" }, [...directory, { ...directory[0], admin: true }], "u-me").admin,
+    true,
+  );
+  assert.equal(mentionCardPerson({ id: "u-maya" }, [...directory, { ...directory[0], team: true }], "u-me").team, true);
+  assert.equal(mentionCardPerson({ id: "u-stranger" }, [{ ...directory[0], admin: true }], "u-me").admin, undefined);
 });
 
 test("pinner profiles match IDs, use canonical identities, and preserve unknown author metadata", () => {

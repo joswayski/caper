@@ -30,12 +30,20 @@ export interface Member extends PersonPicture {
   username: string;
   displayName: string;
   owner: boolean;
+  admin?: boolean;
 }
 
 export interface DirectConversation {
   id: string;
   /** `team`: the Caper account, whose DM goes to the feedback team. */
-  peer: PersonPicture & { id: string; username: string; displayName: string; avatarId?: number; team?: boolean };
+  peer: PersonPicture & {
+    id: string;
+    username: string;
+    displayName: string;
+    avatarId?: number;
+    team?: boolean;
+    admin?: boolean;
+  };
   lastSeq: string;
   readSeq: string;
   /** Older servers omit it: treat as accepted. */
@@ -60,6 +68,7 @@ export interface Person extends PersonPicture {
   username: string;
   displayName: string;
   avatarId?: number | null;
+  admin?: boolean;
 }
 
 /** People in a response refresh live profile updates they postdate: there is no
@@ -350,6 +359,10 @@ function pathId(id: string) {
 
 export function listSpaces() {
   return request<{ spaces: Space[]; invitations?: Space[]; limits: SpaceLimits }>("/api/spaces");
+}
+
+export function listSpaceVoiceActivity() {
+  return request<{ spaceIds: string[] }>("/api/spaces/voice-activity", { signal: AbortSignal.timeout(10_000) });
 }
 
 export function getSpace(spaceId: string) {
