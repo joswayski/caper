@@ -3583,7 +3583,6 @@ internal fun counterTone(count: Int): Color = when {
     remove: (Member) -> Unit, cancel: (Member) -> Unit, channel: Boolean, suggestions: List<MentionCandidate>,
 ) {
     Text("Invite", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-    MemberManager(members, pending, busy, add, remove, channel, suggestions, heading = "Members", action = "Invite")
     Text("Pending invitations", fontSize = 13.sp, fontWeight = FontWeight.Bold)
     if (pending.isEmpty()) Text("No pending invitations.", color = TextMuted, fontSize = 11.sp)
     pending.forEach { member ->
@@ -3596,6 +3595,7 @@ internal fun counterTone(count: Int): Color = when {
             TextButton({ cancel(member) }, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("Cancel", color = ErrorText) }
         }
     }
+    MemberManager(members, pending, busy, add, remove, channel, suggestions, heading = "Members", action = "Invite")
 }
 
 @Composable private fun ManageChannelDialog(state: AppUiState, channel: Channel, viewModel: CaperViewModel, close: () -> Unit) {

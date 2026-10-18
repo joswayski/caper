@@ -8699,6 +8699,10 @@ private struct SpaceEditor: View {
                         Divider().overlay(CaperTheme.border)
                         InviteLinksSection(model: model)
                         Divider().overlay(CaperTheme.border)
+                        Text("Pending invitations  \(model.pendingMembers.count)").font(CaperTheme.font(14, weight: .bold))
+                        ForEach(model.pendingMembers) { member in
+                            HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)").foregroundStyle(CaperTheme.muted) }; Spacer(); Button("Cancel") { run { try await model.cancelSpaceInvitation(member) } } }.font(CaperTheme.font(12))
+                        }
                         Text("Members  \(model.detail?.members.count ?? 0)").font(CaperTheme.font(14, weight: .bold))
                             .accessibilityLabel("Members \(model.detail?.members.count ?? 0)")
                             .accessibilityIdentifier("space-members-heading")
@@ -8726,10 +8730,6 @@ private struct SpaceEditor: View {
                         if let memberError { Text(memberError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error) }
                         ForEach(model.detail?.members ?? []) { member in
                             HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)\(member.owner ? " · Owner" : "")").foregroundStyle(CaperTheme.muted) }; Spacer(); if !member.owner { Button("Remove") { removing = member }.disabled(pending) } }.font(CaperTheme.font(12))
-                        }
-                        Text("Pending invitations  \(model.pendingMembers.count)").font(CaperTheme.font(14, weight: .bold))
-                        ForEach(model.pendingMembers) { member in
-                            HStack { Avatar(name: member.displayName, size: 30, avatarID: member.avatarId, picture: member.avatarPicture); VStack(alignment: .leading) { Text(member.displayName); Text("@\(member.username)").foregroundStyle(CaperTheme.muted) }; Spacer(); Button("Cancel") { run { try await model.cancelSpaceInvitation(member) } } }.font(CaperTheme.font(12))
                         }
                         Divider().overlay(CaperTheme.border)
                         Text("Delete space").font(CaperTheme.font(14, weight: .bold))

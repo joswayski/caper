@@ -21121,7 +21121,12 @@ impl CaperApp {
             response
         };
         let rect = egui::Rect::from_min_size(outer.min, egui::vec2(side, side));
-        let corner = picture_corner(side);
+        let space_icon = matches!(target, pictures::Target::SpaceIcon(_));
+        let corner = if space_icon {
+            16.0
+        } else {
+            picture_corner(side)
+        };
         let hovered = enabled && response.hovered();
         let over_frame = ui.input(|input| {
             input
@@ -21150,21 +21155,23 @@ impl CaperApp {
             ui.painter()
                 .rect_filled(rect, corner, SURFACE.gamma_multiply(0.45));
         }
-        ui.painter().rect_stroke(
-            rect,
-            corner,
-            Stroke::new(
-                if dropping { 2.0 } else { 1.0 },
-                if dropping {
-                    TERRACOTTA
-                } else if hovered {
-                    MUTED
-                } else {
-                    BORDER
-                },
-            ),
-            egui::StrokeKind::Inside,
-        );
+        if !space_icon || dropping || response.has_focus() {
+            ui.painter().rect_stroke(
+                rect,
+                corner,
+                Stroke::new(
+                    if dropping { 2.0 } else { 1.0 },
+                    if dropping || response.has_focus() {
+                        TERRACOTTA
+                    } else if hovered {
+                        MUTED
+                    } else {
+                        BORDER
+                    },
+                ),
+                egui::StrokeKind::Inside,
+            );
+        }
         // The badge sits over the frame's corner, cut out by a ring of the dialog.
         let badge = egui::Rect::from_min_max(outer.max - egui::vec2(34.0, 34.0), outer.max);
         ui.painter().rect_filled(badge, 10.0, SURFACE);
@@ -21319,22 +21326,6 @@ impl CaperApp {
             ui.add_space(14.0);
             ui.separator();
             ui.horizontal(|ui| {
-                ui.label(bold("Members").size(14.0));
-                egui::Frame::new()
-                    .fill(RAISED)
-                    .corner_radius(8)
-                    .inner_margin(egui::Margin::symmetric(7, 2))
-                    .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(self.managed_members.len().to_string())
-                                .size(10.0)
-                                .color(MUTED),
-                        );
-                    });
-            });
-            self.members_dialog(ui, None);
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
                 ui.label(bold("Pending invitations").size(14.0));
                 ui.label(RichText::new(self.managed_invitations.len().to_string()).color(MUTED));
             });
@@ -21361,6 +21352,22 @@ impl CaperApp {
                     }
                 });
             }
+            ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                ui.label(bold("Members").size(14.0));
+                egui::Frame::new()
+                    .fill(RAISED)
+                    .corner_radius(8)
+                    .inner_margin(egui::Margin::symmetric(7, 2))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(self.managed_members.len().to_string())
+                                .size(10.0)
+                                .color(MUTED),
+                        );
+                    });
+            });
+            self.members_dialog(ui, None);
             ui.add_space(14.0);
             ui.separator();
             ui.label(RichText::new("Delete space").size(14.0));
@@ -22105,68 +22112,63 @@ impl CaperApp {
         }
         ui.separator();
         let members = self.managed_members.clone();
-        egui::ScrollArea::vertical()
-            .max_height(280.0)
-            .show(ui, |ui| {
-                for member in members {
-                    ui.horizontal(|ui| {
-                        avatar(
+        for member in members {
+            ui.horizontal(|ui| {
+                avatar(
+                    ui,
+                    &member.display_name,
+                    member.avatar_id,
+                    member.picture(),
+                    30.0,
+                    false,
+                );
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(&member.display_name).strong());
+                    ui.label(
+                        RichText::new(format!(
+                            "@{}{}",
+                            member.username,
+                            if member.owner { " · Owner" } else { "" }
+                        ))
+                        .size(10.0)
+                        .color(MUTED),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !member.owner
+                        && toned(
                             ui,
-                            &member.display_name,
-                            member.avatar_id,
-                            member.picture(),
-                            30.0,
-                            false,
-                        );
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new(&member.display_name).strong());
-                            ui.label(
-                                RichText::new(format!(
-                                    "@{}{}",
-                                    member.username,
-                                    if member.owner { " · Owner" } else { "" }
-                                ))
-                                .size(10.0)
-                                .color(MUTED),
-                            );
+                            REMOVE_TONE,
+                            true,
+                            egui::Button::new(RichText::new("Remove").size(11.0))
+                                .min_size(egui::vec2(64.0, 32.0)),
+                        )
+                        .clicked()
+                        && let Some(space) = self.selected_space.clone()
+                    {
+                        // Confirm first; "Cancel invite" stays one click.
+                        let place = match &channel {
+                            Some(id) => self
+                                .saved_channel(id)
+                                .map_or_else(|| "this channel".to_owned(), |(name, _)| name),
+                            None => self
+                                .detail
+                                .as_ref()
+                                .map_or("this space", |detail| detail.space.name.as_str())
+                                .to_owned(),
+                        };
+                        self.error = None;
+                        self.dialog = Some(Dialog::RemoveMember {
+                            space,
+                            channel: channel.clone(),
+                            member: member.id.clone(),
+                            name: member.display_name.clone(),
+                            place,
                         });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if !member.owner
-                                && toned(
-                                    ui,
-                                    REMOVE_TONE,
-                                    true,
-                                    egui::Button::new(RichText::new("Remove").size(11.0))
-                                        .min_size(egui::vec2(64.0, 32.0)),
-                                )
-                                .clicked()
-                                && let Some(space) = self.selected_space.clone()
-                            {
-                                // Confirm first; "Cancel invite" stays one click.
-                                let place = match &channel {
-                                    Some(id) => self.saved_channel(id).map_or_else(
-                                        || "this channel".to_owned(),
-                                        |(name, _)| name,
-                                    ),
-                                    None => self
-                                        .detail
-                                        .as_ref()
-                                        .map_or("this space", |detail| detail.space.name.as_str())
-                                        .to_owned(),
-                                };
-                                self.error = None;
-                                self.dialog = Some(Dialog::RemoveMember {
-                                    space,
-                                    channel: channel.clone(),
-                                    member: member.id.clone(),
-                                    name: member.display_name.clone(),
-                                    place,
-                                });
-                            }
-                        });
-                    });
-                }
+                    }
+                });
             });
+        }
     }
 }
 
@@ -35668,6 +35670,44 @@ mod tests {
             "http://127.0.0.1:9/invite/AbCdE12345"
         );
         assert!(app.invite_join.busy, "the preview is already loading");
+    }
+
+    #[test]
+    fn space_members_share_the_settings_scroll_below_invitations() {
+        let (context, mut app) = fixture("parity-admin-invitations");
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        let output = scroll_modal_to_bottom(&mut app, &context);
+        let bounds =
+            context.memory(|memory| memory.area_rect(egui::Id::new("caper-dialog")).unwrap());
+        let heading = |label: &str| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text)
+                        if text.galley.job.text == label && bounds.contains(text.pos) =>
+                    {
+                        Some(text.pos.y)
+                    }
+                    _ => None,
+                })
+                .expect("settings heading")
+        };
+        assert!(heading("Pending invitations") < heading("Members"));
+        for member in &app.managed_members {
+            assert!(
+                output.shapes.iter().any(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text)
+                        if text.galley.job.text == format!("@{}{}", member.username,
+                            if member.owner { " · Owner" } else { "" })
+                        && shape.clip_rect.contains_rect(text.galley.rect.translate(text.pos.to_vec2())))
+                }),
+                "{} should be fully visible without scrolling a nested list",
+                member.username
+            );
+        }
     }
 
     #[test]
