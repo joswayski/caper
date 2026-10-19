@@ -39,9 +39,10 @@ class FileDropTest {
     }
 
     @Test fun `motion settles at the resting pose`() {
-        assertEquals(0f, FileDrop.backOut(0f), 1e-6f)
-        assertEquals(1f, FileDrop.backOut(1f), 1e-6f)
-        assertTrue("the fan overshoots before settling", FileDrop.backOut(0.7f) > 1f)
+        assertEquals(0f, FileDrop.easeOut(0f), 1e-6f)
+        assertEquals(1f, FileDrop.easeOut(1f), 1e-6f)
+        for (step in 0..100) assertTrue("entrances never overshoot", FileDrop.easeOut(step / 100f) <= 1f)
+        assertTrue("entrances decelerate", FileDrop.easeOut(0.25f) > 0.5f)
         assertEquals(Triple(0f, 1f, 1f), FileDrop.hop(0f))
         assertEquals(-9f, FileDrop.hop(0.5f + 1.6f * 0.25f).first, 1e-3f)
         assertEquals(0f, FileDrop.sway(0.2f, 0.48f), 0f)

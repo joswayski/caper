@@ -82,7 +82,7 @@ private val cardShape = RoundedCornerShape(8.dp)
             Modifier
                 .graphicsLayer {
                     alpha = motion.settle(FileDrop.progress(motion.time(), 0f, 0.12f))
-                    translationY = 10.dp.toPx() * (1f - FileDrop.backOut(motion.settle(FileDrop.progress(motion.time(), 0f, 0.26f))))
+                    translationY = 10.dp.toPx() * (1f - FileDrop.easeOut(motion.settle(FileDrop.progress(motion.time(), 0f, 0.26f))))
                 }
                 .widthIn(max = 360.dp)
                 .shadow(24.dp, cardShape)
@@ -123,18 +123,16 @@ private class DropMotion(private val still: Boolean, private val elapsed: () -> 
             Box(
                 Modifier
                     .graphicsLayer {
-                        val fan = motion.settle(FileDrop.progress(motion.time(), 0.06f, 0.42f))
-                        val spread = FileDrop.backOut(fan)
+                        // Each card slides out and up from the middle at its resting turn.
+                        val fan = motion.settle(FileDrop.progress(motion.time(), 0.06f, 0.26f))
+                        val spread = FileDrop.easeOut(fan)
                         val swayed = when (index) {
                             0 -> motion.sway(0.48f)
                             1 -> motion.sway(0.78f)
                             else -> 1f - motion.sway(0.48f)
                         }
-                        val scale = 0.7f + 0.3f * spread
                         transformOrigin = TransformOrigin(0.5f, 1f)
-                        scaleX = scale
-                        scaleY = scale
-                        rotationZ = turn * spread + 4f * swayed
+                        rotationZ = turn + 4f * swayed
                         alpha = fan
                         translationX = (88f + x * spread - 27f).dp.toPx()
                         translationY = (98f + 24f + (y - 24f) * spread - 3f * swayed - 66f).dp.toPx()
@@ -149,13 +147,12 @@ private class DropMotion(private val still: Boolean, private val elapsed: () -> 
             painterResource(character), null,
             Modifier
                 .graphicsLayer {
-                    val rise = motion.settle(FileDrop.progress(motion.time(), 0.12f, 0.38f))
-                    val lifted = FileDrop.backOut(rise)
+                    val rise = motion.settle(FileDrop.progress(motion.time(), 0.12f, 0.26f))
+                    val lifted = FileDrop.easeOut(rise)
                     val (lift, squashX, squashY) = motion.hop()
-                    val grow = 0.6f + 0.4f * lifted
                     transformOrigin = TransformOrigin(0.5f, 1f)
-                    scaleX = squashX * grow
-                    scaleY = squashY * grow
+                    scaleX = squashX
+                    scaleY = squashY
                     alpha = rise
                     translationX = (88f - 38f).dp.toPx()
                     translationY = (128f + 4f + 28f * (1f - lifted) + lift - 76f).dp.toPx()

@@ -2756,10 +2756,10 @@ enum FileDropMotion {
     /// Resting pose per card, left to right: offset and turn in degrees.
     static let poses: [(x: Double, y: Double, turn: Double)] = [(-46, 10, -16), (0, -26, 0), (46, 10, 16)]
 
-    /// Overshoots and settles, like CSS `cubic-bezier(0.34, 1.56, 0.64, 1)`.
-    static func backOut(_ t: Double) -> Double {
-        let t = min(max(t, 0), 1) - 1
-        return 1 + 2.70158 * t * t * t + 1.70158 * t * t
+    /// Decelerates without overshooting, like the shared `--ease-out` entrances.
+    static func easeOut(_ t: Double) -> Double {
+        let t = min(max(t, 0), 1)
+        return t >= 1 ? 1 : 1 - pow(2, -10 * t)
     }
 
     static func easeInOut(_ t: Double) -> Double {
@@ -2825,7 +2825,7 @@ struct FileDropOverlay: View {
                 .overlay(Rectangle().stroke(CaperTheme.terracotta, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])).padding(9.75))
                 .shadow(color: .black.opacity(0.45), radius: 24, y: 18)
                 .opacity(shown)
-                .offset(y: 10 * (1 - FileDropMotion.backOut(pop)))
+                .offset(y: 10 * (1 - FileDropMotion.easeOut(pop)))
                 .padding(16)
             }
         }
@@ -2841,25 +2841,23 @@ struct FileDropOverlay: View {
     }
 
     private func art(_ elapsed: Double, rest: Bool) -> some View {
-        let fan: Double = rest ? 1 : FileDropMotion.progress(elapsed, delay: 0.06, duration: 0.42)
-        let spread = FileDropMotion.backOut(fan)
-        let rise: Double = rest ? 1 : FileDropMotion.progress(elapsed, delay: 0.12, duration: 0.38)
-        let lifted = FileDropMotion.backOut(rise)
+        let fan: Double = rest ? 1 : FileDropMotion.progress(elapsed, delay: 0.06, duration: 0.26)
+        let spread = FileDropMotion.easeOut(fan)
+        let rise: Double = rest ? 1 : FileDropMotion.progress(elapsed, delay: 0.12, duration: 0.26)
+        let lifted = FileDropMotion.easeOut(rise)
         let hop = rest ? (lift: 0.0, x: 1.0, y: 1.0) : FileDropMotion.hop(elapsed)
-        let grow: Double = 0.6 + 0.4 * lifted
         let characterBottom: Double = 128 + 4 + 28 * (1 - lifted) + hop.lift
         return ZStack {
-            // The middle card first, behind the other two.
+            // The middle card first, behind the other two. Each slides out and
+            // up from the middle at its resting turn.
             ForEach([1, 0, 2], id: \.self) { index in
                 let pose = FileDropMotion.poses[index]
                 let swayed: Double = rest ? 0 : sway(card: index, elapsed)
-                let scale: Double = 0.7 + 0.3 * spread
-                let turn: Double = pose.turn * spread + 4 * swayed
+                let turn: Double = pose.turn + 4 * swayed
                 let x: Double = 88 + pose.x * spread
                 // The card's bottom edge, less half its 66-point height.
                 let bottom: Double = 98 + 24 + (pose.y - 24) * spread - 3 * swayed
                 DropFileCard(symbol: ["photo", "doc.text", "film"][index])
-                    .scaleEffect(scale, anchor: .bottom)
                     .rotationEffect(.degrees(turn), anchor: .bottom)
                     .opacity(fan)
                     .position(x: x, y: bottom - 33)
@@ -2867,7 +2865,7 @@ struct FileDropOverlay: View {
             Image("caper-branding-\(fixture ? 0 : dailyIndex)", bundle: caperResourceBundle)
                 .renderingMode(.original).resizable().scaledToFit()
                 .frame(width: 76, height: 76)
-                .scaleEffect(x: hop.x * grow, y: hop.y * grow, anchor: .bottom)
+                .scaleEffect(x: hop.x, y: hop.y, anchor: .bottom)
                 .opacity(rise)
                 .position(x: 88, y: characterBottom - 38)
         }

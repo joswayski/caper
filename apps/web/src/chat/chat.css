@@ -49,7 +49,7 @@
   background: var(--surface);
   box-shadow: 0 18px 48px rgb(0 0 0 / 45%);
   text-align: center;
-  animation: caper-dialog-in var(--motion-base) var(--ease-out) both;
+  animation: chat-drop-card-in var(--motion-slow) var(--ease-out) both;
 }
 .chat-drop-card strong {
   font-size: 18px;
@@ -147,10 +147,16 @@
   transform-origin: 50% 100%;
   animation: chat-drop-hop 1.6s ease-in-out 500ms infinite;
 }
+@keyframes chat-drop-card-in {
+  from {
+    opacity: 0;
+    translate: 0 10px;
+  }
+}
 @keyframes chat-drop-fan {
   from {
     opacity: 0;
-    transform: translate(0, 16px) rotate(0deg);
+    transform: translate(0, 24px) rotate(var(--turn));
   }
 }
 @keyframes chat-drop-sway {
@@ -161,7 +167,7 @@
 @keyframes chat-drop-rise {
   from {
     opacity: 0;
-    transform: translateY(16px);
+    transform: translateY(28px);
   }
 }
 /* A small hop with a squash on landing. */
