@@ -415,8 +415,10 @@ emits a clearly labelled test alert, never a live provider send.
   provider's `Retry-After` if longer) after 429, 5xx, an expired provider token or
   a network error; abandoned once the next try would be more than 24 h after the
   message, or after any other rejection; or the device revoked (APNs 410,
-  `BadDeviceToken`, `DeviceTokenNotForTopic`; FCM `UNREGISTERED`,
-  `SENDER_ID_MISMATCH`, or `INVALID_ARGUMENT` on the token field).
+  `BadDeviceToken`; FCM `UNREGISTERED`, or `INVALID_ARGUMENT` on the token
+  field). APNs `DeviceTokenNotForTopic` and FCM `SENDER_ID_MISMATCH` usually
+  mean a wrong `APNS_TOPIC` or Firebase project, so they abandon the delivery
+  and log a configuration error instead of revoking every device.
 - APNs uses HTTP/2 and an ES256 JWT reused for 40 minutes; production and
   sandbox use separate keys. FCM uses an OAuth token from the service account's
   RS256 assertion, cached until 5 minutes before it expires. Signing uses

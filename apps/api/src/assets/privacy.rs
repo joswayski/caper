@@ -15,6 +15,17 @@ use tokio_util::io::ReaderStream;
 // A single streamed job bounds scratch disk and subprocess memory per API pod.
 pub(super) static JOBS: Semaphore = Semaphore::const_new(1);
 const DEADLINE: Duration = Duration::from_secs(120);
+/// A pessimistic rate for moving one file through download, cleaning and
+/// upload, so large files get time to finish instead of always timing out.
+const BYTES_PER_SECOND: u64 = 20_000_000;
+const MAX_DEADLINE: Duration = Duration::from_secs(15 * 60);
+
+/// Time allowed to publish `bytes`: a base plus time to move them, about six
+/// and a half minutes at the 5 GiB upload limit.
+fn deadline(bytes: i64) -> Duration {
+    let transfer = u64::try_from(bytes).unwrap_or(0) / BYTES_PER_SECOND;
+    (DEADLINE + Duration::from_secs(transfer)).min(MAX_DEADLINE)
+}
 
 pub(super) fn staged(key: &str) -> String {
     format!("staging/{key}")
@@ -95,8 +106,21 @@ fn format(head: &[u8], content_type: &str) -> Result<Option<Format>, ApiError> {
     if content_type.starts_with("image/")
         || content_type.starts_with("video/")
         || content_type.starts_with("audio/")
+        // TIFF and the camera raws built on it.
         || at(0, b"II\x2a\0")
         || at(0, b"MM\0\x2a")
+        // Panasonic RW2, Olympus ORF, Fujifilm RAF and Canon CRW raws.
+        || at(0, b"IIU\0")
+        || at(0, b"IIRO")
+        || at(0, b"IIRS")
+        || at(0, b"MMOR")
+        || at(0, b"FUJIFILMCCD-RAW")
+        || at(0, b"II\x1a\0\0\0HEAPCCDR")
+        // JPEG XL (bare codestream or container), JPEG 2000 and Photoshop.
+        || at(0, b"\xff\x0a")
+        || at(0, b"\0\0\0\x0cJXL \r\n\x87\n")
+        || at(0, b"\0\0\0\x0cjP  ")
+        || at(0, b"8BPS")
         || (at(0, b"BM")
             && head.get(14..18).is_some_and(|size| {
                 matches!(
@@ -190,7 +214,10 @@ async fn clean(input: &Path, output: &Path, format: Format, max_size: u64) -> Re
         .kill_on_drop(true)
         .spawn()
         .map_err(|_| unavailable())?;
-    let status = tokio::time::timeout(Duration::from_secs(65), child.wait())
+    // Copying a large file's streams takes time too; the publish deadline
+    // still bounds the whole job.
+    let wait = Duration::from_secs(65 + max_size / BYTES_PER_SECOND);
+    let status = tokio::time::timeout(wait, child.wait())
         .await
         .map_err(|_| rejected())?
         .map_err(|_| unavailable())?;
@@ -211,7 +238,7 @@ pub(super) async fn publish(
     name: Option<&str>,
 ) -> Result<i64, ApiError> {
     tokio::time::timeout(
-        DEADLINE,
+        deadline(expected),
         publish_inner(r2, key, expected, content_type, name),
     )
     .await
@@ -231,7 +258,7 @@ async fn publish_inner(
     let mut response = r2
         .http
         .get(r2.presign("GET", &staged(key), 180, &[]))
-        .timeout(DEADLINE)
+        .timeout(deadline(expected))
         .send()
         .await
         .map_err(|_| unavailable())?;
@@ -307,7 +334,7 @@ async fn publish_inner(
     let mut request = r2
         .http
         .put(r2.presign("PUT", key, 180, &headers))
-        .timeout(DEADLINE);
+        .timeout(deadline(expected));
     for (name, value) in headers {
         request = request.header(name, value);
     }
@@ -320,4 +347,53 @@ async fn publish_inner(
         return Err(unavailable());
     }
     Ok(size as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uncleanable_images_and_raws_fail_closed_even_as_downloads() {
+        let mut jpeg_xl = b"\0\0\0\x0cJXL \r\n\x87\n".to_vec();
+        jpeg_xl.extend(b"\0\0\0\x14ftypjxl ");
+        for head in [
+            b"II\x2a\0private".as_slice(),
+            b"IIU\0\x18\0\0\0".as_slice(),
+            b"IIRO\x08\0\0\0".as_slice(),
+            b"IIRS\x08\0\0\0".as_slice(),
+            b"MMOR\0\0\0\x08".as_slice(),
+            b"FUJIFILMCCD-RAW 0201FF383501".as_slice(),
+            b"II\x1a\0\0\0HEAPCCDR\x02\0".as_slice(),
+            b"\xff\x0a\xfa\x7f".as_slice(),
+            jpeg_xl.as_slice(),
+            b"\0\0\0\x0cjP  \r\n\x87\n\0\0\0\x14ftypjp2 ".as_slice(),
+            b"8BPS\0\x01\0\0\0\0\0\0".as_slice(),
+        ] {
+            assert_eq!(
+                format(head, "application/octet-stream")
+                    .err()
+                    .map(|error| error.status),
+                Some(axum::http::StatusCode::UNPROCESSABLE_ENTITY),
+                "{head:?}"
+            );
+        }
+        // Ordinary documents stay plain downloads.
+        for head in [
+            b"%PDF-1.7".as_slice(),
+            b"PK\x03\x04".as_slice(),
+            b"plain notes".as_slice(),
+        ] {
+            assert!(format(head, "application/octet-stream").unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn publish_deadline_grows_with_size_within_a_bound() {
+        assert_eq!(deadline(1), DEADLINE);
+        assert_eq!(deadline(200_000_000), DEADLINE + Duration::from_secs(10));
+        let largest = deadline(5 * 1024 * 1024 * 1024);
+        assert!(largest > Duration::from_secs(380) && largest < MAX_DEADLINE);
+        assert_eq!(deadline(i64::MAX), MAX_DEADLINE);
+    }
 }

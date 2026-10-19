@@ -146,6 +146,9 @@ async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result
             "enter an exact username",
         ));
     }
+    // Charge the attempt before the lookup, and outside the transaction, so
+    // "not found" and "not accepting" answers can't be probed without limit.
+    lookup_rate_limit(pool, user).await?;
     // Every team name (@feedback, @caper, @admin, ...) opens the Caper DM.
     let team = crate::mentions::FEEDBACK_ALIASES.contains(&username.as_str());
     let peer: i64 = sqlx::query_scalar("SELECT id FROM public.users WHERE (CASE WHEN $2 THEN team_account ELSE username=$1 END) AND display_name IS NOT NULL AND deleted_at IS NULL")
@@ -220,6 +223,36 @@ async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result
     }
     tx.commit().await.map_err(|_| chat::unavailable())?;
     Ok(id)
+}
+
+/// Username lookups an account may make starting DMs in an hour, shared across
+/// API replicas and counting failed lookups. Opening an existing conversation
+/// from the list doesn't come through here.
+const LOOKUPS_PER_HOUR: i32 = 60;
+
+async fn lookup_rate_limit(pool: &PgPool, user: i64) -> Result<(), ApiError> {
+    // `attempts=0` leaves the invitation window untouched for a new row.
+    let attempts: i32 = sqlx::query_scalar(
+        "INSERT INTO public.space_invite_limits(user_id,attempts,direct_attempts) VALUES($1,0,1)
+         ON CONFLICT(user_id) DO UPDATE SET
+           direct_attempts=CASE WHEN space_invite_limits.direct_window_start <= now()-interval '1 hour' THEN 1
+                                ELSE LEAST(space_invite_limits.direct_attempts+1,$2+1) END,
+           direct_window_start=CASE WHEN space_invite_limits.direct_window_start <= now()-interval '1 hour' THEN now()
+                                    ELSE space_invite_limits.direct_window_start END
+         RETURNING direct_attempts",
+    )
+    .bind(user)
+    .bind(LOOKUPS_PER_HOUR)
+    .fetch_one(pool)
+    .await
+    .map_err(|_| chat::unavailable())?;
+    if attempts > LOOKUPS_PER_HOUR {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many conversations; try again later",
+        ));
+    }
+    Ok(())
 }
 
 /// Accepts a request addressed to `user`. Returns false when there is none.

@@ -77,6 +77,7 @@ struct AuthLimits {
     code_attempts: i16,
     email_15m: i64,
     email_daily: i64,
+    email_daily_cap: i64,
     ip_hourly: i64,
     global_hourly: i64,
 }
@@ -87,6 +88,7 @@ impl AuthLimits {
             code_attempts: parse_limit(environment, "AUTH_CODE_ATTEMPTS", 3, 10)? as i16,
             email_15m: parse_limit(environment, "AUTH_EMAIL_15M_LIMIT", 3, 100)?,
             email_daily: parse_limit(environment, "AUTH_EMAIL_DAILY_LIMIT", 5, 1_000)?,
+            email_daily_cap: parse_limit(environment, "AUTH_EMAIL_DAILY_CAP", 20, 10_000)?,
             ip_hourly: parse_limit(environment, "AUTH_IP_HOURLY_LIMIT", 10, 10_000)?,
             global_hourly: parse_limit(environment, "AUTH_GLOBAL_HOURLY_LIMIT", 500, 1_000_000)?,
         })
@@ -99,6 +101,7 @@ impl Default for AuthLimits {
             code_attempts: 3,
             email_15m: 3,
             email_daily: 5,
+            email_daily_cap: 20,
             ip_hourly: 10,
             global_hourly: 500,
         }
@@ -236,23 +239,36 @@ impl AuthVerifier {
         .map_err(database_unavailable)?;
 
         // One round trip while every sign-in request waits on the global lock.
-        let (email_recent, email_daily, ip_hourly, global_hourly): (i64, i64, i64, i64) =
-            sqlx::query_as(
-                "SELECT
-                    (SELECT count(*) FROM public.auth_email_challenges
-                     WHERE email = $1 AND created_at > now() - interval '15 minutes'),
-                    (SELECT count(*) FROM public.auth_email_challenges
-                     WHERE email = $1 AND created_at > now() - interval '24 hours'),
-                    (SELECT count(*) FROM public.auth_email_challenges
-                     WHERE request_ip_hash = $2 AND created_at > now() - interval '1 hour'),
-                    (SELECT count(*) FROM public.auth_email_challenges
-                     WHERE created_at > now() - interval '1 hour')",
-            )
-            .bind(&email)
-            .bind(&ip_hash)
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(database_unavailable)?;
+        // The strict per-email windows count only this requester's codes, so a
+        // stranger asking for someone else's address cannot lock its owner out.
+        // The looser absolute daily cap still bounds email bombing from many
+        // addresses.
+        let (email_recent, email_daily, email_daily_all, ip_hourly, global_hourly): (
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+        ) = sqlx::query_as(
+            "SELECT
+                (SELECT count(*) FROM public.auth_email_challenges
+                 WHERE email = $1 AND request_ip_hash = $2
+                   AND created_at > now() - interval '15 minutes'),
+                (SELECT count(*) FROM public.auth_email_challenges
+                 WHERE email = $1 AND request_ip_hash = $2
+                   AND created_at > now() - interval '24 hours'),
+                (SELECT count(*) FROM public.auth_email_challenges
+                 WHERE email = $1 AND created_at > now() - interval '24 hours'),
+                (SELECT count(*) FROM public.auth_email_challenges
+                 WHERE request_ip_hash = $2 AND created_at > now() - interval '1 hour'),
+                (SELECT count(*) FROM public.auth_email_challenges
+                 WHERE created_at > now() - interval '1 hour')",
+        )
+        .bind(&email)
+        .bind(&ip_hash)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_unavailable)?;
 
         let id = Uuid::new_v4();
         let review_code = auth
@@ -262,6 +278,7 @@ impl AuthVerifier {
             .map(|review| review.code.clone());
         if email_recent >= auth.limits.email_15m
             || email_daily >= auth.limits.email_daily
+            || email_daily_all >= auth.limits.email_daily_cap
             || ip_hourly >= auth.limits.ip_hourly
             || global_hourly >= auth.limits.global_hourly
         {
@@ -272,11 +289,14 @@ impl AuthVerifier {
         let is_review = review_code.is_some();
         let code = review_code.unwrap_or_else(random_code);
         let code_hash = code_hash(&auth.secret, id, &email, &code);
+        // A new code replaces only this requester's pending codes; someone
+        // else's request must not cancel the code its owner is about to type.
         sqlx::query(
             "UPDATE public.auth_email_challenges SET consumed_at = now()
-             WHERE email = $1 AND consumed_at IS NULL",
+             WHERE email = $1 AND request_ip_hash = $2 AND consumed_at IS NULL",
         )
         .bind(&email)
+        .bind(&ip_hash)
         .execute(&mut *transaction)
         .await
         .map_err(database_unavailable)?;
@@ -981,6 +1001,75 @@ mod tests {
             .verify_code(Some(&pool), replacement, &replacement_code)
             .await
             .unwrap();
+    }
+
+    #[sqlx::test(migrations = "./migrations")]
+    #[ignore = "requires disposable Postgres DATABASE_URL"]
+    async fn strangers_cannot_lock_out_or_cancel_another_requesters_code(pool: PgPool) {
+        let sender = Arc::new(RecordingSender {
+            deliveries: std::sync::Mutex::new(vec![]),
+        });
+        let verifier = AuthVerifier {
+            enabled: Some(EnabledAuth {
+                secret: Arc::from(b"a sufficiently long test-only auth secret".as_slice()),
+                sender: sender.clone(),
+                limits: AuthLimits::default(),
+                review: None,
+            }),
+            bypass: false,
+        };
+        let owner_ip: IpAddr = "192.0.2.10".parse().unwrap();
+        let owner = verifier
+            .request_code(Some(&pool), "victim@caper.chat", owner_ip)
+            .await
+            .unwrap();
+        let owner_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();
+
+        // Another source exhausts its own windows for the address. Rotating
+        // through one IPv6 /64 does not reset them.
+        for host in 1..=8 {
+            let stranger: IpAddr = format!("2001:db8:1:2::{host}").parse().unwrap();
+            verifier
+                .request_code(Some(&pool), "victim@caper.chat", stranger)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            sender.deliveries.lock().unwrap().len(),
+            4,
+            "the /64 is held to three codes in 15 minutes"
+        );
+
+        // The owner's pending code still works, and the owner can still ask
+        // for a new one.
+        verifier
+            .verify_code(Some(&pool), owner, &owner_code)
+            .await
+            .unwrap();
+        let again = verifier
+            .request_code(Some(&pool), "victim@caper.chat", owner_ip)
+            .await
+            .unwrap();
+        assert_eq!(sender.deliveries.lock().unwrap().len(), 5);
+        let again_code = sender.deliveries.lock().unwrap().last().unwrap().1.clone();
+        verifier
+            .verify_code(Some(&pool), again, &again_code)
+            .await
+            .unwrap();
+
+        // Many sources together stop at the absolute daily cap.
+        for host in 10..30 {
+            let stranger: IpAddr = format!("198.51.100.{host}").parse().unwrap();
+            verifier
+                .request_code(Some(&pool), "victim@caper.chat", stranger)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            sender.deliveries.lock().unwrap().len(),
+            20,
+            "no more than 20 codes a day go to one address"
+        );
     }
 
     #[sqlx::test(migrations = "./migrations")]

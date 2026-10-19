@@ -27,6 +27,12 @@ use std::{collections::HashMap, fmt::Write as _, sync::Arc, time::Duration};
 const DEFAULT_QUOTA_BYTES: i64 = 10 * 1024 * 1024 * 1024;
 const PREVIEW_MAX_BYTES: i64 = 512 * 1024;
 const UPLOAD_URL_SECONDS: u64 = 15 * 60;
+/// R2's limit for one `PUT`; there are no multipart uploads.
+const MAX_FILE_BYTES: i64 = 5 * 1024 * 1024 * 1024;
+/// Unsent rows keep their reservation until every presigned `PUT` for them has
+/// expired, with a margin for an upload that started just before expiry, so a
+/// reused URL can't store bytes the quota no longer counts.
+const UNSENT_RELEASE_SECONDS: i64 = UPLOAD_URL_SECONDS as i64 + 15 * 60;
 const CREATES_PER_MINUTE: i64 = 30;
 const MAX_PENDING: i64 = 20;
 pub(crate) const MAX_PER_MESSAGE: usize = 10;
@@ -813,6 +819,12 @@ async fn create(
     let kind = kind(&content_type);
     if input.byte_size < 1 || input.source_byte_size.is_some_and(|v| v < 1) {
         return Err(invalid("invalid file size"));
+    }
+    if input.byte_size > MAX_FILE_BYTES {
+        return Err(
+            ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "files can be up to 5 GiB")
+                .with_code("file_too_large"),
+        );
     }
     let width = optional_range(input.width, MAX_DIMENSION, 1)?;
     let height = optional_range(input.height, MAX_DIMENSION, 1)?;
@@ -1826,8 +1838,8 @@ pub(crate) async fn notification_content(
     Ok(())
 }
 
-/// Abandoned and rejected uploads lose their objects immediately; files
-/// deleted after being sent wait `PURGE_DELAY_HOURS`. Rows remain, and so do
+/// Abandoned and rejected uploads lose their objects once their upload URLs
+/// have expired; files deleted after being sent wait `PURGE_DELAY_HOURS`. Rows remain, and so do
 /// applied pictures, including ones since replaced or removed.
 pub(crate) fn spawn_purger(assets: Assets) {
     tokio::spawn(async move {
@@ -1927,13 +1939,17 @@ pub(crate) async fn purge(assets: &Assets) -> Result<usize, ()> {
     .map_err(|_| ())?;
     // Don't hold a transaction or row locks across object-store calls. Purges
     // are idempotent, so a replica repeating one only repeats its deletes.
+    // Unsent files wait for their upload URLs to expire: deleting earlier would
+    // release quota while a reused URL could still store the bytes again.
     let rows: Vec<(i64, String, bool)> = sqlx::query_as(
         "SELECT id, external_id, preview_content_type IS NOT NULL FROM public.assets
          WHERE deleted_at IS NOT NULL AND purged_at IS NULL
-           AND (message_id IS NULL OR deleted_at < now() - make_interval(hours => $1))
+           AND (CASE WHEN message_id IS NULL THEN created_at < now() - make_interval(secs => $2)
+                     ELSE deleted_at < now() - make_interval(hours => $1) END)
          ORDER BY deleted_at LIMIT 25",
     )
     .bind(PURGE_DELAY_HOURS)
+    .bind(UNSENT_RELEASE_SECONDS as f64)
     .fetch_all(&assets.pool)
     .await
     .map_err(|_| ())?;

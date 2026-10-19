@@ -1381,13 +1381,15 @@ native fixtures are not live-account or live-storage validation.
 `GET /api/assets/usage` returns `{used, limit}`. `POST /api/assets/urls`
 returns fresh URLs for visible attachments (like Discord's refresh endpoint)
 for tabs open longer than a URL's lifetime; a file an edit replaced is
-refreshed only for its owner.
+refreshed only for its owner. Files of a forwarded message, and of its direct
+replies, are also refreshed for readers of a channel holding a live forward.
 
 ### Limits and quota
 
 - Per person, across every space: `ASSET_QUOTA_BYTES` (default 10 GiB) of stored
-  bytes, original plus preview. No separate per-file limit; one file may use
-  the whole allowance. Space owners are not charged for members' uploads.
+  bytes, original plus preview. One file may be up to 5 GiB (R2's single `PUT`
+  limit); larger reservations get 413 `file_too_large`. Cleaning gets 2 minutes
+  plus a second per 20 MB, up to 15 minutes. Space owners are not charged for members' uploads.
 - Quota counts what is **stored** (after client compression and metadata removal), and reservations
   count immediately so parallel uploads cannot overshoot.
 - Bytes stay counted until the purge loop successfully deletes the original and
@@ -2138,9 +2140,11 @@ An API loop (approximately every minute, idempotent across replicas):
 - Marks uploads never completed after 1 hour, or completed but never sent
   after 24 hours, as deleted. This remains the fallback when a client is offline,
   closes before cancellation completes, or never receives the reservation ID.
-- Removes R2 objects for deleted rows in batches of 25: unsent files are eligible
-  on the next pass (no 24-hour wait after explicit removal), sent files 24 hours
-  after deletion (so moderators can still inspect them). Only successful deletion
+- Removes R2 objects for deleted rows in batches of 25: unsent files once their
+  15-minute upload URLs have expired plus a 15-minute margin (30 minutes after
+  the reservation; no 24-hour wait after explicit removal), so a reused URL
+  can't store bytes the quota no longer counts; sent files 24 hours after
+  deletion (so moderators can still inspect them). Only successful deletion
   of both original and preview sets `purged_at` and releases quota. Failures retry.
 - Revisits deleted, unsent rows, including already-purged rows, in a separate
   25-row batch. Presigned PUT URLs can be reused until expiry and an in-flight PUT
@@ -4207,9 +4211,10 @@ Keep this temporary test separate from any future production app/key.
 | `RESERVED_USERNAMES` | Optional API-only comma-separated additional usernames that cannot be newly assigned by `/api/account/profile`. `caper`, `capers`, `admin`, `admins`, `administrator`, `administrators`, `mod`, `mods`, `moderator`, `moderators`, `support`, `feedback`, `security`, `staff`, `official`, `system`, `team`, `trust`, `safety`, `caper_support`, `caper_feedback`, `jose`, `caperchat`, `aaron`, `joswayski`, `everyone`, and `here` are always reserved. Existing owners may keep their current reserved username while updating their profile; changing to another reserved username is still blocked. Exact case-insensitive matches after trimming; restart all API replicas after changes. This does not create accounts or deliver chat mentions. |
 | `AUTH_REVIEW_EMAIL`, `AUTH_REVIEW_CODE` | Optional API-only pair for App Store and Google Play reviewers, who cannot read emailed codes. Set both or neither; startup fails otherwise. Requesting a code for that one address emails nothing, and the fixed 6-character code (letters/digits from the sign-in alphabet, no `0`, `O`, `1`, `I`, `L`, `U` or `V`) completes the normal single-use challenge with the usual attempt and rate limits. Anyone given the pair can use that account, so keep it to demo content and rotate the code after reviews if it leaks. |
 | `AUTH_CODE_ATTEMPTS` | Attempts per code; default `3`, allowed `1`–`10` |
-| `AUTH_EMAIL_15M_LIMIT` | Code requests accepted per email in 15 minutes; default `3` |
-| `AUTH_EMAIL_DAILY_LIMIT` | Code requests accepted per email in 24 hours; default `5` |
-| `AUTH_IP_HOURLY_LIMIT` | Code requests accepted per source-IP hash in one hour; default `10` |
+| `AUTH_EMAIL_15M_LIMIT` | Code requests accepted per email from one source in 15 minutes; default `3` |
+| `AUTH_EMAIL_DAILY_LIMIT` | Code requests accepted per email from one source in 24 hours; default `5` |
+| `AUTH_EMAIL_DAILY_CAP` | Code requests accepted per email from all sources in 24 hours, bounding email bombing; default `20`. A new code cancels only the same source's earlier codes, so a stranger's requests can't lock the owner out or void the code they're typing. |
+| `AUTH_IP_HOURLY_LIMIT` | Code requests accepted per source in one hour; default `10`. A source is an IPv4 address or an IPv6 /64 (IPv4-mapped addresses count as IPv4), hashed with `AUTH_SECRET`. |
 | `AUTH_GLOBAL_HOURLY_LIMIT` | Code requests accepted across the service in one hour; default `500` |
 | `NOTIFICATIONS_WEBHOOK_URL` | Optional server-only HTTPS URL for best-effort application notifications. The current event is `user.created`; URLs with credentials, query strings, or fragments are rejected and leave notifications disabled. Redirects are never followed. |
 | `CAPER_API_ORIGIN` | Web-only. Origin the web server uses for server-rendered account lookups, e.g. `http://caper-api:3001` in-cluster or `http://api:3001` in Compose. It is the only place the server sends a visitor's session cookie. Unset outside development, the homepage renders a placeholder and the browser looks the account up itself. |
@@ -6960,7 +6965,9 @@ Read state is account-wide, not device-wide. New conversations are limited to
 20/minute and 1,000 per initiating account; requests other people start with you
 don't count. Starting one requires a completed profile (403 `complete profile
 required`). Exact usernames are discoverable by
-starting a conversation; membership in a shared space is not required, but a
+starting a conversation, so each account may start at most 60 an hour by
+username, counting lookups that find no one or a person not accepting DMs
+(429 `too many conversations; try again later`); membership in a shared space is not required, but a
 stranger's first DM is a message request.
 
 ### Message requests, blocking and DM privacy
@@ -8802,9 +8809,10 @@ only reads the requested immutable asset from the fixed Caper repository. Client
 never read rolling `latest.json`, so an old build cannot announce future features.
 The API has bounded GitHub fetches, per-revision coalescing and a 60-second
 success/failure cache. Revisions that loaded (up to 32) are counted apart from
-in-flight and failed lookups (up to 32), so unknown revisions can neither evict
-nor block a working one; once the failure side is full, further unknown
-revisions get `502` until a failure expires. A slow fetch never holds up other
+in-flight and failed lookups (up to 32), so unknown revisions can't evict a
+working one. Once the failure side is full, a new revision replaces the oldest
+settled failure, so made-up revisions can't keep a new build's notes from
+loading; only when all 32 are still in flight does a new revision get `502`. A slow fetch never holds up other
 revisions.
 Each snapshot is at most 64 KiB UTF-8, retains at most 30 chronological releases,
 and has positive JavaScript-safe integer sequences. Titles/bodies are plain text,
