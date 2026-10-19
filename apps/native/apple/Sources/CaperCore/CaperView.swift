@@ -6070,6 +6070,7 @@ private struct MentionCardView: View {
             }
             ComposerSuggestionsView(controller: autocomplete).disabled(!draft.editable || pending != nil)
             HStack(alignment: .bottom, spacing: 0) {
+                Group {
                 #if os(iOS)
                 Button { showingDrawer = true; updateDialogState() } label: {
                     CaperIcon(name: "plus", size: 18).foregroundStyle(showingDrawer ? CaperTheme.text : CaperTheme.muted)
@@ -6095,6 +6096,7 @@ private struct MentionCardView: View {
                 .fixedSize()
                 .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog || draft.files.count >= AttachmentPolicy.maxAttachments)
                 #endif
+                }
                 .opacity(uploadsAvailable ? 1 : 0.4)
                 .help(uploadsAvailable ? "Attach files" : "File uploads are unavailable")
                 .accessibilityLabel("Attach files")
