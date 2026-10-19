@@ -59,6 +59,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -3077,6 +3081,7 @@ internal const val DELETED_REPLY = "Original message was deleted."
                                 listOfNotNull(if (inlineEdited) CustomAccessibilityAction("Open message history") { history(); true } else null)
                         },
                         color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp,
+                        inlineContent = messageInlineContent(),
                     )
                 }
             }
@@ -3184,7 +3189,8 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
 
 /**
  * Message text: resolved mentions as pills (text #F3F4F5, one weight step bolder, terracotta at 24%),
- * then [links] (found outside the mentions, `data/Links.kt`) in terracotta-bright with an underline.
+ * then [links] (found outside the mentions, `data/Links.kt`) in blue with an underline.
+ * Inline icon placeholders are presentation only; message actions use the original content text.
  * `SpanStyle` backgrounds cannot round corners or pad, so Android pills are square-edged.
  * [openHistory] appends a grouped row's "(edited)" marker right after the text.
  */
@@ -3192,15 +3198,22 @@ internal fun messageText(
     text: String, mentions: List<MentionSpan>, entries: List<MessageMention>? = null, links: List<LinkRange> = emptyList(),
     open: (MessageMention) -> Unit = {}, openLink: (String) -> Unit = {}, openHistory: (() -> Unit)? = null,
 ) = buildAnnotatedString {
-    append(text)
+    var cursor = 0
+    links.forEach { link ->
+        append(text.substring(cursor, link.end))
+        appendInlineContent(ExternalLinkInline)
+        cursor = link.end
+    }
+    append(text.substring(cursor))
+    fun displayed(offset: Int) = offset + links.count { it.end <= offset }
     mentions.forEach { span ->
         // With [entries], a person's pill is a link (focusable, Enter-activatable; 32% while hovered, focused or pressed).
         val user = entries?.let { mentionedUser(span, it) }
-        if (user == null) addStyle(MentionPill, span.start, span.end)
-        else addLink(LinkAnnotation.Clickable("mention:${span.name}", MentionPillLink) { open(user) }, span.start, span.end)
+        if (user == null) addStyle(MentionPill, displayed(span.start), displayed(span.end))
+        else addLink(LinkAnnotation.Clickable("mention:${span.name}", MentionPillLink) { open(user) }, displayed(span.start), displayed(span.end))
     }
     // Only http(s) URLs reach here, and they open outside the app.
-    links.forEach { link -> addLink(LinkAnnotation.Url(link.href, MessageLink) { openLink(link.href) }, link.start, link.end) }
+    links.forEach { link -> addLink(LinkAnnotation.Url(link.href, MessageLink) { openLink(link.href) }, displayed(link.start), displayed(link.end)) }
     openHistory?.let { history ->
         append(" ")
         withLink(LinkAnnotation.Clickable("edited", EditedMarker) { history() }) { append("(edited)") }
@@ -3210,9 +3223,15 @@ internal fun messageText(
 private val MentionPill = SpanStyle(color = Text, fontWeight = FontWeight.Medium, background = Terracotta.copy(alpha = 0.24f))
 private val MentionPillActive = SpanStyle(background = Terracotta.copy(alpha = 0.32f))
 private val MentionPillLink = TextLinkStyles(MentionPill, focusedStyle = MentionPillActive, hoveredStyle = MentionPillActive, pressedStyle = MentionPillActive)
-private val MessageLinkActive = SpanStyle(background = Terracotta.copy(alpha = 0.24f))
+internal const val ExternalLinkInline = "external-link"
+@Composable internal fun messageInlineContent() = mapOf(ExternalLinkInline to InlineTextContent(
+    Placeholder(14.sp, 12.sp, PlaceholderVerticalAlign.TextCenter),
+) {
+    Icon(painterResource(R.drawable.lucide_external_link), null, Modifier.fillMaxSize().padding(start = 3.dp), tint = LinkBlue)
+})
+private val MessageLinkActive = SpanStyle(color = LinkBlueActive, background = LinkBlue.copy(alpha = 0.12f))
 internal val MessageLink = TextLinkStyles(
-    SpanStyle(color = TerracottaBright, background = Terracotta.copy(alpha = 0.12f), textDecoration = TextDecoration.Underline),
+    SpanStyle(color = LinkBlue, textDecoration = TextDecoration.Underline),
     focusedStyle = MessageLinkActive, hoveredStyle = MessageLinkActive, pressedStyle = MessageLinkActive,
 )
 private val EditedMarker = TextLinkStyles(SpanStyle(color = TextMuted, fontSize = 10.sp))

@@ -11,6 +11,8 @@
   --border: #34383b;
   --text: #f3f4f5;
   --text-muted: #b9bcbe;
+  --link: #69cfff;
+  --link-hover: #a9e5ff;
   --terracotta: #b64d32;
   --terracotta-bright: #db6849;
   /* Primary actions are eggshell with blackout labels, so one calm, bright

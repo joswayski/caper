@@ -19,7 +19,8 @@ function browser(...args) {
 }
 const evaluate = (code) => browser("eval", `(async () => { ${code} })()`).result;
 const draft = "Join us 🙂 https://caper.chat/invite/AbCd1234, or www.Example.org/Notes.";
-const marks = () => evaluate("return [...document.querySelectorAll('.chat-draft-link')].map(el => el.textContent);");
+const marks = () =>
+  evaluate("return [...document.querySelectorAll('.chat-mention-input-mirror mark')].map(el => el.textContent);");
 try {
   browser("open", origin.href);
   browser("set", "viewport", "1000", "640", "2");
@@ -53,7 +54,7 @@ try {
   `);
   browser("wait", "#link-fixture textarea");
   browser("fill", "#link-fixture textarea", draft);
-  assert.deepEqual(marks(), ["https://caper.chat/invite/AbCd1234", "www.Example.org/Notes"]);
+  assert.deepEqual(marks(), [], "draft URLs stay plain");
   browser("press", "Enter");
   browser("wait", "#sent a");
   assert.deepEqual(evaluate("return window.sent;"), [draft], "highlighting must not alter submitted text");
@@ -66,6 +67,9 @@ try {
       ["www.Example.org/Notes", "https://www.Example.org/Notes", "_blank"],
     ],
   );
+  assert.equal(evaluate("return document.querySelectorAll('#sent a svg[aria-hidden=true]').length;"), 2);
+  assert.equal(evaluate("return document.querySelector('#sent').textContent;"), draft, "icons do not add copied text");
+  assert.equal(evaluate("return getComputedStyle(document.querySelector('#sent a')).color;"), "rgb(105, 207, 255)");
   assert.equal(
     evaluate(`
     const event = new MouseEvent('contextmenu', {bubbles: true, cancelable: true});
@@ -84,14 +88,25 @@ try {
   }
   browser("set", "viewport", "390", "844", "2");
   evaluate("await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));");
-  assert.deepEqual(marks(), ["https://caper.chat/invite/AbCd1234", "www.Example.org/Notes"]);
+  assert.deepEqual(marks(), []);
   assert.equal(evaluate("return document.documentElement.scrollWidth <= innerWidth;"), true);
+  assert.equal(
+    evaluate(`
+    return [...document.querySelectorAll('.chat-link-end')].every(tail => {
+      const range = document.createRange(); range.selectNodeContents(tail.firstChild);
+      const text = range.getBoundingClientRect(), icon = tail.querySelector('svg').getBoundingClientRect();
+      return icon.left >= text.right && icon.top >= text.top && icon.bottom <= text.bottom;
+    });
+  `),
+    true,
+    "icons stay beside the final URL character on wrapped lines",
+  );
   if (artifacts) browser("screenshot", `${artifacts}/links-narrow.png`);
   browser("fill", "#link-fixture textarea", "plain text, no link");
   assert.deepEqual(marks(), [], "removing a link clears its highlight");
   browser("fill", "#link-fixture textarea", draft);
   console.log(
-    "PASS: draft highlighting, exact send payload, link destinations, native context-menu allowance, wrapping, and removal",
+    "PASS: plain drafts, exact send payload, blue links, decorative icons, context-menu allowance, and wrapping",
   );
 } finally {
   if (!process.env.LINK_TEST_KEEP) browser("close");

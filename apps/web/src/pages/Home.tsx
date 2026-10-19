@@ -113,7 +113,7 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
             </span>{" "}
             Have feedback?{" "}
             <a
-              className="inline-flex items-center gap-1 underline"
+              className="inline-flex items-center gap-0.5 underline"
               href="https://caper.chat/invite/uz3HFpD8jV"
               target="_blank"
               rel="noopener noreferrer"

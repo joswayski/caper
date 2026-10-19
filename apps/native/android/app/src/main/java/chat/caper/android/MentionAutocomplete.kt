@@ -7,7 +7,6 @@ import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
-import chat.caper.android.data.linkRanges
 import chat.caper.android.model.AppUiState
 import chat.caper.android.model.ChatAuthor
 import chat.caper.android.model.MessageMention
@@ -218,9 +217,6 @@ internal class MentionVisualTransformation(private val source: MentionSource) : 
         val mentions = draftMentionSpans(text.text, source)
         for (span in mentions) {
             styled.addStyle(SpanStyle(background = Terracotta.copy(alpha = 0.24f)), span.start, span.end)
-        }
-        for (link in linkRanges(text.text, mentions.map { it.start until it.end })) {
-            styled.addStyle(SpanStyle(background = Terracotta.copy(alpha = 0.24f)), link.start, link.end)
         }
         return TransformedText(styled.toAnnotatedString(), OffsetMapping.Identity)
     }

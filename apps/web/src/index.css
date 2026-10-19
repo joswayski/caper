@@ -421,7 +421,7 @@
 }
 .made-by a,
 .experimental-note a {
-  color: var(--text);
+  color: var(--link);
   text-underline-offset: 4px;
   transition: color 0.2s ease;
 }
@@ -429,11 +429,11 @@
   .made-by a:hover,
   .experimental-note a:hover,
   .latest-changes li a:hover {
-    color: var(--terracotta-bright);
+    color: var(--link-hover);
   }
 }
 :is(.made-by, .experimental-note, .latest-changes) a:focus-visible {
-  outline: 2px solid var(--terracotta);
+  outline: 2px solid var(--link);
   outline-offset: 4px;
   border-radius: 2px;
 }
@@ -466,11 +466,17 @@
 .contact-or {
   white-space: nowrap;
 }
+.experimental-note a.contact-action {
+  color: var(--link);
+}
 .contact-action svg {
   width: 14px;
   height: 14px;
 }
 @media (hover: hover) {
+  .experimental-note a.contact-action:hover {
+    color: var(--link-hover);
+  }
   .contact-action:hover {
     color: var(--terracotta-bright);
   }
@@ -613,7 +619,7 @@
 }
 .latest-changes li a {
   width: fit-content;
-  color: var(--text);
+  color: var(--link);
   font-size: 0.9375rem;
   font-weight: 700;
   line-height: 1.35;

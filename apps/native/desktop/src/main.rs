@@ -91,6 +91,8 @@ const TEXT: Color32 = Color32::from_rgb(243, 244, 245);
 const MUTED: Color32 = Color32::from_rgb(185, 188, 190);
 const TERRACOTTA: Color32 = Color32::from_rgb(182, 77, 50);
 const TERRACOTTA_BRIGHT: Color32 = Color32::from_rgb(219, 104, 73);
+const LINK: Color32 = Color32::from_rgb(105, 207, 255);
+const LINK_ACTIVE: Color32 = Color32::from_rgb(169, 229, 255);
 /// Primary actions are eggshell with blackout labels (shared/design.css `--action`);
 /// terracotta stays for selection and focus.
 const ACTION: Color32 = Color32::from_rgb(241, 237, 228);
@@ -26229,7 +26231,7 @@ enum Run {
     Link(std::ops::Range<usize>, String),
 }
 
-/// Mention and link styling keeps editable glyph metrics and cursor offsets unchanged.
+/// Only mentions are highlighted in drafts; editable glyph metrics stay unchanged.
 fn draft_layout(
     ui: &egui::Ui,
     text: &str,
@@ -26246,28 +26248,20 @@ fn draft_layout(
     let mut job = egui::text::LayoutJob::default();
     job.wrap.max_width = width;
     let ranges = mentions::draft_highlights(text, people, specials);
-    for run in message_runs(text, &ranges) {
-        let (range, format) = match run {
-            Run::Plain(range) => (range, plain.clone()),
-            Run::Pill(range, _) => (
-                range,
-                egui::TextFormat {
-                    background: TERRACOTTA.gamma_multiply(0.24),
-                    ..plain.clone()
-                },
-            ),
-            Run::Link(range, _) => (
-                range,
-                egui::TextFormat {
-                    color: TERRACOTTA_BRIGHT,
-                    background: TERRACOTTA.gamma_multiply(0.24),
-                    underline: Stroke::new(1.0, TERRACOTTA_BRIGHT),
-                    ..plain.clone()
-                },
-            ),
-        };
-        job.append(&text[range], 0.0, format);
+    let mut written = 0;
+    for range in ranges {
+        job.append(&text[written..range.start], 0.0, plain.clone());
+        job.append(
+            &text[range.clone()],
+            0.0,
+            egui::TextFormat {
+                background: TERRACOTTA.gamma_multiply(0.24),
+                ..plain.clone()
+            },
+        );
+        written = range.end;
     }
+    job.append(&text[written..], 0.0, plain);
     ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
@@ -26300,6 +26294,8 @@ fn message_runs(text: &str, pills: &[std::ops::Range<usize>]) -> Vec<Run> {
 /// Inline emoji are drawn a little larger than the text around them, as the
 /// color emoji fonts other clients use are.
 const INLINE_EMOJI_SCALE: f32 = 1.2;
+/// 11px external-link vector plus 2px breathing room on either side.
+const LINK_ICON_SPACE: f32 = 15.0;
 
 /// Message text in the 14px message style; see `rich_text`.
 fn message_body(
@@ -26325,7 +26321,7 @@ fn linked_text(ui: &mut egui::Ui, message: &str, text: &str) {
 }
 
 /// Message text with resolved mentions drawn as pills and links drawn
-/// terracotta-bright and underlined. Pills are one weight bolder, primary
+/// baby-blue and underlined. Pills are one weight bolder, primary
 /// text color and a terracotta background (24%, or 32% while hovered or
 /// focused) with 2px side padding. egui `LayoutJob` backgrounds are plain
 /// rectangles, so pills have square corners rather than the 4px corners other
@@ -26375,12 +26371,13 @@ fn rich_text(
         ..Default::default()
     };
     let link = egui::TextFormat {
-        color: TERRACOTTA_BRIGHT,
-        underline: Stroke::new(1.0, TERRACOTTA_BRIGHT),
+        color: LINK,
+        underline: Stroke::new(1.0, LINK),
         ..plain.clone()
     };
     let mut job = egui::text::LayoutJob::default();
     let mut after_pill = false;
+    let mut after_link = false;
     for run in &runs {
         let (range, format, is_pill) = match run {
             Run::Plain(range) => (range, plain.clone(), false),
@@ -26390,7 +26387,13 @@ fn rich_text(
                 (
                     range,
                     egui::TextFormat {
-                        background: TERRACOTTA.gamma_multiply(if hot { 0.24 } else { 0.12 }),
+                        color: if hot { LINK_ACTIVE } else { LINK },
+                        underline: Stroke::new(1.0, if hot { LINK_ACTIVE } else { LINK }),
+                        background: if hot {
+                            LINK.gamma_multiply(0.12)
+                        } else {
+                            Color32::TRANSPARENT
+                        },
                         ..link.clone()
                     },
                     false,
@@ -26400,6 +26403,9 @@ fn rich_text(
         };
         // Pills keep 2px on either side for their background.
         let mut gap = if is_pill || after_pill { 2.0 } else { 0.0 };
+        if after_link {
+            gap += LINK_ICON_SPACE;
+        }
         // Emoji are laid out as invisible glyphs and drawn in color below.
         let mut start = range.start;
         for (emoji, _) in emojis
@@ -26435,8 +26441,21 @@ fn rich_text(
             job.append(&text[start..range.end], gap, format);
         }
         after_pill = is_pill;
+        after_link = matches!(run, Run::Link(..));
     }
-    let (position, galley, response) = egui::Label::new(job).layout_in_ui(ui);
+    // LayoutSection::leading_space reserves room before the following text,
+    // without adding a character to selection/copy or shifting mention ranges.
+    // Leave the same gutter at the right edge: a wrapping boundary may discard
+    // that leading space, and a final URL has no following section at all.
+    let (position, galley, response) = if linked {
+        ui.scope(|ui| {
+            ui.set_max_width((ui.available_width() - LINK_ICON_SPACE).max(1.0));
+            egui::Label::new(job).layout_in_ui(ui)
+        })
+        .inner
+    } else {
+        egui::Label::new(job).layout_in_ui(ui)
+    };
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
     });
@@ -26514,10 +26533,37 @@ fn rich_text(
         let id = ui.make_persistent_id(("message-link", message, index));
         let hot_id = ui.make_persistent_id(("message-link-hot", message, range.start));
         let mut hot = false;
-        for (row, rect) in pill_rects(&galley, characters(range))
-            .into_iter()
-            .enumerate()
-        {
+        let mut rects = pill_rects(&galley, characters(range));
+        if let Some(last) = rects.last_mut() {
+            last.max.x += LINK_ICON_SPACE;
+            let icon = egui::Rect::from_center_size(
+                egui::pos2(last.right() - LINK_ICON_SPACE / 2.0, last.center().y),
+                egui::vec2(11.0, 11.0),
+            )
+            .translate(position.to_vec2());
+            let was_hot = ui
+                .data(|data| data.get_temp::<bool>(hot_id))
+                .unwrap_or(false);
+            if was_hot {
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(last.right() - LINK_ICON_SPACE, last.top()),
+                        last.max,
+                    )
+                    .translate(position.to_vec2()),
+                    2.0,
+                    LINK.gamma_multiply(0.12),
+                );
+            }
+            paint_icon(
+                ui.painter(),
+                icon,
+                NavIcon::ExternalLink,
+                if was_hot { LINK_ACTIVE } else { LINK },
+            );
+            ui.expand_to_include_rect(last.translate(position.to_vec2()));
+        }
+        for (row, rect) in rects.into_iter().enumerate() {
             let rect = rect.translate(position.to_vec2());
             let (piece, sense) = if row == 0 {
                 (id, egui::Sense::click())
@@ -26536,7 +26582,7 @@ fn rich_text(
                 ui.painter().rect_stroke(
                     rect.expand(1.0),
                     2.0,
-                    Stroke::new(1.0, TERRACOTTA_BRIGHT),
+                    Stroke::new(1.0, LINK_ACTIVE),
                     egui::StrokeKind::Outside,
                 );
             }
@@ -26574,6 +26620,12 @@ fn rich_text(
             .rows
             .last()
             .map(|row| row.rect().translate(position.to_vec2()))
+            .map(|mut row| {
+                if after_link {
+                    row.max.x += LINK_ICON_SPACE;
+                }
+                row
+            })
             .filter(|row| row.right() + 4.0 + size.x <= ui.max_rect().right())
             .map_or_else(
                 || ui.allocate_exact_size(size, egui::Sense::hover()).0,
@@ -28447,11 +28499,10 @@ mod tests {
     use super::{
         AccountOperation, CaperApp, ComposerToken, ConnectionReport, DELETE_ACCOUNT_URL, Dialog,
         GatewayEvent, MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingReaction, PendingSend,
-        Phase, RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA,
-        TERRACOTTA_BRIGHT, TEXT, display_time, endpoint, media, member_page_ids, message_runs,
-        normalize_channel, permanent_send_rejection, pill_rects, projected_reactions,
-        redundant_invitation, resend_countdown, resend_wait, short_time, take_date_divider,
-        timestamp_parts, voice,
+        Phase, RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT,
+        display_time, endpoint, media, member_page_ids, message_runs, normalize_channel,
+        permanent_send_rejection, pill_rects, projected_reactions, redundant_invitation,
+        resend_countdown, resend_wait, short_time, take_date_divider, timestamp_parts, voice,
     };
     use crate::{mentions, navigation, whats_new};
     use std::time::{Duration, Instant};
@@ -41364,7 +41415,7 @@ mod tests {
     }
 
     #[test]
-    fn draft_links_preserve_text_case_and_cursor_metrics() {
+    fn draft_links_stay_plain_and_preserve_cursor_metrics() {
         let context = egui::Context::default();
         let text = "Join HTTPS://Caper.Example/invite/AbC or www.Example.com/Path.";
         let _ = context.run(egui::RawInput::default(), |ctx| {
@@ -41383,13 +41434,13 @@ mod tests {
                     .job
                     .sections
                     .iter()
-                    .filter(|section| section.format.color == TERRACOTTA_BRIGHT)
+                    .filter(|section| {
+                        section.format.underline != egui::Stroke::NONE
+                            || section.format.background != egui::Color32::TRANSPARENT
+                    })
                     .map(|section| &text[section.byte_range.clone()])
                     .collect();
-                assert_eq!(
-                    links,
-                    ["HTTPS://Caper.Example/invite/AbC", "www.Example.com/Path"]
-                );
+                assert!(links.is_empty());
                 assert!(
                     galley
                         .job
@@ -41399,6 +41450,98 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[test]
+    fn message_link_icons_reserve_space_and_open_from_their_hit_area() {
+        for width in [140.0, 400.0] {
+            let context = egui::Context::default();
+            let text = "(https://example.com/long/path), www.example.org/end";
+            assert_eq!(
+                message_runs(text, &[])
+                    .iter()
+                    .filter(|run| matches!(run, Run::Link(..)))
+                    .count(),
+                2
+            );
+            let draw = |events| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 600.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            super::message_body(
+                                ui,
+                                "icon-test",
+                                text,
+                                &[],
+                                |_| String::new(),
+                                true,
+                            );
+                        });
+                    },
+                )
+            };
+            let output = draw(vec![]);
+            let shape = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(shape) if shape.galley.job.text == text => {
+                        Some(shape)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(shape.galley.text(), text, "no decorative copy characters");
+            if width == 140.0 {
+                assert!(shape.galley.rows.len() > 1);
+            }
+            for run in message_runs(text, &[]) {
+                let Run::Link(range, href) = run else {
+                    continue;
+                };
+                let chars = text[..range.start].chars().count()..text[..range.end].chars().count();
+                let rects = super::pill_rects(&shape.galley, chars.clone());
+                let last = rects.last().unwrap().translate(shape.pos.to_vec2());
+                let icon = egui::pos2(last.right() + super::LINK_ICON_SPACE / 2.0, last.center().y);
+                assert!(
+                    icon.x + 5.5 <= width,
+                    "final/wrapped icon stays inside the panel"
+                );
+                if range.end < text.len() {
+                    let next = super::pill_rects(&shape.galley, chars.end..chars.end + 1)[0]
+                        .translate(shape.pos.to_vec2());
+                    assert!(
+                        next.top() >= last.bottom()
+                            || next.left() >= last.right() + super::LINK_ICON_SPACE - 0.5,
+                        "punctuation cannot overlap the icon"
+                    );
+                }
+                draw(vec![
+                    egui::Event::PointerMoved(icon),
+                    egui::Event::PointerButton {
+                        pos: icon,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                let clicked = draw(vec![egui::Event::PointerButton {
+                    pos: icon,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }]);
+                assert_eq!(opened_url(&clicked), Some(href.as_str()));
+            }
+        }
     }
 
     #[test]
@@ -41427,8 +41570,9 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         for token in ["www.example.com/notes", "https://caper.example/a_(b)"] {
             let format = section_format(&output, LINKED, token);
-            assert_eq!(format.color, TERRACOTTA_BRIGHT, "{token}");
-            assert_eq!(format.underline, egui::Stroke::new(1.0, TERRACOTTA_BRIGHT));
+            assert_eq!(format.color, super::LINK, "{token}");
+            assert_eq!(format.underline, egui::Stroke::new(1.0, super::LINK));
+            assert_eq!(format.background, egui::Color32::TRANSPARENT);
         }
         let plain = section_format(&output, LINKED, "Notes at ");
         assert_eq!(plain.color, MESSAGE_TEXT);
@@ -41440,7 +41584,7 @@ mod tests {
         );
         assert_eq!(
             section_format(&output, ORIGINAL, "https://example.com/original").color,
-            TERRACOTTA_BRIGHT,
+            super::LINK,
             "forwarded originals link too"
         );
 
@@ -41452,8 +41596,12 @@ mod tests {
         );
         let hovered = render(&mut app, &context, vec![]);
         assert_eq!(
+            section_format(&hovered, LINKED, "www.example.com/notes").color,
+            super::LINK_ACTIVE
+        );
+        assert_eq!(
             section_format(&hovered, LINKED, "www.example.com/notes").background,
-            TERRACOTTA.gamma_multiply(0.24)
+            super::LINK.gamma_multiply(0.12)
         );
         let clicked = click_at(&mut app, &context, link);
         assert_eq!(opened_url(&clicked), Some("https://www.example.com/notes"));

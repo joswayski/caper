@@ -824,14 +824,23 @@
   vertical-align: baseline;
 }
 .chat-link {
-  color: var(--terracotta-bright);
-  background: rgb(182 77 50 / 12%);
+  color: var(--link);
   border-radius: 3px;
   box-decoration-break: clone;
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
   overflow-wrap: anywhere;
+}
+.chat-link-end {
+  white-space: nowrap;
+}
+.chat-link-end svg {
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  margin-left: 2px;
+  vertical-align: -0.05em;
 }
 @media (hover: hover) and (prefers-reduced-motion: no-preference) {
   .call-page a.chat-link {
@@ -843,14 +852,14 @@
 }
 @media (hover: hover) {
   .chat-link:hover {
-    color: var(--action-hover);
-    background: rgb(182 77 50 / 24%);
+    color: var(--link-hover);
+    background: color-mix(in srgb, var(--link) 12%, transparent);
     text-decoration-thickness: 2px;
   }
 }
 .chat-link:focus-visible {
   border-radius: 2px;
-  outline: 2px solid var(--terracotta);
+  outline: 2px solid var(--link);
   outline-offset: 2px;
 }
 /* Including hover/focus, which would otherwise swap the tint for the plain row highlight. */

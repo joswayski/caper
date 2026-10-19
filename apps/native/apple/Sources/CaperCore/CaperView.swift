@@ -23,6 +23,7 @@ public enum CaperTheme {
     public static let border = Color(red: 52/255, green: 56/255, blue: 59/255)
     public static let text = Color(red: 243/255, green: 244/255, blue: 245/255)
     public static let muted = Color(red: 185/255, green: 188/255, blue: 190/255)
+    public static let link = Color(red: 105/255, green: 207/255, blue: 255/255)
     public static let terracotta = Color(red: 182/255, green: 77/255, blue: 50/255)
     public static let terracottaBright = Color(red: 219/255, green: 104/255, blue: 73/255)
     /// Primary actions are eggshell with blackout labels (shared/design.css --action);
@@ -4961,9 +4962,7 @@ private struct MessageRow: View {
                     if !message.content.text.isEmpty || (grouped && edited) {
                     HStack(alignment: .lastTextBaseline, spacing: 7) {
                         rendered.text.font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
-                            // Links take the tint. Person pills are links too: keep them in
-                            // the pill text colour, not the accent, when the text has any.
-                            .tint(pills.isEmpty ? CaperTheme.terracottaBright : CaperTheme.text)
+                            .tint(CaperTheme.link)
                             .modifier(SwipeGuardedLinks())
                             .modifier(MentionPillInteraction(pills: pills, hasLinks: rendered.hasLinks, cards: mentionCards))
                         if grouped && edited { editedMarker }
@@ -5230,16 +5229,16 @@ private struct MessageRow: View {
     private var messageText: (text: Text, hasLinks: Bool) {
         let content = message.content
         let segments = MentionAutocomplete.segments(in: content.text, mentions: content.mentions)
-        var attributed = AttributedString()
+        var text = Text("")
         var styled = false
         var hasLinks = false
         for segment in segments {
             guard segment.highlighted else {
-                if let linked = MessageLinks.attributed(segment.text) {
-                    attributed.append(linked)
+                if let linked = MessageLinks.renderedText(segment.text) {
+                    text = text + linked
                     hasLinks = true
                 } else {
-                    attributed.append(AttributedString(segment.text))
+                    text = text + Text(segment.text)
                 }
                 continue
             }
@@ -5249,11 +5248,11 @@ private struct MessageRow: View {
             part.backgroundColor = CaperTheme.terracotta.opacity(0.24)
             // A person's pill opens the mention card; @everyone/@here stay inert.
             if let user = segment.user { part.link = MentionCard.url(for: user) }
-            attributed.append(part)
+            text = text + Text(part)
             styled = true
         }
         guard styled || hasLinks else { return (Text(content.text), false) }
-        return (Text(attributed), hasLinks)
+        return (text, hasLinks)
     }
     /// "(edited)": opens the edit history, in the header or, on a grouped row, after the text.
     private var editedMarker: some View {
@@ -5322,26 +5321,32 @@ private struct MessageLinkMenuItems: View {
 }
 
 extension MessageLinks {
-    /// `text` with its links highlighted, underlined, and opening in
-    /// the system browser (the default `openURL`); nil when it has none. The
-    /// visible text is never shortened. Hosts set `.tint` to the same colour:
+    /// Inline linked text plus a decorative SF Symbol, never part of the source
+    /// or the Copy text action. Text concatenation retains native link attributes
+    /// and line wrapping, including in forwarded originals. Nil when no links.
+    /// Hosts set `.tint` to the same colour:
     /// SwiftUI may draw link runs in the tint rather than their own colour.
-    static func attributed(_ text: String) -> AttributedString? {
+    static func renderedText(_ text: String) -> Text? {
         let runs = segments(in: text)
         guard runs.contains(where: { $0.href != nil }) else { return nil }
-        var attributed = AttributedString()
+        var rendered = Text("")
         for run in runs {
             var part = AttributedString(run.text)
             // iOS 17/macOS 14 URL parsing percent-encodes what a URL can't hold, e.g. a non-ASCII path.
             if let href = run.href, let url = URL(string: href) {
                 part.link = url
-                part.foregroundColor = CaperTheme.terracottaBright
-                part.backgroundColor = CaperTheme.terracotta.opacity(0.12)
-                part.underlineStyle = Text.LineStyle(pattern: .solid, color: CaperTheme.terracottaBright)
+                part.foregroundColor = CaperTheme.link
+                part.underlineStyle = Text.LineStyle(pattern: .solid, color: CaperTheme.link)
+                rendered = rendered + Text(part)
+                    + Text(Image(systemName: "arrow.up.right.square"))
+                        .font(.system(size: 10))
+                        .foregroundColor(CaperTheme.link)
+                        .accessibilityLabel(Text(""))
+            } else {
+                rendered = rendered + Text(part)
             }
-            attributed.append(part)
         }
-        return attributed
+        return rendered
     }
 }
 
