@@ -66,7 +66,7 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
     "What’s new", close, heroIcon = R.drawable.caper_face,
     // Like the update review on desktop: the installed version right under the title.
     subtitle = {
-        val version = "Version ${BuildConfig.VERSION_NAME}"
+        val version = "Installed version ${BuildConfig.VERSION_NAME}"
         if (isReleaseRevision(BuildConfig.SOURCE_REVISION)) ReleaseCommitLink(version, BuildConfig.SOURCE_REVISION, 13)
         else Text(version, fontSize = 13.sp, color = TextMuted)
     },
@@ -83,10 +83,10 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
     } else releases.groupBy { it.publishedAt.take(10) }.forEach { (date, dayReleases) ->
         Text(releaseDayLabel(date), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextMuted)
         dayReleases.forEach { release ->
-            ReleaseCommitLink(release.version?.let { "Version $it" } ?: "Commit ${release.revision.take(7)}", release.revision)
             release.highlights.forEach { highlight ->
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(highlight.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    ReleaseCommitLink(release.version?.let { "Version $it" } ?: release.revision.take(7), release.revision)
                     Text(highlight.body, fontSize = 14.sp, color = TextMuted)
                 }
             }
@@ -100,7 +100,7 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
 
 /** Muted and underlined, brightening on hover, focus or press, so a version reads as a link. */
 private val ReleaseLinkStyles = TextLinkStyles(
-    SpanStyle(color = TextMuted, textDecoration = TextDecoration.Underline),
+    SpanStyle(color = TextMuted.copy(alpha = 0.72f), textDecoration = TextDecoration.Underline),
     focusedStyle = SpanStyle(color = Text), hoveredStyle = SpanStyle(color = Text), pressedStyle = SpanStyle(color = Text),
 )
 

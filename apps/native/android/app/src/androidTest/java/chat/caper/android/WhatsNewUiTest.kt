@@ -39,7 +39,7 @@ class WhatsNewUiTest {
         compose.onAllNodesWithText("2026-10-11").assertCountEquals(1)
         compose.onNodeWithText("Version 0.1.112").performTouchInput { click() }
         compose.runOnIdle { assertEquals("https://github.com/joswayski/caper/commit/" + "4".repeat(40), opened) }
-        compose.onNodeWithText("Commit 2222222").performTouchInput { click() }
+        compose.onNodeWithText("2222222").performTouchInput { click() }
         compose.runOnIdle { assertEquals("https://github.com/joswayski/caper/commit/" + "2".repeat(40), opened) }
         compose.onNodeWithText("Got it").performClick()
         compose.runOnIdle { assertEquals(4L, dismissed) }

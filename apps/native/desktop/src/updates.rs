@@ -297,11 +297,11 @@ pub fn commit_url(revision: &str) -> Option<String> {
     .then(|| format!("https://github.com/joswayski/caper/commit/{revision}"))
 }
 
-/// The installed app's version as What's new and the update review show it.
+/// The installed app's version in What's new, distinct from an available update.
 pub fn version_label() -> String {
     build_number().map_or_else(
         || "Development build".into(),
-        |build| format!("Version 0.1.{build}"),
+        |build| format!("Installed version 0.1.{build}"),
     )
 }
 

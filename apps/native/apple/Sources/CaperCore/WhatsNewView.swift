@@ -152,7 +152,7 @@ private struct ReleaseLinkFeedback: ViewModifier {
     @State private var hovered = false
 
     func body(content: Content) -> some View {
-        content.foregroundStyle(pressed ? CaperTheme.terracottaBright : hovered ? CaperTheme.actionHover : CaperTheme.muted)
+        content.foregroundStyle(pressed ? CaperTheme.terracottaBright : hovered ? CaperTheme.actionHover : focused ? CaperTheme.text : CaperTheme.muted.opacity(0.72))
             .background(CaperTheme.terracotta.opacity(pressed ? 0.24 : hovered ? 0.12 : 0))
             .overlay {
                 RoundedRectangle(cornerRadius: 2)
@@ -188,7 +188,7 @@ func releaseDayLabel(_ day: String) -> String {
     private func close() { notes.dismiss(display) }
     private var installedVersion: String {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
-            .map { "Version \($0)" } ?? "Development build"
+            .map { "Installed version \($0)" } ?? "Development build"
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -224,14 +224,14 @@ func releaseDayLabel(_ day: String) -> String {
                                 .foregroundStyle(CaperTheme.muted)
                             ForEach(days[date] ?? [], id: \.sequence) { release in
                                 VStack(alignment: .leading, spacing: 12) {
-                                    if let url = URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)") {
-                                        ReleaseLink(
-                                            label: release.version.map { "Version \($0)" } ?? "Commit \(release.revision.prefix(7))",
-                                            url: url, size: 12)
-                                    }
                                     ForEach(Array(release.highlights.enumerated()), id: \.offset) { _, highlight in
                                         VStack(alignment: .leading, spacing: 4) {
                                             Text(highlight.title).font(CaperTheme.font(16, weight: .bold))
+                                            if let url = URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)") {
+                                                ReleaseLink(
+                                                    label: release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)),
+                                                    url: url, size: 12)
+                                            }
                                             Text(highlight.body).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                                         }
                                     }

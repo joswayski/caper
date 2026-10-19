@@ -21592,21 +21592,21 @@ impl CaperApp {
                     }
                     ui.add_space(16.0);
                     let label = release.version.as_ref().map_or_else(
-                        || format!("Commit {}", &release.revision[..7]),
+                        || release.revision[..7].to_owned(),
                         |version| format!("Version {version}"),
-                    );
-                    release_link(
-                        ui,
-                        &label,
-                        12.0,
-                        &updates::commit_url(&release.revision)
-                            .expect("validated release revision"),
                     );
                     for highlight in release.highlights {
                         ui.add_space(10.0);
                         ui.scope(|ui| {
                             ui.spacing_mut().item_spacing.y = 4.0;
                             ui.label(bold(highlight.title).size(16.0));
+                            release_link(
+                                ui,
+                                &label,
+                                12.0,
+                                &updates::commit_url(&release.revision)
+                                    .expect("validated release revision"),
+                            );
                             ui.label(highlight.body);
                         });
                     }
@@ -27204,7 +27204,7 @@ fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::R
     } else if response.has_focus() {
         TEXT
     } else {
-        MUTED
+        MUTED.gamma_multiply(0.72)
     };
     if ui.is_rect_visible(rect) {
         if response.hovered() || pressed {
@@ -31191,7 +31191,8 @@ mod tests {
         }
         let output = render(&mut app, &context, vec![]);
         let title = text_position(&output, "Edit your messages");
-        for offset in [-9.0, -6.0, 22.0, 25.0] {
+        // The former gap below the title now contains the release link.
+        for offset in [-9.0, -6.0] {
             let pos = title + egui::vec2(10.0, offset);
             render(&mut app, &context, vec![egui::Event::PointerMoved(pos)]);
             let output = render(&mut app, &context, vec![egui::Event::PointerMoved(pos)]);
@@ -31239,9 +31240,16 @@ mod tests {
             if route == "Done" {
                 // The installed version under the title opens the installed commit.
                 let installed = crate::updates::version_label();
+                let title = text_position(&output, "Find your conversations");
+                let source = text_position(&output, "2222222");
+                let body = text_position(
+                    &output,
+                    "Move between your spaces and direct messages while keeping your drafts.",
+                );
+                assert!(title.y < source.y && source.y < body.y);
                 for (label, revision) in [
                     ("Version 0.1.112", whats_new::REVISION.to_owned()),
-                    ("Commit 2222222", "2".repeat(40)),
+                    ("2222222", "2".repeat(40)),
                     (installed.as_str(), whats_new::REVISION.to_owned()),
                 ] {
                     let output = render(&mut app, &context, vec![]);
