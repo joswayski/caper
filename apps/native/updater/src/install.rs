@@ -107,6 +107,7 @@ pub fn can_replace(layout: Layout, install: &Path) -> bool {
 pub fn unpack(layout: Layout, archive: &Path, stage: &Path) -> io::Result<PathBuf> {
     remove_if_present(stage)?;
     // Private until swapped in. create() fails if something reappeared there.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut folder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
