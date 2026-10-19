@@ -1041,6 +1041,25 @@ test("a clicked browser alert opens in place when the page can, and loads its lo
   assert.equal(loaded, undefined, "a conversation shown in place keeps the page (and any call)");
   shown[1].onclick?.();
   assert.equal(loaded, "/spaces?dm=dm0000000001", "what the page can't show in place still loads");
+  const voice = {
+    kind: "voice.started",
+    notificationId: "101",
+    messageId: undefined,
+    spaceId: "space0000001",
+    channelId: "chan00000002",
+  };
+  emit(3, voice);
+  assert.equal(shown.length, 3, "voice starts alert without a message ID");
+  shown[2].onclick?.();
+  assert.equal(
+    offered.at(-1),
+    "/spaces?space=space0000001&channel=chan00000002",
+    "voice alerts only navigate, without a join or message jump",
+  );
+  emit(4, { ...voice, notificationId: undefined });
+  emit(5, { ...voice, channelId: undefined });
+  emit(6, { ...voice, conversationId: "dm0000000001" });
+  assert.equal(shown.length, 3, "malformed voice events cannot fall through to other destinations");
 });
 
 test("browser alerts download images outside the cross-tab lock and coalesce unread refreshes", async (t) => {

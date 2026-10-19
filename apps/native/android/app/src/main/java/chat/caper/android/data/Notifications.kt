@@ -23,6 +23,7 @@ internal const val MUTED_FOREVER = "forever"
 /** Setting keys: the account level, the phone choice, and one per override scope. */
 internal const val ACCOUNT_LEVEL_KEY = "level"
 internal const val MOBILE_KEY = "mobile"
+internal const val VOICE_KEY = "voiceStarted"
 internal fun spaceKey(spaceId: String) = "space:$spaceId"
 internal fun channelKey(channelId: String) = "channel:$channelId"
 internal fun directKey(conversationId: String) = "dm:$conversationId"
@@ -127,25 +128,28 @@ internal enum class MutePreset(val label: String, private val duration: Duration
 
 /** One override change. The API leaves the other field as it is, and null resets this one. */
 sealed interface OverrideChange {
+    data class VoiceStarted(val enabled: Boolean?) : OverrideChange
     data class Level(val level: String?) : OverrideChange
     data class Mute(val mutedUntil: String?) : OverrideChange
 }
 
 internal fun OverrideChange.body(): JsonObject = buildJsonObject {
     when (val change = this@body) {
+        is OverrideChange.VoiceStarted -> put("voiceStarted", change.enabled)
         is OverrideChange.Level -> put("level", change.level)
         is OverrideChange.Mute -> put("mutedUntil", change.mutedUntil)
     }
 }
 
 internal fun NotificationOverride.applying(change: OverrideChange) = when (change) {
+    is OverrideChange.VoiceStarted -> copy(voiceStarted = change.enabled)
     is OverrideChange.Level -> copy(level = change.level)
     is OverrideChange.Mute -> copy(mutedUntil = change.mutedUntil)
 }
 
 /** [key]'s override replaced by [value]. Like the server, an override with no level and no mute is dropped. */
 internal fun NotificationSettings.withOverride(key: String, value: NotificationOverride?): NotificationSettings {
-    val kept = value?.takeIf { it.level != null || it.mutedUntil != null }
+    val kept = value?.takeIf { it.level != null || it.mutedUntil != null || it.voiceStarted != null }
     val index = overrides.indexOfFirst { it.key == key }
     val next = overrides.toMutableList()
     if (index < 0) { if (kept != null) next.add(kept) }
@@ -158,6 +162,7 @@ internal fun NotificationSettings.withOverride(key: String, value: NotificationO
 internal fun NotificationSettings.withSettingFrom(key: String, source: NotificationSettings): NotificationSettings = when (key) {
     ACCOUNT_LEVEL_KEY -> copy(level = source.level)
     MOBILE_KEY -> copy(mobile = source.mobile)
+    VOICE_KEY -> copy(voiceStarted = source.voiceStarted)
     else -> withOverride(key, source.override(key))
 }
 

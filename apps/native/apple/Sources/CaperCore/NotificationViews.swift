@@ -76,7 +76,18 @@ struct SpaceNotificationItems: View {
 
     var body: some View {
         NotificationLevelMenu(model: model, scope: .space(spaceID))
+        Menu("When voice starts") {
+            voiceChoice(nil, "Default (account)")
+            voiceChoice(true, "On")
+            voiceChoice(false, "Off")
+        }
+        .disabled(model.notificationSettings == nil || model.notificationScopesSaving.contains(.space(spaceID)))
         NotificationMuteMenu(model: model, scope: .space(spaceID))
+    }
+
+    private func voiceChoice(_ value: Bool?, _ title: String) -> some View {
+        Toggle(title, isOn: Binding(get: { model.notificationSettings?.override(for: .space(spaceID))?.voiceStarted == value },
+                                   set: { on in if on { Task { await model.setVoiceStartedOverride(value, spaceID: spaceID) } } }))
     }
 }
 

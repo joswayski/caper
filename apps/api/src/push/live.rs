@@ -41,6 +41,7 @@ impl Row {
             "mention.everyone" => Kind::MentionEveryone,
             "space.invitation" | "channel.invitation" => Kind::Invitation,
             "direct.request" => Kind::DirectRequest,
+            "voice.started" => Kind::VoiceStarted,
             "feedback" => Kind::Feedback,
             _ => return None,
         };
@@ -71,7 +72,16 @@ impl Row {
                 id: self.channel_id.clone(),
             },
         };
-        let alert = if kind == Kind::DirectRequest {
+        let alert = if kind == Kind::VoiceStarted {
+            Alert::voice(
+                self.id,
+                conversation,
+                &self.channel_name,
+                &self.sender,
+                &self.sender_id,
+                self.sender_avatar_id,
+            )
+        } else if kind == Kind::DirectRequest {
             Alert::request(
                 self.id,
                 &self.channel_id,
@@ -171,7 +181,8 @@ pub(crate) async fn read(
                 author.avatar_id AS sender_avatar_id,author.avatar_asset AS sender_avatar_asset,
                 COALESCE(ch.external_id,'') AS channel_id,COALESCE(ch.name,'') AS channel_name,
                 s.external_id AS space_id,s.name AS space_name,
-                CASE WHEN n.kind='direct.request' THEN COALESCE(req.eligible,false) AND n.created_at > now()-interval '24 hours'
+                CASE WHEN n.kind='voice.started' THEN COALESCE(voice.eligible,false)
+                WHEN n.kind='direct.request' THEN COALESCE(req.eligible,false) AND n.created_at > now()-interval '24 hours'
                 WHEN n.message_id IS NULL THEN COALESCE(inv.eligible,false) AND n.created_at > now()-interval '24 hours'
                 ELSE (n.dismissed_at IS NULL AND m.deleted_at IS NULL AND m.created_at > now()-interval '24 hours'
                  AND recipient.deleted_at IS NULL AND author.id IS NOT NULL
@@ -203,6 +214,7 @@ pub(crate) async fn read(
          LEFT JOIN public.channels ch ON ch.id=n.channel_id LEFT JOIN public.spaces s ON s.id=n.space_id
          LEFT JOIN public.notification_invitation_sources inv ON inv.id=n.id
          LEFT JOIN public.notification_request_sources req ON req.id=n.id
+         LEFT JOIN public.notification_voice_sources voice ON voice.id=n.id
          JOIN public.users recipient ON recipient.id=n.user_id
          LEFT JOIN public.users author ON author.id=n.actor_id AND author.deleted_at IS NULL
          LEFT JOIN public.notification_settings ns ON ns.user_id=n.user_id

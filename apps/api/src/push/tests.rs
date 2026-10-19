@@ -1176,7 +1176,7 @@ async fn device_settings_and_override_routes_validate_and_logout_revokes(pool: P
         get_settings(app, &alice.token).await,
         (
             StatusCode::OK,
-            json!({"level": "all", "mobile": "whenInactive", "overrides": []})
+            json!({"level": "all", "mobile": "whenInactive", "voiceStarted": true, "overrides": []})
         )
     );
     for (body, error) in [
@@ -1207,7 +1207,7 @@ async fn device_settings_and_override_routes_validate_and_logout_revokes(pool: P
         )
         .await
         .1,
-        json!({"level": "mentions", "mobile": "whenInactive", "overrides": []})
+        json!({"level": "mentions", "mobile": "whenInactive", "voiceStarted": true, "overrides": []})
     );
     assert_eq!(
         put_json(
@@ -1218,7 +1218,7 @@ async fn device_settings_and_override_routes_validate_and_logout_revokes(pool: P
         )
         .await
         .1,
-        json!({"level": "mentions", "mobile": "always", "overrides": []})
+        json!({"level": "mentions", "mobile": "always", "voiceStarted": true, "overrides": []})
     );
 
     // Overrides.
@@ -1231,7 +1231,7 @@ async fn device_settings_and_override_routes_validate_and_logout_revokes(pool: P
         put_json(app, &space_path, &alice.token, json!({"level": "mentions"})).await,
         (
             StatusCode::OK,
-            json!({"spaceId": space_external, "level": "mentions", "mutedUntil": null})
+            json!({"spaceId": space_external, "level": "mentions", "mutedUntil": null, "voiceStarted": null})
         )
     );
     assert_eq!(
@@ -1243,7 +1243,7 @@ async fn device_settings_and_override_routes_validate_and_logout_revokes(pool: P
         )
         .await
         .1,
-        json!({"spaceId": space_external, "level": "mentions", "mutedUntil": soon_text})
+        json!({"spaceId": space_external, "level": "mentions", "mutedUntil": soon_text, "voiceStarted": null})
     );
     assert_eq!(
         put_json(app, &space_path, &alice.token, json!({"level": "loud"})).await,
@@ -1349,7 +1349,7 @@ async fn device_settings_and_override_routes_validate_and_logout_revokes(pool: P
     assert_eq!(
         get_settings(app, &alice.token).await.1["overrides"],
         json!([
-            {"spaceId": space_external, "level": "mentions", "mutedUntil": soon_text},
+            {"spaceId": space_external, "level": "mentions", "mutedUntil": soon_text, "voiceStarted": null},
             {"spaceId": space_external, "channelId": secret, "level": "all", "mutedUntil": null},
             {"conversationId": conversation, "level": "nothing", "mutedUntil": "forever"},
         ])
@@ -3897,4 +3897,241 @@ async fn icon_badge_counts_messages_and_consent_not_events_or_deliveries(pool: P
         .await
         .unwrap();
     assert_count(0).await;
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn voice_alerts_recheck_preferences_access_and_deliver_without_a_message(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let (space, external) = space(&pool, &alice, &[]).await;
+    let channel = channel(&pool, space, "voice", false, &[&alice]).await;
+    let channel_id: i64 = sqlx::query_scalar("SELECT id FROM channels WHERE external_id=$1")
+        .bind(&channel)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let space_path = format!("/api/spaces/{external}/notifications");
+    let channel_path = format!("/api/spaces/{external}/channels/{channel}/notifications");
+    for case in [
+        "default",
+        "mentions",
+        "accountoff",
+        "spaceon",
+        "spaceoff",
+        "nothing",
+        "muted",
+        "channelmute",
+        "revoked",
+        "blocked",
+        "private",
+        "expired",
+        "held",
+        "apns",
+    ] {
+        let recipient = person(&pool, case).await;
+        sqlx::query("INSERT INTO space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(space)
+            .bind(recipient.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // No channel_join: these are space members, not message subscribers.
+        register(
+            &h,
+            &recipient,
+            &recipient.token,
+            if case == "apns" { "apns" } else { "fcm" },
+            if case == "apns" { APNS_TOKEN } else { case },
+        )
+        .await;
+        let mut tx = pool.begin().await.unwrap();
+        consent(
+            &mut tx,
+            recipient.id,
+            alice.id,
+            "voice.started",
+            Some(space),
+            Some(channel_id),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let notification: i64 = sqlx::query_scalar("SELECT id FROM notifications WHERE user_id=$1")
+            .bind(recipient.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let account = match case {
+            "default" => json!({}),
+            "accountoff" | "spaceon" => json!({"voiceStarted":false}),
+            "nothing" => json!({"level":"nothing"}),
+            _ => json!({"level":"mentions"}),
+        };
+        assert_eq!(
+            put_json(
+                &h.app,
+                "/api/notifications/settings",
+                &recipient.token,
+                account
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            get_settings(&h.app, &recipient.token).await.1["voiceStarted"],
+            !matches!(case, "accountoff" | "spaceon")
+        );
+        match case {
+            "spaceon" | "spaceoff" => {
+                let saved = put_json(
+                    &h.app,
+                    &space_path,
+                    &recipient.token,
+                    json!({"voiceStarted":case=="spaceon"}),
+                )
+                .await;
+                assert_eq!(saved.0, StatusCode::OK);
+                assert_eq!(saved.1["voiceStarted"], case == "spaceon");
+                assert_eq!(
+                    get_settings(&h.app, &recipient.token).await.1["overrides"][0]["voiceStarted"],
+                    case == "spaceon"
+                );
+            }
+            "muted" | "channelmute" => {
+                assert_eq!(
+                    put_json(
+                        &h.app,
+                        if case == "muted" {
+                            &space_path
+                        } else {
+                            &channel_path
+                        },
+                        &recipient.token,
+                        json!({"mutedUntil":"forever"})
+                    )
+                    .await
+                    .0,
+                    StatusCode::OK
+                );
+            }
+            "revoked" => {
+                sqlx::query("UPDATE space_members SET deleted_at=now() WHERE user_id=$1")
+                    .bind(recipient.id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            "blocked" => {
+                sqlx::query("INSERT INTO user_blocks(blocker_id,blocked_id) VALUES($1,$2)")
+                    .bind(recipient.id)
+                    .bind(alice.id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            "private" => {
+                sqlx::query("UPDATE channels SET private=true WHERE id=$1")
+                    .bind(channel_id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            "expired" => {
+                sqlx::query(
+                    "UPDATE notifications SET created_at=now()-interval '301 seconds' WHERE id=$1",
+                )
+                .bind(notification)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            "held" => {
+                let (_, hash) = session(&pool, recipient.id).await;
+                active(&h, &recipient, &hash).await;
+            }
+            _ => {}
+        }
+        let eligible = matches!(case, "default" | "mentions" | "spaceon" | "held" | "apns");
+        let feed = live::read(&pool, recipient.id, 0, i64::MAX, None)
+            .await
+            .unwrap();
+        assert_eq!(feed.len(), 1);
+        assert_eq!(feed[0].1.is_some(), eligible, "{case}");
+        deliver(&h).await;
+        let fcm = h.fcm.take();
+        let apns = h.apns.take();
+        assert_eq!(
+            fcm.len() + apns.len(),
+            usize::from(eligible && case != "held"),
+            "{case}"
+        );
+        if let Some(sent) = fcm.first() {
+            let data = &sent.body["message"]["data"];
+            assert_eq!(data["kind"], "voice.started");
+            assert_eq!(data["body"], "Alice joined voice in #voice.");
+            assert_eq!(data["notificationId"], notification.to_string());
+            assert_eq!(data["channelId"], channel);
+            assert!(data.get("messageId").is_none());
+            assert_eq!(sent.body["message"]["android"]["ttl"], "300s");
+        }
+        if let Some(sent) = apns.first() {
+            assert_eq!(sent.body["kind"], "voice.started");
+            assert_eq!(sent.body["notificationId"], notification.to_string());
+            assert!(sent.body.get("messageId").is_none());
+            let expiration: i64 = sent.headers["apns-expiration"]
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!((290..=300).contains(&(expiration - Utc::now().timestamp())));
+        }
+        if case == "held" {
+            let held: bool = sqlx::query_scalar(
+                "SELECT held FROM notification_deliveries WHERE notification_id=$1",
+            )
+            .bind(notification)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(held);
+            clear_presence(&recipient).await;
+        }
+        if case == "private" {
+            sqlx::query("UPDATE channels SET private=false WHERE id=$1")
+                .bind(channel_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        if case == "spaceoff" {
+            let reset = put_json(
+                &h.app,
+                &space_path,
+                &recipient.token,
+                json!({"voiceStarted":null}),
+            )
+            .await;
+            assert_eq!(reset.0, StatusCode::OK);
+            assert_eq!(reset.1["voiceStarted"], Value::Null);
+            assert_eq!(
+                get_settings(&h.app, &recipient.token).await.1["overrides"],
+                json!([])
+            );
+        }
+    }
+    for value in [Value::Null, json!("false"), json!(0)] {
+        assert_eq!(
+            put_json(
+                &h.app,
+                "/api/notifications/settings",
+                &alice.token,
+                json!({"voiceStarted":value})
+            )
+            .await
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
 }

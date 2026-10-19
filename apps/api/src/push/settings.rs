@@ -50,6 +50,7 @@ enum Mute {
 struct OverrideInput {
     level: Option<Option<Level>>,
     muted_until: Option<Option<Mute>>,
+    voice_started: Option<Option<bool>>,
 }
 
 fn override_input(
@@ -57,7 +58,17 @@ fn override_input(
     direct: bool,
     now: DateTime<Utc>,
 ) -> Result<OverrideInput, ApiError> {
-    let object = object(body, &["level", "mutedUntil"])?;
+    let object = object(body, &["level", "mutedUntil", "voiceStarted"])?;
+    let voice_started = object
+        .get("voiceStarted")
+        .map(|value| {
+            if value.is_null() {
+                Ok(None)
+            } else {
+                value.as_bool().map(Some).ok_or_else(invalid)
+            }
+        })
+        .transpose()?;
     let level = match object.get("level") {
         None => None,
         Some(Value::Null) => Some(None),
@@ -93,7 +104,11 @@ fn override_input(
             Some(Some(Mute::Until(seconds)))
         }
     };
-    Ok(OverrideInput { level, muted_until })
+    Ok(OverrideInput {
+        level,
+        muted_until,
+        voice_started,
+    })
 }
 
 /// Stored override state, with expired mutes already read as none.
@@ -102,6 +117,7 @@ struct Stored {
     level: Option<String>,
     forever: bool,
     muted_until: Option<DateTime<Utc>>,
+    voice_started: Option<bool>,
 }
 
 impl Stored {
@@ -139,13 +155,14 @@ async fn save(
         None => (false, None),
     };
     sqlx::query_as(&format!(
-        "INSERT INTO public.notification_overrides (user_id, {scope}, level, muted_until)
-         VALUES ($1, $2, $4, CASE WHEN $6 THEN 'infinity'::timestamptz ELSE $7 END)
+        "INSERT INTO public.notification_overrides (user_id, {scope}, level, muted_until, voice_started)
+         VALUES ($1, $2, $4, CASE WHEN $6 THEN 'infinity'::timestamptz ELSE $7 END, $9)
          ON CONFLICT (user_id, {scope}) WHERE {scope} IS NOT NULL DO UPDATE SET
              level = CASE WHEN $3 THEN EXCLUDED.level ELSE notification_overrides.level END,
              muted_until = CASE WHEN $5 THEN EXCLUDED.muted_until ELSE notification_overrides.muted_until END,
+             voice_started = CASE WHEN $8 THEN EXCLUDED.voice_started ELSE notification_overrides.voice_started END,
              updated_at = now()
-         RETURNING {STORED}"
+         RETURNING {STORED}, voice_started"
     ))
     .bind(user)
     .bind(id)
@@ -154,6 +171,8 @@ async fn save(
     .bind(input.muted_until.is_some())
     .bind(forever)
     .bind(until)
+    .bind(input.voice_started.is_some())
+    .bind(input.voice_started.flatten())
     .fetch_one(pool)
     .await
     .map_err(database_error)
@@ -180,7 +199,7 @@ async fn update_space(
     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "space not found"))?;
     let stored = save(pool, principal.user.id, "space_id", id, &input).await?;
     Ok(Json(
-        json!({"spaceId": space, "level": stored.level(), "mutedUntil": stored.muted_until()}),
+        json!({"spaceId": space, "level": stored.level(), "mutedUntil": stored.muted_until(), "voiceStarted": stored.voice_started}),
     ))
 }
 
@@ -191,6 +210,9 @@ async fn update_channel(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let input = override_input(&body, false, Utc::now())?;
+    if input.voice_started.is_some() {
+        return Err(invalid());
+    }
     let pool = pool(&state)?;
     let not_found = || ApiError::new(StatusCode::NOT_FOUND, "channel not found");
     // Read access, as for history: membership plus a grant for private channels.
@@ -230,6 +252,9 @@ async fn update_direct(
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let input = override_input(&body, true, Utc::now())?;
+    if input.voice_started.is_some() {
+        return Err(invalid());
+    }
     let pool = pool(&state)?;
     let not_found = || ApiError::new(StatusCode::NOT_FOUND, "conversation not found");
     let access = channel_access(pool, &conversation, Some(principal.user.id))
@@ -264,22 +289,22 @@ struct Listed {
 /// Account settings plus every override still in effect for a scope the
 /// account can still read.
 async fn settings(pool: &PgPool, user: i64) -> Result<Value, ApiError> {
-    let account: Option<(Option<String>, String)> = sqlx::query_as(
-        "SELECT default_level, mobile FROM public.notification_settings WHERE user_id=$1",
+    let account: Option<(Option<String>, String, bool)> = sqlx::query_as(
+        "SELECT default_level, mobile, voice_started FROM public.notification_settings WHERE user_id=$1",
     )
     .bind(user)
     .fetch_optional(pool)
     .await
     .map_err(database_error)?;
-    let (level, mobile) = account.unwrap_or((None, "whenInactive".into()));
+    let (level, mobile, voice_started) = account.unwrap_or((None, "whenInactive".into(), true));
     let rows: Vec<Listed> = sqlx::query_as(
         "SELECT s.external_id AS space_id, c.external_id AS channel_id, c.id IS NOT NULL AND c.space_id IS NULL AS direct,
-                o.level, COALESCE(o.muted_until = 'infinity', false) AS forever,
+                o.level, o.voice_started, COALESCE(o.muted_until = 'infinity', false) AS forever,
                 CASE WHEN o.muted_until > now() AND o.muted_until <> 'infinity' THEN o.muted_until END AS muted_until
          FROM public.notification_overrides o
          LEFT JOIN public.channels c ON c.id=o.channel_id
          LEFT JOIN public.spaces s ON s.id=COALESCE(o.space_id, c.space_id)
-         WHERE o.user_id=$1 AND (o.level IS NOT NULL OR o.muted_until > now())
+         WHERE o.user_id=$1 AND (o.level IS NOT NULL OR o.muted_until > now() OR o.voice_started IS NOT NULL)
            AND ((s.id IS NOT NULL AND s.deleted_at IS NULL AND NOT s.demo
                  AND EXISTS(SELECT 1 FROM public.space_members m WHERE m.space_id=s.id AND m.user_id=$1 AND m.deleted_at IS NULL)
                  AND (o.space_id IS NOT NULL
@@ -310,12 +335,16 @@ async fn settings(pool: &PgPool, user: i64) -> Result<Value, ApiError> {
             };
             entry["level"] = row.stored.level();
             entry["mutedUntil"] = row.stored.muted_until();
+            if !row.direct && entry.get("channelId").is_none() {
+                entry["voiceStarted"] = json!(row.stored.voice_started);
+            }
             entry
         })
         .collect();
     Ok(json!({
         "level": level.as_deref().and_then(Level::parse).unwrap_or(Level::All).name(),
         "mobile": mobile,
+        "voiceStarted": voice_started,
         "overrides": overrides,
     }))
 }
@@ -332,7 +361,11 @@ async fn update_settings(
     Extension(principal): Extension<Principal>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let object = object(&body, &["level", "mobile"])?;
+    let object = object(&body, &["level", "mobile", "voiceStarted"])?;
+    let voice_started = object
+        .get("voiceStarted")
+        .map(|value| value.as_bool().ok_or_else(invalid))
+        .transpose()?;
     let level = object
         .get("level")
         .map(|level| {
@@ -353,11 +386,12 @@ async fn update_settings(
         .transpose()?;
     let pool = pool(&state)?;
     sqlx::query(
-        "INSERT INTO public.notification_settings (user_id, default_level, mobile)
-         VALUES ($1, $3, COALESCE($5, 'whenInactive'))
+        "INSERT INTO public.notification_settings (user_id, default_level, mobile, voice_started)
+         VALUES ($1, $3, COALESCE($5, 'whenInactive'), COALESCE($6,true))
          ON CONFLICT (user_id) DO UPDATE SET
              default_level = CASE WHEN $2 THEN EXCLUDED.default_level ELSE notification_settings.default_level END,
              mobile = CASE WHEN $4 THEN EXCLUDED.mobile ELSE notification_settings.mobile END,
+             voice_started = COALESCE($6,notification_settings.voice_started),
              updated_at = now()",
     )
     .bind(principal.user.id)
@@ -365,6 +399,7 @@ async fn update_settings(
     .bind(level.map(Level::name))
     .bind(mobile.is_some())
     .bind(mobile)
+    .bind(voice_started)
     .execute(pool)
     .await
     .map_err(database_error)?;
@@ -387,6 +422,7 @@ mod tests {
             OverrideInput {
                 level: Some(None),
                 muted_until: Some(Some(Mute::Forever)),
+                voice_started: None,
             }
         );
         let soon = now + TimeDelta::minutes(15);

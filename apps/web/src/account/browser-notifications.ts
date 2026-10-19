@@ -49,6 +49,11 @@ export interface MessageNotification {
 export function notificationLocation(event: MessageNotification) {
   const id = /^[A-Za-z0-9]{12}$/;
   const message = /^[A-Za-z0-9]{15}$/;
+  if (event.kind === "voice.started") {
+    if (event.spaceId && event.channelId && id.test(event.spaceId) && id.test(event.channelId) && !event.conversationId)
+      return `/spaces?space=${event.spaceId}&channel=${event.channelId}`;
+    return;
+  }
   // The feedback team visits the conversation in place, at the report's thread.
   const visit = event.conversationId ?? event.channelId;
   if (event.kind === "feedback" && visit && id.test(visit) && event.messageId && message.test(event.messageId)) {
@@ -132,10 +137,11 @@ export function watchBrowserNotifications(
     const event = value as MessageNotification;
     const invitation = event?.kind === "space.invitation" || event?.kind === "channel.invitation";
     const request = event?.kind === "direct.request";
+    const voice = event?.kind === "voice.started";
     const identity =
-      invitation || request
+      invitation || request || voice
         ? typeof event.notificationId === "string" && /^[1-9][0-9]*$/.test(event.notificationId)
-          ? `${request ? "request" : "invitation"}:${event.notificationId}`
+          ? `${voice ? "voice" : request ? "request" : "invitation"}:${event.notificationId}`
           : undefined
         : event?.messageId;
     if (

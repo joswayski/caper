@@ -9363,3 +9363,27 @@ No Windows runtime, Windows snapping/multi-monitor/DPI-change acceptance, macOS
 runtime or signed installer update was exercised. A Linux window-manager-forced
 fullscreen check did not round-trip as fullscreen; app-managed fullscreen
 restoration does not establish support for that external window-manager mode.
+
+## Voice-start notifications (October 19, 2026)
+
+See [the notification contract](notifications.md#voice-start-alerts-october-19-2026).
+The additive `202610190021_voice_notifications.sql` migration adds account/space
+preferences, a durable space cooldown and a shared eligibility function/view.
+API startup grants the runtime role access. Deploy the API before the gateway,
+web and native releases; old clients omit the new fields safely but may not show
+this new alert kind. No provider secrets or infrastructure changes are required.
+
+Validation uses real disposable Postgres and Valkey, with the SFU and APNs/FCM
+explicitly mocked. Join-route tests cover simultaneous starts, cross-channel
+occupancy, empty/rejoin cooldown, private access and expired leases in both memory
+and shared media mode. Notification tests cover account opt-out, space overrides
+and inheritance, mutes, blocks, revoked membership, private access at delivery,
+freshness, mobile holds and APNs/FCM payloads without message IDs.
+
+Web build/typecheck/lint and Vitest pass. Desktop Rust build/tests/Clippy and
+Android unit tests/lint pass. Rendered web desktop/narrow controls and Linux
+desktop fixtures were inspected; the web pointer interaction was recorded with
+a labeled API mock. Apple code and tests are implemented but require Xcode to
+compile/run. No physical mobile device, live SFU call, real push-provider delivery
+or Windows/macOS notification activation was exercised. Docker is unavailable in
+the orb; build stages are validated directly rather than as images.

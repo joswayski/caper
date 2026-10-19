@@ -21,6 +21,7 @@ pub(super) enum Kind {
     Feedback,
     Invitation,
     DirectRequest,
+    VoiceStarted,
 }
 
 impl Kind {
@@ -33,6 +34,7 @@ impl Kind {
             Self::Feedback => "feedback",
             Self::Invitation => "invitation",
             Self::DirectRequest => "direct.request",
+            Self::VoiceStarted => "voice.started",
         }
     }
 }

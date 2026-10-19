@@ -2256,6 +2256,18 @@ extension AppModel {
         await saveAccountNotifications(NotificationAccountChange(mobile: mobile), field: "mobile")
     }
 
+    public func setVoiceStartedNotifications(_ enabled: Bool) async {
+        var change = NotificationAccountChange()
+        change.voiceStarted = enabled
+        await saveAccountNotifications(change, field: "voiceStarted")
+    }
+
+    public func setVoiceStartedOverride(_ enabled: Bool?, spaceID: String) async {
+        var change = NotificationOverrideChange()
+        change.voiceStarted = .some(enabled)
+        await saveOverride(change, for: .space(spaceID))
+    }
+
     /// A space or channel level (nil is Default), or a DM's on/off (`nothing` or nil).
     public func setNotificationLevel(_ level: NotificationLevel?, for scope: NotificationScope) async {
         guard let current = notificationSettings, current.overrideLevel(for: scope) != level else { return }
@@ -2332,16 +2344,18 @@ extension AppModel {
         notificationChangesInFlight += 1
         notificationSettings = current.applying(change)
         notificationError = nil
-        let restore = NotificationAccountChange(level: change.level == nil ? nil : current.level,
+        var restore = NotificationAccountChange(level: change.level == nil ? nil : current.level,
                                                 mobile: change.mobile == nil ? nil : current.mobile)
+        restore.voiceStarted = change.voiceStarted == nil ? nil : current.voiceStarted
         do {
             let saved = try await api.updateNotificationSettings(change)
             guard generation == attempt else { return }
             notificationChangesInFlight -= 1
             guard accountNotificationRevisions[field] == revision else { return }
             // Only this change's field: other fields may have changes in flight.
-            let confirmed = NotificationAccountChange(level: change.level == nil ? nil : saved.level,
+            var confirmed = NotificationAccountChange(level: change.level == nil ? nil : saved.level,
                                                       mobile: change.mobile == nil ? nil : saved.mobile)
+            confirmed.voiceStarted = change.voiceStarted == nil ? nil : saved.voiceStarted
             notificationSettings = notificationSettings?.applying(confirmed)
         } catch {
             guard generation == attempt else { return }

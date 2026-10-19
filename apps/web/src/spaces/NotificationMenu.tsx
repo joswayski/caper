@@ -3,7 +3,7 @@ import { Bell, BellMinus, BellOff, BellRing, Check, ChevronRight } from "lucide-
 import type { MutedUntil, NotificationChange, NotificationLevel } from "./client.ts";
 import { levelLabels, muteLabel, mutePresets, muteUntil, refreshNotificationSettings } from "./notifications.ts";
 
-type Submenu = "level" | "mute";
+type Submenu = "level" | "mute" | "voice";
 
 // Like the menu's other actions: close it and return focus to its button.
 function closeMenu(event: MouseEvent<HTMLElement>) {
@@ -98,6 +98,8 @@ export function LevelNotificationItems({
   inherited,
   mutedUntil,
   mutedWithSpace = false,
+  voiceStarted = null,
+  inheritedVoiceStarted = true,
   onChange,
 }: {
   noun: "space" | "channel";
@@ -107,6 +109,8 @@ export function LevelNotificationItems({
   inherited: NotificationLevel;
   mutedUntil: MutedUntil;
   mutedWithSpace?: boolean;
+  voiceStarted?: boolean | null;
+  inheritedVoiceStarted?: boolean;
   onChange: (change: NotificationChange) => void;
 }) {
   const { ref, open, toggle } = useSubmenu();
@@ -141,6 +145,44 @@ export function LevelNotificationItems({
             </button>
           ))}
         </div>
+      )}
+      {noun === "space" && (
+        <>
+          <button type="button" disabled={!loaded} aria-expanded={open === "voice"} onClick={() => toggle("voice")}>
+            <BellRing aria-hidden="true" />
+            <span className="notification-item">
+              When voice starts
+              <small>
+                {loaded
+                  ? voiceStarted === null
+                    ? `Default (${inheritedVoiceStarted ? "On" : "Off"})`
+                    : voiceStarted
+                      ? "On"
+                      : "Off"
+                  : "Loading…"}
+              </small>
+            </span>
+            <ChevronRight className="notification-chevron" aria-hidden="true" />
+          </button>
+          {open === "voice" && (
+            <div className="notification-choices" role="group" aria-label="When voice starts">
+              {([null, true, false] as const).map((value) => (
+                <button
+                  key={String(value)}
+                  type="button"
+                  aria-pressed={value === voiceStarted}
+                  onClick={(event) => {
+                    closeMenu(event);
+                    if (value !== voiceStarted) onChange({ voiceStarted: value });
+                  }}
+                >
+                  <Check aria-hidden="true" />
+                  {value === null ? `Default (${inheritedVoiceStarted ? "On" : "Off"})` : value ? "On" : "Off"}
+                </button>
+              ))}
+            </div>
+          )}
+        </>
       )}
       <MuteItems
         noun={noun}

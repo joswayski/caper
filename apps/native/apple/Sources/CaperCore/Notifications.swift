@@ -139,15 +139,16 @@ public struct NotificationOverride: Decodable, Hashable, Sendable {
     public let scope: NotificationScope
     public var level: NotificationLevel?
     public var mutedUntil: MuteUntil?
+    public var voiceStarted: Bool? = nil
 
     /// Neither a level nor a mute: the server omits these.
-    public var isEmpty: Bool { level == nil && mutedUntil == nil }
+    public var isEmpty: Bool { level == nil && mutedUntil == nil && voiceStarted == nil }
 
     public init(scope: NotificationScope, level: NotificationLevel? = nil, mutedUntil: MuteUntil? = nil) {
         self.scope = scope; self.level = level; self.mutedUntil = mutedUntil
     }
 
-    private enum CodingKeys: String, CodingKey { case spaceId, channelId, conversationId, level, mutedUntil }
+    private enum CodingKeys: String, CodingKey { case spaceId, channelId, conversationId, level, mutedUntil, voiceStarted }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -166,6 +167,7 @@ public struct NotificationOverride: Decodable, Hashable, Sendable {
         }
         let rawLevel: NotificationLevel? = try? values.decodeIfPresent(NotificationLevel.self, forKey: .level)
         level = rawLevel
+        voiceStarted = try values.decodeIfPresent(Bool.self, forKey: .voiceStarted)
         let rawMute: String? = try? values.decodeIfPresent(String.self, forKey: .mutedUntil)
         mutedUntil = rawMute.flatMap { MuteUntil(serverValue: $0) }
     }
@@ -175,6 +177,7 @@ public struct NotificationOverride: Decodable, Hashable, Sendable {
 public struct NotificationOverrideChange: Encodable, Equatable, Sendable {
     public var level: NotificationLevel??
     public var mutedUntil: MuteUntil??
+    public var voiceStarted: Bool?? = .none
 
     public init(level: NotificationLevel?? = .none, mutedUntil: MuteUntil?? = .none) {
         self.level = level; self.mutedUntil = mutedUntil
@@ -188,10 +191,14 @@ public struct NotificationOverrideChange: Encodable, Equatable, Sendable {
         NotificationOverrideChange(mutedUntil: .some(until))
     }
 
-    private enum CodingKeys: String, CodingKey { case level, mutedUntil }
+    private enum CodingKeys: String, CodingKey { case level, mutedUntil, voiceStarted }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        if let voiceStarted {
+            if let value = voiceStarted { try container.encode(value, forKey: .voiceStarted) }
+            else { try container.encodeNil(forKey: .voiceStarted) }
+        }
         if let level {
             if let value = level { try container.encode(value.rawValue, forKey: .level) }
             else { try container.encodeNil(forKey: .level) }
@@ -207,6 +214,7 @@ public struct NotificationOverrideChange: Encodable, Equatable, Sendable {
 public struct NotificationAccountChange: Encodable, Equatable, Sendable {
     public var level: NotificationLevel?
     public var mobile: MobilePushPolicy?
+    public var voiceStarted: Bool? = nil
 
     public init(level: NotificationLevel? = nil, mobile: MobilePushPolicy? = nil) {
         self.level = level; self.mobile = mobile
@@ -217,13 +225,14 @@ public struct NotificationAccountChange: Encodable, Equatable, Sendable {
 public struct NotificationSettings: Decodable, Equatable, Sendable {
     public var level: NotificationLevel
     public var mobile: MobilePushPolicy
+    public var voiceStarted: Bool = true
     public var overrides: [NotificationOverride]
 
     public init(level: NotificationLevel = .all, mobile: MobilePushPolicy = .whenInactive, overrides: [NotificationOverride] = []) {
         self.level = level; self.mobile = mobile; self.overrides = overrides
     }
 
-    private enum CodingKeys: String, CodingKey { case level, mobile, overrides }
+    private enum CodingKeys: String, CodingKey { case level, mobile, overrides, voiceStarted }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -231,6 +240,7 @@ public struct NotificationSettings: Decodable, Equatable, Sendable {
         level = decodedLevel ?? .all
         let decodedMobile: MobilePushPolicy? = try? values.decodeIfPresent(MobilePushPolicy.self, forKey: .mobile)
         mobile = decodedMobile ?? .whenInactive
+        voiceStarted = try values.decodeIfPresent(Bool.self, forKey: .voiceStarted) ?? true
         let entries: [LossyOverride] = try values.decodeIfPresent([LossyOverride].self, forKey: .overrides) ?? []
         overrides = entries.compactMap(\.value)
     }
@@ -306,6 +316,7 @@ public struct NotificationSettings: Decodable, Equatable, Sendable {
         var next = override(for: scope) ?? NotificationOverride(scope: scope)
         if let level = change.level { next.level = level }
         if let mute = change.mutedUntil { next.mutedUntil = mute }
+        if let voice = change.voiceStarted { next.voiceStarted = voice }
         return replacing(next, for: scope)
     }
 
@@ -314,6 +325,7 @@ public struct NotificationSettings: Decodable, Equatable, Sendable {
         var copy = self
         if let level = change.level { copy.level = level }
         if let mobile = change.mobile { copy.mobile = mobile }
+        if let voice = change.voiceStarted { copy.voiceStarted = voice }
         return copy
     }
 }
@@ -378,6 +390,11 @@ public enum NotificationRoute: Equatable, Sendable {
             return string
         }
         let conversationID = value("conversationId")
+        if value("kind") == "voice.started" {
+            guard conversationID == nil, let spaceID = value("spaceId"), let channelID = value("channelId") else { return nil }
+            self = .channel(spaceID: spaceID, channelID: channelID)
+            return
+        }
         // `feedback` first, then invitations, then the conversation fallback.
         if value("kind") == Self.feedbackKind, let messageID = value("messageId"),
            let channelID = conversationID ?? value("channelId") {

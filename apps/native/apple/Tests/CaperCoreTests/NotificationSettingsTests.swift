@@ -28,6 +28,20 @@ final class NotificationSettingsTests: XCTestCase {
 
     // MARK: Decoding
 
+    func testVoiceSettingsDefaultsAndExplicitReset() throws {
+        XCTAssertTrue(try decode("{}").voiceStarted)
+        let settings = try decode(#"{"voiceStarted":false,"overrides":[{"spaceId":"space0000001","voiceStarted":true}]}"#)
+        XCTAssertFalse(settings.voiceStarted)
+        XCTAssertEqual(settings.override(for: space)?.voiceStarted, true)
+        XCTAssertFalse(try XCTUnwrap(settings.override(for: space)).isEmpty)
+        var change = NotificationOverrideChange()
+        change.voiceStarted = .some(nil)
+        XCTAssertEqual(try object(change), ["voiceStarted": NSNull()] as NSDictionary)
+        XCTAssertNil(settings.applying(change, to: space).override(for: space))
+        XCTAssertEqual(NotificationRoute(userInfo: ["kind": "voice.started", "notificationId": "94", "spaceId": "space0000001", "channelId": "chan00000001"]),
+                       .channel(spaceID: "space0000001", channelID: "chan00000001"))
+    }
+
     func testSettingsDecodeEveryScope() throws {
         let settings = try decode(sampleSettings)
         XCTAssertEqual(settings.level, .all)

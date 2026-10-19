@@ -95,6 +95,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class NotificationSettings(
     val level: String = "all",
     val mobile: String = "whenInactive",
+    val voiceStarted: Boolean = true,
     val overrides: List<NotificationOverride> = emptyList(),
 )
 /**
@@ -107,6 +108,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val conversationId: String? = null,
     val level: String? = null,
     val mutedUntil: String? = null,
+    val voiceStarted: Boolean? = null,
 )
 @Serializable data class ChannelInvitation(val channel: Channel, val inviter: Inviter)
 /** An invite link's inviter or creator: public identity only. */

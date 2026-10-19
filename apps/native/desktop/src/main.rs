@@ -3135,6 +3135,7 @@ impl CaperApp {
             notifications::Notifications::with_settings(model::NotificationSettings {
                 level: model::NotificationLevel::All,
                 mobile: "whenInactive".into(),
+                voice_started: true,
                 overrides: Vec::new(),
             });
         self.live = "Live".into();
@@ -5476,6 +5477,26 @@ impl CaperApp {
         let mut change = None;
         ui.add_enabled_ui(enabled, |ui| {
             let level = self.notifications.level(scope);
+            if matches!(scope, Scope::Space(_)) {
+                ui.menu_button("When voice starts", |ui| {
+                    for (value, label) in [
+                        (None, "Default (account)"),
+                        (Some(true), "On"),
+                        (Some(false), "Off"),
+                    ] {
+                        if ui
+                            .selectable_label(
+                                self.notifications.voice_started(scope) == value,
+                                label,
+                            )
+                            .clicked()
+                        {
+                            change = Some(Change::VoiceStarted(value));
+                            ui.close();
+                        }
+                    }
+                });
+            }
             if let Scope::Direct(_) = scope {
                 let off = level == Some(NotificationLevel::Nothing);
                 if ui
@@ -21986,6 +22007,16 @@ impl CaperApp {
         });
         if let Some(level) = chosen {
             self.change_notifications(Scope::Account, Change::Level(Some(level)));
+        }
+        let mut voice = self.notifications.account_voice_started();
+        if ui
+            .add_enabled(
+                current.is_some() && !self.notifications.saving(&Scope::Account),
+                egui::Checkbox::new(&mut voice, "When voice starts in a space"),
+            )
+            .changed()
+        {
+            self.change_notifications(Scope::Account, Change::VoiceStarted(Some(voice)));
         }
         if current.is_none() {
             match self.notifications.load_error().map(str::to_owned) {

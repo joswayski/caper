@@ -47,6 +47,7 @@ impl Scope {
 /// One choice from a menu or Settings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
+    VoiceStarted(Option<bool>),
     /// The account level, or an override where `None` inherits. DMs use
     /// `Nothing` (off) or `None` (on).
     Level(Option<NotificationLevel>),
@@ -143,6 +144,7 @@ pub fn default_label(inherited: NotificationLevel) -> String {
 
 #[derive(Clone, Debug)]
 enum Previous {
+    VoiceStarted(bool),
     Level(NotificationLevel),
     Override(Option<NotificationOverride>),
 }
@@ -203,6 +205,12 @@ impl Notifications {
             return false;
         };
         let previous = match (scope, change) {
+            (Scope::Account, Change::VoiceStarted(Some(enabled))) => {
+                if settings.voice_started == *enabled {
+                    return false;
+                }
+                Previous::VoiceStarted(std::mem::replace(&mut settings.voice_started, *enabled))
+            }
             (Scope::Account, Change::Level(Some(level))) => {
                 if settings.level == *level {
                     return false;
@@ -218,6 +226,7 @@ impl Notifications {
                     .cloned();
                 let mut entry = previous.clone().unwrap_or_else(|| scope.empty());
                 match change {
+                    Change::VoiceStarted(enabled) => entry.voice_started = *enabled,
                     Change::Level(level) => entry.level = *level,
                     Change::Mute(until) => entry.muted_until = until.clone(),
                 }
@@ -252,6 +261,7 @@ impl Notifications {
             Err(error) => {
                 if let Some(settings) = self.settings.as_mut() {
                     match previous {
+                        Previous::VoiceStarted(enabled) => settings.voice_started = enabled,
                         Previous::Level(level) => settings.level = level,
                         Previous::Override(entry) => {
                             set_entry(&mut settings.overrides, scope, entry);
@@ -271,6 +281,7 @@ impl Notifications {
         for scope in self.saving.keys() {
             if *scope == Scope::Account {
                 settings.level = current.level;
+                settings.voice_started = current.voice_started;
             } else {
                 let entry = current
                     .overrides
@@ -305,6 +316,16 @@ impl Notifications {
 
     pub fn account_level(&self) -> Option<NotificationLevel> {
         self.settings.as_ref().map(|settings| settings.level)
+    }
+
+    pub fn account_voice_started(&self) -> bool {
+        self.settings
+            .as_ref()
+            .is_none_or(|settings| settings.voice_started)
+    }
+
+    pub fn voice_started(&self, scope: &Scope) -> Option<bool> {
+        self.entry(scope)?.voice_started
     }
 
     fn entry(&self, scope: &Scope) -> Option<&NotificationOverride> {
@@ -365,8 +386,9 @@ fn set_entry(
     entry: Option<NotificationOverride>,
 ) {
     overrides.retain(|existing| Scope::of(existing).as_ref() != Some(scope));
-    if let Some(entry) = entry.filter(|entry| entry.level.is_some() || entry.muted_until.is_some())
-    {
+    if let Some(entry) = entry.filter(|entry| {
+        entry.level.is_some() || entry.muted_until.is_some() || entry.voice_started.is_some()
+    }) {
         overrides.push(entry);
     }
 }
@@ -401,6 +423,22 @@ mod tests {
         let revision = notifications.start_load().unwrap();
         notifications.finish_load(revision, Ok(settings()));
         notifications
+    }
+
+    #[test]
+    fn voice_defaults_overrides_and_failure_restore() {
+        let mut notifications = loaded();
+        assert!(notifications.account_voice_started());
+        let space = Scope::Space("voice-space".into());
+        assert_eq!(notifications.voice_started(&space), None);
+        assert!(notifications.begin(&space, &Change::VoiceStarted(Some(false))));
+        assert_eq!(notifications.voice_started(&space), Some(false));
+        notifications.finish_save(&space, Err("offline".into()));
+        assert_eq!(notifications.voice_started(&space), None);
+        assert!(notifications.begin(&Scope::Account, &Change::VoiceStarted(Some(false))));
+        assert!(!notifications.account_voice_started());
+        notifications.finish_save(&Scope::Account, Err("offline".into()));
+        assert!(notifications.account_voice_started());
     }
 
     fn channel() -> Scope {

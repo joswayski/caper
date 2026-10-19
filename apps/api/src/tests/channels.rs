@@ -273,6 +273,7 @@ async fn isolation_and_revocation(shared: bool) {
     } else {
         None
     };
+    voice_start_notifications(&state, &pool).await;
     assert_eq!(
         voice_activity(&state, Some("member-session")).await,
         (StatusCode::OK, json!({"spaceIds":[]}))
@@ -689,4 +690,130 @@ async fn memory_channels_isolate_rosters_tokens_tracks_and_revoke_access() {
 #[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL and TEST_VALKEY_URL"]
 async fn shared_channels_isolate_and_recover_cleanup_on_fresh_pod() {
     isolation_and_revocation(true).await;
+}
+
+/// Real join/leave routes, real Postgres and both media stores; provider mocked.
+async fn voice_start_notifications(state: &AppState, pool: &sqlx::PgPool) {
+    async fn count(pool: &sqlx::PgPool) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM notifications WHERE kind='voice.started'")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+    async fn enter(state: &AppState, channel: &str, account: &str) -> Value {
+        let (status, body) = request(state, channel, "join", Some(account), None, json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+    async fn exit(state: &AppState, channel: &str, account: &str, joined: &Value) {
+        let (status, body) = request(
+            state,
+            channel,
+            "leave",
+            Some(account),
+            joined["token"].as_str(),
+            json!({}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    }
+    async fn cool(pool: &sqlx::PgPool) {
+        pool.execute(
+            "UPDATE voice_notification_state SET notified_at=now()-interval '301 seconds'",
+        )
+        .await
+        .unwrap();
+    }
+    // Failed authorization cannot start voice or notify.
+    assert_eq!(
+        request(
+            state,
+            "ChannelAlpha",
+            "join",
+            Some("outside-session"),
+            None,
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(count(pool).await, 0);
+    // Concurrent first joins in distinct rooms generate only ONE event. Neither
+    // provisional insertion may suppress both events, even on separate stores.
+    let (a, b) = tokio::join!(
+        enter(state, "ChannelAlpha", "owner-session"),
+        enter(state, "ChannelBravo", "member-session")
+    );
+    assert_eq!(count(pool).await, 1);
+    let (recipient, actor): (i64, i64) =
+        sqlx::query_as("SELECT user_id,actor_id FROM notifications WHERE kind='voice.started'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_ne!(recipient, actor);
+    let events = crate::push::live::read(pool, recipient, 0, i64::MAX, None)
+        .await
+        .unwrap();
+    let event = events.into_iter().find_map(|(_, event)| event).unwrap();
+    assert_eq!(event["kind"], "voice.started");
+    assert!(event.get("notificationId").is_some());
+    assert!(event.get("messageId").is_none());
+    assert_eq!(event["spaceId"], "SpaceExample");
+    assert!(
+        event["body"]
+            .as_str()
+            .unwrap()
+            .contains("joined voice in #")
+    );
+    exit(state, "ChannelAlpha", "owner-session", &a).await;
+    // Even after the cooldown, another occupied channel suppresses the alert.
+    cool(pool).await;
+    let a = enter(state, "ChannelAlpha", "owner-session").await;
+    assert_eq!(count(pool).await, 1);
+    exit(state, "ChannelAlpha", "owner-session", &a).await;
+    exit(state, "ChannelBravo", "member-session", &b).await;
+    let a = enter(state, "ChannelAlpha", "owner-session").await;
+    assert_eq!(count(pool).await, 2);
+    exit(state, "ChannelAlpha", "owner-session", &a).await;
+    let b = enter(state, "ChannelBravo", "member-session").await;
+    assert_eq!(count(pool).await, 2, "empty-room rejoin inside cooldown");
+    exit(state, "ChannelBravo", "member-session", &b).await;
+    // Private activity never exposes a channel to a member without a grant.
+    pool.execute("UPDATE channels SET private=true WHERE external_id='ChannelAlpha'")
+        .await
+        .unwrap();
+    cool(pool).await;
+    let a = enter(state, "ChannelAlpha", "owner-session").await;
+    assert_eq!(count(pool).await, 2);
+    exit(state, "ChannelAlpha", "owner-session", &a).await;
+    pool.execute("INSERT INTO channel_members(channel_id,user_id) SELECT c.id,u.id FROM channels c CROSS JOIN users u WHERE c.external_id='ChannelAlpha' AND u.username='member'").await.unwrap();
+    cool(pool).await;
+    let a = enter(state, "ChannelAlpha", "owner-session").await;
+    assert_eq!(count(pool).await, 3);
+    // Expired leases do not keep a space occupied; the cooldown still applies.
+    let mut room = state.clone();
+    room.media_channel = Some("ChannelAlpha".into());
+    room.update(|r| {
+        for p in r.participants.values_mut() {
+            p.lease = Timestamp::now() - LEASE - Duration::from_secs(1);
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+    cool(pool).await;
+    let b = enter(state, "ChannelBravo", "member-session").await;
+    assert_eq!(count(pool).await, 4);
+    // Restore fixtures for the surrounding authorization/cleanup contract.
+    let id = Uuid::parse_str(a["id"].as_str().unwrap()).unwrap();
+    remove_participant(&room, id).await;
+    exit(state, "ChannelBravo", "member-session", &b).await;
+    for channel in ["ChannelAlpha", "ChannelBravo"] {
+        room.media_channel = Some(channel.into());
+        while room.read(|r| Ok(!r.cleanup.is_empty())).await.unwrap() {
+            retry_backlog(&room).await;
+        }
+    }
+    pool.execute("UPDATE channels SET private=false WHERE external_id='ChannelAlpha'; DELETE FROM channel_members").await.unwrap();
 }

@@ -97,6 +97,7 @@ test("notification routes send only the changed fields and read unknown levels a
 
   assert.deepEqual(await getNotificationSettings(), {
     level: "mentions",
+    voiceStarted: true,
     mobile: "whenInactive",
     overrides: [{ conversationId: "dm0000000001", level: null, mutedUntil: null }],
   });
@@ -115,6 +116,36 @@ test("notification routes send only the changed fields and read unknown levels a
     },
     { path: "/api/dms/dm0000000001/notifications", method: "PUT", body: { level: "nothing", mutedUntil: null } },
   ]);
+});
+
+test("voice preferences save independently and survive message preference changes", async () => {
+  const store = await freshStore();
+  const space = { spaceId: "space0000001" };
+  const saved = { ...space, level: null, mutedUntil: null, voiceStarted: false };
+  const calls: unknown[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+    if (!init?.method) return Response.json({ ...settings, overrides: [saved] });
+    const change = JSON.parse(String(init.body));
+    calls.push(change);
+    return Response.json({ ...saved, ...change });
+  });
+  await store.refreshNotificationSettings();
+  const read = () => store.overrideFor(store.useNotificationSettings(), space);
+  const changing = store.changeSpaceNotifications(space.spaceId, { mutedUntil: null });
+  assert.equal(read()?.voiceStarted, false);
+  await changing;
+  await store.changeSpaceNotifications(space.spaceId, { voiceStarted: true });
+  assert.equal(read()?.voiceStarted, true);
+  await store.changeSpaceNotifications(space.spaceId, { voiceStarted: null });
+  assert.equal(read(), undefined);
+  const put = deferred();
+  vi.mocked(fetch).mockImplementation(() => put.promise);
+  const changingAccount = store.setVoiceStarted(false);
+  assert.equal(store.useNotificationSettings().voiceStarted, false);
+  put.resolve(Response.json({ error: "not saved" }, { status: 500 }));
+  await assert.rejects(changingAccount, /not saved/);
+  assert.equal(store.useNotificationSettings().voiceStarted, true);
+  assert.deepEqual(calls, [{ mutedUntil: null }, { voiceStarted: true }, { voiceStarted: null }]);
 });
 
 test("notification route errors keep the server's message and IDs are checked before sending", async () => {

@@ -75,12 +75,14 @@ internal data class PushPayload(
             if (kind == PushRetraction.KIND) return null
             val invitation = kind == "space.invitation" || kind == "channel.invitation"
             val request = kind == "direct.request"
+            val voice = kind == "voice.started"
             val consent = invitation || request
-            val notificationId = if (consent) value("notificationId")?.takeIf { Regex("^[1-9][0-9]*$").matches(it) } ?: return null else null
-            val messageId = if (consent) "${if (invitation) "invitation" else "request"}:$notificationId" else value("messageId")?.takeIf(messageIdPattern::matches) ?: return null
+            val notificationId = if (consent || voice) value("notificationId")?.takeIf { Regex("^[1-9][0-9]*$").matches(it) } ?: return null else null
+            val messageId = if (voice) "voice:$notificationId" else if (consent) "${if (invitation) "invitation" else "request"}:$notificationId" else value("messageId")?.takeIf(messageIdPattern::matches) ?: return null
             val conversationId = value("conversationId")
             val spaceId = value("spaceId")
             val channelId = value("channelId")
+            if (voice && conversationId != null) return null
             if (invitation) {
                 if (conversationId != null || spaceId == null || !externalId.matches(spaceId)) return null
                 if (kind == "space.invitation" && channelId != null) return null
@@ -107,7 +109,7 @@ internal data class PushPayload(
                 senderAvatarId = caperAvatarIndex(value("senderAvatarId")?.toIntOrNull()),
                 conversationTitle = conversationTitle,
                 attachment = if (consent) null else PushAttachment.parse(data),
-                threadRootId = if (consent) null else value("threadRootId")?.takeIf(messageIdPattern::matches),
+                threadRootId = if (consent || voice) null else value("threadRootId")?.takeIf(messageIdPattern::matches),
             )
         }
 

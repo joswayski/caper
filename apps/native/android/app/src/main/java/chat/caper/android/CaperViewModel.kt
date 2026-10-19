@@ -1125,6 +1125,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         return@editNotifications { it.copy(mobile = saved) }
     }
 
+    fun setVoiceStartedNotifications(enabled: Boolean) = editNotifications(VOICE_KEY, { it.copy(voiceStarted = enabled) }) { token ->
+        val saved = api.updateNotificationSettings(token, voiceStarted = enabled).voiceStarted
+        return@editNotifications { it.copy(voiceStarted = saved) }
+    }
+
     fun setSpaceNotifications(spaceId: String, change: OverrideChange) =
         editOverride(NotificationOverride(spaceId = spaceId), change) { api.setSpaceNotifications(it, spaceId, change) }
 

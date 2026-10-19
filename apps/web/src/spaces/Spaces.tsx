@@ -3302,6 +3302,8 @@ export default function Spaces({
                 <LevelNotificationItems
                   noun="space"
                   loaded={notifications.loaded}
+                  voiceStarted={spaceNotifications?.voiceStarted ?? null}
+                  inheritedVoiceStarted={notifications.voiceStarted}
                   level={spaceNotifications?.level ?? null}
                   inherited={inheritedLevel(notifications, { spaceId: detail.space.id })}
                   mutedUntil={spaceNotifications?.mutedUntil ?? null}

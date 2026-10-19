@@ -106,6 +106,13 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
         NotificationMenuPage.Main -> {
             before()
             val enabled = inherited != null && !saving
+            if (noun == "space") {
+                listOf(null to "Default (account)", true to "On", false to "Off").forEach { (value, label) ->
+                    DropdownMenuItem(text = { Text("When voice starts: $label", fontSize = fontSize) },
+                        onClick = { choose(OverrideChange.VoiceStarted(value)) }, enabled = enabled,
+                        leadingIcon = { RadioButton(override?.voiceStarted == value, null) })
+                }
+            }
             DropdownMenuItem(
                 text = { MenuLabel("Notifications", inherited?.let { override?.level?.let(::overrideLevelLabel) ?: defaultLevelLabel(it) }, fontSize) },
                 onClick = { showPage(NotificationMenuPage.Level) }, enabled = enabled,
@@ -231,6 +238,12 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
     Text("Notifications", Modifier.semantics { heading() }, fontWeight = FontWeight.Bold, fontSize = 14.sp)
     SettingChoices("Notify me about", accountLevelOptions, settings?.level, settings != null && ACCOUNT_LEVEL_KEY !in state.notificationSaving, viewModel::setNotificationLevel)
     NotificationSaveError(state.notificationErrors[ACCOUNT_LEVEL_KEY]) { viewModel.dismissNotificationError(ACCOUNT_LEVEL_KEY) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(settings?.voiceStarted ?: true, viewModel::setVoiceStartedNotifications,
+            enabled = settings != null && VOICE_KEY !in state.notificationSaving)
+        Text("When voice starts in a space", fontSize = 13.sp)
+    }
+    NotificationSaveError(state.notificationErrors[VOICE_KEY]) { viewModel.dismissNotificationError(VOICE_KEY) }
     if (settings == null) {
         val error = state.notificationSettingsError
         Text(error ?: "Loading…", color = if (error != null) ErrorText else TextMuted, fontSize = 12.sp)

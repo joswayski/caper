@@ -10,6 +10,8 @@ Space/private-channel invitation alerts are implemented (October 11); see
 [the invitation contract and rollout](#invitation-alerts-october-11-2026).
 New DM requests also alert once at creation; see
 [the message-request contract](#new-message-request-alerts-october-11-2026).
+Voice-start alerts notify space members when an empty space becomes active; see
+[the voice-start contract](#voice-start-alerts-october-19-2026).
 Space/channel unread dots are implemented (October 11) on all clients; see
 [the unread contract and rollout](media.md#space-and-channel-unread-indicators-october-11-2026).
 These dots are independent of notification levels, OS permission and mutes;
@@ -63,6 +65,47 @@ Linux shells not implementing Unity's protocol have only the title fallback.
   permissions come later.
 - **Cleanup.** Drop the unused SNS-era `push_*` tables in the first push
   migration.
+
+## Voice-start alerts (October 19, 2026)
+
+`voice.started` means the first successful non-monitor voice join while **every
+channel in the space** has no live, completed voice participant. It is not the
+account's first-ever join. Joining another channel while any channel is occupied
+does not alert, even if that other channel is private. Reservations, failed joins,
+monitor sessions and expired leases do not count.
+
+- A durable, space-wide five-minute cooldown starts with a qualifying activation,
+  including one with no eligible recipients. Leaving/rejoining or switching
+  channels cannot reset it. Suppressed starts do not schedule a later alert.
+- Notify other active space members, even those who have not joined the channel
+  for messages. Private channels require the recipient's grant (or ownership).
+  Blocks in either direction, deleted accounts/channels/spaces and demo spaces
+  exclude delivery. The joining account never notifies itself.
+- Account `voiceStarted` defaults to `true`; a space override is `true`, `false`
+  or `null` (inherit). Account/space PUT endpoints accept only the changed field.
+  Channel/DM endpoints do not accept voice overrides. Existing pauses, mutes,
+  account `nothing` and effective conversation `nothing` still suppress alerts.
+  `mentions` governs messages and does not disable a separately enabled voice alert.
+- Live feed and phone workers recheck access and preferences. Unsent/replayed
+  events expire after five minutes; APNs/FCM retain an accepted push for at most
+  another five minutes. Existing mobile active-elsewhere suppression applies.
+- Payloads contain `notificationId`, `spaceId`, `channelId`, sender and
+  “Name joined voice in #channel.” There is no fake chat message, message ID or
+  unread increment. Clicking opens the channel without connecting the microphone.
+
+Successful joins lock `voice_notification_state` per space in Postgres before
+checking occupancy in the media store and marking the new participant ready.
+This serializes simultaneous starts across channels and API processes using the
+shared store. Fanout and cooldown commit together, with sorted recipient locks
+preserving notification-feed cursors. Old serialized participants default to
+ready during upgrades. A database/media-store error can lose an alert; notification
+failure is logged without deliberately tearing down a working voice connection.
+This is not a distributed transaction with the SFU or guaranteed exactly-once
+delivery through a process crash.
+
+Web, Android, shared Apple iOS/macOS and Rust desktop expose the account toggle
+and per-space Default/On/Off choice. Validation and rollout boundaries are in
+[the media runbook](media.md#voice-start-notifications-october-19-2026).
 
 ## Phase 1 as built
 

@@ -370,6 +370,21 @@ impl Api {
         )
     }
 
+    /// Sets the account's voice-start notification choice.
+    pub fn save_voice_started(
+        &self,
+        token: &str,
+        enabled: bool,
+    ) -> Result<NotificationSettings, ApiError> {
+        self.request(
+            Method::PUT,
+            "api/notifications/settings",
+            Some(token),
+            None,
+            Some(json!({"voiceStarted": enabled})),
+        )
+    }
+
     /// `PUT` one field of a space, channel or DM override; `None` resets it.
     pub fn save_notification_override(
         &self,
@@ -386,6 +401,7 @@ impl Api {
             Scope::Direct(id) => format!("api/dms/{id}/notifications"),
         };
         let body = match change {
+            Change::VoiceStarted(enabled) => json!({"voiceStarted": enabled}),
             Change::Level(level) => json!({"level": level.map(NotificationLevel::as_str)}),
             Change::Mute(until) => json!({"mutedUntil": until}),
         };

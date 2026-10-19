@@ -130,7 +130,8 @@ internal object CaperNotifications {
         if (payload.conversationId != null) open.putExtra(EXTRA_CONVERSATION_ID, payload.conversationId)
         else open.putExtra(EXTRA_SPACE_ID, payload.spaceId).putExtra(EXTRA_CHANNEL_ID, payload.channelId)
         // A `feedback` tap opens the visit view at the message and its thread (the latest message wins).
-        open.putExtra(EXTRA_KIND, payload.kind).putExtra(EXTRA_MESSAGE_ID, payload.messageId)
+        open.putExtra(EXTRA_KIND, payload.kind)
+        if (payload.kind != "voice.started") open.putExtra(EXTRA_MESSAGE_ID, payload.messageId)
         payload.threadRootId?.let { open.putExtra(EXTRA_THREAD_ROOT_ID, it) }
         val pending = PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val dismiss = PendingIntent.getBroadcast(context, 0,

@@ -59,6 +59,12 @@ impl Alert {
     /// their lists (`known` false), visited in the reply's thread if it was
     /// one; then the conversation as before.
     pub fn route(&self, feedback_team: bool, known: bool) -> Option<Route> {
+        if self.kind.as_deref() == Some("voice.started") {
+            return Some(Route::Channel {
+                space: self.space_id.clone()?,
+                channel: self.channel_id.clone()?,
+            });
+        }
         let visit = |thread: Option<String>| {
             let message = self.message_id.clone()?;
             Some(Route::Visit(crate::feedback::VisitTarget {
@@ -605,6 +611,21 @@ mod tests {
             event[key] = value.clone();
         }
         serde_json::from_value(event).unwrap()
+    }
+
+    #[test]
+    fn voice_without_message_routes_to_channel_even_for_feedback_team() {
+        let voice = alert(
+            json!({"kind": "voice.started", "notificationId": "94", "messageId": null,
+            "spaceId": "space0000001", "channelId": "chan00000001"}),
+        );
+        assert_eq!(
+            voice.route(true, false),
+            Some(Route::Channel {
+                space: "space0000001".into(),
+                channel: "chan00000001".into(),
+            })
+        );
     }
 
     #[test]

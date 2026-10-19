@@ -2271,6 +2271,9 @@ fn execute_account(api: &Api, token: &str, operation: AccountOperation) -> Accou
         },
         AccountOperation::SaveNotifications { scope, change } => {
             let result = match (&scope, &change) {
+                (Scope::Account, Change::VoiceStarted(Some(enabled))) => {
+                    api.save_voice_started(token, *enabled).map(Saved::Settings)
+                }
                 (Scope::Account, Change::Level(Some(level))) => api
                     .save_notification_level(token, *level)
                     .map(Saved::Settings),
