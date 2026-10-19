@@ -115,7 +115,8 @@ function ViewerItem({
   const lastTap = useRef<{ time: number; point: Point }>(undefined);
   const image = attachment.kind === "image";
   const animated = !image && !!attachment.animated;
-  const Image = attachment.contentType === "image/gif" ? GifImage : "img";
+  // Profile originals have no MIME metadata; they may also need a reduced-motion still.
+  const Image = ["image/gif", "image/*"].includes(attachment.contentType) ? GifImage : "img";
 
   useEffect(() => {
     const motion = window.matchMedia("(prefers-reduced-motion: reduce)");

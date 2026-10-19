@@ -5677,6 +5677,10 @@ private struct MentionCardView: View {
     @State private var invited: [String: String] = [:]
     @State private var blockRequested = false
     @State private var editingProfile = false
+    @State private var pictureViewer: MediaViewerRequest?
+    @State private var copyingPicture = false
+    @State private var pictureCopyError = false
+    @Environment(\.openURL) private var openURL
     /// A staged file open in the attachment editor.
     @State private var editingFile: AttachmentEditRequest?
     /// A staged file the editor can open, in the preview with its tools.
@@ -5715,17 +5719,68 @@ private struct MentionCardView: View {
             // Only the popover can present over itself: the editor and the
             // preview replace the card inside it, which grows to fit, while the
             // card stays underneath so its pickers and composer state carry on.
-            let covered = editingFile != nil || previewingFile != nil
+            let covered = editingFile != nil || previewingFile != nil || pictureViewer != nil
             ZStack {
                 profileCard
                     .opacity(covered ? 0 : 1)
                     .disabled(covered)
                     .accessibilityHidden(covered)
                 presentedFile
+                if let pictureViewer {
+                    MediaViewer(request: pictureViewer) { self.pictureViewer = nil }
+                        .frame(width: 720, height: 600)
+                        .id(pictureViewer.id)
+                }
             }
             #else
             profileCard
+                .sheet(item: $pictureViewer) { shown in
+                    MediaViewer(request: shown) { pictureViewer = nil }
+                        .presentationDetents([.large])
+                        .presentationBackground(.black).preferredColorScheme(.dark)
+                }
             #endif
+        }
+    }
+
+    private func openPicture(_ picture: CaperPicture) {
+        // avatarUrl is already the signed original. Do not derive a thumbnail
+        // URL or mark GIFs as looping videos; the viewer decodes their frames
+        // and honors Reduce Motion itself.
+        let type = UTType(filenameExtension: picture.url.pathExtension)
+        let item = ChatAttachment(id: picture.asset, kind: .image,
+            contentType: type?.preferredMIMEType ?? "image/*",
+            name: "\(person.title)’s profile picture", size: 0, url: picture.url.absoluteString)
+        pictureViewer = MediaViewerRequest(items: [item], start: 0, chat: nil, hideSpoiler: { _ in })
+    }
+
+    @ViewBuilder private var profilePicture: some View {
+        let avatar = Avatar(name: person.avatarName, size: 48, avatarID: person.avatarId, picture: person.picture)
+        if let picture = person.picture {
+            Button { openPicture(picture) } label: { avatar }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open \(person.title)’s profile picture")
+                .accessibilityIdentifier("mention-card-picture")
+                .contextMenu {
+                    Button("Open full-size picture") { openPicture(picture) }
+                    Button("Copy image") {
+                        copyingPicture = true
+                        Task {
+                            do {
+                                let copied = try await copyMediaImage(picture.url)
+                                pictureCopyError = !copied
+                            }
+                            catch { pictureCopyError = true }
+                            copyingPicture = false
+                        }
+                    }.disabled(copyingPicture)
+                    Button("Open in browser") { openURL(picture.url) }
+                }
+                .alert("Couldn’t copy image. Try opening it and saving it instead.", isPresented: $pictureCopyError) {
+                    Button("OK", role: .cancel) {}
+                }
+        } else {
+            avatar.accessibilityHidden(true)
         }
     }
 
@@ -5754,7 +5809,7 @@ private struct MentionCardView: View {
             VStack(alignment: .leading, spacing: 12) {
                 // Identity, then Open conversation and Close at the end, as on web.
                 HStack(alignment: .center, spacing: 12) {
-                    Avatar(name: person.avatarName, size: 48, avatarID: person.avatarId, picture: person.picture).accessibilityHidden(true)
+                    profilePicture
                     VStack(alignment: .leading, spacing: 2) {
                         Text(person.title).font(CaperTheme.font(15, weight: .semibold)).foregroundStyle(CaperTheme.text).lineLimit(1)
                             .accessibilityIdentifier("mention-card-title")

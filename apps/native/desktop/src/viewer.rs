@@ -210,6 +210,40 @@ pub struct Viewer {
 }
 
 impl Viewer {
+    /// Profile pictures use stable asset keys, not message attachment IDs.
+    pub fn profile_picture(source: crate::pictures::Source<'_>, name: &str) -> Option<Attachment> {
+        Some(Attachment {
+            id: format!("profile-picture:{}", source.asset),
+            name: format!("{name} profile picture"),
+            kind: AttachmentKind::Image,
+            content_type: "image/webp".into(),
+            url: Some(source.url?.to_owned()),
+            preview_url: None,
+            size: 0,
+            width: None,
+            height: None,
+            duration_ms: None,
+            preview: false,
+            unavailable: false,
+            status: AttachmentStatus::Ready,
+            animated: false,
+            spoiler: false,
+        })
+    }
+
+    pub fn picture_menu(&mut self, ui: &mut egui::Ui, current: &Attachment, media: &mut Media) {
+        if crate::message_menu_item(ui, NavIcon::Copy, "Copy image", self.copying.is_none())
+            .clicked()
+        {
+            self.copy(current, media, ui.ctx(), true);
+            ui.close();
+        }
+        if crate::message_menu_item(ui, NavIcon::ExternalLink, "Open in browser", true).clicked() {
+            open_browser(ui.ctx(), current, media, chrono::Utc::now().timestamp());
+            ui.close();
+        }
+    }
+
     pub fn open(items: Vec<Attachment>, index: usize) -> Self {
         let (sender, receiver) = mpsc::channel();
         Self {
@@ -585,7 +619,7 @@ impl Viewer {
         }
         let more = action(ui, NavIcon::More, "More media actions");
         if action(ui, NavIcon::ExternalLink, "Open in browser").clicked() {
-            media.open(ui.ctx(), current, unix_now);
+            open_browser(ui.ctx(), current, media, unix_now);
         }
         let saving = self.saving.is_some();
         if action(
@@ -826,15 +860,20 @@ impl Viewer {
         let painter = ui.painter_at(stage);
         let (texture, natural, loading) = match self.full.get(&current.id) {
             Some(Full::Ready(picture)) => {
-                if let Some(next) = picture.next_frame() {
+                if let Some(next) = picture.next_frame().filter(|_| !crate::motion::reduced()) {
                     ui.ctx().request_repaint_after(next);
                 }
-                (Some(picture.texture().id()), picture.size, false)
+                let texture = if crate::motion::reduced() {
+                    &picture.frames[0].0
+                } else {
+                    picture.texture()
+                };
+                (Some(texture.id()), picture.size, false)
             }
             other => {
                 // The inline preview stands in until the original arrives.
                 let failed = matches!(other, Some(Full::Failed { .. }));
-                if failed {
+                if failed && !current.id.starts_with("profile-picture:") {
                     media.refresh_now(&current.id);
                 }
                 let preview = match media.image(&current.id, current.preview_url.as_deref()) {
@@ -885,6 +924,7 @@ impl Viewer {
                 format!("Image {}", current.name),
             )
         });
+        response.context_menu(|ui| self.picture_menu(ui, current, media));
         response.hovered() || response.dragged()
     }
 
@@ -1105,8 +1145,20 @@ impl Viewer {
     }
 }
 
-/// Where the media sits on `screen`: below the top bar, between the arrows,
-/// above a video's control bar.
+/// Open picture URLs directly; attachment URLs retain their refresh contract.
+fn open_browser(context: &egui::Context, current: &Attachment, media: &mut Media, now: i64) {
+    if current.id.starts_with("profile-picture:") {
+        // Picture URLs are supplied by account/profile refreshes, not the
+        // message-attachment URL endpoint.
+        if let Some(url) = &current.url {
+            context.open_url(egui::OpenUrl::new_tab(url));
+        }
+    } else {
+        media.open(context, current, now);
+    }
+}
+
+/// Where media sits: below the top bar and above video controls.
 fn stage_rect(screen: egui::Rect, video: bool) -> egui::Rect {
     let bottom = if video { CONTROLS } else { 16.0 };
     egui::Rect::from_min_max(
@@ -1467,6 +1519,11 @@ pub(crate) fn decode_original(bytes: &[u8], content_type: &str) -> Option<image:
 /// Formats the `image` codecs cannot read (AVIF, HEIC) go through FFmpeg.
 fn decode_full(bytes: &[u8], content_type: &str) -> Option<Vec<(egui::ColorImage, Duration)>> {
     use image::AnimationDecoder;
+    let content_type = match image::guess_format(bytes).ok() {
+        Some(image::ImageFormat::Gif) => "image/gif",
+        Some(image::ImageFormat::WebP) => "image/webp",
+        _ => content_type,
+    };
     let cursor = || std::io::Cursor::new(bytes);
     let frames = match content_type {
         "image/gif" => image::codecs::gif::GifDecoder::new(cursor())
@@ -1593,6 +1650,30 @@ mod tests {
             status: AttachmentStatus::Ready,
             animated: false,
         }
+    }
+
+    #[test]
+    fn profile_pictures_open_only_with_an_original_url() {
+        let source = crate::pictures::Source {
+            asset: "avatars/person/asset",
+            url: Some("https://cdn.test/picture?exp=123&sig=s"),
+        };
+        let item = Viewer::profile_picture(source, "Person").unwrap();
+        assert!(viewable(&item));
+        assert_eq!(item.url.as_deref(), source.url);
+        assert!(item.preview_url.is_none());
+        let viewer = Viewer::open(vec![item], 0);
+        assert_eq!((viewer.index(), viewer.len()), (0, 1));
+        assert!(
+            Viewer::profile_picture(
+                crate::pictures::Source {
+                    url: None,
+                    ..source
+                },
+                "Person"
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -1796,6 +1877,8 @@ mod tests {
         }
         let frames = decode_full(&bytes, "image/gif").unwrap();
         assert_eq!(frames.len(), 2);
+        // Profile metadata has no MIME type: sniff the original, not its URL.
+        assert_eq!(decode_full(&bytes, "image/webp").unwrap().len(), 2);
         assert_eq!(frames[0].0.size, [4, 2]);
         assert_eq!(frames[1].1, Duration::from_millis(150));
         let copied = decode_original(&bytes, "image/gif").unwrap();

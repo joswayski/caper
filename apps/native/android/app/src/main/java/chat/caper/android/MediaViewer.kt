@@ -1,7 +1,10 @@
 package chat.caper.android
 
 import android.app.DownloadManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
 import android.os.Build
 import android.os.Environment
 import androidx.annotation.OptIn
@@ -64,6 +67,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.net.toUri
+import androidx.core.content.FileProvider
+import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
@@ -80,6 +85,9 @@ import chat.caper.android.model.AttachmentState
 import chat.caper.android.model.ChatAttachment
 import chat.caper.android.ui.*
 import coil3.compose.AsyncImage
+import coil3.asDrawable
+import coil3.request.SuccessResult
+import coil3.request.allowHardware
 import coil3.gif.AnimatedImageDecoder
 import coil3.gif.GifDecoder
 import coil3.size.Size
@@ -87,6 +95,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CancellationException
+import java.io.File
+import java.util.UUID
 
 /** Opens in the media viewer: a ready image or video with a URL. Other files keep their cards. */
 internal fun ChatAttachment.viewable(): Boolean =
@@ -190,6 +203,8 @@ private const val DOUBLE_TAP_ZOOM = 2f
     pages: ViewerPages, attachments: List<ChatAttachment>, caption: String?, close: () -> Unit,
     open: (String) -> Unit, onLoadFailed: (ChatAttachment, Int?) -> Unit,
     hideSpoiler: (String) -> Unit,
+    profilePicture: Boolean = false,
+    showActionsInitially: Boolean = false,
 ) {
     val ids = pages.ids
     val names = remember { attachments.associate { it.id to it.name } }
@@ -245,13 +260,23 @@ private const val DOUBLE_TAP_ZOOM = 2f
                     Text(it, Modifier.padding(horizontal = 8.dp).semantics { contentDescription = "File ${page + 1} of ${ids.size}"; liveRegion = LiveRegionMode.Polite },
                         color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
-                var actionsOpen by remember(current?.id, url) { mutableStateOf(false) }
+                var actionsOpen by remember(current?.id, url) { mutableStateOf(showActionsInitially) }
                 Box {
                     IconButton({ actionsOpen = true }, Modifier.semantics { contentDescription = "More media actions" }, enabled = url != null) {
                         Icon(painterResource(R.drawable.lucide_ellipsis), null, Modifier.size(20.dp), tint = if (url != null) Text else TextMuted.copy(alpha = 0.4f))
                     }
                     DropdownMenu(actionsOpen, { actionsOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small) {
-                        DropdownMenuItem(
+                        if (profilePicture) DropdownMenuItem(
+                            text = { Text("Copy image", color = Text) },
+                            onClick = {
+                                actionsOpen = false
+                                if (current != null) scope.launch {
+                                    notice = "Copying image…"
+                                    notice = if (copyViewerImage(context, current)) "Image copied." else "Couldn’t copy the image."
+                                }
+                            },
+                        )
+                        if (!profilePicture) DropdownMenuItem(
                             text = { Text("Download", color = Text) },
                             leadingIcon = { Icon(painterResource(R.drawable.lucide_download), null, tint = Text) },
                             onClick = {
@@ -290,7 +315,7 @@ private const val DOUBLE_TAP_ZOOM = 2f
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         when {
                             attachment == null -> Text("File removed", color = TextMuted, fontSize = 14.sp)
-                            attachment.kind == "image" -> ViewerImage(attachment, active, onLoadFailed)
+                            attachment.kind == "image" -> ViewerImage(attachment, active, onLoadFailed, respectReducedMotion = profilePicture)
                             else -> ViewerVideo(attachment, active, onLoadFailed)
                         }
                     }
@@ -377,16 +402,18 @@ private class ViewerDismiss(private val scope: CoroutineScope) {
  * (Coil caps decoded bitmaps at 4096 px a side). GIFs and animated WebP play. An original this
  * device cannot decode stays on the preview.
  */
-@Composable private fun ViewerImage(attachment: ChatAttachment, active: Boolean, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
+@Composable private fun ViewerImage(attachment: ChatAttachment, active: Boolean, onLoadFailed: (ChatAttachment, Int?) -> Unit, respectReducedMotion: Boolean = false) {
     val url = attachment.url ?: return
     val context = LocalContext.current
     val preview = attachment.previewUrl
     var loaded by remember(url) { mutableStateOf<IntSize?>(null) }
     var failed by remember(url) { mutableStateOf(false) }
-    val request = remember(url, attachment.id) {
+    val animate = !respectReducedMotion || !reducedMotion()
+    val request = remember(url, attachment.id, animate) {
         AttachmentImages.request(context, url, "${attachment.id}:original").newBuilder()
             .size(Size.ORIGINAL)
-            .decoderFactory(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AnimatedImageDecoder.Factory() else GifDecoder.Factory())
+            .apply { if (respectReducedMotion) memoryCacheKey("${attachment.id}:original:$animate") }
+            .apply { if (animate) decoderFactory(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AnimatedImageDecoder.Factory() else GifDecoder.Factory()) }
             .build()
     }
     val known = attachment.width?.let { width -> attachment.height?.let { IntSize(width, it) } }
@@ -567,6 +594,29 @@ internal class AttachmentPlayback(val player: ExoPlayer) {
     )
     if (!playback.rendered) attachment.previewUrl?.let { AttachmentImage(attachment, it, "display", Modifier.fillMaxSize(), ContentScale.Fit, onLoadFailed) }
     if (playback.failed) Text("This file could not be played.", color = ErrorText, fontSize = 12.sp)
+}
+
+/** Copy actual image pixels (a still PNG), never a signed URL masquerading as an image. */
+private suspend fun copyViewerImage(context: Context, attachment: ChatAttachment): Boolean = try {
+    val uri = withContext(Dispatchers.IO) {
+        val request = AttachmentImages.request(context, attachment.url, "${attachment.id}:clipboard").newBuilder()
+            .size(2048).allowHardware(false).build()
+        val result = AttachmentImages.loader(context).execute(request) as? SuccessResult
+            ?: return@withContext null
+        val directory = File(context.cacheDir, "profile-media").apply { mkdirs() }
+        directory.listFiles()?.filter { it.lastModified() < System.currentTimeMillis() - 86_400_000L }?.forEach { it.delete() }
+        val file = File(directory, "${UUID.randomUUID()}.png")
+        file.outputStream().use { check(result.image.asDrawable(context.resources).toBitmap().compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        FileProvider.getUriForFile(context, "${context.packageName}.notification-media", file)
+    }
+    if (uri == null) false else {
+        context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newUri(context.contentResolver, "Profile picture", uri))
+        true
+    }
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (_: Exception) {
+    false
 }
 
 /**

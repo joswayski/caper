@@ -9184,6 +9184,35 @@ existing own-profile refresh path.
 - Docker daemon unavailable; the web image's build stage was validated directly
   with `npm run check`, not an image build. No API or storage schema changes.
 
+### Profile-picture viewing (October 19, 2026)
+
+Click a custom picture inside a person's profile card to open the original in
+the media viewer. Chat avatars still open the profile first. Web images keep the
+browser's native right-click Copy image/Open image actions; native profile cards
+offer equivalent context-menu or long-press actions. Closing the viewer preserves
+the profile composer. Reduced motion keeps animated originals still. Mascot-only
+profiles do not offer a custom-picture viewer.
+
+Validation for this change:
+
+- Web: `npm run check` and all 696 Vitest tests pass. Run
+  `PICTURE_VIEWER_ONLY=1 node scripts/test-pictures.mjs <loopback-web-url>` with
+  Playwright/Chromium configured as documented in that script. Desktop, 390px
+  touch emulation and reduced-motion fixtures pass: original proportions,
+  native context-menu hit target, PNG clipboard data, external tab, keyboard,
+  Back/close and draft preservation. Screenshots and interaction recording
+  inspected. These use mocked accounts/CDN, not live accounts or Safari.
+- The full picture script still times out at its live-profile-refresh assertion
+  (line 981), also reproduced against the unchanged checkout.
+- Android: `compileDebugKotlin`, `testDebugUnitTest` (498 tests) and `lintDebug`
+  pass. Clipboard interoperability and rendered/device interactions remain unverified.
+- Rust desktop: formatting, application Clippy (`--no-deps`) and 650 tests pass
+  with `--no-default-features`; 16 tests remain ignored. Clippy including vendored
+  WebRTC fails on existing missing safety documentation. Native rendering,
+  clipboard and browser-launch integration remain unverified for this change.
+- Apple implementation is not compiled or device-verified: no Xcode in this orb.
+  Docker daemon unavailable; web build stages checked directly, not as an image.
+
 ### Validation (October 14, 2026)
 
 | Platform | Validation boundary |

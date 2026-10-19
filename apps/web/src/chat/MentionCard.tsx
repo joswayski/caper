@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Ellipsis, MessageCircle, X } from "lucide-react";
 import {
   autoUpdate,
@@ -26,7 +26,9 @@ import { unblock, useBlockedIds } from "../spaces/blocks.ts";
 import { getRememberedAccount, subscribeAccount, withLatestProfile } from "../account/client.ts";
 import { getProfiles, getServerProfiles, subscribeProfiles } from "../account/profiles.ts";
 import { canEditProfile, editProfile } from "../account/profile-editor.ts";
+import { pictureUrl } from "../account/pictures.ts";
 import ProfileComposer from "./ProfileComposer.tsx";
+import MediaViewer from "./MediaViewer.tsx";
 
 export interface MentionCardTarget {
   person: MentionCardPerson;
@@ -75,6 +77,9 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
   const [invited, setInvited] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [status, setStatus] = useState<string>();
   const [composerState, setComposerState] = useState({ picking: false, sending: false });
+  const [pictureAnchor, setPictureAnchor] = useState<HTMLElement>();
+  const closePicture = useCallback(() => setPictureAnchor(undefined), []);
+  const original = person.avatarAsset && pictureUrl(person.avatarUrl);
   const canMessage = !person.self && !blocked && !!onMessage && !!person.username;
   const canInvite = !person.self && !blocked && !!person.username && spaces.length > 0;
   const canBlock = !!onBlock && (blocked || (!person.admin && !person.team));
@@ -85,7 +90,7 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
     nodeId,
     open: true,
     onOpenChange: (open) => {
-      if (!open && !composerState.sending && !pending) onClose();
+      if (!open && !pictureAnchor && !composerState.sending && !pending) onClose();
     },
     placement: "bottom-start",
     strategy: "fixed",
@@ -93,12 +98,18 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
     whileElementsMounted: autoUpdate,
   });
   const { getFloatingProps } = useInteractions([
-    useDismiss(context, { outsidePress: !composerState.picking && !composerState.sending && !pending }),
+    useDismiss(context, {
+      enabled: !pictureAnchor,
+      outsidePress: !composerState.picking && !composerState.sending && !pending,
+    }),
     useRole(context),
   ]);
   useEffect(() => {
     refs.setReference(anchor);
   }, [anchor, refs.setReference]);
+  useEffect(() => {
+    if (!original) closePicture();
+  }, [original, closePicture]);
   const title = person.displayName ?? (person.username ? `@${person.username}` : "Profile");
 
   const message = async () => {
@@ -150,6 +161,7 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
   const panel = (
     <FloatingFocusManager
       context={context}
+      disabled={!!pictureAnchor}
       returnFocus={returnFocus}
       initialFocus={target.focusOnOpen === false ? -1 : canMessage && !drawer ? composerInput : 0}
       closeOnFocusOut={false}
@@ -163,9 +175,21 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
       >
         {drawer && <div className="chat-drawer-handle" aria-hidden="true" />}
         <div className="chat-mention-card-identity">
-          <i className="chat-mention-card-avatar">
-            <Avatar person={person} name={person.displayName ?? person.username ?? title} />
-          </i>
+          {original ? (
+            <button
+              type="button"
+              className="chat-mention-card-avatar"
+              aria-label={`Open ${title}’s profile picture`}
+              title="View profile picture"
+              onClick={(event) => setPictureAnchor(event.currentTarget)}
+            >
+              <Avatar person={person} name={title} />
+            </button>
+          ) : (
+            <i className="chat-mention-card-avatar">
+              <Avatar person={person} name={title} />
+            </i>
+          )}
           <div>
             <strong>{title}</strong>
             {person.displayName && person.username && <span>@{person.username}</span>}
@@ -289,6 +313,24 @@ function MentionCardPanel({ target, onClose, onMessage, onBlock, spaces = [] }: 
           panel
         )}
       </FloatingPortal>
+      {pictureAnchor && original && person.avatarAsset && (
+        <MediaViewer
+          key={person.avatarAsset}
+          attachments={[
+            {
+              id: person.avatarAsset,
+              kind: "image",
+              contentType: "image/*",
+              name: `${title}’s profile picture`,
+              size: 0,
+              url: original,
+            },
+          ]}
+          attachmentId={person.avatarAsset}
+          anchor={pictureAnchor}
+          onClose={closePicture}
+        />
+      )}
     </FloatingNode>
   );
 }
