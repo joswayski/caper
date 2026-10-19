@@ -1264,6 +1264,8 @@ struct CaperApp {
     /// The call's full list (design H's 1b), open beside the call card.
     call_list: Option<CallList>,
     sidebar_width: f32,
+    /// Proportion of the sidebar's scrollable area reserved for channels.
+    sidebar_channels_fraction: f32,
     members_width: f32,
     /// A dialog opened from the User Settings menu is showing.
     settings_menu_dialog: bool,
@@ -1588,6 +1590,7 @@ impl CaperApp {
             call_order: Vec::new(),
             call_list: None,
             sidebar_width: 280.0,
+            sidebar_channels_fraction: 0.5,
             members_width: 220.0,
             settings_menu_dialog: false,
             focus_user_settings: false,
@@ -9032,6 +9035,13 @@ impl CaperApp {
         {
             self.sidebar_width = width;
         }
+        if let Some(fraction) = storage
+            .get_string("sidebar-channels-fraction-v1")
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|fraction| fraction.is_finite() && *fraction > 0.0 && *fraction < 1.0)
+        {
+            self.sidebar_channels_fraction = fraction;
+        }
         if let Some(width) = storage
             .get_string("members-width-v1")
             .and_then(|value| value.parse::<f32>().ok())
@@ -9094,6 +9104,10 @@ impl eframe::App for CaperApp {
         }
         if self.persist_preferences {
             storage.set_string("sidebar-width-v1", self.sidebar_width.to_string());
+            storage.set_string(
+                "sidebar-channels-fraction-v1",
+                self.sidebar_channels_fraction.to_string(),
+            );
             storage.set_string("members-width-v1", self.members_width.to_string());
             storage.set_string("sound-effects-v1", self.sound_effects.to_string());
             self.whats_new.save(storage);
@@ -11273,9 +11287,28 @@ impl CaperApp {
                     header.response.rect.bottom(),
                     Stroke::new(1.0, BORDER),
                 );
-                egui::ScrollArea::vertical()
-                    .id_salt("sidebar-scroll")
-                    .show(ui, |ui| {
+                let divider_height = if self.account.is_some() { 12.0 } else { 0.0 };
+                let pane_height = (ui.available_height() - divider_height).max(0.0);
+                // Keep both independently scrollable lists useful, even in a
+                // compact window. On normal windows this is a 50/50 split.
+                let minimum_pane = if pane_height >= 240.0 {
+                    96.0
+                } else {
+                    pane_height * 0.25
+                };
+                let channels_height = (pane_height * if self.account.is_some() { self.sidebar_channels_fraction } else { 1.0 }).clamp(
+                    minimum_pane,
+                    if self.account.is_some() { (pane_height - minimum_pane).max(minimum_pane) } else { pane_height },
+                );
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), channels_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("sidebar-channels-scroll")
+                            .auto_shrink([false, false])
+                            .max_height(channels_height)
+                            .show(ui, |ui| {
                         if let Some(scope) = &space_scope
                             && self.notifications.error(scope).is_some()
                         {
@@ -11546,8 +11579,94 @@ impl CaperApp {
                             });
                             ui.add_space(6.0);
                         }
-                        self.direct_navigation(ui);
+                            });
                     });
+                if self.account.is_some() {
+                let (divider_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), divider_height),
+                    egui::Sense::hover(),
+                );
+                let divider = ui
+                    .interact(
+                        divider_rect,
+                        egui::Id::new("sidebar-height-resize"),
+                        egui::Sense::click_and_drag(),
+                    )
+                    .on_hover_text(
+                        "Drag to resize. Arrow keys to adjust. Double-click to reset.",
+                    );
+                divider.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Slider,
+                        true,
+                        "Channel and direct message list height",
+                    )
+                });
+                ui.painter().with_clip_rect(ui.clip_rect().expand2(egui::vec2(12.0, 0.0))).hline(
+                    (divider_rect.left() - 12.0)..=(divider_rect.right() + 12.0),
+                    divider_rect.center().y,
+                    Stroke::new(1.0, BORDER),
+                );
+                if divider.dragged() && pane_height > 0.0 {
+                    self.sidebar_channels_fraction = ((channels_height + divider.drag_delta().y)
+                        / pane_height)
+                        .clamp(
+                            minimum_pane / pane_height,
+                            1.0 - minimum_pane / pane_height,
+                        );
+                }
+                if divider.double_clicked() {
+                    self.sidebar_channels_fraction = 0.5;
+                }
+                if divider.clicked() {
+                    divider.request_focus();
+                }
+                if divider.hovered() || divider.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                }
+                if divider.has_focus() {
+                    ui.memory_mut(|memory| {
+                        memory.set_focus_lock_filter(
+                            divider.id,
+                            egui::EventFilter {
+                                vertical_arrows: true,
+                                ..Default::default()
+                            },
+                        )
+                    });
+                    ui.input_mut(|input| {
+                        if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
+                            self.sidebar_channels_fraction -= 10.0 / pane_height.max(1.0);
+                        }
+                        if input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
+                            self.sidebar_channels_fraction += 10.0 / pane_height.max(1.0);
+                        }
+                        if input.consume_key(egui::Modifiers::NONE, egui::Key::Home) {
+                            self.sidebar_channels_fraction = minimum_pane / pane_height.max(1.0);
+                        }
+                        if input.consume_key(egui::Modifiers::NONE, egui::Key::End) {
+                            self.sidebar_channels_fraction =
+                                1.0 - minimum_pane / pane_height.max(1.0);
+                        }
+                    });
+                    if pane_height > 0.0 {
+                        self.sidebar_channels_fraction = self.sidebar_channels_fraction.clamp(
+                            minimum_pane / pane_height,
+                            1.0 - minimum_pane / pane_height,
+                        );
+                    }
+                }
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), ui.available_height()),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("sidebar-direct-scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| self.direct_navigation(ui));
+                    },
+                );
+                }
             });
     }
 
@@ -11662,9 +11781,7 @@ impl CaperApp {
         let Some(account) = self.account.clone() else {
             return;
         };
-        ui.add_space(16.0);
-        full_bleed_separator(ui, ui.cursor().top());
-        ui.add_space(12.0);
+        ui.add_space(6.0);
         ui.scope(|ui| {
             ui.spacing_mut().interact_size.y = 28.0;
             ui.horizontal(|ui| {
@@ -29027,17 +29144,6 @@ fn destructive(ui: &mut egui::Ui, text: &str) -> egui::Response {
     )
 }
 
-fn full_bleed_separator(ui: &egui::Ui, y: f32) {
-    // Panels clip to their padded content; extend the clip as well as the line.
-    let mut painter = ui.painter().clone();
-    painter.set_clip_rect(ui.clip_rect().expand2(egui::vec2(12.0, 0.5)));
-    painter.hline(
-        (ui.max_rect().left() - 12.0)..=(ui.max_rect().right() + 12.0),
-        y,
-        Stroke::new(1.0, BORDER),
-    );
-}
-
 fn notices(ui: &mut egui::Ui, error: &Option<String>, warning: &Option<String>) {
     if let Some(error) = error {
         ui.add_space(8.0);
@@ -44026,11 +44132,16 @@ mod tests {
                     .unwrap_or_else(|| panic!("missing {label}"))
             };
             let last_channel = bounds("Join voice in #planning");
+            let divider = bounds("Channel and direct message list height");
             let direct_y = text_position(&output, "Direct messages").y;
-            let gap = direct_y - last_channel.y1 as f32;
+            let gap = direct_y - divider.y1 as f32;
             assert!(
-                (40.0..56.0).contains(&gap),
-                "DM heading must leave room for the divider on both sides without being bottom-anchored: {gap}"
+                divider.y0 > last_channel.y1,
+                "channels stay above the independent DM pane"
+            );
+            assert!(
+                (12.0..28.0).contains(&gap),
+                "DM heading stays below the movable divider, not the end of the channel content: {gap}"
             );
             let direct_action = "New message";
             assert!(bounds("Mute microphone").y0 > bounds(direct_action).y1);
@@ -44751,6 +44862,9 @@ mod tests {
         {
             let (context, mut app) = fixture("parity-voice-crowded");
             app.sidebar_width = sidebar;
+            // This test inspects every voice card at once; scrolling is owned
+            // by the bounded channel pane, independent of card presentation.
+            app.sidebar_channels_fraction = 0.9;
             render(&mut app, &context, vec![]);
             let output = render(&mut app, &context, vec![]);
             let shown = texts(&output);
@@ -48434,6 +48548,41 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_height_divider_keeps_channels_and_directs_independently_reachable() {
+        let (context, mut app) = fixture("parity-desktop");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let divider = labelled_center(&output, "Channel and direct message list height").unwrap();
+        let output = render(&mut app, &context, vec![egui::Event::PointerMoved(divider)]);
+        assert_eq!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::ResizeVertical
+        );
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new("sidebar-height-resize")));
+        render(&mut app, &context, vec![]);
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Key {
+                key: egui::Key::ArrowDown,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(
+            app.sidebar_channels_fraction > 0.5,
+            "keyboard adjustment gives the channel pane more room"
+        );
+        let output = render(&mut app, &context, vec![]);
+        let divider = labelled_center(&output, "Channel and direct message list height").unwrap();
+        click(&mut app, &context, divider);
+        click(&mut app, &context, divider);
+        assert_eq!(app.sidebar_channels_fraction, 0.5);
+    }
+
+    #[test]
     fn sidebar_keyboard_and_persistence_preserve_width_without_fixture_leaks() {
         #[derive(Default)]
         struct Storage(std::collections::BTreeMap<String, String>);
@@ -48495,14 +48644,17 @@ mod tests {
         );
         app.persist_preferences = true;
         app.sidebar_width = 337.0;
+        app.sidebar_channels_fraction = 0.64;
         app.members_width = 313.0;
         app.sound_effects = false;
         eframe::App::save(&mut app, &mut storage);
         app.sidebar_width = 280.0;
+        app.sidebar_channels_fraction = 0.5;
         app.members_width = 220.0;
         app.sound_effects = true;
         app.restore_preferences(&storage);
         assert_eq!(app.sidebar_width, 337.0);
+        assert_eq!(app.sidebar_channels_fraction, 0.64);
         assert_eq!(app.members_width, 313.0);
         assert!(!app.sound_effects);
         app.sound_effects = true;
@@ -48512,11 +48664,16 @@ mod tests {
         assert!(app.sound_effects);
         for invalid in ["NaN", "inf", "219", "441"] {
             app.sidebar_width = 280.0;
+            app.sidebar_channels_fraction = 0.5;
             app.members_width = 220.0;
             storage.0.insert("sidebar-width-v1".into(), invalid.into());
+            storage
+                .0
+                .insert("sidebar-channels-fraction-v1".into(), invalid.into());
             storage.0.insert("members-width-v1".into(), invalid.into());
             app.restore_preferences(&storage);
             assert_eq!(app.sidebar_width, 280.0);
+            assert_eq!(app.sidebar_channels_fraction, 0.5);
             assert_eq!(app.members_width, 220.0);
         }
     }

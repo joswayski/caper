@@ -10,6 +10,27 @@ membership. See [spaces and channel access](#spaces-and-channel-access).
 Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
 
+Channels and direct messages occupy independently scrolling sidebar panes on web,
+Android, iOS/macOS and Rust desktop. Drag their horizontal divider to redistribute
+the height; both remain bounded above the account controls, even with long lists.
+The split defaults to half, retains its saved proportion across launches, and
+reserves a useful minimum for each pane in short windows. Mouse pointers use the
+platform's vertical-resize cursor. Up/Down adjusts the focused divider, Home/End
+reaches its bounds, and double-click/tap resets it. Touch resize gestures do not
+start a Browse swipe. The labelled homepage simulation keeps its unsplit layout.
+
+Split-sidebar validation (2026-10-19): `npm run check`, `npm test`, and
+`node scripts/test-sidebar-sections.mjs` against the local parity fixture passed.
+The browser script covers 80 channels and 40 DMs, independent scrolling, drag and
+cursor, persistence/reload, keyboard bounds/reset, action menus at minimum pane
+heights, collapsed/sparse lists, and 1440×900, 1440×540 and 390×844 layouts. Set
+`SIDEBAR_TEST_WEB_URL` if Vite is not on port 5174. Android Kotlin compilation,
+498 JVM tests and debug lint passed. Rust desktop build, Clippy, the full suite
+(650 passed, 16 ignored) and an actual Linux/Xvfb pointer drag passed.
+Apple implementation remains uncompiled without Xcode; native phone,
+touch/assistive-technology and Windows checks remain unverified. Narrow Chromium
+captures are not physical-device acceptance. No API or migration change.
+
 Mobile channel, DM and thread timelines dismiss the software keyboard when a
 vertical scroll drag starts. The unsent draft stays in its composer; tapping it
 reopens the keyboard. Automatic following/paging and scrolling within a multiline

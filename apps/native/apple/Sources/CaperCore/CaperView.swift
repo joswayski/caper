@@ -585,6 +585,7 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     let open: Bool
     let enabled: Bool
     var excludedStart: CGRect = .null
+    var excludedResize: CGRect = .null
     let navigate: () -> Void
     @Environment(Drawer.self) private var drawer: Drawer?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -628,7 +629,7 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                     // Toward open, in points.
                     let dx = opening * value.translation.width, dy = value.translation.height
                     if tracking == nil {
-                        tracking = enabled && drawer != nil && !excludedStart.contains(value.startLocation) && abs(dx) >= abs(dy) * 1.5 && (open ? dx < 0 : dx > 0)
+                        tracking = enabled && drawer != nil && !excludedStart.contains(value.startLocation) && !excludedResize.contains(value.startLocation) && abs(dx) >= abs(dy) * 1.5 && (open ? dx < 0 : dx > 0)
                         guard tracking == true, let drawer else { return }
                         // Catch a view still sliding where it is drawn, and follow
                         // from here rather than jumping by the gesture's start distance.
@@ -673,7 +674,7 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     /// Its trailing moves keep its start, which it records as ended.
     private func releaseUnfollowed(_ value: DragGesture.Value) {
         let dx = Drawer.opening * value.translation.width, dy = value.translation.height
-        guard enabled, let drawer, !excludedStart.contains(value.startLocation),
+        guard enabled, let drawer, !excludedStart.contains(value.startLocation), !excludedResize.contains(value.startLocation),
               abs(dx) >= 40, abs(dx) >= abs(dy) * 1.5, open ? dx < 0 : dx > 0 else { return }
         gesture = (value.startLocation, Date())
         tracking = nil
@@ -1197,6 +1198,11 @@ private struct ChannelSidebar: View {
     let narrow: Bool
     let close: () -> Void
     @State private var channelsExpanded = true
+    @AppStorage("caper.channelSidebarChannelsShare") private var channelsShare = 0.5
+    @State private var dividerDragStart: Double?
+    @State private var dividerDragShare: Double?
+    @State private var dividerFrame: CGRect = .null
+    @FocusState private var dividerFocused: Bool
     @State private var channelSearch = ""
     @State private var searchFrame: CGRect = .null
     @State private var browsing = false
@@ -1261,15 +1267,22 @@ private struct ChannelSidebar: View {
                     .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             NotificationErrorRow(model: model)
 
-            ScrollView {
+            Group {
                 if narrow && model.showingFeedback && model.isFeedbackTeam {
                     // Phones push the feedback inbox in place of the channel list.
-                    FeedbackInboxList(model: model, pushed: true)
+                    ScrollView { FeedbackInboxList(model: model, pushed: true) }
                 } else if narrow && model.showingMessageRequests && model.account != nil {
                     // Phones push the requests list in place of the channel list.
-                    MessageRequestsList(model: model, pushed: true)
+                    ScrollView { MessageRequestsList(model: model, pushed: true) }
                 } else {
+                GeometryReader { geometry in
+                let dividerHeight = narrow ? 24.0 : 12.0
+                let available = max(0, geometry.size.height - (model.account == nil ? 0 : dividerHeight))
+                let minimum = min(96.0, available / 3)
+                let lower = minimum / max(available, 1)
+                let split = min(max(dividerDragShare ?? channelsShare, lower), 1 - lower)
                 VStack(spacing: 0) {
+                ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     // Voice with no row here (a call in another space, a visit's
                     // room), above the channels; live rows grow into cards in place.
@@ -1378,7 +1391,42 @@ private struct ChannelSidebar: View {
                         Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error).padding(8)
                     }
                 }.padding(.horizontal, 16)
+                }
+                .frame(height: model.account == nil ? available : available * split)
             if model.account != nil {
+                Color.clear.frame(height: dividerHeight)
+                    .contentShape(Rectangle())
+                    .overlay { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                    .modifier(VerticalResizeCursor())
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { dividerFrame = $0 }
+                    .onDisappear { dividerFrame = .null; dividerDragShare = nil; dividerDragStart = nil }
+                    .gesture(DragGesture(minimumDistance: 1).onChanged { value in
+                        if dividerDragStart == nil { dividerDragStart = split }
+                        dividerDragShare = min(max((dividerDragStart ?? split) + Double(value.translation.height) / max(available, 1), lower), 1 - lower)
+                    }.onEnded { _ in
+                        if let share = dividerDragShare { channelsShare = share }
+                        dividerDragShare = nil; dividerDragStart = nil
+                    })
+                    .simultaneousGesture(TapGesture(count: 2).onEnded { channelsShare = 0.5 })
+                    .focusable().focusEffectDisabled().focused($dividerFocused)
+                    .accessibilityRepresentation {
+                        Slider(value: Binding(get: { split }, set: { channelsShare = $0 }), in: lower...1 - lower, step: 0.05)
+                    }
+                    .accessibilityLabel("Channels and direct messages divider")
+                    .accessibilityIdentifier("sidebar-sections-resize")
+                    .accessibilityValue("\(Int(split * 100)) percent channels")
+                    .accessibilityHint("Drag to resize the channel and direct message lists.")
+                    .onKeyPress { press in
+                        switch press.key {
+                        case .upArrow: channelsShare = max(lower, split - 10 / max(available, 1))
+                        case .downArrow: channelsShare = min(1 - lower, split + 10 / max(available, 1))
+                        case .home: channelsShare = lower
+                        case .end: channelsShare = 1 - lower
+                        default: return .ignored
+                        }
+                        return .handled
+                    }
+                ScrollView {
                 #if os(macOS)
                 let directRowHeight: CGFloat = 28
                 #else
@@ -1453,18 +1501,19 @@ private struct ChannelSidebar: View {
                         .contentShape(Rectangle())
                     }.buttonStyle(.plain).modifier(ControlHover()).padding(.horizontal, 16)
                         .accessibilityIdentifier("new-message")
-                }.padding(.top, 12).padding(.bottom, 8)
-                    .overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
-                    .padding(.top, 16)
+                }.padding(.top, 6).padding(.bottom, 8)
+                }
+                .frame(height: available * (1 - split))
             }
                 }
                 }
+            }
             }
             .modifier(FeedbackPullToRefresh(enabled: narrow && model.showingFeedback && model.isFeedbackTeam) { await model.refreshFeedback() })
             .accessibilityIdentifier("channel-browser")
             if !narrow { AccountBar(model: model, sheet: $sheet) }
         }
-        .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil || model.visit != nil), excludedStart: browsing ? searchFrame : .null, navigate: close))
+        .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil || model.visit != nil), excludedStart: browsing ? searchFrame : .null, excludedResize: dividerFrame, navigate: close))
         // Browse belongs to the space it was opened in.
         .onChange(of: model.selectedSpaceID) { _, _ in browsing = false; channelSearch = "" }
         .background(CaperTheme.sidebar)
@@ -9802,6 +9851,17 @@ private struct ResizeCursor: ViewModifier {
     func body(content: Content) -> some View {
         #if os(macOS)
         content.background(PointerRegion(enabled: true, cursor: .resizeLeftRight).allowsHitTesting(false))
+        #else
+        content
+        #endif
+    }
+}
+
+/// The channel/DM split is resized vertically, unlike the workspace sidebar.
+private struct VerticalResizeCursor: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content.background(PointerRegion(enabled: true, cursor: .resizeUpDown).allowsHitTesting(false))
         #else
         content
         #endif
