@@ -242,14 +242,26 @@ private const val DOUBLE_TAP_ZOOM = 2f
                     Text(it, Modifier.padding(horizontal = 8.dp).semantics { contentDescription = "File ${page + 1} of ${ids.size}"; liveRegion = LiveRegionMode.Polite },
                         color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
-                val tint = if (url != null) Text else TextMuted.copy(alpha = 0.4f)
-                IconButton({
-                    if (current != null && url != null) notice = if (download(context, current, url)) "Downloading ${current.name}…" else "Couldn’t start the download."
-                }, Modifier.semantics { contentDescription = "Download" }, enabled = url != null) {
-                    Icon(painterResource(R.drawable.lucide_download), null, Modifier.size(20.dp), tint = tint)
-                }
-                IconButton({ url?.let(open) }, Modifier.semantics { contentDescription = "Open in browser" }, enabled = url != null) {
-                    Icon(painterResource(R.drawable.lucide_external_link), null, Modifier.size(20.dp), tint = tint)
+                var actionsOpen by remember(current?.id, url) { mutableStateOf(false) }
+                Box {
+                    IconButton({ actionsOpen = true }, Modifier.semantics { contentDescription = "More media actions" }, enabled = url != null) {
+                        Icon(painterResource(R.drawable.lucide_ellipsis), null, Modifier.size(20.dp), tint = if (url != null) Text else TextMuted.copy(alpha = 0.4f))
+                    }
+                    DropdownMenu(actionsOpen, { actionsOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small) {
+                        DropdownMenuItem(
+                            text = { Text("Download", color = Text) },
+                            leadingIcon = { Icon(painterResource(R.drawable.lucide_download), null, tint = Text) },
+                            onClick = {
+                                actionsOpen = false
+                                if (current != null && url != null) notice = if (download(context, current, url)) "Downloading ${current.name}…" else "Couldn’t start the download."
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Open in browser", color = Text) },
+                            leadingIcon = { Icon(painterResource(R.drawable.lucide_external_link), null, tint = Text) },
+                            onClick = { actionsOpen = false; url?.let(open) },
+                        )
+                    }
                 }
                 IconButton(close, Modifier.semantics { contentDescription = "Close viewer" }) { Icon(painterResource(R.drawable.lucide_x), null, tint = Text) }
             }

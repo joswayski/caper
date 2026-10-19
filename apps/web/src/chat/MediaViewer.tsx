@@ -7,7 +7,20 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Brush, ChevronLeft, ChevronRight, Crop, Download, ExternalLink, EyeOff, Type, X } from "lucide-react";
+import {
+  Brush,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Crop,
+  Download,
+  Ellipsis,
+  ExternalLink,
+  EyeOff,
+  Link,
+  Type,
+  X,
+} from "lucide-react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -413,9 +426,12 @@ export default function MediaViewer({
   const [entering, setEntering] = useState<1 | -1>();
   // URLs that failed to load. A refreshed URL is a new key, so it loads again.
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const [copying, setCopying] = useState(false);
+  const [copyStatus, setCopyStatus] = useState("");
   const reported = useRef(new Set<string>());
   const returnFocus = useRef(anchor);
   const closeButton = useRef<HTMLButtonElement>(null);
+  const actionsMenu = useRef<HTMLDetailsElement>(null);
   const titleId = useId();
   const counterId = useId();
   const { refs, context } = useFloating({ open: true });
@@ -438,6 +454,68 @@ export default function MediaViewer({
       : undefined;
   // What download costs; message files always carry their stored size.
   const size = current?.size ? formatBytes(current.size) : undefined;
+
+  useEffect(() => {
+    if (!copyStatus || copying) return;
+    const timer = setTimeout(() => setCopyStatus(""), 4000);
+    return () => clearTimeout(timer);
+  }, [copyStatus, copying]);
+
+  const copy = async (image: boolean) => {
+    if (!current?.url || copying) return;
+    setCopying(true);
+    setCopyStatus(image ? "Copying image…" : "Copying media link…");
+    try {
+      if (image) {
+        // Supply a promise immediately so Safari keeps the click's clipboard permission
+        // while the original downloads. PNG is the interoperable clipboard image format.
+        const png = (async () => {
+          const response = await fetch(current.url!);
+          if (!response.ok) throw new Error("Image download failed");
+          const bitmap = await createImageBitmap(await response.blob());
+          try {
+            const canvas = document.createElement("canvas");
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+            const context = canvas.getContext("2d");
+            if (!context) throw new Error("Image conversion unavailable");
+            context.drawImage(bitmap, 0, 0);
+            return await new Promise<Blob>((resolve, reject) => {
+              canvas.toBlob(
+                (blob) => (blob ? resolve(blob) : reject(new Error("Image conversion failed"))),
+                "image/png",
+              );
+            });
+          } finally {
+            bitmap.close();
+          }
+        })();
+        // A permission failure can reject write before the image finishes loading.
+        void png.catch(() => {});
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+      } else {
+        await navigator.clipboard.writeText(current.url);
+      }
+      setCopyStatus(image ? "Image copied" : "Media link copied");
+    } catch {
+      setCopyStatus(
+        image
+          ? "Couldn’t copy image. Try downloading it instead."
+          : "Couldn’t copy media link. Check clipboard permissions.",
+      );
+    } finally {
+      setCopying(false);
+    }
+  };
+
+  useEffect(() => {
+    const dismiss = (event: PointerEvent) => {
+      const menu = actionsMenu.current;
+      if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, []);
 
   useEffect(() => {
     // Back closes the viewer on phones and tablets, like the thread panel.
@@ -537,6 +615,7 @@ export default function MediaViewer({
                 <>
                   {/* The CDN is another origin, so browsers may open the file instead of saving it. */}
                   <a
+                    className="chat-viewer-desktop-action"
                     href={current.url}
                     download={current.name}
                     target="_blank"
@@ -547,6 +626,7 @@ export default function MediaViewer({
                     <Download size={20} aria-hidden="true" />
                   </a>
                   <a
+                    className="chat-viewer-desktop-action"
                     href={current.url}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -555,12 +635,88 @@ export default function MediaViewer({
                   >
                     <ExternalLink size={20} aria-hidden="true" />
                   </a>
+                  <details
+                    key={current.id}
+                    ref={actionsMenu}
+                    className="chat-viewer-actions"
+                    onBlur={(event) => {
+                      // Safari may blur the summary without focusing the tapped link.
+                      // Outside taps are handled separately; keep the link until its click.
+                      if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
+                        event.currentTarget.open = false;
+                    }}
+                    onKeyDown={(event) => {
+                      if (!event.currentTarget.open) return;
+                      event.stopPropagation();
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.currentTarget.open = false;
+                        event.currentTarget.querySelector("summary")?.focus();
+                      }
+                    }}
+                  >
+                    <summary aria-label="More media actions" title="More media actions">
+                      <Ellipsis size={20} aria-hidden="true" />
+                    </summary>
+                    <div
+                      className="chat-viewer-actions-panel"
+                      onClick={() => {
+                        if (actionsMenu.current) actionsMenu.current.open = false;
+                        actionsMenu.current?.querySelector("summary")?.focus();
+                      }}
+                    >
+                      {current.kind === "image" && (
+                        <button
+                          className="chat-viewer-desktop-action"
+                          type="button"
+                          disabled={copying}
+                          onClick={() => void copy(true)}
+                        >
+                          <Copy size={20} aria-hidden="true" />
+                          Copy image
+                        </button>
+                      )}
+                      <button
+                        className="chat-viewer-desktop-action"
+                        type="button"
+                        disabled={copying}
+                        onClick={() => void copy(false)}
+                      >
+                        <Link size={20} aria-hidden="true" />
+                        Copy media link
+                      </button>
+                      <a
+                        className="chat-viewer-mobile-action"
+                        href={current.url}
+                        download={current.name}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <Download size={20} aria-hidden="true" />
+                        Download
+                      </a>
+                      <a
+                        className="chat-viewer-mobile-action"
+                        href={current.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        <ExternalLink size={20} aria-hidden="true" />
+                        Open in browser
+                      </a>
+                    </div>
+                  </details>
                 </>
               )}
               <button ref={closeButton} type="button" aria-label="Close viewer" title="Close" onClick={onClose}>
                 <X size={22} aria-hidden="true" />
               </button>
             </header>
+            {copyStatus && (
+              <div className="chat-viewer-copy-status" role="status">
+                {copyStatus}
+              </div>
+            )}
             {current?.spoiler && onHideSpoiler && (
               <button
                 type="button"

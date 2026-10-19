@@ -33,6 +33,11 @@ const MAX_ANIMATION_BYTES: usize = 512 * 1024 * 1024;
 /// Videos decode at most at 1080p however large the window.
 const MAX_VIDEO: egui::Vec2 = egui::vec2(1920.0, 1080.0);
 const NOTICE: Duration = Duration::from_secs(4);
+// egui's Context::copy_image keeps its clipboard alive, but its output API
+// reports no write result (egui-winit only logs failures). Keep our fallible
+// writer alive for the process instead: dropping it loses Linux ownership,
+// including when the viewer closes. Access happens only on copy workers.
+static CLIPBOARD: std::sync::Mutex<Option<arboard::Clipboard>> = std::sync::Mutex::new(None);
 /// One-finger drags past these, while not zoomed, change file or close
 /// (web's `viewer.ts`).
 const SWIPE_DISTANCE: f32 = 60.0;
@@ -188,6 +193,7 @@ pub struct Viewer {
     /// The seek bar while it is dragged, 0–1.
     scrub: Option<f32>,
     saving: Option<Receiver<Result<String, String>>>,
+    copying: Option<Receiver<Result<String, String>>>,
     notice: Option<(String, Instant)>,
     opened: bool,
     swipe: Option<Swipe>,
@@ -216,6 +222,7 @@ impl Viewer {
             video: None,
             scrub: None,
             saving: None,
+            copying: None,
             notice: None,
             opened: false,
             swipe: None,
@@ -288,6 +295,19 @@ impl Viewer {
             return false;
         }
         self.receive(context);
+        if let Some(copying) = &self.copying {
+            match copying.try_recv() {
+                Ok(result) => {
+                    self.copying = None;
+                    self.notice = Some((result.unwrap_or_else(|error| error), Instant::now()));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.copying = None;
+                    self.notice = Some(("Couldn’t copy the media.".into(), Instant::now()));
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
         if let Some(saving) = &self.saving
             && let Ok(result) = saving.try_recv()
         {
@@ -518,7 +538,7 @@ impl Viewer {
             .map(|(text, _)| text.clone());
         let title_rect = egui::Rect::from_min_max(
             top.min + egui::vec2(20.0, 0.0),
-            egui::pos2(top.right() - 150.0, top.bottom()),
+            egui::pos2(top.right() - 186.0, top.bottom()),
         );
         let mut job = egui::text::LayoutJob::single_section(
             title,
@@ -543,7 +563,7 @@ impl Viewer {
         );
         if let Some(notice) = notice {
             painter.text(
-                egui::pos2(top.right() - 160.0, top.center().y),
+                egui::pos2(top.right() - 196.0, top.center().y),
                 egui::Align2::RIGHT_CENTER,
                 notice,
                 egui::FontId::proportional(12.0),
@@ -563,6 +583,7 @@ impl Viewer {
         if action(ui, NavIcon::Close, "Close viewer").clicked() {
             close = true;
         }
+        let more = action(ui, NavIcon::More, "More media actions");
         if action(ui, NavIcon::ExternalLink, "Open in browser").clicked() {
             media.open(ui.ctx(), current, unix_now);
         }
@@ -577,6 +598,34 @@ impl Viewer {
         {
             self.save(current, media);
         }
+        egui::Popup::menu(&more)
+            .align(egui::RectAlign::BOTTOM_END)
+            .show(|ui| {
+                ui.set_width(200.0);
+                if current.kind == AttachmentKind::Image
+                    && crate::message_menu_item(
+                        ui,
+                        NavIcon::Copy,
+                        "Copy image",
+                        self.copying.is_none(),
+                    )
+                    .clicked()
+                {
+                    self.copy(current, media, ui.ctx(), true);
+                    ui.close();
+                }
+                if crate::message_menu_item(
+                    ui,
+                    NavIcon::Link,
+                    "Copy media link",
+                    self.copying.is_none(),
+                )
+                .clicked()
+                {
+                    self.copy(current, media, ui.ctx(), false);
+                    ui.close();
+                }
+            });
         if current.spoiler && self.reveal_scope.is_some() {
             // Keep the label out of the filename and toolbar, including narrow windows.
             let bounds = egui::Rect::from_min_max(
@@ -969,6 +1018,65 @@ impl Viewer {
         over
     }
 
+    fn copy(&mut self, current: &Attachment, media: &Media, context: &egui::Context, image: bool) {
+        let Some(url) = current.url.clone() else {
+            self.notice = Some((
+                "Couldn’t copy: media is unavailable.".into(),
+                Instant::now(),
+            ));
+            return;
+        };
+        let api = media.api().cloned();
+        let content_type = current.content_type.clone();
+        let context = context.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.copying = Some(receiver);
+        self.notice = Some(("Copying…".into(), Instant::now()));
+        std::thread::spawn(move || {
+            let result = (|| {
+                let pixels = if image {
+                    let bytes = api
+                        .ok_or("Couldn’t load the original image.")?
+                        .fetch_media(&url)
+                        .map_err(|_| "Couldn’t load the original image.")?;
+                    Some(
+                        decode_original(&bytes, &content_type)
+                            .ok_or("Couldn’t decode the original image.")?,
+                    )
+                } else {
+                    None
+                };
+                let mut owner = CLIPBOARD
+                    .lock()
+                    .map_err(|_| "Couldn’t access the clipboard.")?;
+                if owner.is_none() {
+                    *owner = Some(
+                        arboard::Clipboard::new().map_err(|_| "Couldn’t access the clipboard.")?,
+                    );
+                }
+                let clipboard = owner.as_mut().expect("initialized");
+                if let Some(pixels) = pixels {
+                    clipboard
+                        .set_image(arboard::ImageData {
+                            width: pixels.width() as usize,
+                            height: pixels.height() as usize,
+                            bytes: std::borrow::Cow::Owned(pixels.into_raw()),
+                        })
+                        .map_err(|_| "Couldn’t copy the image.")?;
+                    Ok("Image copied.".to_owned())
+                } else {
+                    clipboard
+                        .set_text(url)
+                        .map_err(|_| "Couldn’t copy the media link.")?;
+                    Ok("Media link copied.".to_owned())
+                }
+            })()
+            .map_err(str::to_owned);
+            let _ = sender.send(result);
+            context.request_repaint();
+        });
+    }
+
     fn save(&mut self, current: &Attachment, media: &Media) {
         let (Some(api), Some(url)) = (media.api().cloned(), current.url.clone()) else {
             return;
@@ -1228,6 +1336,7 @@ fn hover_text(icon: NavIcon) -> &'static str {
         NavIcon::ChevronRight => "Next (→)",
         NavIcon::Download => "Save",
         NavIcon::ExternalLink => "Open in browser",
+        NavIcon::More => "More media actions",
         NavIcon::Pause => "Pause (Space)",
         NavIcon::Play => "Play (Space)",
         NavIcon::VolumeX => "Unmute",
@@ -1331,6 +1440,29 @@ impl Zoom {
     }
 }
 
+/// Clipboard pixels are never the viewer's scaled texture or inline preview.
+/// ImageReader decodes the first frame of GIF/WebP without loading the animation.
+/// Reject excessive originals rather than silently shrinking them.
+fn decode_original(bytes: &[u8], content_type: &str) -> Option<image::RgbaImage> {
+    use image::ImageDecoder;
+    if matches!(content_type, "image/avif" | "image/heic" | "image/heif") {
+        return decode_ffmpeg_pixels(bytes, content_type);
+    }
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(MAX_ANIMATION_BYTES as u64);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder().ok()?;
+    let orientation = decoder.orientation().ok()?;
+    let mut image = image::DynamicImage::from_decoder(decoder).ok()?;
+    image.apply_orientation(orientation);
+    Some(image.to_rgba8())
+}
+
 /// Full-size frames: animated GIF/WebP with their delays, other stills once.
 /// Formats the `image` codecs cannot read (AVIF, HEIC) go through FFmpeg.
 fn decode_full(bytes: &[u8], content_type: &str) -> Option<Vec<(egui::ColorImage, Duration)>> {
@@ -1396,6 +1528,47 @@ fn color_image(image: image::RgbaImage) -> egui::ColorImage {
         [image.width() as usize, image.height() as usize],
         image.as_raw(),
     )
+}
+
+/// Clipboard originals need full-resolution, straight-alpha pixels rather than
+/// the bounded, premultiplied display image returned by ffmpeg::decode_image.
+fn decode_ffmpeg_pixels(bytes: &[u8], content_type: &str) -> Option<image::RgbaImage> {
+    let binary = crate::ffmpeg::binary()?;
+    let extension = match content_type {
+        "image/avif" => "avif",
+        "image/heic" | "image/heif" => "heic",
+        _ => return None,
+    };
+    let scratch = crate::uploads::Scratch::new(extension);
+    std::fs::write(scratch.path(), bytes).ok()?;
+    let probe = crate::ffmpeg::probe(binary, scratch.path()).ok()?;
+    let stream = probe.video?;
+    let [width, height] = [stream.width as usize, stream.height as usize];
+    if width == 0
+        || height == 0
+        || width > 16_384
+        || height > 16_384
+        || width.checked_mul(height)?.checked_mul(4)? > MAX_ANIMATION_BYTES
+    {
+        return None;
+    }
+    let output = crate::ffmpeg::command(binary)
+        .args(["-loglevel", "error", "-i"])
+        .arg(scratch.path())
+        .args([
+            "-frames:v",
+            "1",
+            "-vf",
+            &format!("scale={width}:{height}:flags=lanczos,format=rgba"),
+        ])
+        .args(["-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() || output.stdout.len() != width * height * 4 {
+        return None;
+    }
+    image::RgbaImage::from_raw(width as u32, height as u32, output.stdout)
 }
 
 #[cfg(test)]
@@ -1625,14 +1798,29 @@ mod tests {
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].0.size, [4, 2]);
         assert_eq!(frames[1].1, Duration::from_millis(150));
+        let copied = decode_original(&bytes, "image/gif").unwrap();
+        assert_eq!(copied.dimensions(), (4, 2));
+        assert_eq!(copied.get_pixel(0, 0).0, [0, 0, 0, 255]);
         // Stills decode once; formats needing FFmpeg fail cleanly without it.
         let mut png = Vec::new();
         image::RgbaImage::from_pixel(3, 3, image::Rgba([1, 2, 3, 255]))
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
         assert_eq!(decode_full(&png, "image/png").unwrap()[0].0.size, [3, 3]);
+        // Copy preserves original dimensions and straight alpha, even when the
+        // viewer would shrink the image to MAX_EDGE.
+        png.clear();
+        image::RgbaImage::from_pixel(MAX_EDGE + 1, 1, image::Rgba([123, 45, 67, 128]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let copied = decode_original(&png, "image/png").unwrap();
+        assert_eq!(copied.dimensions(), (MAX_EDGE + 1, 1));
+        assert_eq!(copied.get_pixel(0, 0).0, [123, 45, 67, 128]);
+        assert!(decode_original(b"broken", "image/png").is_none());
+        assert!(decode_original(b"broken", "image/webp").is_none());
         if crate::ffmpeg::binary().is_none() {
             assert!(decode_full(b"not an avif", "image/avif").is_none());
+            assert!(decode_original(b"not an avif", "image/avif").is_none());
         }
     }
 }
