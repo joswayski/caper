@@ -179,7 +179,7 @@ export class ChatTimeline {
   }
 
   private mergeForwardMessage(message: ChatMessage) {
-    if (!message.forward) return;
+    if (!message.forward || message.deletedAt || this.editUpdates.get(message.id)?.deletedAt) return;
     const previous = this.forwardUpdates.get(message.id);
     // Source snapshots may be fresher than the asynchronous projection. Its
     // source cursor and the destination replay revision are independent.

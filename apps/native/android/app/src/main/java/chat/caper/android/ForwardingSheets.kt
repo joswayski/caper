@@ -172,6 +172,12 @@ import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun ForwardConversationSheet(message: ChatMessage, viewModel: CaperViewModel, onDismiss: () -> Unit) {
+    if (message.deletedAt != null) {
+        ModalBottomSheet(onDismissRequest = onDismiss, containerColor = SurfaceRaised) {
+            Text("Original conversation unavailable.", modifier = Modifier.padding(18.dp), color = TextMuted)
+        }
+        return
+    }
     var conversation by remember { mutableStateOf<ForwardConversation?>(null) }
     var oldest by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }

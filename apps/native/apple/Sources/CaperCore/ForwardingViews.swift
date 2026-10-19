@@ -164,7 +164,7 @@ struct ForwardConversationView: View {
     @State private var error: String?
     @State private var attempt = 0
     private var message: ChatMessage? { (chat.messages + chat.pinnedMessages).first { $0.id == messageID } }
-    private var root: ChatMessage? { if let conversation { conversation.root } else if error == nil { message?.forward?.message } else { nil } }
+    private var root: ChatMessage? { if message?.isDeleted == true { nil } else if let conversation { conversation.root } else if error == nil { message?.forward?.message } else { nil } }
     var body: some View {
         VStack(spacing: 0) {
             HStack { Text("Forwarded conversation").font(CaperTheme.font(16, weight: .bold)); Spacer(); Button("Close") { dismiss() } }.padding(16)
@@ -187,8 +187,8 @@ struct ForwardConversationView: View {
         }.background(CaperTheme.raised).foregroundStyle(CaperTheme.text).frame(idealWidth: 520, idealHeight: 560)
             // A sheet: only it can present the viewer over itself.
             .modifier(MediaViewerHost())
-            .task(id: "\(message?.forward?.seq ?? "0"):\(pages):\(attempt)") {
-                guard let message else { conversation = nil; return }
+            .task(id: "\(message?.deletedAt ?? ""):\(message?.forward?.seq ?? "0"):\(pages):\(attempt)") {
+                guard let message, !message.isDeleted else { conversation = nil; error = nil; loading = false; return }
                 loading = true; error = nil
                 defer { loading = false }
                 do {

@@ -227,6 +227,8 @@ test("a deletion arrives as an edit that empties the message, drops its files an
     pinSeq: "3",
     pin: { author: root.author, createdAt: root.createdAt },
     thread: { replyCount: 1, participants: [root.author], seq: "4" },
+    forward: { message: { ...root, id: "original", channelId: "private" }, seq: "20" },
+    forwardSeq: "3",
   };
   timeline.reset([pinned], "4", [pinned]);
   const deletion: ChatEditEvent = {
@@ -235,6 +237,8 @@ test("a deletion arrives as an edit that empties the message, drops its files an
       ...edit(root, 2, "5", "").message,
       attachmentsSeq: "5",
       deletedAt: "2026-10-06T13:00:00Z",
+      forward: { message: null, seq: "0" },
+      forwardSeq: "3",
     },
   };
   assert.ok(isChatEditEvent(deletion));
@@ -244,10 +248,19 @@ test("a deletion arrives as an edit that empties the message, drops its files an
   assert.equal(message.content.text, "");
   assert.equal(message.content.attachments, undefined);
   assert.equal(message.thread?.replyCount, 1, "the thread stays reachable");
+  assert.deepEqual(message.forward, { message: null, seq: "0" }, "deletion clears the shared excerpt");
   assert.deepEqual(timeline.pinnedMessages, []);
   // A late history page from before the deletion never brings it back.
   timeline.prepend([pinned]);
   assert.equal(timeline.messages[0].deletedAt, "2026-10-06T13:00:00Z");
+  timeline.applyEvent({
+    type: "message.forward",
+    schemaVersion: 1,
+    channelId: "room",
+    seq: "6",
+    message: { ...pinned, forwardSeq: "6" },
+  });
+  assert.deepEqual(timeline.messages[0].forward, { message: null, seq: "0" }, "old forward overlays cannot restore it");
 });
 
 test("replies quoting a deleted message validate without its text", () => {

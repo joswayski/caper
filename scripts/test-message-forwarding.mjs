@@ -530,8 +530,47 @@ try {
   evaluate("window.releaseForwardLookup()");
   wait('document.querySelector("#chat-heading")?.textContent.includes("design")');
   assert.equal(evaluate('!!document.querySelector(".chat-forward-dialog")'), false);
+  // A destination-only reader must not keep an open cached excerpt after its
+  // author deletes the wrapper in another client. No reload is involved.
+  for (const width of [1440, 390]) {
+    const shared = await request(
+      "/api/chat/channels/chan00000001/forwards",
+      { sourceChannelId: source.channelId, sourceMessageId: source.id, clientMessageId: crypto.randomUUID() },
+      "owner",
+      "POST",
+      session.token,
+    );
+    assert.equal(shared.status, 200);
+    const sharedRow = `[data-message-key="${shared.value.clientMessageId}"]`;
+    browser("set", "viewport", String(width), "900", "2");
+    browser("cookies", "set", "caper_fixture", "other", "--url", web, "--path", "/", "--sameSite", "Lax");
+    browser("open", `${web}/spaces?space=space0000001&channel=chan00000001`);
+    wait(
+      `!!document.querySelector('${sharedRow} .chat-forward-card button') && !document.querySelector('.chat-initial-messages')`,
+    );
+    if (width <= 760 && evaluate('!!document.querySelector(".member-list-close")')) {
+      browser("click", ".member-list-close");
+      wait('!document.querySelector(".space-member-presence")');
+    }
+    browser("click", `${sharedRow} .chat-forward-card button`);
+    wait('document.querySelector(".chat-forward-body h3")?.textContent === "2 replies"');
+    screenshot(`forward-before-deletion-${width}`);
+    const removed = await request(
+      `/api/chat/channels/chan00000001/messages/${shared.value.id}`,
+      undefined,
+      "owner",
+      "DELETE",
+      session.token,
+    );
+    assert.equal(removed.status, 200);
+    wait(
+      `!document.querySelector('.chat-forward-dialog') && document.querySelector('${sharedRow}')?.textContent.includes('Message deleted')`,
+    );
+    assert.equal(evaluate(`!!document.querySelector('${sharedRow} .chat-forward-card')`), false);
+    screenshot(`forward-after-deletion-${width}`);
+  }
   console.log(
-    "Forwarding browser checks passed: source navigation and focus on desktop/narrow, reply-thread and DM routes, lookup failure and stale-navigation guards; excerpt original without visible loading, single empty state, unavailable/error cache revocation and retry; aligned reaction chips and 2px subtitles, space/channel/token search, persistent multi-selection, cross-space/channel/DM delivery, partial retry deduplication, destination-only live edits/reactions/replies, read-only originals, independent destination thread.",
+    "Forwarding browser checks passed: source navigation and focus on desktop/narrow, reply-thread and DM routes, lookup failure and stale-navigation guards; excerpt original without visible loading, single empty state, unavailable/error cache revocation and retry; aligned reaction chips and 2px subtitles, space/channel/token search, persistent multi-selection, cross-space/channel/DM delivery, partial retry deduplication, destination-only live edits/reactions/replies, read-only originals, independent destination thread; deleted wrappers close open shared conversations on desktop and narrow layouts.",
   );
 } finally {
   browser("close");

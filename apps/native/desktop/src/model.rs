@@ -1369,7 +1369,8 @@ impl Message {
     }
 
     fn merge_edit(&mut self, incoming: &Self) {
-        if self.id == incoming.id
+        if !self.is_deleted()
+            && self.id == incoming.id
             && self.channel_id == incoming.channel_id
             && incoming.revision > self.revision
         {
@@ -1385,6 +1386,9 @@ impl Message {
             self.edited_at.clone_from(&incoming.edited_at);
             self.edit_seq.clone_from(&incoming.edit_seq);
             self.deleted_at.clone_from(&incoming.deleted_at);
+            if self.is_deleted() {
+                self.forward.clone_from(&incoming.forward);
+            }
         }
     }
 }
@@ -2190,6 +2194,9 @@ fn overlay_reactions(current: &mut Message, incoming: &Message) {
 }
 
 fn overlay_forward(current: &mut Message, incoming: &Message) {
+    if current.is_deleted() {
+        return;
+    }
     let Some(next) = &incoming.forward else {
         return;
     };
@@ -4216,5 +4223,33 @@ mod tests {
         assert!(loaded.is_deleted());
         assert_eq!(loaded.content.text, "");
         assert_eq!(timeline.cursor(), "1");
+    }
+
+    #[test]
+    fn deleted_forward_cannot_be_restored_by_stale_history_or_forward_overlay() {
+        let mut original = message("wrapper", 1);
+        original.forward = Some(Box::new(MessageForward {
+            message: Some(message("source", 2)),
+            seq: "20".into(),
+        }));
+        original.forward_seq = Some("12".into());
+        let mut deleted = tombstone(original.clone(), 13, 2).message;
+        deleted.forward = Some(Box::new(MessageForward {
+            message: None,
+            seq: "0".into(),
+        }));
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![original.clone()], "12").unwrap();
+        timeline.merge_edit_ack(deleted).unwrap();
+        timeline.merge_edit_ack(original.clone()).unwrap();
+        timeline.prepend(vec![original.clone()]).unwrap();
+        let loaded = timeline.messages().next().unwrap();
+        assert!(loaded.is_deleted());
+        assert!(loaded.forward.as_ref().unwrap().message.is_none());
+        assert_eq!(loaded.forward.as_ref().unwrap().seq, "0");
+        assert_eq!(loaded.forward_seq.as_deref(), Some("12"));
+        let mut overlaid = loaded.clone();
+        overlay_forward(&mut overlaid, &original);
+        assert!(overlaid.forward.as_ref().unwrap().message.is_none());
     }
 }

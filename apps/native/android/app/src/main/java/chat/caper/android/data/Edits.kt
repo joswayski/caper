@@ -20,12 +20,13 @@ internal fun EditUpdate.validated(expectedChannel: String): EditUpdate {
  * "ready" file back to an older "processing" one.
  */
 internal fun mergeEdit(current: ChatMessage, incoming: ChatMessage): ChatMessage {
-    if (current.id != incoming.id || current.channelId != incoming.channelId || incoming.revision <= current.revision) return current
+    if (current.deletedAt != null || current.id != incoming.id || current.channelId != incoming.channelId || incoming.revision <= current.revision) return current
     val edited = current.copy(
         content = incoming.content.copy(attachments = current.content.attachments),
         revision = incoming.revision, editedAt = incoming.editedAt, editSeq = incoming.editSeq,
         // A deletion arrives as an edit; its newer `attachmentsSeq` drops the files below.
         deletedAt = incoming.deletedAt ?: current.deletedAt,
+        forward = if (incoming.deletedAt != null) incoming.forward else current.forward,
     )
     return newerAttachments(edited, incoming)
 }

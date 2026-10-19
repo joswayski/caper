@@ -17,14 +17,14 @@ export function withNewerAttachments(current: ChatMessage, incoming: Attachments
 /** Content revisions never replace independent reaction, pin, thread or
  * attachment-processing revisions. */
 export function mergeEditedContent(current: ChatMessage, incoming: ChatMessage): ChatMessage {
-  if ((incoming.revision ?? 1) <= (current.revision ?? 1)) return current;
+  if (current.deletedAt || (incoming.revision ?? 1) <= (current.revision ?? 1)) return current;
   const edited: ChatMessage = {
     ...current,
     content: incoming.content,
     revision: incoming.revision,
     editedAt: incoming.editedAt,
     editSeq: incoming.editSeq,
-    ...(incoming.deletedAt ? { deletedAt: incoming.deletedAt } : {}),
+    ...(incoming.deletedAt ? { deletedAt: incoming.deletedAt, forward: incoming.forward } : {}),
   };
   // The edit carries the files as of its own commit; keep a newer processing result.
   if (sequence(current.attachmentsSeq ?? "0") > sequence(incoming.attachmentsSeq ?? "0")) {

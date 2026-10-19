@@ -1156,7 +1156,7 @@ struct EditSnapshots: Sendable {
 
     mutating func apply(_ message: ChatMessage) {
         guard (message.revision ?? 1) > 1 else { return }
-        if let current = values[message.id], (current.revision ?? 1) >= (message.revision ?? 1) { return }
+        if let current = values[message.id], current.isDeleted || (current.revision ?? 1) >= (message.revision ?? 1) { return }
         guard knownMessageIDs.contains(message.id) || values[message.id] != nil || values.keys.filter({ !knownMessageIDs.contains($0) }).count < 256 else {
             unseenOverflowed = true; return
         }
@@ -1169,7 +1169,7 @@ struct EditSnapshots: Sendable {
     }
 
     func overlay(_ message: ChatMessage) -> ChatMessage {
-        guard let snapshot = values[message.id], snapshot.channelId == message.channelId,
+        guard !message.isDeleted, let snapshot = values[message.id], snapshot.channelId == message.channelId,
               (snapshot.revision ?? 1) > (message.revision ?? 1) else { return message }
         var result = message
         // Edits change text only; attachments stay governed by `attachmentsSeq`.
@@ -1180,6 +1180,7 @@ struct EditSnapshots: Sendable {
         if snapshot.deletedAt != nil {
             // A deletion also drops the files, at the tombstone's newer `attachmentsSeq`.
             result.deletedAt = snapshot.deletedAt
+            result.forward = snapshot.forward
             result.content.attachments = nil
             result.attachmentsSeq = snapshot.attachmentsSeq ?? message.attachmentsSeq
         }

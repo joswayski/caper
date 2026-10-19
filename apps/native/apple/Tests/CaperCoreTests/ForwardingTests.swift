@@ -2,6 +2,26 @@ import XCTest
 @testable import CaperCore
 
 final class ForwardingTests: XCTestCase {
+    func testDeletionClearsForwardAndStaleOverlaysCannotRestoreIt() throws {
+        let original = try wrapper("20", "12")
+        var tombstone = original
+        tombstone.content = ChatContent(version: 1, type: "text", text: ""); tombstone.revision = 2
+        tombstone.deletedAt = "2026-10-07T00:00:00Z"
+        tombstone.forward = MessageForward(message: nil, seq: "0")
+        var edits = EditSnapshots()
+        edits.seed([tombstone, original])
+        let deleted = edits.overlay(original)
+        XCTAssertTrue(deleted.isDeleted)
+        XCTAssertNil(deleted.forward?.message)
+        XCTAssertEqual(deleted.forward?.seq, "0")
+        XCTAssertEqual(deleted.forwardSeq, "12")
+        var forwards = ForwardSnapshots()
+        forwards.seed([original])
+        XCTAssertNil(forwards.overlay(deleted).forward?.message)
+        XCTAssertNil(edits.overlay(forwards.overlay(original)).forward?.message)
+        XCTAssertNil(mergeForward(deleted, original).forward?.message)
+    }
+
     private func wrapper(_ sourceSeq: String, _ destinationSeq: String) throws -> ChatMessage {
         let json = """
         {"id":"wrapper00000001","channelId":"channel00001","seq":"1","clientMessageId":"wrapper-key",
