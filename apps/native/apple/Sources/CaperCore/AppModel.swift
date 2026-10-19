@@ -296,6 +296,7 @@ public final class AppModel {
         chatModel.onMessageSent = { [weak self] in
             guard let self, self.isFeedbackTeam, self.visit != nil || self.feedbackLoaded else { return }
             Task { await self.refreshFeedback() }
+            Task { await self.refreshUnreadSpaces() }
         }
         chatModel.viewerAccountID = { [weak self] in self?.account?.id }
         chatModel.viewerProfile = { [weak self] in self?.account }
@@ -3854,6 +3855,7 @@ public final class ChatModel {
                    delivery.confirmGateway(clientMessageID: message.clientMessageId, authorID: message.author.id, ownAuthorID: session?.author.id) {
                     error = nil
                     releasePendingUploads()
+                    onMessageSent?()
                 }
                 if let subscriptionID {
                     let cursor = delivery.cursor

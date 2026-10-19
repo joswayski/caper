@@ -6892,6 +6892,10 @@ impl CaperApp {
                     self.pending = None;
                     self.release_pending_files();
                     self.error = None;
+                    if self.visiting().is_some() {
+                        self.load_feedback(false);
+                        self.refresh_unread();
+                    }
                 }
                 // Requests and blocked authors never play message sounds.
                 let remote = self
@@ -7132,6 +7136,7 @@ impl CaperApp {
                     // A reply can answer a report.
                     if self.visiting().is_some() {
                         self.load_feedback(false);
+                        self.refresh_unread();
                     }
                     if root.is_none() && self.has_newer {
                         self.reload_channel();
@@ -39026,6 +39031,86 @@ mod tests {
         );
         assert!(app.visit_request.is_none());
         assert!(app.feedback_open && app.context_loading);
+    }
+
+    #[test]
+    fn answering_feedback_refreshes_badge_before_the_next_poll() {
+        use std::io::{BufRead, BufReader, Write};
+        for via_gateway in [false, true] {
+            let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            server.set_nonblocking(true).unwrap();
+            let api =
+                crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+            let requests = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while Instant::now() < deadline {
+                    let Ok((stream, _)) = server.accept() else {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    };
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(1)))
+                        .unwrap();
+                    let mut reader = BufReader::new(stream);
+                    let mut request = String::new();
+                    reader.read_line(&mut request).unwrap();
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" || line.is_empty() {
+                            break;
+                        }
+                    }
+                    let unread = request.starts_with("GET /api/spaces/unread ");
+                    let body = if unread {
+                        r#"{"spaces":[],"feedbackWaiting":0}"#
+                    } else {
+                        r#"{"reports":[],"cursor":null}"#
+                    };
+                    let _ = write!(
+                        reader.get_mut(),
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    if unread {
+                        return;
+                    }
+                }
+            });
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(&context, api, Some("parity-feedback-visit"));
+            app.token = Some("fixture-only-token".into());
+            app.session = Some(session());
+            app.feedback_waiting = 1;
+            app.draft = "Thanks for the report".into();
+            app.send_message();
+            let mut message = app.timeline.messages().last().unwrap().clone();
+            message.seq = (message.seq.parse::<u64>().unwrap() + 1).to_string();
+            message.id = "confirmation".into();
+            message.client_message_id = app.pending.as_ref().unwrap().id.clone();
+            message.content.text = "Thanks for the report".into();
+            message.author = app.session.as_ref().unwrap().author.clone();
+            if via_gateway {
+                app.gateway(crate::gateway::GatewayEvent::Message {
+                    generation: app.generation,
+                    channel: message.channel_id.clone(),
+                    message: Box::new(message),
+                });
+            } else {
+                app.sent(Ok(message));
+            }
+            // Receive the authoritative count without running the periodic UI update.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while app.feedback_waiting != 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+                app.receive();
+            }
+            assert_eq!(
+                app.feedback_waiting, 0,
+                "gateway confirmation: {via_gateway}"
+            );
+            requests.join().unwrap();
+        }
     }
 
     #[test]

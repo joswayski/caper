@@ -2072,8 +2072,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request == generation && mutable.value.selectedChannel?.id == channel.id) {
                     addMessage(sent)
                     confirmPending(sent)
-                    // A reply may answer a report: the inbox shows it on return.
-                    if (mutable.value.visit != null) refreshFeedback()
                 }
             } catch (error: Throwable) {
                 if (request != generation || mutable.value.pendingMessage?.clientMessageId != operation.id.toString()) return@launch
@@ -2828,6 +2826,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             pendingDrafts = emptyList()
             pendingNeedsUpload = false
             it.confirmed.invoke()
+            // HTTP and gateway confirmations both answer the report immediately.
+            if (mutable.value.visit != null) {
+                refreshFeedback()
+                refreshUnreadSpaces()
+            }
             if (!refreshingHistory) {
                 if (message.threadRootId != null && mutable.value.thread?.rootId == message.threadRootId && mutable.value.thread?.hasNewer == true) loadThread()
                 else if (message.threadRootId == null && mutable.value.hasNewerMessages) resyncChannel(message.channelId)
