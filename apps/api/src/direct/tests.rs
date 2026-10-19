@@ -4,15 +4,17 @@ use axum::{
     body::{Body, to_bytes},
     http::Request,
 };
-use futures_util::{SinkExt, StreamExt};
 use sha2::{Digest, Sha256};
 use std::{future::IntoFuture, sync::Arc, time::Duration};
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Message, client::IntoClientRequest},
-};
 use tower::ServiceExt;
 use uuid::Uuid;
+
+/// A replayed message and the `ready` checkpoint after it.
+async fn replay(socket: &mut gateway::testing::Socket) -> [Value; 2] {
+    let message = gateway::testing::chat_event(socket, Duration::from_secs(6)).await;
+    let ready = gateway::testing::chat_event(socket, Duration::from_secs(6)).await;
+    [message, ready]
+}
 
 async fn request(
     app: &Router,
@@ -346,62 +348,30 @@ async fn two_person_privacy_durability_read_cursors_and_gateway_replay(pool: PgP
     let addr = listener.local_addr().unwrap();
     let server =
         tokio::spawn(axum::serve(listener, gateway::router(gateway.clone())).into_future());
-    let socket_request = |account: &str, after: &str| {
-        let mut request = format!("ws://{addr}/api/chat/events?channelId={id}&after={after}")
-            .into_client_request()
-            .unwrap();
-        request.headers_mut().insert(
-            "cookie",
-            format!("caper_session={account}").parse().unwrap(),
-        );
-        request
-    };
-    assert!(
-        connect_async(socket_request("outsider", "0"))
-            .await
-            .is_err()
+    let mut outsider = gateway::testing::chat_socket(addr, "outsider", &id, "0")
+        .await
+        .unwrap();
+    assert_eq!(
+        gateway::testing::chat_revoked(&mut outsider).await["status"],
+        404
     );
-    let (mut socket, _) = connect_async(socket_request("bob", "0")).await.unwrap();
-    let mut replay = Vec::new();
-    while replay.len() < 2 {
-        let frame = tokio::time::timeout(Duration::from_secs(6), socket.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        match frame {
-            Message::Text(text) => replay.push(serde_json::from_str::<Value>(&text).unwrap()),
-            Message::Ping(bytes) => socket.send(Message::Pong(bytes)).await.unwrap(),
-            _ => {}
-        }
-    }
-    assert_eq!(replay[0]["message"], first.1);
-    assert_eq!(replay[1]["type"], "ready");
-    let notes_request = |account: &str| {
-        let mut request = format!("ws://{addr}/api/chat/events?channelId={notes}&after=0")
-            .into_client_request()
-            .unwrap();
-        request.headers_mut().insert(
-            "cookie",
-            format!("caper_session={account}").parse().unwrap(),
-        );
-        request
-    };
-    assert!(connect_async(notes_request("bob")).await.is_err());
-    let (mut notes_socket, _) = connect_async(notes_request("alice")).await.unwrap();
-    let mut notes_replay = Vec::new();
-    while notes_replay.len() < 2 {
-        match tokio::time::timeout(Duration::from_secs(6), notes_socket.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap()
-        {
-            Message::Text(text) => notes_replay.push(serde_json::from_str::<Value>(&text).unwrap()),
-            Message::Ping(bytes) => notes_socket.send(Message::Pong(bytes)).await.unwrap(),
-            _ => {}
-        }
-    }
+    let mut socket = gateway::testing::chat_socket(addr, "bob", &id, "0")
+        .await
+        .unwrap();
+    let frames = replay(&mut socket).await;
+    assert_eq!(frames[0]["message"], first.1);
+    assert_eq!(frames[1]["type"], "ready");
+    let mut refused = gateway::testing::chat_socket(addr, "bob", &notes, "0")
+        .await
+        .unwrap();
+    assert_eq!(
+        gateway::testing::chat_revoked(&mut refused).await["status"],
+        404
+    );
+    let mut notes_socket = gateway::testing::chat_socket(addr, "alice", &notes, "0")
+        .await
+        .unwrap();
+    let notes_replay = replay(&mut notes_socket).await;
     assert_eq!(notes_replay[0]["message"], note.1);
     assert_eq!(notes_replay[1]["type"], "ready");
     notes_socket.close(None).await.unwrap();

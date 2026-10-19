@@ -3,7 +3,6 @@
 use crate::{
     ApiError, RuntimeEnvironment,
     chat::{self, Chat},
-    session_cookie,
     spaces::{channel_access, session_user},
 };
 use axum::{
@@ -30,6 +29,8 @@ use std::{
 use tokio::sync::{Semaphore, broadcast, watch};
 
 mod application;
+#[cfg(test)]
+pub(crate) mod testing;
 
 pub const HANDOFF_WINDOW: Duration = Duration::from_secs(20);
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(35);
@@ -40,9 +41,6 @@ const REPLAY_LIMIT: i64 = 2000;
 pub struct Gateway {
     chat: Chat,
     application: Arc<application::Application>,
-    events: broadcast::Sender<Value>,
-    typing: broadcast::Sender<Value>,
-    repair: watch::Sender<u64>,
     drain: watch::Sender<bool>,
     slots: Arc<Semaphore>,
     broker_ready: Arc<AtomicBool>,
@@ -71,16 +69,10 @@ impl Gateway {
         Ok(state)
     }
     pub(crate) fn new(chat: Chat) -> Self {
-        let (events, _) = broadcast::channel(256);
-        let (typing, _) = broadcast::channel(64);
-        let (repair, _) = watch::channel(0);
         let (drain, _) = watch::channel(false);
         Self {
             chat,
             application: Arc::new(application::Application::default()),
-            events,
-            typing,
-            repair,
             drain,
             slots: Arc::new(Semaphore::new(128)),
             broker_ready: Arc::new(AtomicBool::new(false)),
@@ -130,8 +122,6 @@ impl Gateway {
                                 } else if let Ok(text) = message.get_payload::<String>()
                                     && let Ok(event) = serde_json::from_str::<Value>(&text) {
                                     state.application.dispatch(&event);
-                                    let sender = if chat::ephemeral(&event) { &state.typing } else { &state.events };
-                                    let _ = sender.send(event);
                                 }
                             }
                             _ = async {
@@ -166,19 +156,13 @@ impl Gateway {
         let state = self.clone();
         tokio::spawn(async move {
             loop {
-                // One readiness check per gateway. Each recipient repairs its
-                // own channel cursor on the resulting tick.
+                // One readiness check per gateway, for /readyz.
                 let result = sqlx::query_scalar::<_, i32>("SELECT 1")
                     .fetch_one(&state.chat.pool)
                     .await;
                 state
                     .database_ready
                     .store(result.is_ok(), Ordering::Release);
-                if result.is_ok() {
-                    state
-                        .repair
-                        .send_modify(|tick| *tick = tick.wrapping_add(1));
-                }
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
         });
@@ -201,251 +185,5 @@ async fn ready(State(state): State<Gateway>) -> StatusCode {
         StatusCode::SERVICE_UNAVAILABLE
     } else {
         StatusCode::NO_CONTENT
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Subscription {
-    channel_id: String,
-    after: String,
-    // Older browser parsers reject unknown events. Typing is explicitly opt-in.
-    #[serde(default)]
-    typing: bool,
-}
-
-async fn upgrade(
-    State(state): State<Gateway>,
-    headers: HeaderMap,
-    Query(query): Query<Subscription>,
-    ws: WebSocketUpgrade,
-) -> Result<Response, ApiError> {
-    if *state.drain.borrow() {
-        return Err(chat::unavailable());
-    }
-    // Public demo reads do not require login, but browsers may only open
-    // same-origin sockets. Credentials are accepted only from the account cookie.
-    if headers
-        .get("sec-fetch-site")
-        .is_some_and(|v| v == "cross-site")
-        || headers.get("origin").is_some_and(|origin| {
-            let origin = origin
-                .to_str()
-                .ok()
-                .and_then(|v| reqwest::Url::parse(v).ok());
-            let host = headers.get("host").and_then(|v| v.to_str().ok());
-            origin
-                .as_ref()
-                .and_then(|url| url.as_str().split('/').nth(2))
-                != host
-        })
-    {
-        return Err(ApiError::new(
-            StatusCode::FORBIDDEN,
-            "cross-origin socket refused",
-        ));
-    }
-    let after = chat::cursor(&query.after)?;
-    let token_hash =
-        session_cookie(&headers).map(|token| Sha256::digest(token.as_bytes()).to_vec());
-    let user = match token_hash.as_deref() {
-        Some(hash) => Some(session_user(&state.chat.pool, hash).await?),
-        None => None,
-    };
-    let channel = channel_access(&state.chat.pool, &query.channel_id, user)
-        .await?
-        .id;
-    let slot = state
-        .slots
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| chat::unavailable())?;
-    Ok(ws
-        .read_buffer_size(4096)
-        .write_buffer_size(0)
-        .max_write_buffer_size(64 * 1024)
-        .max_message_size(1024)
-        .max_frame_size(1024)
-        .on_upgrade(move |socket| async move {
-            let _slot = slot;
-            let _ = serve(
-                socket,
-                state,
-                channel,
-                query.channel_id,
-                token_hash,
-                after,
-                query.typing,
-            )
-            .await;
-        })
-        .into_response())
-}
-
-async fn write(socket: &mut WebSocket, event: Value) -> Result<(), ()> {
-    tokio::time::timeout(
-        SEND_TIMEOUT,
-        socket.send(Message::Text(event.to_string().into())),
-    )
-    .await
-    .map_err(|_| ())?
-    .map_err(|_| ())
-}
-
-async fn catch_up(
-    socket: &mut WebSocket,
-    state: &Gateway,
-    channel: i64,
-    external_id: &str,
-    token_hash: Option<&[u8]>,
-    after: &mut i64,
-) -> Result<(), ()> {
-    let head = authorized(state, external_id, token_hash).await?.last_seq;
-    if *after > head || head - *after > REPLAY_LIMIT {
-        write(socket, json!({"type":"resync_required"})).await?;
-        return Err(());
-    }
-    while *after < head {
-        let access = authorized(state, external_id, token_hash).await?;
-        if access.id != channel {
-            return Err(());
-        }
-        let rows: Vec<(i64, Value, Option<i16>, Option<String>)> = sqlx::query_as("SELECT e.seq,e.payload,u.avatar_id,u.display_name FROM public.channel_events e LEFT JOIN public.messages m ON m.channel_id=e.channel_id AND m.external_id=e.payload->'message'->>'id' LEFT JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE e.channel_id=$1 AND e.seq>$2 AND e.seq<=$3 ORDER BY e.seq LIMIT 16")
-            .bind(channel).bind(*after).bind(head).fetch_all(&state.chat.pool).await.map_err(|_| ())?;
-        if rows.is_empty() {
-            write(socket, json!({"type":"resync_required"})).await?;
-            return Err(());
-        }
-        let (seqs, mut payloads): (Vec<i64>, Vec<Value>) = rows
-            .into_iter()
-            .map(|(seq, payload, avatar_id, name)| {
-                (
-                    seq,
-                    crate::chat::enrich_author(payload, avatar_id, name.as_deref()),
-                )
-            })
-            .unzip();
-        crate::assets::reply_attachments(&state.chat.pool, &mut payloads)
-            .await
-            .map_err(|_| ())?;
-        // Stored events still name files a later edit replaced.
-        crate::assets::conceal_retired(&state.chat.pool, &mut payloads)
-            .await
-            .map_err(|_| ())?;
-        for (seq, payload) in seqs.into_iter().zip(payloads) {
-            if seq != *after + 1 {
-                write(socket, json!({"type":"resync_required"})).await?;
-                return Err(());
-            }
-            write(
-                socket,
-                crate::assets::sign_attachments(payload, state.chat.cdn.as_deref()),
-            )
-            .await?;
-            *after = seq;
-        }
-    }
-    write(socket, json!({"type":"ready","cursor":after.to_string()})).await
-}
-
-async fn authorized(
-    state: &Gateway,
-    external_id: &str,
-    token_hash: Option<&[u8]>,
-) -> Result<crate::spaces::ChannelAccess, ()> {
-    let user = match token_hash {
-        Some(hash) => Some(session_user(&state.chat.pool, hash).await.map_err(|_| ())?),
-        None => None,
-    };
-    channel_access(&state.chat.pool, external_id, user)
-        .await
-        .map_err(|_| ())
-}
-
-async fn serve(
-    mut socket: WebSocket,
-    state: Gateway,
-    channel: i64,
-    external_id: String,
-    token_hash: Option<Vec<u8>>,
-    mut after: i64,
-    with_typing: bool,
-) -> Result<(), ()> {
-    // Buffer live before capturing a DB high-water mark. Replay then merge by
-    // sequence. Lagging bounded buffers trigger another replay, never a skip.
-    let _feed = state.application.channel(&external_id);
-    let mut events = state.events.subscribe();
-    let mut repair = state.repair.subscribe();
-    let mut drain = state.drain.subscribe();
-    let mut deadline = None;
-    let mut last_pong = tokio::time::Instant::now();
-    let mut heartbeat = tokio::time::interval(Duration::from_secs(10));
-    // Bound initial catch-up, including slow readers, to avoid retaining tasks.
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        catch_up(
-            &mut socket,
-            &state,
-            channel,
-            &external_id,
-            token_hash.as_deref(),
-            &mut after,
-        ),
-    )
-    .await
-    .map_err(|_| ())??;
-    // No replay or initial buffer for ephemeral presence; dropping it must
-    // never consume durable buffer space or alter the delivery cursor.
-    let mut typing = state.typing.subscribe();
-    if *drain.borrow_and_update() {
-        write(&mut socket, json!({"type":"migrating"})).await?;
-        deadline = Some(tokio::time::Instant::now() + HANDOFF_WINDOW);
-    }
-    loop {
-        tokio::select! {
-            _ = async { match deadline { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => return Ok(()),
-            _ = drain.changed(), if deadline.is_none() => {
-                write(&mut socket, json!({"type":"migrating"})).await?;
-                deadline = Some(tokio::time::Instant::now() + HANDOFF_WINDOW);
-            }
-            event = events.recv() => {
-                match event {
-                    Ok(event) if event["channelId"].as_str() == Some(&external_id) => {
-                        authorized(&state, &external_id, token_hash.as_deref()).await?;
-                        let seq = event["seq"].as_str().and_then(|v| v.parse::<i64>().ok()).ok_or(())?;
-                        if seq == after + 1 { write(&mut socket, crate::assets::sign_attachments(event, state.chat.cdn.as_deref())).await?; after = seq; }
-                        else if seq > after { tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &external_id, token_hash.as_deref(), &mut after)).await.map_err(|_| ())??; }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => { tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &external_id, token_hash.as_deref(), &mut after)).await.map_err(|_| ())??; }
-                    Err(broadcast::error::RecvError::Closed) => return Err(()),
-                    _ => {},
-                }
-            }
-            event = typing.recv(), if with_typing => {
-                if let Ok(event) = event
-                    && event["channelId"].as_str() == Some(&external_id)
-                {
-                    authorized(&state, &external_id, token_hash.as_deref()).await?;
-                    write(&mut socket, event).await?;
-                }
-            }
-            _ = repair.changed() => {
-                repair.borrow_and_update();
-                let access = authorized(&state, &external_id, token_hash.as_deref()).await?;
-                if access.last_seq > after {
-                    tokio::time::timeout(Duration::from_secs(10), catch_up(&mut socket, &state, channel, &external_id, token_hash.as_deref(), &mut after)).await.map_err(|_| ())??;
-                }
-            }
-            _ = heartbeat.tick() => {
-                if last_pong.elapsed() > Duration::from_secs(30) { return Err(()); }
-                tokio::time::timeout(SEND_TIMEOUT, socket.send(Message::Ping(Vec::new().into()))).await.map_err(|_| ())?.map_err(|_| ())?;
-            }
-            frame = socket.recv() => match frame {
-                Some(Ok(Message::Pong(_))) => last_pong = tokio::time::Instant::now(),
-                Some(Ok(Message::Ping(_))) => {},
-                // Commands belong to HTTP; arbitrary client payloads are refused.
-                _ => return Ok(()),
-            }
-        }
     }
 }

@@ -1,5 +1,4 @@
 use super::*;
-use futures_util::{SinkExt, StreamExt};
 use sqlx::{
     Connection, Executor,
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -917,12 +916,7 @@ async fn pins_are_shared_idempotent_authorized_and_transactional() {
     .unwrap();
     let mut readers = Vec::new();
     for token in ["pin-owner", "pin-member"] {
-        let (mut reader, _) = tokio_tungstenite::connect_async(account_socket(
-            format!("ws://{address}/api/chat/events?channelId={channel}&after=3"),
-            token,
-        ))
-        .await
-        .unwrap();
+        let mut reader = chat_socket(address, token, channel, "3").await.unwrap();
         let replayed = event(&mut reader).await;
         assert_eq!(replayed["type"], "message.pin");
         assert_eq!(replayed["message"]["author"]["avatarId"], 255);
@@ -2002,55 +1996,9 @@ async fn direct_reactions_require_participants_and_preserve_history_sequences(po
     );
 }
 
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+use crate::gateway::testing::{Socket, chat_revoked, chat_socket};
 async fn event(socket: &mut Socket) -> Value {
-    tokio::time::timeout(Duration::from_secs(6), async {
-        loop {
-            match socket.next().await.unwrap().unwrap() {
-                tokio_tungstenite::tungstenite::Message::Text(text) => {
-                    return serde_json::from_str(&text).unwrap();
-                }
-                tokio_tungstenite::tungstenite::Message::Ping(bytes) => {
-                    socket
-                        .send(tokio_tungstenite::tungstenite::Message::Pong(bytes))
-                        .await
-                        .unwrap();
-                }
-                frame => panic!("unexpected frame {frame:?}"),
-            }
-        }
-    })
-    .await
-    .expect("event timeout")
-}
-
-async fn wait_closed(socket: &mut Socket) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            match socket.next().await {
-                None | Some(Err(_)) => return,
-                Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => return,
-                Some(Ok(tokio_tungstenite::tungstenite::Message::Ping(bytes))) => {
-                    socket
-                        .send(tokio_tungstenite::tungstenite::Message::Pong(bytes))
-                        .await
-                        .unwrap();
-                }
-                Some(Ok(frame)) => panic!("unexpected frame before close: {frame:?}"),
-            }
-        }
-    })
-    .await
-    .expect("socket was not revoked");
-}
-
-fn account_socket(url: String, cookie: &str) -> axum::http::Request<()> {
-    let mut request = url.into_client_request().unwrap();
-    request
-        .headers_mut()
-        .insert("cookie", format!("caper_session={cookie}").parse().unwrap());
-    request
+    crate::gateway::testing::chat_event(socket, Duration::from_secs(6)).await
 }
 
 async fn typing_command(
@@ -2294,12 +2242,9 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
     let new_server = tokio::spawn(
         axum::serve(new_listener, crate::gateway::router(replacement.clone())).into_future(),
     );
-    let (mut socket, _) = tokio_tungstenite::connect_async(account_socket(
-        format!("ws://{old_address}/api/chat/events?channelId={channel}&after=0"),
-        account_cookie,
-    ))
-    .await
-    .unwrap();
+    let mut socket = chat_socket(old_address, account_cookie, &channel, "0")
+        .await
+        .unwrap();
     for seq in ["1", "2", "3"] {
         let replayed = event(&mut socket).await;
         assert_eq!(replayed["seq"], seq);
@@ -2309,8 +2254,7 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
         event(&mut socket).await,
         json!({"type":"ready","cursor":"3"})
     );
-    // Real broker fanout reaches both gateways, without persisting presence or
-    // sending new event types to clients that did not opt in.
+    // Real broker fanout reaches both gateways, without persisting presence.
     tokio::time::timeout(Duration::from_secs(5), async {
         for address in [old_address, new_address] {
             while reqwest::get(format!("http://{address}/readyz"))
@@ -2325,18 +2269,12 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
     })
     .await
     .unwrap();
-    let (mut typing_old, _) = tokio_tungstenite::connect_async(account_socket(
-        format!("ws://{old_address}/api/chat/events?channelId={channel}&after=3&typing=true"),
-        account_cookie,
-    ))
-    .await
-    .unwrap();
-    let (mut typing_new, _) = tokio_tungstenite::connect_async(account_socket(
-        format!("ws://{new_address}/api/chat/events?channelId={channel}&after=3&typing=true"),
-        account_cookie,
-    ))
-    .await
-    .unwrap();
+    let mut typing_old = chat_socket(old_address, account_cookie, &channel, "3")
+        .await
+        .unwrap();
+    let mut typing_new = chat_socket(new_address, account_cookie, &channel, "3")
+        .await
+        .unwrap();
     assert_eq!(event(&mut typing_old).await["cursor"], "3");
     assert_eq!(event(&mut typing_new).await["cursor"], "3");
     assert_eq!(
@@ -2388,6 +2326,12 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
     );
     typing_old.close(None).await.unwrap();
     typing_new.close(None).await.unwrap();
+    // Every chat subscription carries typing, without advancing its cursor.
+    for typing in [true, false, true, false] {
+        let update = event(&mut socket).await;
+        assert_eq!(update["type"], "typing.updated");
+        assert_eq!(update["typing"], typing);
+    }
     // Mark-published state may be lost after broker delivery. Replay/republication
     // must not duplicate already sent events on an existing socket.
     assert!(publish_pending(&chat).await.unwrap());
@@ -2410,12 +2354,9 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
     assert_eq!(event(&mut socket).await["type"], "ready");
     old.begin_shutdown();
     assert_eq!(event(&mut socket).await["type"], "migrating");
-    let (mut next, _) = tokio_tungstenite::connect_async(account_socket(
-        format!("ws://{new_address}/api/chat/events?channelId={channel}&after=3"),
-        account_cookie,
-    ))
-    .await
-    .unwrap();
+    let mut next = chat_socket(new_address, account_cookie, &channel, "3")
+        .await
+        .unwrap();
     assert_eq!(event(&mut next).await["seq"], "4");
     assert_eq!(event(&mut next).await["cursor"], "4");
     let fifth = persist(&pool, &channel, token, Uuid::new_v4(), "during overlap")
@@ -2425,22 +2366,17 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
     assert_eq!(event(&mut socket).await["message"], fifth);
     assert_eq!(event(&mut next).await["message"], fifth);
     assert!(
-        tokio_tungstenite::connect_async(account_socket(
-            format!("ws://{old_address}/api/chat/events?channelId={channel}&after=5"),
-            account_cookie,
-        ))
-        .await
-        .is_err()
+        chat_socket(old_address, account_cookie, &channel, "5")
+            .await
+            .is_err()
     );
     socket.close(None).await.unwrap();
     // Explicitly reject an impossible cursor; never pretend missing history was read.
-    let (mut invalid, _) = tokio_tungstenite::connect_async(account_socket(
-        format!("ws://{new_address}/api/chat/events?channelId={channel}&after=999"),
-        account_cookie,
-    ))
-    .await
-    .unwrap();
+    let mut invalid = chat_socket(new_address, account_cookie, &channel, "999")
+        .await
+        .unwrap();
     assert_eq!(event(&mut invalid).await["type"], "resync_required");
+    assert_eq!(event(&mut invalid).await["type"], "error");
     next.close(None).await.unwrap();
 
     let demo_channel: String = sqlx::query_scalar("SELECT c.external_id FROM public.channels c JOIN public.spaces s ON s.id=c.space_id WHERE s.demo")
@@ -2457,21 +2393,32 @@ async fn durable_account_delivery_replay_handoff_and_demo_retirement() {
         .execute(&pool)
         .await
         .unwrap();
+    // Signed-out sockets are refused outright; the retired demo is refused
+    // even to its members.
     assert!(
-        tokio_tungstenite::connect_async(format!(
-            "ws://{new_address}/api/chat/events?channelId={demo_channel}&after=0"
-        ))
-        .await
-        .is_err()
+        tokio_tungstenite::connect_async(format!("ws://{new_address}/api/chat/events"))
+            .await
+            .is_err()
     );
-    assert!(
-        tokio_tungstenite::connect_async(account_socket(
-            format!("ws://{new_address}/api/chat/events?channelId={demo_channel}&after=0"),
-            account_cookie,
-        ))
+    let mut demo = chat_socket(new_address, account_cookie, &demo_channel, "0")
         .await
-        .is_err()
+        .unwrap();
+    assert_eq!(event(&mut demo).await["status"], 404);
+    // The retired one-channel-per-socket protocol is refused before any work,
+    // even for a signed-in member of the channel.
+    let mut retired = format!("ws://{new_address}/api/chat/events?channelId={channel}&after=0")
+        .into_client_request()
+        .unwrap();
+    retired.headers_mut().insert(
+        "cookie",
+        format!("caper_session={account_cookie}").parse().unwrap(),
     );
+    match tokio_tungstenite::connect_async(retired).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), StatusCode::GONE)
+        }
+        other => panic!("retired protocol was not refused: {other:?}"),
+    }
     old_server.abort();
     new_server.abort();
 
@@ -2936,20 +2883,14 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(axum::serve(listener, crate::gateway::router(gateway)).into_future());
-    let mut request = format!("ws://{address}/api/chat/events?channelId={first}&after=0")
-        .into_client_request()
-        .unwrap();
-    request
-        .headers_mut()
-        .insert("cookie", format!("caper_session={cookie}").parse().unwrap());
-    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let mut socket = chat_socket(address, cookie, &first, "0").await.unwrap();
     assert_eq!(event(&mut socket).await["message"], first_message);
     assert_eq!(
         event(&mut socket).await,
         json!({"type":"ready","cursor":"1"})
     );
 
-    // Removing the private grant closes an already-established subscription on
+    // Removing the private grant ends an already-established subscription on
     // the next periodic authorization tick, without requiring another event.
     sqlx::query("UPDATE public.channel_members SET deleted_at=now() WHERE channel_id=$1 AND user_id=$2 AND deleted_at IS NULL")
         .bind(first_id)
@@ -2957,24 +2898,12 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
         .execute(&pool)
         .await
         .unwrap();
-    wait_closed(&mut socket).await;
-    let mut denied = format!("ws://{address}/api/chat/events?channelId={first}&after=1")
-        .into_client_request()
-        .unwrap();
-    denied
-        .headers_mut()
-        .insert("cookie", format!("caper_session={cookie}").parse().unwrap());
-    assert!(tokio_tungstenite::connect_async(denied).await.is_err());
+    assert_eq!(chat_revoked(&mut socket).await["status"], 404);
+    let mut denied = chat_socket(address, cookie, &first, "1").await.unwrap();
+    assert_eq!(chat_revoked(&mut denied).await["status"], 404);
 
     // A privacy conversion similarly invalidates a member without a grant.
-    let mut public_request = format!("ws://{address}/api/chat/events?channelId={public}&after=0")
-        .into_client_request()
-        .unwrap();
-    public_request.headers_mut().insert(
-        "cookie",
-        format!("caper_session={outsider_cookie}").parse().unwrap(),
-    );
-    let (mut public_socket, _) = tokio_tungstenite::connect_async(public_request)
+    let mut public_socket = chat_socket(address, outsider_cookie, &public, "0")
         .await
         .unwrap();
     assert_eq!(event(&mut public_socket).await["type"], "message.created");
@@ -2984,7 +2913,7 @@ async fn account_channels_isolate_sequences_and_gateway_revokes_live_access() {
         .execute(&pool)
         .await
         .unwrap();
-    wait_closed(&mut public_socket).await;
+    assert_eq!(chat_revoked(&mut public_socket).await["status"], 404);
 
     server.abort();
     pool.close().await;

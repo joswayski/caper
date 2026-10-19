@@ -3,13 +3,12 @@ use axum::{
     body::{Body, to_bytes},
     http::Request,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use sqlx::{
     Connection, Executor,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 use std::{future::IntoFuture, str::FromStr};
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tower::ServiceExt;
 
 async fn command(
@@ -1185,37 +1184,20 @@ fn placeholder(id: &str, kind: &str, content_type: &str) -> Value {
     json!({"id":id,"kind":kind,"contentType":content_type,"name":"Replaced file","size":0,"unavailable":true})
 }
 
-/// Every frame a legacy channel socket replays for `token`, up to `ready`.
+/// Every event a chat subscription replays for `token`, up to `ready`.
 async fn replayed(address: std::net::SocketAddr, channel: &str, token: &str) -> Vec<Value> {
-    let mut request = format!("ws://{address}/api/chat/events?channelId={channel}&after=0")
-        .into_client_request()
+    let mut socket = crate::gateway::testing::chat_socket(address, token, channel, "0")
+        .await
         .unwrap();
-    request
-        .headers_mut()
-        .insert("cookie", format!("caper_session={token}").parse().unwrap());
-    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
     let mut frames = Vec::new();
-    tokio::time::timeout(Duration::from_secs(6), async {
-        loop {
-            match socket.next().await.unwrap().unwrap() {
-                tokio_tungstenite::tungstenite::Message::Text(text) => {
-                    let frame: Value = serde_json::from_str(&text).unwrap();
-                    if frame["type"] == "ready" {
-                        return;
-                    }
-                    frames.push(frame);
-                }
-                tokio_tungstenite::tungstenite::Message::Ping(bytes) => socket
-                    .send(tokio_tungstenite::tungstenite::Message::Pong(bytes))
-                    .await
-                    .unwrap(),
-                frame => panic!("unexpected frame {frame:?}"),
-            }
+    loop {
+        let frame = crate::gateway::testing::chat_event(&mut socket, Duration::from_secs(6)).await;
+        assert!(frame["type"] != "error", "replay refused: {frame}");
+        if frame["type"] == "ready" {
+            return frames;
         }
-    })
-    .await
-    .expect("replay timeout");
-    frames
+        frames.push(frame);
+    }
 }
 
 #[tokio::test]

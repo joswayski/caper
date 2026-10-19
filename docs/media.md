@@ -527,9 +527,10 @@ SES or migration credentials. Existing opaque sessions are verified from the DB.
 Then merge Caper PR #146 into `main`, wait for both immutable images, and deploy
 that merged SHA **API first**, **gateway second**, **web last**, matching the existing
 deployment workflow's API-image prerequisite. The API rollout includes outstanding
-spaces/channel migrations; the gateway does not run migrations. New gateways accept old chat clients.
-Between the first two steps, old gateways repair durable messages from Postgres,
-but old tabs can miss typing pulses as publications move to scoped topics.
+spaces/channel migrations; the gateway does not run migrations. The previous
+one-channel-per-socket protocol (`/api/chat/events?channelId=…`) has since been
+retired: gateways answer it with `410 Gone` before any database work, and only
+web tabs loaded before this rollout ever used it (native clients never did).
 Do not expose new web clients to old gateways. Old SSE endpoints remain solely for
 compatibility; mixed old API pods may delay old-tab roster updates until repair.
 The older SSE-specific sections below describe that compatibility path and its
@@ -791,9 +792,11 @@ request resources; it does not undo a server-side commit.
 Typing uses channel-scoped `caper:chat:v1:typing:{channelId}` Pub/Sub topics; it
 never enters the transactional outbox, history, or message sequence. Gateways
 subscribe only for locally interested channels and deliver `typing.updated`
-on that channel's logical chat subscription. The old `&typing=true` protocol is
-retained for already-open tabs. Follow the application-gateway rollout above;
-the initial protocol cutover can miss ephemeral pulses on old gateways.
+on that channel's logical chat subscription. Each chat subscription rechecks
+the sign-in session and channel access (one query) before every durable event
+and every ten seconds while idle; typing and upload progress reuse a check from
+the last second. Losing access ends the subscription with an `error` frame
+within those bounds.
 
 Typing publications are limited across API replicas to four per author/channel
 per second and 120 per channel per second. The browser pulses at most every 500ms
@@ -880,7 +883,7 @@ Validation matrix for this slice:
 | Check | Evidence / limitation |
 | --- | --- |
 | Transaction rollback, concurrent retry/order, replay, duplicate publish, lost last event, overlap | Automated integration test with disposable Postgres and real broker/WebSockets; also runs in CI with Postgres 17 + Valkey 9.1.2 |
-| Typing auth/rate limits, cross-gateway fanout, legacy opt-out, unchanged durable cursor | Automated disposable Postgres/broker integration; browser unit tests cover throttling, expiry, overlap and nonblocking sends |
+| Typing auth/rate limits, cross-gateway fanout, unchanged durable cursor | Automated disposable Postgres/broker integration; browser unit tests cover throttling, expiry, overlap and nonblocking sends |
 | Real guest browser send/receive | Two isolated Chromium sessions, real local HTTP/DB/broker/gateway; literal HTML-like text stays text |
 | Real process SIGTERM with replacement | Readiness-aware local test proxy; 12 messages received once, zero offline transitions; old socket closed after replacement ready |
 | Lost acknowledgment after commit | Injected browser fetch failure after real HTTP commit; Enter retry returned the same message, one visible copy |
@@ -1398,8 +1401,7 @@ refreshed only for its owner.
 ### Delivery and URL signing
 
 Every response or socket frame that carries a message signs URLs as it leaves:
-history, the send response, and both gateway paths (live and replay, including
-the legacy socket). URLs look like
+history, the send response, and the gateway's live and replay paths. URLs look like
 `https://cdn.caper.chat/assets/{id}?exp={unix}&sig={base64url HMAC-SHA256("{key}\n{exp}")}`.
 The public `/assets/{id}` path maps to the existing `original/{id}` R2 key;
 the HMAC still signs that storage key. Previews stay at `/preview/{id}`.

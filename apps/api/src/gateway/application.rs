@@ -341,15 +341,15 @@ pub(super) async fn upgrade(
     Query(query): Query<HashMap<String, String>>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    // Old tabs can drain through the previous protocol during an API/gateway/web
-    // rollout. New clients never create a channel-specific connection.
+    // `?channelId=` was the retired one-channel-per-socket protocol, used only
+    // by web builds from before 2026-09-23 (native clients never used it).
+    // Refuse it before any database work or connection slot: such a tab keeps
+    // retrying, and only a reload gets it the current protocol.
     if query.contains_key("channelId") {
-        let query = Subscription {
-            channel_id: query.get("channelId").cloned().ok_or_else(invalid)?,
-            after: query.get("after").cloned().ok_or_else(invalid)?,
-            typing: query.get("typing").is_some_and(|v| v == "true"),
-        };
-        return super::upgrade(State(state), headers, Query(query), ws).await;
+        return Err(ApiError::new(
+            StatusCode::GONE,
+            "this chat connection was retired; reload the page",
+        ));
     }
     if *state.drain.borrow() {
         return Err(chat::unavailable());
