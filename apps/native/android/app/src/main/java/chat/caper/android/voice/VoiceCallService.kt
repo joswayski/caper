@@ -454,7 +454,7 @@ class VoiceCallService : Service() {
 
     private fun updateRoutes() {
         if (Build.VERSION.SDK_INT < 31) return
-        val routes = audio.availableCommunicationDevices.map { AudioRoute(it.id, it.productName?.toString() ?: routeName(it.type)) }
+        val routes = audio.availableCommunicationDevices.map { AudioRoute(it.id, it.productName?.toString()?.takeIf(String::isNotBlank) ?: routeName(it.type), it.type) }
         val selected = audio.communicationDevice?.id
         update { it.copy(routes = routes, selectedRouteId = selected) }
     }

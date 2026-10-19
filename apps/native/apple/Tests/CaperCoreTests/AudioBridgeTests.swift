@@ -4,6 +4,20 @@ import WebRTC
 @testable import CaperCore
 
 final class AudioBridgeTests: XCTestCase {
+    func testDeviceIconsUseConservativeFallbacksForUnknownHardware() {
+        let unknown = AudioDevice(id: "unknown", name: "USB Product 123")
+        XCTAssertEqual(unknown.icon(input: true), "mic")
+        XCTAssertEqual(unknown.icon(input: false), "speaker.wave.2")
+        let headphones = AudioDevice(id: "headphones", name: "Studio Headphones")
+        XCTAssertEqual(headphones.icon(input: false), "headphones")
+        XCTAssertEqual(AudioDevice(id: "bt", name: "Bluetooth Headphones").icon(input: false), "bluetooth")
+        XCTAssertEqual(AudioDevice(id: "headset", name: "USB Headset").icon(input: true), "headset")
+        XCTAssertEqual(AudioDevice(id: "monitor", name: "HDMI Monitor").icon(input: false), "monitor")
+        var typed = unknown
+        typed.symbol = "airplayaudio"
+        XCTAssertEqual(typed.icon(input: false), "airplayaudio", "OS port metadata takes precedence over name inference")
+    }
+
     func testPinnedMacOSBinaryAcceptsCustomAudioDeviceWithoutHardware() {
         RTCInitializeSSL()
         XCTAssertTrue(CaperCustomAudioFactoryAvailable(), "The pinned WebRTC framework must export M153's custom audio factory selector")

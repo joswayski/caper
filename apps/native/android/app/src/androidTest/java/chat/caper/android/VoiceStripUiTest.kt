@@ -15,13 +15,18 @@ import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import chat.caper.android.model.Participant
+import chat.caper.android.model.AudioRoute
+import android.os.Build
 import chat.caper.android.ui.CaperTheme
 import chat.caper.android.voice.VoiceState
 import org.junit.Assert.assertEquals
@@ -35,6 +40,52 @@ class VoiceStripUiTest {
     @get:Rule val compose = createComposeRule()
 
     private fun person(id: String, name: String) = Participant(id, name, muted = false, deafened = false, tracks = emptyList())
+
+    @Test fun outputOptionsKeepVolumeAndSelectedDeviceButMoveChoicesToDialog() {
+        compose.setContent { CaperTheme {
+            AudioOptionsMenu(false, VoiceState(routes = listOf(AudioRoute(1, "Phone speaker"), AudioRoute(2, "Headset")), selectedRouteId = 1))
+        } }
+        compose.onNodeWithContentDescription("Output Options").performClick()
+        compose.onNodeWithContentDescription("Output volume").assertExists()
+        compose.onNodeWithText("Phone speaker").assertExists()
+        compose.onNodeWithText("Headset").assertDoesNotExist()
+        compose.onNodeWithText("Audio output").performClick()
+        compose.onNodeWithText("Communication device").assertExists()
+        if (Build.VERSION.SDK_INT >= 31) compose.onNodeWithText("Headset").assertExists()
+        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithText("Communication device").assertDoesNotExist()
+    }
+
+    @Test fun audioDeviceSummaryOpensBoundedSharedRoutePickerAndDismissesAfterChoice() {
+        org.junit.Assume.assumeTrue(Build.VERSION.SDK_INT >= 31)
+        val longName = "Bluetooth headset with a very long device name that must wrap without hiding its radio button"
+        val voice = mutableStateOf(VoiceState(routes = listOf(AudioRoute(1, "Phone speaker")) +
+            (2..40).map { AudioRoute(it, if (it == 40) longName else "Device $it") }, selectedRouteId = 1))
+        var chosen: Int? = null
+        compose.setContent { CaperTheme {
+            AudioDeviceSelector(true, voice.value) { chosen = it; voice.value = voice.value.copy(selectedRouteId = it) }
+        } }
+        compose.onNodeWithText("Device 2").assertDoesNotExist()
+        compose.onNodeWithText("Microphone").performClick()
+        compose.onNodeWithText("Android chooses the microphone", substring = true).assertExists()
+        compose.onNode(hasText("Phone speaker") and hasAnyAncestor(isDialog())).assertIsSelected()
+        compose.onNode(hasText(longName) and hasAnyAncestor(isDialog())).performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(40, chosen) }
+        compose.onNodeWithText("Communication device").assertDoesNotExist()
+        compose.onNodeWithText("Microphone").performClick()
+        compose.onNode(hasText(longName) and hasAnyAncestor(isDialog())).performScrollTo().assertIsSelected()
+        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithText("Communication device").assertDoesNotExist()
+    }
+
+    @Test fun unavailableAudioRoutesExplainSystemControlWithoutFakeChoices() {
+        compose.setContent { CaperTheme { AudioDeviceSelector(false, VoiceState()) } }
+        compose.onNodeWithText("System default").performClick()
+        val message = if (Build.VERSION.SDK_INT >= 31) "No communication devices available." else "Choose audio devices in system settings"
+        compose.onNodeWithText(message, substring = true).assertExists()
+        compose.onNodeWithContentDescription("Close").performClick()
+        compose.onNodeWithText("System default").assertExists()
+    }
 
     @Test fun callStripMutesInPlaceAndOtherwiseOpensBrowse() {
         // Maya is speaking: only her face's ring shows it.

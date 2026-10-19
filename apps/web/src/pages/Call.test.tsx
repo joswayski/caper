@@ -3,7 +3,34 @@ import { expect, test } from "vitest";
 import type { GeneralChatHistory } from "../chat/types";
 import { Route as SpacesRoute } from "../routes/spaces";
 import Call from "./Call";
+import AudioDevicePicker, { audioDeviceOptions } from "./AudioDevicePicker";
 import { STRIP_FACES, callCardFaces, liveNames } from "../media/live-now";
+
+test("device choices keep system routing distinct from explicit devices with the same label", () => {
+  const device = (deviceId: string, label: string, kind: MediaDeviceKind = "audiooutput") =>
+    ({ deviceId, label, kind, groupId: "", toJSON: () => ({}) }) as MediaDeviceInfo;
+  const devices = [
+    device("default", "Default - Headphones"),
+    device("first", "Headphones"),
+    device("second", "Headphones"),
+    device("mic", "Microphone", "audioinput"),
+  ];
+  expect(audioDeviceOptions(devices, false)).toEqual([
+    { id: "", label: "System default", detail: "Headphones" },
+    { id: "first", label: "Headphones", detail: "" },
+    { id: "second", label: "Headphones", detail: "" },
+  ]);
+  expect(audioDeviceOptions([], true)).toEqual([
+    { id: "", label: "System default", detail: "Follows system sound settings" },
+  ]);
+  const markup = renderToStaticMarkup(
+    <AudioDevicePicker title="Output device" devices={devices} value="first" onChange={() => {}} />,
+  );
+  expect(markup).toContain('aria-expanded="false"');
+  expect(markup).toContain("Headphones");
+  expect(markup).not.toContain("System default");
+  expect(markup).not.toContain('role="menuitemradio"');
+});
 
 test("a direct spaces visit renders a visible server fallback before account data or hydration", () => {
   const Pending = SpacesRoute.options.pendingComponent!;

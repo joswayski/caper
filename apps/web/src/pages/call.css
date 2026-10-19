@@ -1183,42 +1183,137 @@
     background: rgb(212 67 85 / 0.18);
   }
 }
-.device-select {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  font-weight: 700;
-}
-.device-select select {
+.audio-device-picker .audio-device-summary,
+.audio-device-picker .audio-device-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   min-width: 0;
-  padding: 9px 8px;
-  border: 1px solid var(--border);
+  min-height: 48px;
+  padding: 10px 8px;
+  border: 0;
   border-radius: 8px;
   color: var(--text);
-  background: var(--surface-raised);
+  background: transparent;
   font: inherit;
   font-size: 0.8rem;
-  font-weight: 500;
+  text-align: left;
   cursor: pointer;
 }
+.audio-device-summary > span,
+.audio-device-choice > span:not(.audio-device-radio) {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.audio-device-summary strong,
+.audio-device-summary small,
+.audio-device-choice small {
+  display: block;
+}
+.audio-device-summary small,
+.audio-device-choice small {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+.audio-device-summary svg,
+.audio-device-choice svg,
+.audio-device-drawer header svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.audio-device-drawer {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: 6px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.3);
+  overflow: hidden;
+  animation: audio-device-arrive var(--motion-fast) var(--ease-out);
+}
+.audio-device-drawer:popover-open {
+  display: flex;
+  flex-direction: column;
+}
+.audio-device-drawer header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 8px;
+  font-size: 0.8rem;
+}
+.audio-device-drawer header button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+.audio-device-choices {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.audio-device-radio {
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border: 1px solid var(--text-muted);
+  border-radius: 50%;
+}
+.audio-device-choice[aria-checked="true"] .audio-device-radio {
+  border: 5px solid var(--terracotta);
+  background: var(--text);
+}
+.audio-device-summary:focus-visible,
+.audio-device-choice:focus-visible,
+.audio-device-drawer header button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+}
 @media (hover: hover) {
-  .device-select select:hover:not(:disabled) {
-    border-color: #4a4f53;
+  .audio-device-summary:hover:not(:disabled),
+  .audio-device-choice:hover,
+  .audio-device-drawer header button:hover {
+    background: var(--surface-raised);
   }
 }
-/* Unavailable pickers (no output selection in this browser, or a pending
-   change) no longer look identical to working ones. */
-.device-select select:disabled {
+.audio-device-summary:disabled {
   opacity: 0.5;
   cursor: default;
 }
-/* iOS zooms the page when a control under 16px gains focus. */
-@media (max-width: 760px), (pointer: coarse) {
-  .device-select select {
-    font-size: 16px;
+@keyframes audio-device-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .audio-device-drawer {
+    animation: none;
+  }
+}
+@media (max-width: 640px) {
+  .audio-device-summary,
+  .audio-device-choice {
+    font-size: 0.9rem;
   }
 }
 .device-options {

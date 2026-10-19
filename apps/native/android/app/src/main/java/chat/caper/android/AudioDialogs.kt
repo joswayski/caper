@@ -1,12 +1,15 @@
 package chat.caper.android
 
 import android.Manifest
+import android.media.AudioDeviceInfo
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.*
@@ -20,6 +23,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.model.AppUiState
@@ -96,23 +101,13 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
         }
         DropdownMenu(open, { open = false }, Modifier.width(280.dp), containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                AudioDeviceSelector(input, voice)
                 if (input) {
-                    // Android records from the system's communication microphone.
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("Microphone", fontWeight = FontWeight.Bold, fontSize = 12.sp); Text("System default", color = TextMuted, fontSize = 12.sp)
-                    }
                     var gain by remember { mutableIntStateOf(preferences.getInt("inputGain", 100)) }
                     VolumeRow("Input volume", gain)
                     DefaultSlider(gain.toFloat(), { gain = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setInputGain(context, gain) },
                         Modifier.semantics { contentDescription = "Input volume" }, valueRange = 0f..200f, defaultValue = 100f)
                 } else {
-                    Text("Audio output", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) voice.routes.forEach { route ->
-                        Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable { VoiceCallService.selectRoute(context, route.id) }, verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(route.id == voice.selectedRouteId, { VoiceCallService.selectRoute(context, route.id) })
-                            Spacer(Modifier.width(8.dp)); Text(route.name, fontSize = 13.sp)
-                        }
-                    } else Text("Choose audio output in system settings.", color = TextMuted, fontSize = 11.sp)
                     var volume by remember { mutableIntStateOf(preferences.getInt("outputVolume", 100)) }
                     VolumeRow("Output volume", volume)
                     DefaultSlider(volume.toFloat(), { volume = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setOutputVolume(context, volume) },
@@ -121,6 +116,56 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
             }
         }
     }
+}
+
+/** Android exposes one communication route, not independently selectable microphones. */
+@Composable internal fun AudioDeviceSelector(input: Boolean, voice: VoiceState, select: ((Int) -> Unit)? = null) {
+    val context = LocalContext.current
+    var picking by remember { mutableStateOf(false) }
+    val selected = voice.routes.firstOrNull { it.id == voice.selectedRouteId }
+    val label = if (input) "Microphone" else "Audio output"
+    val summary = selected?.name ?: "System default"
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
+        .clickable(role = Role.Button, onClickLabel = "Choose communication device") { picking = true }
+        .padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Icon(painterResource(audioRouteIcon(selected?.type ?: 0, input)), null, Modifier.size(20.dp), tint = TextMuted)
+        Column(Modifier.weight(1f)) {
+            Text(label, fontSize = 11.sp, color = TextMuted)
+            Text(summary, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 13.sp)
+        }
+        Icon(painterResource(R.drawable.lucide_chevron_down), null, Modifier.size(14.dp), tint = TextMuted)
+    }
+    if (input) Text("Microphone follows the communication route.", color = TextMuted, fontSize = 11.sp)
+    if (picking) CaperDialog("Communication device", { picking = false }) {
+        Text("Android chooses the microphone for the communication route. Changing this device changes both call input and output. Outside a call, audio tests may use the system default.", color = TextMuted, fontSize = 12.sp)
+        if (Build.VERSION.SDK_INT < 31) Text("Choose audio devices in system settings on this Android version.", color = TextMuted, fontSize = 12.sp)
+        else if (voice.routes.isEmpty()) Text("No communication devices available. Join voice to choose a route; otherwise use system settings.", color = TextMuted, fontSize = 12.sp)
+        else Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            voice.routes.forEach { route ->
+                val active = route.id == voice.selectedRouteId
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
+                    .selectable(active, role = Role.RadioButton) {
+                        if (select != null) select(route.id) else VoiceCallService.selectRoute(context, route.id)
+                        picking = false
+                    }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(painterResource(audioRouteIcon(route.type)), null, Modifier.size(20.dp), tint = TextMuted)
+                    Text(route.name, Modifier.weight(1f), fontSize = 13.sp)
+                    RadioButton(active, onClick = null)
+                }
+            }
+        }
+    }
+}
+
+internal fun audioRouteIcon(type: Int, input: Boolean = false): Int = when (type) {
+    AudioDeviceInfo.TYPE_BLUETOOTH_SCO, AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+    AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLE_SPEAKER -> R.drawable.audio_bluetooth
+    AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_USB_HEADSET -> R.drawable.audio_headset
+    AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> R.drawable.lucide_headphones
+    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, AudioDeviceInfo.TYPE_BUILTIN_SPEAKER_SAFE -> R.drawable.lucide_volume_2
+    AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> R.drawable.audio_earpiece
+    AudioDeviceInfo.TYPE_BUILTIN_MIC -> R.drawable.lucide_mic
+    else -> if (input) R.drawable.lucide_mic else R.drawable.lucide_audio_lines
 }
 
 @Composable private fun MenuButton(label: String, enabled: Boolean = true, action: () -> Unit) =
@@ -312,16 +357,11 @@ private const val MAX_RECORDING_SECONDS = 30
         VolumeRow("Microphone volume", inputGain)
         DefaultSlider(inputGain.toFloat(), { inputGain = it.toInt(); CaperEffects.slider(it / 200f); VoiceCallService.setInputGain(context, inputGain); prejoin?.gain(inputGain) },
             modifier = Modifier.semantics { contentDescription = "Test microphone volume" }, valueRange = 0f..200f, defaultValue = 100f)
-        Text("Speaker", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-        if (Build.VERSION.SDK_INT >= 31 && voice.routes.isNotEmpty()) voice.routes.forEach { route ->
-            Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable { VoiceCallService.selectRoute(context, route.id) }, verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(route.id == voice.selectedRouteId, { VoiceCallService.selectRoute(context, route.id) })
-                Spacer(Modifier.width(8.dp)); Text(route.name, fontSize = 13.sp)
-            }
-        } else Text("Choose speakers in system settings.", color = TextMuted, fontSize = 11.sp)
+        AudioDeviceSelector(true, voice)
         VolumeRow("Speaker volume", outputVolume)
         DefaultSlider(outputVolume.toFloat(), { outputVolume = it.toInt(); CaperEffects.slider(it / 200f); stopPlayback(); VoiceCallService.setOutputVolume(context, outputVolume) },
             modifier = Modifier.semantics { contentDescription = "Test speaker volume" }, valueRange = 0f..200f, defaultValue = 100f)
+        AudioDeviceSelector(false, voice)
         OutlinedButton({ speakerError = false; speakerPlaying = !speakerPlaying }, shape = MaterialTheme.shapes.small, colors = neutralOutlinedButtonColors(),
             modifier = Modifier.semantics { stateDescription = if (speakerPlaying) "On" else "Off" }) {
             Text(if (speakerPlaying) "Stop speaker test" else "Test speakers")
