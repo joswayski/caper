@@ -49,6 +49,21 @@ final class AttachmentImageLoader: @unchecked Sendable {
         return body
     }
 
+    #if os(macOS)
+    /// Copy original pixels, with orientation applied; animations contribute their first frame.
+    func clipboardImage(_ url: URL) async throws -> CGImage {
+        let data = try await fetch(url)
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+              let width = properties[kCGImagePropertyPixelWidth as String] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight as String] as? Int,
+              let image = Self.decodeStill(source, maxPixelSize: max(width, height)) else {
+            throw AttachmentLoadError.undecodable
+        }
+        return image
+    }
+    #endif
+
     func load(key: String, url: URL, maxPixelSize: Int) async throws -> CGImage {
         if let hit = cached(key) { return hit }
         let data = try await fetch(url)
@@ -1219,6 +1234,8 @@ private struct MediaViewer: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     #else
     @FocusState private var focused: Bool
+    @State private var copyingImage = false
+    @State private var copyStatus: String?
     #endif
     @State private var index: Int
     @State private var hidingSpoiler = false
@@ -1344,6 +1361,30 @@ private struct MediaViewer: View {
                     .help("Open in browser")
                     .accessibilityLabel("Open in browser")
                     .accessibilityIdentifier("media-viewer-open")
+                    Menu {
+                        if item.kind == .image {
+                            Button { copyImage(url) } label: {
+                                Label("Copy image", systemImage: "doc.on.doc")
+                            }
+                            .disabled(copyingImage)
+                        }
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            copyStatus = NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                                ? "Media link copied" : "Couldn’t copy media link."
+                        } label: {
+                            Label("Copy media link", systemImage: "link")
+                        }
+                        .disabled(copyingImage)
+                    } label: {
+                        CaperIcon(name: "ellipsis", size: 20)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .buttonStyle(MediaViewerButton())
+                    .help("More media actions")
+                    .accessibilityLabel("More media actions")
                     #endif
                 }
                 Button(action: close) { CaperIcon(name: "x", size: 20) }
@@ -1374,6 +1415,22 @@ private struct MediaViewer: View {
                 .padding(.horizontal, 12)
             }
             Spacer(minLength: 0)
+            #if os(macOS)
+            if let copyStatus {
+                Text(copyStatus)
+                    .font(CaperTheme.font(13))
+                    .foregroundStyle(CaperTheme.text)
+                    .padding(12)
+                    .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.bottom, 16)
+                    .accessibilityLabel(copyStatus)
+                    .task(id: copyStatus) {
+                        guard !copyingImage else { return }
+                        try? await Task.sleep(for: .seconds(4))
+                        if !Task.isCancelled { self.copyStatus = nil }
+                    }
+            }
+            #endif
         }
         .overlay {
             if showsArrows && count > 1 {
@@ -1410,6 +1467,25 @@ private struct MediaViewer: View {
         .accessibilityLabel("Save or share")
         .accessibilityIdentifier("media-viewer-download")
     }
+
+    #if os(macOS)
+    private func copyImage(_ url: URL) {
+        copyingImage = true
+        copyStatus = "Copying image…"
+        Task {
+            do {
+                let image = try await AttachmentImageLoader.shared.clipboardImage(url)
+                NSPasteboard.general.clearContents()
+                let copied = NSPasteboard.general.writeObjects([NSImage(cgImage: image, size: .zero)])
+                copyingImage = false
+                copyStatus = copied ? "Image copied" : "Couldn’t copy image."
+            } catch {
+                copyingImage = false
+                copyStatus = "Couldn’t copy image. Try saving it instead."
+            }
+        }
+    }
+    #endif
 
     private func move(_ delta: Int, count: Int) {
         let next = MediaViewerPolicy.step(index, by: delta, count: count)

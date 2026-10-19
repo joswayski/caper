@@ -11,11 +11,13 @@ import {
   Brush,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Crop,
   Download,
   Ellipsis,
   ExternalLink,
   EyeOff,
+  Link,
   Type,
   X,
 } from "lucide-react";
@@ -406,6 +408,8 @@ export default function MediaViewer({
   const [entering, setEntering] = useState<1 | -1>();
   // URLs that failed to load. A refreshed URL is a new key, so it loads again.
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const [copying, setCopying] = useState(false);
+  const [copyStatus, setCopyStatus] = useState("");
   const reported = useRef(new Set<string>());
   const returnFocus = useRef(anchor);
   const closeButton = useRef<HTMLButtonElement>(null);
@@ -432,6 +436,59 @@ export default function MediaViewer({
       : undefined;
   // What download costs; message files always carry their stored size.
   const size = current?.size ? formatBytes(current.size) : undefined;
+
+  useEffect(() => {
+    if (!copyStatus || copying) return;
+    const timer = setTimeout(() => setCopyStatus(""), 4000);
+    return () => clearTimeout(timer);
+  }, [copyStatus, copying]);
+
+  const copy = async (image: boolean) => {
+    if (!current?.url || copying) return;
+    setCopying(true);
+    setCopyStatus(image ? "Copying image…" : "Copying media link…");
+    try {
+      if (image) {
+        // Supply a promise immediately so Safari keeps the click's clipboard permission
+        // while the original downloads. PNG is the interoperable clipboard image format.
+        const png = (async () => {
+          const response = await fetch(current.url!);
+          if (!response.ok) throw new Error("Image download failed");
+          const bitmap = await createImageBitmap(await response.blob());
+          try {
+            const canvas = document.createElement("canvas");
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+            const context = canvas.getContext("2d");
+            if (!context) throw new Error("Image conversion unavailable");
+            context.drawImage(bitmap, 0, 0);
+            return await new Promise<Blob>((resolve, reject) => {
+              canvas.toBlob(
+                (blob) => (blob ? resolve(blob) : reject(new Error("Image conversion failed"))),
+                "image/png",
+              );
+            });
+          } finally {
+            bitmap.close();
+          }
+        })();
+        // A permission failure can reject write before the image finishes loading.
+        void png.catch(() => {});
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+      } else {
+        await navigator.clipboard.writeText(current.url);
+      }
+      setCopyStatus(image ? "Image copied" : "Media link copied");
+    } catch {
+      setCopyStatus(
+        image
+          ? "Couldn’t copy image. Try downloading it instead."
+          : "Couldn’t copy media link. Check clipboard permissions.",
+      );
+    } finally {
+      setCopying(false);
+    }
+  };
 
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
@@ -590,11 +647,42 @@ export default function MediaViewer({
                         actionsMenu.current?.querySelector("summary")?.focus();
                       }}
                     >
-                      <a href={current.url} download={current.name} target="_blank" rel="noopener noreferrer">
+                      {current.kind === "image" && (
+                        <button
+                          className="chat-viewer-desktop-action"
+                          type="button"
+                          disabled={copying}
+                          onClick={() => void copy(true)}
+                        >
+                          <Copy size={20} aria-hidden="true" />
+                          Copy image
+                        </button>
+                      )}
+                      <button
+                        className="chat-viewer-desktop-action"
+                        type="button"
+                        disabled={copying}
+                        onClick={() => void copy(false)}
+                      >
+                        <Link size={20} aria-hidden="true" />
+                        Copy media link
+                      </button>
+                      <a
+                        className="chat-viewer-mobile-action"
+                        href={current.url}
+                        download={current.name}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
                         <Download size={20} aria-hidden="true" />
                         Download
                       </a>
-                      <a href={current.url} target="_blank" rel="noopener noreferrer">
+                      <a
+                        className="chat-viewer-mobile-action"
+                        href={current.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
                         <ExternalLink size={20} aria-hidden="true" />
                         Open in browser
                       </a>
@@ -606,6 +694,11 @@ export default function MediaViewer({
                 <X size={22} aria-hidden="true" />
               </button>
             </header>
+            {copyStatus && (
+              <div className="chat-viewer-copy-status" role="status">
+                {copyStatus}
+              </div>
+            )}
             {current?.spoiler && onHideSpoiler && (
               <button
                 type="button"
