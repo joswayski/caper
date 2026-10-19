@@ -368,7 +368,9 @@ public enum WorkspaceValidation {
         let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty { return "Enter a space name." }
         if name.unicodeScalars.count > 80 { return "Space names can be at most 80 characters." }
-        if name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
+        // Cc only, as on web: Foundation's controlCharacters also holds format
+        // characters (bidi overrides, zero-width), which the next rule names.
+        if name.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) {
             return "Space names cannot contain control characters."
         }
         if NameCharacters.hasHidden(name) { return "Space names cannot contain invisible or text-direction characters." }

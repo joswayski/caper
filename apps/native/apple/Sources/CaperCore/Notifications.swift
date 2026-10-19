@@ -303,11 +303,15 @@ public struct NotificationSettings: Decodable, Equatable, Sendable {
 
     // MARK: Changing
 
-    /// Replaces the scope's override (or clears it when `override` is nil or empty).
+    /// Replaces the scope's override in place (or clears it when `override` is
+    /// nil or empty), so a restored override never moves and lists keep their order.
     public func replacing(_ override: NotificationOverride?, for scope: NotificationScope) -> NotificationSettings {
         var copy = self
+        let index = copy.overrides.firstIndex { $0.scope == scope }
         copy.overrides.removeAll { $0.scope == scope }
-        if let override, override.scope == scope, !override.isEmpty { copy.overrides.append(override) }
+        if let override, override.scope == scope, !override.isEmpty {
+            copy.overrides.insert(override, at: min(index ?? copy.overrides.count, copy.overrides.count))
+        }
         return copy
     }
 
