@@ -5,6 +5,7 @@
 //   PLAYWRIGHT_MODULE=/path/to/node_modules/playwright/index.mjs \
 //   PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
 //   node scripts/test-pictures.mjs http://localhost:5174 [screenshot-directory]
+// Set PICTURE_GALLERY_ONLY=1 to run only the desktop/touch gallery contract checks.
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -128,7 +129,12 @@ function fixture() {
   if (location.protocol === "about:") return;
   const cdn = "https://cdn.test/assets";
   const url = (asset, signature = "a") => `${cdn}/${asset}?exp=1792000000&sig=${signature}`;
-  const account = { id: "owner1234567", username: "fixture_owner", displayName: "Owner (test)", avatarId: 0 };
+  const account = {
+    id: "owner1234567",
+    username: "fixture_owner",
+    displayName: "Owner (test)",
+    avatarId: 0,
+  };
   const picture = (avatarAsset) => ({ avatarAsset, avatarUrl: url(avatarAsset) });
   const others = [
     {
@@ -148,7 +154,14 @@ function fixture() {
     },
     { id: "member000004", username: "avery", displayName: "Avery (mascot)", avatarId: 143 },
   ];
-  const control = (window.pictureFixture = { reservations: [], completes: 0, removals: 0, failNext: undefined });
+  const control = (window.pictureFixture = {
+    reservations: [],
+    completes: 0,
+    removals: 0,
+    failNext: undefined,
+    history: [],
+    selections: [],
+  });
   // The server's own copy follows a profile change made "elsewhere" (as the real API would).
   control.updateAccount = (fields) => Object.assign(account, fields);
   const members = () => [{ ...account, owner: true }, ...others.map((member) => ({ ...member, owner: false }))];
@@ -213,7 +226,8 @@ function fixture() {
   const original = window.fetch.bind(window);
   let uploads = 0;
   window.fetch = async (input, options = {}) => {
-    const path = new URL(typeof input === "string" ? input : input.url, location.href).pathname;
+    const requestUrl = new URL(typeof input === "string" ? input : input.url, location.href);
+    const path = requestUrl.pathname;
     const method = (options.method ?? "GET").toUpperCase();
     if (!path.startsWith("/api/")) return original(input, options);
     if (path === "/api/account/me") return Response.json(account);
@@ -221,6 +235,36 @@ function fixture() {
       control.removals++;
       delete account.avatarAsset;
       delete account.avatarUrl;
+      return Response.json(account);
+    }
+    if (path === "/api/account/avatar/history") {
+      if (control.holdHistory)
+        await new Promise((resolve) => {
+          control.finishHistory = resolve;
+        });
+      if (control.failHistory) return Response.json({ error: "Unavailable" }, { status: 503 });
+      const cursor = requestUrl.searchParams.get("cursor");
+      const start = cursor ? control.history.indexOf(cursor) + 1 : 0;
+      const ids = control.history.slice(start, start + (control.pageSize ?? 40));
+      return Response.json({
+        pictures: ids.map(picture),
+        nextCursor: start + ids.length < control.history.length ? ids.at(-1) : null,
+      });
+    }
+    if (path === "/api/account/avatar/select" && method === "POST") {
+      const body = JSON.parse(options.body);
+      control.selections.push(body);
+      if (control.holdSelect)
+        await new Promise((resolve) => {
+          control.finishSelect = resolve;
+        });
+      if (control.failSelect || body.expectedAvatarAsset !== (account.avatarAsset ?? null)) {
+        control.failSelect = false;
+        return Response.json({ error: "Your profile picture changed. Refresh and try again." }, { status: 409 });
+      }
+      if (!control.history.includes(body.avatarAsset))
+        return Response.json({ error: "Profile picture is unavailable." }, { status: 404 });
+      Object.assign(account, picture(body.avatarAsset));
       return Response.json(account);
     }
     if (path === "/api/assets" && method === "POST") {
@@ -253,6 +297,7 @@ function fixture() {
       const reservation = control.reservations.at(-1);
       const id = complete[1];
       if (reservation.purpose === "avatar") {
+        control.history.unshift(id);
         Object.assign(account, { avatarAsset: id, avatarUrl: url(id, "b") });
         return Response.json({ id, kind: "image", account });
       }
@@ -396,7 +441,7 @@ async function context(browser, options) {
 }
 
 const shot = async (target, name) => {
-  if (artifacts) await target.screenshot({ path: join(artifacts, name) });
+  if (artifacts) await target.screenshot({ path: join(artifacts, name), animations: "disabled" });
 };
 const loaded = (selector) =>
   `[...document.querySelectorAll(${JSON.stringify(selector)})].length > 0 && [...document.querySelectorAll(${JSON.stringify(selector)})].every((element) => element.querySelector(".caper-picture") && element.querySelector(".caper-picture").dataset.state !== "loading")`;
@@ -452,8 +497,139 @@ async function checkFaces(target, scope) {
   for (const [asset, ...face] of faces) assert.deepEqual(face, ["30%", "hidden", true, false], `${scope}: ${asset}`);
 }
 
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
-try {
+async function checkGallery(browser, narrow) {
+  const label = narrow ? "narrow" : "desktop";
+  const created = await context(browser, {
+    viewport: { width: narrow ? 390 : 1280, height: narrow ? 844 : 900 },
+    hasTouch: narrow,
+    isMobile: narrow,
+  });
+  try {
+    const page = await created.newPage();
+    const problems = [];
+    page.on("pageerror", (error) => problems.push(error.message));
+    await page.goto(new URL(narrow ? "/profile" : "/spaces?space=space1234567&channel=channel12345", origin).href);
+    if (narrow) assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), true);
+    if (!narrow) await page.locator(".account-profile").click();
+    const profile = page.locator(narrow ? "main" : ".profile-dialog");
+    const edit = profile.getByRole("button", { name: "Change profile picture" });
+    const open = async () => {
+      await edit.click();
+      await profile.getByRole("menuitem", { name: "Previous pictures" }).click();
+    };
+    const gallery = page.getByRole("dialog", { name: "Previous pictures", exact: true });
+    await open();
+    await gallery.getByText("No previous pictures yet.", { exact: false }).waitFor();
+    assert.ok(await gallery.getByRole("button", { name: "Save picture", exact: true }).isDisabled());
+    await gallery.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+    const bounds = await gallery.boundingBox();
+    assert.ok(
+      bounds && bounds.y >= 0 && bounds.y + bounds.height <= page.viewportSize().height,
+      `Gallery must fit the viewport, including when opened from a scrolled profile: ${JSON.stringify(bounds)}`,
+    );
+    const header = await gallery.getByRole("heading", { name: "Previous pictures" }).boundingBox();
+    assert.ok(header && header.y >= bounds.y, `Gallery title must stay visible: ${JSON.stringify({ bounds, header })}`);
+    await shot(narrow ? page : gallery, `gallery-empty-${label}.png`);
+    await gallery.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await page.evaluate(() => window.pictureFixture.selections.length), 0);
+
+    // Four retained, visibly distinct fixtures; page two contains the oldest choice.
+    await page.evaluate(() => {
+      window.pictureFixture.history = ["gifpicture01", "stillpictur1", "inviteicon01", "spaceicon001"];
+      window.pictureFixture.pageSize = 2;
+      window.pictureFixture.holdHistory = true;
+    });
+    await open();
+    await gallery.getByText("Loading pictures…").waitFor();
+    await shot(narrow ? page : gallery, `gallery-loading-${label}.png`);
+    await page.evaluate(() => {
+      window.pictureFixture.holdHistory = false;
+      window.pictureFixture.finishHistory();
+    });
+    await gallery.getByRole("button", { name: "Load more", exact: true }).click();
+    await gallery.getByRole("button", { name: "Previous picture 4", exact: true }).waitFor();
+    assert.equal(await gallery.locator(".avatar-history-choice").count(), 4);
+    await gallery.getByRole("button", { name: "Previous picture 3", exact: true }).click();
+    assert.equal(
+      await gallery.locator(".avatar-history-preview [data-avatar-asset]").getAttribute("data-avatar-asset"),
+      "inviteicon01",
+    );
+    assert.equal(
+      await profile.locator(".picture-settings [data-avatar-asset]").count(),
+      0,
+      "preview leaves the saved mascot alone",
+    );
+    assert.equal(await page.evaluate(() => window.pictureFixture.selections.length), 0);
+    await shot(narrow ? page : gallery, `gallery-selected-${label}.png`);
+    if (narrow) await page.goBack();
+    else await page.keyboard.press("Escape");
+    await gallery.waitFor({ state: "detached" });
+    assert.ok(await profile.isVisible(), "dismiss only the gallery");
+    assert.ok(await edit.evaluate((button) => document.activeElement === button));
+    assert.equal(await page.evaluate(() => window.pictureFixture.selections.length), 0);
+    await open();
+    await gallery.getByRole("button", { name: "Load more", exact: true }).click();
+    await gallery.getByRole("button", { name: "Previous picture 3", exact: true }).click();
+    await page.evaluate(() => {
+      window.pictureFixture.holdSelect = true;
+    });
+    await gallery.getByRole("button", { name: "Save picture", exact: true }).click();
+    await gallery.getByRole("button", { name: "Saving…", exact: true }).waitFor();
+    assert.equal(await gallery.locator("button:not(:disabled)").count(), 0, "all actions disabled during save");
+    await shot(narrow ? page : gallery, `gallery-saving-${label}.png`);
+    await page.evaluate(() => {
+      window.pictureFixture.holdSelect = false;
+      window.pictureFixture.finishSelect();
+    });
+    await gallery.waitFor({ state: "detached" });
+    assert.equal(
+      await profile.locator(".picture-settings [data-avatar-asset]").getAttribute("data-avatar-asset"),
+      "inviteicon01",
+    );
+    assert.deepEqual(await page.evaluate(() => window.pictureFixture.selections), [
+      { avatarAsset: "inviteicon01", expectedAvatarAsset: null },
+    ]);
+    assert.equal(await page.evaluate(() => window.pictureFixture.reservations.length), 0, "select never uploads");
+    await open();
+    await gallery.getByRole("button", { name: "Load more", exact: true }).click();
+    await gallery.getByRole("button", { name: "Current picture 3", exact: true }).waitFor();
+    assert.ok(await gallery.getByRole("button", { name: "Save picture", exact: true }).isDisabled());
+    await shot(narrow ? page : gallery, `gallery-current-${label}.png`);
+    await gallery.getByRole("button", { name: "Previous picture 1", exact: true }).click();
+    await page.evaluate(() => {
+      window.pictureFixture.failSelect = true;
+    });
+    await gallery.getByRole("button", { name: "Save picture", exact: true }).click();
+    await gallery.getByRole("alert").getByText("Your picture changed elsewhere.", { exact: false }).waitFor();
+    assert.equal(
+      await profile.locator(".picture-settings [data-avatar-asset]").getAttribute("data-avatar-asset"),
+      "inviteicon01",
+    );
+    assert.ok(await gallery.getByRole("button", { name: "Save picture", exact: true }).isDisabled());
+    await shot(narrow ? page : gallery, `gallery-conflict-${label}.png`);
+    await gallery.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page.evaluate(() => {
+      window.pictureFixture.failHistory = true;
+    });
+    await open();
+    await gallery.getByRole("button", { name: "Retry", exact: true }).waitFor();
+    await shot(narrow ? page : gallery, `gallery-error-${label}.png`);
+    await page.evaluate(() => {
+      window.pictureFixture.failHistory = false;
+    });
+    await gallery.getByRole("button", { name: "Retry", exact: true }).click();
+    await gallery.getByRole("button", { name: "Previous picture 1", exact: true }).waitFor();
+    await gallery.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.deepEqual(problems, []);
+    console.log(
+      `PASS gallery ${label}: preview-only, pagination, Cancel/Escape/Back, explicit selection, no upload, current disabled, pending, conflict, empty/error/retry.`,
+    );
+  } finally {
+    await created.close();
+  }
+}
+
+async function checkExistingPictures(browser) {
   // ---- Desktop: rendering everywhere ----
   const desktop = await context(browser, { viewport: { width: 1280, height: 900 } });
   const page = await desktop.newPage();
@@ -512,11 +688,11 @@ try {
   // ---- Profile picture: upload a still (cropped, WebP), then a GIF (unchanged), then remove ----
   await page.locator(".account-profile").click();
   const dialog = page.locator(".profile-dialog");
-  // Without a custom picture, the mascot holds up "change me!" and the frame opens the picker directly.
+  // Even without a custom picture, the menu offers the retained picture library.
   const editPicture = dialog.getByRole("button", { name: "Change profile picture" });
   await editPicture.waitFor();
   await dialog.locator('.picture-settings-change-me[data-avatar-id="0"]').waitFor();
-  assert.equal(await editPicture.getAttribute("aria-haspopup"), null);
+  assert.equal(await editPicture.getAttribute("aria-haspopup"), "menu");
   await page.waitForTimeout(300); // Let the sign's vector arrive.
   await shot(dialog, "pictures-profile-mascot.png");
   await dialog.locator('.picture-settings input[type="file"]').setInputFiles({
@@ -563,6 +739,7 @@ try {
   assert.equal(await dialog.locator(".picture-settings-change-me").count(), 0);
   await editPicture.click();
   await dialog.getByRole("menuitem", { name: "Remove picture" }).waitFor();
+  assert.equal(await dialog.getByRole("menuitem", { name: "Previous pictures" }).count(), 1);
   await shot(dialog, "pictures-profile-uploaded.png");
   await dialog.getByRole("menuitem", { name: "Edit picture", exact: true }).click();
   await editor.getByRole("slider", { name: "Crop size" }).waitFor();
@@ -593,6 +770,25 @@ try {
     ["image/gif", "avatar.gif", animatedAvatar.length, 64, 64],
   );
   await page.waitForFunction(loaded('.account-avatar [data-avatar-asset="upload000002"]'));
+  // The library includes completed uploads; selecting one applies it without another upload.
+  await editPicture.click();
+  const previousPictures = dialog.getByRole("menuitem", { name: "Previous pictures" });
+  await previousPictures.click();
+  const gallery = page.getByRole("dialog", { name: "Previous pictures", exact: true });
+  await gallery.getByRole("button", { name: "Previous picture 2", exact: true }).click();
+  await gallery.getByRole("button", { name: "Save picture", exact: true }).click();
+  await gallery.waitFor({ state: "detached" });
+  await page.waitForFunction(
+    `[...document.querySelectorAll(${JSON.stringify(ownAvatars)})].every((element) => element.dataset.avatarAsset === "upload000001")`,
+  );
+  assert.ok(await editPicture.evaluate((button) => document.activeElement === button));
+  await editPicture.click();
+  await previousPictures.click();
+  await gallery.getByRole("button", { name: "Previous picture 1", exact: true }).click();
+  await gallery.getByRole("button", { name: "Save picture", exact: true }).click();
+  await gallery.waitFor({ state: "detached" });
+  await page.waitForFunction(loaded('.account-avatar [data-avatar-asset="upload000002"]'));
+  assert.equal(await page.evaluate(() => window.pictureFixture.reservations.length), 2);
   // Local and server errors are explained inline.
   await dialog.locator('.picture-settings input[type="file"]').setInputFiles({
     name: "huge.gif",
@@ -616,7 +812,11 @@ try {
     const decoder = new ImageDecoder({ data: bytes, type: "image/gif" });
     await decoder.tracks.ready;
     const { image } = await decoder.decode({ frameIndex: 0 });
-    return { frames: decoder.tracks.selectedTrack.frameCount, width: image.displayWidth, height: image.displayHeight };
+    return {
+      frames: decoder.tracks.selectedTrack.frameCount,
+      width: image.displayWidth,
+      height: image.displayHeight,
+    };
   }, shrunkBody.toString("base64"));
   assert.deepEqual(playback, { frames: 12, width: 512, height: 512 });
   await page.waitForFunction(loaded('.account-avatar [data-avatar-asset="upload000003"]'));
@@ -645,7 +845,15 @@ try {
     `[...document.querySelectorAll(${JSON.stringify(ownAvatars)})].every((element) => !element.dataset.avatarAsset && !element.querySelector(".caper-picture") && element.dataset.avatarId === "0")`,
   );
   await dialog.locator(".picture-settings-change-me").waitFor();
-  assert.equal(await editPicture.getAttribute("aria-haspopup"), null);
+  assert.equal(await editPicture.getAttribute("aria-haspopup"), "menu");
+  await editPicture.click();
+  assert.equal(await dialog.getByRole("menuitem", { name: "Remove picture" }).count(), 0);
+  assert.equal(await dialog.getByRole("menuitem", { name: "Edit picture", exact: true }).count(), 0);
+  await previousPictures.click();
+  await gallery.getByRole("button", { name: "Previous picture 1", exact: true }).click();
+  await gallery.getByRole("button", { name: "Save picture", exact: true }).click();
+  await gallery.waitFor({ state: "detached" });
+  await page.waitForFunction(loaded('.account-avatar [data-avatar-asset="upload000003"]'));
   await dialog.getByRole("button", { name: "Close profile" }).click();
 
   // ---- Space icon: remove, then upload a new one; the rail follows ----
@@ -866,6 +1074,16 @@ try {
     64,
     "current saved picture can be confirmed without choosing another file",
   );
+  await profile.getByRole("button", { name: "Change profile picture" }).tap();
+  await profile.getByRole("menuitem", { name: "Previous pictures" }).tap();
+  const narrowGallery = profile.getByRole("dialog", { name: "Previous pictures", exact: true });
+  await narrowGallery.getByRole("button", { name: "Previous picture 3", exact: true }).tap();
+  await narrowGallery.getByRole("button", { name: "Save picture", exact: true }).tap();
+  await narrowGallery.waitFor({ state: "detached" });
+  assert.equal(
+    await profile.locator(".picture-settings [data-avatar-asset]").getAttribute("data-avatar-asset"),
+    "upload000001",
+  );
   await profile.goto(new URL("/invite/FIXTURE123", origin).href);
   await profile.waitForFunction(loaded("main [data-avatar-asset]"));
   await profile.waitForFunction(
@@ -896,6 +1114,13 @@ try {
   console.log(
     "PASS: animated, still, broken and absent pictures; rounded squares, including live room card and phone voice strip faces; upload, GIF, errors and removal; space icons; live profile and space updates; narrow; reduced motion.",
   );
+}
+
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
+try {
+  await checkGallery(browser, false);
+  await checkGallery(browser, true);
+  if (process.env.PICTURE_GALLERY_ONLY !== "1") await checkExistingPictures(browser);
 } finally {
   await browser.close();
 }

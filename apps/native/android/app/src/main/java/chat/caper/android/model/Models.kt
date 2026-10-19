@@ -503,6 +503,8 @@ fun caperAvatarIndex(avatarId: Int?): Int? = avatarId?.takeIf { it in 0..799 }
  * A custom profile picture or space icon. [asset] is stable until the picture changes and keys
  * every cache; the signed [url] re-signs daily, so it never does.
  */
+@Serializable data class AvatarHistoryPicture(val avatarAsset: String, val avatarUrl: String)
+@Serializable data class AvatarHistory(val pictures: List<AvatarHistoryPicture>, val nextCursor: String? = null)
 data class Picture(val asset: String, val url: String)
 
 /**

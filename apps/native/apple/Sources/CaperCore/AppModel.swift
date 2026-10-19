@@ -237,6 +237,7 @@ public final class AppModel {
     public let voicePresence: VoicePresenceModel
     private let preferredInitialSpaceID: String?
     private var generation = 0
+    public var accountEpoch: Int { generation }
     private var navigationGeneration = 0
     private var openingForward = false
     private var profileMessageDrafts: [String: ProfileMessageDraft] = [:]
@@ -530,6 +531,31 @@ public final class AppModel {
         guard let current = account else { return }
         let attempt = generation
         let updated = try await api.removeAvatar()
+        guard generation == attempt, account?.id == current.id, updated.id == current.id else { throw CancellationError() }
+        account = updated
+        refreshOwnIdentity(updated)
+    }
+
+    public func avatarHistory(cursor: String?) async throws -> AvatarHistory {
+        let attempt = generation
+        let result = try await api.avatarHistory(cursor: cursor)
+        guard generation == attempt, account != nil else { throw CancellationError() }
+        return result
+    }
+
+    public func selectAvatar(_ asset: String, expected: String?) async throws {
+        guard let current = account else { throw CancellationError() }
+        let attempt = generation
+        let updated: Account
+        do { updated = try await api.selectAvatar(avatarAsset: asset, expectedAvatarAsset: expected) }
+        catch let failure as APIError where failure.status == 409 {
+            if let refreshed = try? await api.account(), generation == attempt,
+               account?.id == current.id, refreshed.id == current.id {
+                account = refreshed
+                refreshOwnIdentity(refreshed)
+            }
+            throw failure
+        }
         guard generation == attempt, account?.id == current.id, updated.id == current.id else { throw CancellationError() }
         account = updated
         refreshOwnIdentity(updated)

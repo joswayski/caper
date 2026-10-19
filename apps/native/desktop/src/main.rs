@@ -920,10 +920,22 @@ struct PictureEdit {
     )>,
     /// A change in flight: its target, and whether it removes the picture.
     busy: Option<(pictures::Target, bool)>,
+    gallery: Option<AvatarGallery>,
     /// The last failure and the target it concerns.
     error: Option<(pictures::Target, String)>,
     /// The server has no picture storage (`503`): uploads step back.
     unavailable: bool,
+}
+
+#[derive(Default)]
+struct AvatarGallery {
+    request: Option<Instant>,
+    expected: Option<String>,
+    selected: Option<String>,
+    pictures: Vec<pictures::PreviousPicture>,
+    next_cursor: Option<String>,
+    loading: bool,
+    error: Option<String>,
 }
 
 /// The native dialog may finish after its conversation or thread closes.
@@ -2826,7 +2838,7 @@ impl CaperApp {
             }
         }
         // Your own picture never loads in this fixture: the mascot shows.
-        let own = if name == "parity-pictures-profile" {
+        let own = if matches!(name, "parity-pictures-profile" | "parity-pictures-gallery") {
             "fixture-gif"
         } else {
             "fixture-missing"
@@ -2878,7 +2890,23 @@ impl CaperApp {
         );
         self.members_visible = true;
         match name {
+            "parity-pictures-gallery" => {
+                self.dialog = Some(Dialog::Profile);
+                self.picture_edit.gallery = Some(AvatarGallery {
+                    expected: Some("fixture-gif".into()),
+                    selected: Some("fixture-icon".into()),
+                    pictures: ["fixture-gif", "fixture-still", "fixture-icon"]
+                        .into_iter()
+                        .map(|asset| pictures::PreviousPicture {
+                            avatar_asset: asset.into(),
+                            avatar_url: String::new(),
+                        })
+                        .collect(),
+                    ..Default::default()
+                });
+            }
             "parity-pictures-profile" => {
+                self.token = Some("fixture-only".into());
                 self.username = "fixture_owner".into();
                 self.display_name = "Fixture Owner".into();
                 self.dialog = Some(Dialog::Profile);
@@ -3510,6 +3538,43 @@ impl CaperApp {
         let identities = events.iter().any(carries_identities);
         for event in events {
             match event {
+                Event::AvatarHistory {
+                    epoch,
+                    request,
+                    result,
+                } if epoch == self.account_epoch => {
+                    if let Some(gallery) = &mut self.picture_edit.gallery
+                        && gallery.request == Some(request)
+                    {
+                        gallery.loading = false;
+                        match result {
+                            Ok(page) => {
+                                for picture in page.pictures {
+                                    if !gallery
+                                        .pictures
+                                        .iter()
+                                        .any(|old| old.avatar_asset == picture.avatar_asset)
+                                    {
+                                        gallery.pictures.push(picture);
+                                    }
+                                }
+                                gallery.next_cursor = page.next_cursor;
+                                gallery.error = None;
+                            }
+                            Err(error) => gallery.error = Some(error),
+                        }
+                    }
+                }
+                Event::AvatarSelected {
+                    epoch,
+                    result,
+                    refreshed,
+                } if epoch == self.account_epoch => {
+                    if let Some(account) = refreshed {
+                        self.account_changed(account);
+                    }
+                    self.picture_changed(pictures::Target::Avatar, result);
+                }
                 Event::Picture {
                     epoch,
                     target,
@@ -9267,8 +9332,11 @@ impl CaperApp {
             self.shell(context);
             if self.updates.available().is_none() {
                 self.pins_dialog(context);
-                self.dialogs(context, dialog_was_open);
+                if self.picture_edit.gallery.is_none() {
+                    self.dialogs(context, dialog_was_open);
+                }
                 self.message_edit_dialogs(context);
+                self.avatar_gallery(context);
             }
             self.dismiss_emoji_picker_outside(context);
         }
@@ -22066,6 +22134,184 @@ impl CaperApp {
         self.picture_edit.downloading = Some((self.account_epoch, target, receiver));
     }
 
+    fn avatar_gallery(&mut self, context: &egui::Context) {
+        let Some(mut gallery) = self.picture_edit.gallery.take() else {
+            return;
+        };
+        let pending = self.picture_edit.busy.is_some();
+        let stale = self
+            .account
+            .as_ref()
+            .and_then(|account| account.avatar_asset.as_ref())
+            != gallery.expected.as_ref();
+        let mut cancel = false;
+        let mut save = false;
+        let mut load = false;
+        let modal = egui::Modal::new(egui::Id::new("avatar-gallery")).show(context, |ui| {
+            ui.set_width(420.0);
+            ui.heading("Previous pictures");
+            ui.label("Choose a picture to preview. Save when you’re ready.");
+            if let Some(picture) = gallery
+                .pictures
+                .iter()
+                .find(|picture| Some(&picture.avatar_asset) == gallery.selected.as_ref())
+            {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(176.0, 176.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 16.0, RAISED);
+                pictures::paint(
+                    ui,
+                    rect,
+                    16,
+                    pictures::Source {
+                        asset: &picture.avatar_asset,
+                        url: Some(&picture.avatar_url),
+                    },
+                );
+            }
+            egui::ScrollArea::vertical()
+                .max_height(270.0)
+                .show(ui, |ui| {
+                    egui::Grid::new("avatar-history-grid")
+                        .num_columns(4)
+                        .spacing(egui::vec2(12.0, 12.0))
+                        .show(ui, |ui| {
+                            for (index, picture) in gallery.pictures.iter().enumerate() {
+                                ui.vertical(|ui| {
+                                    let selected =
+                                        gallery.selected.as_deref() == Some(&picture.avatar_asset);
+                                    let (rect, response) = ui.allocate_exact_size(
+                                        egui::vec2(88.0, 88.0),
+                                        egui::Sense::click(),
+                                    );
+                                    response.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            !pending,
+                                            format!("Previous picture {}", index + 1),
+                                        )
+                                    });
+                                    ui.painter().rect_filled(rect, 8.0, RAISED);
+                                    pictures::paint(
+                                        ui,
+                                        rect.shrink(3.0),
+                                        8,
+                                        pictures::Source {
+                                            asset: &picture.avatar_asset,
+                                            url: Some(&picture.avatar_url),
+                                        },
+                                    );
+                                    ui.painter().rect_stroke(
+                                        rect,
+                                        8.0,
+                                        Stroke::new(
+                                            if selected { 2.0 } else { 1.0 },
+                                            if selected { TERRACOTTA } else { BORDER },
+                                        ),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    if selected {
+                                        ui.painter().text(
+                                            rect.right_top() + egui::vec2(-14.0, 14.0),
+                                            egui::Align2::CENTER_CENTER,
+                                            "✓",
+                                            egui::FontId::proportional(20.0),
+                                            TERRACOTTA,
+                                        );
+                                    }
+                                    if response.clicked() && !pending {
+                                        gallery.selected = Some(picture.avatar_asset.clone());
+                                    }
+                                    if gallery.expected.as_deref() == Some(&picture.avatar_asset) {
+                                        ui.label("Current");
+                                    }
+                                });
+                                if index % 4 == 3 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                });
+            if gallery.loading {
+                ui.spinner();
+                ui.label("Loading pictures…");
+            } else if gallery.pictures.is_empty() && gallery.error.is_none() {
+                ui.label("No previous pictures yet.");
+            }
+            if stale {
+                ui.colored_label(
+                    ERROR,
+                    "Your picture changed elsewhere. Close and reopen to refresh.",
+                );
+            } else if let Some(error) = &gallery.error {
+                ui.colored_label(ERROR, error);
+                if !pending && !stale && ui.button("Retry").clicked() {
+                    load = true;
+                }
+            } else if gallery.next_cursor.is_some()
+                && !gallery.loading
+                && ui
+                    .add_enabled(!pending, egui::Button::new("Load more"))
+                    .clicked()
+            {
+                load = true;
+            }
+            ui.horizontal(|ui| {
+                let can_save = !pending
+                    && !stale
+                    && !gallery.loading
+                    && gallery.selected.is_some()
+                    && gallery.selected != gallery.expected;
+                save = ui
+                    .add_enabled(
+                        can_save,
+                        egui::Button::new(RichText::new("Save picture").color(if can_save {
+                            ON_ACTION
+                        } else {
+                            MUTED
+                        }))
+                        .fill(if can_save { ACTION } else { BORDER }),
+                    )
+                    .clicked();
+                cancel = ui
+                    .add_enabled(!pending, egui::Button::new("Cancel"))
+                    .clicked();
+                if pending {
+                    ui.spinner();
+                    ui.label("Saving…");
+                }
+            });
+        });
+        if !pending && (cancel || modal.should_close()) {
+            return;
+        }
+        if let Some(token) = self.token.clone() {
+            if save && let Some(asset) = gallery.selected.clone() {
+                self.worker.send(Command::SelectAvatar {
+                    epoch: self.account_epoch,
+                    token,
+                    asset,
+                    expected: gallery.expected.clone(),
+                });
+                self.picture_edit.busy = Some((pictures::Target::Avatar, false));
+                self.picture_edit.error = None;
+                gallery.error = None;
+            } else if load && !gallery.loading {
+                let request = Instant::now();
+                self.worker.send(Command::AvatarHistory {
+                    epoch: self.account_epoch,
+                    request,
+                    token,
+                    cursor: gallery.next_cursor.clone(),
+                });
+                gallery.request = Some(request);
+                gallery.loading = true;
+                gallery.error = None;
+            }
+        }
+        self.picture_edit.gallery = Some(gallery);
+    }
+
     /// Picker results, local previews of uploaded pictures, and picture loads.
     fn picture_housekeeping(&mut self, context: &egui::Context) {
         if self
@@ -22217,6 +22463,7 @@ impl CaperApp {
         self.picture_edit.busy = None;
         match result {
             Ok(changed) => {
+                self.picture_edit.gallery = None;
                 self.local_pictures.extend(changed.local);
                 match changed.applied {
                     pictures::Applied::Account(account) => self.account_changed(account),
@@ -22224,6 +22471,9 @@ impl CaperApp {
                 }
             }
             Err(failure) => {
+                if let Some(gallery) = &mut self.picture_edit.gallery {
+                    gallery.error = Some(failure.message.clone());
+                }
                 self.picture_edit.unavailable |= failure.unavailable;
                 self.picture_edit.error = Some((target, failure.message));
             }
@@ -22263,6 +22513,7 @@ impl CaperApp {
             pictures::Target::Avatar => ("Change profile picture", "picture"),
             pictures::Target::SpaceIcon(_) => ("Change space icon", "icon"),
         };
+        let gallery_available = target == pictures::Target::Avatar;
         let edit = &self.picture_edit;
         let busy = edit
             .busy
@@ -22282,7 +22533,7 @@ impl CaperApp {
             .map(|(_, error)| error.clone());
         let unavailable = edit.unavailable;
         // With uploads unavailable, a custom picture can still be removed.
-        let enabled = idle && (custom || !unavailable);
+        let enabled = idle && (custom || gallery_available || !unavailable);
         let side = PICTURE_FRAME;
         let (outer, response) = ui.allocate_exact_size(
             egui::vec2(side + PICTURE_BADGE_OVERHANG, side + PICTURE_BADGE_OVERHANG),
@@ -22370,12 +22621,16 @@ impl CaperApp {
                 ui,
                 egui::Rect::from_center_size(badge.center(), egui::vec2(15.0, 15.0)),
             );
-        let (mut change, mut remove, mut adjust) = (false, false, false);
-        if custom {
+        let (mut change, mut remove, mut adjust, mut restore) = (false, false, false, false);
+        if custom || gallery_available {
             egui::Popup::menu(&response).show(|ui| {
-                if ui
-                    .add_enabled(!unavailable, egui::Button::new(format!("Edit {noun}…")))
-                    .clicked()
+                if !idle {
+                    ui.disable();
+                }
+                if custom
+                    && ui
+                        .add_enabled(!unavailable, egui::Button::new(format!("Edit {noun}…")))
+                        .clicked()
                 {
                     adjust = true;
                     ui.close();
@@ -22390,7 +22645,11 @@ impl CaperApp {
                     change = true;
                     ui.close();
                 }
-                if ui.button(format!("Remove {noun}")).clicked() {
+                if gallery_available && ui.button("Previous pictures").clicked() {
+                    restore = true;
+                    ui.close();
+                }
+                if custom && ui.button(format!("Remove {noun}")).clicked() {
                     remove = true;
                     ui.close();
                 }
@@ -22403,7 +22662,9 @@ impl CaperApp {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().size(12.0).color(MUTED));
                 ui.label(
-                    RichText::new(if removing {
+                    RichText::new(if self.picture_edit.gallery.is_some() {
+                        "Saving…"
+                    } else if removing {
                         "Removing…"
                     } else {
                         "Uploading…"
@@ -22423,6 +22684,24 @@ impl CaperApp {
             self.download_picture(ui.ctx(), target);
         } else if change {
             self.pick_picture(ui.ctx(), target);
+        } else if restore {
+            if let (Some(token), Some(account)) = (self.token.clone(), self.account.as_ref()) {
+                let request = Instant::now();
+                self.worker.send(Command::AvatarHistory {
+                    epoch: self.account_epoch,
+                    request,
+                    token,
+                    cursor: None,
+                });
+                self.picture_edit.error = None;
+                self.picture_edit.gallery = Some(AvatarGallery {
+                    request: Some(request),
+                    expected: account.avatar_asset.clone(),
+                    selected: account.avatar_asset.clone(),
+                    loading: true,
+                    ..Default::default()
+                });
+            }
         } else if remove {
             self.change_picture(target, None);
         }
@@ -39898,6 +40177,201 @@ mod tests {
     }
 
     #[test]
+    fn avatar_history_pages_and_select_sends_explicit_null_and_explains_conflicts() {
+        let (base, seen) = account_server_with(|route, body| {
+            match route {
+            "GET /api/account/avatar/history?cursor=asset000003" => (200, r#"{"pictures":[{"avatarAsset":"asset000001","avatarUrl":"https://example.test/one"}],"nextCursor":null}"#.into()),
+            "POST /api/account/avatar/select" => {
+                assert_eq!(serde_json::from_slice::<serde_json::Value>(body).unwrap(), serde_json::json!({"avatarAsset":"asset000001","expectedAvatarAsset":null}));
+                (409, r#"{"error":"avatar_changed"}"#.into())
+            }
+            _ => (404, "{}".into()),
+        }
+        });
+        let api = crate::api::Api::new(&base).unwrap();
+        let page = api
+            .avatar_history("fixture-token", Some("asset000003"))
+            .unwrap();
+        assert_eq!(page.pictures[0].avatar_asset, "asset000001");
+        assert!(page.next_cursor.is_none());
+        let failure = crate::pictures::select(&api, "fixture-token", "asset000001", None)
+            .err()
+            .unwrap();
+        assert!(failure.message.contains("changed elsewhere"));
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn previous_picture_gallery_previews_cancel_and_saves_only_the_chosen_nonadjacent_id() {
+        let (base, seen) = account_server_with(|route, body| {
+            match route {
+            "GET /api/account/avatar/history" => (
+                200,
+                serde_json::json!({
+                    "pictures": [
+                        {"avatarAsset":"fixture-gif", "avatarUrl":"https://example.test/a"},
+                        {"avatarAsset":"middle-portrait", "avatarUrl":"https://example.test/b"},
+                        {"avatarAsset":"distant-landscape", "avatarUrl":"https://example.test/c"}
+                    ], "nextCursor": null
+                })
+                .to_string(),
+            ),
+            "GET /api/account/me" => (200, serde_json::json!({"id":"fixture-owner", "username":"fixture_owner", "displayName":"Fixture Owner", "avatarAsset":"middle-portrait", "avatarUrl":"https://example.test/b"}).to_string()),
+            "POST /api/account/avatar/select" => {
+                let request: serde_json::Value = serde_json::from_slice(body).unwrap();
+                if request["expectedAvatarAsset"] == "distant-landscape" {
+                    return (409, r#"{"error":"Picture changed elsewhere"}"#.into());
+                }
+                assert_eq!(
+                    request,
+                    serde_json::json!({
+                        "avatarAsset":"distant-landscape", "expectedAvatarAsset":"fixture-gif"
+                    })
+                );
+                (200, serde_json::json!({"id":"fixture-owner", "username":"fixture_owner", "displayName":"Fixture Owner", "avatarAsset":"distant-landscape", "avatarUrl":"https://example.test/c"}).to_string())
+            }
+            _ => (404, "{}".into()),
+        }
+        });
+        let (context, mut app) = fixture("parity-pictures-profile");
+        app.worker =
+            crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context.clone());
+        app.token = Some("fixture-token".into());
+        for (asset, color) in [
+            ("middle-portrait", egui::Color32::RED),
+            ("distant-landscape", egui::Color32::BLUE),
+        ] {
+            app.pictures.insert(
+                &context,
+                asset,
+                vec![(egui::ColorImage::filled([8, 8], color), Duration::ZERO)],
+            );
+        }
+        for cancel_with_escape in [false, true] {
+            click_label(&mut app, &context, "Change profile picture");
+            click_label(&mut app, &context, "Previous pictures");
+            receive_until(&mut app, |app| {
+                app.picture_edit
+                    .gallery
+                    .as_ref()
+                    .is_some_and(|gallery| !gallery.loading)
+            });
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            assert!(shows(&output, "Current"), "{:?}", texts(&output));
+            assert_eq!(app.picture_edit.gallery.as_ref().unwrap().pictures.len(), 3);
+            click_label(&mut app, &context, "Save picture");
+            assert!(
+                app.picture_edit.busy.is_none(),
+                "the current selection cannot save"
+            );
+            click_label(&mut app, &context, "Previous picture 3");
+            let output = render(&mut app, &context, vec![]);
+            let texture = app.pictures.texture_id("distant-landscape").unwrap();
+            assert!(
+                painted(&output, texture)
+                    .iter()
+                    .any(|image| image.rect.size() == egui::vec2(176.0, 176.0)),
+                "the chosen tile updates the large preview"
+            );
+            assert_eq!(
+                app.picture_edit
+                    .gallery
+                    .as_ref()
+                    .unwrap()
+                    .selected
+                    .as_deref(),
+                Some("distant-landscape")
+            );
+            assert_eq!(
+                app.account.as_ref().unwrap().avatar_asset.as_deref(),
+                Some("fixture-gif")
+            );
+            if cancel_with_escape {
+                render(&mut app, &context, press(egui::Key::Escape));
+            } else {
+                click_label(&mut app, &context, "Cancel");
+            }
+            assert!(app.picture_edit.gallery.is_none());
+            assert!(
+                !seen
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|request| request.starts_with("POST"))
+            );
+        }
+        click_label(&mut app, &context, "Change profile picture");
+        click_label(&mut app, &context, "Previous pictures");
+        receive_until(&mut app, |app| {
+            app.picture_edit
+                .gallery
+                .as_ref()
+                .is_some_and(|gallery| !gallery.loading)
+        });
+        assert_eq!(
+            app.picture_edit
+                .gallery
+                .as_ref()
+                .unwrap()
+                .selected
+                .as_deref(),
+            Some("fixture-gif")
+        );
+        click_label(&mut app, &context, "Previous picture 3");
+        click_label(&mut app, &context, "Save picture");
+        click_label(&mut app, &context, "Save picture");
+        receive_until(&mut app, |app| app.picture_edit.busy.is_none());
+        assert_eq!(
+            app.account.as_ref().unwrap().avatar_asset.as_deref(),
+            Some("distant-landscape")
+        );
+        assert!(app.picture_edit.gallery.is_none());
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request.starts_with("POST /api/account/avatar/select"))
+                .count(),
+            1
+        );
+        // A missed live event is repaired on conflict; reopening uses the refreshed account.
+        click_label(&mut app, &context, "Change profile picture");
+        click_label(&mut app, &context, "Previous pictures");
+        receive_until(&mut app, |app| {
+            app.picture_edit
+                .gallery
+                .as_ref()
+                .is_some_and(|gallery| !gallery.loading)
+        });
+        click_label(&mut app, &context, "Previous picture 1");
+        click_label(&mut app, &context, "Save picture");
+        receive_until(&mut app, |app| app.picture_edit.busy.is_none());
+        assert_eq!(
+            app.account.as_ref().unwrap().avatar_asset.as_deref(),
+            Some("middle-portrait")
+        );
+        click_label(&mut app, &context, "Cancel");
+        click_label(&mut app, &context, "Change profile picture");
+        click_label(&mut app, &context, "Previous pictures");
+        receive_until(&mut app, |app| {
+            app.picture_edit
+                .gallery
+                .as_ref()
+                .is_some_and(|gallery| !gallery.loading)
+        });
+        assert_eq!(
+            app.picture_edit
+                .gallery
+                .as_ref()
+                .unwrap()
+                .expected
+                .as_deref(),
+            Some("middle-portrait")
+        );
+    }
+
+    #[test]
     fn profile_pictures_change_remove_and_refresh_every_own_identity() {
         use crate::pictures::{Applied, Changed, Failure, Target};
         let (context, mut app) = fixture("parity-pictures-profile");
@@ -39968,6 +40442,12 @@ mod tests {
         );
         let output = render(&mut app, &context, vec![]);
         assert!(!shows(&output, "Remove picture") && !shows(&output, "Removing…"));
+        egui::Popup::close_all(&context);
+        click(&mut app, &context, frame);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Previous pictures"));
+        assert!(!shows(&output, "Edit picture…") && !shows(&output, "Remove picture"));
+        app.picture_edit.busy = Some((Target::Avatar, false));
         // An upload shows its own decoded picture at once, everywhere you appear.
         account.avatar_asset = Some("new-picture".into());
         account.avatar_url = Some("https://cdn.caper.chat/assets/new-picture?exp=1&sig=x".into());

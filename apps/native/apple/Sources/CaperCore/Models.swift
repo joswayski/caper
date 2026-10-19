@@ -39,6 +39,15 @@ extension AvatarPictureCarrying {
     public var avatarPicture: CaperPicture? { CaperPicture(asset: avatarAsset, url: avatarUrl) }
 }
 
+public struct AvatarHistoryPicture: Codable, Equatable, Sendable, AvatarPictureCarrying {
+    public let avatarAsset: String?
+    public let avatarUrl: String?
+}
+public struct AvatarHistory: Codable, Sendable {
+    public let pictures: [AvatarHistoryPicture]
+    public let nextCursor: String?
+}
+
 public struct Account: Codable, Equatable, Sendable {
     public let id: String
     public var username: String?

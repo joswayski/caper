@@ -164,6 +164,33 @@ impl Api {
         Ok(account)
     }
 
+    pub fn avatar_history(
+        &self,
+        token: &str,
+        cursor: Option<&str>,
+    ) -> Result<crate::pictures::History, ApiError> {
+        let path = cursor.map_or_else(
+            || "api/account/avatar/history".to_owned(),
+            |cursor| format!("api/account/avatar/history?cursor={cursor}"),
+        );
+        self.request(Method::GET, &path, Some(token), None, None)
+    }
+
+    pub fn select_avatar(
+        &self,
+        token: &str,
+        asset: &str,
+        expected: Option<&str>,
+    ) -> Result<Account, ApiError> {
+        self.request(
+            Method::POST,
+            "api/account/avatar/select",
+            Some(token),
+            None,
+            Some(json!({"avatarAsset": asset, "expectedAvatarAsset": expected})),
+        )
+    }
+
     /// `DELETE /api/account/avatar`: back to the saved mascot.
     pub fn remove_avatar(&self, token: &str) -> Result<Account, ApiError> {
         self.request(

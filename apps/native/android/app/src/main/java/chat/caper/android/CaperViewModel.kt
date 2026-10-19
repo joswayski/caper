@@ -3006,9 +3006,35 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                if (request == accountGeneration) setPictureSave(key, PictureSaveUi(error = pictureError(error, target)))
+                if (request == accountGeneration) setPictureSave(key, PictureSaveUi(error =
+                    pictureError(error, target)))
             }
         }
+    }
+
+    suspend fun avatarHistory(epoch: Long, cursor: String?) : chat.caper.android.model.AvatarHistory {
+        check(epoch == accountGeneration)
+        val result = api.avatarHistory(accountToken ?: error("Signed out"), cursor)
+        check(epoch == accountGeneration)
+        return result
+    }
+
+    suspend fun selectAvatar(epoch: Long, asset: String, expected: String?) {
+        check(epoch == accountGeneration)
+        val token = accountToken ?: error("Signed out")
+        val result = try { api.selectAvatar(token, asset, expected) }
+        catch (failure: chat.caper.android.data.ApiException) {
+            if (failure.status == 409) {
+                try {
+                    val refreshed = api.me(token)
+                    if (epoch == accountGeneration) applyOwnAccount(refreshed)
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { /* Reopening can retry after a transient refresh failure. */ }
+            }
+            throw failure
+        }
+        check(epoch == accountGeneration)
+        applyOwnAccount(result)
     }
 
     /** Clears a finished picture change's error ([key]: [PROFILE_PICTURE_KEY] or a space ID); one in flight stays. */

@@ -1332,13 +1332,11 @@ async fn auth_email_verify(
                 &session.user,
             ));
     }
+    let account = own_account(&state, &session.user).await;
     let mut response = match input.token_transport {
-        TokenTransport::Cookie => {
-            Json(json!({"account": session.user.own(&state.debug_users)})).into_response()
-        }
+        TokenTransport::Cookie => Json(json!({"account": account})).into_response(),
         TokenTransport::Bearer => {
-            Json(json!({"account": session.user.own(&state.debug_users), "token": session.token}))
-                .into_response()
+            Json(json!({"account": account, "token": session.token})).into_response()
         }
     };
     if matches!(input.token_transport, TokenTransport::Cookie) {
