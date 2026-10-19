@@ -41,6 +41,18 @@ class MentionAutocompleteTest {
     private val everyone = MessageMention("everyone")
     private val here = MessageMention("here")
 
+    @Test fun `draft links highlight exact mixed case text without changing offsets`() {
+        val text = "🙂 @Maya HTTPS://Caper.chat/invite/AbCd www.Example.org/Path?q=Case."
+        val styled = MentionVisualTransformation(space(person("maya"))).filter(androidx.compose.ui.text.AnnotatedString(text))
+        assertEquals(text, styled.text.text)
+        assertEquals(listOf("@Maya", "HTTPS://Caper.chat/invite/AbCd", "www.Example.org/Path?q=Case"),
+            styled.text.spanStyles.map { text.substring(it.start, it.end) })
+        for (offset in 0..text.length) {
+            assertEquals(offset, styled.offsetMapping.originalToTransformed(offset))
+            assertEquals(offset, styled.offsetMapping.transformedToOriginal(offset))
+        }
+    }
+
     @Test fun `draft highlights preserve text and offsets and use conversation scope`() {
         val text = "🙂 @Maya, @ma @missing bob@maya.com @@maya (@feedback)\n@Here @everyone @feedbacks"
         val source = MentionSource(listOf(person("maya")), specials = true, feedback = true)

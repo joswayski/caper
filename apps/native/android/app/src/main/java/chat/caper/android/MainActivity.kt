@@ -2518,7 +2518,11 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
         )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) } }
         // A team mention (`@feedback`, `@admin`, …): the server told the Caper team, who can read and reply here.
         if (!deleted && notifiesCaperTeam(message.content)) Text(CAPER_TEAM_NOTIFIED, Modifier.padding(start = 62.dp, end = 18.dp, bottom = 6.dp), color = TextMuted, fontSize = 11.sp)
-        if (!deleted) ForwardCard(message, state, onAttachmentFailed) { openConversation(message) }
+        if (!deleted) Box(Modifier.combinedClickable(
+            onClick = { openConversation(message) },
+            onLongClick = { openActions(message) },
+            onLongClickLabel = "Message actions for ${message.author.name}",
+        )) { ForwardCard(message, state, onAttachmentFailed) { openConversation(message) } }
         if (!deleted) FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
@@ -2577,6 +2581,14 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
 ) {
     val context = LocalContext.current
     val clipboard = context.getSystemService(ClipboardManager::class.java)
+    val uriHandler = LocalUriHandler.current
+    // Include both a forwarding note and its visible original, but never deleted text.
+    val links = if (message.deletedAt != null) emptyList() else
+        listOfNotNull(message, message.forward?.message).filter { it.deletedAt == null }.flatMap { linkedMessage ->
+            val text = linkedMessage.content.text
+            linkRanges(text, highlightedMentions(text, linkedMessage.content.mentions).map { it.start until it.end })
+                .map { link -> text.substring(link.start, link.end) to link.href }
+        }.distinct()
     val own = state.chatAuthorId ?: state.account?.id
     // A deleted message keeps only its thread and its ID.
     val deleted = message.deletedAt != null
@@ -2628,6 +2640,11 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                         HorizontalDivider(color = Border)
                     }
                     // An attachment-only message has no text to copy.
+                    links.forEach { (label, href) ->
+                        SheetAction("Open link: $label") { openExternalLink(uriHandler, href); onDismiss() }
+                        SheetAction("Copy link: $label") { copy("Link", href) }
+                        HorizontalDivider(color = Border)
+                    }
                     if (message.content.text.isNotBlank()) {
                         SheetAction("Copy text") { copy("Message text", message.content.text) }
                         HorizontalDivider(color = Border)
@@ -3193,9 +3210,9 @@ internal fun messageText(
 private val MentionPill = SpanStyle(color = Text, fontWeight = FontWeight.Medium, background = Terracotta.copy(alpha = 0.24f))
 private val MentionPillActive = SpanStyle(background = Terracotta.copy(alpha = 0.32f))
 private val MentionPillLink = TextLinkStyles(MentionPill, focusedStyle = MentionPillActive, hoveredStyle = MentionPillActive, pressedStyle = MentionPillActive)
-private val MessageLinkActive = SpanStyle(background = TerracottaWash)
+private val MessageLinkActive = SpanStyle(background = Terracotta.copy(alpha = 0.24f))
 internal val MessageLink = TextLinkStyles(
-    SpanStyle(color = TerracottaBright, textDecoration = TextDecoration.Underline),
+    SpanStyle(color = TerracottaBright, background = Terracotta.copy(alpha = 0.12f), textDecoration = TextDecoration.Underline),
     focusedStyle = MessageLinkActive, hoveredStyle = MessageLinkActive, pressedStyle = MessageLinkActive,
 )
 private val EditedMarker = TextLinkStyles(SpanStyle(color = TextMuted, fontSize = 10.sp))

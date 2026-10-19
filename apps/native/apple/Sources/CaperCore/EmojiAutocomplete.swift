@@ -253,6 +253,7 @@ struct SuggestionRow: ViewModifier {
 /// Attributes only: never replace the text, register an undo edit, or change glyph metrics.
 @MainActor private func highlightDraft(_ storage: NSTextStorage, source: MentionSource) {
     let ranges = MentionAutocomplete.draftHighlights(in: storage.string, source: source)
+        + MessageLinks.draftHighlights(in: storage.string)
     #if os(iOS)
     let color = UIColor(CaperTheme.terracotta).withAlphaComponent(0.24)
     #else

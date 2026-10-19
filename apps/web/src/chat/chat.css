@@ -825,6 +825,9 @@
 }
 .chat-link {
   color: var(--terracotta-bright);
+  background: rgb(182 77 50 / 12%);
+  border-radius: 3px;
+  box-decoration-break: clone;
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
@@ -841,7 +844,7 @@
 @media (hover: hover) {
   .chat-link:hover {
     color: var(--action-hover);
-    background: rgb(182 77 50 / 12%);
+    background: rgb(182 77 50 / 24%);
     text-decoration-thickness: 2px;
   }
 }

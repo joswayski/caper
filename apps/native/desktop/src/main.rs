@@ -26216,7 +26216,7 @@ struct Body {
     pill: Option<PillClick>,
     /// Where a grouped row's inline "(edited)" marker was drawn.
     edited: Option<egui::Rect>,
-    /// The pointer is over a link, so the row's own menu stays closed.
+    /// A link is hovered or owns an open menu, so the row's own menu stays closed.
     link_hovered: bool,
 }
 
@@ -26229,7 +26229,7 @@ enum Run {
     Link(std::ops::Range<usize>, String),
 }
 
-/// Background-only mention styling keeps editable glyph metrics and cursor offsets unchanged.
+/// Mention and link styling keeps editable glyph metrics and cursor offsets unchanged.
 fn draft_layout(
     ui: &egui::Ui,
     text: &str,
@@ -26245,20 +26245,29 @@ fn draft_layout(
     };
     let mut job = egui::text::LayoutJob::default();
     job.wrap.max_width = width;
-    let mut cursor = 0;
-    for range in mentions::draft_highlights(text, people, specials) {
-        job.append(&text[cursor..range.start], 0.0, plain.clone());
-        job.append(
-            &text[range.clone()],
-            0.0,
-            egui::TextFormat {
-                background: TERRACOTTA.gamma_multiply(0.24),
-                ..plain.clone()
-            },
-        );
-        cursor = range.end;
+    let ranges = mentions::draft_highlights(text, people, specials);
+    for run in message_runs(text, &ranges) {
+        let (range, format) = match run {
+            Run::Plain(range) => (range, plain.clone()),
+            Run::Pill(range, _) => (
+                range,
+                egui::TextFormat {
+                    background: TERRACOTTA.gamma_multiply(0.24),
+                    ..plain.clone()
+                },
+            ),
+            Run::Link(range, _) => (
+                range,
+                egui::TextFormat {
+                    color: TERRACOTTA_BRIGHT,
+                    background: TERRACOTTA.gamma_multiply(0.24),
+                    underline: Stroke::new(1.0, TERRACOTTA_BRIGHT),
+                    ..plain.clone()
+                },
+            ),
+        };
+        job.append(&text[range], 0.0, format);
     }
-    job.append(&text[cursor..], 0.0, plain);
     ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
@@ -26375,7 +26384,18 @@ fn rich_text(
     for run in &runs {
         let (range, format, is_pill) = match run {
             Run::Plain(range) => (range, plain.clone(), false),
-            Run::Link(range, _) => (range, link.clone(), false),
+            Run::Link(range, _) => {
+                let id = ui.make_persistent_id(("message-link-hot", message, range.start));
+                let hot = ui.data(|data| data.get_temp::<bool>(id)).unwrap_or(false);
+                (
+                    range,
+                    egui::TextFormat {
+                        background: TERRACOTTA.gamma_multiply(if hot { 0.24 } else { 0.12 }),
+                        ..link.clone()
+                    },
+                    false,
+                )
+            }
             Run::Pill(range, index) => (range, pill(hot[*index]), true),
         };
         // Pills keep 2px on either side for their background.
@@ -26492,6 +26512,8 @@ fn rich_text(
     });
     for (index, (range, href)) in links.enumerate() {
         let id = ui.make_persistent_id(("message-link", message, index));
+        let hot_id = ui.make_persistent_id(("message-link-hot", message, range.start));
+        let mut hot = false;
         for (row, rect) in pill_rects(&galley, characters(range))
             .into_iter()
             .enumerate()
@@ -26518,10 +26540,28 @@ fn rich_text(
                     egui::StrokeKind::Outside,
                 );
             }
-            body.link_hovered |= target.hovered();
+            target.context_menu(|ui| {
+                if ui.button("Open link").clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(href));
+                    ui.close();
+                }
+                if ui.button("Copy link").clicked() {
+                    ui.ctx().copy_text(href.clone());
+                    ui.close();
+                }
+            });
+            hot |= target.hovered() || target.has_focus() || target.context_menu_opened();
+            body.link_hovered |= target.hovered() || target.context_menu_opened();
             if target.clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(href));
             }
+        }
+        let was_hot = ui
+            .data(|data| data.get_temp::<bool>(hot_id))
+            .unwrap_or(false);
+        if hot != was_hot {
+            ui.data_mut(|data| data.insert_temp(hot_id, hot));
+            ui.ctx().request_repaint();
         }
     }
     if edited {
@@ -41324,6 +41364,44 @@ mod tests {
     }
 
     #[test]
+    fn draft_links_preserve_text_case_and_cursor_metrics() {
+        let context = egui::Context::default();
+        let text = "Join HTTPS://Caper.Example/invite/AbC or www.Example.com/Path.";
+        let _ = context.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let font = egui::FontId::proportional(13.6);
+                let galley = super::draft_layout(
+                    ui,
+                    text,
+                    300.0,
+                    &[],
+                    mentions::Specials::default(),
+                    font.clone(),
+                );
+                assert_eq!(galley.job.text, text);
+                let links: Vec<_> = galley
+                    .job
+                    .sections
+                    .iter()
+                    .filter(|section| section.format.color == TERRACOTTA_BRIGHT)
+                    .map(|section| &text[section.byte_range.clone()])
+                    .collect();
+                assert_eq!(
+                    links,
+                    ["HTTPS://Caper.Example/invite/AbC", "www.Example.com/Path"]
+                );
+                assert!(
+                    galley
+                        .job
+                        .sections
+                        .iter()
+                        .all(|section| section.format.font_id == font)
+                );
+            });
+        });
+    }
+
+    #[test]
     fn message_links_open_in_the_browser_and_keep_the_row_menu_off() {
         const LINKED: &str = "Notes at www.example.com/notes, and (https://caper.example/a_(b)).";
         const ORIGINAL: &str = "Forwarded from https://example.com/original";
@@ -41372,6 +41450,11 @@ mod tests {
             hovered.platform_output.cursor_icon,
             egui::CursorIcon::PointingHand
         );
+        let hovered = render(&mut app, &context, vec![]);
+        assert_eq!(
+            section_format(&hovered, LINKED, "www.example.com/notes").background,
+            TERRACOTTA.gamma_multiply(0.24)
+        );
         let clicked = click_at(&mut app, &context, link);
         assert_eq!(opened_url(&clicked), Some("https://www.example.com/notes"));
 
@@ -41398,6 +41481,19 @@ mod tests {
         };
         let output = right_click(&mut app, link);
         assert!(!texts(&output).contains(&"Forward message"));
+        assert!(texts(&output).contains(&"Open link"));
+        assert!(texts(&output).contains(&"Copy link"));
+        let copy = text_position(&output, "Copy link");
+        let output = click_at(&mut app, &context, copy);
+        assert!(output.platform_output.commands.iter().any(|command| {
+            matches!(command, egui::OutputCommand::CopyText(text) if text == "https://www.example.com/notes")
+        }));
+        let output = right_click(&mut app, link);
+        let open = text_position(&output, "Open link");
+        let output = render(&mut app, &context, vec![egui::Event::PointerMoved(open)]);
+        assert!(!texts(&output).contains(&"Forward message"));
+        let output = click_at(&mut app, &context, open);
+        assert_eq!(opened_url(&output), Some("https://www.example.com/notes"));
         let output = right_click(&mut app, pill_center(&output, LINKED, "Notes at "));
         assert!(
             texts(&output).contains(&"Forward message"),

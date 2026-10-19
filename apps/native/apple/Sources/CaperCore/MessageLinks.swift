@@ -17,6 +17,16 @@ struct LinkSegment: Equatable {
 /// shared/messages/link-cases.json. The text is scanned by Unicode scalar:
 /// the rules only name characters that are one scalar (and one UTF-16 unit).
 enum MessageLinks {
+    /// NSTextStorage uses UTF-16 offsets, not Swift character or scalar counts.
+    static func draftHighlights(in text: String) -> [NSRange] {
+        var offset = 0
+        return segments(in: text).compactMap { segment in
+            let length = segment.text.utf16.count
+            defer { offset += length }
+            return segment.href == nil ? nil : NSRange(location: offset, length: length)
+        }
+    }
+
     /// Unicode White_Space; links end at the first of these or `<`.
     static func isWhitespace(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {

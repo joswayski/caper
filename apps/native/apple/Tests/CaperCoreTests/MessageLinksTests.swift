@@ -49,6 +49,17 @@ final class MessageLinksTests: XCTestCase {
         XCTAssertTrue(hrefs.allSatisfy { $0.hasPrefix("https://") || $0.hasPrefix("http://") })
     }
 
+    func testDraftHighlightsUseUTF16AndPreserveSpelling() {
+        let invite = "HTTPS://Caper.Chat/invite/AbC😀"
+        let web = "www.Example.com/Case"
+        let text = "👨‍👩‍👧‍👦 e\u{301} (\(invite)), then \(web)!"
+        let ranges = MessageLinks.draftHighlights(in: text)
+        XCTAssertEqual(ranges, [(text as NSString).range(of: invite), (text as NSString).range(of: web)])
+        XCTAssertEqual(ranges.map { (text as NSString).substring(with: $0) }, [invite, web])
+        XCTAssertEqual(MessageLinks.draftHighlights(in: "no links 😀"), [])
+        XCTAssertEqual(MessageLinks.draftHighlights(in: ""), [])
+    }
+
     /// Links are found in the text between mention pills, never inside one.
     func testLinksRunOnTheTextBetweenMentions() {
         let content = ChatContent(version: 1, type: "text", text: "@maya see https://example.com/a?b=c, then @alex",

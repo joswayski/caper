@@ -5168,6 +5168,7 @@ private struct MessageRow: View {
             }.disabled(!chat.canInteract || chat.pendingPins.contains(message.id))
             // Attachment-only messages have no text to copy.
             if !message.content.text.isEmpty { Button("Copy text") { copy(message.content.text) } }
+            MessageLinkMenuItems(text: message.content.text)
             Button("Copy message ID") { copy(message.id) }
             if chat.canDelete(message) {
                 Divider()
@@ -5289,8 +5290,39 @@ private struct MessageRow: View {
     }
 }
 
+/// Native menu actions use the HTTP(S) destination, including https for bare www links.
+private struct MessageLinkMenuItems: View {
+    let text: String
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        let links = MessageLinks.segments(in: text).filter { $0.href != nil }
+        ForEach(Array(links.enumerated()), id: \.offset) { _, link in
+            if let href = link.href, let url = URL(string: href) {
+                if links.count == 1 {
+                    actions(link, url: url)
+                } else {
+                    Menu(link.text) { actions(link, url: url) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func actions(_ link: LinkSegment, url: URL) -> some View {
+        Button("Open link") { openURL(url) }
+        Button("Copy link") {
+            #if os(macOS)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(link.href ?? link.text, forType: .string)
+            #else
+            UIPasteboard.general.string = link.href ?? link.text
+            #endif
+        }
+    }
+}
+
 extension MessageLinks {
-    /// `text` with its links in terracotta-bright, underlined, and opening in
+    /// `text` with its links highlighted, underlined, and opening in
     /// the system browser (the default `openURL`); nil when it has none. The
     /// visible text is never shortened. Hosts set `.tint` to the same colour:
     /// SwiftUI may draw link runs in the tint rather than their own colour.
@@ -5304,6 +5336,7 @@ extension MessageLinks {
             if let href = run.href, let url = URL(string: href) {
                 part.link = url
                 part.foregroundColor = CaperTheme.terracottaBright
+                part.backgroundColor = CaperTheme.terracotta.opacity(0.12)
                 part.underlineStyle = Text.LineStyle(pattern: .solid, color: CaperTheme.terracottaBright)
             }
             attributed.append(part)
@@ -6577,6 +6610,10 @@ private struct MessageActionsSheet: View {
             // Attachment-only messages have no text to copy.
             if !message.content.text.isEmpty {
                 Divider()
+                if MessageLinks.segments(in: message.content.text).contains(where: { $0.href != nil }) {
+                    Menu("Links") { MessageLinkMenuItems(text: message.content.text) }
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                }
                 Button {
                     UIPasteboard.general.string = message.content.text
                     dismiss()
