@@ -4539,6 +4539,23 @@ Those measurements describe the initial web-only Leave fix. The reliability
 changes below also require an API rollout. Do not treat background request
 duration as local leave latency.
 
+On native iOS, Leave gates microphone publication and playback and clears call
+state immediately. Ending a microphone comparison, disabling WebRTC tracks,
+closing the old peer (including VoiceProcessingIO disposal), and deactivating
+`RTCAudioSession` run off the main actor. Previously those synchronous operations
+ran on the main actor, so even an already-idle model could not render until audio
+shutdown returned. A new join or microphone preparation awaits pending cleanup
+before reusing the shared audio device/session; cancelling that join invalidates
+it before it can activate audio. Remote `/leave` cleanup remains independent.
+
+The iOS regression tests hold the audio-session configuration lock while checking
+immediate Leave and cancelled rejoin, and use synthetic PCM through local WebRTC
+peers to check silence before peer disposal and playback after reopening its gate.
+These tests require Xcode/iOS Simulator and have not been run in the Linux orb.
+Physical-iPhone Leave timing (speaker and Bluetooth), rapid leave/rejoin, and
+leaving during a microphone comparison still need device validation. No new
+native latency measurements are claimed here.
+
 ## Provider failures and cleanup
 
 Caper HTTP 502 does **not** prove Cloudflare returned 502. Provider HTTP errors,

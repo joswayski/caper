@@ -157,6 +157,7 @@ public final class VoiceClient {
     private let requestMicrophonePermission: @MainActor () async -> Bool
     #if os(iOS)
     private var audioObservers: [NSObjectProtocol] = []
+    private var audioCleanup: Task<Void, Never>?
     #endif
 
     public convenience init(api: APIClient) {
@@ -232,10 +233,17 @@ public final class VoiceClient {
         }
         do {
             guard let factory else { throw VoiceError.setup }
+            #if os(iOS)
+            // Closing the old peer and deactivating its audio session can take
+            // seconds. Suspend Join, never the UI, before reusing that hardware.
+            await finishAudioCleanup()
+            guard generation == attempt, phase == .joining else { return }
+            #endif
             guard await requestMicrophonePermission() else { throw VoiceError.permission }
             guard generation == attempt, phase == .joining else { return }
             #if os(iOS)
             try activateAudioSession()
+            audioDevice.playoutEnabled = true
             installAudioObservers(generation: attempt)
             #endif
             let sessionStarted = clock.now
@@ -413,8 +421,8 @@ public final class VoiceClient {
 
     public func leave() async { leaveImmediately() }
 
-    /// Stops capture, playback and transport synchronously. Remote cleanup is
-    /// deliberately detached so provider latency can never resurrect or delay leave.
+    /// Silences local audio and clears call state synchronously. iOS hardware
+    /// disposal and remote cleanup must not block the UI or revive an old call.
     public func leaveImmediately() {
         #if os(iOS)
         guard phase != .idle || comparisonGeneration != nil else { return }
@@ -655,7 +663,25 @@ public final class VoiceClient {
     private func detachLocal(preservingContext: Bool = false) {
         #if os(macOS) || os(iOS)
         audioDevice.publicationEnabled = false
+        #if os(iOS)
+        audioDevice.playoutEnabled = false
+        removeAudioObservers()
+        let previousCleanup = audioCleanup
+        let oldPeer = peer, oldMicrophone = microphone, oldRemoteAudio = remoteAudio
+        audioCleanup = Task.detached(priority: .userInitiated) { [audioDevice] in
+            await previousCleanup?.value
+            _ = audioDevice.endComparison()
+            oldMicrophone?.isEnabled = false
+            oldRemoteAudio.forEach { $0.isEnabled = false }
+            oldPeer?.close()
+            let audio = RTCAudioSession.sharedInstance()
+            audio.lockForConfiguration()
+            try? audio.setActive(false)
+            audio.unlockForConfiguration()
+        }
+        #else
         _ = audioDevice.endComparison()
+        #endif
         comparisonPeer = nil; comparisonGeneration = nil
         #endif
         diagnostics = nil; previousStatistics = nil; joinTiming = nil; joinChecks = nil
@@ -667,9 +693,11 @@ public final class VoiceClient {
         pullRetryTask?.cancel(); pullRetryTask = nil; pullRetryIndex = 0
         if let mediaSubscriptionID { Task { await gateway.unsubscribe(mediaSubscriptionID) } }
         mediaSubscriptionID = nil
+        #if !os(iOS)
         microphone?.isEnabled = false
         remoteAudio.forEach { $0.isEnabled = false }
         peer?.close()
+        #endif
         peer = nil; delegate = nil; microphone = nil
         remoteAudio = []; remoteAudioByMID = [:]; participantByMID = [:]
         token = nil; selfID = nil; subscribed = [:]; participants = []; sessionStartedAt = nil
@@ -678,13 +706,6 @@ public final class VoiceClient {
         // An automatic reconnect rejoins the same call, where everyone else keeps
         // their id: keep each person's volume and Mute for me, as web does.
         if !preservingContext { context = nil; participantGains = [:]; locallyMutedParticipants = [] }
-        #if os(iOS)
-        removeAudioObservers()
-        let audio = RTCAudioSession.sharedInstance()
-        audio.lockForConfiguration()
-        try? audio.setActive(false)
-        audio.unlockForConfiguration()
-        #endif
     }
 
     private func scheduleReconnect(generation attempt: Int) {
@@ -828,6 +849,9 @@ public final class VoiceClient {
 
     func prepareMicrophoneDenoise() async -> Bool {
         #if os(iOS)
+        let attempt = generation
+        await finishAudioCleanup()
+        guard generation == attempt else { return false }
         if phase == .idle || phase == .failed {
             do { try activateAudioSession() } catch { return false }
         }
@@ -842,12 +866,16 @@ public final class VoiceClient {
 
     #if os(iOS)
     func releaseIdleAudioPreparation() {
+        guard audioCleanup == nil else { return }
         if (phase == .idle || phase == .failed) && comparisonGeneration == nil { deactivateAudioSession() }
     }
     #endif
 
     /// Keep publication gated through recording and playback; stale tests cannot open a replacement call.
     func beginMicrophoneComparison() -> Int? {
+        #if os(iOS)
+        guard audioCleanup == nil else { return nil }
+        #endif
         if phase == .idle || phase == .failed {
             #if os(iOS)
             do { try activateAudioSession() } catch { return nil }
@@ -1005,6 +1033,14 @@ public final class VoiceClient {
     }
 
     #if os(iOS)
+    private func finishAudioCleanup() async {
+        while let cleanup = audioCleanup {
+            await cleanup.value
+            // Cancel/rejoin can append another cleanup while this actor yields.
+            if audioCleanup == cleanup { audioCleanup = nil }
+        }
+    }
+
     private func activateAudioSession() throws {
         let audio = RTCAudioSession.sharedInstance()
         audio.lockForConfiguration()
