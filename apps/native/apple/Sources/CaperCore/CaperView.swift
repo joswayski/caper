@@ -8111,11 +8111,13 @@ private struct PrivacySheet: View {
                         Text(unblockError).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                     }
                     Rectangle().fill(CaperTheme.border).frame(height: 1).padding(.vertical, 6)
-                    Text("Delete account").font(CaperTheme.font(13, weight: .bold))
                     Link(destination: PrivacySettings.deleteAccountURL) {
-                        Text("How to delete your account").font(CaperTheme.font(13)).underline()
-                            .foregroundStyle(CaperTheme.text)
+                        HStack(spacing: 4) {
+                            Text("Delete account").font(CaperTheme.font(13))
+                            CaperIcon(name: "external-link", size: 12)
+                        }
                     }
+                    .buttonStyle(.plain).foregroundStyle(CaperTheme.error)
                     .frame(minHeight: 44).modifier(ControlPointer())
                     .accessibilityIdentifier("delete-account-link")
                 }.padding(22).frame(maxWidth: .infinity, alignment: .leading)

@@ -27334,6 +27334,17 @@ fn copy_items(ui: &mut egui::Ui, message: &model::Message) {
 
 /// Muted release links keep real hyperlink behavior, with visible pointer and keyboard feedback.
 fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::Response {
+    external_link(ui, label, size, url, MUTED.gamma_multiply(0.72))
+        .on_hover_text("View this version on GitHub")
+}
+
+fn external_link(
+    ui: &mut egui::Ui,
+    label: &str,
+    size: f32,
+    url: &str,
+    color: Color32,
+) -> egui::Response {
     let galley =
         ui.painter()
             .layout_no_wrap(label.to_owned(), egui::FontId::proportional(size), MUTED);
@@ -27350,7 +27361,7 @@ fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::R
     } else if response.has_focus() {
         TEXT
     } else {
-        MUTED.gamma_multiply(0.72)
+        color
     };
     if ui.is_rect_visible(rect) {
         if response.hovered() || pressed {
@@ -27388,9 +27399,7 @@ fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::R
         }
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, label));
-    let response = response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("View this version on GitHub");
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if response.clicked() {
         ui.ctx().open_url(egui::OpenUrl::new_tab(url));
     }
@@ -28880,16 +28889,7 @@ fn notices(ui: &mut egui::Ui, error: &Option<String>, warning: &Option<String>) 
 
 /// Part of the Privacy section: opens the account deletion instructions.
 fn delete_account_settings(ui: &mut egui::Ui) {
-    ui.label(RichText::new("Delete account").size(13.0).color(TEXT));
-    ui.add_space(6.0);
-    let link = RichText::new("How to delete your account")
-        .size(13.0)
-        .color(TEXT)
-        .underline();
-    if ui.link(link).clicked() {
-        ui.ctx()
-            .open_url(egui::OpenUrl::new_tab(DELETE_ACCOUNT_URL));
-    }
+    external_link(ui, "Delete account", 13.0, DELETE_ACCOUNT_URL, ERROR);
 }
 
 fn endpoint(args: &[String], fixture: Option<&str>) -> Result<String, String> {
@@ -31936,12 +31936,7 @@ mod tests {
             "{labels:?}"
         );
         assert_eq!(
-            click_opening(
-                &mut app,
-                &context,
-                text_position(&output, "How to delete your account"),
-            )
-            .as_deref(),
+            click_opening(&mut app, &context, text_position(&output, "Delete account"),).as_deref(),
             Some(DELETE_ACCOUNT_URL)
         );
         let output = scroll_modal_to_bottom(&mut app, &context);
