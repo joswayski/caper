@@ -1,18 +1,21 @@
 package chat.caper.android
 
 import android.content.Context
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.text.LinkAnnotation
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import chat.caper.android.data.*
@@ -98,18 +101,25 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
     }
 }
 
-/** Muted and underlined, brightening on hover, focus or press, so a version reads as a link. */
-private val ReleaseLinkStyles = TextLinkStyles(
-    SpanStyle(color = TextMuted.copy(alpha = 0.72f), textDecoration = TextDecoration.Underline),
-    focusedStyle = SpanStyle(color = Text), hoveredStyle = SpanStyle(color = Text), pressedStyle = SpanStyle(color = Text),
-)
-
+/** The icon identifies an external link; underline and brighten only during interaction. */
 @Composable private fun ReleaseCommitLink(label: String, revision: String, size: Int = 12) {
     val uriHandler = LocalUriHandler.current
     val url = "https://github.com/joswayski/caper/commit/$revision"
-    Text(buildAnnotatedString {
-        withLink(LinkAnnotation.Url(url, ReleaseLinkStyles) { openExternalLink(uriHandler, url) }) { append(label) }
-    }, fontSize = size.sp, color = TextMuted)
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val focused by interaction.collectIsFocusedAsState()
+    val pressed by interaction.collectIsPressedAsState()
+    val active = hovered || focused || pressed
+    val color = if (active) Text else TextMuted.copy(alpha = 0.72f)
+    Row(
+        Modifier.clickable(interaction, indication = null, role = Role.Button,
+            onClickLabel = "View this version on GitHub") { openExternalLink(uriHandler, url) },
+        horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, Modifier.weight(1f, fill = false), fontSize = size.sp, color = color,
+            textDecoration = if (active) TextDecoration.Underline else TextDecoration.None)
+        Icon(painterResource(R.drawable.lucide_external_link), null, Modifier.size(12.dp), tint = color)
+    }
 }
 
 /** "October 18, 2026" for a release's UTC publication day ("2026-10-18"). */

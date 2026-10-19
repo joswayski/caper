@@ -27195,7 +27195,11 @@ fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::R
     let galley =
         ui.painter()
             .layout_no_wrap(label.to_owned(), egui::FontId::proportional(size), MUTED);
-    let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::click());
+    let text_size = galley.size();
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(text_size.x + 16.0, text_size.y.max(12.0)),
+        egui::Sense::click(),
+    );
     let pressed = response.is_pointer_button_down_on();
     let color = if pressed {
         TERRACOTTA_BRIGHT
@@ -27216,18 +27220,22 @@ fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::R
         }
         ui.painter()
             .galley_with_override_text_color(rect.min, galley, color);
-        ui.painter().hline(
-            rect.x_range(),
-            rect.bottom() - 0.5,
-            Stroke::new(
-                if response.hovered() || pressed {
-                    2.0
-                } else {
-                    1.0
-                },
-                color.gamma_multiply(0.7),
+        paint_icon(
+            ui.painter(),
+            egui::Rect::from_min_size(
+                egui::pos2(rect.right() - 12.0, rect.center().y - 6.0),
+                egui::vec2(12.0, 12.0),
             ),
+            NavIcon::ExternalLink,
+            color,
         );
+        if response.hovered() || response.has_focus() || pressed {
+            ui.painter().hline(
+                rect.left()..=rect.left() + text_size.x,
+                rect.bottom() - 0.5,
+                Stroke::new(2.0, color.gamma_multiply(0.7)),
+            );
+        }
         if response.has_focus() {
             ui.painter().rect_stroke(
                 rect.expand(3.0),
