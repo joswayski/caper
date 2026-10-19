@@ -25,22 +25,31 @@ async fn list(
     let user = user(pool, &headers).await?;
     let mut tx = pool.begin().await.map_err(database_error)?;
     let (channel, _, _) = editing::locked_channel(&mut tx, &channel, Some(user), false).await?;
+    // One pass over this channel's replies (replies always share their root's
+    // channel) finds each thread's newest reply from someone else and whether
+    // the reader replied; only those threads are then checked against the
+    // root and the read position. Deleted replies are tombstones, not news.
     let rows: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT root.external_id,max(reply.channel_seq)
-         FROM public.messages root
-         JOIN public.messages reply ON reply.thread_root_id=root.id
-         JOIN public.chat_sessions author ON author.id=reply.session_id
-         JOIN public.users u ON u.id=author.user_id AND u.deleted_at IS NULL
+        "WITH replies AS (
+           SELECT reply.thread_root_id AS root_id,reply.channel_seq,author.user_id=$2 AS mine,
+                  reply.deleted_at IS NULL AND author.user_id<>$2
+                    AND EXISTS(SELECT 1 FROM public.users u WHERE u.id=author.user_id AND u.deleted_at IS NULL)
+                    AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$2
+                                   AND b.blocked_id=author.user_id AND b.deleted_at IS NULL) AS counts
+           FROM public.messages reply JOIN public.chat_sessions author ON author.id=reply.session_id
+           WHERE reply.channel_id=$1 AND reply.thread_root_id IS NOT NULL
+         ), threads AS (
+           SELECT root_id,max(channel_seq) FILTER (WHERE counts) AS seq,bool_or(mine) AS replied
+           FROM replies GROUP BY root_id
+           HAVING bool_or(counts)
+         )
+         SELECT root.external_id,t.seq FROM threads t
+         JOIN public.messages root ON root.id=t.root_id
+         JOIN public.chat_sessions root_author ON root_author.id=root.session_id
          LEFT JOIN public.thread_reads r ON r.thread_root_id=root.id AND r.user_id=$2
-         WHERE root.channel_id=$1 AND root.thread_root_id IS NULL
-           AND reply.channel_seq>COALESCE(r.seq,0) AND author.user_id<>$2
-           AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$2
-                          AND b.blocked_id=author.user_id AND b.deleted_at IS NULL)
-           AND EXISTS(SELECT 1 FROM public.messages participation
-                      JOIN public.chat_sessions participant ON participant.id=participation.session_id
-                      WHERE (participation.id=root.id OR participation.thread_root_id=root.id)
-                        AND participant.user_id=$2)
-         GROUP BY root.id,root.external_id ORDER BY root.external_id",
+         WHERE root.channel_id=$1 AND root.thread_root_id IS NULL AND t.seq>COALESCE(r.seq,0)
+           AND (t.replied OR root_author.user_id=$2)
+         ORDER BY root.external_id",
     )
     .bind(channel)
     .bind(user)

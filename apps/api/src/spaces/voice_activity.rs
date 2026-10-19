@@ -23,16 +23,25 @@ pub(super) async fn list(
     .collect();
     let mut active = BTreeSet::new();
     if !spaces.is_empty() {
-        for room in state.media_rooms().await? {
-            let Some(channel) = &room.media_channel else {
-                continue; // The retired public/demo room is not a member space.
-            };
-            let access = match channel_participation(pool, channel, Some(principal.user.id)).await {
-                Ok(access) => access,
-                Err(error) if error.status == StatusCode::NOT_FOUND => continue,
-                Err(error) => return Err(error),
-            };
-            let Some(space) = access.space_id.and_then(|id| spaces.get(&id)) else {
+        let rooms = state.media_rooms().await?;
+        // The retired public/demo room has no channel and is not a member space.
+        let channels: Vec<String> = rooms
+            .iter()
+            .filter_map(|room| room.media_channel.clone())
+            .collect();
+        // One access check for every active room, not one query per room.
+        let participating = if channels.is_empty() {
+            HashMap::new()
+        } else {
+            participating_channel_spaces(pool, &channels, principal.user.id).await?
+        };
+        for room in rooms {
+            let Some(space) = room
+                .media_channel
+                .as_ref()
+                .and_then(|channel| participating.get(channel))
+                .and_then(|id| spaces.get(id))
+            else {
                 continue;
             };
             if active.contains(space) {
