@@ -719,7 +719,7 @@ async fn voice_start_notifications(state: &AppState, pool: &sqlx::PgPool) {
     }
     async fn cool(pool: &sqlx::PgPool) {
         pool.execute(
-            "UPDATE voice_notification_state SET notified_at=now()-interval '301 seconds'",
+            "UPDATE voice_notification_state SET notified_at=now()-interval '1801 seconds'",
         )
         .await
         .unwrap();
@@ -776,8 +776,11 @@ async fn voice_start_notifications(state: &AppState, pool: &sqlx::PgPool) {
     let a = enter(state, "ChannelAlpha", "owner-session").await;
     assert_eq!(count(pool).await, 2);
     exit(state, "ChannelAlpha", "owner-session", &a).await;
+    pool.execute("UPDATE voice_notification_state SET notified_at=now()-interval '29 minutes'")
+        .await
+        .unwrap();
     let b = enter(state, "ChannelBravo", "member-session").await;
-    assert_eq!(count(pool).await, 2, "empty-room rejoin inside cooldown");
+    assert_eq!(count(pool).await, 2, "empty-room rejoin after 29 minutes");
     exit(state, "ChannelBravo", "member-session", &b).await;
     // Private activity never exposes a channel to a member without a grant.
     pool.execute("UPDATE channels SET private=true WHERE external_id='ChannelAlpha'")

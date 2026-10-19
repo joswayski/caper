@@ -39,7 +39,7 @@ pub(crate) async fn joined(state: &AppState, participant: Uuid) -> Result<(), Ap
     .await
     .map_err(super::database_error)?;
     let cooled: bool = sqlx::query_scalar(
-        "SELECT notified_at IS NULL OR notified_at<=clock_timestamp()-interval '5 minutes'
+        "SELECT notified_at IS NULL OR notified_at<=clock_timestamp()-interval '30 minutes'
          FROM public.voice_notification_state WHERE space_id=$1 FOR UPDATE",
     )
     .bind(space)

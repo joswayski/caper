@@ -74,7 +74,7 @@ account's first-ever join. Joining another channel while any channel is occupied
 does not alert, even if that other channel is private. Reservations, failed joins,
 monitor sessions and expired leases do not count.
 
-- A durable, space-wide five-minute cooldown starts with a qualifying activation,
+- A durable, space-wide 30-minute cooldown starts with a qualifying activation,
   including one with no eligible recipients. Leaving/rejoining or switching
   channels cannot reset it. Suppressed starts do not schedule a later alert.
 - Notify other active space members, even those who have not joined the channel
