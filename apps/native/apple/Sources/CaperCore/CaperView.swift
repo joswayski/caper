@@ -8562,7 +8562,7 @@ private struct LoginPage: View {
                         .frame(maxWidth: .infinity, alignment: .trailing).padding(.top, 12)
                 } else {
                     // An exhausted code keeps its error; a new code re-enables the field.
-                    CaperField(title: "Sign-in code", text: input($code, clearsError: model.loginAttemptsRemaining != 0), focus: $codeFocused)
+                    CaperField(title: "Sign-in code", text: input($code, clearsError: model.loginAttemptsRemaining != 0), placeholder: "e.g. ABC234", focus: $codeFocused)
                         .disabled(model.loginAttemptsRemaining == 0)
                         .onChange(of: code) { _, value in
                             // A keystroke during a request is put back by `input`, not filtered into the code.

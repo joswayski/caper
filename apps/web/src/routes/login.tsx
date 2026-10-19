@@ -148,6 +148,7 @@ function Login() {
                 autoComplete="one-time-code"
                 autoCapitalize="characters"
                 spellCheck={false}
+                placeholder="e.g. ABC234"
                 pattern="[A-HJKMNPQRSTWXYZ2-9]{6}"
                 readOnly={pending}
                 disabled={attemptsRemaining === 0}

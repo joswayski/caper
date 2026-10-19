@@ -10149,6 +10149,7 @@ impl CaperApp {
                                 !exhausted,
                                 egui::TextEdit::singleline(text)
                                     .id(egui::Id::new("sign-in-code"))
+                                    .hint_text("e.g. ABC234")
                                     .vertical_align(egui::Align::Center)
                                     .font(egui::FontId::proportional(16.0))
                                     .margin(egui::Margin::symmetric(14, 4))
