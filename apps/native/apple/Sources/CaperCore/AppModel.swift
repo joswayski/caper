@@ -129,6 +129,8 @@ public final class AppModel {
     public var notificationError: String?
     /// The settings could not load; shown in Notifications settings.
     public private(set) var notificationsLoadError: String?
+    public private(set) var accountNotificationsSaving: Set<String> = []
+    public private(set) var notificationScopesSaving: Set<NotificationScope> = []
     /// Bumped when a timed mute ends, so muted rows redraw.
     public private(set) var muteExpiryTick = 0
     @ObservationIgnored private var notificationsLoadedAt: Date?
@@ -2269,8 +2271,10 @@ extension AppModel {
     }
 
     private func saveAccountNotifications(_ change: NotificationAccountChange, field: String) async {
-        guard account != nil, let current = notificationSettings else { return }
+        guard account != nil, let current = notificationSettings, !accountNotificationsSaving.contains(field) else { return }
         let attempt = generation
+        accountNotificationsSaving.insert(field)
+        defer { if generation == attempt { accountNotificationsSaving.remove(field) } }
         let revision = (accountNotificationRevisions[field] ?? 0) + 1
         accountNotificationRevisions[field] = revision
         notificationRequest += 1
@@ -2298,8 +2302,10 @@ extension AppModel {
     }
 
     private func saveOverride(_ change: NotificationOverrideChange, for scope: NotificationScope) async {
-        guard account != nil, let current = notificationSettings else { return }
+        guard account != nil, let current = notificationSettings, !notificationScopesSaving.contains(scope) else { return }
         let attempt = generation
+        notificationScopesSaving.insert(scope)
+        defer { if generation == attempt { notificationScopesSaving.remove(scope) } }
         let revision = (overrideRevisions[scope] ?? 0) + 1
         overrideRevisions[scope] = revision
         notificationRequest += 1
@@ -2350,6 +2356,7 @@ extension AppModel {
         notificationSettings = nil; notificationError = nil; notificationsLoadError = nil
         notificationsLoadedAt = nil; notificationChangesInFlight = 0
         accountNotificationRevisions = [:]; overrideRevisions = [:]
+        accountNotificationsSaving = []; notificationScopesSaving = []
         pendingNotificationRoute = nil
     }
 }

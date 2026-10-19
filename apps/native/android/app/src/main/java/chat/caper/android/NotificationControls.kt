@@ -76,9 +76,9 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
     leadingIcon = { Icon(painterResource(R.drawable.lucide_arrow_right), "Back", Modifier.size(16.dp).graphicsLayer { rotationZ = 180f }) },
 )
 
-@Composable private fun MutePage(title: String, fontSize: TextUnit, choose: (MutePreset) -> Unit, back: () -> Unit) {
+@Composable private fun MutePage(title: String, fontSize: TextUnit, choose: (MutePreset) -> Unit, enabled: Boolean = true, back: () -> Unit) {
     MenuBack(title, fontSize, back)
-    MutePreset.entries.forEach { preset -> DropdownMenuItem(text = { Text(preset.label, fontSize = fontSize) }, onClick = { choose(preset) }) }
+    MutePreset.entries.forEach { preset -> DropdownMenuItem(text = { Text(preset.label, fontSize = fontSize) }, onClick = { choose(preset) }, enabled = enabled) }
 }
 
 /**
@@ -95,6 +95,7 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
     inherited: String?,
     change: (OverrideChange) -> Unit,
     close: () -> Unit,
+    saving: Boolean = false,
     spaceMuted: Boolean = false,
     fontSize: TextUnit = TextUnit.Unspecified,
     before: @Composable () -> Unit = {},
@@ -104,7 +105,7 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
     when (page) {
         NotificationMenuPage.Main -> {
             before()
-            val enabled = inherited != null
+            val enabled = inherited != null && !saving
             DropdownMenuItem(
                 text = { MenuLabel("Notifications", inherited?.let { override?.level?.let(::overrideLevelLabel) ?: defaultLevelLabel(it) }, fontSize) },
                 onClick = { showPage(NotificationMenuPage.Level) }, enabled = enabled,
@@ -130,10 +131,11 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
                 DropdownMenuItem(
                     text = { Text(label, fontSize = fontSize) }, onClick = { choose(OverrideChange.Level(value)) },
                     modifier = Modifier.semantics { selected = current }, leadingIcon = { RadioButton(current, null) },
+                    enabled = inherited != null && !saving,
                 )
             }
         }
-        NotificationMenuPage.Mute -> MutePage("Mute $noun", fontSize, { choose(OverrideChange.Mute(it.mutedUntil(Instant.now()))) }) {
+        NotificationMenuPage.Mute -> MutePage("Mute $noun", fontSize, { choose(OverrideChange.Mute(it.mutedUntil(Instant.now()))) }, inherited != null && !saving) {
             showPage(NotificationMenuPage.Main)
         }
     }
@@ -151,7 +153,7 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
     val close = { page = NotificationMenuPage.Main; dismiss() }
     val choose = { next: OverrideChange -> close(); change(next) }
     DropdownMenu(expanded, close, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-        if (page == NotificationMenuPage.Mute) MutePage("Mute conversation", 13.sp, { choose(OverrideChange.Mute(it.mutedUntil(Instant.now()))) }) {
+        if (page == NotificationMenuPage.Mute) MutePage("Mute conversation", 13.sp, { choose(OverrideChange.Mute(it.mutedUntil(Instant.now()))) }, loaded) {
             page = NotificationMenuPage.Main
         } else {
             val off = override?.level == LEVEL_NOTHING
@@ -227,7 +229,7 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
     val settings = state.notificationSettings
     HorizontalDivider(color = Border)
     Text("Notifications", Modifier.semantics { heading() }, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-    SettingChoices("Notify me about", accountLevelOptions, settings?.level, settings != null, viewModel::setNotificationLevel)
+    SettingChoices("Notify me about", accountLevelOptions, settings?.level, settings != null && ACCOUNT_LEVEL_KEY !in state.notificationSaving, viewModel::setNotificationLevel)
     NotificationSaveError(state.notificationErrors[ACCOUNT_LEVEL_KEY]) { viewModel.dismissNotificationError(ACCOUNT_LEVEL_KEY) }
     if (settings == null) {
         val error = state.notificationSettingsError
@@ -235,7 +237,7 @@ internal enum class NotificationMenuPage { Main, Level, Mute }
         if (error != null) TextButton(viewModel::refreshNotificationSettings, shape = MaterialTheme.shapes.small) { Text("Retry") }
     }
     if (!pushAvailable) return
-    SettingChoices("Send to this phone", mobileOptions, settings?.mobile, settings != null, viewModel::setMobileNotifications)
+    SettingChoices("Send to this phone", mobileOptions, settings?.mobile, settings != null && MOBILE_KEY !in state.notificationSaving, viewModel::setMobileNotifications)
     NotificationSaveError(state.notificationErrors[MOBILE_KEY]) { viewModel.dismissNotificationError(MOBILE_KEY) }
     Row(
         Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(MaterialTheme.shapes.small).toggleable(pushEnabled, enabled = !pushWorking, role = Role.Switch) {

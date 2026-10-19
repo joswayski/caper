@@ -15,7 +15,7 @@ struct NotificationLevelMenu: View {
             choice(.mentions)
             choice(.nothing)
         }
-        .disabled(model.notificationSettings == nil)
+        .disabled(model.notificationSettings == nil || model.notificationScopesSaving.contains(scope))
         .onAppear { model.refreshNotificationSettingsIfStale() }
     }
 
@@ -47,6 +47,7 @@ struct NotificationMuteMenu: View {
         if let mute = model.notificationMute(scope) {
             Button(NotificationLabels.mutedStatus(mute)) {}.disabled(true)
             Button(NotificationLabels.muteTitle(for: scope, muted: true)) { save(nil) }
+                .disabled(model.notificationScopesSaving.contains(scope))
         } else {
             Menu(NotificationLabels.muteTitle(for: scope, muted: false)) {
                 preset(.fifteenMinutes)
@@ -55,7 +56,7 @@ struct NotificationMuteMenu: View {
                 preset(.twentyFourHours)
                 preset(.forever)
             }
-            .disabled(model.notificationSettings == nil)
+            .disabled(model.notificationSettings == nil || model.notificationScopesSaving.contains(scope))
         }
     }
 
@@ -109,7 +110,7 @@ struct DirectMessageNotificationItems: View {
             let level: NotificationLevel? = off ? nil : .nothing
             Task { await model.setNotificationLevel(level, for: scope) }
         }
-        .disabled(model.notificationSettings == nil)
+        .disabled(model.notificationSettings == nil || model.notificationScopesSaving.contains(scope))
         .onAppear { model.refreshNotificationSettingsIfStale() }
         NotificationMuteMenu(model: model, scope: scope)
     }

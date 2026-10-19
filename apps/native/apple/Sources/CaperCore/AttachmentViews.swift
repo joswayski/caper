@@ -10,6 +10,69 @@ import UniformTypeIdentifiers
 
 enum AttachmentLoadError: Error { case status(Int), undecodable }
 
+/// Cancellation may arrive before the continuation installs its task delegate.
+private final class AttachmentDownloadCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: URLSessionDataTask?
+    private var cancelled = false
+
+    func start(_ task: URLSessionDataTask) {
+        lock.withLock {
+            self.task = task
+            task.resume()
+            if cancelled { task.cancel() }
+        }
+    }
+
+    func cancel() {
+        lock.withLock {
+            cancelled = true
+            task?.cancel()
+        }
+    }
+}
+
+/// Data-task callbacks deliver chunks, avoiding both an unbounded download and
+/// per-byte async iteration. State is confined to URLSession's serial delegate queue.
+private final class AttachmentImageDownload: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    static let maximumBytes = 40 * 1024 * 1024
+    private var body = Data()
+    private var failure: Error?
+    private let continuation: CheckedContinuation<Data, Error>
+
+    init(_ continuation: CheckedContinuation<Data, Error>) { self.continuation = continuation }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            failure = AttachmentLoadError.status(http.statusCode)
+        } else if response.expectedContentLength > Int64(Self.maximumBytes) {
+            failure = URLError(.dataLengthExceedsMaximum)
+        }
+        completionHandler(failure == nil ? .allow : .cancel)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard failure == nil else { return }
+        guard data.count <= Self.maximumBytes - body.count else {
+            failure = URLError(.dataLengthExceedsMaximum)
+            body = Data()
+            dataTask.cancel()
+            return
+        }
+        body.append(data)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = failure ?? error {
+            body = Data()
+            continuation.resume(throwing: error)
+        } else {
+            continuation.resume(returning: body)
+        }
+    }
+}
+
 private final class CachedAttachmentImage: NSObject {
     let image: CGImage
     init(_ image: CGImage) { self.image = image }
@@ -25,8 +88,7 @@ final class AttachmentImageLoader: @unchecked Sendable {
     private let cache = NSCache<NSString, CachedAttachmentImage>()
     private let session: URLSession
 
-    init() {
-        let configuration = URLSessionConfiguration.ephemeral
+    init(configuration: URLSessionConfiguration = .ephemeral) {
         configuration.httpCookieAcceptPolicy = .never
         configuration.httpShouldSetCookies = false
         session = URLSession(configuration: configuration)
@@ -44,9 +106,16 @@ final class AttachmentImageLoader: @unchecked Sendable {
 
     private func fetch(_ url: URL) async throws -> Data {
         if url.isFileURL { return try Data(contentsOf: url) }
-        let (body, response) = try await session.data(from: url)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { throw AttachmentLoadError.status(http.statusCode) }
-        return body
+        let cancellation = AttachmentDownloadCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let task = session.dataTask(with: url)
+                task.delegate = AttachmentImageDownload(continuation)
+                cancellation.start(task)
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
     }
 
     func load(key: String, url: URL, maxPixelSize: Int) async throws -> CGImage {

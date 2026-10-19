@@ -574,6 +574,7 @@ data class AppUiState(
     val notificationSettingsError: String? = null,
     /** Failed notification saves by setting key (see `data/Notifications.kt`), shown beside that control. */
     val notificationErrors: Map<String, String> = emptyMap(),
+    val notificationSaving: Set<String> = emptySet(),
     val selectedDirectId: String? = null,
     /** Immutable unread boundary captured before this channel visit acknowledges history. */
     val channelVisitUnread: UnreadChannel? = null,

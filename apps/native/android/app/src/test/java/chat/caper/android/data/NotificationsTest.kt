@@ -113,6 +113,9 @@ class NotificationsTest {
         val space = NotificationOverride(spaceId = "space0000001", level = LEVEL_MENTIONS)
         val edits = NotificationEdits(NotificationSettings(overrides = listOf(space)))
         val mute = edits.begin(space.key) { it.withOverride(space.key, space.copy(mutedUntil = "forever")) }
+        assertNull(edits.begin(space.key) { it.withOverride(space.key, space.copy(level = LEVEL_NOTHING)) })
+        val direct = NotificationOverride(conversationId = "direct000001", level = LEVEL_NOTHING)
+        val directTicket = edits.begin(direct.key) { it.withOverride(direct.key, direct) }
         val level = edits.begin(ACCOUNT_LEVEL_KEY) { it.copy(level = LEVEL_NOTHING) }
         assertEquals("forever", edits.shown.override(space.key)?.mutedUntil)
         assertEquals(LEVEL_NOTHING, edits.shown.level)
@@ -124,17 +127,26 @@ class NotificationsTest {
         edits.succeeded(ACCOUNT_LEVEL_KEY, level) { it.copy(level = LEVEL_NOTHING) }
         assertEquals(LEVEL_NOTHING, edits.shown.level)
         assertEquals(LEVEL_NOTHING, edits.confirmed.level)
+        edits.succeeded(direct.key, directTicket) { it.withOverride(direct.key, direct) }
+        assertEquals(direct, edits.shown.override(direct.key))
+        assertEquals(emptySet<String>(), edits.saving)
     }
 
-    @Test fun `a newer edit of the same setting outlives an older failure`() {
+    @Test fun `overlapping saves are rejected and failure restores confirmed state`() {
         val edits = NotificationEdits(NotificationSettings())
         val first = edits.begin(MOBILE_KEY) { it.copy(mobile = MOBILE_ALWAYS) }
-        edits.begin(MOBILE_KEY) { it.copy(mobile = MOBILE_WHEN_INACTIVE) }
-        val third = edits.begin(MOBILE_KEY) { it.copy(mobile = MOBILE_ALWAYS) }
+        assertNull(edits.begin(MOBILE_KEY) { error("must not apply a rejected edit") })
+        val other = edits.begin(ACCOUNT_LEVEL_KEY) { it.copy(level = LEVEL_NOTHING) }
+        assertEquals(setOf(MOBILE_KEY, ACCOUNT_LEVEL_KEY), edits.saving)
         edits.failed(MOBILE_KEY, first)
-        assertEquals(MOBILE_ALWAYS, edits.shown.mobile)
-        edits.failed(MOBILE_KEY, third)
         assertEquals(MOBILE_WHEN_INACTIVE, edits.shown.mobile)
+        assertEquals(LEVEL_NOTHING, edits.shown.level)
+        val next = edits.begin(MOBILE_KEY) { it.copy(mobile = MOBILE_ALWAYS) }
+        edits.succeeded(MOBILE_KEY, first) { error("stale success must not update confirmed") }
+        edits.failed(MOBILE_KEY, next)
+        assertEquals(MOBILE_WHEN_INACTIVE, edits.confirmed.mobile)
+        edits.succeeded(ACCOUNT_LEVEL_KEY, other) { it.copy(level = LEVEL_NOTHING) }
+        assertEquals(emptySet<String>(), edits.saving)
     }
 
     @Test fun `the saved answer wins and a reload keeps settings still saving`() {

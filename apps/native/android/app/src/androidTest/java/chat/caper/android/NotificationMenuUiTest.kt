@@ -24,6 +24,21 @@ import org.junit.runner.RunWith
 class NotificationMenuUiTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun savingScopeDisablesNotificationControlsButNotOtherScopes() {
+        compose.setContent {
+            CaperTheme {
+                Column {
+                    ScopeMenuContent(NotificationMenuPage.Main, {}, "space", null, "all", {}, {}, saving = true)
+                    ScopeMenuContent(NotificationMenuPage.Main, {}, "channel", null, "all", {}, {})
+                }
+            }
+        }
+        compose.onNodeWithText("Mute space").assertIsNotEnabled()
+        compose.onNodeWithText("Mute channel").assertIsEnabled()
+        compose.onAllNodesWithText("Notifications")[0].assertIsNotEnabled()
+        compose.onAllNodesWithText("Notifications")[1].assertIsEnabled()
+    }
+
     @Test fun directMenuTurnsNotificationsOffAndMutes() {
         val changes = mutableListOf<OverrideChange>()
         compose.setContent {
