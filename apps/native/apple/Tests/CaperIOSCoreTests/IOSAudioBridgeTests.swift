@@ -13,6 +13,56 @@ final class IOSAudioBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testLeaveDoesNotWaitForAudioSessionAndCancelledRejoinStaysLeft() async throws {
+        var permissionRequests = 0
+        let voice = VoiceClient(api: APIClient(baseURL: URL(string: "https://caper.invalid")!),
+                                requestMicrophonePermission: { permissionRequests += 1; return false })
+        let context = VoiceContext(channelID: "Aaaaaaaaaaaa", channelName: "voice", spaceID: "Space1234567", spaceName: "Space")
+        voice.displayRosterPreview(context: context, selfID: "me", participants: [])
+        let locked = expectation(description: "audio configuration is busy")
+        let unlocked = expectation(description: "audio configuration released")
+        let release = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let audio = RTCAudioSession.sharedInstance()
+            audio.lockForConfiguration()
+            locked.fulfill()
+            // Bound the failure on the old synchronous implementation instead
+            // of deadlocking the test's main actor indefinitely.
+            _ = release.wait(timeout: .now() + 3)
+            audio.unlockForConfiguration()
+            unlocked.fulfill()
+        }
+        defer { release.signal() }
+        await fulfillment(of: [locked], timeout: 2)
+        let started = ContinuousClock.now
+        voice.leaveImmediately()
+        XCTAssertNil(voice.beginMicrophoneComparison(), "A mic test cannot race old hardware disposal")
+        voice.releaseIdleAudioPreparation()
+        XCTAssertLessThan(started.duration(to: .now), .milliseconds(250))
+        XCTAssertEqual(voice.phase, .idle)
+        XCTAssertNil(voice.context)
+
+        let rejoining = expectation(description: "rejoin starts while cleanup is blocked")
+        let rejoin = Task {
+            rejoining.fulfill()
+            await voice.join(channelID: context.channelID, context: context, name: "Me")
+        }
+        await fulfillment(of: [rejoining], timeout: 1)
+        XCTAssertEqual(voice.phase, .joining)
+        XCTAssertEqual(permissionRequests, 0, "Rejoin must wait before reclaiming the shared audio session")
+        voice.leaveImmediately()
+        release.signal()
+        await fulfillment(of: [unlocked], timeout: 2)
+        await rejoin.value
+        XCTAssertEqual(permissionRequests, 0, "Cancelled joins must not resume after cleanup")
+        XCTAssertEqual(voice.phase, .idle)
+        XCTAssertNil(voice.context)
+        await voice.join(channelID: context.channelID, context: context, name: "Me")
+        XCTAssertEqual(permissionRequests, 1, "A fresh join must resume after all pending cleanup")
+        XCTAssertEqual(voice.phase, .failed, "This fixture deliberately denies microphone access")
+    }
+
+    @MainActor
     func testRealLocalPeersReceiveOnlyEligibleSyntheticPCM() async throws {
         RTCInitializeSSL()
         let device = CaperIOSAudioDevice.syntheticTest()
@@ -73,6 +123,26 @@ final class IOSAudioBridgeTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertGreaterThan(audible, 100)
+
+        // Leave must silence both directions even while peers/hardware remain
+        // alive for background disposal. Playback cannot rely on peer.close().
+        device.publicationEnabled = false
+        device.playoutEnabled = false
+        for _ in 0..<20 {
+            XCTAssertTrue(device.injectSyntheticPCM(pcm))
+            XCTAssertEqual(device.syntheticLastPublishedPeak, 0)
+            let playback = try XCTUnwrap(device.pullSyntheticPlayoutFrames(480))
+            XCTAssertEqual(Self.peak(playback), 0)
+        }
+        device.publicationEnabled = true
+        device.playoutEnabled = true
+        var resumed = 0
+        for _ in 0..<80 {
+            XCTAssertTrue(device.injectSyntheticPCM(pcm))
+            if let playback = device.pullSyntheticPlayoutFrames(480) { resumed = max(resumed, Self.peak(playback)) }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertGreaterThan(resumed, 100, "Playback must recover when its gate reopens")
 
         device.processingStrength = 100
         device.inputGain = 0
