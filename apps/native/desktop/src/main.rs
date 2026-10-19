@@ -10734,20 +10734,21 @@ impl CaperApp {
                                     .to_uppercase()
                                     .to_string()
                             };
-                            // Web: hover stays neutral; terracotta marks only the
-                            // current space.
+                            // Like web, hover and press stay neutral until the
+                            // space opens. A temporary orange press would flash
+                            // back to neutral on release before selection commits.
                             let tone = if active {
                                 let current = (PRESSED, Color32::from_rgb(128, 81, 67), TEXT);
                                 Tone {
                                     rest: current,
                                     hover: current,
-                                    press: (current.0, TERRACOTTA_BRIGHT, TEXT),
+                                    press: current,
                                 }
                             } else {
                                 Tone {
                                     rest: (SURFACE, BORDER, MUTED),
                                     hover: (RAISED, MUTED, TEXT),
-                                    press: (PRESSED, TERRACOTTA_BRIGHT, TEXT),
+                                    press: (RAISED, MUTED, TEXT),
                                 }
                             };
                             // Not `strong()`: that would pin the pressed text color.
@@ -38562,6 +38563,67 @@ mod tests {
             Some(name),
         );
         (context, app)
+    }
+
+    #[test]
+    fn space_rail_press_keeps_hover_colors_until_selection_commits() {
+        for selected in [false, true] {
+            let (context, mut app) = fixture("parity-desktop");
+            context.enable_accesskit();
+            let space = app.spaces.iter().find(|space| !space.demo).unwrap().clone();
+            app.selected_space = selected.then(|| space.id.clone());
+            let mut frame = |events| {
+                context.run(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+                    },
+                )
+            };
+            frame(vec![]);
+            let bounds = node_bounds(&frame(vec![]), &space.name).unwrap();
+            let painted = |output: &egui::FullOutput| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.rect == bounds && rect.stroke.width > 0.0 =>
+                        {
+                            Some((rect.fill, rect.stroke.color))
+                        }
+                        _ => None,
+                    })
+                    .expect("space tile background and border")
+            };
+            frame(vec![egui::Event::PointerMoved(bounds.center())]);
+            let hover = painted(&frame(vec![]));
+            assert_eq!(
+                hover,
+                if selected {
+                    (super::PRESSED, egui::Color32::from_rgb(128, 81, 67))
+                } else {
+                    (super::RAISED, super::MUTED)
+                }
+            );
+            let pressed = frame(vec![egui::Event::PointerButton {
+                pos: bounds.center(),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            }]);
+            assert_eq!(painted(&pressed), hover, "press must not flash orange");
+            let released = frame(vec![egui::Event::PointerButton {
+                pos: bounds.center(),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            }]);
+            assert_eq!(painted(&released), hover, "release must not flash back");
+        }
     }
 
     #[test]
