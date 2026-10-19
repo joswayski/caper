@@ -6275,6 +6275,17 @@ apps access your microphone**, or select an available input in Caper. Disconnect
 from Discord temporarily to isolate a sharing/driver problem; muting Discord
 may leave capture open. The generic failure does not establish a Discord conflict.
 
+Earlier Windows builds failed every call and microphone test with "Microphone
+could not start", whatever the device or privacy setting. The capture track
+asks for echo cancellation, so WebRTC switched the capture ADM to Windows'
+built-in AEC (the Voice Capture DMO) whenever that DMO existed, which is on
+nearly every PC. WASAPI then refuses `StartRecording` unless the same ADM is
+already playing, and Caper captures on a factory whose playout stays off, with
+speakers on another. The vendored `AdmProxy` now reports the built-in AEC as
+unavailable on Windows and refuses to enable it, so WebRTC keeps its software
+AEC. Verify on a Windows PC: Settings › Audio test records, and a voice join
+connects with the microphone live.
+
 **System default** means the normal Windows input/output default, including at
 startup, replay, and fresh microphone reopen. WebRTC's implicit default is the
 communications default, which can be a different or unavailable device. An
