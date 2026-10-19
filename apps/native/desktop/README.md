@@ -79,8 +79,10 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
 - File attachments, when the server has storage configured (otherwise the
   attach control stays disabled, without shifting the composer). Inline images show the uploaded preview, else
   the PNG/JPEG/WebP/GIF/AVIF original, decoded off the UI thread and cached by
-  attachment id. Videos show their poster with a play button. Clicking an
-  image or video opens the in-app viewer over the window (`viewer.rs`): the
+  attachment id. Videos play inline from their poster's play button; a separate
+  expand button opens the viewer. GIF-style videos autoplay silently while visible,
+  respecting reduced motion. Leaving the message or expanding stops its inline player.
+  Clicking an image or expanding a video opens the in-app viewer (`viewer.rs`): the
   message's images and videos with arrows, Left/Right, an "n / m" counter,
   zoom (double-click, Ctrl+scroll or pinch) and pan, animated GIF/WebP,
   Save (file dialog), Open in browser and Esc to close. Full-size AVIF/HEIC
