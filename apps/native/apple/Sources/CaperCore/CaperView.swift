@@ -1243,6 +1243,230 @@ private struct ChannelSidebar: View {
         }
         else if model.account != nil && model.detail?.space.demo != true { Button("Leave space…", role: .destructive) { sheet = .leaveSpace } }
     }
+    /// The Channels pane: live voice, joined channels, Browse and invitations.
+    /// Kept out of `body` so the compiler type-checks each pane on its own.
+    @ViewBuilder private var channelsList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Voice with no row here (a call in another space, a visit's
+            // room), above the channels; live rows grow into cards in place.
+            LiveNowSection(model: model, narrow: narrow)
+            HStack {
+                Button { if !SwipeTapGuard.swiping { channelsExpanded.toggle(); CaperEffects.shared.toggle(channelsExpanded) } } label: {
+                    HStack(spacing: 6) {
+                        // One chevron that turns, as for message requests.
+                        CaperIcon(name: "chevron-down")
+                            .rotationEffect(.degrees(channelsExpanded ? 0 : -90))
+                            .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: channelsExpanded)
+                        Text("Channels")
+                        Text("\(model.detail?.channels.filter(\.joined).count ?? 0)").font(CaperTheme.font(10, weight: .bold))
+                    }.font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                        // The header's full 44pt height is the target, not just its text.
+                        .frame(maxHeight: .infinity).contentShape(Rectangle())
+                }.buttonStyle(.plain).modifier(ControlHover())
+                    .accessibilityValue(channelsExpanded ? "Expanded" : "Collapsed")
+                    .accessibilityIdentifier("channels-toggle")
+                Spacer()
+                if model.isOwner {
+                    let createHelp = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
+                    Button { if !SwipeTapGuard.swiping { sheet = .createChannel } } label: { CaperIcon(name: "plus") }
+                        .buttonStyle(SidebarIconButton()).disabled(!model.canCreateChannel).help(createHelp).accessibilityLabel("Create channel")
+                    // Web's owner-only Channel options menu.
+                    Menu {
+                        Button("Create channel") { sheet = .createChannel }.disabled(!model.canCreateChannel)
+                        Button("\(channelsExpanded ? "Collapse" : "Expand") channels") { channelsExpanded.toggle() }
+                    } label: { CaperIcon(name: "ellipsis") }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                        #if os(iOS)
+                        .frame(width: 44, height: 44)
+                        #else
+                        .frame(width: 28, height: 28)
+                        #endif
+                        .contentShape(Rectangle()).modifier(ControlHover())
+                        .help("Channel options").accessibilityLabel("Channel options")
+                }
+            }.frame(height: 44)
+
+            // Collapsed, Channels still lists its live rows (your call's
+            // card and rooms with people in voice), so voice never hides.
+            let rows = LiveNow.listed(model.detail?.channels.filter(\.joined) ?? [], expanded: channelsExpanded) {
+                channelIsLive(model, $0)
+            }
+            if !rows.isEmpty {
+                VStack(spacing: 3) {
+                    ForEach(rows) { channel in
+                        ChannelSidebarItem(model: model, sheet: $sheet, channel: channel, narrow: narrow)
+                    }
+                }
+            }
+
+            if browsing {
+            TextField("Search channels", text: $channelSearch).textFieldStyle(CaperTextFieldStyle()).padding(.vertical, 6)
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { searchFrame = $0 }
+            if browseResults.isEmpty {
+                Text(channelSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "This space has no channels yet." : "No channels match your search.")
+                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.vertical, 8)
+                    .accessibilityIdentifier("browse-channels-empty")
+            }
+            ForEach(browseResults) { channel in
+                HStack(spacing: 4) {
+                    // Includes unjoined channels, such as one where you were mentioned.
+                    let unread = model.channelUnread(channel.id)
+                    Button { if !SwipeTapGuard.swiping { Task { await model.select(channel: channel) } } } label: {
+                        HStack {
+                            CaperIcon(name: channel.private ? "lock" : "hash", size: 16); Text(channel.name).lineLimit(1); Spacer()
+                            if unread { Circle().fill(CaperTheme.text).frame(width: 6, height: 6).accessibilityHidden(true) }
+                            Text(channel.joined ? "Joined" : "Read-only preview").font(CaperTheme.font(10))
+                        }
+                        // The whole row is the target, including the gap before Joined/Preview.
+                        .padding(.vertical, 6)
+                        #if os(iOS)
+                        .frame(minHeight: 44)
+                        #endif
+                        .contentShape(Rectangle())
+                    }.buttonStyle(.plain).modifier(ControlHover())
+                        .accessibilityValue(unread ? "Unread activity" : "")
+                    // Web's owner-only Manage button, also for channels you haven't joined.
+                    if model.isOwner {
+                        Button { if !SwipeTapGuard.swiping { sheet = .manageChannel(channel) } } label: { CaperIcon(name: "settings", size: 16) }
+                            .buttonStyle(SidebarIconButton()).help("Manage \(channel.name)")
+                            .accessibilityLabel("Manage \(channel.name)")
+                    }
+                }
+            }
+            }
+            if let invitations = model.detail?.channelInvitations, !invitations.isEmpty {
+                Text("Private invitations").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.top, 12)
+                ForEach(invitations) { invitation in
+                    Button { if !SwipeTapGuard.swiping { sheet = .channelInvitation(invitation) } } label: {
+                        // Satoshi like the channel rows, with the whole row as the target.
+                        Text("#\(invitation.channel.name) · from @\(invitation.inviter.username)").lineLimit(1)
+                            .font(CaperTheme.font(13, weight: .medium))
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)
+                            #if os(iOS)
+                            .frame(minHeight: 44)
+                            #endif
+                            .contentShape(Rectangle())
+                    }.buttonStyle(.plain).modifier(ControlHover())
+                }
+            }
+
+            if let error = model.error ?? model.directMessagesError {
+                Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error).padding(8)
+            }
+        }.padding(.horizontal, 16)
+    }
+
+    /// The draggable rule between Channels and Direct messages (also a slider
+    /// for VoiceOver and the arrow keys).
+    private func sectionDivider(height dividerHeight: Double, available: Double, lower: Double, split: Double) -> some View {
+        Color.clear.frame(height: dividerHeight)
+            .contentShape(Rectangle())
+            .overlay { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            .modifier(VerticalResizeCursor())
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { dividerFrame = $0 }
+            .onDisappear { dividerFrame = .null; dividerDragShare = nil; dividerDragStart = nil }
+            .gesture(DragGesture(minimumDistance: 1).onChanged { value in
+                if dividerDragStart == nil { dividerDragStart = split }
+                dividerDragShare = min(max((dividerDragStart ?? split) + Double(value.translation.height) / max(available, 1), lower), 1 - lower)
+            }.onEnded { _ in
+                if let share = dividerDragShare { channelsShare = share }
+                dividerDragShare = nil; dividerDragStart = nil
+            })
+            .simultaneousGesture(TapGesture(count: 2).onEnded { channelsShare = 0.5 })
+            .focusable().focusEffectDisabled().focused($dividerFocused)
+            .accessibilityRepresentation {
+                Slider(value: Binding(get: { split }, set: { channelsShare = $0 }), in: lower...1 - lower, step: 0.05)
+            }
+            .accessibilityLabel("Channels and direct messages divider")
+            .accessibilityIdentifier("sidebar-sections-resize")
+            .accessibilityValue("\(Int(split * 100)) percent channels")
+            .accessibilityHint("Drag to resize the channel and direct message lists.")
+            .onKeyPress { press in
+                switch press.key {
+                case .upArrow: channelsShare = max(lower, split - 10 / max(available, 1))
+                case .downArrow: channelsShare = min(1 - lower, split + 10 / max(available, 1))
+                case .home: channelsShare = lower
+                case .end: channelsShare = 1 - lower
+                default: return .ignored
+                }
+                return .handled
+            }
+    }
+
+    /// The Direct messages pane, beneath the resizable divider.
+    private func directMessagesList(rowHeight directRowHeight: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Direct messages").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                Spacer()
+                Button { if !SwipeTapGuard.swiping { sheet = .newDirectMessage } } label: { CaperIcon(name: "plus") }
+                    .buttonStyle(SidebarIconButton()).accessibilityLabel("New direct message")
+                    #if os(macOS)
+                    .focused($directActionFocused)
+                    .opacity(directHeadingHovered || directActionFocused ? 1 : 0)
+                    .allowsHitTesting(directHeadingHovered || directActionFocused)
+                    #endif
+            }.padding(.horizontal, 16).frame(height: directRowHeight)
+                #if os(macOS)
+                .contentShape(Rectangle())
+                .onHover { directHeadingHovered = $0 }
+                #endif
+                VStack(spacing: 2) {
+                    if model.isFeedbackTeam {
+                        FeedbackRow(model: model, narrow: narrow, rowHeight: directRowHeight)
+                        if !narrow && model.showingFeedback {
+                            FeedbackInboxList(model: model, pushed: false)
+                        }
+                    }
+                    if !model.messageRequests.isEmpty {
+                        MessageRequestsRow(model: model, narrow: narrow, rowHeight: directRowHeight)
+                        if !narrow && model.showingMessageRequests {
+                            MessageRequestsList(model: model, pushed: false)
+                        }
+                    }
+                    if let account = model.account {
+                        let selfConversation = model.directMessages.first { $0.peer.id == account.id }
+                        Button { if !SwipeTapGuard.swiping { Task { await model.openSelfDirectMessage() } } } label: {
+                            HStack(spacing: 9) {
+                                Avatar(name: account.displayName ?? account.username ?? "You", size: 20, avatarID: account.avatarId, picture: account.avatarPicture).frame(width: 24, height: 20)
+                                Text(account.displayName ?? account.username ?? "You").lineLimit(1)
+                                Text("you").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                                    .fixedSize(horizontal: true, vertical: false)
+                                Spacer()
+                                if selfConversation?.unread == true { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
+                            }.font(CaperTheme.font(13, weight: .medium))
+                                .foregroundStyle(selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.text : CaperTheme.muted)
+                                .padding(.horizontal, 9).frame(height: directRowHeight)
+                                .background(selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .contentShape(Rectangle())
+                        }.buttonStyle(.plain).disabled(model.busy)
+                            .modifier(NavigationPrefetchModifier {
+                                if let selfConversation { model.prefetch(directMessage: selfConversation) }
+                            })
+                            .accessibilityIdentifier("dm-self")
+                    }
+                    ForEach(model.visibleDirectMessages.filter { $0.peer.id != model.account?.id }) { conversation in
+                        DirectMessageSidebarRow(model: model, conversation: conversation, rowHeight: directRowHeight)
+                    }
+                }.padding(.horizontal, 16).padding(.top, 2)
+            Button {
+                guard !SwipeTapGuard.swiping else { return }
+                sheet = .newDirectMessage
+            } label: {
+                HStack(spacing: 9) {
+                    CaperIcon(name: "plus", size: 17).frame(width: 24)
+                    Text("New message")
+                    Spacer()
+                }
+                .font(CaperTheme.font(13, weight: .medium)).foregroundStyle(CaperTheme.muted)
+                .padding(.horizontal, 9).frame(minHeight: directRowHeight)
+                .contentShape(Rectangle())
+            }.buttonStyle(.plain).modifier(ControlHover()).padding(.horizontal, 16)
+                .accessibilityIdentifier("new-message")
+        }.padding(.top, 6).padding(.bottom, 8)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
                     HStack(spacing: 6) {
@@ -1283,225 +1507,18 @@ private struct ChannelSidebar: View {
                 let split = min(max(dividerDragShare ?? channelsShare, lower), 1 - lower)
                 VStack(spacing: 0) {
                 ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    // Voice with no row here (a call in another space, a visit's
-                    // room), above the channels; live rows grow into cards in place.
-                    LiveNowSection(model: model, narrow: narrow)
-                    HStack {
-                        Button { if !SwipeTapGuard.swiping { channelsExpanded.toggle(); CaperEffects.shared.toggle(channelsExpanded) } } label: {
-                            HStack(spacing: 6) {
-                                // One chevron that turns, as for message requests.
-                                CaperIcon(name: "chevron-down")
-                                    .rotationEffect(.degrees(channelsExpanded ? 0 : -90))
-                                    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: channelsExpanded)
-                                Text("Channels")
-                                Text("\(model.detail?.channels.filter(\.joined).count ?? 0)").font(CaperTheme.font(10, weight: .bold))
-                            }.font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                                // The header's full 44pt height is the target, not just its text.
-                                .frame(maxHeight: .infinity).contentShape(Rectangle())
-                        }.buttonStyle(.plain).modifier(ControlHover())
-                            .accessibilityValue(channelsExpanded ? "Expanded" : "Collapsed")
-                            .accessibilityIdentifier("channels-toggle")
-                        Spacer()
-                        if model.isOwner {
-                            let createHelp = model.canCreateChannel ? "Create channel" : "Channel limit reached (\(model.limits?.channelsPerSpace ?? 100))"
-                            Button { if !SwipeTapGuard.swiping { sheet = .createChannel } } label: { CaperIcon(name: "plus") }
-                                .buttonStyle(SidebarIconButton()).disabled(!model.canCreateChannel).help(createHelp).accessibilityLabel("Create channel")
-                            // Web's owner-only Channel options menu.
-                            Menu {
-                                Button("Create channel") { sheet = .createChannel }.disabled(!model.canCreateChannel)
-                                Button("\(channelsExpanded ? "Collapse" : "Expand") channels") { channelsExpanded.toggle() }
-                            } label: { CaperIcon(name: "ellipsis") }
-                                .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                                #if os(iOS)
-                                .frame(width: 44, height: 44)
-                                #else
-                                .frame(width: 28, height: 28)
-                                #endif
-                                .contentShape(Rectangle()).modifier(ControlHover())
-                                .help("Channel options").accessibilityLabel("Channel options")
-                        }
-                    }.frame(height: 44)
-
-                    // Collapsed, Channels still lists its live rows (your call's
-                    // card and rooms with people in voice), so voice never hides.
-                    let rows = LiveNow.listed(model.detail?.channels.filter(\.joined) ?? [], expanded: channelsExpanded) {
-                        channelIsLive(model, $0)
-                    }
-                    if !rows.isEmpty {
-                        VStack(spacing: 3) {
-                            ForEach(rows) { channel in
-                                ChannelSidebarItem(model: model, sheet: $sheet, channel: channel, narrow: narrow)
-                            }
-                        }
-                    }
-
-                    if browsing {
-                    TextField("Search channels", text: $channelSearch).textFieldStyle(CaperTextFieldStyle()).padding(.vertical, 6)
-                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { searchFrame = $0 }
-                    if browseResults.isEmpty {
-                        Text(channelSearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "This space has no channels yet." : "No channels match your search.")
-                            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted).padding(.vertical, 8)
-                            .accessibilityIdentifier("browse-channels-empty")
-                    }
-                    ForEach(browseResults) { channel in
-                        HStack(spacing: 4) {
-                            // Includes unjoined channels, such as one where you were mentioned.
-                            let unread = model.channelUnread(channel.id)
-                            Button { if !SwipeTapGuard.swiping { Task { await model.select(channel: channel) } } } label: {
-                                HStack {
-                                    CaperIcon(name: channel.private ? "lock" : "hash", size: 16); Text(channel.name).lineLimit(1); Spacer()
-                                    if unread { Circle().fill(CaperTheme.text).frame(width: 6, height: 6).accessibilityHidden(true) }
-                                    Text(channel.joined ? "Joined" : "Read-only preview").font(CaperTheme.font(10))
-                                }
-                                // The whole row is the target, including the gap before Joined/Preview.
-                                .padding(.vertical, 6)
-                                #if os(iOS)
-                                .frame(minHeight: 44)
-                                #endif
-                                .contentShape(Rectangle())
-                            }.buttonStyle(.plain).modifier(ControlHover())
-                                .accessibilityValue(unread ? "Unread activity" : "")
-                            // Web's owner-only Manage button, also for channels you haven't joined.
-                            if model.isOwner {
-                                Button { if !SwipeTapGuard.swiping { sheet = .manageChannel(channel) } } label: { CaperIcon(name: "settings", size: 16) }
-                                    .buttonStyle(SidebarIconButton()).help("Manage \(channel.name)")
-                                    .accessibilityLabel("Manage \(channel.name)")
-                            }
-                        }
-                    }
-                    }
-                    if let invitations = model.detail?.channelInvitations, !invitations.isEmpty {
-                        Text("Private invitations").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.top, 12)
-                        ForEach(invitations) { invitation in
-                            Button { if !SwipeTapGuard.swiping { sheet = .channelInvitation(invitation) } } label: {
-                                // Satoshi like the channel rows, with the whole row as the target.
-                                Text("#\(invitation.channel.name) · from @\(invitation.inviter.username)").lineLimit(1)
-                                    .font(CaperTheme.font(13, weight: .medium))
-                                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)
-                                    #if os(iOS)
-                                    .frame(minHeight: 44)
-                                    #endif
-                                    .contentShape(Rectangle())
-                            }.buttonStyle(.plain).modifier(ControlHover())
-                        }
-                    }
-
-                    if let error = model.error ?? model.directMessagesError {
-                        Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error).padding(8)
-                    }
-                }.padding(.horizontal, 16)
+                channelsList
                 }
                 .frame(height: model.account == nil ? available : available * split)
             if model.account != nil {
-                Color.clear.frame(height: dividerHeight)
-                    .contentShape(Rectangle())
-                    .overlay { Rectangle().fill(CaperTheme.border).frame(height: 1) }
-                    .modifier(VerticalResizeCursor())
-                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { dividerFrame = $0 }
-                    .onDisappear { dividerFrame = .null; dividerDragShare = nil; dividerDragStart = nil }
-                    .gesture(DragGesture(minimumDistance: 1).onChanged { value in
-                        if dividerDragStart == nil { dividerDragStart = split }
-                        dividerDragShare = min(max((dividerDragStart ?? split) + Double(value.translation.height) / max(available, 1), lower), 1 - lower)
-                    }.onEnded { _ in
-                        if let share = dividerDragShare { channelsShare = share }
-                        dividerDragShare = nil; dividerDragStart = nil
-                    })
-                    .simultaneousGesture(TapGesture(count: 2).onEnded { channelsShare = 0.5 })
-                    .focusable().focusEffectDisabled().focused($dividerFocused)
-                    .accessibilityRepresentation {
-                        Slider(value: Binding(get: { split }, set: { channelsShare = $0 }), in: lower...1 - lower, step: 0.05)
-                    }
-                    .accessibilityLabel("Channels and direct messages divider")
-                    .accessibilityIdentifier("sidebar-sections-resize")
-                    .accessibilityValue("\(Int(split * 100)) percent channels")
-                    .accessibilityHint("Drag to resize the channel and direct message lists.")
-                    .onKeyPress { press in
-                        switch press.key {
-                        case .upArrow: channelsShare = max(lower, split - 10 / max(available, 1))
-                        case .downArrow: channelsShare = min(1 - lower, split + 10 / max(available, 1))
-                        case .home: channelsShare = lower
-                        case .end: channelsShare = 1 - lower
-                        default: return .ignored
-                        }
-                        return .handled
-                    }
+                sectionDivider(height: dividerHeight, available: available, lower: lower, split: split)
                 ScrollView {
                 #if os(macOS)
                 let directRowHeight: CGFloat = 28
                 #else
                 let directRowHeight: CGFloat = 44
                 #endif
-                VStack(spacing: 0) {
-                    HStack {
-                        Text("Direct messages").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                        Spacer()
-                        Button { if !SwipeTapGuard.swiping { sheet = .newDirectMessage } } label: { CaperIcon(name: "plus") }
-                            .buttonStyle(SidebarIconButton()).accessibilityLabel("New direct message")
-                            #if os(macOS)
-                            .focused($directActionFocused)
-                            .opacity(directHeadingHovered || directActionFocused ? 1 : 0)
-                            .allowsHitTesting(directHeadingHovered || directActionFocused)
-                            #endif
-                    }.padding(.horizontal, 16).frame(height: directRowHeight)
-                        #if os(macOS)
-                        .contentShape(Rectangle())
-                        .onHover { directHeadingHovered = $0 }
-                        #endif
-                        VStack(spacing: 2) {
-                            if model.isFeedbackTeam {
-                                FeedbackRow(model: model, narrow: narrow, rowHeight: directRowHeight)
-                                if !narrow && model.showingFeedback {
-                                    FeedbackInboxList(model: model, pushed: false)
-                                }
-                            }
-                            if !model.messageRequests.isEmpty {
-                                MessageRequestsRow(model: model, narrow: narrow, rowHeight: directRowHeight)
-                                if !narrow && model.showingMessageRequests {
-                                    MessageRequestsList(model: model, pushed: false)
-                                }
-                            }
-                            if let account = model.account {
-                                let selfConversation = model.directMessages.first { $0.peer.id == account.id }
-                                Button { if !SwipeTapGuard.swiping { Task { await model.openSelfDirectMessage() } } } label: {
-                                    HStack(spacing: 9) {
-                                        Avatar(name: account.displayName ?? account.username ?? "You", size: 20, avatarID: account.avatarId, picture: account.avatarPicture).frame(width: 24, height: 20)
-                                        Text(account.displayName ?? account.username ?? "You").lineLimit(1)
-                                        Text("you").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                                            .fixedSize(horizontal: true, vertical: false)
-                                        Spacer()
-                                        if selfConversation?.unread == true { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
-                                    }.font(CaperTheme.font(13, weight: .medium))
-                                        .foregroundStyle(selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.text : CaperTheme.muted)
-                                        .padding(.horizontal, 9).frame(height: directRowHeight)
-                                        .background(selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.terracotta.opacity(0.16) : Color.clear)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                                        .contentShape(Rectangle())
-                                }.buttonStyle(.plain).disabled(model.busy)
-                                    .modifier(NavigationPrefetchModifier {
-                                        if let selfConversation { model.prefetch(directMessage: selfConversation) }
-                                    })
-                                    .accessibilityIdentifier("dm-self")
-                            }
-                            ForEach(model.visibleDirectMessages.filter { $0.peer.id != model.account?.id }) { conversation in
-                                DirectMessageSidebarRow(model: model, conversation: conversation, rowHeight: directRowHeight)
-                            }
-                        }.padding(.horizontal, 16).padding(.top, 2)
-                    Button {
-                        guard !SwipeTapGuard.swiping else { return }
-                        sheet = .newDirectMessage
-                    } label: {
-                        HStack(spacing: 9) {
-                            CaperIcon(name: "plus", size: 17).frame(width: 24)
-                            Text("New message")
-                            Spacer()
-                        }
-                        .font(CaperTheme.font(13, weight: .medium)).foregroundStyle(CaperTheme.muted)
-                        .padding(.horizontal, 9).frame(minHeight: directRowHeight)
-                        .contentShape(Rectangle())
-                    }.buttonStyle(.plain).modifier(ControlHover()).padding(.horizontal, 16)
-                        .accessibilityIdentifier("new-message")
-                }.padding(.top, 6).padding(.bottom, 8)
+                directMessagesList(rowHeight: directRowHeight)
                 }
                 .frame(height: available * (1 - split))
             }
