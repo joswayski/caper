@@ -21,15 +21,18 @@ pub fn reduced() -> bool {
     REDUCED.load(Ordering::Relaxed)
 }
 
-/// Reads the system's setting off the UI thread and repaints if it asks for
-/// less motion. GNOME's "Animations" (`enable-animations`), KDE's animation
+/// Refreshes the system's setting every two seconds off the UI thread and
+/// repaints only when it changes. GNOME's "Animations" (`enable-animations`), KDE's animation
 /// speed set to instant, and Windows' "Animation effects" (`MinAnimate`) count.
 pub fn watch_reduced(context: &Context) {
     let context = context.clone();
     std::thread::spawn(move || {
-        if system_reduces_motion() {
-            REDUCED.store(true, Ordering::Relaxed);
-            context.request_repaint();
+        loop {
+            let reduced = system_reduces_motion();
+            if REDUCED.swap(reduced, Ordering::Relaxed) != reduced {
+                context.request_repaint();
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
         }
     });
 }

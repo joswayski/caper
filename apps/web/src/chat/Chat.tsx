@@ -2415,7 +2415,7 @@ export default function Chat({
             onClose={closeReactors}
           />
         )}
-        {forwardTarget && forwardMessage && (
+        {forwardTarget && forwardMessage && !forwardMessage.deletedAt && (
           <ForwardPicker
             key={forwardMessage.id}
             message={forwardMessage}

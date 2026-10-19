@@ -177,7 +177,9 @@ async function checkReactionFollow(root, layout) {
     "⭐",
   ].entries()) {
     await control({ incomingReaction: { channelId: "chan00000001", messageId: last.id, emoji } });
-    wait(`document.querySelectorAll('${thread(last.clientMessageId)} .chat-reaction').length === ${index + 1}`);
+    wait(
+      `document.querySelectorAll('${thread(last.clientMessageId)} .chat-reaction:not(.chat-reaction-add)').length === ${index + 1}`,
+    );
     wait(visible);
   }
   screenshot(`thread-reaction-${layout}-latest`);
@@ -188,10 +190,36 @@ async function checkReactionFollow(root, layout) {
     return scroller.scrollTop;
   })()`);
   await control({ incomingReaction: { channelId: "chan00000001", messageId: last.id, emoji: "🦀" } });
-  wait(`document.querySelectorAll('${thread(last.clientMessageId)} .chat-reaction').length === 14`);
+  wait(
+    `document.querySelectorAll('${thread(last.clientMessageId)} .chat-reaction:not(.chat-reaction-add)').length === 14`,
+  );
   evaluate("new Promise(r => setTimeout(r, 300))");
   assert.equal(evaluate("document.querySelector('.chat-thread-messages').scrollTop"), before);
-  console.log(`PASS: ${layout}: first/wrapped thread reactions visible and history reader retained.`);
+  await control({ incomingReply: { rootId: root.id, text: `TEST FIXTURE — incoming ${layout} reply` } });
+  wait(`document.querySelector('.chat-thread-messages').textContent.includes('incoming ${layout} reply')`);
+  assert.equal(evaluate("document.querySelector('.chat-thread-messages').scrollTop"), before);
+  await control({ holdSends: true });
+  try {
+    browser("fill", "#chat-thread-reply", `TEST FIXTURE — pending ${layout} reply`);
+    browser("click", '.chat-thread-send-row button[aria-label="Send reply"]');
+    wait('!!document.querySelector(".chat-thread-panel .chat-message-pending")');
+    assert.equal(
+      evaluate(`(() => {
+        const viewport = document.querySelector('.chat-thread-messages').getBoundingClientRect();
+        const pending = document.querySelector('.chat-thread-panel .chat-message-pending').getBoundingClientRect();
+        return pending.top >= viewport.top && pending.bottom <= viewport.bottom + 1;
+      })()`),
+      true,
+      "Sending from history reveals the pending reply before the server responds",
+    );
+    screenshot(`thread-pending-${layout}`);
+  } finally {
+    await control({ holdSends: false });
+  }
+  wait('!document.querySelector(".chat-thread-panel .chat-message-pending")');
+  console.log(
+    `PASS: ${layout}: reactions follow, incoming replies preserve history, and own pending sends are visible.`,
+  );
 }
 
 const checkThreadResize = (rootID) => {

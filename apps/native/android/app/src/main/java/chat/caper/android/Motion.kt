@@ -7,6 +7,8 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -24,7 +26,19 @@ internal const val MOTION_SLOW = 260
 /** True when the system's animator duration scale is 0 (Remove animations), web's `prefers-reduced-motion`. */
 @Composable internal fun reducedMotion(): Boolean {
     val context = LocalContext.current
-    return remember { Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
+    val initial = remember(context) { Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
+    val still by produceState(initial, context) {
+        val resolver = context.contentResolver
+        val setting = Settings.Global.ANIMATOR_DURATION_SCALE
+        fun disabled() = Settings.Global.getFloat(resolver, setting, 1f) == 0f
+        val observer = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) { value = disabled() }
+        }
+        resolver.registerContentObserver(Settings.Global.getUriFor(setting), false, observer)
+        value = disabled()
+        awaitDispose { resolver.unregisterContentObserver(observer) }
+    }
+    return still
 }
 
 /**
@@ -37,9 +51,12 @@ internal const val MOTION_SLOW = 260
     val progress = remember { Animatable(if (still) 1f else (elapsedMillis.toFloat() / durationMillis).coerceIn(0f, 1f)) }
     val animates = remember { progress.value < 1f }
     if (!animates) return this
-    LaunchedEffect(progress) { progress.animateTo(1f, tween(((1f - progress.value) * durationMillis).roundToInt(), easing = LinearEasing)) }
+    LaunchedEffect(progress, still) {
+        if (still) progress.snapTo(1f)
+        else progress.animateTo(1f, tween(((1f - progress.value) * durationMillis).roundToInt(), easing = LinearEasing))
+    }
     return graphicsLayer {
-        val eased = EaseOut.transform(progress.value)
+        val eased = if (still) 1f else EaseOut.transform(progress.value)
         alpha = eased
         translationX = dx.toPx() * (1f - eased)
         translationY = dy.toPx() * (1f - eased)

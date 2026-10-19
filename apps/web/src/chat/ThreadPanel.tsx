@@ -304,6 +304,14 @@ export default function ThreadPanel({
     return () => cancelAnimationFrame(frame);
   }, [state.thread?.focusMessageId, state.thread?.loading]);
   useLayoutEffect(() => {
+    // Own sends reveal their pending row immediately, even while reading an
+    // older window. Incoming replies must preserve the reader's position.
+    if (!pending || !scroll.current) return;
+    follow.current = true;
+    olderAnchor.current = undefined;
+    scroll.current.scrollTop = scroll.current.scrollHeight;
+  }, [pending?.clientMessageId]);
+  useLayoutEffect(() => {
     if (scroll.current && follow.current && !state.thread?.hasNewer)
       scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [rootId, replies, root, pending?.clientMessageId, state.thread?.loading]);
@@ -385,8 +393,11 @@ export default function ThreadPanel({
     )
       return;
     try {
+      if (pending && scroll.current) {
+        follow.current = true;
+        scroll.current.scrollTop = scroll.current.scrollHeight;
+      }
       await onSend(pending?.text ?? draft.text, pending?.broadcast ?? draft.broadcast);
-      follow.current = true;
     } catch (error) {
       setValidation(error instanceof Error ? error.message : "Reply could not be sent.");
     }

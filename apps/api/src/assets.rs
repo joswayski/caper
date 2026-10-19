@@ -1302,11 +1302,26 @@ async fn urls(
     if input.ids.is_empty() || input.ids.len() > 100 {
         return Err(invalid("request 1–100 files"));
     }
-    // A file replaced by an edit stays its author's alone.
+    // Original-channel access also covers the author's retained versions.
+    // A live forward shares current files and direct replies, not unrelated
+    // source history or retired files. Reuse channel_access for each candidate
+    // destination so private channels, DMs and feedback keep the same policy.
     let rows: Vec<(String, String, bool)> = sqlx::query_as(
         "SELECT a.external_id, c.external_id, a.preview_content_type IS NOT NULL
-         FROM public.assets a JOIN public.channels c ON c.id=a.channel_id
-         WHERE a.external_id = ANY($1) AND a.message_id IS NOT NULL AND a.deleted_at IS NULL
+         FROM public.assets a JOIN public.messages m ON m.id=a.message_id
+         JOIN public.channels sc ON sc.id=m.channel_id
+         LEFT JOIN public.spaces ss ON ss.id=sc.space_id
+         CROSS JOIN LATERAL (
+             SELECT a.channel_id
+             UNION
+             SELECT f.channel_id FROM public.messages f
+             JOIN public.messages shared ON shared.id=f.forward_source_id AND shared.deleted_at IS NULL
+             WHERE f.forward_source_id IN (m.id,m.thread_root_id) AND f.deleted_at IS NULL
+               AND a.retired_at IS NULL AND m.deleted_at IS NULL AND sc.deleted_at IS NULL
+               AND (sc.space_id IS NULL OR ss.deleted_at IS NULL)
+         ) visible
+         JOIN public.channels c ON c.id=visible.channel_id
+         WHERE a.external_id = ANY($1) AND a.deleted_at IS NULL
            AND (a.retired_at IS NULL OR a.owner_id=$2)",
     )
     .bind(&input.ids)
@@ -1318,6 +1333,9 @@ async fn urls(
     let now = Utc::now().timestamp();
     let mut out = Map::new();
     for (asset, channel, preview) in rows {
+        if out.contains_key(&asset) {
+            continue;
+        }
         let ok = match allowed.get(&channel) {
             Some(ok) => *ok,
             None => {
