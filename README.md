@@ -1,6 +1,4 @@
-# Caper
-
-[caper.chat](https://caper.chat)
+# Caper Chat - [https://caper.chat](https://caper.chat)
 
 ## Install
 
