@@ -114,9 +114,12 @@ unverified for this change.
 
 Clicking or tapping a person's pill opens a small profile card (`@everyone`/`@here`
 pills stay inert): avatar, display name, `@username`, and an inline DM composer
-with text, emoji and file attachments. Typing and choosing files stay local;
-**Send** resolves the DM, uploads its files and opens the conversation only after
-confirmed delivery. **Open conversation** opens a DM without sending the draft;
+with text, emoji and file attachments. Typing stays local; choosing or pasting
+files resolves the DM and starts uploading immediately, like the main composer.
+**Send** waits for any remaining uploads and opens the conversation only after
+confirmed delivery. Unsent uploads retain the normal 24-hour cleanup; stale
+uploads are renewed before a new send, without changing an uncertain retry's
+attachment IDs. **Open conversation** opens a DM without sending the draft;
 incoming requests still require explicit acceptance. Message-author avatars/names
 (channels, DMs, threads and Pins) and member-list
 rows open the same card on every client; guest authors stay inert. Your own card

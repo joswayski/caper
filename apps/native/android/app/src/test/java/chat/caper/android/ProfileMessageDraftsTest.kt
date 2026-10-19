@@ -2,10 +2,13 @@ package chat.caper.android
 
 import chat.caper.android.data.*
 import chat.caper.android.model.*
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.*
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -48,7 +51,7 @@ class ProfileMessageDraftsTest {
             "createdAt":"2026-10-11T12:00:00Z","clientMessageId":${body.getValue("clientMessageId")}}""")
     }
 
-    @Test fun `typing and picking keep separate person drafts without creating a DM`() {
+    @Test fun `typing and local preparation keep separate drafts without creating a DM`() {
         composer.text(peer, "Maya draft 🙂")
         file()
         composer.text("jordan000001", "Jordan draft")
@@ -64,6 +67,8 @@ class ProfileMessageDraftsTest {
     @Test fun `blocks incoming requests and server privacy refusal keep text and files without uploading`() = runTest {
         composer.text(peer, "Keep this draft")
         file()
+        assertTrue(runCatching { composer.upload(peer, peer, "maya", "account-token", { listOf(direct) }, { setOf(peer) }) }.isFailure)
+        assertTrue(runCatching { composer.upload(peer, peer, "maya", "account-token", { listOf(direct.copy(status = "incoming")) }, { emptySet() }) }.isFailure)
         assertNull(send(blocked = setOf(peer)))
         assertEquals(directMessageError(DM_BLOCKED), composer[peer].error)
         assertNull(send(listOf(direct.copy(status = "incoming"))))
@@ -105,22 +110,50 @@ class ProfileMessageDraftsTest {
         assertTrue(composer[peer].editable)
     }
 
-    @Test fun `file-only Send resolves uploads then retries exactly the same message without reuploading`() = runTest {
+    @Test fun `eager resolution rejects a changed recipient before uploading`() = runTest {
+        file()
+        server.enqueue(MockResponse().setBody("""{"conversations":[]}"""))
+        server.enqueue(MockResponse().setBody("""{"id":"${direct.id}","peer":{"id":"other0000001","username":"maya","displayName":"Maya"},"lastSeq":"0","readSeq":"0"}"""))
+        val error = runCatching { composer.upload(peer, peer, "maya", "account-token", { emptyList() }, { emptySet() }) }.exceptionOrNull()
+        assertEquals("Direct message recipient mismatch.", error?.message)
+        assertEquals(2, server.requestCount)
+        assertNull(composer[peer].files.single().attachment)
+        assertTrue(composer[peer].editable)
+    }
+
+    @Test fun `eager uploads coalesce without sending and Send retries exactly the same message without reuploading`() = runTest {
         file()
         composer.text("jordan000001", "Unrelated draft")
         var attempts = 0
+        val entered = CompletableDeferred<Unit>()
+        val release = CountDownLatch(1)
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
                 "/api/dms" -> if (request.method == "GET") MockResponse().setBody("""{"conversations":[]}""")
                     else MockResponse().setBody("""{"id":"${direct.id}","peer":{"id":"$peer","username":"maya","displayName":"Maya"},"lastSeq":"0","readSeq":"0","status":"outgoing"}""")
                 "/api/assets" -> MockResponse().setBody("""{"id":"$asset","kind":"file","upload":{"method":"PUT","url":"${server.url("/storage")}","headers":{"content-type":"text/plain"}},"storage":{"used":0,"limit":1000}}""")
-                "/storage" -> MockResponse()
+                "/storage" -> {
+                    entered.complete(Unit)
+                    check(release.await(5, TimeUnit.SECONDS))
+                    MockResponse()
+                }
                 "/api/assets/$asset/complete" -> MockResponse().setBody("""{"id":"$asset","kind":"file","contentType":"text/plain","name":"note.txt","size":18}""")
                 "/api/chat/channels/${direct.id}/messages" -> if (++attempts == 1) MockResponse().setResponseCode(503).setBody("""{"error":"messages unavailable"}""") else sent(request)
                 else -> MockResponse().setResponseCode(404)
             }
         }
-        assertNull(send())
+        val firstUpload = launch { composer.upload(peer, peer, "maya", "account-token", { emptyList() }, { emptySet() }) }
+        val secondUpload = launch { composer.upload(peer, peer, "maya", "account-token", { emptyList() }, { emptySet() }) }
+        entered.await()
+        assertEquals(0, attempts)
+        assertTrue(composer[peer].editable)
+        val sending = launch { assertNull(send()) }
+        yield()
+        assertTrue(composer[peer].sending)
+        release.countDown()
+        firstUpload.join(); secondUpload.join(); sending.join()
+        assertEquals(6, server.requestCount)
+        assertEquals(asset, composer[peer].files.single().attachment?.id)
         assertTrue(composer[peer].uncertain)
         composer.text(peer, "Must not replace the unknown send")
         assertFalse(composer.remove(peer, "file-1"))
@@ -130,6 +163,7 @@ class ProfileMessageDraftsTest {
         assertEquals(listOf("/api/dms", "/api/assets", "/storage", "/api/assets/$asset/complete"), paths)
         val first = request().body.readUtf8()
         assertEquals(listOf(asset), Json.parseToJsonElement(first).jsonObject.getValue("attachmentIds").jsonArray.map { it.jsonPrimitive.content })
+        composer.updateFile(peer, "file-1") { it.copy(uploadedAt = 0L) }
         assertNotNull(send())
         val retry = request()
         assertEquals("/api/chat/channels/${direct.id}/messages", retry.path)
@@ -163,13 +197,55 @@ class ProfileMessageDraftsTest {
         composer.text(peer, "Caption")
         file()
         server.enqueue(MockResponse().setResponseCode(413).setBody("""{"error":"storage full","code":"storage_full"}"""))
+        assertTrue(runCatching { composer.upload(peer, peer, "maya", "account-token", { listOf(direct) }, { emptySet() }) }.isFailure)
+        assertEquals("You’ve used all of your file storage.", composer[peer].files.single().error)
+        assertTrue(composer[peer].editable)
+        server.enqueue(MockResponse().setResponseCode(413).setBody("""{"error":"storage full","code":"storage_full"}"""))
         assertNull(send(listOf(direct)))
-        assertEquals(1, server.requestCount)
+        assertEquals(2, server.requestCount)
         assertEquals("You’ve used all of your file storage.", composer[peer].error)
         assertEquals("Caption", composer[peer].text)
         assertEquals("note.txt", composer[peer].files.single().name)
         assertTrue(composer[peer].editable)
         assertFalse(composer[peer].uncertain)
+    }
+
+    @Test(timeout = 10000) fun `expired uploads are cancelled and renewed before sending`() = runBlocking {
+        file()
+        composer.updateFile(peer, "file-1") {
+            it.copy(attachment = ChatAttachment(asset, "file", "text/plain", "note.txt", 18), uploadedAt = 0L)
+        }
+        server.enqueue(MockResponse().setBody("{}"))
+        server.enqueue(MockResponse().setResponseCode(413).setBody("""{"error":"storage full","code":"storage_full"}"""))
+        assertTrue(runCatching { composer.upload(peer, peer, "maya", "account-token", { listOf(direct) }, { emptySet() }) }.isFailure)
+        assertEquals("/api/assets/$asset/cancel", request().path)
+        assertEquals("/api/assets", request().path)
+        assertNull(composer[peer].files.single().attachment)
+        assertEquals(2, server.requestCount)
+        assertFalse(composer[peer].uncertain)
+    }
+
+    @Test fun `logout invalidates both resolving and queued eager uploads`() = runTest {
+        file()
+        val entered = CompletableDeferred<Unit>()
+        val release = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                entered.complete(Unit)
+                check(release.await(5, TimeUnit.SECONDS))
+                return MockResponse().setBody("""{"conversations":[]}""")
+            }
+        }
+        val resolving = launch { composer.upload(peer, peer, "maya", "account-token", { emptyList() }, { emptySet() }) }
+        entered.await()
+        val queued = launch { composer.upload(peer, peer, "maya", "account-token", { emptyList() }, { emptySet() }) }
+        yield()
+        composer.clear()
+        release.countDown()
+        resolving.join(); queued.join()
+        assertTrue(composer.state.value.isEmpty())
+        assertEquals(1, server.requestCount)
+        assertEquals("GET", request().method)
     }
 
     @Test fun `logout during a send prevents late resolution or draft restoration`() = runTest {

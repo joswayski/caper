@@ -2626,6 +2626,10 @@ final class APIClientTests: XCTestCase {
                 XCTAssertEqual(request.url?.path, "/api/dms")
                 return (200, try JSONEncoder().encode(DirectMessagesResponse(conversations: [incoming])))
             }
+            _ = model.profileMessageDraft(person: person)
+            draft.startUploads()
+            try? await draft.awaitUploads()
+            XCTAssertEqual(draft.error, "Open conversation and accept this message request before sending.")
             let success = await model.sendProfileMessage(to: person)
             XCTAssertFalse(success)
             XCTAssertEqual(draft.error, "Open conversation and accept this message request before sending.")

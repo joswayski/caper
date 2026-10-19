@@ -153,8 +153,8 @@ import kotlinx.coroutines.launch
                     ProfileMessageComposer(
                         card.username!!, profileDraft, writable && pending == null, state?.uploadsEnabled == true,
                         text = { viewModel.profileDrafts.text(person, it) },
-                        add = { if (viewModel.accountEpoch == pickerEpoch) viewModel.addProfileAttachments(person, it) },
-                        paste = { viewModel.pasteProfileAttachments(person) },
+                        add = { if (viewModel.accountEpoch == pickerEpoch) viewModel.addProfileAttachments(person, card.id, card.username, it) },
+                        paste = { if (viewModel.accountEpoch == pickerEpoch) viewModel.pasteProfileAttachments(person, card.id, card.username) },
                         remove = { viewModel.removeProfileAttachment(person, it) },
                         toggleSpoiler = { viewModel.toggleProfileAttachmentSpoiler(person, it) },
                         send = { viewModel.sendProfileMessage(person, card.id, card.username, onMessageSent ?: onDismiss) },
