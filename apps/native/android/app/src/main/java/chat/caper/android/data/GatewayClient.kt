@@ -325,7 +325,12 @@ class GatewayClient(
         if (s === candidate) {
             candidate = null
             dispose(s, "candidate failed")
-            if (!closed) { if (active != null) scheduleCandidate() else scheduleActive() }
+            if (closed) return
+            if (active != null) return scheduleCandidate()
+            // The old stream already ended during the handoff, so nothing is live any more: publish
+            // that (as an active failure does) instead of leaving LIVE and stale rosters up.
+            mediaRevisions.clear(); onMediaDisconnected(); mutableStatus.value = GatewayStatus.DISCONNECTED
+            scheduleActive()
             return
         }
         active = null; dispose(s, "stream failed")
