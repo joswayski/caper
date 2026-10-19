@@ -5,6 +5,12 @@ import { compressionSettings, prepareFile, type CompressionSettings, type Prepar
 export const MAX_ATTACHMENTS = 10;
 /** Allow a queued batch of ten files (two minutes per original/preview) to finish cleaning. */
 export const COMPLETE_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, ...Array<number>(240).fill(5_000)];
+/** Parts of a large file in flight at once, and part URLs asked for at a time.
+ * Asking as parts go also keeps a long upload alive on the server. */
+const PART_CONCURRENCY = 4;
+const PART_BATCH = 4;
+/** A failed part is sent again with a fresh URL after each of these pauses. */
+export const PART_RETRY_DELAYS_MS = [500, 2_000, 5_000, 15_000];
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -188,9 +194,16 @@ interface PresignedPut {
   headers: Record<string, string>;
 }
 
+interface MultipartPlan {
+  partBytes: number;
+  partCount: number;
+}
+
 async function failure(response: Response, fallback: string) {
   const body = (await response.json().catch(() => undefined)) as { error?: unknown; code?: unknown } | undefined;
   if (body?.code === "storage_full") return new UploadError("You’ve used all of your file storage.", true);
+  if (body?.code === "media_too_large") return new UploadError("Photos, videos and audio can be up to 5 GB.");
+  if (body?.code === "upload_incomplete") return new UploadError("The upload did not arrive intact. Try again.");
   if (response.status === 413) return new UploadError("This file is too large to upload.");
   if (response.status === 422 && body?.code !== "media_metadata")
     return new UploadError("The upload did not arrive intact. Try again.");
@@ -229,8 +242,97 @@ export async function cancelUpload(id: string, fetcher: typeof fetch = fetch): P
   }
 }
 
+/** Send a large file in parts, each straight to storage: a few at a time, URLs
+ * asked for as they are needed, and a failed part sent again with a fresh URL.
+ * The first part that can't be sent stops the rest. */
+async function uploadParts(
+  id: string,
+  blob: Blob,
+  plan: MultipartPlan,
+  transport: UploadTransport,
+  progress: (fraction: number) => void,
+  signal: AbortSignal,
+) {
+  const stop = new AbortController();
+  const abort = () => stop.abort(signal.reason);
+  signal.addEventListener("abort", abort, { once: true });
+  const local = stop.signal;
+  const sent = Array.from({ length: plan.partCount }, () => 0);
+  const report = () => progress(sent.reduce((sum, bytes) => sum + bytes, 0) / blob.size);
+  const urls = new Map<number, string>();
+  const requested = new Map<number, Promise<void>>();
+  const request = async (numbers: number[]) => {
+    const response = await transport.fetch(`/api/assets/${encodeURIComponent(id)}/parts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      credentials: "same-origin",
+      signal: local,
+      body: JSON.stringify({ parts: numbers }),
+    });
+    if (!response.ok) throw await failure(response, "This file could not be uploaded.");
+    const body = (await response.json()) as { parts?: Array<{ number?: unknown; url?: unknown }> };
+    for (const part of body.parts ?? [])
+      if (typeof part.number === "number" && typeof part.url === "string") urls.set(part.number, part.url);
+  };
+  const urlFor = async (number: number) => {
+    if (!urls.has(number)) {
+      if (!requested.has(number)) {
+        const batch: number[] = [];
+        for (let next = number; next <= plan.partCount && batch.length < PART_BATCH; next++)
+          if (!urls.has(next) && !requested.has(next)) batch.push(next);
+        const pending = request(batch).finally(() => batch.forEach((part) => requested.delete(part)));
+        for (const part of batch) requested.set(part, pending);
+      }
+      await requested.get(number);
+    }
+    const url = urls.get(number);
+    if (!url) throw new UploadError("The upload service returned an invalid response.");
+    return url;
+  };
+  const send = async (number: number) => {
+    const body = blob.slice((number - 1) * plan.partBytes, Math.min(number * plan.partBytes, blob.size));
+    for (let attempt = 0; ; attempt++) {
+      const url = await urlFor(number);
+      urls.delete(number);
+      try {
+        await transport.put(
+          url,
+          {},
+          body,
+          (fraction) => {
+            sent[number - 1] = fraction * body.size;
+            report();
+          },
+          local,
+        );
+        sent[number - 1] = body.size;
+        report();
+        return;
+      } catch (error) {
+        if (local.aborted || attempt >= PART_RETRY_DELAYS_MS.length) throw error;
+        sent[number - 1] = 0;
+        report();
+        await (transport.sleep ?? sleep)(PART_RETRY_DELAYS_MS[attempt], local);
+      }
+    }
+  };
+  let next = 1;
+  const worker = async () => {
+    while (next <= plan.partCount) await send(next++);
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(PART_CONCURRENCY, plan.partCount) }, worker));
+  } catch (error) {
+    stop.abort(error);
+    throw signal.aborted ? signal.reason : error;
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
 /** Reserve the prepared (compressed) file and its preview, PUT each straight
  * to storage with exactly the signed headers (preview first), then confirm.
+ * Files larger than one part go up in parts instead of one PUT.
  * Returns the attachment description to send with a message. */
 export async function uploadPrepared(
   channelId: string,
@@ -257,18 +359,29 @@ export async function uploadPrepared(
       height: file.height,
       durationMs: file.durationMs,
       preview: file.preview ? { contentType: file.preview.type, byteSize: file.preview.size } : undefined,
+      multipart: true,
     }),
   });
   if (!created.ok) throw await failure(created, "This file could not be uploaded.");
   const reservation = (await created.json()) as {
     id?: unknown;
     upload?: Partial<PresignedPut>;
+    multipart?: Partial<MultipartPlan>;
     previewUpload?: Partial<PresignedPut>;
   };
   if (typeof reservation.id !== "string") throw new UploadError("The upload service returned an invalid response.");
   try {
     signal.throwIfAborted();
-    if (typeof reservation.upload?.url !== "string")
+    const plan = reservation.multipart;
+    const parts =
+      plan && Number.isSafeInteger(plan.partBytes) && Number.isSafeInteger(plan.partCount) && plan.partBytes! > 0
+        ? { partBytes: plan.partBytes!, partCount: plan.partCount! }
+        : undefined;
+    if (
+      plan
+        ? !parts || parts.partCount !== Math.ceil(file.blob.size / parts.partBytes)
+        : typeof reservation.upload?.url !== "string"
+    )
       throw new UploadError("The upload service returned an invalid response.");
     // A reserved preview must be uploaded, or /complete rejects the asset.
     if (file.preview && typeof reservation.previewUpload?.url !== "string")
@@ -287,13 +400,9 @@ export async function uploadPrepared(
         (fraction) => progress((fraction * previewSize) / total),
         signal,
       );
-    await transport.put(
-      reservation.upload.url,
-      reservation.upload.headers ?? {},
-      file.blob,
-      (fraction) => progress((previewSize + fraction * file.blob.size) / total),
-      signal,
-    );
+    const report = (fraction: number) => progress((previewSize + fraction * file.blob.size) / total);
+    if (parts) await uploadParts(reservation.id, file.blob, parts, transport, report, signal);
+    else await transport.put(reservation.upload!.url!, reservation.upload!.headers ?? {}, file.blob, report, signal);
     const path = `/api/assets/${encodeURIComponent(reservation.id)}/complete`;
     for (let attempt = 0; ; attempt++) {
       const completed = await transport.fetch(path, { method: "POST", credentials: "same-origin", signal });
@@ -304,7 +413,16 @@ export async function uploadPrepared(
         return attachment;
       }
       // 409: storage is not visible yet, or metadata processing is queued.
-      if (completed.status !== 409 || attempt >= COMPLETE_RETRY_DELAYS_MS.length) {
+      // Missing parts won't arrive by waiting.
+      const incomplete =
+        completed.status === 409 &&
+        (
+          (await completed
+            .clone()
+            .json()
+            .catch(() => undefined)) as { code?: unknown } | undefined
+        )?.code === "upload_incomplete";
+      if (completed.status !== 409 || incomplete || attempt >= COMPLETE_RETRY_DELAYS_MS.length) {
         throw await failure(completed, "This file could not be uploaded.");
       }
       await completed.body?.cancel().catch(() => undefined);

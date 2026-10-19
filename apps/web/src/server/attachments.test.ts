@@ -234,6 +234,7 @@ test("uploads reserve the compressed size with source size and preview, PUT the 
       width: 40,
       height: 30,
       preview: { contentType: "image/webp", byteSize: 100 },
+      multipart: true,
     },
   ]);
   assert.deepEqual(t.calls, [
@@ -295,6 +296,7 @@ test("files without a preview or a browser type reserve only what they have", as
     contentType: "application/octet-stream",
     byteSize: 3,
     sourceByteSize: 3,
+    multipart: true,
   });
   assert.equal(t.puts.length, 1);
 });
@@ -508,4 +510,145 @@ test("byte sizes format compactly", () => {
   assert.equal(formatBytes(512), "512 B");
   assert.equal(formatBytes(18.4 * 1024 * 1024), "18 MB");
   assert.equal(formatBytes(1.5 * 1024 * 1024), "1.5 MB");
+});
+
+/** A storage service that reserves `size` bytes in `partBytes` parts. */
+function multipartTransport(size: number, partBytes: number, failures: Record<string, number> = {}) {
+  const calls: string[] = [];
+  const bodies = new Map<number, Blob>();
+  const sleeps: number[] = [];
+  let issued = 0;
+  const value: UploadTransport = {
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      const path = String(input);
+      if (path === "/api/assets") {
+        calls.push("POST /api/assets");
+        return Response.json(
+          { id: "f1", kind: "file", multipart: { partBytes, partCount: Math.ceil(size / partBytes) } },
+          { status: 201 },
+        );
+      }
+      if (path.endsWith("/parts")) {
+        const { parts } = JSON.parse(String(init?.body)) as { parts: number[] };
+        calls.push(`parts ${parts.join(",")}`);
+        return Response.json({
+          parts: parts.map((number) => ({
+            number,
+            method: "PUT",
+            url: `https://r2.test/p${number}?u=${++issued}`,
+            headers: {},
+          })),
+        });
+      }
+      calls.push(`POST ${path}`);
+      if (path.endsWith("/cancel")) return new Response(null, { status: 204 });
+      return Response.json({ id: "f1", kind: "file", contentType: "application/zip", name: "big.zip", size });
+    }) as typeof fetch,
+    put: async (url, headers, body, report) => {
+      assert.deepEqual(headers, {}, "parts carry no signed headers");
+      const key = url.split("?")[0];
+      calls.push(`PUT ${url}`);
+      if ((failures[key] ?? 0) > 0) {
+        failures[key]--;
+        throw new UploadError("The upload was interrupted.");
+      }
+      report(0.5);
+      bodies.set(Number(key.slice("https://r2.test/p".length)), body);
+      report(1);
+    },
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  };
+  return { value, calls, bodies, sleeps };
+}
+
+const large = (size: number) =>
+  prepared({
+    blob: new Blob([new Uint8Array(size).map((_, i) => i % 251)]),
+    contentType: "application/zip",
+    kind: "file",
+    name: "big.zip",
+  });
+
+test("large files go up in parts: ranges cover the file, URLs come in small batches, progress reaches the end", async () => {
+  const file = large(950);
+  const t = multipartTransport(950, 100);
+  const progress: number[] = [];
+  const attachment = await uploadPrepared(
+    "c1",
+    file,
+    t.value,
+    (value) => progress.push(value),
+    new AbortController().signal,
+  );
+  assert.equal(attachment.size, 950);
+  assert.equal(t.bodies.size, 10);
+  const joined = new Uint8Array(
+    await new Blob(Array.from({ length: 10 }, (_, i) => t.bodies.get(i + 1)!)).arrayBuffer(),
+  );
+  assert.deepEqual(joined, new Uint8Array(await file.blob.arrayBuffer()), "parts reassemble the exact bytes");
+  assert.equal(t.bodies.get(10)!.size, 50, "the last part is the remainder");
+  const batches = t.calls.filter((call) => call.startsWith("parts "));
+  assert.ok(
+    batches.every((call) => call.split(",").length <= 4),
+    "URLs are asked for a few at a time",
+  );
+  assert.equal(
+    new Set(batches.flatMap((call) => call.slice(6).split(","))).size,
+    10,
+    "each part's URL is asked for once",
+  );
+  assert.equal(t.calls.at(-1), "POST /api/assets/f1/complete");
+  assert.ok(
+    progress.every((value, i) => i === 0 || value >= progress[i - 1] - 1e-9),
+    "progress never goes backwards on success",
+  );
+  assert.equal(progress.at(-1), 1);
+});
+
+test("a failed part is sent again with a fresh URL after a pause", async () => {
+  const t = multipartTransport(250, 100, { "https://r2.test/p2": 2 });
+  await uploadPrepared("c1", large(250), t.value, () => undefined, new AbortController().signal);
+  const attempts = t.calls.filter((call) => call.startsWith("PUT https://r2.test/p2?"));
+  assert.equal(attempts.length, 3);
+  assert.equal(new Set(attempts).size, 3, "every attempt uses a fresh URL");
+  assert.deepEqual(t.sleeps, [500, 2_000]);
+  assert.equal(t.bodies.get(2)!.size, 100);
+});
+
+test("a part that keeps failing stops the upload and cancels the reservation", async () => {
+  const t = multipartTransport(250, 100, { "https://r2.test/p1": 99 });
+  await assert.rejects(
+    uploadPrepared("c1", large(250), t.value, () => undefined, new AbortController().signal),
+    /interrupted/,
+  );
+  assert.equal(t.calls.filter((call) => call.startsWith("PUT https://r2.test/p1?")).length, 5);
+  assert.equal(t.calls.at(-1), "POST /api/assets/f1/cancel");
+  assert.ok(!t.calls.includes("POST /api/assets/f1/complete"));
+});
+
+test("missing parts fail at once instead of waiting, and oversized media explains the limit", async () => {
+  const t = multipartTransport(250, 100);
+  let completes = 0;
+  const original = t.value.fetch;
+  t.value.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input).endsWith("/complete")) {
+      completes++;
+      return Response.json({ error: "upload not finished", code: "upload_incomplete" }, { status: 409 });
+    }
+    return original(input, init);
+  }) as typeof fetch;
+  await assert.rejects(
+    uploadPrepared("c1", large(250), t.value, () => undefined, new AbortController().signal),
+    /did not arrive intact/,
+  );
+  assert.equal(completes, 1);
+  const media = transport([]);
+  media.value.fetch = (async () =>
+    Response.json({ error: "too large", code: "media_too_large" }, { status: 413 })) as typeof fetch;
+  await assert.rejects(
+    uploadPrepared("c1", prepared(), media.value, () => undefined, new AbortController().signal),
+    /Photos, videos and audio can be up to 5 GB/,
+  );
 });
