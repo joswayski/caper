@@ -8788,6 +8788,11 @@ and recover on a retry or newer release. Known rollback revisions reuse their
 old snapshots without lowering rolling heads; an unrecorded historical rebuild
 gets a quiet, new sequence. Do not overwrite/delete immutable assets.
 
+The web build also reads `whats-new-web/latest.json` once at build time and shows the
+newest eight highlights as the homepage's Latest changes, falling back to recent
+`main` commit titles when the feed is unavailable or empty. Because notes publish
+after a web rollout, the homepage lists highlights up to the previous web release.
+
 The public API `/api/whats-new?platform=<platform>&revision=<40-lowercase-hex-sha>`
 only reads the requested immutable asset from the fixed Caper repository. Clients
 never read rolling `latest.json`, so an old build cannot announce future features.

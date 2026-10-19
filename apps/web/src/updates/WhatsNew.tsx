@@ -190,7 +190,7 @@ export default function WhatsNew({
               rel="noreferrer"
               title="View this version on GitHub"
             >
-              Installed build {revision.slice(0, 7)}
+              Web build {revision.slice(0, 7)}
               <ExternalLink size={12} aria-hidden="true" />
             </a>
           )}

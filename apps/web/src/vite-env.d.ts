@@ -1,6 +1,8 @@
 interface LatestChange {
   sha: string;
   title: string;
+  /** Set for Claude-written release highlights; commit-title fallbacks have none. */
+  body: string | null;
   url: string;
   committedAt: string;
   pullRequest: number | null;
