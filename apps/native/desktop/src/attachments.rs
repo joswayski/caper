@@ -420,6 +420,8 @@ pub struct Media {
     api: Option<crate::api::Api>,
     generation: u64,
     frame: u64,
+    copying: Option<Receiver<Option<egui::ColorImage>>>,
+    pub copy_status: Option<&'static str>,
 }
 
 impl Media {
@@ -439,6 +441,8 @@ impl Media {
             api,
             generation: 0,
             frame: 0,
+            copying: None,
+            copy_status: None,
         }
     }
 
@@ -451,6 +455,38 @@ impl Media {
         self.waiting.clear();
         self.in_flight = 0;
         self.open_after_refresh = None;
+        self.copying = None;
+        self.copy_status = None;
+    }
+
+    pub fn copying(&self) -> bool {
+        self.copying.is_some()
+    }
+
+    /// Decode the original, not the cropped tile or JPEG preview. Clipboard
+    /// delivery stays on the UI thread; logout drops any in-flight result.
+    pub fn copy_image(&mut self, context: &egui::Context, attachment: &Attachment) {
+        let (Some(api), Some(url)) = (self.api.clone(), attachment.url.clone()) else {
+            self.copy_status = Some("Image copying is unavailable in this preview.");
+            return;
+        };
+        let content_type = attachment.content_type.clone();
+        let context = context.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.copying = Some(receiver);
+        self.copy_status = Some("Copying image…");
+        std::thread::spawn(move || {
+            let image = api.fetch_media(&url).ok().and_then(|bytes| {
+                crate::viewer::decode_original(&bytes, &content_type).map(|image| {
+                    egui::ColorImage::from_rgba_unmultiplied(
+                        [image.width() as usize, image.height() as usize],
+                        image.as_raw(),
+                    )
+                })
+            });
+            let _ = sender.send(image);
+            context.request_repaint();
+        });
     }
 
     pub fn resolve(&self, attachment: &Attachment) -> Attachment {
@@ -700,6 +736,19 @@ impl Media {
 
     /// Apply finished loads, start queued ones, and bound texture memory.
     pub fn poll(&mut self, context: &egui::Context) {
+        if let Some(result) = self
+            .copying
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok())
+        {
+            self.copying = None;
+            self.copy_status = Some(if let Some(image) = result {
+                context.copy_image(image);
+                "Image copied."
+            } else {
+                "Couldn’t copy image. Try again."
+            });
+        }
         self.poll_at(context, Instant::now());
     }
 
@@ -876,6 +925,58 @@ mod tests {
 
     fn signed(expiry: i64) -> String {
         format!("https://cdn.caper.chat/original/asset1?exp={expiry}&sig=abc")
+    }
+
+    #[test]
+    fn copy_image_delivers_original_pixels_not_preview_or_link() {
+        use std::io::{Read, Write};
+        let pixels = vec![255, 0, 0, 255, 0, 70, 230, 128];
+        let image = image::RgbaImage::from_raw(2, 1, pixels.clone()).unwrap();
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = encoded.into_inner();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4096];
+            let length = stream.read(&mut request).unwrap();
+            assert!(
+                std::str::from_utf8(&request[..length])
+                    .unwrap()
+                    .starts_with("GET /original ")
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            )
+            .unwrap();
+            stream.write_all(&bytes).unwrap();
+        });
+        let context = egui::Context::default();
+        let mut media = Media::new(Some(crate::api::Api::new(&base).unwrap()));
+        media.copy_image(&context, &attachment(Some(&format!("{base}/original"))));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let output = context.run(Default::default(), |ctx| media.poll(ctx));
+            if let Some(egui::OutputCommand::CopyImage(image)) =
+                output.platform_output.commands.first()
+            {
+                assert_eq!(image.size, [2, 1]);
+                let expected = egui::ColorImage::from_rgba_unmultiplied([2, 1], &pixels);
+                assert_eq!(image.pixels, expected.pixels);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "image clipboard output never arrived"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        server.join().unwrap();
     }
 
     #[test]

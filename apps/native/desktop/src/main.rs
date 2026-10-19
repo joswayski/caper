@@ -29,6 +29,7 @@ mod media;
 mod media_gateway;
 mod media_proxy;
 mod mentions;
+mod message_selection;
 mod metadata;
 mod model;
 mod motion;
@@ -16935,18 +16936,39 @@ impl CaperApp {
                 .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
                 .at_pointer_fixed()
                 .show(|ui| {
-                    if !deleted
-                        && ui
-                            .add_enabled(
-                                can_react && self.pending.is_none(),
-                                egui::Button::new("Reply"),
-                            )
+                    ui.set_width(244.0);
+                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
+                    let selected = ui
+                        .ctx()
+                        .plugin::<message_selection::MessageSelection>()
+                        .lock()
+                        .text
+                        .clone();
+                    if !selected.is_empty() {
+                        if message_menu_item(ui, NavIcon::Copy, "Copy selected text", true)
                             .clicked()
+                        {
+                            ui.ctx().copy_text(selected);
+                            ui.close();
+                        }
+                        ui.separator();
+                    }
+                    if !deleted
+                        && message_menu_item(
+                            ui,
+                            NavIcon::Reply,
+                            "Reply",
+                            can_react && self.pending.is_none(),
+                        )
+                        .clicked()
                     {
                         self.select_reply(ui.ctx(), message, in_thread);
                         ui.close();
                     }
-                    if forwardable && ui.button("Forward message").clicked() {
+                    if forwardable
+                        && message_menu_item(ui, NavIcon::Forward, "Forward message", true)
+                            .clicked()
+                    {
                         self.forwarding.picker(
                             &self.worker,
                             self.generation,
@@ -16955,12 +16977,17 @@ impl CaperApp {
                         );
                         ui.close();
                     }
-                    if !reactions.is_empty() && ui.button("View reactions").clicked() {
+                    if !reactions.is_empty()
+                        && message_menu_item(ui, NavIcon::Users, "View reactions", true).clicked()
+                    {
                         self.reactors_view = Some((message.id.clone(), reactions[0].emoji.clone()));
                         ui.close();
                     }
+                    ui.separator();
                     copy_items(ui, message);
-                    if self.can_delete(message) && ui.button("Delete message").clicked() {
+                    if self.can_delete(message)
+                        && danger_menu_item(ui, NavIcon::Trash, "Delete message").clicked()
+                    {
                         self.open_delete(message);
                         ui.close();
                     }
@@ -18320,6 +18347,37 @@ impl CaperApp {
         let response = response
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text(label);
+        if !video {
+            if response.secondary_clicked() && !self.media.copying() {
+                self.media.copy_status = None;
+            }
+            response.context_menu(|ui| {
+                ui.set_width(244.0);
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
+                if message_menu_item(ui, NavIcon::Copy, "Copy image", !self.media.copying())
+                    .clicked()
+                {
+                    self.media.copy_image(ui.ctx(), attachment);
+                }
+                if message_menu_item(ui, NavIcon::Link, "Copy image link", true).clicked() {
+                    if let Some(url) = &attachment.url {
+                        ui.ctx().copy_text(url.clone());
+                    }
+                    ui.close();
+                }
+                if message_menu_item(ui, NavIcon::ExternalLink, "Open image in browser", true)
+                    .clicked()
+                {
+                    self.media
+                        .open(ui.ctx(), attachment, chrono::Utc::now().timestamp());
+                    ui.close();
+                }
+                if let Some(status) = self.media.copy_status {
+                    ui.separator();
+                    ui.label(RichText::new(status).size(12.0).color(MUTED));
+                }
+            });
+        }
         response.clicked()
     }
 
@@ -26861,7 +26919,13 @@ fn rich_text(
     let linked = runs.iter().any(|run| matches!(run, Run::Link(..)));
     let emojis = emoji::inline(text);
     if pills.is_empty() && !linked && !edited && emojis.is_empty() {
-        ui.label(RichText::new(text).font(plain.font_id).color(plain.color));
+        let (position, galley, response) =
+            egui::Label::new(RichText::new(text).font(plain.font_id).color(plain.color))
+                .layout_in_ui(ui);
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
+        });
+        message_selection::paint(ui, &response, position, galley);
         return Body::default();
     }
     let ids: Vec<_> = (0..pills.len())
@@ -27001,14 +27065,7 @@ fn rich_text(
                 );
             }
         }
-        egui::text_selection::LabelSelectionState::label_text_selection(
-            ui,
-            &response,
-            position,
-            galley.clone(),
-            ui.visuals().text_color(),
-            Stroke::NONE,
-        );
+        message_selection::paint(ui, &response, position, galley.clone());
     }
     if !emojis.is_empty() && ui.is_rect_visible(response.rect) {
         let textures = emoji::Textures::shared(ui.ctx());
@@ -27293,15 +27350,13 @@ fn message_menu_item_in(
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::click());
         ui.painter().rect_filled(
             rect,
-            0.0,
+            4.0,
             if response.hovered() || response.has_focus() {
                 BORDER
             } else {
-                RAISED
+                Color32::TRANSPARENT
             },
         );
-        ui.painter()
-            .hline(rect.x_range(), rect.top(), Stroke::new(1.0, BORDER));
         paint_icon(
             ui.painter(),
             egui::Rect::from_center_size(
@@ -28088,6 +28143,7 @@ fn short_time(timestamp: &str) -> String {
 
 fn configure(context: &egui::Context) {
     egui_extras::install_image_loaders(context);
+    context.add_plugin(message_selection::MessageSelection::default());
     let mut fonts = egui::FontDefinitions::default();
     for (name, bytes) in [
         (
@@ -30321,6 +30377,130 @@ mod tests {
                 assert!(texts(&output).contains(&"Unpin message"));
             }
         }
+    }
+
+    #[test]
+    fn right_click_preserves_selection_and_copies_only_selected_text() {
+        let (context, mut app) = fixture("parity-channel");
+        app.dialog = None;
+        app.token = Some("fixture-only".into());
+        app.session = Some(session());
+        let mut message = app.timeline.messages().next().unwrap().clone();
+        message.content.text = "Before copy only this after".into();
+        message.content.attachments.clear();
+        app.timeline.reset(vec![message], "7").unwrap();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Before copy only this after" => {
+                    Some(text)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let position = |index| {
+            text.pos
+                + text
+                    .galley
+                    .pos_from_cursor(egui::text::CCursor::new(index))
+                    .center()
+                    .to_vec2()
+        };
+        let start = position(7);
+        let end = position(21);
+        render(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        render(&mut app, &context, vec![egui::Event::PointerMoved(end)]);
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        click_with(
+            &mut app,
+            &context,
+            start + egui::vec2(10.0, 0.0),
+            egui::PointerButton::Secondary,
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let copy = node_bounds(&output, "Copy selected text").expect("selected text action");
+        assert!(
+            copy.width() <= 250.0,
+            "context menu must not inherit row width"
+        );
+        render(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(copy.center()),
+                egui::Event::PointerButton {
+                    pos: copy.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        let copied = render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: copy.center(),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(
+            copied
+                .platform_output
+                .commands
+                .iter()
+                .any(|command| matches!(command,
+                    egui::OutputCommand::CopyText(text) if text == "copy only this"
+                ))
+        );
+        // This is a new single click, not egui's time-based double/triple click.
+        let time = context.input(|input| input.time) + 1.0;
+        let _ = context.run(
+            egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            },
+            |context| app.page(context),
+        );
+        click(&mut app, &context, start);
+        click_with(&mut app, &context, start, egui::PointerButton::Secondary);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            node_bounds(&output, "Copy selected text").is_none(),
+            "a plain click is not a text selection"
+        );
+        assert!(
+            node_bounds(&output, "Copy text").is_some(),
+            "whole-message copying remains available"
+        );
     }
 
     #[test]

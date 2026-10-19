@@ -1443,7 +1443,7 @@ impl Zoom {
 /// Clipboard pixels are never the viewer's scaled texture or inline preview.
 /// ImageReader decodes the first frame of GIF/WebP without loading the animation.
 /// Reject excessive originals rather than silently shrinking them.
-fn decode_original(bytes: &[u8], content_type: &str) -> Option<image::RgbaImage> {
+pub(crate) fn decode_original(bytes: &[u8], content_type: &str) -> Option<image::RgbaImage> {
     use image::ImageDecoder;
     if matches!(content_type, "image/avif" | "image/heic" | "image/heif") {
         return decode_ffmpeg_pixels(bytes, content_type);
