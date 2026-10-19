@@ -203,7 +203,11 @@ impl AuthVerifier {
         let auth = self.enabled()?;
         let pool = pool.ok_or_else(unavailable)?;
         let email = normalize_email(email)?;
-        let ip_hash = keyed_hash(&auth.secret, b"ip", ip.to_string().as_bytes());
+        let ip_hash = keyed_hash(
+            &auth.secret,
+            b"ip",
+            rate_limit_network(ip).to_string().as_bytes(),
+        );
         let email_lock_hash = keyed_hash(&auth.secret, b"email-lock", email.as_bytes());
         let ip_lock_hash = keyed_hash(&auth.secret, b"ip-lock", &ip_hash);
         let global_lock_hash = keyed_hash(&auth.secret, b"global-send-lock", b"caper");
@@ -518,13 +522,38 @@ fn normalize_email(value: &str) -> Result<String, ApiError> {
     ]
     .iter()
     .any(|reserved| domain == *reserved || domain.ends_with(&format!(".{reserved}")));
-    if email.len() > 254 || !email_address::EmailAddress::is_valid(&email) || reserved {
+    // A bare address only: display text ("Name <a@b.c>") would reach the same
+    // inbox under a different account key, bypassing the per-address limits,
+    // and an IP-literal domain sidesteps the reserved-domain check.
+    let options = email_address::Options::default()
+        .without_display_text()
+        .without_domain_literal();
+    if email.len() > 254
+        || email_address::EmailAddress::parse_with_options(&email, options).is_err()
+        || reserved
+    {
         return Err(ApiError::new(
             axum::http::StatusCode::BAD_REQUEST,
             "invalid email",
         ));
     }
     Ok(email)
+}
+
+/// The network an address is rate limited as. One IPv6 subscriber or host
+/// usually holds a whole /64, so each of its addresses would otherwise get a
+/// fresh hourly budget (and could drain the global one). IPv4-mapped IPv6
+/// addresses count as their IPv4 address.
+fn rate_limit_network(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(std::net::Ipv6Addr::from(
+                u128::from(v6) & !u128::from(u64::MAX),
+            )),
+        },
+    }
 }
 
 fn keyed_hash(secret: &[u8], domain: &[u8], value: &[u8]) -> Vec<u8> {
@@ -638,6 +667,16 @@ mod tests {
             "person@caper.chat"
         );
         assert!(normalize_email("not-an-email").is_err());
+        // One inbox must not gain extra accounts or rate-limit keys.
+        for alias in [
+            "Name <person@caper.chat>",
+            "<person@caper.chat>",
+            "person@[192.0.2.10]",
+            "person@[IPv6:2001:db8::1]",
+            "x <person@example.com>",
+        ] {
+            assert!(normalize_email(alias).is_err(), "{alias}");
+        }
         let id = Uuid::new_v4();
         let secret = b"a sufficiently long test-only secret";
         let hash = code_hash(secret, id, "person@example.com", "123456");
@@ -735,6 +774,19 @@ mod tests {
                 "{code}"
             );
         }
+    }
+
+    #[test]
+    fn ipv6_addresses_share_their_64_rate_limit_bucket() {
+        let network = |value: &str| rate_limit_network(value.parse().unwrap()).to_string();
+        assert_eq!(network("192.0.2.10"), "192.0.2.10");
+        assert_eq!(network("::ffff:192.0.2.10"), "192.0.2.10");
+        assert_eq!(
+            network("2001:db8:1:2:aaaa:bbbb:cccc:dddd"),
+            "2001:db8:1:2::"
+        );
+        assert_eq!(network("2001:db8:1:2::1"), network("2001:db8:1:2:ffff::9"));
+        assert_ne!(network("2001:db8:1:2::1"), network("2001:db8:1:3::1"));
     }
 
     #[test]
