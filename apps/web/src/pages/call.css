@@ -1365,9 +1365,81 @@
   .call-room {
     height: calc(100vh - 104px);
   }
+  .call-room:has(> .room-resize) {
+    position: relative;
+    width: min(calc(100% - 24px), max(760px, var(--room-width, min(1400px, calc(100% - 56px)))));
+    height: min(calc(100vh - 104px), max(420px, var(--room-height, calc(100vh - 104px))));
+    min-height: 0;
+  }
+  .room-resize {
+    position: absolute;
+    z-index: 8;
+    touch-action: none;
+  }
+  .room-resize-icon {
+    position: absolute;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    pointer-events: none;
+    opacity: 0;
+  }
+  .room-resize-icon svg {
+    width: 16px;
+    height: 16px;
+  }
+  .room-resize:is(:hover, :focus-visible, :active) .room-resize-icon {
+    opacity: 1;
+  }
+  .room-resize-left .room-resize-icon {
+    left: 0;
+    top: calc(50% - 12px);
+  }
+  .room-resize-right .room-resize-icon {
+    right: 0;
+    top: calc(50% - 12px);
+  }
+  .room-resize-bottom .room-resize-icon {
+    bottom: 0;
+    left: calc(50% - 12px);
+  }
+  .room-resize-left,
+  .room-resize-right {
+    top: 0;
+    bottom: 8px;
+    width: 6px;
+    cursor: ew-resize;
+  }
+  .room-resize-left {
+    left: 0;
+  }
+  .room-resize-right {
+    right: 0;
+  }
+  .room-resize-bottom {
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 8px;
+    cursor: ns-resize;
+  }
+  .call-room > .room-resize:focus-visible {
+    outline: 1px solid var(--text-muted);
+    outline-offset: -2px;
+  }
   .stage {
     min-height: 0;
     overflow-y: auto;
+  }
+}
+@media (max-width: 760px) {
+  .room-resize {
+    display: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {
