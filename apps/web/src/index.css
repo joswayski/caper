@@ -420,19 +420,19 @@
   font-weight: 400;
 }
 .made-by a,
-.experimental-note a {
+.experimental-note a:not(.contact-action) {
   color: var(--link);
   text-underline-offset: 4px;
   transition: color 0.2s ease;
 }
 @media (hover: hover) {
   .made-by a:hover,
-  .experimental-note a:hover,
+  .experimental-note a:not(.contact-action):hover,
   .latest-changes li a:hover {
     color: var(--link-hover);
   }
 }
-:is(.made-by, .experimental-note, .latest-changes) a:focus-visible {
+:is(.made-by, .experimental-note, .latest-changes) a:not(.contact-action):focus-visible {
   outline: 2px solid var(--link);
   outline-offset: 4px;
   border-radius: 2px;
@@ -466,18 +466,12 @@
 .contact-or {
   white-space: nowrap;
 }
-.experimental-note a.contact-action {
-  color: var(--link);
-}
 .contact-action svg {
   width: 14px;
   height: 14px;
 }
 @media (hover: hover) {
-  .experimental-note a.contact-action:hover {
-    color: var(--link-hover);
-  }
-  .contact-action:hover {
+  button.contact-action:hover {
     color: var(--terracotta-bright);
   }
 }

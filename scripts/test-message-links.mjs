@@ -19,10 +19,22 @@ function browser(...args) {
 }
 const evaluate = (code) => browser("eval", `(async () => { ${code} })()`).result;
 const draft = "Join us 🙂 https://caper.chat/invite/AbCd1234, or www.Example.org/Notes.";
+const draftLinks = ["https://caper.chat/invite/AbCd1234", "www.Example.org/Notes"];
 const marks = () =>
   evaluate("return [...document.querySelectorAll('.chat-mention-input-mirror mark')].map(el => el.textContent);");
 try {
   browser("open", origin.href);
+  browser("set", "viewport", "1440", "1000", "2");
+  browser("wait", '.experimental-note a[aria-label="Jose on X"]');
+  const xStyle = () =>
+    evaluate(`const style = getComputedStyle(document.querySelector('a[aria-label="Jose on X"]'));
+    return [style.color, style.backgroundColor, style.boxShadow];`);
+  const neutralX = ["rgb(243, 244, 245)", "rgba(0, 0, 0, 0)", "none"];
+  assert.deepEqual(xStyle(), neutralX, "the X logo is neutral, not a highlighted URL");
+  if (artifacts) browser("screenshot", ".experimental-note", `${artifacts}/homepage-contact.png`);
+  browser("hover", 'a[aria-label="Jose on X"]');
+  assert.deepEqual(xStyle(), neutralX, "the X logo stays neutral on hover");
+  if (artifacts) browser("screenshot", ".experimental-note", `${artifacts}/homepage-contact-hover.png`);
   browser("set", "viewport", "1000", "640", "2");
   evaluate(`
     const source = await (await fetch('/src/chat/Composer.tsx')).text();
@@ -54,7 +66,16 @@ try {
   `);
   browser("wait", "#link-fixture textarea");
   browser("fill", "#link-fixture textarea", draft);
-  assert.deepEqual(marks(), [], "draft URLs stay plain");
+  assert.deepEqual(marks(), draftLinks, "both invitation and ordinary draft URLs highlight");
+  assert.equal(
+    evaluate(`return [...document.querySelectorAll('.chat-draft-link')].every(mark => {
+    const style = getComputedStyle(mark);
+    return style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.borderRadius === '4px'
+      && style.boxShadow !== 'none' && style.padding === '0px';
+  });`),
+    true,
+    "draft highlights are rounded without moving the textarea's glyphs",
+  );
   browser("press", "Enter");
   browser("wait", "#sent a");
   assert.deepEqual(evaluate("return window.sent;"), [draft], "highlighting must not alter submitted text");
@@ -98,7 +119,7 @@ try {
   }
   browser("set", "viewport", "390", "844", "2");
   evaluate("await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));");
-  assert.deepEqual(marks(), []);
+  assert.deepEqual(marks(), draftLinks);
   assert.equal(evaluate("return document.documentElement.scrollWidth <= innerWidth;"), true);
   assert.equal(
     evaluate(`
@@ -114,9 +135,23 @@ try {
   if (artifacts) browser("screenshot", `${artifacts}/links-narrow.png`);
   browser("fill", "#link-fixture textarea", "plain text, no link");
   assert.deepEqual(marks(), [], "removing a link clears its highlight");
+  const mixed = "🙂 @feedback\nhttps://example.org/Notes";
+  browser("fill", "#link-fixture textarea", mixed);
+  browser("press", "Control+a");
+  browser("press", "Control+c");
+  browser("press", "Backspace");
+  assert.deepEqual(marks(), []);
+  browser("press", "Control+v");
+  assert.equal(evaluate("return document.querySelector('#link-fixture textarea').value;"), mixed);
+  assert.deepEqual(marks(), ["@feedback", "https://example.org/Notes"], "pasted links and mentions coexist");
+  browser("press", "Home");
+  browser("press", "Delete");
+  assert.deepEqual(marks(), ["@feedback"], "editing away a URL prefix removes only its highlight");
+  browser("press", "Control+z");
+  assert.deepEqual(marks(), ["@feedback", "https://example.org/Notes"], "native undo restores the highlight");
   browser("fill", "#link-fixture textarea", draft);
   console.log(
-    "PASS: plain drafts, exact send payload, all-URL blue pills, decorative icons, context-menu allowance, and wrapping",
+    "PASS: neutral X logo, highlighted draft URLs, exact send payload, all-URL blue pills, decorative icons, context-menu allowance, and wrapping",
   );
 } finally {
   if (!process.env.LINK_TEST_KEEP) browser("close");

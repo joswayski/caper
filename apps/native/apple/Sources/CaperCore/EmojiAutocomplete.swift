@@ -255,11 +255,21 @@ struct SuggestionRow: ViewModifier {
     let ranges = MentionAutocomplete.draftHighlights(in: storage.string, source: source)
     #if os(iOS)
     let color = UIColor(CaperTheme.terracotta).withAlphaComponent(0.24)
+    let linkColor = UIColor(CaperTheme.link).withAlphaComponent(0.14)
     #else
     let color = NSColor(CaperTheme.terracotta).withAlphaComponent(0.24)
+    let linkColor = NSColor(CaperTheme.link).withAlphaComponent(0.14)
     #endif
     storage.beginEditing()
     storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: storage.length))
+    var offset = 0
+    for segment in MessageLinks.segments(in: storage.string) {
+        let range = NSRange(location: offset, length: segment.text.utf16.count)
+        offset += range.length
+        if segment.href != nil, !ranges.contains(where: { NSIntersectionRange($0, range).length > 0 }) {
+            storage.addAttribute(.backgroundColor, value: linkColor, range: range)
+        }
+    }
     for range in ranges { storage.addAttribute(.backgroundColor, value: color, range: range) }
     #if os(macOS)
     storage.removeAttribute(.toolTip, range: NSRange(location: 0, length: storage.length))

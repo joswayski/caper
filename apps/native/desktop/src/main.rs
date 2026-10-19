@@ -26231,7 +26231,7 @@ enum Run {
     Link(std::ops::Range<usize>, String),
 }
 
-/// Only mentions are highlighted in drafts; editable glyph metrics stay unchanged.
+/// Background-only highlights keep editable glyph metrics and cursor positions unchanged.
 fn draft_layout(
     ui: &egui::Ui,
     text: &str,
@@ -26248,20 +26248,24 @@ fn draft_layout(
     let mut job = egui::text::LayoutJob::default();
     job.wrap.max_width = width;
     let ranges = mentions::draft_highlights(text, people, specials);
-    let mut written = 0;
-    for range in ranges {
-        job.append(&text[written..range.start], 0.0, plain.clone());
+    if text.is_empty() {
+        job.append(text, 0.0, plain.clone());
+    }
+    for run in message_runs(text, &ranges) {
+        let (range, background) = match run {
+            Run::Plain(range) => (range, Color32::TRANSPARENT),
+            Run::Pill(range, _) => (range, TERRACOTTA.gamma_multiply(0.24)),
+            Run::Link(range, _) => (range, LINK.gamma_multiply(0.14)),
+        };
         job.append(
-            &text[range.clone()],
+            &text[range],
             0.0,
             egui::TextFormat {
-                background: TERRACOTTA.gamma_multiply(0.24),
+                background,
                 ..plain.clone()
             },
         );
-        written = range.end;
     }
-    job.append(&text[written..], 0.0, plain);
     ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
@@ -41430,7 +41434,7 @@ mod tests {
     }
 
     #[test]
-    fn draft_links_stay_plain_and_preserve_cursor_metrics() {
+    fn draft_links_highlight_and_preserve_cursor_metrics() {
         let context = egui::Context::default();
         let text = "Join HTTPS://Caper.Example/invite/AbC or www.Example.com/Path.";
         let _ = context.run(egui::RawInput::default(), |ctx| {
@@ -41455,7 +41459,10 @@ mod tests {
                     })
                     .map(|section| &text[section.byte_range.clone()])
                     .collect();
-                assert!(links.is_empty());
+                assert_eq!(
+                    links,
+                    ["HTTPS://Caper.Example/invite/AbC", "www.Example.com/Path"]
+                );
                 assert!(
                     galley
                         .job

@@ -2353,6 +2353,15 @@
   color: transparent;
   border-radius: 3px;
 }
+.chat-mention-input-mirror .chat-draft-link {
+  background: color-mix(in srgb, var(--link) 14%, transparent);
+  border-radius: 4px;
+  box-decoration-break: clone;
+  /* Visual padding only: the mirror must wrap at the textarea's exact glyph positions. */
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--link) 14%, transparent),
+    0 0 6px color-mix(in srgb, var(--link) 8%, transparent);
+}
 .chat-mention-input[data-disabled] .chat-mention-input-mirror {
   opacity: 0.55;
 }

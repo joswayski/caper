@@ -25,6 +25,7 @@ import {
 import { emojiSegments } from "./emoji.ts";
 import { emojiName } from "./reactors.ts";
 import { draftMentionSegments, type MentionCandidate } from "./mentions.ts";
+import { linkSegments } from "./links.ts";
 
 /** A background-only mirror keeps native editing and supplies emoji hit targets. */
 export default function MentionTextarea({
@@ -155,7 +156,19 @@ export default function MentionTextarea({
       <div ref={mirror} className="chat-mention-input-mirror" aria-hidden="true">
         {segments.map((segment, index) => (
           <span key={index}>
-            {segment.mention ? <mark>{renderText(segment.text)}</mark> : renderText(segment.text)}
+            {segment.mention ? (
+              <mark>{renderText(segment.text)}</mark>
+            ) : (
+              linkSegments(segment.text).map((part, index) =>
+                part.href ? (
+                  <mark key={index} className="chat-draft-link">
+                    {renderText(part.text)}
+                  </mark>
+                ) : (
+                  <span key={index}>{renderText(part.text)}</span>
+                ),
+              )
+            )}
           </span>
         ))}
         {"\n"}

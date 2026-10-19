@@ -10,6 +10,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import chat.caper.android.model.AppUiState
 import chat.caper.android.model.ChatAuthor
 import chat.caper.android.model.MessageMention
+import chat.caper.android.data.linkRanges
+import chat.caper.android.ui.LinkBlue
 import chat.caper.android.ui.Terracotta
 import java.util.Locale
 
@@ -217,6 +219,9 @@ internal class MentionVisualTransformation(private val source: MentionSource) : 
         val mentions = draftMentionSpans(text.text, source)
         for (span in mentions) {
             styled.addStyle(SpanStyle(background = Terracotta.copy(alpha = 0.24f)), span.start, span.end)
+        }
+        for (link in linkRanges(text.text, mentions.map { it.start until it.end })) {
+            styled.addStyle(SpanStyle(background = LinkBlue.copy(alpha = 0.14f)), link.start, link.end)
         }
         return TransformedText(styled.toAnnotatedString(), OffsetMapping.Identity)
     }
