@@ -1760,6 +1760,15 @@ export default function Chat({
                       className="chat-thread-summary"
                       onMouseEnter={() => prefetchThread(message.id)}
                       onFocus={() => prefetchThread(message.id)}
+                      onPointerDown={(event) => {
+                        if (event.pointerType === "mouse" || !event.isPrimary || event.button !== 0) return;
+                        event.currentTarget.dataset.pressing = "true";
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                      }}
+                      onPointerUp={(event) => delete event.currentTarget.dataset.pressing}
+                      onPointerCancel={(event) => delete event.currentTarget.dataset.pressing}
+                      onLostPointerCapture={(event) => delete event.currentTarget.dataset.pressing}
+                      onContextMenu={(event) => event.preventDefault()}
                       onClick={() => openThread(message.id)}
                       aria-label={`View thread with ${message.thread.replyCount} ${message.thread.replyCount === 1 ? "reply" : "replies"}${state.unreadThreads?.[message.id] ? ", unread" : ""}`}
                     >

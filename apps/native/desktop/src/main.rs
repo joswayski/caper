@@ -17343,6 +17343,20 @@ impl CaperApp {
                     });
             });
         }
+        // The message body already ends with 10px padding. Keep its compact
+        // footer 4px below the text rather than stacking that padding and the
+        // timeline's default item gap above it.
+        if mentions::notifies_team(&message.content.mentions)
+            || (!in_thread && message.thread_root_id.is_none() && message.thread.is_some())
+        {
+            let body_padding =
+                if message.content.attachments.is_empty() && message.forward.is_none() {
+                    8.0
+                } else {
+                    0.0
+                };
+            ui.add_space(-ui.spacing().item_spacing.y - body_padding);
+        }
         let controls = egui::Frame::new()
             .inner_margin(egui::Margin {
                 left: 62,
@@ -17351,32 +17365,38 @@ impl CaperApp {
                 bottom: 5,
             })
             .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
                 // Below a message that asked the team (any team name). The
                 // salute is drawn from the emoji sheet, like reactions.
                 if mentions::notifies_team(&message.content.mentions) {
-                    let notice = ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        match emoji::find("🫡") {
-                            Some(entry) => {
-                                ui.label(
-                                    RichText::new(
-                                        mentions::FEEDBACK_NOTICE.trim_end_matches(" 🫡"),
-                                    )
-                                    .size(11.0)
-                                    .color(MUTED),
-                                );
-                                let salute = self.reaction_textures.image(ui, entry, 13.0);
-                                ui.add(salute);
-                            }
-                            None => {
-                                ui.label(
-                                    RichText::new(mentions::FEEDBACK_NOTICE)
-                                        .size(11.0)
-                                        .color(MUTED),
-                                );
-                            }
-                        }
-                    });
+                    let notice = ui
+                        .scope(|ui| {
+                            ui.spacing_mut().interact_size.y = 0.0;
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                match emoji::find("🫡") {
+                                    Some(entry) => {
+                                        ui.label(
+                                            RichText::new(
+                                                mentions::FEEDBACK_NOTICE.trim_end_matches(" 🫡"),
+                                            )
+                                            .size(11.0)
+                                            .color(MUTED),
+                                        );
+                                        let salute = self.reaction_textures.image(ui, entry, 13.0);
+                                        ui.add(salute);
+                                    }
+                                    None => {
+                                        ui.label(
+                                            RichText::new(mentions::FEEDBACK_NOTICE)
+                                                .size(11.0)
+                                                .color(MUTED),
+                                        );
+                                    }
+                                }
+                            })
+                        })
+                        .inner;
                     notice.response.widget_info(|| {
                         egui::WidgetInfo::labeled(
                             egui::WidgetType::Label,
@@ -17475,27 +17495,51 @@ impl CaperApp {
                     && message.thread_root_id.is_none()
                     && let Some(summary) = &message.thread
                 {
-                    ui.horizontal(|ui| {
-                        for author in &summary.participants {
-                            avatar(
+                    let background = ui.painter().add(egui::Shape::Noop);
+                    let row = ui.scope(|ui| {
+                        ui.spacing_mut().interact_size.y = 32.0;
+                        ui.horizontal(|ui| {
+                            ui.set_min_width(ui.available_width());
+                            for author in &summary.participants {
+                                avatar(
+                                    ui,
+                                    &author.name,
+                                    author.avatar_id,
+                                    author.picture(),
+                                    24.0,
+                                    false,
+                                );
+                            }
+                            thread_summary_link(
                                 ui,
-                                &author.name,
-                                author.avatar_id,
-                                author.picture(),
-                                24.0,
-                                false,
-                            );
-                        }
-                        if thread_summary_link(
-                            ui,
-                            summary.reply_count,
-                            self.thread_unread.contains_key(&message.id),
-                        )
-                        .clicked()
-                        {
-                            self.open_thread(message.id.clone());
-                        }
+                                summary.reply_count,
+                                self.thread_unread.contains_key(&message.id),
+                            )
+                        })
                     });
+                    let response = row
+                        .response
+                        .interact(egui::Sense::click())
+                        .union(row.inner.inner);
+                    if response.hovered() || response.is_pointer_button_down_on() {
+                        ui.painter().set(
+                            background,
+                            egui::Shape::rect_filled(
+                                response.rect,
+                                8.0,
+                                Color32::from_white_alpha(
+                                    if response.is_pointer_button_down_on() {
+                                        20
+                                    } else {
+                                        15
+                                    },
+                                ),
+                            ),
+                        );
+                    }
+                    if response.clicked() {
+                        self.open_thread(message.id.clone());
+                    }
                 }
                 if let Some(error) = self.reaction_errors.get(&message.id).cloned() {
                     ui.horizontal(|ui| {
@@ -26932,7 +26976,7 @@ fn thread_summary_link(ui: &mut egui::Ui, replies: u64, unread: bool) -> egui::R
     );
     let response = ui
         .scope(|ui| {
-            ui.spacing_mut().button_padding = egui::vec2(0.0, 4.0);
+            ui.spacing_mut().button_padding = egui::vec2(6.0, 3.0);
             ui.add(egui::Button::new(job).frame(false))
         })
         .inner;

@@ -2165,9 +2165,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         onAttachmentFailed = viewModel::reportAttachmentFailure,
                         grouped = message.id != newMessagesId && row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
                     )
-                    if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
-                        message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl) }
-                        TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }, shape = MaterialTheme.shapes.small) {
+                    if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp), shape = MaterialTheme.shapes.small) {
+                            message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach {
+                                Avatar(it.name, 24.dp, avatarId = it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl)
+                                Spacer(Modifier.width(6.dp))
+                            }
                             val summary = message.thread?.takeIf { message.threadRootId == null }
                             // As on web: the reply count in bold terracotta, then a quiet "View thread".
                             if (summary != null) Text(buildAnnotatedString {
@@ -2179,6 +2182,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 }
                                 withStyle(SpanStyle(color = TextMuted)) { append("  View thread") }
                             }) else Text("Replied to a thread · View thread")
+                            Spacer(Modifier.weight(1f))
                         }
                     }
                 }
@@ -2517,7 +2521,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
             onLongClickLabel = "Message actions for ${message.author.name}",
         )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) } }
         // A team mention (`@feedback`, `@admin`, …): the server told the Caper team, who can read and reply here.
-        if (!deleted && notifiesCaperTeam(message.content)) Text(CAPER_TEAM_NOTIFIED, Modifier.padding(start = 62.dp, end = 18.dp, bottom = 6.dp), color = TextMuted, fontSize = 11.sp)
+        if (!deleted && notifiesCaperTeam(message.content)) Text(CAPER_TEAM_NOTIFIED, Modifier.padding(start = 62.dp, end = 18.dp, bottom = 2.dp), color = TextMuted, fontSize = 11.sp)
         if (!deleted) ForwardCard(message, state, onAttachmentFailed) { openConversation(message) }
         if (!deleted) FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
