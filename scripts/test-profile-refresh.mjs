@@ -129,6 +129,17 @@ try {
     wait('!document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")');
     click("Edit profile for TEST FIXTURE Old Name");
     wait('!!document.querySelector(".profile-dialog[open] form")');
+    browser("fill", "#display-name", "Keep this unsaved name");
+    // The native file picker emits a bubbling cancel event, not a dialog dismissal.
+    evaluate(
+      `document.querySelector('.profile-dialog input[type="file"]').dispatchEvent(new Event("cancel", { bubbles: true }))`,
+    );
+    assert.ok(
+      evaluate('!!document.querySelector(".profile-dialog[open]")'),
+      "Canceling the picture picker keeps the profile open",
+    );
+    assert.equal(evaluate('document.querySelector("#display-name").value'), "Keep this unsaved name");
+    browser("fill", "#display-name", "TEST FIXTURE Old Name");
     evaluate('document.querySelector(".profile-dialog form button[type=submit]").scrollIntoView({block:"nearest"})');
     const size = profileSaveSize();
     assert.ok(size[0] <= 160 && size[1] <= 48, "Profile save must be compact");

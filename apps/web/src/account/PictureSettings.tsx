@@ -283,7 +283,13 @@ function PictureEditor({
         )}
       </div>
       <input
-        ref={input}
+        ref={(element) => {
+          input.current = element;
+          // Canceling the native picker must not dismiss any enclosing dialogs.
+          const cancel = (event: Event) => event.stopPropagation();
+          element?.addEventListener("cancel", cancel);
+          return () => element?.removeEventListener("cancel", cancel);
+        }}
         type="file"
         accept="image/*"
         hidden
