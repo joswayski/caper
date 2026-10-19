@@ -178,6 +178,7 @@ class PicturesTest {
         server.enqueue(MockResponse().setBody("""{"id":"space0000001","name":"Studio","ownerId":"account00001"}"""))
         val removed = api.removeAvatar("account-secret")
         assertNull(removed.avatarAsset)
+        assertFalse(removed.canRestoreAvatar)
         assertEquals(16, removed.avatarId)
         assertNull(api.removeSpaceIcon("account-secret", "space0000001").iconAsset)
         val avatar = server.takeRequest()
@@ -186,6 +187,22 @@ class PicturesTest {
         val icon = server.takeRequest()
         assertEquals("DELETE", icon.method)
         assertEquals("/api/spaces/space0000001/icon", icon.path)
+    }
+
+    @Test fun `restore sends current asset including mascot null and returns capability`() = runBlocking {
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        for (asset in listOf(id, null)) {
+            server.enqueue(MockResponse().setBody("""{"id":"account00001","avatarAsset":"$id","canRestoreAvatar":true}"""))
+            assertTrue(api.restoreAvatar("account-secret", asset).canRestoreAvatar)
+            val request = server.takeRequest()
+            assertEquals("POST", request.method)
+            assertEquals("/api/account/avatar/restore", request.path)
+            val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+            assertEquals(if (asset == null) "null" else "\"$asset\"", body["avatarAsset"].toString())
+        }
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"error":"stale avatar"}"""))
+        val error = runCatching { api.restoreAvatar("account-secret", id) }.exceptionOrNull()
+        assertTrue(error is ApiException && error.status == 409)
     }
 
     @Test fun `empty pictures are refused before reserving`() = runBlocking {

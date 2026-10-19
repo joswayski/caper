@@ -483,7 +483,9 @@ final class ProfilePictureTests: XCTestCase {
             case ("PUT", _): return (200, Data())
             case ("POST", "/api/assets/\(pictureID)/complete"):
                 return (200, Data(#"{"id":"\#(pictureID)","kind":"image","account":\#(account),"avatarAsset":"\#(pictureID)","avatarUrl":"\#(pictureURL)"}}"#.utf8))
-            case ("DELETE", "/api/account/avatar"): return (200, Data((account + "}").utf8))
+            case ("DELETE", "/api/account/avatar"): return (200, Data((account + ",\"canRestoreAvatar\":true}").utf8))
+            case ("POST", "/api/account/avatar/restore"):
+                return (200, Data((account + ",\"avatarAsset\":\"\(pictureID)\",\"avatarUrl\":\"\(pictureURL)\",\"canRestoreAvatar\":true}").utf8))
             default: throw URLError(.badURL)
             }
         }
@@ -529,6 +531,14 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertEqual(model.detail?.members.first?.avatarId, 4)
         XCTAssertNil(model.chat.messages.first?.author.avatarPicture)
         XCTAssertNil(model.chat.messages.last?.replyTo?.author.avatarPicture)
+        XCTAssertEqual(model.account?.canRestoreAvatar, true)
+        try await model.removeAvatar(restore: true)
+        XCTAssertEqual(model.account?.avatarAsset, pictureID)
+        XCTAssertEqual(model.chat.messages.first?.author.avatarPicture?.asset, pictureID)
+        let restored = try XCTUnwrap(PictureURLProtocol.requests.last)
+        XCTAssertEqual(restored.url.path, "/api/account/avatar/restore")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(restored.body)) as? [String: Any])
+        XCTAssertTrue(body["avatarAsset"] is NSNull)
     }
 
     @MainActor

@@ -1,4 +1,4 @@
-import { ImageUp, Pencil, Trash2 } from "lucide-react";
+import { ImageUp, Pencil, RotateCcw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import AttachmentEditor from "../chat/AttachmentEditor";
 import type { AttachmentEdit } from "../chat/edit";
@@ -8,12 +8,24 @@ import Avatar from "../components/Avatar";
 import SpaceIcon from "../components/SpaceIcon";
 import { removeSpaceIcon, SpacesApiError, type Space } from "../spaces/client";
 import { avatarUrl } from "./avatar";
-import { AccountApiError, getRememberedAccount, removeAvatar, subscribeAccount, type Account } from "./client";
+import {
+  AccountApiError,
+  getRememberedAccount,
+  removeAvatar,
+  restoreAvatar,
+  subscribeAccount,
+  type Account,
+} from "./client";
 import { PictureError, uploadAvatar, uploadSpaceIcon } from "./picture-upload";
 import { gifSize, pictureErrorMessage, pictureMessages } from "./pictures";
 import "./pictures.css";
 
-type Phase = { kind: "idle" } | { kind: "preparing" } | { kind: "uploading"; progress: number } | { kind: "removing" };
+type Phase =
+  | { kind: "idle" }
+  | { kind: "preparing" }
+  | { kind: "uploading"; progress: number }
+  | { kind: "removing" }
+  | { kind: "restoring" };
 
 function uploadError(error: unknown) {
   if (error instanceof PictureError) return error.message;
@@ -31,6 +43,7 @@ function PictureEditor({
   removeFailed,
   onUpload,
   onRemove,
+  onRestore,
 }: {
   title: string;
   preview: ReactNode;
@@ -41,6 +54,7 @@ function PictureEditor({
   removeFailed: (error: unknown) => string;
   onUpload: (file: Blob, progress: (fraction: number) => void, edit?: AttachmentEdit) => Promise<void>;
   onRemove: () => Promise<void>;
+  onRestore?: () => Promise<void>;
 }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [error, setError] = useState<string>();
@@ -71,7 +85,7 @@ function PictureEditor({
     if (!document.activeElement || document.activeElement === document.body)
       frame.current?.querySelector<HTMLButtonElement>(".picture-settings-edit")?.focus();
   }, [busy]);
-  const offersMenu = removable;
+  const offersMenu = removable || !!onRestore;
 
   // A click or tap anywhere else closes the menu.
   useEffect(() => {
@@ -141,6 +155,27 @@ function PictureEditor({
     }
   };
 
+  const restore = async () => {
+    if (!onRestore || busy) return;
+    refocus.current = true;
+    setMenu(false);
+    setError(undefined);
+    setDone(undefined);
+    setPhase({ kind: "restoring" });
+    try {
+      await onRestore();
+      setDone("Previous picture restored.");
+    } catch (reason) {
+      setError(
+        reason instanceof AccountApiError && (reason.status === 404 || reason.status === 409)
+          ? reason.message
+          : removalError(reason, "avatar", "Your picture couldn’t be restored. Try again."),
+      );
+    } finally {
+      setPhase({ kind: "idle" });
+    }
+  };
+
   const status =
     phase.kind === "preparing"
       ? "Preparing…"
@@ -148,9 +183,11 @@ function PictureEditor({
         ? `Uploading… ${Math.round(phase.progress * 100)}%`
         : phase.kind === "removing"
           ? "Removing…"
-          : unavailable
-            ? pictureMessages.unavailable
-            : done;
+          : phase.kind === "restoring"
+            ? "Restoring…"
+            : unavailable
+              ? pictureMessages.unavailable
+              : done;
   // With uploads unavailable, the frame still offers removal of a custom picture.
   const disabled = busy || (unavailable && !offersMenu);
 
@@ -219,21 +256,24 @@ function PictureEditor({
               items[(at + step + items.length) % items.length]?.focus();
             }}
           >
+            {removable && (
+              <button
+                type="button"
+                role="menuitem"
+                autoFocus
+                disabled={unavailable || !currentUrl}
+                onClick={() => {
+                  if (currentUrl) void choose(currentUrl);
+                }}
+              >
+                <Pencil size={16} aria-hidden="true" />
+                Edit {noun}
+              </button>
+            )}
             <button
               type="button"
               role="menuitem"
-              autoFocus
-              disabled={unavailable || !currentUrl}
-              onClick={() => {
-                if (currentUrl) void choose(currentUrl);
-              }}
-            >
-              <Pencil size={16} aria-hidden="true" />
-              Edit {noun}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
+              autoFocus={!removable}
               disabled={unavailable}
               onClick={() => {
                 setMenu(false);
@@ -243,18 +283,26 @@ function PictureEditor({
               <ImageUp size={16} aria-hidden="true" />
               Choose a new {noun}
             </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="picture-settings-remove"
-              onClick={() => {
-                setMenu(false);
-                void remove();
-              }}
-            >
-              <Trash2 size={16} aria-hidden="true" />
-              Remove {noun}
-            </button>
+            {onRestore && (
+              <button type="button" role="menuitem" onClick={() => void restore()}>
+                <RotateCcw size={16} aria-hidden="true" />
+                Restore previous picture
+              </button>
+            )}
+            {removable && (
+              <button
+                type="button"
+                role="menuitem"
+                className="picture-settings-remove"
+                onClick={() => {
+                  setMenu(false);
+                  void remove();
+                }}
+              >
+                <Trash2 size={16} aria-hidden="true" />
+                Remove {noun}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -362,6 +410,13 @@ export function ProfilePictureSettings({ account: initial }: { account: Account 
       onRemove={async () => {
         await removeAvatar();
       }}
+      onRestore={
+        account.canRestoreAvatar
+          ? async () => {
+              await restoreAvatar(account.avatarAsset ?? null);
+            }
+          : undefined
+      }
     />
   );
 }

@@ -103,7 +103,9 @@
   left: 0;
   z-index: 2;
   display: grid;
+  width: max-content;
   min-width: 200px;
+  max-width: calc(100vw - 48px);
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: 8px;

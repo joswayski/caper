@@ -525,10 +525,12 @@ public final class AppModel {
     }
 
     /// Back to the same saved mascot everywhere.
-    public func removeAvatar() async throws {
+    public func removeAvatar(restore: Bool = false) async throws {
         guard let current = account else { return }
         let attempt = generation
-        let updated = try await api.removeAvatar()
+        let updated: Account
+        if restore { updated = try await api.restoreAvatar(avatarAsset: current.avatarAsset) }
+        else { updated = try await api.removeAvatar() }
         guard generation == attempt, account?.id == current.id, updated.id == current.id else { throw CancellationError() }
         account = updated
         refreshOwnIdentity(updated)

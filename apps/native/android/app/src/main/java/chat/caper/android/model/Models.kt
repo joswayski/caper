@@ -25,6 +25,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class Account(
     val id: String, val username: String? = null, val displayName: String? = null, val debugEnabled: Boolean = false, val avatarId: Int? = null,
     val feedbackTeam: Boolean = false,
+    val canRestoreAvatar: Boolean = false,
     val avatarAsset: String? = null, val avatarUrl: String? = null,
 )
 @Serializable data class Challenge(val challengeId: String)
@@ -800,8 +801,8 @@ data class DraftAttachmentUi(
 const val PROFILE_PICTURE_KEY = "avatar"
 
 /** A picture change in flight, [uploading] a new one or [removing] it, or the inline [error] it ended with. */
-data class PictureSaveUi(val uploading: Boolean = false, val removing: Boolean = false, val error: String? = null) {
-    val busy: Boolean get() = uploading || removing
+data class PictureSaveUi(val uploading: Boolean = false, val removing: Boolean = false, val error: String? = null, val restoring: Boolean = false) {
+    val busy: Boolean get() = uploading || removing || restoring
 }
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)

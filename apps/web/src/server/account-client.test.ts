@@ -7,6 +7,7 @@ import {
   getRememberedAccount,
   logout,
   requestEmailCode,
+  restoreAvatar,
   subscribeAccount,
   updateProfile,
   verifyEmailCode,
@@ -101,6 +102,28 @@ test("profile saves refresh retained member identities and win over an older acc
 test("missing session is an ordinary signed-out state", async (t) => {
   mockFetch(t, () => Response.json({ error: "unauthorized" }, { status: 401 }));
   assert.equal(await getAccount(), null);
+});
+
+test("restoring a picture sends the displayed asset, publishes the saved account, and leaves it alone on conflict", async (t) => {
+  const restored = { id: "self", username: "me", displayName: "Me", avatarAsset: "previous", canRestoreAvatar: true };
+  let expected: string | null = "current";
+  let conflict = false;
+  mockFetch(t, (path, init) => {
+    assert.equal(path, "/api/account/avatar/restore");
+    assert.equal(init?.method, "POST");
+    assert.deepEqual(JSON.parse(String(init?.body)), { avatarAsset: expected });
+    return conflict ? Response.json({ error: "Picture changed" }, { status: 409 }) : Response.json(restored);
+  });
+  assert.deepEqual(await restoreAvatar(expected), restored);
+  assert.deepEqual(getRememberedAccount(), restored);
+  expected = null;
+  assert.deepEqual(await restoreAvatar(null), restored);
+  conflict = true;
+  await assert.rejects(
+    restoreAvatar(null),
+    (error: unknown) => error instanceof AccountApiError && error.status === 409,
+  );
+  assert.deepEqual(getRememberedAccount(), restored);
 });
 
 test("verification errors preserve the server's remaining-attempt count", async (t) => {

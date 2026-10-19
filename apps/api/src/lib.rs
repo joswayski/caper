@@ -1332,13 +1332,11 @@ async fn auth_email_verify(
                 &session.user,
             ));
     }
+    let account = own_account(&state, &session.user).await;
     let mut response = match input.token_transport {
-        TokenTransport::Cookie => {
-            Json(json!({"account": session.user.own(&state.debug_users)})).into_response()
-        }
+        TokenTransport::Cookie => Json(json!({"account": account})).into_response(),
         TokenTransport::Bearer => {
-            Json(json!({"account": session.user.own(&state.debug_users), "token": session.token}))
-                .into_response()
+            Json(json!({"account": account, "token": session.token})).into_response()
         }
     };
     if matches!(input.token_transport, TokenTransport::Cookie) {
@@ -1384,6 +1382,19 @@ async fn account_me(
 pub(crate) async fn own_account(state: &AppState, user: &accounts::User) -> Value {
     let mut account =
         serde_json::to_value(user.own(&state.debug_users)).expect("account serializes");
+    account["canRestoreAvatar"] = json!(if let Some(pool) = &state.database {
+        if let Ok(mut connection) = pool.acquire().await {
+            pictures::restore_candidate(&mut connection, user.id)
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+        } else {
+            false
+        }
+    } else {
+        false
+    });
     // Team members get the feedback inbox. A database outage only hides it.
     if let Some(pool) = &state.database
         && let Ok(mut connection) = pool.acquire().await

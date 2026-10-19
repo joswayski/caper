@@ -920,6 +920,7 @@ struct PictureEdit {
     )>,
     /// A change in flight: its target, and whether it removes the picture.
     busy: Option<(pictures::Target, bool)>,
+    restoring: bool,
     /// The last failure and the target it concerns.
     error: Option<(pictures::Target, String)>,
     /// The server has no picture storage (`503`): uploads step back.
@@ -2839,6 +2840,7 @@ impl CaperApp {
         };
         if let Some(account) = &mut self.account {
             account.avatar_asset = Some(own.into());
+            account.can_restore_avatar = name == "parity-pictures-profile";
         }
         for member in self
             .detail
@@ -2879,6 +2881,7 @@ impl CaperApp {
         self.members_visible = true;
         match name {
             "parity-pictures-profile" => {
+                self.token = Some("fixture-only".into());
                 self.username = "fixture_owner".into();
                 self.display_name = "Fixture Owner".into();
                 self.dialog = Some(Dialog::Profile);
@@ -2920,6 +2923,7 @@ impl CaperApp {
         };
         self.account = Some(Account {
             id: "fixture-owner".into(),
+            can_restore_avatar: false,
             avatar_id: Some(0),
             avatar_asset: None,
             avatar_url: None,
@@ -22128,6 +22132,7 @@ impl CaperApp {
         result: Result<pictures::Changed, pictures::Failure>,
     ) {
         self.picture_edit.busy = None;
+        self.picture_edit.restoring = false;
         match result {
             Ok(changed) => {
                 self.local_pictures.extend(changed.local);
@@ -22176,6 +22181,11 @@ impl CaperApp {
             pictures::Target::Avatar => ("Change profile picture", "picture"),
             pictures::Target::SpaceIcon(_) => ("Change space icon", "icon"),
         };
+        let can_restore = target == pictures::Target::Avatar
+            && self
+                .account
+                .as_ref()
+                .is_some_and(|account| account.can_restore_avatar);
         let edit = &self.picture_edit;
         let busy = edit
             .busy
@@ -22195,7 +22205,7 @@ impl CaperApp {
             .map(|(_, error)| error.clone());
         let unavailable = edit.unavailable;
         // With uploads unavailable, a custom picture can still be removed.
-        let enabled = idle && (custom || !unavailable);
+        let enabled = idle && (custom || can_restore || !unavailable);
         let side = PICTURE_FRAME;
         let (outer, response) = ui.allocate_exact_size(
             egui::vec2(side + PICTURE_BADGE_OVERHANG, side + PICTURE_BADGE_OVERHANG),
@@ -22283,12 +22293,16 @@ impl CaperApp {
                 ui,
                 egui::Rect::from_center_size(badge.center(), egui::vec2(15.0, 15.0)),
             );
-        let (mut change, mut remove, mut adjust) = (false, false, false);
-        if custom {
+        let (mut change, mut remove, mut adjust, mut restore) = (false, false, false, false);
+        if custom || can_restore {
             egui::Popup::menu(&response).show(|ui| {
-                if ui
-                    .add_enabled(!unavailable, egui::Button::new(format!("Edit {noun}…")))
-                    .clicked()
+                if !idle {
+                    ui.disable();
+                }
+                if custom
+                    && ui
+                        .add_enabled(!unavailable, egui::Button::new(format!("Edit {noun}…")))
+                        .clicked()
                 {
                     adjust = true;
                     ui.close();
@@ -22303,7 +22317,11 @@ impl CaperApp {
                     change = true;
                     ui.close();
                 }
-                if ui.button(format!("Remove {noun}")).clicked() {
+                if can_restore && ui.button("Restore previous picture").clicked() {
+                    restore = true;
+                    ui.close();
+                }
+                if custom && ui.button(format!("Remove {noun}")).clicked() {
                     remove = true;
                     ui.close();
                 }
@@ -22316,7 +22334,9 @@ impl CaperApp {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().size(12.0).color(MUTED));
                 ui.label(
-                    RichText::new(if removing {
+                    RichText::new(if self.picture_edit.restoring {
+                        "Restoring…"
+                    } else if removing {
                         "Removing…"
                     } else {
                         "Uploading…"
@@ -22336,6 +22356,17 @@ impl CaperApp {
             self.download_picture(ui.ctx(), target);
         } else if change {
             self.pick_picture(ui.ctx(), target);
+        } else if restore {
+            if let (Some(token), Some(account)) = (self.token.clone(), self.account.as_ref()) {
+                self.worker.send(Command::RestoreAvatar {
+                    epoch: self.account_epoch,
+                    token,
+                    asset: account.avatar_asset.clone(),
+                });
+                self.picture_edit.error = None;
+                self.picture_edit.busy = Some((pictures::Target::Avatar, false));
+                self.picture_edit.restoring = true;
+            }
         } else if remove {
             self.change_picture(target, None);
         }
@@ -39628,6 +39659,7 @@ mod tests {
         assert!(shows(&output, "Removing…"));
         let mut account = app.account.clone().unwrap();
         account.avatar_asset = None;
+        account.can_restore_avatar = true;
         app.picture_changed(
             Target::Avatar,
             Ok(Changed {
@@ -39655,6 +39687,15 @@ mod tests {
         );
         let output = render(&mut app, &context, vec![]);
         assert!(!shows(&output, "Remove picture") && !shows(&output, "Removing…"));
+        egui::Popup::close_all(&context);
+        click(&mut app, &context, frame);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Restore previous picture"));
+        assert!(!shows(&output, "Edit picture…") && !shows(&output, "Remove picture"));
+        app.picture_edit.busy = Some((Target::Avatar, false));
+        app.picture_edit.restoring = true;
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Restoring…") && !shows(&output, "Uploading…"));
         // An upload shows its own decoded picture at once, everywhere you appear.
         account.avatar_asset = Some("new-picture".into());
         account.avatar_url = Some("https://cdn.caper.chat/assets/new-picture?exp=1&sig=x".into());
@@ -42374,6 +42415,7 @@ mod tests {
     fn account(profile: bool) -> Account {
         Account {
             id: "account".into(),
+            can_restore_avatar: false,
             avatar_id: None,
             avatar_asset: None,
             avatar_url: None,

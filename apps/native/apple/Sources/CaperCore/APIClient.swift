@@ -582,6 +582,19 @@ public actor APIClient {
         try await request("api/account/avatar", method: "DELETE")
     }
 
+    public func restoreAvatar(avatarAsset: String?) async throws -> Account {
+        struct Input: Encodable {
+            let avatarAsset: String?
+            enum CodingKeys: String, CodingKey { case avatarAsset }
+            func encode(to encoder: Encoder) throws {
+                var values = encoder.container(keyedBy: CodingKeys.self)
+                if let avatarAsset { try values.encode(avatarAsset, forKey: .avatarAsset) }
+                else { try values.encodeNil(forKey: .avatarAsset) }
+            }
+        }
+        return try await request("api/account/avatar/restore", method: "POST", body: Input(avatarAsset: avatarAsset))
+    }
+
     /// Back to the space's initial. Owner only (404 otherwise).
     public func removeSpaceIcon(spaceID: String) async throws -> Space {
         try await request("api/spaces/\(try pathID(spaceID))/icon", method: "DELETE")

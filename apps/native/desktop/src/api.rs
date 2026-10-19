@@ -164,6 +164,16 @@ impl Api {
         Ok(account)
     }
 
+    pub fn restore_avatar(&self, token: &str, asset: Option<&str>) -> Result<Account, ApiError> {
+        self.request(
+            Method::POST,
+            "api/account/avatar/restore",
+            Some(token),
+            None,
+            Some(json!({"avatarAsset": asset})),
+        )
+    }
+
     /// `DELETE /api/account/avatar`: back to the saved mascot.
     pub fn remove_avatar(&self, token: &str) -> Result<Account, ApiError> {
         self.request(

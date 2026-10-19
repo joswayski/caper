@@ -51,6 +51,7 @@ public struct Account: Codable, Equatable, Sendable {
     /// The custom profile picture (`avatarAsset`/`avatarUrl`); absent for the saved mascot.
     public var avatarAsset: String? = nil
     public var avatarUrl: String? = nil
+    public var canRestoreAvatar: Bool? = nil
 
     public var isFeedbackTeam: Bool { feedbackTeam == true }
 

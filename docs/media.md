@@ -8995,11 +8995,25 @@ snapshot (a new revision) carries it to everyone watching the call.
 
 **Old pictures are kept.** Replacing or removing a picture leaves its row and R2
 object in place (rows were already retained; objects are small and changes are
-rare). They are never shown again, do not count toward the 10 GB file allowance,
-keep moderation history possible, and leave room for a later "recent pictures"
-picker. Abandoned, cancelled, rejected or orphaned (space deleted or transferred
+rare). They do not count toward the 10 GB file allowance, keep moderation history
+possible, and leave room for a later "recent pictures" picker. Profile settings
+offer **Restore previous picture** when a retained custom picture is available;
+there is no gallery. Abandoned, cancelled, rejected or orphaned (space deleted or transferred
 mid-upload) picture uploads are purged like any other unsent upload. Removing a
 user's pictures from storage on account deletion belongs with that future flow.
+
+One-step restore (October 19, 2026) swaps the current and previous custom picture
+without uploading or re-encoding bytes. A new save remembers the picture actually
+displayed before it, not simply the newest upload. Remove remembers the removed
+picture too; restoring it leaves no prior custom picture, so Remove is how to
+return to the mascot. Migration `202610190001_avatar_restore.sql` adds nullable
+`previous_avatar_asset`, `avatar_history_initialized` (false by default), and
+nullable `avatar_restored_at`. Accounts without initialized history fall back to
+the latest retained upload preceding the current picture's reservation, or the
+latest retained upload if showing the mascot. This legacy fallback cannot
+reconstruct exact previous choices. Once a save, removal or restore initializes
+history, only the explicit previous picture is eligible. In-flight uploads
+reserved before a restore cannot overwrite it when they finish.
 
 ### API
 
@@ -9009,6 +9023,7 @@ user's pictures from storage on account deletion belongs with that future flow.
 | `POST /api/assets/{id}/complete` | Checks size and magic bytes as for attachments, then the real pixel size read from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), ≤ 1024 px (`422 picture_invalid`). The first successful completion **applies** the picture and returns `account` (avatar) or `space` (icon); a retry returns the current state without re-applying, so a late retry never undoes a newer picture. Pictures are ordered by reservation: one that completes after a later-reserved picture already completed is kept but not applied, and the response shows the newer one. |
 | `POST /api/assets/{id}/cancel` | Cancels a picture before completion; `409` afterwards. |
 | `DELETE /api/account/avatar` | Back to the saved mascot; returns the account. |
+| `POST /api/account/avatar/restore` `{"avatarAsset": "current asset ID" \| null}` | Compares the supplied current picture under the account row lock, then swaps in the retained previous custom picture. Returns the account and broadcasts its profile change. `409` if the current picture changed; `404` if no valid previous picture exists. No caller-supplied restore target. Own-account responses include `canRestoreAvatar`; public profiles do not. |
 | `DELETE /api/spaces/{space}/icon` | Owner only; back to the initial; returns the space. |
 
 `avatarAsset`/`avatarUrl` join every person that has `avatarId`: the account,
@@ -9049,6 +9064,10 @@ choose another or remove it. Editing the current picture downloads its saved
 pixels; it cannot recover parts cropped out of an earlier upload (choose the
 original file again for those). Dropping a file onto the frame opens the same
 editor. Cancel leaves the saved picture unchanged and makes no upload reservation.
+Profile menus also offer **Restore previous picture** when `canRestoreAvatar`
+is true, including after removal while showing the mascot. Restore disables the
+frame while pending, refreshes the saved account on success, and leaves the
+picture alone with an inline error on failure. Space icons have no restore action.
 GIFs offer **Keep original animation** or an explicitly acknowledged still-frame
 edit; cropping animation is not supported. Animated PNG/WebP require confirmation
 before becoming stills. The frame highlights the drop target;
@@ -9058,6 +9077,29 @@ Without a custom profile picture, the saved mascot holds
 up a "change me!" sign (`assets/avatars/change-me.svg`, one vector drawn over
 any mascot); a successful change updates the signed-in client everywhere through the
 existing own-profile refresh path.
+
+### Previous-picture restore validation (October 19, 2026)
+
+- API: workspace tests, formatting and Clippy pass. The existing picture
+  integration test passes with disposable local PostgreSQL and fake R2: restore,
+  redo, save after restore, remove/restore, first picture, owner isolation,
+  invalid history, legacy fallback, stale requests and late upload completion.
+- Web: `npm run check` and 683 Vitest tests pass. Desktop and 390px touch Chromium
+  checks exercise restore/redo, no extra upload, pending/disabled state, focus
+  return, conflict errors, removal/restore and no-history hiding. These use mock
+  API/CDN/storage. The full `scripts/test-pictures.mjs` run stops at its existing
+  live-update assertion (also reproduced with the unchanged harness); a scratch
+  run omitting only that section passes the remaining checks. This is not a
+  passing full browser suite or live-storage validation. Desktop/mobile
+  screenshots and a restore/redo pointer recording were inspected.
+- Android: Kotlin/Java and test compilation plus 488 unit tests pass. Full APK
+  assembly requires the missing prepared native-audio inputs; no device run.
+- Rust desktop: build, application Clippy (`--no-deps`, `-D warnings`) and 628
+  tests pass (15 ignored), including headless egui restore-menu and pending-state
+  checks. The 2x Linux/Xvfb profile menu was inspected. No Windows/macOS run.
+- Apple: iOS/macOS implementation and restore request/identity tests are included;
+  compilation, tests and visual validation still require Swift/Xcode on an Apple
+  runner. Docker is unavailable here; application builds were run directly.
 
 ### Picture editing validation (October 18, 2026)
 

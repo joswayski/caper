@@ -7,6 +7,8 @@ export interface Account extends PersonPicture {
   username: string | null;
   displayName: string | null;
   debugEnabled?: boolean;
+  /** Only on your own account: a retained custom picture can be restored. */
+  canRestoreAvatar?: boolean;
   /** On the Caper feedback team: sees the feedback inbox and can visit reported conversations. */
   feedbackTeam?: boolean;
 }
@@ -131,6 +133,16 @@ export function rememberSavedAccount(account: Account) {
 /** Back to the saved mascot; `avatarId` never changes. */
 export async function removeAvatar() {
   return rememberSavedAccount(await request<Account>("/api/account/avatar", { method: "DELETE" }));
+}
+
+/** Compare with the displayed picture so a stale tab cannot undo a newer change. */
+export async function restoreAvatar(avatarAsset: string | null) {
+  return rememberSavedAccount(
+    await request<Account>("/api/account/avatar/restore", {
+      method: "POST",
+      body: JSON.stringify({ avatarAsset }),
+    }),
+  );
 }
 
 /** Browser storage key for the chat capability minted from the account session. */

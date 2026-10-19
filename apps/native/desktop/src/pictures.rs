@@ -568,6 +568,21 @@ pub fn upload(
     Ok(Changed { applied, local })
 }
 
+pub fn restore(api: &Api, token: &str, asset: Option<&str>) -> Result<Changed, Failure> {
+    let account = api.restore_avatar(token, asset).map_err(|error| {
+        if error.status.is_some_and(|status| status.as_u16() == 409) {
+            Failure::new("Your picture changed elsewhere. Reopen your profile and try again.")
+        } else {
+            api_failure(&error, &Target::Avatar)
+        }
+    })?;
+    api.reset_chat_session();
+    Ok(Changed {
+        applied: Applied::Account(account),
+        local: None,
+    })
+}
+
 /// `DELETE` the picture: back to the saved mascot or the space initial.
 pub fn remove(api: &Api, token: &str, target: &Target) -> Result<Changed, Failure> {
     let applied = match target {

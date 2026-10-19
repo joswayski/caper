@@ -148,6 +148,7 @@ private val FrameSide = 112.dp
         edit = account.avatarUrl?.let { url -> { editPicture(Uri.parse(url)) } },
         change = { pickerEpoch = epoch; runCatching { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } },
         remove = { viewModel.removePicture() },
+        restore = if (account.canRestoreAvatar) ({ viewModel.removePicture(restore = true) }) else null,
     ) {
         if (hasPicture) {
             Avatar(name, FrameSide, avatarId = account.avatarId, avatarAsset = account.avatarAsset, avatarUrl = account.avatarUrl)
@@ -200,11 +201,12 @@ private val FrameSide = 112.dp
 @Composable private fun PictureFrame(
     save: PictureSaveUi?, unavailable: Boolean, hasPicture: Boolean, label: String, noun: String,
     change: () -> Unit, remove: () -> Unit, drop: (Uri) -> Unit,
-    edit: (() -> Unit)? = null, picture: @Composable () -> Unit,
+    edit: (() -> Unit)? = null, restore: (() -> Unit)? = null,
+    picture: @Composable () -> Unit,
 ) {
     val busy = save?.busy == true
     // With uploads unavailable, a custom picture can still be removed.
-    val enabled = !busy && (hasPicture || !unavailable)
+    val enabled = !busy && (hasPicture || restore != null || !unavailable)
     var menu by remember { mutableStateOf(false) }
     var dropping by remember { mutableStateOf(false) }
     val canDrop by rememberUpdatedState(!busy && !unavailable)
@@ -234,7 +236,7 @@ private val FrameSide = 112.dp
                 Modifier
                     .dragAndDropTarget({ canDrop && FileDrop.carriesFiles(it.mimeTypes()) }, dropTarget)
                     .semantics { contentDescription = label }
-                    .clickable(enabled = enabled, role = Role.Button) { if (hasPicture) menu = true else change() }
+                    .clickable(enabled = enabled, role = Role.Button) { if (hasPicture || restore != null) menu = true else change() }
                     // Room for the badge, which sits over the frame's corner.
                     .padding(end = 6.dp, bottom = 6.dp),
             ) {
@@ -253,13 +255,15 @@ private val FrameSide = 112.dp
                 }
             }
             DropdownMenu(menu, { menu = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                DropdownMenuItem({ Text("Edit $noun") }, { menu = false; edit?.invoke() }, enabled = !unavailable && edit != null)
+                if (hasPicture) DropdownMenuItem({ Text("Edit $noun") }, { menu = false; edit?.invoke() }, enabled = !busy && !unavailable && edit != null)
                 DropdownMenuItem(
-                    { Text("Choose a new $noun") }, { menu = false; change() }, enabled = !unavailable,
+                    { Text("Choose a new $noun") }, { menu = false; change() }, enabled = !busy && !unavailable,
                     leadingIcon = { Icon(painterResource(R.drawable.lucide_image), null, Modifier.size(16.dp)) },
                 )
-                DropdownMenuItem(
+                if (restore != null) DropdownMenuItem({ Text("Restore previous picture") }, { menu = false; restore() }, enabled = !busy)
+                if (hasPicture) DropdownMenuItem(
                     { Text("Remove $noun") }, { menu = false; remove() },
+                    enabled = !busy,
                     leadingIcon = { Icon(painterResource(R.drawable.lucide_trash_2), null, Modifier.size(16.dp)) },
                 )
             }
@@ -267,6 +271,7 @@ private val FrameSide = 112.dp
         val status = when {
             save?.uploading == true -> "Uploading…"
             save?.removing == true -> "Removing…"
+            save?.restoring == true -> "Restoring…"
             unavailable -> "Picture uploads aren’t available right now."
             else -> null
         }

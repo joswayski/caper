@@ -128,7 +128,14 @@ function fixture() {
   if (location.protocol === "about:") return;
   const cdn = "https://cdn.test/assets";
   const url = (asset, signature = "a") => `${cdn}/${asset}?exp=1792000000&sig=${signature}`;
-  const account = { id: "owner1234567", username: "fixture_owner", displayName: "Owner (test)", avatarId: 0 };
+  const account = {
+    id: "owner1234567",
+    username: "fixture_owner",
+    displayName: "Owner (test)",
+    avatarId: 0,
+    canRestoreAvatar: false,
+  };
+  let previousAvatar;
   const picture = (avatarAsset) => ({ avatarAsset, avatarUrl: url(avatarAsset) });
   const others = [
     {
@@ -219,8 +226,28 @@ function fixture() {
     if (path === "/api/account/me") return Response.json(account);
     if (path === "/api/account/avatar" && method === "DELETE") {
       control.removals++;
+      if (account.avatarAsset) previousAvatar = picture(account.avatarAsset);
       delete account.avatarAsset;
       delete account.avatarUrl;
+      account.canRestoreAvatar = !!previousAvatar;
+      return Response.json(account);
+    }
+    if (path === "/api/account/avatar/restore" && method === "POST") {
+      if (control.holdRestore)
+        await new Promise((resolve) => {
+          control.finishRestore = resolve;
+        });
+      const body = JSON.parse(options.body);
+      if (control.failRestore || body.avatarAsset !== (account.avatarAsset ?? null)) {
+        control.failRestore = false;
+        return Response.json({ error: "Your profile picture changed. Refresh and try again." }, { status: 409 });
+      }
+      if (!previousAvatar)
+        return Response.json({ error: "No previous profile picture is available." }, { status: 404 });
+      const current = account.avatarAsset ? picture(account.avatarAsset) : undefined;
+      Object.assign(account, previousAvatar);
+      previousAvatar = current;
+      account.canRestoreAvatar = !!previousAvatar;
       return Response.json(account);
     }
     if (path === "/api/assets" && method === "POST") {
@@ -253,7 +280,8 @@ function fixture() {
       const reservation = control.reservations.at(-1);
       const id = complete[1];
       if (reservation.purpose === "avatar") {
-        Object.assign(account, { avatarAsset: id, avatarUrl: url(id, "b") });
+        previousAvatar = account.avatarAsset ? picture(account.avatarAsset) : undefined;
+        Object.assign(account, { avatarAsset: id, avatarUrl: url(id, "b"), canRestoreAvatar: !!previousAvatar });
         return Response.json({ id, kind: "image", account });
       }
       const space = spaces.find((item) => item.id === reservation.spaceId);
@@ -396,7 +424,7 @@ async function context(browser, options) {
 }
 
 const shot = async (target, name) => {
-  if (artifacts) await target.screenshot({ path: join(artifacts, name) });
+  if (artifacts) await target.screenshot({ path: join(artifacts, name), animations: "disabled" });
 };
 const loaded = (selector) =>
   `[...document.querySelectorAll(${JSON.stringify(selector)})].length > 0 && [...document.querySelectorAll(${JSON.stringify(selector)})].every((element) => element.querySelector(".caper-picture") && element.querySelector(".caper-picture").dataset.state !== "loading")`;
@@ -563,6 +591,7 @@ try {
   assert.equal(await dialog.locator(".picture-settings-change-me").count(), 0);
   await editPicture.click();
   await dialog.getByRole("menuitem", { name: "Remove picture" }).waitFor();
+  assert.equal(await dialog.getByRole("menuitem", { name: "Restore previous picture" }).count(), 0);
   await shot(dialog, "pictures-profile-uploaded.png");
   await dialog.getByRole("menuitem", { name: "Edit picture", exact: true }).click();
   await editor.getByRole("slider", { name: "Crop size" }).waitFor();
@@ -593,6 +622,41 @@ try {
     ["image/gif", "avatar.gif", animatedAvatar.length, 64, 64],
   );
   await page.waitForFunction(loaded('.account-avatar [data-avatar-asset="upload000002"]'));
+  // Restore swaps the two saved pictures without reserving or uploading another file.
+  await editPicture.click();
+  const restorePicture = dialog.getByRole("menuitem", { name: "Restore previous picture" });
+  await restorePicture.waitFor();
+  await shot(dialog, "pictures-restore-menu-desktop.png");
+  await page.evaluate(() => {
+    window.pictureFixture.holdRestore = true;
+  });
+  await restorePicture.click();
+  await dialog.getByText("Restoring…", { exact: true }).waitFor();
+  assert.ok(await editPicture.isDisabled());
+  await shot(dialog, "pictures-restoring-desktop.png");
+  await page.evaluate(() => {
+    window.pictureFixture.holdRestore = false;
+    window.pictureFixture.finishRestore();
+  });
+  await dialog.getByText("Previous picture restored.").waitFor();
+  await page.waitForFunction(
+    `[...document.querySelectorAll(${JSON.stringify(ownAvatars)})].every((element) => element.dataset.avatarAsset === "upload000001")`,
+  );
+  assert.ok(await editPicture.evaluate((button) => document.activeElement === button));
+  await shot(dialog, "pictures-restored-desktop.png");
+  // A stale request leaves the displayed image alone and explains the failure.
+  await page.evaluate(() => {
+    window.pictureFixture.failRestore = true;
+  });
+  await editPicture.click();
+  await restorePicture.click();
+  await dialog.getByRole("alert").getByText("Your profile picture changed. Refresh and try again.").waitFor();
+  assert.equal(await dialog.locator("[data-avatar-asset]").getAttribute("data-avatar-asset"), "upload000001");
+  await shot(dialog, "pictures-restore-error-desktop.png");
+  await editPicture.click();
+  await restorePicture.click();
+  await page.waitForFunction(loaded('.account-avatar [data-avatar-asset="upload000002"]'));
+  assert.equal(await page.evaluate(() => window.pictureFixture.reservations.length), 2);
   // Local and server errors are explained inline.
   await dialog.locator('.picture-settings input[type="file"]').setInputFiles({
     name: "huge.gif",
@@ -645,7 +709,16 @@ try {
     `[...document.querySelectorAll(${JSON.stringify(ownAvatars)})].every((element) => !element.dataset.avatarAsset && !element.querySelector(".caper-picture") && element.dataset.avatarId === "0")`,
   );
   await dialog.locator(".picture-settings-change-me").waitFor();
-  assert.equal(await editPicture.getAttribute("aria-haspopup"), null);
+  assert.equal(await editPicture.getAttribute("aria-haspopup"), "menu");
+  await editPicture.click();
+  assert.equal(await dialog.getByRole("menuitem", { name: "Remove picture" }).count(), 0);
+  assert.equal(await dialog.getByRole("menuitem", { name: "Edit picture", exact: true }).count(), 0);
+  await shot(dialog, "pictures-restore-mascot-desktop.png");
+  await restorePicture.click();
+  await page.waitForFunction(loaded('.account-avatar [data-avatar-asset="upload000003"]'));
+  await editPicture.click();
+  assert.equal(await restorePicture.count(), 0, "restoring after removal does not offer a nonexistent custom image");
+  await page.keyboard.press("Escape");
   await dialog.getByRole("button", { name: "Close profile" }).click();
 
   // ---- Space icon: remove, then upload a new one; the rail follows ----
@@ -866,6 +939,15 @@ try {
     64,
     "current saved picture can be confirmed without choosing another file",
   );
+  await profile.getByRole("button", { name: "Change profile picture" }).tap();
+  await shot(profile, "pictures-restore-menu-narrow.png");
+  await profile.getByRole("menuitem", { name: "Restore previous picture" }).tap();
+  await profile.getByText("Previous picture restored.").waitFor();
+  assert.equal(
+    await profile.locator(".picture-settings [data-avatar-asset]").getAttribute("data-avatar-asset"),
+    "upload000002",
+  );
+  await shot(profile, "pictures-restored-narrow.png");
   await profile.goto(new URL("/invite/FIXTURE123", origin).href);
   await profile.waitForFunction(loaded("main [data-avatar-asset]"));
   await profile.waitForFunction(

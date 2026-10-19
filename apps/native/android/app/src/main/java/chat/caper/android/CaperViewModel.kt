@@ -2963,17 +2963,19 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Back to your saved mascot ([spaceId] null) or the space's initial. */
-    fun removePicture(spaceId: String? = null) {
+    fun removePicture(spaceId: String? = null, restore: Boolean = false) {
+        if (restore && (spaceId != null || mutable.value.account?.canRestoreAvatar != true)) return
         val key = spaceId ?: PROFILE_PICTURE_KEY
         if (mutable.value.pictureSaves[key]?.busy == true) return
         val token = accountToken ?: return
         val request = accountGeneration
         val target = if (spaceId == null) PictureTarget.Avatar else PictureTarget.SpaceIcon(spaceId)
-        setPictureSave(key, PictureSaveUi(removing = true))
+        val avatarAsset = mutable.value.account?.avatarAsset
+        setPictureSave(key, PictureSaveUi(removing = !restore, restoring = restore))
         pictureJobs[key] = viewModelScope.launch {
             try {
                 if (spaceId == null) {
-                    val account = api.removeAvatar(token)
+                    val account = if (restore) api.restoreAvatar(token, avatarAsset) else api.removeAvatar(token)
                     if (request != accountGeneration) return@launch
                     applyOwnAccount(account)
                 } else {
@@ -2985,7 +2987,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
-                if (request == accountGeneration) setPictureSave(key, PictureSaveUi(error = pictureError(error, target)))
+                if (request == accountGeneration) setPictureSave(key, PictureSaveUi(error =
+                    if (restore && error is chat.caper.android.data.ApiException && error.status == 409)
+                        "Your picture changed elsewhere. Reopen your profile and try again."
+                    else pictureError(error, target)))
             }
         }
     }

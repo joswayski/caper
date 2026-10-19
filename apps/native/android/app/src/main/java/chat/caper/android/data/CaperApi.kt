@@ -263,6 +263,9 @@ class CaperApi(
     /** Back to the saved mascot; returns the account without a picture. */
     suspend fun removeAvatar(token: String): Account = request("/api/account/avatar", "DELETE", token)
 
+    suspend fun restoreAvatar(token: String, avatarAsset: String?): Account =
+        post("/api/account/avatar/restore", buildJsonObject { put("avatarAsset", avatarAsset) }, token)
+
     /** Owner only (404 otherwise): back to the space's initial; returns the space without an icon. */
     suspend fun removeSpaceIcon(token: String, space: String): Space = request("/api/spaces/${space.pathId()}/icon", "DELETE", token)
 

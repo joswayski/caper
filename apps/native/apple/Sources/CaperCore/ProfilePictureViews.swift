@@ -138,6 +138,7 @@ struct PictureEditor<Preview: View>: View {
     let currentURL: URL?
     let upload: (PreparedPicture) async throws -> Void
     let remove: () async throws -> Void
+    let restore: (() async throws -> Void)?
     private let preview: Preview
     @State private var phase: Phase?
     @State private var error: String?
@@ -153,18 +154,19 @@ struct PictureEditor<Preview: View>: View {
     @State private var showAnimationChoice = false
     @State private var loadTask: Task<Void, Never>?
 
-    private enum Phase { case loading, uploading, removing }
+    private enum Phase { case loading, uploading, removing, restoring }
 
     /// The frame's side, in points.
     static var side: CGFloat { 112 }
 
     init(purpose: PicturePurpose, hasPicture: Bool, currentURL: URL? = nil, upload: @escaping (PreparedPicture) async throws -> Void,
-         remove: @escaping () async throws -> Void, @ViewBuilder preview: () -> Preview) {
+         remove: @escaping () async throws -> Void, restore: (() async throws -> Void)? = nil, @ViewBuilder preview: () -> Preview) {
         self.purpose = purpose
         self.hasPicture = hasPicture
         self.currentURL = currentURL
         self.upload = upload
         self.remove = remove
+        self.restore = restore
         self.preview = preview()
     }
 
@@ -175,6 +177,7 @@ struct PictureEditor<Preview: View>: View {
         case .loading: "Opening picture…"
         case .uploading: "Uploading…"
         case .removing: "Removing…"
+        case .restoring: "Restoring…"
         case nil: unavailable ? ProfilePicturePolicy.unavailableMessage : nil
         }
     }
@@ -182,7 +185,7 @@ struct PictureEditor<Preview: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Menu {
-                if let currentURL {
+                if hasPicture, let currentURL {
                     Button("Edit current \(noun)") {
                         start {
                             let configuration = URLSessionConfiguration.ephemeral
@@ -199,9 +202,12 @@ struct PictureEditor<Preview: View>: View {
                     .disabled(unavailable)
                 Button { showFiles = true } label: { Label("Files", systemImage: "doc") }
                     .disabled(unavailable)
+                if restore != nil {
+                    Button("Restore previous picture") { removePicture(restoring: true) }
+                }
                 if hasPicture {
                     Divider()
-                    Button(role: .destructive, action: removePicture) { Label("Remove \(noun)", systemImage: "trash") }
+                    Button(role: .destructive, action: { removePicture() }) { Label("Remove \(noun)", systemImage: "trash") }
                 }
             } label: {
                 framedPicture
@@ -210,7 +216,7 @@ struct PictureEditor<Preview: View>: View {
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
-            .disabled(phase != nil || (unavailable && !hasPicture))
+            .disabled(phase != nil || (unavailable && !hasPicture && restore == nil))
             .accessibilityLabel(avatar ? "Change profile picture" : "Change space icon")
             .accessibilityIdentifier(avatar ? "change-profile-picture" : "change-space-icon")
             .dropDestination(for: DroppedAttachment.self) { items, _ in
@@ -360,13 +366,18 @@ struct PictureEditor<Preview: View>: View {
         }
     }
 
-    private func removePicture() {
+    private func removePicture(restoring: Bool = false) {
         guard phase == nil else { return }
-        phase = .removing
+        phase = restoring ? .restoring : .removing
         error = nil
         Task { @MainActor in
-            do { try await remove() }
+            do {
+                if restoring { try await restore?() } else { try await remove() }
+            }
             catch is CancellationError {}
+            catch let failure as APIError where restoring && failure.status == 409 {
+                self.error = "Your picture changed elsewhere. Reopen your profile and try again."
+            }
             catch { self.error = ProfilePicturePolicy.message(for: error, purpose: purpose) }
             phase = nil
         }

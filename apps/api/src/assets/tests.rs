@@ -1861,6 +1861,19 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         )
     };
     let code = |error: ApiError| (error.status, error.code);
+    let restore = |who: &Principal, current: Option<&str>| {
+        crate::pictures::restore_avatar(
+            State(state.clone()),
+            Extension(who.clone()),
+            Json(crate::pictures::RestoreAvatar {
+                avatar_asset: json!(current),
+            }),
+        )
+    };
+    assert_eq!(
+        restore(&owner, None).await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
 
     // Reservations: type, size, dimensions and targets are checked first.
     assert_eq!(
@@ -1917,6 +1930,11 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
     let done = complete_as(&owner, &first_id).await.unwrap().0;
     assert_eq!(done["account"]["avatarAsset"], first_id.as_str());
     assert_eq!(done["account"]["avatarId"], mascot);
+    assert_eq!(done["account"]["canRestoreAvatar"], false);
+    assert_eq!(
+        restore(&owner, Some(&first_id)).await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
     let usage_now = usage(State(state.clone()), Extension(owner.clone()))
         .await
         .unwrap()
@@ -1938,6 +1956,145 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         complete_as(&owner, &first_id).await.unwrap().0["account"]["avatarAsset"],
         second_id.as_str()
     );
+    assert_eq!(
+        restore(&owner, Some(&second_id)).await.unwrap().0["avatarAsset"],
+        first_id
+    );
+    assert_eq!(
+        restore(&owner, Some(&second_id)).await.unwrap_err().status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        restore(&owner, Some(&first_id)).await.unwrap().0["avatarAsset"],
+        second_id
+    );
+    assert_eq!(
+        restore(&owner, Some(&second_id)).await.unwrap().0["avatarAsset"],
+        first_id
+    );
+    assert_eq!(
+        restore(&outsider, None).await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+    // A new save remembers the actual displayed A, not the most recent upload B.
+    let (_, Json(third)) = create_as(&owner, picture("avatar", "image/jpeg", photo.len(), 640))
+        .await
+        .unwrap();
+    let third_id = third["id"].as_str().unwrap();
+    put(&third, "upload", &photo).await;
+    assert_eq!(
+        complete_as(&owner, third_id).await.unwrap().0["account"]["avatarAsset"],
+        third_id
+    );
+    assert_eq!(
+        restore(&owner, Some(third_id)).await.unwrap().0["avatarAsset"],
+        first_id
+    );
+    // A reservation predating a restore may finish, but must not apply.
+    let (_, Json(late)) = create_as(&owner, picture("avatar", "image/jpeg", photo.len(), 640))
+        .await
+        .unwrap();
+    put(&late, "upload", &photo).await;
+    assert_eq!(
+        restore(&owner, Some(&first_id)).await.unwrap().0["avatarAsset"],
+        third_id
+    );
+    assert_eq!(
+        complete_as(&owner, late["id"].as_str().unwrap())
+            .await
+            .unwrap()
+            .0["account"]["avatarAsset"],
+        third_id
+    );
+    let removed = crate::pictures::remove_avatar(State(state.clone()), Extension(owner.clone()))
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(removed["canRestoreAvatar"], true);
+    assert_eq!(
+        restore(&owner, None).await.unwrap().0["avatarAsset"],
+        third_id
+    );
+    // Legacy fallback uses reservation order, not the explicit history column.
+    sqlx::query("UPDATE public.users SET avatar_history_initialized=false WHERE id=$1")
+        .bind(owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        restore(&owner, Some(third_id)).await.unwrap().0["avatarAsset"],
+        second_id
+    );
+    // Explicit history never grants access to another owner's picture.
+    sqlx::query("UPDATE public.users SET previous_avatar_asset=$2, avatar_history_initialized=true WHERE id=$1")
+        .bind(outsider.user.id).bind(&first_id).execute(&pool).await.unwrap();
+    assert_eq!(
+        restore(&outsider, None).await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+
+    // Legacy accounts without a current custom picture use the latest retained upload.
+    sqlx::query(
+        "UPDATE public.users SET avatar_asset=NULL, avatar_history_initialized=false WHERE id=$1",
+    )
+    .bind(owner.user.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        restore(&owner, None).await.unwrap().0["avatarAsset"],
+        late["id"]
+    );
+    assert!(
+        serde_json::to_value(owner.user.public())
+            .unwrap()
+            .get("canRestoreAvatar")
+            .is_none()
+    );
+    // Invalid retained history is unavailable both in own-account capability and restore.
+    for column in ["deleted_at", "purged_at", "uploaded_at"] {
+        let value = if column == "uploaded_at" {
+            "NULL"
+        } else {
+            "now()"
+        };
+        sqlx::query(&format!(
+            "UPDATE public.assets SET {column}={value} WHERE external_id=$1"
+        ))
+        .bind(&first_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE public.users SET previous_avatar_asset=$2 WHERE id=$1")
+            .bind(owner.user.id)
+            .bind(&first_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::own_account(&state, &owner.user).await["canRestoreAvatar"],
+            false
+        );
+        assert_eq!(
+            restore(&owner, late["id"].as_str())
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+        let value = if column == "uploaded_at" {
+            "now()"
+        } else {
+            "NULL"
+        };
+        sqlx::query(&format!(
+            "UPDATE public.assets SET {column}={value} WHERE external_id=$1"
+        ))
+        .bind(&first_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
     // Uploads finishing out of order: the later choice wins even when the
     // earlier one completes last, and the earlier one is kept, not discarded.
     let mut chosen = Vec::new();

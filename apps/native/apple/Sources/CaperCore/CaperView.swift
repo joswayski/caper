@@ -8490,7 +8490,13 @@ private struct ProfileSheet: View {
                           upload: {
                               guard model.account?.id == account.id else { throw CancellationError() }
                               try await model.changeAvatar($0)
-                          }, remove: { try await model.removeAvatar() }) {
+                          }, remove: {
+                              guard model.account?.id == account.id else { throw CancellationError() }
+                              try await model.removeAvatar()
+                          }, restore: account.canRestoreAvatar == true ? {
+                              guard model.account?.id == account.id else { throw CancellationError() }
+                              try await model.removeAvatar(restore: true)
+                          } : nil) {
                 if account.avatarAsset == nil {
                     ChangeMeMascot(name: name, avatarID: account.avatarId, size: side)
                 } else {
