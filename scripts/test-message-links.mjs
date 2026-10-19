@@ -71,10 +71,16 @@ try {
     evaluate(`return [...document.querySelectorAll('.chat-draft-link')].every(mark => {
     const style = getComputedStyle(mark);
     return style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.borderRadius === '4px'
-      && style.boxShadow !== 'none' && style.padding === '0px';
+      && style.boxShadow !== 'none' && style.padding === '0px' && style.color === 'rgb(105, 207, 255)';
   });`),
     true,
-    "draft highlights are rounded without moving the textarea's glyphs",
+    "draft URLs have baby-blue text and rounded backgrounds without moving glyphs",
+  );
+  assert.deepEqual(
+    evaluate(`const style = getComputedStyle(document.querySelector('#link-fixture textarea'));
+    return [style.color, style.caretColor];`),
+    ["rgba(0, 0, 0, 0)", "rgb(243, 244, 245)"],
+    "the native caret stays visible without duplicate foreground text",
   );
   browser("press", "Enter");
   browser("wait", "#sent a");
@@ -135,6 +141,11 @@ try {
   if (artifacts) browser("screenshot", `${artifacts}/links-narrow.png`);
   browser("fill", "#link-fixture textarea", "plain text, no link");
   assert.deepEqual(marks(), [], "removing a link clears its highlight");
+  assert.equal(
+    evaluate("return getComputedStyle(document.querySelector('#link-fixture textarea')).color;"),
+    "rgb(243, 244, 245)",
+    "plain drafts return to native text painting",
+  );
   const mixed = "🙂 @feedback\nhttps://example.org/Notes";
   browser("fill", "#link-fixture textarea", mixed);
   browser("press", "Control+a");

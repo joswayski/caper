@@ -256,18 +256,23 @@ struct SuggestionRow: ViewModifier {
     #if os(iOS)
     let color = UIColor(CaperTheme.terracotta).withAlphaComponent(0.24)
     let linkColor = UIColor(CaperTheme.link).withAlphaComponent(0.14)
+    let textColor = UIColor(CaperTheme.text)
+    let linkTextColor = UIColor(CaperTheme.link)
     #else
     let color = NSColor(CaperTheme.terracotta).withAlphaComponent(0.24)
     let linkColor = NSColor(CaperTheme.link).withAlphaComponent(0.14)
+    let textColor = NSColor(CaperTheme.text)
+    let linkTextColor = NSColor(CaperTheme.link)
     #endif
     storage.beginEditing()
     storage.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: storage.length))
+    storage.addAttribute(.foregroundColor, value: textColor, range: NSRange(location: 0, length: storage.length))
     var offset = 0
     for segment in MessageLinks.segments(in: storage.string) {
         let range = NSRange(location: offset, length: segment.text.utf16.count)
         offset += range.length
         if segment.href != nil, !ranges.contains(where: { NSIntersectionRange($0, range).length > 0 }) {
-            storage.addAttribute(.backgroundColor, value: linkColor, range: range)
+            storage.addAttributes([.backgroundColor: linkColor, .foregroundColor: linkTextColor], range: range)
         }
     }
     for range in ranges { storage.addAttribute(.backgroundColor, value: color, range: range) }
@@ -496,6 +501,7 @@ struct NativeMessageComposer: UIViewRepresentable {
             highlighting = true
             highlightDraft(view.textStorage, source: parent.highlightSource ?? parent.mentions)
             view.typingAttributes.removeValue(forKey: .backgroundColor)
+            view.typingAttributes[.foregroundColor] = UIColor(CaperTheme.text)
             highlighting = false
         }
         func insert(_ emoji: String, selection: NSRange) {
@@ -652,6 +658,7 @@ struct NativeMessageComposer: NSViewRepresentable {
             highlightDraft(storage, source: parent.highlightSource ?? parent.mentions)
             view.typingAttributes.removeValue(forKey: .backgroundColor)
             view.typingAttributes.removeValue(forKey: .toolTip)
+            view.typingAttributes[.foregroundColor] = NSColor(CaperTheme.text)
             highlighting = false
         }
         @MainActor func insert(_ emoji: String, selection: NSRange) {

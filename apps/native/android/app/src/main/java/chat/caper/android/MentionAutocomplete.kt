@@ -212,7 +212,7 @@ internal fun draftMentionSpans(text: String, source: MentionSource): List<Mentio
     }
 }
 
-/** Background only: selection, IME offsets and the submitted text are unchanged. */
+/** Colour only: selection, IME offsets and the submitted text are unchanged. */
 internal class MentionVisualTransformation(private val source: MentionSource) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText {
         val styled = AnnotatedString.Builder(text)
@@ -221,7 +221,7 @@ internal class MentionVisualTransformation(private val source: MentionSource) : 
             styled.addStyle(SpanStyle(background = Terracotta.copy(alpha = 0.24f)), span.start, span.end)
         }
         for (link in linkRanges(text.text, mentions.map { it.start until it.end })) {
-            styled.addStyle(SpanStyle(background = LinkBlue.copy(alpha = 0.14f)), link.start, link.end)
+            styled.addStyle(SpanStyle(color = LinkBlue, background = LinkBlue.copy(alpha = 0.14f)), link.start, link.end)
         }
         return TransformedText(styled.toAnnotatedString(), OffsetMapping.Identity)
     }

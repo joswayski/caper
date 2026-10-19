@@ -2362,6 +2362,36 @@
     0 0 0 1px color-mix(in srgb, var(--link) 14%, transparent),
     0 0 6px color-mix(in srgb, var(--link) 8%, transparent);
 }
+/* A textarea cannot colour individual ranges. When URLs exist, the aligned
+   mirror paints the text; the real textarea still owns editing and the caret. */
+.chat-mention-input:has(.chat-draft-link) > textarea {
+  color: transparent;
+  caret-color: var(--text);
+}
+.chat-mention-input:has(.chat-draft-link) > textarea::selection {
+  color: transparent;
+  background: rgb(105 207 255 / 28%);
+}
+.chat-mention-input:has(.chat-draft-link) .chat-mention-input-mirror,
+.chat-mention-input:has(.chat-draft-link) mark {
+  color: var(--text);
+}
+.chat-mention-input:has(.chat-draft-link) .chat-draft-link {
+  color: var(--link);
+}
+@media (forced-colors: active) {
+  .chat-mention-input:has(.chat-draft-link) .chat-mention-input-mirror {
+    visibility: hidden;
+  }
+  .chat-mention-input:has(.chat-draft-link) > textarea {
+    color: CanvasText;
+    caret-color: CanvasText;
+  }
+  .chat-mention-input:has(.chat-draft-link) > textarea::selection {
+    color: HighlightText;
+    background: Highlight;
+  }
+}
 .chat-mention-input[data-disabled] .chat-mention-input-mirror {
   opacity: 0.55;
 }

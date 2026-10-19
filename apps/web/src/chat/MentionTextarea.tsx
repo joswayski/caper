@@ -27,7 +27,7 @@ import { emojiName } from "./reactors.ts";
 import { draftMentionSegments, type MentionCandidate } from "./mentions.ts";
 import { linkSegments } from "./links.ts";
 
-/** A background-only mirror keeps native editing and supplies emoji hit targets. */
+/** An aligned text mirror styles URLs/mentions while the textarea keeps native editing. */
 export default function MentionTextarea({
   ref,
   people,

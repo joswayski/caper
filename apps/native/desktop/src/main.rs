@@ -26231,7 +26231,7 @@ enum Run {
     Link(std::ops::Range<usize>, String),
 }
 
-/// Background-only highlights keep editable glyph metrics and cursor positions unchanged.
+/// Colour-only highlights keep editable glyph metrics and cursor positions unchanged.
 fn draft_layout(
     ui: &egui::Ui,
     text: &str,
@@ -26252,16 +26252,17 @@ fn draft_layout(
         job.append(text, 0.0, plain.clone());
     }
     for run in message_runs(text, &ranges) {
-        let (range, background) = match run {
-            Run::Plain(range) => (range, Color32::TRANSPARENT),
-            Run::Pill(range, _) => (range, TERRACOTTA.gamma_multiply(0.24)),
-            Run::Link(range, _) => (range, LINK.gamma_multiply(0.14)),
+        let (range, background, color) = match run {
+            Run::Plain(range) => (range, Color32::TRANSPARENT, plain.color),
+            Run::Pill(range, _) => (range, TERRACOTTA.gamma_multiply(0.24), plain.color),
+            Run::Link(range, _) => (range, LINK.gamma_multiply(0.14), LINK),
         };
         job.append(
             &text[range],
             0.0,
             egui::TextFormat {
                 background,
+                color,
                 ..plain.clone()
             },
         );
@@ -41457,7 +41458,10 @@ mod tests {
                         section.format.underline != egui::Stroke::NONE
                             || section.format.background != egui::Color32::TRANSPARENT
                     })
-                    .map(|section| &text[section.byte_range.clone()])
+                    .map(|section| {
+                        assert_eq!(section.format.color, super::LINK);
+                        &text[section.byte_range.clone()]
+                    })
                     .collect();
                 assert_eq!(
                     links,

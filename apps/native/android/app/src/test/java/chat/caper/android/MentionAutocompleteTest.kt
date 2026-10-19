@@ -47,6 +47,7 @@ class MentionAutocompleteTest {
         assertEquals(text, styled.text.text)
         assertEquals(listOf("@Maya", "HTTPS://Caper.chat/invite/AbCd", "www.Example.org/Path?q=Case"),
             styled.text.spanStyles.map { text.substring(it.start, it.end) })
+        assertTrue(styled.text.spanStyles.drop(1).all { it.item.color == chat.caper.android.ui.LinkBlue })
         for (offset in 0..text.length) {
             assertEquals(offset, styled.offsetMapping.originalToTransformed(offset))
             assertEquals(offset, styled.offsetMapping.transformedToOriginal(offset))
