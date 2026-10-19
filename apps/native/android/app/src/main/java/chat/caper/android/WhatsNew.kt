@@ -11,6 +11,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
@@ -112,8 +114,9 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
     val active = hovered || focused || pressed
     val color = if (active) Text else TextMuted.copy(alpha = 0.72f)
     Row(
-        Modifier.clickable(interaction, indication = null, role = Role.Button,
-            onClickLabel = "View this version on GitHub") { openExternalLink(uriHandler, url) },
+        Modifier.pointerHoverIcon(PointerIcon.Hand)
+            .clickable(interaction, indication = null, role = Role.Button,
+                onClickLabel = "View this version on GitHub") { openExternalLink(uriHandler, url) },
         horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, Modifier.weight(1f, fill = false), fontSize = size.sp, color = color,
