@@ -234,7 +234,7 @@ export default function WhatsNew({
                       rel="noreferrer"
                       title="View this version on GitHub"
                     >
-                      Commit {release.revision.slice(0, 7)}
+                      {release.revision.slice(0, 7)}
                     </a>
                     <p>{highlight.body}</p>
                   </article>

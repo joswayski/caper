@@ -229,7 +229,7 @@ func releaseDayLabel(_ day: String) -> String {
                                             Text(highlight.title).font(CaperTheme.font(16, weight: .bold))
                                             if let url = URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)") {
                                                 ReleaseLink(
-                                                    label: release.version.map { "Version \($0)" } ?? "Commit \(release.revision.prefix(7))",
+                                                    label: release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)),
                                                     url: url, size: 12)
                                             }
                                             Text(highlight.body).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)

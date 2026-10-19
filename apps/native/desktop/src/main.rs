@@ -21524,7 +21524,7 @@ impl CaperApp {
                     }
                     ui.add_space(16.0);
                     let label = release.version.as_ref().map_or_else(
-                        || format!("Commit {}", &release.revision[..7]),
+                        || release.revision[..7].to_owned(),
                         |version| format!("Version {version}"),
                     );
                     for highlight in release.highlights {
@@ -30962,7 +30962,7 @@ mod tests {
                 // The installed version under the title opens the installed commit.
                 let installed = crate::updates::version_label();
                 let title = text_position(&output, "Find your conversations");
-                let source = text_position(&output, "Commit 2222222");
+                let source = text_position(&output, "2222222");
                 let body = text_position(
                     &output,
                     "Move between your spaces and direct messages while keeping your drafts.",
@@ -30970,7 +30970,7 @@ mod tests {
                 assert!(title.y < source.y && source.y < body.y);
                 for (label, revision) in [
                     ("Version 0.1.112", whats_new::REVISION.to_owned()),
-                    ("Commit 2222222", "2".repeat(40)),
+                    ("2222222", "2".repeat(40)),
                     (installed.as_str(), whats_new::REVISION.to_owned()),
                 ] {
                     let output = render(&mut app, &context, vec![]);
