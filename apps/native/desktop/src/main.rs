@@ -26372,7 +26372,6 @@ fn rich_text(
     };
     let link = egui::TextFormat {
         color: LINK,
-        underline: Stroke::new(1.0, LINK),
         ..plain.clone()
     };
     let mut job = egui::text::LayoutJob::default();
@@ -26388,11 +26387,10 @@ fn rich_text(
                     range,
                     egui::TextFormat {
                         color: if hot { LINK_ACTIVE } else { LINK },
-                        underline: Stroke::new(1.0, if hot { LINK_ACTIVE } else { LINK }),
-                        background: if hot {
-                            LINK.gamma_multiply(0.12)
+                        underline: if hot {
+                            Stroke::new(1.0, LINK_ACTIVE)
                         } else {
-                            Color32::TRANSPARENT
+                            Stroke::NONE
                         },
                         ..link.clone()
                     },
@@ -26459,7 +26457,38 @@ fn rich_text(
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
     });
+    let characters = |range: &std::ops::Range<usize>| {
+        text[..range.start].chars().count()..text[..range.end].chars().count()
+    };
     if ui.is_rect_visible(response.rect) {
+        // Paint behind the selectable galley. Wrapped URLs get one rounded
+        // background per line, with the icon inside the final piece.
+        for run in &runs {
+            let Run::Link(range, _) = run else { continue };
+            let id = ui.make_persistent_id(("message-link-hot", message, range.start));
+            let hot = ui.data(|data| data.get_temp::<bool>(id)).unwrap_or(false);
+            let mut rects = pill_rects(&galley, characters(range));
+            if let Some(last) = rects.last_mut() {
+                last.max.x += LINK_ICON_SPACE;
+            }
+            for rect in rects {
+                let rect = rect
+                    .translate(position.to_vec2())
+                    .expand2(egui::vec2(2.0, 1.0));
+                let glow = egui::Shadow {
+                    offset: [0, 0],
+                    blur: if hot { 8 } else { 6 },
+                    spread: 0,
+                    color: LINK.gamma_multiply(if hot { 0.14 } else { 0.08 }),
+                };
+                ui.painter().add(glow.as_shape(rect, 4));
+                ui.painter().rect_filled(
+                    rect,
+                    4,
+                    LINK.gamma_multiply(if hot { 0.18 } else { 0.10 }),
+                );
+            }
+        }
         egui::text_selection::LabelSelectionState::label_text_selection(
             ui,
             &response,
@@ -26469,9 +26498,6 @@ fn rich_text(
             Stroke::NONE,
         );
     }
-    let characters = |range: &std::ops::Range<usize>| {
-        text[..range.start].chars().count()..text[..range.end].chars().count()
-    };
     if !emojis.is_empty() && ui.is_rect_visible(response.rect) {
         let textures = emoji::Textures::shared(ui.ctx());
         let size = INLINE_EMOJI_SCALE * plain.font_id.size;
@@ -26544,17 +26570,6 @@ fn rich_text(
             let was_hot = ui
                 .data(|data| data.get_temp::<bool>(hot_id))
                 .unwrap_or(false);
-            if was_hot {
-                ui.painter().rect_filled(
-                    egui::Rect::from_min_max(
-                        egui::pos2(last.right() - LINK_ICON_SPACE, last.top()),
-                        last.max,
-                    )
-                    .translate(position.to_vec2()),
-                    2.0,
-                    LINK.gamma_multiply(0.12),
-                );
-            }
             paint_icon(
                 ui.painter(),
                 icon,
@@ -41571,8 +41586,16 @@ mod tests {
         for token in ["www.example.com/notes", "https://caper.example/a_(b)"] {
             let format = section_format(&output, LINKED, token);
             assert_eq!(format.color, super::LINK, "{token}");
-            assert_eq!(format.underline, egui::Stroke::new(1.0, super::LINK));
-            assert_eq!(format.background, egui::Color32::TRANSPARENT);
+            assert_eq!(format.underline, egui::Stroke::NONE);
+            let center = pill_center(&output, LINKED, token);
+            assert!(
+                output.shapes.iter().any(|shape| matches!(
+                    &shape.shape, egui::epaint::Shape::Rect(rect)
+                    if rect.rect.contains(center) && rect.fill == super::LINK.gamma_multiply(0.10)
+                        && rect.corner_radius == egui::CornerRadius::same(4)
+                )),
+                "{token} has a rounded background even before hovering"
+            );
         }
         let plain = section_format(&output, LINKED, "Notes at ");
         assert_eq!(plain.color, MESSAGE_TEXT);
@@ -41600,9 +41623,13 @@ mod tests {
             super::LINK_ACTIVE
         );
         assert_eq!(
-            section_format(&hovered, LINKED, "www.example.com/notes").background,
-            super::LINK.gamma_multiply(0.12)
+            section_format(&hovered, LINKED, "www.example.com/notes").underline,
+            egui::Stroke::new(1.0, super::LINK_ACTIVE)
         );
+        assert!(hovered.shapes.iter().any(|shape| matches!(
+            &shape.shape, egui::epaint::Shape::Rect(rect)
+            if rect.rect.contains(link) && rect.fill == super::LINK.gamma_multiply(0.18)
+        )));
         let clicked = click_at(&mut app, &context, link);
         assert_eq!(opened_url(&clicked), Some("https://www.example.com/notes"));
 

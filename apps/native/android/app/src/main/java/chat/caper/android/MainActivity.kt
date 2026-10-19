@@ -3073,7 +3073,7 @@ internal const val DELETED_REPLY = "Original message was deleted."
                     }
                     val people = linked?.let { mentions.mapNotNull { span -> mentionedUser(span, it) }.distinct() }.orEmpty()
                     // TalkBack also reaches each pill, link and the inline "(edited)" through labelled custom actions.
-                    Text(
+                    MessageLinkText(
                         annotated,
                         if (people.isEmpty() && links.isEmpty() && !inlineEdited) Modifier else Modifier.semantics {
                             customActions = people.map { user -> CustomAccessibilityAction("Open profile for ${mentionLabel(user)}") { open?.invoke(user); true } } +
@@ -3081,7 +3081,6 @@ internal const val DELETED_REPLY = "Original message was deleted."
                                 listOfNotNull(if (inlineEdited) CustomAccessibilityAction("Open message history") { history(); true } else null)
                         },
                         color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp,
-                        inlineContent = messageInlineContent(),
                     )
                 }
             }
@@ -3189,9 +3188,9 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
 
 /**
  * Message text: resolved mentions as pills (text #F3F4F5, one weight step bolder, terracotta at 24%),
- * then [links] (found outside the mentions, `data/Links.kt`) in blue with an underline.
+ * then [links] (found outside the mentions, `data/Links.kt`) in baby-blue rounded pills.
  * Inline icon placeholders are presentation only; message actions use the original content text.
- * `SpanStyle` backgrounds cannot round corners or pad, so Android pills are square-edged.
+ * URL backgrounds are drawn by [MessageLinkText]; mention backgrounds remain span styles.
  * [openHistory] appends a grouped row's "(edited)" marker right after the text.
  */
 internal fun messageText(
@@ -3229,9 +3228,9 @@ internal const val ExternalLinkInline = "external-link"
 ) {
     Icon(painterResource(R.drawable.lucide_external_link), null, Modifier.fillMaxSize().padding(start = 3.dp), tint = LinkBlue)
 })
-private val MessageLinkActive = SpanStyle(color = LinkBlueActive, background = LinkBlue.copy(alpha = 0.12f))
+private val MessageLinkActive = SpanStyle(color = LinkBlueActive, textDecoration = TextDecoration.Underline)
 internal val MessageLink = TextLinkStyles(
-    SpanStyle(color = LinkBlue, textDecoration = TextDecoration.Underline),
+    SpanStyle(color = LinkBlue),
     focusedStyle = MessageLinkActive, hoveredStyle = MessageLinkActive, pressedStyle = MessageLinkActive,
 )
 private val EditedMarker = TextLinkStyles(SpanStyle(color = TextMuted, fontSize = 10.sp))

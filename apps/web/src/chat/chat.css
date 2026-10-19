@@ -825,9 +825,12 @@
 }
 .chat-link {
   color: var(--link);
-  border-radius: 3px;
+  background: color-mix(in srgb, var(--link) 10%, transparent);
+  border-radius: 4px;
+  padding: 1px 3px;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--link) 8%, transparent);
   box-decoration-break: clone;
-  text-decoration: underline;
+  text-decoration: none;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
   overflow-wrap: anywhere;
@@ -847,18 +850,18 @@
     transition:
       color 100ms ease-in-out,
       background-color 100ms ease-in-out,
-      text-decoration-thickness 100ms ease-in-out;
+      box-shadow 100ms ease-in-out;
   }
 }
 @media (hover: hover) {
   .chat-link:hover {
     color: var(--link-hover);
-    background: color-mix(in srgb, var(--link) 12%, transparent);
-    text-decoration-thickness: 2px;
+    background: color-mix(in srgb, var(--link) 18%, transparent);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--link) 14%, transparent);
+    text-decoration-line: underline;
   }
 }
 .chat-link:focus-visible {
-  border-radius: 2px;
   outline: 2px solid var(--link);
   outline-offset: 2px;
 }

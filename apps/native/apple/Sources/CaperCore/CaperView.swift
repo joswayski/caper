@@ -4963,6 +4963,7 @@ private struct MessageRow: View {
                     HStack(alignment: .lastTextBaseline, spacing: 7) {
                         rendered.text.font(CaperTheme.font(14)).foregroundStyle(Color(red: 222/255, green: 223/255, blue: 224/255))
                             .tint(CaperTheme.link)
+                            .modifier(MessageLinkPills(enabled: rendered.hasLinks))
                             .modifier(SwipeGuardedLinks())
                             .modifier(MentionPillInteraction(pills: pills, hasLinks: rendered.hasLinks, cards: mentionCards))
                         if grouped && edited { editedMarker }
@@ -5320,6 +5321,83 @@ private struct MessageLinkMenuItems: View {
     }
 }
 
+/// Only sent linked-text hosts opt in; composers and mention-only text stay native.
+struct MessageLinkPills: ViewModifier {
+    var enabled = true
+    @State private var pointer: CGPoint?
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if enabled {
+            if #available(iOS 18.0, macOS 15.0, *) {
+                content.textRenderer(MessageLinkRenderer(pointer: pointer))
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let location): pointer = location
+                        case .ended: pointer = nil
+                        }
+                    }
+            } else {
+                content
+            }
+        } else {
+            content
+        }
+    }
+}
+
+@available(iOS 18.0, macOS 15.0, *)
+private struct MessageLinkAttribute: TextAttribute {
+    // An occurrence, not a destination: repeated links remain separate pills.
+    let id: UUID
+}
+
+@available(iOS 18.0, macOS 15.0, *)
+private struct MessageLinkRenderer: TextRenderer {
+    var pointer: CGPoint?
+
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        var hovered: UUID?
+        if let pointer {
+            for line in layout {
+                for run in line where run.typographicBounds.rect.insetBy(dx: -2, dy: -1).contains(pointer) {
+                    if let attribute = run[MessageLinkAttribute.self] { hovered = attribute.id }
+                }
+            }
+        }
+        // Union adjacent URL/symbol/font runs per line, never across a wrap.
+        // Paint every background before any glyphs so padding cannot cover text.
+        for line in layout {
+            var pending: (id: UUID, rect: CGRect)?
+            func paint(_ pill: (id: UUID, rect: CGRect)) {
+                let hot = pill.id == hovered
+                let path = RoundedRectangle(cornerRadius: 4)
+                    .path(in: pill.rect.insetBy(dx: -2, dy: -1))
+                var glow = context
+                glow.addFilter(.blur(radius: 2))
+                glow.fill(path, with: .color(CaperTheme.link.opacity(hot ? 0.14 : 0.08)))
+                context.fill(path, with: .color(CaperTheme.link.opacity(hot ? 0.18 : 0.10)))
+            }
+            for run in line {
+                if let attribute = run[MessageLinkAttribute.self] {
+                    if let previous = pending, previous.id == attribute.id {
+                        pending = (previous.id, previous.rect.union(run.typographicBounds.rect))
+                    } else {
+                        if let previous = pending { paint(previous) }
+                        pending = (attribute.id, run.typographicBounds.rect)
+                    }
+                } else {
+                    if let previous = pending { paint(previous) }
+                    pending = nil
+                }
+            }
+            if let previous = pending { paint(previous) }
+        }
+        for line in layout {
+            for run in line { context.draw(run) }
+        }
+    }
+}
+
 extension MessageLinks {
     /// Inline linked text plus a decorative SF Symbol, never part of the source
     /// or the Copy text action. Text concatenation retains native link attributes
@@ -5336,12 +5414,21 @@ extension MessageLinks {
             if let href = run.href, let url = URL(string: href) {
                 part.link = url
                 part.foregroundColor = CaperTheme.link
-                part.underlineStyle = Text.LineStyle(pattern: .solid, color: CaperTheme.link)
-                rendered = rendered + Text(part)
-                    + Text(Image(systemName: "arrow.up.right.square"))
-                        .font(.system(size: 10))
-                        .foregroundColor(CaperTheme.link)
-                        .accessibilityLabel(Text(""))
+                let icon = Text(Image(systemName: "arrow.up.right.square"))
+                    .font(.system(size: 10))
+                    .foregroundColor(CaperTheme.link)
+                    .accessibilityLabel(Text(""))
+                if #available(iOS 18.0, macOS 15.0, *) {
+                    let attribute = MessageLinkAttribute(id: UUID())
+                    rendered = rendered + Text(part).underline(false).customAttribute(attribute)
+                        + icon.customAttribute(attribute)
+                } else {
+                    // iOS 17/macOS 14: native attributed backgrounds preserve
+                    // wrapping/actions, but have square corners, no padding or
+                    // glow, and cannot include the decorative image attachment.
+                    part.backgroundColor = CaperTheme.link.opacity(0.10)
+                    rendered = rendered + Text(part).underline(false) + icon
+                }
             } else {
                 rendered = rendered + Text(part)
             }

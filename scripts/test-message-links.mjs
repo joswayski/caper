@@ -71,6 +71,16 @@ try {
   assert.equal(evaluate("return document.querySelector('#sent').textContent;"), draft, "icons do not add copied text");
   assert.equal(evaluate("return getComputedStyle(document.querySelector('#sent a')).color;"), "rgb(105, 207, 255)");
   assert.equal(
+    evaluate(`return [...document.querySelectorAll('#sent a')].every(a => {
+      const style = getComputedStyle(a);
+      return style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.boxShadow !== 'none'
+        && style.borderRadius === '4px' && style.padding === '1px 3px'
+        && style.textDecorationLine === 'none';
+    });`),
+    true,
+    "both generic and invitation URLs have padded, rounded, glowing backgrounds at rest",
+  );
+  assert.equal(
     evaluate(`
     const event = new MouseEvent('contextmenu', {bubbles: true, cancelable: true});
     return document.querySelector('#sent a').dispatchEvent(event);
@@ -106,7 +116,7 @@ try {
   assert.deepEqual(marks(), [], "removing a link clears its highlight");
   browser("fill", "#link-fixture textarea", draft);
   console.log(
-    "PASS: plain drafts, exact send payload, blue links, decorative icons, context-menu allowance, and wrapping",
+    "PASS: plain drafts, exact send payload, all-URL blue pills, decorative icons, context-menu allowance, and wrapping",
   );
 } finally {
   if (!process.env.LINK_TEST_KEEP) browser("close");

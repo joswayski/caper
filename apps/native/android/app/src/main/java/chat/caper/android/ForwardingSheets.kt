@@ -75,7 +75,7 @@ import java.util.UUID
     val annotated = remember(text, links, uriHandler) {
         messageText(text, emptyList(), links = links, openLink = { openExternalLink(uriHandler, it) })
     }
-    Text(annotated, fontSize = fontSize, inlineContent = messageInlineContent())
+    MessageLinkText(annotated, fontSize = fontSize)
 }
 
 @Composable internal fun ForwardCard(
