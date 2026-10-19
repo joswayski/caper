@@ -17,7 +17,9 @@ import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
-import androidx.compose.ui.test.onLast
+import androidx.compose.ui.test.filterToOne
+import androidx.compose.ui.test.hasAnyDescendant
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -58,8 +60,9 @@ class AttachDrawerUiTest {
     private fun save(name: String) {
         val directory = File(requireNotNull(InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")))
         check(directory.mkdirs() || directory.isDirectory)
-        // The sheet is its own window: capture the newest root.
-        val screenshot = compose.onAllNodes(isRoot()).onLast().captureToImage().asAndroidBitmap()
+        // The sheet is its own window: capture the root that holds the drawer.
+        val screenshot = compose.onAllNodes(isRoot()).filterToOne(hasAnyDescendant(hasText("Attach")))
+            .captureToImage().asAndroidBitmap()
         try {
             File(directory, "$name.png").outputStream().use { check(screenshot.compress(Bitmap.CompressFormat.PNG, 100, it)) }
         } finally { screenshot.recycle() }
