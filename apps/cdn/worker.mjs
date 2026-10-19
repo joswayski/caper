@@ -31,7 +31,11 @@ const INLINE = new Set([
 const VIEWABLE = new Set(["application/pdf"]);
 // API URLs live 24–48 hours; refuse anything signed further out.
 const MAX_LIFETIME = 3 * 24 * 60 * 60;
-const PRIVATE = "private, max-age=86400, immutable";
+const MAX_BROWSER_AGE = 24 * 60 * 60;
+// Browsers keep a copy no longer than the signed URL itself is valid, so an
+// expired link stops loading even from a local cache.
+const browserCache = (expires, now) =>
+  `private, max-age=${Math.max(0, Math.min(MAX_BROWSER_AGE, expires - now))}, immutable`;
 const encoder = new TextEncoder();
 
 function base64url(bytes) {
@@ -69,7 +73,7 @@ function deny(status) {
   return new Response(null, { status, headers: { "cache-control": "no-store" } });
 }
 
-function headersFor(object) {
+function headersFor(object, cacheControl) {
   const headers = new Headers();
   object.writeHttpMetadata(headers);
   const type = (headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
@@ -94,7 +98,7 @@ function headersFor(object) {
   // Signed GETs can be read by clients to render a device-only notification image.
   headers.set("access-control-allow-origin", "*");
   // Objects never change once uploaded; the signed URL itself rotates daily.
-  headers.set("cache-control", PRIVATE);
+  headers.set("cache-control", cacheControl);
   return headers;
 }
 
@@ -118,7 +122,7 @@ export default {
       const hit = await cache.match(cacheKey);
       if (hit) {
         const response = new Response(hit.body, hit);
-        response.headers.set("cache-control", PRIVATE);
+        response.headers.set("cache-control", browserCache(expires, now));
         response.headers.set("access-control-allow-origin", "*");
         return response;
       }
@@ -129,14 +133,17 @@ export default {
         ? await env.MEDIA.head(key)
         : await env.MEDIA.get(key, { range: request.headers, onlyIf: request.headers });
     if (!object) return deny(404);
-    const headers = headersFor(object);
+    const headers = headersFor(object, browserCache(expires, now));
     if (!("body" in object) || object.body == null) {
       // HEAD, or a conditional request that matched (If-None-Match).
       headers.set("content-length", String(object.size));
       return new Response(null, { status: request.method === "HEAD" ? 200 : 304, headers });
     }
     if (ranged && object.range) {
-      const { offset = 0, length = object.size - offset } = object.range;
+      // R2Range is {offset, length?}, {offset?, length} or a suffix (`bytes=-N`).
+      const { suffix } = object.range;
+      const offset = object.range.offset ?? (suffix === undefined ? 0 : object.size - Math.min(suffix, object.size));
+      const length = object.range.length ?? object.size - offset;
       headers.set("content-range", `bytes ${offset}-${offset + length - 1}/${object.size}`);
       headers.set("content-length", String(length));
       return new Response(object.body, { status: 206, headers });

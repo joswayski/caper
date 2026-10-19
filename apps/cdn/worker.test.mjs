@@ -22,6 +22,12 @@ function bucket(objects) {
       if (!objects[key]) return null;
       const body = objects[key].body;
       const header = range?.get?.("range");
+      const suffix = header && /^bytes=-(\d+)$/.exec(header);
+      if (suffix) {
+        // R2 echoes a suffix request as `{suffix}`, without an offset.
+        const length = Math.min(Number(suffix[1]), body.length);
+        return { ...metadata(key), range: { suffix: Number(suffix[1]) }, body: body.slice(body.length - length) };
+      }
       const match = header && /^bytes=(\d+)-(\d+)$/.exec(header);
       if (match) {
         const offset = Number(match[1]);
@@ -85,7 +91,8 @@ test("assets, legacy originals and previews stream the correct media inline", as
     assert.equal(response.headers.get("content-type"), "image/png");
     assert.equal(response.headers.get("content-disposition"), "inline");
     assert.equal(response.headers.get("x-content-type-options"), "nosniff");
-    assert.equal(response.headers.get("cache-control"), "private, max-age=86400, immutable");
+    // Cached no longer than the URL's own remaining lifetime (an hour here).
+    assert.match(response.headers.get("cache-control"), /^private, max-age=(3599|3600), immutable$/);
     assert.equal(response.headers.get("access-control-allow-origin"), "*");
     assert.equal(await response.text(), body);
   }
@@ -113,6 +120,25 @@ test("ranges return partial content for video seeking", async () => {
   assert.equal(response.status, 206);
   assert.equal(response.headers.get("content-range"), "bytes 2-5/10");
   assert.equal(await response.text(), "2345");
+});
+
+test("browser caching never outlives the signature, and stops at a day", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const response = await worker.fetch(new Request(await signed("original/abc", now + 2 * 24 * 3600)), env);
+  assert.equal(response.headers.get("cache-control"), "private, max-age=86400, immutable");
+});
+
+test("suffix ranges report the bytes actually returned", async () => {
+  for (const [range, contentRange, body] of [
+    ["bytes=-4", "bytes 6-9/10", "6789"],
+    ["bytes=-20", "bytes 0-9/10", "0123456789"],
+  ]) {
+    const response = await worker.fetch(new Request(await signed("original/abc"), { headers: { range } }), env);
+    assert.equal(response.status, 206);
+    assert.equal(response.headers.get("content-range"), contentRange);
+    assert.equal(response.headers.get("content-length"), String(body.length));
+    assert.equal(await response.text(), body);
+  }
 });
 
 test("tampered, expired, overlong, foreign-key and unknown requests are refused", async () => {
