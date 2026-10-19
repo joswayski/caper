@@ -29,9 +29,13 @@ impl MediaProxy {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
         let routes: Arc<Mutex<HashMap<String, String>>> = Arc::default();
+        // No overall deadline (a long video streams for as long as it plays),
+        // but an upstream that stops sending frees this thread: the blocking
+        // `timeout` bounds the response head and then each body read, which
+        // a paused player (not reading) never starts.
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(15))
-            .timeout(None)
+            .timeout(crate::api::MEDIA_STALL)
             .build()
             .map_err(std::io::Error::other)?;
         let shared = routes.clone();

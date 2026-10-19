@@ -342,11 +342,22 @@ impl Viewer {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
-        if let Some(saving) = &self.saving
-            && let Ok(result) = saving.try_recv()
-        {
-            self.saving = None;
-            self.notice = Some((result.unwrap_or_else(|error| error), Instant::now()));
+        if let Some(saving) = &self.saving {
+            // A failure (including a stalled download) re-enables Save.
+            match saving.try_recv() {
+                Ok(result) => {
+                    self.saving = None;
+                    self.notice = Some((result.unwrap_or_else(|error| error), Instant::now()));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.saving = None;
+                    self.notice = Some((
+                        "Couldn’t save the file. Please try again.".into(),
+                        Instant::now(),
+                    ));
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
         }
         let (previous, next, toggle) = context.input_mut(|input| {
             (
@@ -633,7 +644,7 @@ impl Viewer {
         .clicked()
             && !saving
         {
-            self.save(current, media);
+            self.save(current, media, ui.ctx());
         }
         egui::Popup::menu(&more)
             .align(egui::RectAlign::BOTTOM_END)
@@ -1120,10 +1131,11 @@ impl Viewer {
         });
     }
 
-    fn save(&mut self, current: &Attachment, media: &Media) {
+    fn save(&mut self, current: &Attachment, media: &Media, context: &egui::Context) {
         let (Some(api), Some(url)) = (media.api().cloned(), current.url.clone()) else {
             return;
         };
+        let context = context.clone();
         let (sender, receiver) = mpsc::channel();
         let name = current.name.clone();
         // The native dialog blocks its own thread, never the UI.
@@ -1141,8 +1153,11 @@ impl Viewer {
                             .map_or(name.clone(), |file| file.to_string_lossy().into_owned())
                     )
                 })
-                .map_err(|_| "Couldn’t save the file.".to_owned());
+                // A refused, broken or stalled download (no bytes for
+                // `MEDIA_STALL`) ends here, never leaving Save stuck.
+                .map_err(|_| "Couldn’t save the file. Please try again.".to_owned());
             let _ = sender.send(result);
+            context.request_repaint();
         });
         self.saving = Some(receiver);
     }

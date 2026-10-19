@@ -21,9 +21,13 @@ use url::Url;
 pub struct Api {
     base: Url,
     client: Client,
-    /// Storage and CDN transfers: no credentials, no redirects, and no overall
-    /// deadline so large uploads can finish.
+    /// CDN downloads: no credentials, no redirects, and no overall deadline so
+    /// large videos can finish, but a response that stops sending fails after
+    /// [`MEDIA_STALL`] (see [`media_client`]).
     media: Client,
+    /// Presigned storage uploads: no credentials, no redirects, and no
+    /// deadline, since a large video on a slow uplink legitimately takes long.
+    upload: Client,
     /// The signed-in chat capability and the account token that minted it. It
     /// is bound to the account session, not a conversation, so navigation
     /// reuses it (like web and mobile) until the server refuses it or the
@@ -67,9 +71,15 @@ impl Api {
             .user_agent(concat!("Caper-Desktop/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|_| "Could not initialize secure networking")?;
-        let media = Client::builder()
+        let media = media_client(MEDIA_STALL)
+            .map_err(|_| "Could not initialize secure networking".to_owned())?;
+        // reqwest's blocking client cannot bound an upload's idle time without
+        // also bounding its total time, so uploads keep no deadline; a stuck
+        // one shows its progress and can be removed from the composer.
+        let upload = Client::builder()
             .connect_timeout(Duration::from_secs(15))
             .timeout(None)
+            .tcp_keepalive(Duration::from_secs(30))
             .redirect(Policy::none())
             .build()
             .map_err(|_| "Could not initialize secure networking")?;
@@ -77,6 +87,7 @@ impl Api {
             base,
             client,
             media,
+            upload,
             chat_session: Arc::new(Mutex::new(None)),
         })
     }
@@ -1090,7 +1101,7 @@ impl Api {
         let url = media_url(url).ok_or_else(|| {
             UploadError::new("The upload service returned an invalid storage address.")
         })?;
-        let mut request = self.media.put(url);
+        let mut request = self.upload.put(url);
         for (name, value) in headers {
             request = request.header(name, value);
         }
@@ -1111,7 +1122,8 @@ impl Api {
     /// reqwest is built without decompression features, so it
     /// sends no `Accept-Encoding` and the CDN never answers with gzip; other
     /// files open in the system browser, which decodes gzip itself.
-    /// Stream a media URL into `path` (the viewer's Save; videos can be large).
+    /// Stream a media URL into `path` (the viewer’s Save; videos can be large,
+    /// so there is no overall deadline, but a stalled response fails).
     pub fn download_media(&self, url: &str, path: &std::path::Path) -> Result<(), Option<u16>> {
         let url = media_url(url).ok_or(None)?;
         let mut response = self.media.get(url).send().map_err(|_| None)?;
@@ -1410,6 +1422,24 @@ impl Api {
 
 /// Storage and CDN addresses must be HTTPS, or plain HTTP on loopback for
 /// local development servers.
+/// How long a media download may go without receiving a byte.
+pub(crate) const MEDIA_STALL: Duration = Duration::from_secs(30);
+
+/// A client for signed CDN media with no overall deadline but a stall rule.
+///
+/// reqwest's *blocking* `timeout` is not a total deadline for the body: it
+/// bounds sending the request until the response head arrives, and then each
+/// `read` of the body separately. So a long download that keeps receiving
+/// bytes runs to completion, while one where no bytes arrive for `stall`
+/// fails. Per-request `.timeout(..)` would instead be a total deadline.
+pub(crate) fn media_client(stall: Duration) -> reqwest::Result<Client> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(15).min(stall))
+        .timeout(stall)
+        .redirect(Policy::none())
+        .build()
+}
+
 pub(crate) fn media_url(url: &str) -> Option<Url> {
     let url = Url::parse(url).ok()?;
     let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
@@ -1652,6 +1682,85 @@ fn invalid(message: &str) -> ApiError {
 mod tests {
     use super::{Api, friendly_error};
     use std::io::{BufRead, BufReader, Write};
+
+    /// Serves one GET: the head, then each chunk after its delay, then holds
+    /// the connection open until the returned sender is dropped.
+    fn trickle(
+        length: usize,
+        chunks: Vec<(std::time::Duration, &'static [u8])>,
+    ) -> (String, std::sync::mpsc::Sender<()>) {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/media.mp4", server.local_addr().unwrap());
+        let (hold, held) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let (stream, _) = server.accept().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                line.clear();
+            }
+            let stream = reader.get_mut();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: {length}\r\n\r\n"
+            )
+            .unwrap();
+            stream.flush().unwrap();
+            for (delay, chunk) in chunks {
+                std::thread::sleep(delay);
+                if stream
+                    .write_all(chunk)
+                    .and_then(|()| stream.flush())
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            let _ = held.recv();
+        });
+        (url, hold)
+    }
+
+    #[test]
+    fn media_downloads_fail_on_a_stall_but_not_on_a_long_steady_transfer() {
+        use std::time::{Duration, Instant};
+        let directory = std::env::temp_dir().join(format!("caper-save-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut api = Api::new("http://127.0.0.1:9").unwrap();
+        api.media = super::media_client(Duration::from_millis(300)).unwrap();
+
+        // Headers and a first chunk, then nothing: Save fails instead of
+        // hanging, and leaves no partial file behind.
+        let (url, _hold) = trickle(1000, vec![(Duration::ZERO, b"0123456789")]);
+        let path = directory.join("stalled.mp4");
+        let started = Instant::now();
+        assert_eq!(api.download_media(&url, &path), Err(None));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!path.exists());
+
+        // A server that accepts but never answers fails the same way.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/media.mp4", silent.local_addr().unwrap());
+        let started = Instant::now();
+        assert_eq!(
+            api.download_media(&url, &directory.join("silent.mp4")),
+            Err(None)
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        // Bytes keep arriving for well over the stall window in total, so
+        // this is an idle rule, not an overall deadline.
+        let chunks = (0..8)
+            .map(|_| (Duration::from_millis(100), b"abcd".as_slice()))
+            .collect();
+        let (url, _hold) = trickle(32, chunks);
+        let path = directory.join("steady.mp4");
+        let started = Instant::now();
+        assert_eq!(api.download_media(&url, &path), Ok(()));
+        assert!(started.elapsed() > Duration::from_millis(600));
+        assert_eq!(std::fs::read(&path).unwrap(), b"abcd".repeat(8));
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 
     #[test]
     fn attachment_spoiler_send_contract_omits_empty_selection() {
