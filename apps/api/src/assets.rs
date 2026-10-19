@@ -27,6 +27,12 @@ use std::{collections::HashMap, fmt::Write as _, sync::Arc, time::Duration};
 const DEFAULT_QUOTA_BYTES: i64 = 10 * 1024 * 1024 * 1024;
 const PREVIEW_MAX_BYTES: i64 = 512 * 1024;
 const UPLOAD_URL_SECONDS: u64 = 15 * 60;
+/// R2's limit for one `PUT`; there are no multipart uploads.
+const MAX_FILE_BYTES: i64 = 5 * 1024 * 1024 * 1024;
+/// Unsent rows keep their reservation until every presigned `PUT` for them has
+/// expired, with a margin for an upload that started just before expiry, so a
+/// reused URL can't store bytes the quota no longer counts.
+const UNSENT_RELEASE_SECONDS: i64 = UPLOAD_URL_SECONDS as i64 + 15 * 60;
 const CREATES_PER_MINUTE: i64 = 30;
 const MAX_PENDING: i64 = 20;
 pub(crate) const MAX_PER_MESSAGE: usize = 10;
@@ -814,6 +820,12 @@ async fn create(
     if input.byte_size < 1 || input.source_byte_size.is_some_and(|v| v < 1) {
         return Err(invalid("invalid file size"));
     }
+    if input.byte_size > MAX_FILE_BYTES {
+        return Err(
+            ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "files can be up to 5 GiB")
+                .with_code("file_too_large"),
+        );
+    }
     let width = optional_range(input.width, MAX_DIMENSION, 1)?;
     let height = optional_range(input.height, MAX_DIMENSION, 1)?;
     let duration = optional_range(input.duration_ms, MAX_DURATION_MS, 0)?;
@@ -1302,11 +1314,26 @@ async fn urls(
     if input.ids.is_empty() || input.ids.len() > 100 {
         return Err(invalid("request 1–100 files"));
     }
-    // A file replaced by an edit stays its author's alone.
+    // Original-channel access also covers the author's retained versions.
+    // A live forward shares current files and direct replies, not unrelated
+    // source history or retired files. Reuse channel_access for each candidate
+    // destination so private channels, DMs and feedback keep the same policy.
     let rows: Vec<(String, String, bool)> = sqlx::query_as(
         "SELECT a.external_id, c.external_id, a.preview_content_type IS NOT NULL
-         FROM public.assets a JOIN public.channels c ON c.id=a.channel_id
-         WHERE a.external_id = ANY($1) AND a.message_id IS NOT NULL AND a.deleted_at IS NULL
+         FROM public.assets a JOIN public.messages m ON m.id=a.message_id
+         JOIN public.channels sc ON sc.id=m.channel_id
+         LEFT JOIN public.spaces ss ON ss.id=sc.space_id
+         CROSS JOIN LATERAL (
+             SELECT a.channel_id
+             UNION
+             SELECT f.channel_id FROM public.messages f
+             JOIN public.messages shared ON shared.id=f.forward_source_id AND shared.deleted_at IS NULL
+             WHERE f.forward_source_id IN (m.id,m.thread_root_id) AND f.deleted_at IS NULL
+               AND a.retired_at IS NULL AND m.deleted_at IS NULL AND sc.deleted_at IS NULL
+               AND (sc.space_id IS NULL OR ss.deleted_at IS NULL)
+         ) visible
+         JOIN public.channels c ON c.id=visible.channel_id
+         WHERE a.external_id = ANY($1) AND a.deleted_at IS NULL
            AND (a.retired_at IS NULL OR a.owner_id=$2)",
     )
     .bind(&input.ids)
@@ -1318,6 +1345,9 @@ async fn urls(
     let now = Utc::now().timestamp();
     let mut out = Map::new();
     for (asset, channel, preview) in rows {
+        if out.contains_key(&asset) {
+            continue;
+        }
         let ok = match allowed.get(&channel) {
             Some(ok) => *ok,
             None => {
@@ -1808,8 +1838,8 @@ pub(crate) async fn notification_content(
     Ok(())
 }
 
-/// Abandoned and rejected uploads lose their objects immediately; files
-/// deleted after being sent wait `PURGE_DELAY_HOURS`. Rows remain, and so do
+/// Abandoned and rejected uploads lose their objects once their upload URLs
+/// have expired; files deleted after being sent wait `PURGE_DELAY_HOURS`. Rows remain, and so do
 /// applied pictures, including ones since replaced or removed.
 pub(crate) fn spawn_purger(assets: Assets) {
     tokio::spawn(async move {
@@ -1909,13 +1939,17 @@ pub(crate) async fn purge(assets: &Assets) -> Result<usize, ()> {
     .map_err(|_| ())?;
     // Don't hold a transaction or row locks across object-store calls. Purges
     // are idempotent, so a replica repeating one only repeats its deletes.
+    // Unsent files wait for their upload URLs to expire: deleting earlier would
+    // release quota while a reused URL could still store the bytes again.
     let rows: Vec<(i64, String, bool)> = sqlx::query_as(
         "SELECT id, external_id, preview_content_type IS NOT NULL FROM public.assets
          WHERE deleted_at IS NOT NULL AND purged_at IS NULL
-           AND (message_id IS NULL OR deleted_at < now() - make_interval(hours => $1))
+           AND (CASE WHEN message_id IS NULL THEN created_at < now() - make_interval(secs => $2)
+                     ELSE deleted_at < now() - make_interval(hours => $1) END)
          ORDER BY deleted_at LIMIT 25",
     )
     .bind(PURGE_DELAY_HOURS)
+    .bind(UNSENT_RELEASE_SECONDS as f64)
     .fetch_all(&assets.pool)
     .await
     .map_err(|_| ())?;

@@ -48,15 +48,20 @@ export default function ChannelSidebar({ children }: { children: ReactNode }) {
   };
   // A drag saves once on release: synchronous storage writes on every pointer
   // move can drop frames while the sidebar follows the pointer.
+  // The root custom property restyles the whole document, so a drag publishes
+  // it once on release; the panel's own width follows the pointer meanwhile.
+  const publish = (value: number) => {
+    document.documentElement.style.setProperty("--channel-sidebar-width", `${value}px`);
+    save(value);
+  };
   const resize = (value: number, persist = true) => {
     const next = Math.round(Math.max(MIN_WIDTH, Math.min(maximum, value)));
     setWidth(next);
-    document.documentElement.style.setProperty("--channel-sidebar-width", `${next}px`);
-    if (persist) save(next);
+    if (persist) publish(next);
     return next;
   };
   const endDrag = () => {
-    if (drag.current?.last !== undefined) save(drag.current.last);
+    if (drag.current?.last !== undefined) publish(drag.current.last);
     drag.current = undefined;
   };
 

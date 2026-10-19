@@ -18,6 +18,7 @@ import type { Account } from "../account/client";
 import LiveWindow from "../components/LiveWindow";
 import Wordmark from "../components/Wordmark";
 import { liveRestScript } from "../components/liveMotion";
+import type { LatestChange } from "../release-highlights";
 import {
   desktopRelease,
   detectDownloadPlatform,
@@ -141,11 +142,12 @@ export default function Home({ account, initialNow, latestChanges, downloadPlatf
         <h2 id="latest-changes-heading">Latest changes</h2>
         {latestChanges.length > 0 ? (
           <ol>
-            {latestChanges.map((change) => (
-              <li key={change.sha}>
+            {latestChanges.map((change, index) => (
+              <li key={`${change.sha}:${index}`}>
                 <a href={change.url} target="_blank" rel="noreferrer">
                   {change.title}
                 </a>
+                {change.body && <p>{change.body}</p>}
                 <time dateTime={change.committedAt}>{formatRelativeTime(change.committedAt, now)}</time>
               </li>
             ))}

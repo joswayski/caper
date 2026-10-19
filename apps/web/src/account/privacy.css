@@ -38,8 +38,8 @@
   border-radius: 8px;
   cursor: pointer;
   transition:
-    background-color 140ms ease,
-    border-color 140ms ease;
+    background-color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
 }
 .privacy-settings label:has(input:checked) {
   border-color: var(--terracotta);
@@ -118,8 +118,8 @@
   font-weight: 700;
   cursor: pointer;
   transition:
-    background-color 140ms ease,
-    border-color 140ms ease;
+    background-color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
 }
 .privacy-settings li button:disabled {
   cursor: wait;
@@ -202,6 +202,6 @@
   font-weight: 700;
   cursor: pointer;
   transition:
-    background-color 140ms ease,
-    border-color 140ms ease;
+    background-color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out);
 }

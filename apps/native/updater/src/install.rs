@@ -106,7 +106,15 @@ pub fn can_replace(layout: Layout, install: &Path) -> bool {
 /// inside it, which replaces `install`.
 pub fn unpack(layout: Layout, archive: &Path, stage: &Path) -> io::Result<PathBuf> {
     remove_if_present(stage)?;
-    fs::create_dir_all(stage)?;
+    // Private until swapped in. create() fails if something reappeared there.
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut folder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        folder.mode(0o700);
+    }
+    folder.create(stage)?;
     match layout {
         Layout::MacBundle => {
             // ditto preserves the bundle's symlinks, modes and signature exactly.
@@ -464,6 +472,8 @@ mod tests {
                 .permissions()
                 .mode();
             assert_eq!(mode & 0o111, 0o111, "the launcher stays executable");
+            let stage_mode = fs::metadata(&stage).unwrap().permissions().mode();
+            assert_eq!(stage_mode & 0o777, 0o700, "the stage stays private");
         }
     }
 

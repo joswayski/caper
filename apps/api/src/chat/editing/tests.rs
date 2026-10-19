@@ -1202,6 +1202,162 @@ async fn replayed(address: std::net::SocketAddr, channel: &str, token: &str) -> 
 
 #[tokio::test]
 #[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn forwarded_files_refresh_only_while_the_shared_excerpt_is_accessible() {
+    let f = files_fixture().await;
+    for id in ["shared-old", "shared-current", "shared-reply", "unshared"] {
+        f.upload(f.author, f.channel, id, "image/avif").await;
+    }
+    let sent = f.send(&["shared-old"], &[]).await;
+    f.send(&["unshared"], &[]).await;
+    let (status, reply) = command(
+        &f.app, "POST", FILES_PATH, "files-author",
+        json!({"clientMessageId":Uuid::new_v4(),"text":"Shared reply","threadRootId":sent["id"],"attachmentIds":["shared-reply"]}),
+    ).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let (status, forward) = command(
+        &f.app, "POST", "/api/chat/channels/files-elsewhere/forwards", "files-author",
+        json!({"sourceChannelId":"files-channel","sourceMessageId":sent["id"],"clientMessageId":Uuid::new_v4()}),
+    ).await;
+    assert_eq!(status, StatusCode::OK, "{forward}");
+    let (status, edited) = f
+        .edit(
+            sent["id"].as_str().unwrap(),
+            "files-author",
+            1,
+            "Current excerpt",
+            json!([{"id":"shared-current","replaces":"shared-old","edit":turned()}]),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
+    // The peer can read the destination, but neither the original channel nor
+    // an unrelated attachment in it. The owner retains original access.
+    sqlx::query("UPDATE public.channels SET private=true WHERE id=$1")
+        .bind(f.channel)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let thread_path = format!(
+        "/api/chat/channels/files-elsewhere/forwards/{}/thread",
+        forward["id"].as_str().unwrap()
+    );
+    let (status, shared) = command(&f.app, "GET", &thread_path, "files-peer", Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{shared}");
+    assert!(shared["source"].is_null());
+    assert!(shared["root"]["content"]["attachments"][0]["url"].is_string());
+    assert!(shared["messages"][0]["content"]["attachments"][0]["url"].is_string());
+    let input = json!({"ids":["shared-old","shared-current","shared-reply","unshared"]});
+    let (status, refreshed) = command(
+        &f.app,
+        "POST",
+        "/api/assets/urls",
+        "files-peer",
+        input.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{refreshed}");
+    assert_eq!(
+        refreshed["urls"].as_object().unwrap().len(),
+        2,
+        "{refreshed}"
+    );
+    for id in ["shared-current", "shared-reply"] {
+        assert!(refreshed["urls"][id]["url"].is_string(), "{refreshed}");
+        assert!(
+            refreshed["urls"][id]["previewUrl"].is_string(),
+            "{refreshed}"
+        );
+    }
+    // Losing destination access revokes the alternative grant.
+    sqlx::query("UPDATE public.channels SET private=true WHERE id=$1")
+        .bind(f.elsewhere)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let (_, denied) = command(
+        &f.app,
+        "POST",
+        "/api/assets/urls",
+        "files-peer",
+        input.clone(),
+    )
+    .await;
+    assert_eq!(denied["urls"], json!({}));
+    sqlx::query("UPDATE public.channels SET private=false WHERE id=$1")
+        .bind(f.elsewhere)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    // A deleted source channel makes its shared content unavailable too.
+    sqlx::query("UPDATE public.channels SET deleted_at=now() WHERE id=$1")
+        .bind(f.channel)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let (_, denied) = command(
+        &f.app,
+        "POST",
+        "/api/assets/urls",
+        "files-peer",
+        input.clone(),
+    )
+    .await;
+    assert_eq!(denied["urls"], json!({}));
+    sqlx::query("UPDATE public.channels SET deleted_at=NULL WHERE id=$1")
+        .bind(f.channel)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    // A removed original also revokes its still-live replies' files.
+    sqlx::query("UPDATE public.messages SET deleted_at=now() WHERE external_id=$1")
+        .bind(sent["id"].as_str())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let (_, denied) = command(
+        &f.app,
+        "POST",
+        "/api/assets/urls",
+        "files-peer",
+        input.clone(),
+    )
+    .await;
+    assert_eq!(denied["urls"], json!({}));
+    sqlx::query("UPDATE public.messages SET deleted_at=NULL WHERE external_id=$1")
+        .bind(sent["id"].as_str())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    // Removing the forward also revokes the alternative URL grant.
+    let (status, deleted) = command(
+        &f.app,
+        "DELETE",
+        &format!(
+            "/api/chat/channels/files-elsewhere/messages/{}",
+            forward["id"].as_str().unwrap()
+        ),
+        "files-author",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    assert!(deleted["forward"]["message"].is_null(), "{deleted}");
+    let (_, denied) = command(
+        &f.app,
+        "POST",
+        "/api/assets/urls",
+        "files-peer",
+        input.clone(),
+    )
+    .await;
+    assert_eq!(denied["urls"], json!({}));
+    // Source access and the author's retained versions are unaffected.
+    let (_, own) = command(&f.app, "POST", "/api/assets/urls", "files-author", input).await;
+    assert_eq!(own["urls"].as_object().unwrap().len(), 4, "{own}");
+    f.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL and CHAT_TEST_VALKEY_URL"]
 async fn replaced_files_stay_the_authors_alone_everywhere_they_were_shown() {
     let f = files_fixture().await;
     for (id, content_type) in [

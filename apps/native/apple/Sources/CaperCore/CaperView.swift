@@ -585,6 +585,7 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     let open: Bool
     let enabled: Bool
     var excludedStart: CGRect = .null
+    var excludedResize: CGRect = .null
     let navigate: () -> Void
     @Environment(Drawer.self) private var drawer: Drawer?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -628,7 +629,7 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
                     // Toward open, in points.
                     let dx = opening * value.translation.width, dy = value.translation.height
                     if tracking == nil {
-                        tracking = enabled && drawer != nil && !excludedStart.contains(value.startLocation) && abs(dx) >= abs(dy) * 1.5 && (open ? dx < 0 : dx > 0)
+                        tracking = enabled && drawer != nil && !excludedStart.contains(value.startLocation) && !excludedResize.contains(value.startLocation) && abs(dx) >= abs(dy) * 1.5 && (open ? dx < 0 : dx > 0)
                         guard tracking == true, let drawer else { return }
                         // Catch a view still sliding where it is drawn, and follow
                         // from here rather than jumping by the gesture's start distance.
@@ -673,7 +674,7 @@ private struct DrawerSwipe<Drawer: SlideDrawer & Observable>: ViewModifier {
     /// Its trailing moves keep its start, which it records as ended.
     private func releaseUnfollowed(_ value: DragGesture.Value) {
         let dx = Drawer.opening * value.translation.width, dy = value.translation.height
-        guard enabled, let drawer, !excludedStart.contains(value.startLocation),
+        guard enabled, let drawer, !excludedStart.contains(value.startLocation), !excludedResize.contains(value.startLocation),
               abs(dx) >= 40, abs(dx) >= abs(dy) * 1.5, open ? dx < 0 : dx > 0 else { return }
         gesture = (value.startLocation, Date())
         tracking = nil
@@ -1197,6 +1198,11 @@ private struct ChannelSidebar: View {
     let narrow: Bool
     let close: () -> Void
     @State private var channelsExpanded = true
+    @AppStorage("caper.channelSidebarChannelsShare") private var channelsShare = 0.5
+    @State private var dividerDragStart: Double?
+    @State private var dividerDragShare: Double?
+    @State private var dividerFrame: CGRect = .null
+    @FocusState private var dividerFocused: Bool
     @State private var channelSearch = ""
     @State private var searchFrame: CGRect = .null
     @State private var browsing = false
@@ -1261,15 +1267,22 @@ private struct ChannelSidebar: View {
                     .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
             NotificationErrorRow(model: model)
 
-            ScrollView {
+            Group {
                 if narrow && model.showingFeedback && model.isFeedbackTeam {
                     // Phones push the feedback inbox in place of the channel list.
-                    FeedbackInboxList(model: model, pushed: true)
+                    ScrollView { FeedbackInboxList(model: model, pushed: true) }
                 } else if narrow && model.showingMessageRequests && model.account != nil {
                     // Phones push the requests list in place of the channel list.
-                    MessageRequestsList(model: model, pushed: true)
+                    ScrollView { MessageRequestsList(model: model, pushed: true) }
                 } else {
+                GeometryReader { geometry in
+                let dividerHeight = narrow ? 24.0 : 12.0
+                let available = max(0, geometry.size.height - (model.account == nil ? 0 : dividerHeight))
+                let minimum = min(96.0, available / 3)
+                let lower = minimum / max(available, 1)
+                let split = min(max(dividerDragShare ?? channelsShare, lower), 1 - lower)
                 VStack(spacing: 0) {
+                ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     // Voice with no row here (a call in another space, a visit's
                     // room), above the channels; live rows grow into cards in place.
@@ -1378,7 +1391,42 @@ private struct ChannelSidebar: View {
                         Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error).padding(8)
                     }
                 }.padding(.horizontal, 16)
+                }
+                .frame(height: model.account == nil ? available : available * split)
             if model.account != nil {
+                Color.clear.frame(height: dividerHeight)
+                    .contentShape(Rectangle())
+                    .overlay { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+                    .modifier(VerticalResizeCursor())
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { dividerFrame = $0 }
+                    .onDisappear { dividerFrame = .null; dividerDragShare = nil; dividerDragStart = nil }
+                    .gesture(DragGesture(minimumDistance: 1).onChanged { value in
+                        if dividerDragStart == nil { dividerDragStart = split }
+                        dividerDragShare = min(max((dividerDragStart ?? split) + Double(value.translation.height) / max(available, 1), lower), 1 - lower)
+                    }.onEnded { _ in
+                        if let share = dividerDragShare { channelsShare = share }
+                        dividerDragShare = nil; dividerDragStart = nil
+                    })
+                    .simultaneousGesture(TapGesture(count: 2).onEnded { channelsShare = 0.5 })
+                    .focusable().focusEffectDisabled().focused($dividerFocused)
+                    .accessibilityRepresentation {
+                        Slider(value: Binding(get: { split }, set: { channelsShare = $0 }), in: lower...1 - lower, step: 0.05)
+                    }
+                    .accessibilityLabel("Channels and direct messages divider")
+                    .accessibilityIdentifier("sidebar-sections-resize")
+                    .accessibilityValue("\(Int(split * 100)) percent channels")
+                    .accessibilityHint("Drag to resize the channel and direct message lists.")
+                    .onKeyPress { press in
+                        switch press.key {
+                        case .upArrow: channelsShare = max(lower, split - 10 / max(available, 1))
+                        case .downArrow: channelsShare = min(1 - lower, split + 10 / max(available, 1))
+                        case .home: channelsShare = lower
+                        case .end: channelsShare = 1 - lower
+                        default: return .ignored
+                        }
+                        return .handled
+                    }
+                ScrollView {
                 #if os(macOS)
                 let directRowHeight: CGFloat = 28
                 #else
@@ -1453,18 +1501,19 @@ private struct ChannelSidebar: View {
                         .contentShape(Rectangle())
                     }.buttonStyle(.plain).modifier(ControlHover()).padding(.horizontal, 16)
                         .accessibilityIdentifier("new-message")
-                }.padding(.top, 12).padding(.bottom, 8)
-                    .overlay(alignment: .top) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
-                    .padding(.top, 16)
+                }.padding(.top, 6).padding(.bottom, 8)
+                }
+                .frame(height: available * (1 - split))
             }
                 }
                 }
+            }
             }
             .modifier(FeedbackPullToRefresh(enabled: narrow && model.showingFeedback && model.isFeedbackTeam) { await model.refreshFeedback() })
             .accessibilityIdentifier("channel-browser")
             if !narrow { AccountBar(model: model, sheet: $sheet) }
         }
-        .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil || model.visit != nil), excludedStart: browsing ? searchFrame : .null, navigate: close))
+        .modifier(BrowseSwipe(open: true, enabled: narrow && sheet == nil && (model.selectedChannel != nil || model.selectedDirectMessageID != nil || model.visit != nil), excludedStart: browsing ? searchFrame : .null, excludedResize: dividerFrame, navigate: close))
         // Browse belongs to the space it was opened in.
         .onChange(of: model.selectedSpaceID) { _, _ in browsing = false; channelSearch = "" }
         .background(CaperTheme.sidebar)
@@ -3321,17 +3370,9 @@ private struct AccountAudioMenu: View {
             CaperDevicePicker(title: "Device", selection: Binding(get: { (input ? voice.selectedInputID : voice.selectedOutputID) ?? "" }, set: { uid in
                 let changed = input ? voice.selectInput(uid) : voice.selectOutput(uid)
                 error = changed ? nil : "Could not switch devices. Check system audio settings."
-            }), devices: input ? voice.availableInputs : voice.availableOutputs)
+            }), devices: input ? voice.availableInputs : voice.availableOutputs, input: input)
             #else
-            // iPhone follows the system audio route.
-            HStack {
-                Text((input ? voice.availableInputs.first(where: { $0.id == voice.selectedInputID }) : voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID }))?.name ?? "System default")
-                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                Spacer()
-                if !input {
-                    SystemAudioRoutePicker().frame(width: 44, height: 36).accessibilityLabel("Choose system audio route")
-                }
-            }
+            IOSCurrentAudioRoute(voice: voice, input: input)
             #endif
             if let error { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error) }
             if input {
@@ -9863,6 +9904,17 @@ private struct ResizeCursor: ViewModifier {
     }
 }
 
+/// The channel/DM split is resized vertically, unlike the workspace sidebar.
+private struct VerticalResizeCursor: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content.background(PointerRegion(enabled: true, cursor: .resizeUpDown).allowsHitTesting(false))
+        #else
+        content
+        #endif
+    }
+}
+
 #if os(macOS)
 private struct PointerRegion: NSViewRepresentable {
     let enabled: Bool
@@ -9958,29 +10010,94 @@ struct DefaultSlider: View {
     }
 }
 
+private struct AudioDeviceIcon: View {
+    let name: String
+    var body: some View {
+        if ["bluetooth", "headset", "monitor"].contains(name) {
+            CaperIcon(name: name, size: 18)
+        } else {
+            Image(systemName: name).accessibilityHidden(true)
+        }
+    }
+}
+
 private struct CaperDevicePicker: View {
     let title: String
     @Binding var selection: String
     let devices: [AudioDevice]
+    var input = false
+    @State private var showingDevices = false
+    @FocusState private var focusedDevice: String?
     @Environment(\.isEnabled) private var isEnabled
+    private var current: AudioDevice? { devices.first(where: { $0.id == selection }) }
+    private var summary: String { selection.isEmpty ? "System default" : current?.name ?? "Device unavailable" }
     var body: some View {
-        Menu {
-            Button("System default") { selection = "" }
-            ForEach(devices) { device in Button(device.name) { selection = device.id } }
-        } label: {
+        Button { showingDevices = true } label: {
             HStack(spacing: 8) {
-                Text(devices.first(where: { $0.id == selection })?.name ?? "System default").lineLimit(1)
+                AudioDeviceIcon(name: current?.icon(input: input) ?? (input ? "mic" : "speaker.wave.2"))
+                Text(summary).lineLimit(1)
                 Spacer(minLength: 0)
-                CaperIcon(name: "chevron-down", size: 12)
+                CaperIcon(name: "chevron-right", size: 12)
             }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.text)
                 .padding(10).background(CaperTheme.composer)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                 // Dimmed like the other controls while it can't be changed (during a microphone test).
                 .opacity(isEnabled ? 1 : 0.45)
-        }.menuStyle(.borderlessButton).menuIndicator(.hidden)
-            .accessibilityLabel(title).accessibilityValue(devices.first(where: { $0.id == selection })?.name ?? "System default")
+        }.buttonStyle(.plain)
+            .accessibilityLabel(title).accessibilityValue(summary)
+            .accessibilityHint("Opens device choices")
             .modifier(ControlHover())
+            .popover(isPresented: $showingDevices) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text(title).font(CaperTheme.font(13, weight: .bold))
+                        Spacer()
+                        Button { showingDevices = false } label: { Image(systemName: "xmark") }
+                            .accessibilityLabel("Close device picker")
+                            .keyboardShortcut(.cancelAction)
+                    }
+                    ScrollView {
+                        VStack(spacing: 4) {
+                            choice(id: "", name: "System default", icon: input ? "mic" : "speaker.wave.2")
+                            ForEach(devices) { device in
+                                choice(id: device.id, name: device.name, icon: device.icon(input: input))
+                            }
+                        }
+                    }.frame(maxHeight: 280)
+                        .onAppear { focusedDevice = selection }
+                        #if os(macOS)
+                        .onMoveCommand { direction in
+                            let ids = [""] + devices.map(\.id)
+                            let index = ids.firstIndex(of: focusedDevice ?? selection) ?? 0
+                            if direction == .down { focusedDevice = ids[min(index + 1, ids.count - 1)] }
+                            if direction == .up { focusedDevice = ids[max(index - 1, 0)] }
+                        }
+                        #endif
+                }.padding(16).frame(width: 280).background(CaperTheme.surface)
+            }
+    }
+
+    private func choice(id: String, name: String, icon: String) -> some View {
+        Button {
+            selection = id
+            showingDevices = false
+        } label: {
+            HStack(spacing: 10) {
+                AudioDeviceIcon(name: icon).frame(width: 20)
+                Text(name).multilineTextAlignment(.leading)
+                Spacer(minLength: 4)
+                Image(systemName: selection == id ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(selection == id ? CaperTheme.terracottaBright : CaperTheme.muted)
+                    .accessibilityHidden(true)
+            }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.text)
+                .padding(10).frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .focused($focusedDevice, equals: id)
+            .accessibilityLabel(name)
+            .accessibilityValue(selection == id ? "Selected" : "Not selected")
+            .accessibilityAddTraits(selection == id ? [.isSelected] : [])
     }
 }
 
@@ -10062,11 +10179,11 @@ private struct AudioPreferencesView: View {
     private var microphoneColumn: some View {
         VStack(alignment: .leading, spacing: 10) {
             #if os(macOS)
-            CaperDevicePicker(title: "Microphone", selection: inputRoute, devices: voice.availableInputs)
+            CaperDevicePicker(title: "Microphone", selection: inputRoute, devices: voice.availableInputs, input: true)
                 .accessibilityIdentifier("audio-input-device").disabled(micTest.recording)
             if let routeError { Text(routeError).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error) }
             #else
-            AudioRouteRow(title: "Microphone", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
+            IOSCurrentAudioRoute(voice: voice, input: true)
             #endif
             HStack { Text("Microphone volume"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12)).monospacedDigit()
             CaperSlider(value: inputGain, in: 0...200, step: 1, defaultValue: 100)
@@ -10081,12 +10198,7 @@ private struct AudioPreferencesView: View {
             CaperDevicePicker(title: "Speaker", selection: outputRoute, devices: voice.availableOutputs)
                 .accessibilityIdentifier("audio-output-device")
             #else
-            HStack {
-                AudioRouteRow(title: "Speaker", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
-                SystemAudioRoutePicker().frame(width: 44, height: 36)
-                    .accessibilityLabel("Choose system audio route")
-                    .accessibilityIdentifier("system-audio-route-picker")
-            }
+            IOSCurrentAudioRoute(voice: voice, input: false)
             #endif
             HStack { Text("Speaker volume"); Spacer(); Text("\(voice.outputGain)%") }.font(CaperTheme.font(12)).monospacedDigit()
             CaperSlider(value: outputGain, in: 0...200, step: 1, defaultValue: 100)
@@ -10355,6 +10467,38 @@ private struct AudioRouteRow: View {
 }
 
 #if os(iOS)
+/// Routing remains owned by iOS. Inputs describe the active route, not a
+/// fabricated list of selectable microphones; output opens the real OS picker.
+private struct IOSCurrentAudioRoute: View {
+    let voice: VoiceClient
+    let input: Bool
+    private var device: AudioDevice? {
+        (input ? voice.availableInputs : voice.availableOutputs).first(where: {
+            $0.id == (input ? voice.selectedInputID : voice.selectedOutputID)
+        })
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                AudioDeviceIcon(name: device?.icon(input: input) ?? (input ? "mic" : "speaker.wave.2"))
+                Text(device?.name ?? "System default").font(CaperTheme.font(12)).lineLimit(1)
+                Spacer(minLength: 0)
+                if !input {
+                    SystemAudioRoutePicker().frame(width: 44, height: 44)
+                        .accessibilityLabel("Choose system audio route")
+                        .accessibilityIdentifier("system-audio-route-picker")
+                }
+            }
+            if input {
+                Text("Microphone follows the system audio route.")
+                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            }
+        }.padding(10).background(CaperTheme.composer)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+    }
+}
+
 private struct SystemAudioRoutePicker: UIViewRepresentable {
     func makeUIView(context: Context) -> MPVolumeView {
         let picker = MPVolumeView()

@@ -126,8 +126,16 @@ impl Apns {
 fn outcome(status: u16, reason: &str, after: Option<Duration>) -> Outcome {
     let error = format!("apns {status} {reason}").trim_end().to_owned();
     match (status, reason) {
-        // 410 Unregistered or ExpiredToken; the others are dead or foreign tokens.
-        (410, _) | (400, "BadDeviceToken" | "DeviceTokenNotForTopic") => Outcome::Revoke(error),
+        // 410 Unregistered or ExpiredToken, or a malformed token.
+        (410, _) | (400, "BadDeviceToken") => Outcome::Revoke(error),
+        // Every device answers this when `APNS_TOPIC` is wrong; revoking would
+        // unregister them all after one bad configuration rollout.
+        (400, "DeviceTokenNotForTopic") => {
+            tracing::error!(
+                "APNs rejected a device for the configured topic; check APNS_TOPIC and the key's team"
+            );
+            Outcome::Abandon(error)
+        }
         (403, "ExpiredProviderToken" | "InvalidProviderToken") | (429, _) | (500..=599, _) => {
             Outcome::Retry { error, after }
         }
@@ -149,6 +157,9 @@ pub(super) fn payload(alert: &Alert) -> Value {
         "senderId": alert.sender_id,
         "senderAvatarId": alert.sender_avatar_id,
     });
+    if let Some(count) = alert.badge_count {
+        payload["aps"]["badge"] = json!(count);
+    }
     if let Some(root) = &alert.thread_root_id {
         payload["threadRootId"] = json!(root);
     }
@@ -206,10 +217,14 @@ mod tests {
             (410, "Unregistered"),
             (410, "ExpiredToken"),
             (400, "BadDeviceToken"),
-            (400, "DeviceTokenNotForTopic"),
         ] {
             assert!(matches!(outcome(status, reason, None), Outcome::Revoke(_)));
         }
+        // A configuration mistake, not a dead token: devices stay registered.
+        assert_eq!(
+            outcome(400, "DeviceTokenNotForTopic", None),
+            Outcome::Abandon("apns 400 DeviceTokenNotForTopic".into())
+        );
         for (status, reason) in [
             (429, "TooManyRequests"),
             (500, "InternalServerError"),

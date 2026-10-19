@@ -126,13 +126,13 @@
   cursor: pointer;
 }
 .voice-hangup:focus-visible {
-  color: #ff7182;
-  background: rgb(212 67 85 / 0.18);
+  color: var(--voice-off);
+  background: var(--voice-off-wash);
 }
 @media (hover: hover) {
   .voice-hangup:hover {
-    color: #ff7182;
-    background: rgb(212 67 85 / 0.18);
+    color: var(--voice-off);
+    background: var(--voice-off-wash);
   }
 }
 .voice-hangup svg {
@@ -531,7 +531,7 @@
   flex: 0 0 auto;
   padding: 0 7px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: transparent;
   font-size: 0.7rem;
@@ -689,7 +689,7 @@
   background: var(--text);
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
   cursor: grab;
-  transition: box-shadow 120ms ease;
+  transition: box-shadow var(--motion-fast) var(--ease-out);
 }
 .range-slider-default {
   position: absolute;
@@ -1165,60 +1165,155 @@
   background: rgb(212 67 85 / 0.14);
 }
 .call-account .voice-action-group.active :is(.voice-icon-button, .call-settings-trigger) {
-  color: #ed5265;
+  color: var(--voice-off);
   background: transparent;
 }
 .call-account
   .voice-action-group.active
   :is(.voice-icon-button:not([aria-disabled="true"]), .call-settings-trigger):focus-visible,
 .call-account .voice-action-group.active .call-settings-trigger[aria-expanded="true"] {
-  color: #ff7182;
-  background: rgb(212 67 85 / 0.18);
+  color: var(--voice-off);
+  background: var(--voice-off-wash);
 }
 @media (hover: hover) {
   .call-account
     .voice-action-group.active
     :is(.voice-icon-button:not([aria-disabled="true"]), .call-settings-trigger):hover {
-    color: #ff7182;
-    background: rgb(212 67 85 / 0.18);
+    color: var(--voice-off);
+    background: var(--voice-off-wash);
   }
 }
-.device-select {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  font-weight: 700;
-}
-.device-select select {
+.audio-device-picker .audio-device-summary,
+.audio-device-picker .audio-device-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   min-width: 0;
-  padding: 9px 8px;
-  border: 1px solid var(--border);
+  min-height: 48px;
+  padding: 10px 8px;
+  border: 0;
   border-radius: 8px;
   color: var(--text);
-  background: var(--surface-raised);
+  background: transparent;
   font: inherit;
   font-size: 0.8rem;
-  font-weight: 500;
+  text-align: left;
   cursor: pointer;
 }
+.audio-device-summary > span,
+.audio-device-choice > span:not(.audio-device-radio) {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.audio-device-summary strong,
+.audio-device-summary small,
+.audio-device-choice small {
+  display: block;
+}
+.audio-device-summary small,
+.audio-device-choice small {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+.audio-device-summary svg,
+.audio-device-choice svg,
+.audio-device-drawer header svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.audio-device-drawer {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: 6px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.3);
+  overflow: hidden;
+  animation: audio-device-arrive var(--motion-fast) var(--ease-out);
+}
+.audio-device-drawer:popover-open {
+  display: flex;
+  flex-direction: column;
+}
+.audio-device-drawer header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 8px;
+  font-size: 0.8rem;
+}
+.audio-device-drawer header button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+.audio-device-choices {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.audio-device-radio {
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border: 1px solid var(--text-muted);
+  border-radius: 50%;
+}
+.audio-device-choice[aria-checked="true"] .audio-device-radio {
+  border: 5px solid var(--terracotta);
+  background: var(--text);
+}
+.audio-device-summary:focus-visible,
+.audio-device-choice:focus-visible,
+.audio-device-drawer header button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+}
 @media (hover: hover) {
-  .device-select select:hover:not(:disabled) {
-    border-color: #4a4f53;
+  .audio-device-summary:hover:not(:disabled),
+  .audio-device-choice:hover,
+  .audio-device-drawer header button:hover {
+    background: var(--surface-raised);
   }
 }
-/* Unavailable pickers (no output selection in this browser, or a pending
-   change) no longer look identical to working ones. */
-.device-select select:disabled {
+.audio-device-summary:disabled {
   opacity: 0.5;
   cursor: default;
 }
-/* iOS zooms the page when a control under 16px gains focus. */
-@media (max-width: 760px), (pointer: coarse) {
-  .device-select select {
-    font-size: 16px;
+@keyframes audio-device-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .audio-device-drawer {
+    animation: none;
+  }
+}
+@media (max-width: 640px) {
+  .audio-device-summary,
+  .audio-device-choice {
+    font-size: 0.9rem;
   }
 }
 .device-options {
@@ -1269,9 +1364,9 @@
   background: var(--border);
   cursor: pointer;
   transition:
-    background-color 150ms ease,
-    border-color 150ms ease,
-    box-shadow 150ms ease;
+    background-color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out);
 }
 .device-options input[role="switch"]::after {
   position: absolute;
@@ -1282,7 +1377,7 @@
   border-radius: 50%;
   background: var(--text);
   content: "";
-  transition: transform 150ms ease;
+  transition: transform var(--motion-fast) var(--ease-out);
 }
 .device-options input[role="switch"]:checked {
   background: var(--terracotta);
@@ -1340,25 +1435,16 @@
 .call-page :is(button, a, summary, .voice-action-group, .device-options label),
 .device-menu .call-settings-trigger svg {
   transition:
-    background-color 150ms ease-in-out,
-    border-color 150ms ease-in-out,
-    color 150ms ease-in-out,
-    opacity 150ms ease-in-out,
-    transform 150ms ease-in-out;
+    background-color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    opacity var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out);
 }
 .call-settings-panel:popover-open,
 .participant-volume:popover-open,
 .audio-dialog[open] {
   animation: audio-panel-in var(--motion-fast) var(--ease-out);
-}
-/* The scrim fades in with its panel, as space dialogs' do, instead of cutting in. */
-.audio-dialog[open]::backdrop {
-  animation: audio-backdrop-in var(--motion-fast) ease-out;
-}
-@keyframes audio-backdrop-in {
-  from {
-    opacity: 0;
-  }
 }
 @keyframes audio-panel-in {
   from {
@@ -1565,7 +1651,7 @@
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   border-radius: 8px;
-  transition: background-color 140ms ease;
+  transition: background-color var(--motion-fast) var(--ease-out);
 }
 .channel-row:has(.channel-link[aria-current]) {
   background: rgb(182 77 50 / 0.14);
@@ -1776,18 +1862,18 @@
   padding: 0 12px;
   border: 0;
   border-radius: 8px;
-  color: #ff7182;
+  color: var(--voice-off);
   background: transparent;
   font-size: 0.78rem;
   font-weight: 700;
 }
 .header-voice .voice-leave:focus-visible {
-  color: #ff7182;
+  color: var(--voice-off);
   background: var(--surface);
 }
 @media (hover: hover) {
   .header-voice .voice-leave:hover {
-    color: #ff7182;
+    color: var(--voice-off);
     background: var(--surface);
   }
 }
@@ -1845,11 +1931,11 @@
     place-items: center;
     padding: 0;
     border: 0;
-    border-radius: 6px;
+    border-radius: var(--radius);
     background: transparent;
   }
   .chat-heading .header-voice .voice-leave {
-    color: #ff7182;
+    color: var(--voice-off);
   }
   .chat-heading .header-voice-join[data-occupied]:not([aria-disabled="true"]) {
     background: rgb(182 77 50 / 0.16);
@@ -1859,7 +1945,7 @@
     height: 20px;
   }
   .header-voice .header-voice-mute.active {
-    color: #ff7182;
+    color: var(--voice-off);
   }
 }
 @media (hover: hover) {
@@ -1872,7 +1958,7 @@
   flex: none;
   width: 10px;
   height: 10px;
-  transition: transform 0.2s ease;
+  transition: transform var(--motion-base) var(--ease-out);
 }
 .voice-stack > .voice-connected-icon {
   width: 16px;

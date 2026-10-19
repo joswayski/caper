@@ -473,7 +473,7 @@ object IceUrlsSerializer : JsonTransformingSerializer<List<String>>(ListSerializ
     val requiresImmediateRenegotiation: Boolean = false,
 )
 @Serializable data class SignalTrack(val mid: String)
-data class AudioRoute(val id: Int, val name: String)
+data class AudioRoute(val id: Int, val name: String, val type: Int = 0)
 
 enum class GatewayStatus { DISCONNECTED, CONNECTING, LIVE, ERROR }
 

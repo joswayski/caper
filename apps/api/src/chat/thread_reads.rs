@@ -23,8 +23,16 @@ async fn list(
 ) -> Result<Json<Value>, ApiError> {
     let pool = &enabled(&state)?.pool;
     let user = user(pool, &headers).await?;
-    let mut tx = pool.begin().await.map_err(database_error)?;
-    let (channel, _, _) = editing::locked_channel(&mut tx, &channel, Some(user), false).await?;
+    // The same read access the channel lock checks, without holding the
+    // channel against senders for the whole aggregation: a summary needs no
+    // cursor consistent with history.
+    let channel = crate::spaces::channel_access(pool, &channel, Some(user))
+        .await
+        .map_err(|error| match error.status {
+            StatusCode::NOT_FOUND => ApiError::new(StatusCode::NOT_FOUND, "channel not found"),
+            _ => error,
+        })?
+        .id;
     // One pass over this channel's replies (replies always share their root's
     // channel) finds each thread's newest reply from someone else and whether
     // the reader replied; only those threads are then checked against the
@@ -53,10 +61,9 @@ async fn list(
     )
     .bind(channel)
     .bind(user)
-    .fetch_all(&mut *tx)
+    .fetch_all(pool)
     .await
     .map_err(database_error)?;
-    tx.commit().await.map_err(database_error)?;
     Ok(Json(json!({"threads":rows.into_iter().map(|(root,seq)|
         json!({"rootId":root,"seq":seq.to_string()})).collect::<Vec<_>>()})))
 }

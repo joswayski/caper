@@ -625,6 +625,12 @@
     text-decoration: underline;
   }
 }
+.latest-changes li p {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
 .latest-changes time,
 .latest-changes-empty {
   color: var(--text-muted);

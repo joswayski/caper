@@ -1,5 +1,6 @@
 import { withPicture, type PersonPicture } from "./pictures.ts";
 import { withProfile, type Profiles } from "./profiles.ts";
+import { setApplicationBadge, unreadChanged } from "./app-badge";
 
 export interface Account extends PersonPicture {
   id: string;
@@ -39,6 +40,10 @@ const accountListeners = new Set<() => void>();
 
 function rememberAccount<T extends Account | null>(account: T): T {
   const changed = JSON.stringify(currentAccount) !== JSON.stringify(account ?? undefined);
+  if (account === null || (currentAccount && currentAccount.id !== account.id)) {
+    setApplicationBadge(0);
+    unreadChanged();
+  }
   currentAccount = account ?? undefined;
   if (changed) for (const listener of accountListeners) listener();
   return account;

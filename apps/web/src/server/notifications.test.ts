@@ -10,8 +10,42 @@ import {
 } from "../spaces/client.ts";
 import { isMuted, muteLabel, muteUntil } from "../spaces/notifications.ts";
 import { notificationLocation, type MessageNotification } from "../account/browser-notifications.ts";
+import { setApplicationBadge } from "../account/app-badge";
 import { feedbackPlace, feedbackPreview, feedbackThreads } from "../spaces/FeedbackInbox.tsx";
 import type { FeedbackReport } from "../spaces/client.ts";
+
+test("app badges use absolute counts, clear after an in-flight write, and tolerate unsupported browsers", async () => {
+  const document = { title: "Caper" };
+  vi.stubGlobal("document", document);
+  let finish!: () => void;
+  let icon = 0;
+  vi.stubGlobal("navigator", {
+    setAppBadge: async (count: number) => {
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      icon = count;
+    },
+    clearAppBadge: async () => {
+      icon = 0;
+    },
+  });
+  setApplicationBadge(62);
+  await vi.waitFor(() => assert.equal(typeof finish, "function"));
+  assert.equal(document.title, "(62) Caper");
+  setApplicationBadge(0);
+  finish();
+  await vi.waitFor(() => assert.equal(icon, 0));
+  // Wait for the queue to drain, so this checks the late write as well.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(icon, 0);
+  assert.equal(document.title, "Caper");
+  vi.stubGlobal("navigator", {});
+  setApplicationBadge(7);
+  setApplicationBadge(-1);
+  assert.equal(document.title, "(7) Caper");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
 
 // Outside a component the store's hook reads its snapshot directly, and its
 // subscribe function is kept so a test can listen the way React would.

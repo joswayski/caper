@@ -4,19 +4,12 @@ import tailwindcss from "@tailwindcss/vite";
 import { nitro } from "nitro/vite";
 import { defineConfig, searchForWorkspaceRoot } from "vite";
 import { execFileSync } from "node:child_process";
+import { fetchHighlights, type LatestChange } from "./src/release-highlights";
 
 const repository = "joswayski/caper";
 const changeCount = 10;
 /** Fetch extra commits so Dependabot merges can be dropped without under-filling the list. */
 const fetchCount = 30;
-
-interface LatestChange {
-  sha: string;
-  title: string;
-  url: string;
-  committedAt: string;
-  pullRequest: number | null;
-}
 
 interface GitHubCommit {
   sha: string;
@@ -62,6 +55,7 @@ function toLatestChange(entry: GitHubCommit): LatestChange {
   return {
     sha: entry.sha,
     title: pullRequest ? title.replace(/\s+\(#\d+\)$/u, "") : title,
+    body: null,
     url: pullRequest ? `https://github.com/${repository}/pull/${pullRequest}` : entry.html_url,
     committedAt,
     pullRequest: pullRequest ? Number(pullRequest) : null,
@@ -110,10 +104,18 @@ export default defineConfig(async () => {
   }
   let changes: LatestChange[] = [];
   try {
-    changes = await latestChanges();
-    console.log(`Fetched ${changes.length} latest changes from the GitHub API.`);
+    changes = await fetchHighlights(AbortSignal.timeout(30_000));
+    console.log(`Fetched ${changes.length} release highlights.`);
   } catch (error) {
-    console.warn("Unable to load latest Caper changes:", error);
+    console.warn("Unable to load Caper release highlights:", error);
+  }
+  if (changes.length === 0) {
+    try {
+      changes = await latestChanges();
+      console.log(`Fetched ${changes.length} latest changes from the GitHub API.`);
+    } catch (error) {
+      console.warn("Unable to load latest Caper changes:", error);
+    }
   }
 
   return {

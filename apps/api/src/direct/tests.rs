@@ -1286,3 +1286,64 @@ async fn blocks_stop_reactions_pins_edits_and_typing_in_dms(pool: PgPool) {
         );
     }
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable Postgres DATABASE_URL"]
+async fn username_lookups_are_rate_limited_before_revealing_accounts(pool: PgPool) {
+    let mut users = Vec::new();
+    for name in ["prober", "private", "other"] {
+        let user: i64 = sqlx::query_scalar(
+            "INSERT INTO users (external_id,username,display_name) VALUES ($1,$2,$2) RETURNING id",
+        )
+        .bind(random_id(12))
+        .bind(name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        users.push(user);
+    }
+    sqlx::query("UPDATE users SET dm_policy='nobody' WHERE id=$1")
+        .bind(users[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Invitation attempts made earlier keep their own window.
+    sqlx::query("INSERT INTO space_invite_limits(user_id,attempts) VALUES($1,5)")
+        .bind(users[0])
+        .execute(&pool)
+        .await
+        .unwrap();
+    for n in 0..LOOKUPS_PER_HOUR {
+        let (username, expected) = if n % 2 == 0 {
+            (format!("missing{n}"), StatusCode::NOT_FOUND)
+        } else {
+            ("private".to_owned(), StatusCode::FORBIDDEN)
+        };
+        let error = create_conversation(&pool, users[0], &username)
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, expected, "{username}");
+    }
+    // Once the hour's budget is spent, neither answer is given.
+    for username in ["missing", "private", "other"] {
+        let error = create_conversation(&pool, users[0], username)
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::TOO_MANY_REQUESTS, "{username}");
+    }
+    let invitations: i32 =
+        sqlx::query_scalar("SELECT attempts FROM space_invite_limits WHERE user_id=$1")
+            .bind(users[0])
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(invitations, 5);
+    // Other accounts keep their own budget, and a new window starts after an hour.
+    assert!(create_conversation(&pool, users[2], "prober").await.is_ok());
+    sqlx::query("UPDATE space_invite_limits SET direct_window_start=now()-interval '1 hour' WHERE user_id=$1")
+        .bind(users[0])
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(create_conversation(&pool, users[0], "other").await.is_ok());
+}

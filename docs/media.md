@@ -10,6 +10,27 @@ membership. See [spaces and channel access](#spaces-and-channel-access).
 Participants use their account display name and saved Caper avatar. This is not an outgoing-call flow.
 No camera, screen sharing, or server-side voice recording.
 
+Channels and direct messages occupy independently scrolling sidebar panes on web,
+Android, iOS/macOS and Rust desktop. Drag their horizontal divider to redistribute
+the height; both remain bounded above the account controls, even with long lists.
+The split defaults to half, retains its saved proportion across launches, and
+reserves a useful minimum for each pane in short windows. Mouse pointers use the
+platform's vertical-resize cursor. Up/Down adjusts the focused divider, Home/End
+reaches its bounds, and double-click/tap resets it. Touch resize gestures do not
+start a Browse swipe. The labelled homepage simulation keeps its unsplit layout.
+
+Split-sidebar validation (2026-10-19): `npm run check`, `npm test`, and
+`node scripts/test-sidebar-sections.mjs` against the local parity fixture passed.
+The browser script covers 80 channels and 40 DMs, independent scrolling, drag and
+cursor, persistence/reload, keyboard bounds/reset, action menus at minimum pane
+heights, collapsed/sparse lists, and 1440×900, 1440×540 and 390×844 layouts. Set
+`SIDEBAR_TEST_WEB_URL` if Vite is not on port 5174. Android Kotlin compilation,
+498 JVM tests and debug lint passed. Rust desktop build, Clippy, the full suite
+(650 passed, 16 ignored) and an actual Linux/Xvfb pointer drag passed.
+Apple implementation remains uncompiled without Xcode; native phone,
+touch/assistive-technology and Windows checks remain unverified. Narrow Chromium
+captures are not physical-device acceptance. No API or migration change.
+
 Mobile channel, DM and thread timelines dismiss the software keyboard when a
 vertical scroll drag starts. The unsent draft stays in its composer; tapping it
 reopens the keyboard. Automatic following/paging and scrolling within a multiline
@@ -1381,13 +1402,15 @@ native fixtures are not live-account or live-storage validation.
 `GET /api/assets/usage` returns `{used, limit}`. `POST /api/assets/urls`
 returns fresh URLs for visible attachments (like Discord's refresh endpoint)
 for tabs open longer than a URL's lifetime; a file an edit replaced is
-refreshed only for its owner.
+refreshed only for its owner. Files of a forwarded message, and of its direct
+replies, are also refreshed for readers of a channel holding a live forward.
 
 ### Limits and quota
 
 - Per person, across every space: `ASSET_QUOTA_BYTES` (default 10 GiB) of stored
-  bytes, original plus preview. No separate per-file limit; one file may use
-  the whole allowance. Space owners are not charged for members' uploads.
+  bytes, original plus preview. One file may be up to 5 GiB (R2's single `PUT`
+  limit); larger reservations get 413 `file_too_large`. Cleaning gets 2 minutes
+  plus a second per 20 MB, up to 15 minutes. Space owners are not charged for members' uploads.
 - Quota counts what is **stored** (after client compression and metadata removal), and reservations
   count immediately so parallel uploads cannot overshoot.
 - Bytes stay counted until the purge loop successfully deletes the original and
@@ -2138,9 +2161,11 @@ An API loop (approximately every minute, idempotent across replicas):
 - Marks uploads never completed after 1 hour, or completed but never sent
   after 24 hours, as deleted. This remains the fallback when a client is offline,
   closes before cancellation completes, or never receives the reservation ID.
-- Removes R2 objects for deleted rows in batches of 25: unsent files are eligible
-  on the next pass (no 24-hour wait after explicit removal), sent files 24 hours
-  after deletion (so moderators can still inspect them). Only successful deletion
+- Removes R2 objects for deleted rows in batches of 25: unsent files once their
+  15-minute upload URLs have expired plus a 15-minute margin (30 minutes after
+  the reservation; no 24-hour wait after explicit removal), so a reused URL
+  can't store bytes the quota no longer counts; sent files 24 hours after
+  deletion (so moderators can still inspect them). Only successful deletion
   of both original and preview sets `purged_at` and releases quota. Failures retry.
 - Revisits deleted, unsent rows, including already-purged rows, in a separate
   25-row batch. Presigned PUT URLs can be reused until expiry and an in-flight PUT
@@ -4200,15 +4225,17 @@ Keep this temporary test separate from any future production app/key.
 | `AXIOM_ENDPOINT` | Required when a token is set: the dataset's actual HTTPS Axiom edge URL ending in `/v1/logs`; no region is assumed |
 | `DATABASE_URL` | API-only runtime URL: pooled port `6432`, database `/caperchat`, restricted app role, verified TLS. Loopback development may explicitly use `sslmode=disable`. Missing configuration fails account access closed. |
 | `MIGRATION_DATABASE_URL` | API-only startup migration URL: direct port `5432`, database `/caperchat`, separate schema-changing role, verified TLS. Required when `DATABASE_URL` is set; never falls back to it. Startup grants the parsed runtime role access to migrated application tables. Neither DB secret belongs in WEB. |
+| `DATABASE_MAX_CONNECTIONS` | Optional runtime pool size per API or gateway process, a whole number from 1 to 100; default `5`. Every replica holds its own pool, so keep replicas × size within the database's pooler limit. Invalid values stop startup. |
 | `DATABASE_ALLOW_INSECURE` | Local development only. Set by Compose so the API may connect without TLS to the private `postgres` service. Hosted databases still default to verified TLS. |
 | `AUTH_SECRET` | API-only random secret of at least 32 bytes. Enables account login and HMAC-protects low-entropy codes/IP rate-limit keys. Keep stable across replicas and rotations deliberate. |
 | `DEBUG_USERS` | Optional API-only comma-separated username allowlist for authenticated client diagnostics. Exact case-insensitive matches after trimming; blank disables. Restart the API after changes; open tabs pick it up when refocused or when User Settings opens. |
 | `RESERVED_USERNAMES` | Optional API-only comma-separated additional usernames that cannot be newly assigned by `/api/account/profile`. `caper`, `capers`, `admin`, `admins`, `administrator`, `administrators`, `mod`, `mods`, `moderator`, `moderators`, `support`, `feedback`, `security`, `staff`, `official`, `system`, `team`, `trust`, `safety`, `caper_support`, `caper_feedback`, `jose`, `caperchat`, `aaron`, `joswayski`, `everyone`, and `here` are always reserved. Existing owners may keep their current reserved username while updating their profile; changing to another reserved username is still blocked. Exact case-insensitive matches after trimming; restart all API replicas after changes. This does not create accounts or deliver chat mentions. |
 | `AUTH_REVIEW_EMAIL`, `AUTH_REVIEW_CODE` | Optional API-only pair for App Store and Google Play reviewers, who cannot read emailed codes. Set both or neither; startup fails otherwise. Requesting a code for that one address emails nothing, and the fixed 6-character code (letters/digits from the sign-in alphabet, no `0`, `O`, `1`, `I`, `L`, `U` or `V`) completes the normal single-use challenge with the usual attempt and rate limits. Anyone given the pair can use that account, so keep it to demo content and rotate the code after reviews if it leaks. |
 | `AUTH_CODE_ATTEMPTS` | Attempts per code; default `3`, allowed `1`–`10` |
-| `AUTH_EMAIL_15M_LIMIT` | Code requests accepted per email in 15 minutes; default `3` |
-| `AUTH_EMAIL_DAILY_LIMIT` | Code requests accepted per email in 24 hours; default `5` |
-| `AUTH_IP_HOURLY_LIMIT` | Code requests accepted per source-IP hash in one hour; default `10` |
+| `AUTH_EMAIL_15M_LIMIT` | Code requests accepted per email from one source in 15 minutes; default `3` |
+| `AUTH_EMAIL_DAILY_LIMIT` | Code requests accepted per email from one source in 24 hours; default `5` |
+| `AUTH_EMAIL_DAILY_CAP` | Code requests accepted per email from all sources in 24 hours, bounding email bombing; default `20`. A new code cancels only the same source's earlier codes, so a stranger's requests can't lock the owner out or void the code they're typing. |
+| `AUTH_IP_HOURLY_LIMIT` | Code requests accepted per source in one hour; default `10`. A source is an IPv4 address or an IPv6 /64 (IPv4-mapped addresses count as IPv4), hashed with `AUTH_SECRET`. |
 | `AUTH_GLOBAL_HOURLY_LIMIT` | Code requests accepted across the service in one hour; default `500` |
 | `NOTIFICATIONS_WEBHOOK_URL` | Optional server-only HTTPS URL for best-effort application notifications. The current event is `user.created`; URLs with credentials, query strings, or fragments are rejected and leave notifications disabled. Redirects are never followed. |
 | `CAPER_API_ORIGIN` | Web-only. Origin the web server uses for server-rendered account lookups, e.g. `http://caper-api:3001` in-cluster or `http://api:3001` in Compose. It is the only place the server sends a visitor's session cookie. Unset outside development, the homepage renders a placeholder and the browser looks the account up itself. |
@@ -5899,7 +5926,10 @@ null standard streams and, on Unix, its own process group. Successful swaps reop
 the new app; failed download/verification/swap attempts reopen the working install
 after the original process exits. macOS uses `/usr/bin/open -n` through
 LaunchServices and checks its exit status. Errors and launch requests are recorded
-in the system temporary directory's `caper-updater.log`. Local Linux subprocess
+in `caper-updater.log`: on Linux in `~/.local/state/caper` (or
+`$XDG_STATE_HOME/caper`), elsewhere in the user's temporary directory. The updater
+stages relocation copies, downloads and unpacked builds in new, randomly named
+0700 folders, never fixed paths in a shared `/tmp`. Local Linux subprocess
 checks cover relocation, replacement/relaunch, and failure recovery, not a live
 signed-release update or a macOS/Windows GUI launch. Those platform checks remain
 release acceptance. Install the fixed native release manually once if the old
@@ -6956,7 +6986,9 @@ Read state is account-wide, not device-wide. New conversations are limited to
 20/minute and 1,000 per initiating account; requests other people start with you
 don't count. Starting one requires a completed profile (403 `complete profile
 required`). Exact usernames are discoverable by
-starting a conversation; membership in a shared space is not required, but a
+starting a conversation, so each account may start at most 60 an hour by
+username, counting lookups that find no one or a person not accepting DMs
+(429 `too many conversations; try again later`); membership in a shared space is not required, but a
 stranger's first DM is a message request.
 
 ### Message requests, blocking and DM privacy
@@ -7973,6 +8005,12 @@ higher-build-number release. No data rollback is needed.
 
 ## Space and channel unread indicators (October 11, 2026)
 
+App-icon badges use a separate `badgeCount` field on the same unread endpoint.
+See [the app-icon badge contract and platform limits](notifications.md#app-icon-badges):
+Apple/web/desktop consume an authoritative message count, Android follows
+active notifications, and Windows taskbar rendering remains unverified.
+This does not change the navigation-dot rules below.
+
 Web (desktop/mobile), Android, iOS/macOS and Rust desktop show a light dot on
 spaces with unread messages or direct mentions. A selected space keeps its dot
 until its other unread channels are viewed. Joined channel rows also show dots.
@@ -8782,14 +8820,23 @@ and recover on a retry or newer release. Known rollback revisions reuse their
 old snapshots without lowering rolling heads; an unrecorded historical rebuild
 gets a quiet, new sequence. Do not overwrite/delete immutable assets.
 
+The homepage's Latest changes shows the newest eight highlights from
+`whats-new-web/latest.json`. Each web pod reads it when rendering the homepage,
+keeps one copy for 60 seconds (a stale copy is served while it refreshes, and
+a cold fetch waits at most 3 seconds), and otherwise uses the list captured at
+build time: those highlights, or recent `main` commit titles when the feed was
+unavailable or empty. A web rollback does not lower the rolling feed, so the
+homepage may still list a rolled-back highlight until the next release.
+
 The public API `/api/whats-new?platform=<platform>&revision=<40-lowercase-hex-sha>`
 only reads the requested immutable asset from the fixed Caper repository. Clients
 never read rolling `latest.json`, so an old build cannot announce future features.
 The API has bounded GitHub fetches, per-revision coalescing and a 60-second
 success/failure cache. Revisions that loaded (up to 32) are counted apart from
-in-flight and failed lookups (up to 32), so unknown revisions can neither evict
-nor block a working one; once the failure side is full, further unknown
-revisions get `502` until a failure expires. A slow fetch never holds up other
+in-flight and failed lookups (up to 32), so unknown revisions can't evict a
+working one. Once the failure side is full, a new revision replaces the oldest
+settled failure, so made-up revisions can't keep a new build's notes from
+loading; only when all 32 are still in flight does a new revision get `502`. A slow fetch never holds up other
 revisions.
 Each snapshot is at most 64 KiB UTF-8, retains at most 30 chronological releases,
 and has positive JavaScript-safe integer sequences. Titles/bodies are plain text,

@@ -880,6 +880,69 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
     .0;
     assert_eq!(hidden["urls"], json!({}));
 
+    // Readers of a channel the message was forwarded into can refresh its
+    // files too, until that forward is deleted.
+    let elsewhere_space: i64 = sqlx::query_scalar(
+        "INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,'Elsewhere',$2) RETURNING id",
+    )
+    .bind(random_id(12))
+    .bind(owner.user.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let elsewhere = random_id(12);
+    sqlx::query("INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'general')")
+        .bind(&elsewhere)
+        .bind(elsewhere_space)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for user in [owner.user.id, outsider.user.id] {
+        sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+            .bind(elsewhere_space)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+            .bind(&elsewhere)
+            .bind(user)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let (status, shared) = chat_request(
+        "POST",
+        format!("/api/chat/channels/{elsewhere}/forwards"),
+        json!({"sourceChannelId": channel, "sourceMessageId": message_id,
+            "clientMessageId": Uuid::new_v4()}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shared}");
+    let refresh_as_outsider = || {
+        urls(
+            State(state.clone()),
+            Extension(outsider.clone()),
+            Json(UrlsInput {
+                ids: vec![shot_id.clone(), fake_id.clone()],
+            }),
+        )
+    };
+    let forwarded_urls = refresh_as_outsider().await.unwrap().0;
+    assert!(
+        forwarded_urls["urls"][&shot_id]["url"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("/assets/{shot_id}?exp="))
+    );
+    assert!(forwarded_urls["urls"].get(&fake_id).is_none());
+    sqlx::query("UPDATE public.messages SET deleted_at=now() WHERE external_id=$1")
+        .bind(shared["id"].as_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(refresh_as_outsider().await.unwrap().0["urls"], json!({}));
+
     // Rejected and abandoned uploads are purged; quota is released only then.
     let before = usage(State(state.clone()), Extension(owner.clone()))
         .await
@@ -894,7 +957,7 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         .await
         .unwrap();
     sqlx::query(
-        "UPDATE public.assets SET uploaded_at = now() - interval '25 hours' WHERE external_id=$1",
+        "UPDATE public.assets SET created_at = now() - interval '25 hours', uploaded_at = now() - interval '25 hours' WHERE external_id=$1",
     )
     .bind(stale["id"].as_str().unwrap())
     .execute(&pool)
@@ -918,8 +981,25 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         (expired.status, expired.code),
         (StatusCode::CONFLICT, Some("attachment_unavailable"))
     );
-    assert_eq!(purge(&assets).await.unwrap(), 2);
-    assert!(!store.lock().unwrap().contains_key(&original_key(&fake_id)));
+    // A rejected upload keeps its reservation until its upload URL has
+    // expired, so reusing the URL can't store bytes the quota stops counting.
+    let fake_source = privacy::staged(&original_key(&fake_id));
+    assert_eq!(purge(&assets).await.unwrap(), 1);
+    assert!(store.lock().unwrap().contains_key(&fake_source));
+    let held = usage(State(state.clone()), Extension(owner.clone()))
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(held["used"], 100 + 100 + 6 + notes.len());
+    sqlx::query(
+        "UPDATE public.assets SET created_at = now() - interval '31 minutes' WHERE external_id=$1",
+    )
+    .bind(&fake_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(purge(&assets).await.unwrap(), 1);
+    assert!(!store.lock().unwrap().contains_key(&fake_source));
     assert!(store.lock().unwrap().contains_key(&original_key(&shot_id)));
     let after = usage(State(state.clone()), Extension(owner.clone()))
         .await
@@ -976,8 +1056,9 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         StatusCode::NOT_FOUND
     );
 
-    // Both completed and incomplete removals release quota at the next purge,
-    // not a day later. Cancellation is idempotent and prevents completion/Send.
+    // Both completed and incomplete removals release quota once their upload
+    // URLs have expired, not a day later. Cancellation is idempotent and
+    // prevents completion/Send.
     for completed in [false, true] {
         let (_, Json(removed)) =
             create_as(&owner, input("remove.png", "image/png", 100, Some(100)))
@@ -1021,6 +1102,16 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
                 .0["used"],
             400
         );
+        // The upload URL could still store bytes again until it expires.
+        assert_eq!(purge(&assets).await.unwrap(), 0);
+        assert!(store.lock().unwrap().contains_key(&original_key(id)) || !completed);
+        sqlx::query(
+            "UPDATE public.assets SET created_at = now() - interval '31 minutes' WHERE external_id=$1",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
         let failed_key = if completed {
             preview_key(id)
         } else {
@@ -1124,6 +1215,9 @@ async fn uploads_reserve_quota_verify_bytes_attach_once_and_purge() {
         Err(error) => {
             assert_eq!(error.code, Some("attachment_unavailable"));
             assert_eq!(cancelled.unwrap(), StatusCode::NO_CONTENT);
+            // Fixture cleanup waits for the upload URL to expire.
+            sqlx::query("UPDATE public.assets SET created_at=now()-interval '31 minutes' WHERE external_id=$1")
+                .bind(race_id).execute(&pool).await.unwrap();
         }
     }
     assert_eq!(purge(&assets).await.unwrap(), 1);
@@ -1713,6 +1807,10 @@ async fn exercise_media_privacy(
             "application/octet-stream",
             b"II\x2a\0private TIFF metadata".as_slice(),
         ),
+        (
+            "application/octet-stream",
+            b"IIU\0private RW2 metadata".as_slice(),
+        ),
         ("application/octet-stream", bitmap.as_slice()),
     ] {
         let input = serde_json::from_value(json!({"channelId":channel,"filename":"bad.bin","contentType":mime,"byteSize":source.len()})).unwrap();
@@ -1741,6 +1839,11 @@ async fn exercise_media_privacy(
     }
     sqlx::query("UPDATE public.assets SET deleted_at=now() WHERE external_id=ANY($1)")
         .bind(&ids)
+        .execute(&assets.pool)
+        .await
+        .unwrap();
+    // Unsent files are purged once their upload URLs have expired.
+    sqlx::query("UPDATE public.assets SET created_at=now()-interval '31 minutes' WHERE deleted_at IS NOT NULL AND message_id IS NULL")
         .execute(&assets.pool)
         .await
         .unwrap();

@@ -33,8 +33,10 @@ pub(super) struct WhatsNew {
 struct Cache {
     /// Revisions whose feed loaded, refreshed in place once stale.
     found: BTreeMap<String, Arc<Slot>>,
-    /// Lookups in flight or failed. When full, new revisions wait out the
-    /// oldest failure rather than replace it, keeping GitHub traffic bounded.
+    /// Lookups in flight or failed. Anyone can name an unknown revision, so
+    /// when full a new revision replaces the oldest settled failure rather
+    /// than wait it out; only lookups still in flight hold their places, which
+    /// bounds concurrent GitHub traffic.
     pending: BTreeMap<String, Arc<Slot>>,
 }
 
@@ -73,7 +75,8 @@ struct Cached {
 }
 
 impl Cache {
-    /// The slot serving `key`, or `None` while unknown lookups are at capacity.
+    /// The slot serving `key`, or `None` while every unknown lookup's place is
+    /// held by one still in flight.
     fn slot(&mut self, key: &str) -> Option<Arc<Slot>> {
         self.pending.retain(|_, slot| !slot.stale());
         // A failed refresh drops a revision back to the bounded unknown path.
@@ -88,7 +91,13 @@ impl Cache {
             return Some(slot.clone());
         }
         if self.pending.len() >= CAPACITY {
-            return None;
+            let oldest = self
+                .pending
+                .iter()
+                .filter(|(_, slot)| slot.0.initialized())
+                .max_by_key(|(_, slot)| slot.age())
+                .map(|(key, _)| key.clone())?;
+            self.pending.remove(&oldest);
         }
         let slot = Slot::new();
         self.pending.insert(key.to_owned(), slot.clone());
@@ -455,8 +464,10 @@ mod tests {
         );
         assert_eq!(calls.load(Ordering::SeqCst) - before, 2);
 
-        // Unknown revisions fill only their own bound and then wait out the
-        // backoff; a working revision is still served and refreshed.
+        // Unknown revisions fill only their own bound. Once it is full of
+        // failures, a new revision replaces the oldest one, so made-up
+        // revisions can't keep a new build's notes from loading; a working
+        // revision is still served and refreshed.
         let before = calls.load(Ordering::SeqCst);
         for number in 0..40 {
             let response = router
@@ -466,13 +477,21 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         }
-        // The slow lookup's failure already holds one of the places.
-        assert_eq!(calls.load(Ordering::SeqCst) - before, CAPACITY - 1);
+        assert_eq!(calls.load(Ordering::SeqCst) - before, 40);
+        assert_eq!(cache.cache.lock().unwrap().pending.len(), CAPACITY);
+        // A failure still inside its backoff is answered without a lookup.
+        let response = router
+            .clone()
+            .oneshot(query(&format!("{:040x}", 39)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(calls.load(Ordering::SeqCst) - before, 40);
         assert_eq!(
             router.clone().oneshot(request()).await.unwrap().status(),
             StatusCode::OK
         );
-        assert_eq!(calls.load(Ordering::SeqCst) - before, CAPACITY - 1);
+        assert_eq!(calls.load(Ordering::SeqCst) - before, 40);
         {
             let mut map = cache.cache.lock().unwrap();
             let slot = map.found.get_mut(&format!("web:{revision}")).unwrap();
@@ -494,10 +513,47 @@ mod tests {
             router.clone().oneshot(request()).await.unwrap().status(),
             StatusCode::OK
         );
-        assert_eq!(calls.load(Ordering::SeqCst) - before, CAPACITY);
+        assert_eq!(calls.load(Ordering::SeqCst) - before, 41);
         assert_eq!(
             router
+                .clone()
                 .oneshot(query(&"9".repeat(40)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(calls.load(Ordering::SeqCst) - before, 42);
+
+        // Only lookups still in flight keep a new revision waiting.
+        *cache.cache.lock().unwrap() = Cache::default();
+        let before = calls.load(Ordering::SeqCst);
+        let held: Vec<_> = (0..CAPACITY)
+            .map(|number| tokio::spawn(router.clone().oneshot(query(&format!("f{number:039x}")))))
+            .collect();
+        while calls.load(Ordering::SeqCst) - before < CAPACITY {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            router
+                .clone()
+                .oneshot(query(&"8".repeat(40)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(calls.load(Ordering::SeqCst) - before, CAPACITY);
+        gate.add_permits(CAPACITY);
+        for lookup in held {
+            assert_eq!(
+                lookup.await.unwrap().unwrap().status(),
+                StatusCode::BAD_GATEWAY
+            );
+        }
+        assert_eq!(
+            router
+                .oneshot(query(&"8".repeat(40)))
                 .await
                 .unwrap()
                 .status(),

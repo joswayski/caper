@@ -1,11 +1,43 @@
 import Foundation
 import Observation
+#if canImport(UserNotifications)
+import UserNotifications
+#endif
+#if os(macOS)
+import AppKit
+#endif
 
 @MainActor @Observable
 public final class AppModel {
     public enum Phase { case loading, signedOut, onboarding, ready }
     public var phase: Phase = .loading
-    public var account: Account?
+    public var account: Account? {
+        didSet {
+            if account == nil || (oldValue != nil && oldValue?.id != account?.id) { updateApplicationBadge(0) }
+        }
+    }
+    private(set) var desiredBadgeCount = 0
+    private var badgeUpdateRunning = false
+
+    /// One writer drains the newest desired value; logout cannot race an older setter.
+    private func updateApplicationBadge(_ count: Int) {
+        desiredBadgeCount = max(0, count)
+        #if os(macOS)
+        NSApp?.dockTile.badgeLabel = desiredBadgeCount == 0 ? nil : String(desiredBadgeCount)
+        #elseif canImport(UserNotifications)
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+        guard !badgeUpdateRunning else { return }
+        badgeUpdateRunning = true
+        Task { @MainActor in
+            while true {
+                let count = desiredBadgeCount
+                try? await UNUserNotificationCenter.current().setBadgeCount(count)
+                if desiredBadgeCount == count { break }
+            }
+            badgeUpdateRunning = false
+        }
+        #endif
+    }
     public var spaces: [Space] = []
     public private(set) var voiceActivitySpaceIDs: Set<String> = []
     private var voiceActivityRefreshing = false
@@ -294,6 +326,11 @@ public final class AppModel {
         chatModel.onReadCursor = { [weak self] in
             self?.markSelectedDirectRead()
             self?.scheduleUnreadRefresh()
+        }
+        chatModel.onThreadRead = { [weak self] in
+            guard let self else { return }
+            self.unreadRevision += 1
+            self.scheduleUnreadRefresh()
         }
         // A reply from the team can answer a report: refresh the inbox's status.
         chatModel.onMessageSent = { [weak self] in
@@ -1148,6 +1185,8 @@ public final class AppModel {
                 let old = directMessages[current]
                 let seq = (try? Sequence.compare(history.cursor, old.readSeq)) == .orderedDescending ? history.cursor : old.readSeq
                 directMessages[current] = old.with(readSeq: seq)
+                unreadRevision += 1
+                scheduleUnreadRefresh()
             } catch { /* A later foreground refresh retries the read cursor. */ }
         }
     }
@@ -1182,16 +1221,27 @@ public final class AppModel {
     }
 
     public func refreshUnreadSpaces() async {
-        guard account != nil else { return }
+        guard phase != .signedOut, let accountID = account?.id else { return }
         let accountGeneration = generation
         await chat.refreshUnreadThreads()
         guard generation == accountGeneration, account != nil else { return }
         acknowledgeVisibleThread()
         unreadRevision += 1
         let attempt = generation, revision = unreadRevision
-        guard let snapshot = try? await api.unreadSpaces(), generation == attempt, unreadRevision == revision else { return }
+        let snapshot: UnreadSpacesResponse
+        do { snapshot = try await api.unreadSpaces() }
+        catch {
+            if generation == attempt, unreadRevision == revision, account?.id == accountID,
+               let failure = error as? APIError, failure.status == 401 {
+                unreadRevision += 1
+                updateApplicationBadge(0)
+            }
+            return
+        }
+        guard generation == attempt, unreadRevision == revision, account?.id == accountID, phase != .signedOut else { return }
         unreadSpaces = snapshot.spaces
         feedbackWaiting = snapshot.feedbackWaiting
+        if let count = snapshot.badgeCount { updateApplicationBadge(count) }
         markSelectedChannelRead()
     }
 
@@ -1224,6 +1274,7 @@ public final class AppModel {
                     }
                     return next.channels.isEmpty ? nil : next
                 }
+                scheduleUnreadRefresh()
             } catch { /* Retry on the next foreground poll or committed cursor. */ }
         }
     }
@@ -2741,6 +2792,7 @@ public final class ChatModel {
                    (try? Sequence.compare(current, visible.seq)) != .orderedDescending {
                     unreadThreads[visible.rootID] = nil
                 }
+                onThreadRead?()
             } catch { /* Keep the badge; the next visibility change or unread poll retries. */ }
         }
     }
@@ -2820,6 +2872,7 @@ public final class ChatModel {
     public var sendRejected: Bool { delivery.rejected }
     @ObservationIgnored public var onAccessRevoked: ((String?) -> Void)?
     @ObservationIgnored public var onReadCursor: (() -> Void)?
+    @ObservationIgnored var onThreadRead: (() -> Void)?
     @ObservationIgnored public var onOpenForward: ((ChatMessage) async -> Bool)?
     /// Accounts you blocked: their messages collapse in every timeline, and
     /// they never chime or show as typing. Kept in step by `AppModel`.

@@ -146,7 +146,7 @@ export default function InvitePage({ code }: { code: string }) {
                 <>
                   {!state.account
                     ? "Sign in to join"
-                    : !state.account.username
+                    : !state.account.username || !state.account.displayName
                       ? "Finish your profile to join"
                       : state.preview.alreadyMember
                         ? "Open space"

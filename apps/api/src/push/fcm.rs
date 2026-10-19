@@ -182,8 +182,17 @@ fn outcome(status: u16, body: &Value, after: Option<Duration>) -> Outcome {
             .is_some_and(|fields| fields.iter().any(|f| f["field"] == "message.token"))
     });
     let error = format!("fcm {status} {code}").trim_end().to_owned();
-    if matches!(code, "UNREGISTERED" | "SENDER_ID_MISMATCH") || (status == 400 && bad_token) {
+    if code == "UNREGISTERED" || (status == 400 && bad_token) {
         return Outcome::Revoke(error);
+    }
+    // Every device answers this when the service account belongs to another
+    // Firebase project; revoking would unregister them all after one bad
+    // secret rollout.
+    if code == "SENDER_ID_MISMATCH" {
+        tracing::error!(
+            "FCM rejected a device for this sender; check FCM_SERVICE_ACCOUNT_JSON's project"
+        );
+        return Outcome::Abandon(error);
     }
     match status {
         401 | 429 | 500..=599 => Outcome::Retry { error, after },
@@ -299,10 +308,11 @@ mod tests {
             outcome(404, &error(404, "UNREGISTERED", None), None),
             Outcome::Revoke("fcm 404 UNREGISTERED".into())
         );
-        assert!(matches!(
+        // A configuration mistake, not a dead token: devices stay registered.
+        assert_eq!(
             outcome(403, &error(403, "SENDER_ID_MISMATCH", None), None),
-            Outcome::Revoke(_)
-        ));
+            Outcome::Abandon("fcm 403 SENDER_ID_MISMATCH".into())
+        );
         assert!(matches!(
             outcome(
                 400,

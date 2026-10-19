@@ -157,16 +157,21 @@ export default function ThreadPanel({
   }, [state.messages, rootId, windowStart, windowEnd]);
   const draft = rootId ? (drafts[rootId] ?? { text: "", broadcast: false }) : { text: "", broadcast: false };
   // Start at one line like the channel composer, growing for typed or wrapped text.
+  const sizedFor = useRef<string>(undefined);
   useLayoutEffect(() => {
     const input = composer.current;
     if (!input) return;
+    const key = `${rootId}:${readOnly}:${state.thread?.hasNewer}`;
     const resizeInput = () => {
       const form = input.closest("form");
+      const before = sizedFor.current === key ? input.style.height : undefined;
+      sizedFor.current = key;
       if (form) form.style.minHeight = `${form.offsetHeight}px`;
       input.style.height = "0px";
       input.style.height = `${input.scrollHeight + input.offsetHeight - input.clientHeight}px`;
       if (form) form.style.minHeight = "";
-      if (follow.current && scroll.current && !state.thread?.hasNewer)
+      // Most keystrokes keep the height; only a new line moves the replies above.
+      if (input.style.height !== before && follow.current && scroll.current && !state.thread?.hasNewer)
         scroll.current.scrollTop = scroll.current.scrollHeight;
     };
     resizeInput();
@@ -304,6 +309,14 @@ export default function ThreadPanel({
     return () => cancelAnimationFrame(frame);
   }, [state.thread?.focusMessageId, state.thread?.loading]);
   useLayoutEffect(() => {
+    // Own sends reveal their pending row immediately, even while reading an
+    // older window. Incoming replies must preserve the reader's position.
+    if (!pending || !scroll.current) return;
+    follow.current = true;
+    olderAnchor.current = undefined;
+    scroll.current.scrollTop = scroll.current.scrollHeight;
+  }, [pending?.clientMessageId]);
+  useLayoutEffect(() => {
     if (scroll.current && follow.current && !state.thread?.hasNewer)
       scroll.current.scrollTop = scroll.current.scrollHeight;
   }, [rootId, replies, root, pending?.clientMessageId, state.thread?.loading]);
@@ -385,8 +398,11 @@ export default function ThreadPanel({
     )
       return;
     try {
+      if (pending && scroll.current) {
+        follow.current = true;
+        scroll.current.scrollTop = scroll.current.scrollHeight;
+      }
       await onSend(pending?.text ?? draft.text, pending?.broadcast ?? draft.broadcast);
-      follow.current = true;
     } catch (error) {
       setValidation(error instanceof Error ? error.message : "Reply could not be sent.");
     }

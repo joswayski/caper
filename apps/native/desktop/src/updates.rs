@@ -214,6 +214,13 @@ impl Updates {
         state.available.clone().filter(|_| state.reviewing)
     }
 
+    /// Whether [`Self::available`] has an update, without copying its notes:
+    /// layout asks several times a frame.
+    pub fn has_available(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state.reviewing && state.available.is_some()
+    }
+
     /// Later hides the notice, not the account bar's update action.
     pub fn known_available(&self) -> Option<Available> {
         self.state.lock().unwrap().available.clone()
@@ -461,8 +468,13 @@ mod tests {
         let mut updates = Updates::preview(release("0.1.18"));
         updates.dismiss();
         assert_eq!(updates.known_available(), Some(release("0.1.18")));
+        assert!(
+            !updates.has_available(),
+            "a known update is not under review"
+        );
         updates.show_available();
         assert_eq!(updates.available(), Some(release("0.1.18")));
+        assert!(updates.has_available());
         updates.dismiss();
         updates
             .state
@@ -470,6 +482,7 @@ mod tests {
             .unwrap()
             .finish(Ok(Some(release("0.1.18"))));
         assert!(updates.available().is_none());
+        assert!(!updates.has_available());
         updates
             .state
             .lock()

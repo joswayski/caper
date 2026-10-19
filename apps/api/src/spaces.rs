@@ -919,15 +919,19 @@ async fn accept_invitation(
 ) -> Result<Json<Space>, ApiError> {
     let mut tx = pool(&state)?.begin().await.map_err(database_error)?;
     // The same space -> recipient lock order as invitation/removal operations.
-    let (id,name,owner_id,icon_asset): (i64,String,String,Option<String>) = sqlx::query_as(
-        "SELECT s.id,s.name,o.external_id,s.icon_asset FROM public.spaces s JOIN public.users o ON o.id=s.owner_id
+    let (id,name,owner,owner_id,icon_asset): (i64,String,i64,String,Option<String>) = sqlx::query_as(
+        "SELECT s.id,s.name,s.owner_id,o.external_id,s.icon_asset FROM public.spaces s JOIN public.users o ON o.id=s.owner_id
          WHERE s.external_id=$1 AND s.deleted_at IS NULL AND NOT s.demo FOR UPDATE OF s",
     ).bind(&space).fetch_optional(&mut *tx).await.map_err(database_error)?.ok_or_else(not_found)?;
     // Invitation changes are serialized on the space row held above. Check for
     // one before the profile so uninvited callers can't probe space existence.
     let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.space_invitations WHERE space_id=$1 AND user_id=$2 AND status='pending' AND updated_at > now()-interval '7 days')")
         .bind(id).bind(principal.user.id).fetch_one(&mut *tx).await.map_err(database_error)?;
-    if !pending {
+    // An owner who blocked this account has withdrawn the invitation, as
+    // invite links do; answer as for no invitation so the block isn't confirmed.
+    let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM public.user_blocks WHERE blocker_id=$1 AND blocked_id=$2 AND deleted_at IS NULL)")
+        .bind(owner).bind(principal.user.id).fetch_one(&mut *tx).await.map_err(database_error)?;
+    if !pending || blocked {
         return Err(not_found());
     }
     lock_onboarded_user(&mut tx, principal.user.id).await?;
@@ -2217,7 +2221,7 @@ mod tests {
         );
         block(false).await;
         assert_eq!(pending_spaces().await, 1);
-        assert_eq!(invite(second).await.unwrap().0, StatusCode::CREATED);
+        assert_eq!(invite(second.clone()).await.unwrap().0, StatusCode::CREATED);
         assert_eq!(pending_spaces().await, 2);
 
         // Private channel invitations inside a shared space follow the same rule.
@@ -2264,6 +2268,34 @@ mod tests {
         assert_eq!(pending_channels().await, 1);
         block(true).await;
         assert_eq!(pending_channels().await, 0);
+        block(false).await;
+
+        // An owner who blocked the invitee after inviting them has withdrawn
+        // the invitation as surely as cancelling it.
+        sqlx::query("INSERT INTO public.user_blocks(blocker_id,blocked_id) VALUES($1,$2)")
+            .bind(owner.user.id)
+            .bind(invitee.user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let refused = accept_invitation(
+            State(state.clone()),
+            Extension(invitee.clone()),
+            Path(second.clone()),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(refused.status, StatusCode::NOT_FOUND);
+        sqlx::query("UPDATE public.user_blocks SET deleted_at=now() WHERE blocker_id=$1 AND blocked_id=$2 AND deleted_at IS NULL")
+            .bind(owner.user.id).bind(invitee.user.id).execute(&pool).await.unwrap();
+        let _ = accept_invitation(
+            State(state.clone()),
+            Extension(invitee.clone()),
+            Path(second.clone()),
+        )
+        .await
+        .unwrap();
 
         // Outsiders get the same 404 for real and missing spaces.
         for space in [first.clone(), random_id(12)] {

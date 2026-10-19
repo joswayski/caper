@@ -2142,6 +2142,27 @@ final class CaperParityUITests: XCTestCase {
         capture("audio-statistics-test-fixture", app: app)
     }
 
+    func testAudioDevicesOpenSeparateChoicesAndDismissWithoutChangingVolume() {
+        let app = launch(fixture: "audio-recorded")
+        app.descendants(matching: .any)["account-settings-menu"].tap()
+        app.descendants(matching: .any)["Audio test"].tap()
+        let device = app.buttons["audio-input-device"]
+        XCTAssertTrue(device.waitForExistence(timeout: 5))
+        let volume = app.sliders["Test microphone volume"]
+        let originalVolume = volume.value as? String
+        device.tap()
+        let close = app.buttons["Close device picker"]
+        XCTAssertTrue(close.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["System default"].exists)
+        app.typeKey(XCUIKeyboardKey.escape.rawValue, modifierFlags: [])
+        XCTAssertFalse(close.exists)
+        XCTAssertEqual(volume.value as? String, originalVolume)
+        device.tap()
+        app.buttons["System default"].tap()
+        XCTAssertFalse(close.exists)
+        XCTAssertEqual(device.value as? String, "System default")
+    }
+
     /// AppKit reports a switch's value as a number (0 or 1), not a string.
     private func switchState(_ toggle: XCUIElement) -> Bool? {
         if let number = toggle.value as? NSNumber { return number.boolValue }

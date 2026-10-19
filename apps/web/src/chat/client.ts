@@ -1,4 +1,5 @@
 import { CHAT_SESSION_KEY } from "../account/client.ts";
+import { unreadChanged } from "../account/app-badge";
 import { getProfiles, withAuthorProfile, withMessageAuthors } from "../account/profiles.ts";
 import { ChatConnection } from "./connection.ts";
 import { cancelUpload, type AttachmentUpload } from "./uploads.ts";
@@ -668,6 +669,7 @@ export class ChatClient {
       if (unreadThreads[rootId] && sequence(unreadThreads[rootId]) <= sequence(seq)) delete unreadThreads[rootId];
       this.update({ unreadThreads });
       this.scheduleThreadUnread();
+      unreadChanged();
     } catch {
       // The visibility check retries; only a confirmed acknowledgement clears it.
     } finally {

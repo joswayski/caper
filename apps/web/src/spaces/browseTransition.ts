@@ -279,7 +279,7 @@ export const BLOCKING = "dialog[open], details[open], [role=dialog], [popover]:p
 // Tappable rows, links and buttons can start a swipe; their release click is
 // suppressed only after a horizontal drag wins. Composer/audio controls own drags.
 export const OWN_GESTURES =
-  ".chat-composer, .voice-panel, input, textarea, select, [contenteditable=true], [role=slider], audio, video";
+  ".chat-composer, .voice-panel, input, textarea, select, [contenteditable=true], [role=slider], [role=separator], audio, video";
 
 /**
  * Touch swipes on the room: right from the conversation reveals Browse, left

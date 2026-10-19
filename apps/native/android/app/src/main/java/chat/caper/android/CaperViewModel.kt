@@ -981,11 +981,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshDirectConversations() {
         val token = accountToken ?: return
         val request = accountGeneration
+        val snapshotStartedAt = System.currentTimeMillis()
         viewModelScope.launch {
             val since = profileEventCount
             runCatching { api.directConversations(token) }.onSuccess { result ->
                 if (request == accountGeneration) {
                     mutable.value = mutable.value.copy(directConversations = result.conversations)
+                    result.conversations.filter { it.readSeq == it.lastSeq }.forEach {
+                        CaperNotifications.reconcileReadDirect(getApplication(), it.id, snapshotStartedAt)
+                    }
                     repairProfiles(result.conversations.map { it.peer.profile() }, since)
                     pendingDirectIntent?.let { id -> result.conversations.firstOrNull { it.id == id } }?.let {
                         pendingDirectIntent = null
@@ -1211,10 +1215,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         refreshThreadUnread()
         val token = accountToken ?: return
         val account = accountGeneration; val revision = ++unreadRevision
+        val snapshotStartedAt = System.currentTimeMillis()
         viewModelScope.launch {
             runCatching { api.unreadSpaces(token) }.onSuccess {
                 if (account == accountGeneration && revision == unreadRevision) {
                     mutable.value = mutable.value.copy(unreadSpaces = it.spaces, feedbackWaiting = it.feedbackWaiting)
+                    CaperNotifications.reconcileReadChannels(getApplication(), it.spaces.flatMap { space -> space.channels.map { channel -> channel.id } }.toSet(), snapshotStartedAt)
                     if (!mutable.value.messagesLoading) mutable.value.selectedChannel?.id?.let { id -> markConversationRead(id, durableReplayCursor) }
                 }
             }

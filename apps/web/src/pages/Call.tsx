@@ -66,7 +66,9 @@ import type { CallViewState, Participant } from "../media/types";
 import { DEFAULT_VOICE_PROCESSING_STRENGTH } from "../media/voice-processing";
 import MicPlayback, { SpeakerTest } from "./MicPlayback";
 import AudioDiagnostics from "./AudioDiagnostics";
+import AudioDevicePicker, { audioDeviceOptions } from "./AudioDevicePicker";
 import VoiceActivity from "./VoiceActivity";
+import { Speaking, SpeakingStore } from "./speaking";
 import ChannelSidebar from "./ChannelSidebar";
 import RoomResize from "./RoomResize";
 import { useBrowseSwipe } from "../spaces/browseTransition";
@@ -121,21 +123,6 @@ function formatBytes(bytes: number) {
 
 function formatBitrate(bitsPerSecond: number) {
   return `${Math.round(bitsPerSecond / 1_000)} kbps`;
-}
-
-function deviceOptions(devices: MediaDeviceInfo[], kind: MediaDeviceKind) {
-  const labels = new Set<string>();
-  return devices
-    .filter((device) => device.kind === kind)
-    .sort((left, right) => Number(right.deviceId === "default") - Number(left.deviceId === "default"))
-    .flatMap((device) => {
-      const label =
-        device.label.replace(/^Default\s*[-–]\s*/i, "") || (kind === "audioinput" ? "Microphone" : "Audio output");
-      const key = label.toLocaleLowerCase();
-      if (labels.has(key)) return [];
-      labels.add(key);
-      return [{ device, label }];
-    });
 }
 
 function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallViewState["diagnostics"]> }) {
@@ -650,7 +637,7 @@ export default function Call({
   const [loggingOut, setLoggingOut] = useState(false);
   const [actionPending, setActionPending] = useState(false);
   const actionGeneration = useRef(0);
-  const [activeParticipants, setActiveParticipants] = useState<Set<string>>(() => new Set());
+  const [speakingStore] = useState(() => new SpeakingStore());
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
@@ -1055,14 +1042,10 @@ export default function Call({
         .enumerateDevices()
         .then((next) => {
           setDevices(next);
-          const inputs = deviceOptions(next, "audioinput");
-          const outputs = deviceOptions(next, "audiooutput");
-          setDeviceId((current) =>
-            inputs.some(({ device }) => device.deviceId === current) ? current : inputs[0]?.device.deviceId || "",
-          );
-          setOutput((current) =>
-            outputs.some(({ device }) => device.deviceId === current) ? current : outputs[0]?.device.deviceId || "",
-          );
+          const inputs = audioDeviceOptions(next, true);
+          const outputs = audioDeviceOptions(next, false);
+          setDeviceId((current) => (inputs.some(({ id }) => id === current) ? current : ""));
+          setOutput((current) => (outputs.some(({ id }) => id === current) ? current : ""));
         })
         .catch(() => setActionError("Device list unavailable. Use system settings."));
     update();
@@ -1294,10 +1277,10 @@ export default function Call({
   const voicePicture = <T extends Pick<Participant, "id" | "avatarId" | "avatarAsset" | "avatarUrl">>(
     participant: T,
   ) => (participant.id === state.selfId && account ? withPicture(participant, account) : participant);
-  const isSpeaking = (participant: { id: string; muted: boolean }) => {
-    const muted = participant.id === state.selfId ? state.muted : participant.muted;
-    return activeParticipants.has(participant.id) && !muted;
-  };
+  const audible = (participant: { id: string; muted: boolean }) => ({
+    id: participant.id,
+    muted: participant.id === state.selfId ? state.muted : participant.muted,
+  });
   const renderRoster = (people: typeof roster, own: boolean, label: string) => (
     <ul
       className={own && volumeParticipant ? "volume-menu-open" : undefined}
@@ -1309,7 +1292,7 @@ export default function Call({
         const participantMuted = self ? state.muted : participant.muted;
         const participantDeafened = self ? state.deafened : participant.deafened;
         const participantStatus = participantDeafened ? "Deafened" : participantMuted ? "Muted" : undefined;
-        const speaking = isSpeaking(participant);
+        const voice = [audible(participant)];
         return (
           <li
             ref={own && volumeParticipant === participant.id ? volumeMenuRef : undefined}
@@ -1325,29 +1308,37 @@ export default function Call({
             }
           >
             <span className="participant-avatar">
-              <span className={`avatar ${speaking ? "speaking" : "quiet"}`}>
-                <Avatar person={voicePicture(participant)} name={participantName} />
-              </span>
+              <Speaking store={speakingStore} people={voice}>
+                {(speaking) => (
+                  <span className={`avatar ${speaking ? "speaking" : "quiet"}`}>
+                    <Avatar person={voicePicture(participant)} name={participantName} />
+                  </span>
+                )}
+              </Speaking>
             </span>
-            <span className="participant-name" data-speaking={speaking ? "" : undefined}>
-              <strong>
-                {participantName}
-                {self ? " (you)" : ""}
-              </strong>
-              {participantStatus && (
-                <span className="participant-status" title={participantStatus}>
-                  {participantMuted && <MicOff aria-hidden="true" />}
-                  {participantDeafened && <HeadphoneOff aria-hidden="true" />}
-                  <span className="sr-only">{participantStatus}</span>
+            <Speaking store={speakingStore} people={voice}>
+              {(speaking) => (
+                <span className="participant-name" data-speaking={speaking ? "" : undefined}>
+                  <strong>
+                    {participantName}
+                    {self ? " (you)" : ""}
+                  </strong>
+                  {participantStatus && (
+                    <span className="participant-status" title={participantStatus}>
+                      {participantMuted && <MicOff aria-hidden="true" />}
+                      {participantDeafened && <HeadphoneOff aria-hidden="true" />}
+                      <span className="sr-only">{participantStatus}</span>
+                    </span>
+                  )}
+                  {!self && mutedParticipants.has(participant.id) && (
+                    <span className="participant-local-muted">
+                      <VolumeX aria-hidden="true" />
+                      You muted {participant.name}
+                    </span>
+                  )}
                 </span>
               )}
-              {!self && mutedParticipants.has(participant.id) && (
-                <span className="participant-local-muted">
-                  <VolumeX aria-hidden="true" />
-                  You muted {participant.name}
-                </span>
-              )}
-            </span>
+            </Speaking>
             {own && !self && (
               <button
                 className="participant-menu-button"
@@ -1566,10 +1557,15 @@ export default function Call({
       </button>
     </Tooltip>
   );
-  const liveFace = (participant: (typeof roster)[number]) => (
-    <span className="live-avatar" key={participant.id} data-speaking={isSpeaking(participant) ? "" : undefined}>
+  const liveAvatar = (participant: (typeof roster)[number], speaking: boolean) => (
+    <span className="live-avatar" key={participant.id} data-speaking={speaking ? "" : undefined}>
       <Avatar person={voicePicture(participant)} name={personName(participant)} />
     </span>
+  );
+  const liveFace = (participant: (typeof roster)[number]) => (
+    <Speaking key={participant.id} store={speakingStore} people={[audible(participant)]}>
+      {(speaking) => liveAvatar(participant, speaking)}
+    </Speaking>
   );
   // Your call's faces keep a stable order: you, then everyone else as they joined.
   const callPeople = () => {
@@ -1688,38 +1684,47 @@ export default function Call({
               const self = participant.id === state.selfId;
               const muted = self ? state.muted : participant.muted;
               const deafened = self ? state.deafened : participant.deafened;
-              const label = [
-                `${personName(participant)}${self ? " (you)" : ""}`,
-                isSpeaking(participant) && "speaking",
-                deafened ? "deafened" : muted && "muted",
-              ]
-                .filter(Boolean)
-                .join(", ");
+              const label = (speaking: boolean) =>
+                [
+                  `${personName(participant)}${self ? " (you)" : ""}`,
+                  speaking && "speaking",
+                  deafened ? "deafened" : muted && "muted",
+                ]
+                  .filter(Boolean)
+                  .join(", ");
               return (
                 <li key={participant.id} data-person={participant.id}>
                   <Tooltip content={personName(participant)}>
-                    <span className="live-face" role="img" aria-label={label}>
-                      {liveFace(participant)}
-                      {(muted || deafened) && (
-                        <span className="live-badge">
-                          {deafened ? <HeadphoneOff aria-hidden="true" /> : <MicOff aria-hidden="true" />}
+                    <Speaking store={speakingStore} people={[audible(participant)]}>
+                      {(speaking) => (
+                        <span className="live-face" role="img" aria-label={label(speaking)}>
+                          {liveAvatar(participant, speaking)}
+                          {(muted || deafened) && (
+                            <span className="live-badge">
+                              {deafened ? <HeadphoneOff aria-hidden="true" /> : <MicOff aria-hidden="true" />}
+                            </span>
+                          )}
                         </span>
                       )}
-                    </span>
+                    </Speaking>
                   </Tooltip>
                 </li>
               );
             })}
             {hidden.length > 0 && (
               <li data-person="">
-                <span
-                  className="live-more"
-                  role="img"
-                  data-speaking={hidden.some(isSpeaking) ? "" : undefined}
-                  aria-label={`${hidden.length} more: ${liveNames(hidden.map(personName))}`}
-                >
-                  +{hidden.length}
-                </span>
+                <Speaking store={speakingStore} people={hidden.map(audible)}>
+                  {(speaking) => (
+                    <span
+                      className="live-more"
+                      role="img"
+                      data-speaking={speaking ? "" : undefined}
+                      aria-label={`${hidden.length} more: ${liveNames(hidden.map(personName))}`}
+                    >
+                      +{hidden.length}
+                    </span>
+                  )}
+                </Speaking>
               </li>
             )}
           </ul>
@@ -1893,14 +1898,7 @@ export default function Call({
             self ? state.localMedia : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream
           }
           muted={self ? state.muted : participant.muted}
-          onActivityChange={(active) =>
-            setActiveParticipants((current) => {
-              if (current.has(participant.id) === active) return current;
-              const next = new Set(current);
-              active ? next.add(participant.id) : next.delete(participant.id);
-              return next;
-            })
-          }
+          onActivityChange={(active) => speakingStore.set(participant.id, active)}
         />
       );
     });
@@ -2018,30 +2016,21 @@ export default function Call({
                   onOpenChange={(open) => setAudioMenu(open ? "input" : undefined)}
                   menuRef={audioMenu === "input" ? audioMenuRef : undefined}
                 >
-                  <label className="device-select">
-                    Microphone
-                    <select
-                      name="input-device"
-                      value={deviceId}
-                      disabled={controlsDisabled}
-                      onChange={(event) => {
-                        const id = event.target.value;
-                        if (connected)
-                          void act(
-                            () => clientRef.current!.changeMicrophone(id),
-                            () => setDeviceId(id),
-                          );
-                        else setDeviceId(id);
-                      }}
-                    >
-                      {deviceOptions(devices, "audioinput").map(({ device, label }) => (
-                        <option key={device.deviceId} value={device.deviceId}>
-                          {label}
-                        </option>
-                      ))}
-                      {!deviceOptions(devices, "audioinput").length && <option value="">System default</option>}
-                    </select>
-                  </label>
+                  <AudioDevicePicker
+                    title="Input device"
+                    input
+                    devices={devices}
+                    value={deviceId}
+                    disabled={controlsDisabled}
+                    onChange={(id) => {
+                      if (connected)
+                        void act(
+                          () => clientRef.current!.changeMicrophone(id),
+                          () => setDeviceId(id),
+                        );
+                      else setDeviceId(id);
+                    }}
+                  />
                   <div className="volume-control output-volume">
                     <span>
                       Input volume <output>{state.inputVolume}%</output>
@@ -2078,17 +2067,7 @@ export default function Call({
                   menuRef={audioMenu === "output" ? audioMenuRef : undefined}
                 >
                   {outputSelectable ? (
-                    <label className="device-select">
-                      Audio output
-                      <select name="output-device" value={output} onChange={(event) => setOutput(event.target.value)}>
-                        {deviceOptions(devices, "audiooutput").map(({ device, label }) => (
-                          <option key={device.deviceId} value={device.deviceId}>
-                            {label}
-                          </option>
-                        ))}
-                        {!deviceOptions(devices, "audiooutput").length && <option value="">System default</option>}
-                      </select>
-                    </label>
+                    <AudioDevicePicker title="Output device" devices={devices} value={output} onChange={setOutput} />
                   ) : (
                     <p className="noise-status">Choose audio output in system settings.</p>
                   )}
@@ -2418,32 +2397,23 @@ export default function Call({
               <p className="noise-status">Only you can hear these tests.</p>
               <div className="audio-test-devices">
                 <div>
-                  <label className="device-select">
-                    Microphone
-                    <select
-                      aria-label="Test microphone device"
-                      value={deviceId}
-                      disabled={actionPending}
-                      onChange={(event) => {
-                        const id = event.target.value;
-                        void act(
-                          () => {
-                            if (connected) return clientRef.current!.changeMicrophone(id);
-                            clientRef.current!.stopLocalMicTest();
-                            return clientRef.current!.startLocalMicTest(id);
-                          },
-                          () => setDeviceId(id),
-                        );
-                      }}
-                    >
-                      {deviceOptions(devices, "audioinput").map(({ device, label }) => (
-                        <option key={device.deviceId} value={device.deviceId}>
-                          {label}
-                        </option>
-                      ))}
-                      {!deviceOptions(devices, "audioinput").length && <option value="">System default</option>}
-                    </select>
-                  </label>
+                  <AudioDevicePicker
+                    title="Test microphone device"
+                    input
+                    devices={devices}
+                    value={deviceId}
+                    disabled={actionPending}
+                    onChange={(id) => {
+                      void act(
+                        () => {
+                          if (connected) return clientRef.current!.changeMicrophone(id);
+                          clientRef.current!.stopLocalMicTest();
+                          return clientRef.current!.startLocalMicTest(id);
+                        },
+                        () => setDeviceId(id),
+                      );
+                    }}
+                  />
                   <div className="volume-control">
                     <span>
                       Microphone volume <output>{state.inputVolume}%</output>
@@ -2458,22 +2428,13 @@ export default function Call({
                   </div>
                 </div>
                 <div>
-                  <label className="device-select">
-                    Speaker
-                    <select
-                      aria-label="Test speaker device"
-                      value={output}
-                      disabled={!outputSelectable}
-                      onChange={(event) => setOutput(event.target.value)}
-                    >
-                      {deviceOptions(devices, "audiooutput").map(({ device, label }) => (
-                        <option key={device.deviceId} value={device.deviceId}>
-                          {label}
-                        </option>
-                      ))}
-                      {!deviceOptions(devices, "audiooutput").length && <option value="">System default</option>}
-                    </select>
-                  </label>
+                  <AudioDevicePicker
+                    title="Test speaker device"
+                    devices={devices}
+                    value={output}
+                    disabled={!outputSelectable}
+                    onChange={setOutput}
+                  />
                   {!outputSelectable && <p className="noise-status">Choose speakers in system settings.</p>}
                   <div className="volume-control">
                     <span>

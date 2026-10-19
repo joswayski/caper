@@ -471,10 +471,13 @@ impl Viewer {
         let sender = self.sender.clone();
         let context = context.clone();
         let (id, content_type) = (current.id.clone(), current.content_type.clone());
+        // Some GPUs (and GLES fallbacks) take less than MAX_EDGE.
+        let edge = context.input(|input| input.max_texture_side);
+        let edge = MAX_EDGE.min(u32::try_from(edge).unwrap_or(u32::MAX));
         std::thread::spawn(move || {
             let result = api
                 .fetch_media(&url)
-                .and_then(|bytes| decode_full(&bytes, &content_type).ok_or(None));
+                .and_then(|bytes| decode_full(&bytes, &content_type, edge).ok_or(None));
             let _ = sender.send(Loaded { id, url, result });
             context.request_repaint();
         });
@@ -1515,10 +1518,15 @@ pub(crate) fn decode_original(bytes: &[u8], content_type: &str) -> Option<image:
     Some(image.to_rgba8())
 }
 
-/// Full-size frames: animated GIF/WebP with their delays, other stills once.
+/// Full-size frames: animated GIF/WebP with their delays, other stills once,
+/// all at most `edge` on their long side.
 /// Formats the `image` codecs cannot read (AVIF, HEIC) go through FFmpeg.
-fn decode_full(bytes: &[u8], content_type: &str) -> Option<Vec<(egui::ColorImage, Duration)>> {
-    use image::AnimationDecoder;
+fn decode_full(
+    bytes: &[u8],
+    content_type: &str,
+    edge: u32,
+) -> Option<Vec<(egui::ColorImage, Duration)>> {
+    use image::{AnimationDecoder, ImageDecoder};
     let content_type = match image::guess_format(bytes).ok() {
         Some(image::ImageFormat::Gif) => "image/gif",
         Some(image::ImageFormat::WebP) => "image/webp",
@@ -1526,13 +1534,21 @@ fn decode_full(bytes: &[u8], content_type: &str) -> Option<Vec<(egui::ColorImage
     };
     let cursor = || std::io::Cursor::new(bytes);
     let frames = match content_type {
-        "image/gif" => image::codecs::gif::GifDecoder::new(cursor())
-            .ok()
-            .and_then(|decoder| animation(decoder.into_frames())),
+        "image/gif" => {
+            image::codecs::gif::GifDecoder::new(cursor())
+                .ok()
+                .and_then(|mut decoder| {
+                    decoder.set_limits(limits()).ok()?;
+                    animation(decoder.into_frames(), edge, MAX_ANIMATION_BYTES)
+                })
+        }
         "image/webp" => image::codecs::webp::WebPDecoder::new(cursor())
             .ok()
             .filter(image::codecs::webp::WebPDecoder::has_animation)
-            .and_then(|decoder| animation(decoder.into_frames())),
+            .and_then(|mut decoder| {
+                decoder.set_limits(limits()).ok()?;
+                animation(decoder.into_frames(), edge, MAX_ANIMATION_BYTES)
+            }),
         _ => None,
     };
     if frames.is_some() {
@@ -1542,22 +1558,32 @@ fn decode_full(bytes: &[u8], content_type: &str) -> Option<Vec<(egui::ColorImage
         let mut reader = image::ImageReader::new(cursor())
             .with_guessed_format()
             .ok()?;
-        let mut limits = image::Limits::default();
-        limits.max_image_width = Some(16_384);
-        limits.max_image_height = Some(16_384);
-        limits.max_alloc = Some(MAX_ANIMATION_BYTES as u64);
-        reader.limits(limits);
+        reader.limits(limits());
         let mut image = reader.decode().ok()?;
-        if image.width() > MAX_EDGE || image.height() > MAX_EDGE {
-            image = image.thumbnail(MAX_EDGE, MAX_EDGE);
+        if image.width() > edge || image.height() > edge {
+            image = image.thumbnail(edge, edge);
         }
         return Some(vec![(color_image(image.to_rgba8()), Duration::ZERO)]);
     }
-    crate::ffmpeg::decode_image(bytes, content_type, MAX_EDGE)
+    crate::ffmpeg::decode_image(bytes, content_type, edge)
         .map(|image| vec![(image, Duration::ZERO)])
 }
 
-fn animation<'a>(frames: image::Frames<'a>) -> Option<Vec<(egui::ColorImage, Duration)>> {
+fn limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(MAX_ANIMATION_BYTES as u64);
+    limits
+}
+
+/// Frames shrunk to `edge`. Past `budget` bytes the first frame stands in as
+/// a still, as inline GIFs do, rather than looping a cut-short animation.
+fn animation(
+    frames: image::Frames<'_>,
+    edge: u32,
+    budget: usize,
+) -> Option<Vec<(egui::ColorImage, Duration)>> {
     let mut decoded = Vec::new();
     let mut bytes = 0;
     for frame in frames.take(MAX_ANIMATION_FRAMES) {
@@ -1570,14 +1596,25 @@ fn animation<'a>(frames: image::Frames<'a>) -> Option<Vec<(egui::ColorImage, Dur
         } else {
             delay
         };
-        let buffer = frame.into_buffer();
+        let buffer = fit_edge(frame.into_buffer(), edge);
         bytes += buffer.len();
-        if bytes > MAX_ANIMATION_BYTES {
+        if bytes > budget {
+            decoded.truncate(1);
             break;
         }
         decoded.push((color_image(buffer), delay));
     }
     (!decoded.is_empty()).then_some(decoded)
+}
+
+/// Scales down, keeping the aspect ratio, so neither side exceeds `edge`.
+fn fit_edge(image: image::RgbaImage, edge: u32) -> image::RgbaImage {
+    if image.width() <= edge && image.height() <= edge {
+        return image;
+    }
+    image::DynamicImage::ImageRgba8(image)
+        .thumbnail(edge, edge)
+        .into_rgba8()
 }
 
 fn color_image(image: image::RgbaImage) -> egui::ColorImage {
@@ -1875,21 +1912,32 @@ mod tests {
                 encoder.encode_frame(frame).unwrap();
             }
         }
-        let frames = decode_full(&bytes, "image/gif").unwrap();
+        let frames = decode_full(&bytes, "image/gif", MAX_EDGE).unwrap();
         assert_eq!(frames.len(), 2);
         // Profile metadata has no MIME type: sniff the original, not its URL.
-        assert_eq!(decode_full(&bytes, "image/webp").unwrap().len(), 2);
+        assert_eq!(
+            decode_full(&bytes, "image/webp", MAX_EDGE).unwrap().len(),
+            2
+        );
         assert_eq!(frames[0].0.size, [4, 2]);
         assert_eq!(frames[1].1, Duration::from_millis(150));
         let copied = decode_original(&bytes, "image/gif").unwrap();
         assert_eq!(copied.dimensions(), (4, 2));
         assert_eq!(copied.get_pixel(0, 0).0, [0, 0, 0, 255]);
+        // Past the memory budget, the first frame stands in as a still.
+        use image::AnimationDecoder;
+        let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(&bytes)).unwrap();
+        let still = animation(decoder.into_frames(), MAX_EDGE, 4 * 2 * 4 + 1).unwrap();
+        assert_eq!(still.len(), 1);
         // Stills decode once; formats needing FFmpeg fail cleanly without it.
         let mut png = Vec::new();
         image::RgbaImage::from_pixel(3, 3, image::Rgba([1, 2, 3, 255]))
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        assert_eq!(decode_full(&png, "image/png").unwrap()[0].0.size, [3, 3]);
+        assert_eq!(
+            decode_full(&png, "image/png", MAX_EDGE).unwrap()[0].0.size,
+            [3, 3]
+        );
         // Copy preserves original dimensions and straight alpha, even when the
         // viewer would shrink the image to MAX_EDGE.
         png.clear();
@@ -1902,8 +1950,44 @@ mod tests {
         assert!(decode_original(b"broken", "image/png").is_none());
         assert!(decode_original(b"broken", "image/webp").is_none());
         if crate::ffmpeg::binary().is_none() {
-            assert!(decode_full(b"not an avif", "image/avif").is_none());
+            assert!(decode_full(b"not an avif", "image/avif", MAX_EDGE).is_none());
             assert!(decode_original(b"not an avif", "image/avif").is_none());
         }
+    }
+
+    #[test]
+    fn wide_animations_shrink_to_fit_a_texture_like_stills() {
+        // A tiny file can still describe a frame wider than the GPU allows.
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            for _ in 0..2 {
+                let frame = image::Frame::from_parts(
+                    image::RgbaImage::from_pixel(8193, 16, image::Rgba([9, 9, 9, 255])),
+                    0,
+                    0,
+                    image::Delay::from_numer_denom_ms(100, 1),
+                );
+                encoder.encode_frame(frame).unwrap();
+            }
+        }
+        let frames = decode_full(&bytes, "image/gif", MAX_EDGE).unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].0.size, [4096, 8]);
+        // A smaller GPU limit wins over MAX_EDGE, for stills too.
+        assert_eq!(
+            decode_full(&bytes, "image/gif", 2048).unwrap()[1].0.size,
+            [2048, 4]
+        );
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(3000, 30, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(
+            decode_full(&png, "image/png", 2048).unwrap()[0].0.size,
+            [2048, 20]
+        );
+        let sliver = fit_edge(image::RgbaImage::new(9000, 1), MAX_EDGE);
+        assert_eq!((sliver.width(), sliver.height()), (4096, 1));
     }
 }

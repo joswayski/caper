@@ -1,6 +1,7 @@
 package chat.caper.android.data
 
 import kotlin.math.max
+import kotlin.math.pow
 
 /**
  * The overlay over a conversation while files are dragged onto it. Every client
@@ -30,10 +31,10 @@ object FileDrop {
     /** Resting pose per card, left to right: offset in dp and turn in degrees. */
     val poses = listOf(Triple(-46f, 10f, -16f), Triple(0f, -26f, 0f), Triple(46f, 10f, 16f))
 
-    /** Overshoots and settles, like CSS `cubic-bezier(0.34, 1.56, 0.64, 1)`. */
-    fun backOut(t: Float): Float {
-        val x = t.coerceIn(0f, 1f) - 1f
-        return 1f + 2.70158f * x * x * x + 1.70158f * x * x
+    /** Decelerates without overshooting, like the shared `--ease-out` entrances. */
+    fun easeOut(t: Float): Float {
+        val x = t.coerceIn(0f, 1f)
+        return if (x >= 1f) 1f else 1f - 2f.pow(-10f * x)
     }
 
     fun easeInOut(t: Float): Float {

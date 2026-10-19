@@ -1204,10 +1204,12 @@ fn manage(
 ) {
     let mut gateway: Option<gateway::GatewayControl> = None;
     let mut notifications: Option<(u64, crate::os_notifications::Control)> = None;
+    let badge = Arc::new(crate::app_badge::Badge::new(api.clone(), context.clone()));
     let mut credential_generation = 0;
     while let Ok(command) = incoming.recv() {
         match command {
             Command::StartNotifications { epoch, token } => {
+                badge.account(Some(token.clone()));
                 notifications.take();
                 let events = events.clone();
                 let context = context.clone();
@@ -1284,6 +1286,7 @@ fn manage(
                 ));
             }
             Command::StopNotifications => {
+                badge.account(None);
                 notifications.take();
             }
             Command::Connect {
@@ -1345,10 +1348,25 @@ fn manage(
                 let api = api.clone();
                 let events = events.clone();
                 let context = context.clone();
-                thread::spawn(move || execute(&api, command, &events, &context));
+                let badge = badge.clone();
+                let refresh_badge = matches!(
+                    command,
+                    Command::ReadDirect { .. }
+                        | Command::ReadChannel { .. }
+                        | Command::ThreadUnread { read: Some(_), .. }
+                        | Command::Account { .. }
+                        | Command::Admin { .. }
+                );
+                thread::spawn(move || {
+                    execute(&api, command, &events, &context);
+                    if refresh_badge {
+                        badge.refresh();
+                    }
+                });
             }
         }
     }
+    badge.account(None);
     if let Some(control) = gateway {
         control.stop();
     }

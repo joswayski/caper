@@ -416,7 +416,10 @@ async function fixture() {
     { deviceId: "default", kind: "audioinput", label: "Desk microphone" },
     { deviceId: "headset", kind: "audioinput", label: "Headset microphone" },
     { deviceId: "default", kind: "audiooutput", label: "Speakers" },
+    { deviceId: "speakers", kind: "audiooutput", label: "Speakers" },
     { deviceId: "headphones", kind: "audiooutput", label: "Headphones" },
+    { deviceId: "bluetooth", kind: "audiooutput", label: "Bluetooth headphones" },
+    { deviceId: "monitor", kind: "audiooutput", label: "HDMI monitor" },
   ];
   PublicCallClient.prototype.prepareMicrophone = () => {};
   PublicCallClient.prototype.openMicrophone = async function (deviceId) {
@@ -1900,6 +1903,9 @@ try {
   } else {
     for (const label of ["Input Options", "Output Options", "User Settings"]) {
       click(label);
+      wait(
+        `document.querySelector('.call-settings-panel').getAnimations().every(animation => animation.playState === 'finished')`,
+      );
       for (const position of ["top", "side", "bottom"]) {
         const [x, y] = evaluate(
           `const r = document.querySelector('.call-settings-panel').getBoundingClientRect(); return ${JSON.stringify(position)} === 'top' ? [Math.round(r.left + r.width / 2), Math.round(r.top + 3)] : ${JSON.stringify(position)} === 'side' ? [Math.round(r.right - 3), Math.round(r.top + r.height / 2)] : [Math.round(r.left + r.width / 2), Math.round(r.bottom - 3)];`,
@@ -1982,9 +1988,11 @@ try {
     wait(`!document.querySelector('dialog[open]')`);
     click("Input Options");
     assert.equal(
-      evaluate(`return !!document.querySelector('.call-settings-panel select');`),
+      evaluate(
+        `return !!document.querySelector('.audio-device-summary') && !document.querySelector('[role="menuitemradio"]');`,
+      ),
       true,
-      "Device menu must use a dropdown",
+      "Only the selected device appears beside volume until its picker opens",
     );
     browser("focus", '[aria-label="Input volume"]');
     browser("press", "End");
@@ -2006,23 +2014,39 @@ try {
       "matrix(-1, 0, 0, -1, 0, 0)",
       "Open chevron must point up",
     );
-    browser("click", 'select[name="input-device"]');
+    click("Input device");
     screenshot("voice-input-dropdown");
     browser("press", "Escape");
     assert.ok(
-      evaluate(`return !!document.querySelector('.call-settings-panel');`),
-      "Escape closes the native dropdown before its parent panel",
+      evaluate(
+        `return !!document.querySelector('.call-settings-panel') && !document.querySelector('.audio-device-drawer') && document.activeElement.getAttribute('aria-label') === 'Input device';`,
+      ),
+      "Escape closes device choices before its parent panel and restores focus",
     );
-    browser("select", 'select[name="input-device"]', "headset");
-    assert.equal(evaluate(`return document.querySelector('select[name="input-device"]').value;`), "headset");
+    click("Input device");
+    browser("press", "ArrowDown");
+    browser("press", "Enter");
+    assert.ok(
+      evaluate(`return document.querySelector('.audio-device-summary').textContent.includes('Headset microphone');`),
+    );
     screenshot("voice-input-options");
     click("Output Options");
     assert.equal(
       evaluate(`return document.querySelector('button[aria-label="Input Options"]').getAttribute('aria-expanded');`),
       "false",
     );
-    browser("select", 'select[name="output-device"]', "headphones");
-    assert.equal(evaluate(`return document.querySelector('select[name="output-device"]').value;`), "headphones");
+    click("Output device");
+    assert.equal(
+      evaluate(`return document.querySelectorAll('[role="menuitemradio"]').length;`),
+      5,
+      "System default and its physical device remain distinct choices",
+    );
+    browser("find", "role", "menuitemradio", "click", "--name", "Headphones", "--exact");
+    assert.ok(evaluate(`return document.querySelector('.audio-device-summary').textContent.includes('Headphones');`));
+    click("Output device");
+    assert.equal(evaluate(`return document.querySelector('[aria-checked="true"]').textContent;`), "Headphones");
+    screenshot("voice-output-choices");
+    browser("press", "Escape");
     browser("focus", '[aria-label="Output volume"]');
     browser("press", "PageDown");
     assert.equal(
@@ -2334,6 +2358,13 @@ try {
       ),
     );
     screenshot("voice-output-narrow");
+    click("Output device");
+    assert.ok(
+      evaluate(`const r = document.querySelector('.audio-device-drawer').getBoundingClientRect();
+      return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;`),
+    );
+    screenshot("voice-output-choices-narrow");
+    browser("press", "Escape");
     browser("press", "Escape");
     click("User Settings");
     screenshot("voice-settings-narrow");

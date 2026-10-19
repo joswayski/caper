@@ -61,6 +61,38 @@ private struct RestartAckBody: Encodable { let generation: String; let sequence:
 public struct AudioDevice: Identifiable, Hashable, Sendable {
     public let id: String
     public let name: String
+    public var symbol: String = ""
+
+    /// macOS's bridge exposes names, not transport types. Avoid guessing from
+    /// arbitrary Bluetooth/USB product names.
+    public func icon(input: Bool) -> String {
+        if !symbol.isEmpty { return symbol }
+        let label = name.lowercased()
+        if label.contains("bluetooth") { return "bluetooth" }
+        if label.contains("headset") { return "headset" }
+        if label.contains("headphone") || label.contains("airpods") { return "headphones" }
+        if !input && (label.contains("monitor") || label.contains("hdmi") || label.contains("displayport")) { return "monitor" }
+        return input ? "mic" : "speaker.wave.2"
+    }
+
+    #if os(iOS)
+    init(port: AVAudioSessionPortDescription) {
+        id = port.uid; name = port.portName
+        switch port.portType {
+        case .bluetoothA2DP, .bluetoothHFP, .bluetoothLE: symbol = "bluetooth"
+        case .headsetMic: symbol = "headset"
+        case .headphones: symbol = "headphones"
+        case .HDMI, .displayPort: symbol = "monitor"
+        case .builtInMic: symbol = "mic"
+        case .builtInReceiver: symbol = "iphone"
+        case .builtInSpeaker: symbol = "speaker.wave.2"
+        case .airPlay: symbol = "airplayaudio"
+        default: symbol = ""
+        }
+    }
+    #endif
+
+    init(id: String, name: String) { self.id = id; self.name = name }
 }
 
 public struct VoiceContext: Equatable, Sendable {
@@ -841,8 +873,8 @@ public final class VoiceClient {
     public func refreshAudioDevices() async {
         #if os(iOS)
         let audio = AVAudioSession.sharedInstance()
-        availableInputs = (audio.availableInputs ?? []).map { AudioDevice(id: $0.uid, name: $0.portName) }
-        availableOutputs = audio.currentRoute.outputs.map { AudioDevice(id: $0.uid, name: $0.portName) }
+        availableInputs = audio.currentRoute.inputs.map { AudioDevice(port: $0) }
+        availableOutputs = audio.currentRoute.outputs.map { AudioDevice(port: $0) }
         selectedInputID = audio.currentRoute.inputs.first?.uid
         selectedOutputID = audio.currentRoute.outputs.first?.uid
         #else

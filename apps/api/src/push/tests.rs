@@ -2163,6 +2163,7 @@ async fn deliveries_reach_providers_revoke_dead_tokens_and_retry_with_backoff(po
     let body = &apns_requests[0].body;
     assert_eq!(body["aps"]["alert"]["title"], "Alice · #general (Studio)");
     assert_eq!(body["aps"]["mutable-content"], 1);
+    assert_eq!(body["aps"]["badge"], 1);
     assert_eq!(body["senderAvatarId"], 317);
     assert_eq!(body["recipientCount"], 2);
     assert!(
@@ -3653,6 +3654,7 @@ async fn deleting_a_message_takes_back_its_delivered_pushes(pool: PgPool) {
     let original = h.apns.take();
     assert_eq!(original.len(), 1);
     assert_eq!(original[0].headers["apns-collapse-id"], shown.as_str());
+    assert_eq!(original[0].body["aps"]["badge"], 1);
     assert_eq!(h.fcm.take().len(), 1);
 
     let mut profiles = redis::Client::open(std::env::var("CHAT_TEST_VALKEY_URL").unwrap())
@@ -3700,6 +3702,7 @@ async fn deleting_a_message_takes_back_its_delivered_pushes(pool: PgPool) {
     assert_eq!(body["aps"]["alert"]["title"], "Alice · #general (Studio)");
     assert_eq!(body["aps"]["alert"]["body"], RETRACTED_BODY);
     assert_eq!(body["aps"]["interruption-level"], "passive");
+    assert_eq!(body["aps"]["badge"], 0);
     assert!(body["aps"].get("sound").is_none());
     assert_eq!(body["kind"], "message.deleted");
     assert_eq!(body["deletedMessageId"], shown.as_str());
@@ -3727,4 +3730,171 @@ async fn deleting_a_message_takes_back_its_delivered_pushes(pool: PgPool) {
     deliver(&h).await;
     retract().await;
     assert!(h.apns.take().is_empty() && h.fcm.take().is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL and CHAT_TEST_VALKEY_URL"]
+async fn icon_badge_counts_messages_and_consent_not_events_or_deliveries(pool: PgPool) {
+    let h = harness(&pool).await;
+    let alice = person(&pool, "alice").await;
+    let bob = person(&pool, "bob").await;
+    let outsider = person(&pool, "outsider").await;
+    let (space_id, space_external) = space(&pool, &alice, &[&bob]).await;
+    let general = channel(&pool, space_id, "general", false, &[&alice, &bob]).await;
+    let dm = direct(&h, &alice, "bob").await;
+    let assert_count = |expected| {
+        let app = h.app.clone();
+        let token = bob.token.clone();
+        async move {
+            let (status, body) = call(
+                &app,
+                "GET",
+                "/api/spaces/unread",
+                Some(&token),
+                None,
+                Value::Null,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["badgeCount"], expected, "{body}");
+        }
+    };
+    assert_count(0).await;
+    let root = send(&h, &bob, &general, "My thread", None).await;
+    send(&h, &alice, &general, "One", None).await;
+    send(&h, &alice, &general, "Two", None).await;
+    send(&h, &alice, &general, "Reply", Some(&root)).await;
+    send(&h, &bob, &dm, "My own message", None).await;
+    send(&h, &alice, &dm, "Direct", None).await;
+    assert_count(4).await;
+    // Alert settings and an advanced event head cannot manufacture or hide unread messages.
+    put_json(
+        &h.app,
+        "/api/notifications/settings",
+        &bob.token,
+        json!({"level":"nothing"}),
+    )
+    .await;
+    sqlx::query("UPDATE channels SET last_seq=last_seq+20 WHERE external_id=$1")
+        .bind(&general)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_count(4).await;
+    let channel_path = format!("/api/spaces/{space_external}/channels/{general}");
+    assert_eq!(
+        call(
+            &h.app,
+            "POST",
+            &format!("{channel_path}/read"),
+            Some(&bob.token),
+            None,
+            json!({"seq":"999"})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_count(2).await; // The unread thread reply survives reading its channel.
+    assert_eq!(
+        call(
+            &h.app,
+            "PUT",
+            &format!("/api/chat/channels/{general}/messages/{root}/thread/read"),
+            Some(&bob.token),
+            None,
+            json!({"seq":"999"})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_count(1).await;
+    assert_eq!(
+        call(
+            &h.app,
+            "POST",
+            &format!("/api/dms/{dm}/read"),
+            Some(&bob.token),
+            None,
+            json!({"seq":"999"})
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_count(0).await;
+    // A mute hides ordinary unread messages, never a direct mention. Forward
+    // metadata, deleted messages and blocked authors must not keep it lit.
+    put_json(
+        &h.app,
+        &format!("{channel_path}/notifications"),
+        &bob.token,
+        json!({"mutedUntil":"forever"}),
+    )
+    .await;
+    send(&h, &alice, &general, "Muted", None).await;
+    let mention = send(&h, &alice, &general, "@bob hello", None).await;
+    assert_count(1).await;
+    sqlx::query("UPDATE messages SET deleted_at=now() WHERE external_id=$1")
+        .bind(&mention)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_count(0).await;
+    send(&h, &alice, &general, "@bob again", None).await;
+    assert_count(1).await;
+    assert_eq!(
+        call(
+            &h.app,
+            "PUT",
+            &format!("/api/blocks/{}", alice.external_id),
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_count(0).await;
+    // Pending requests count once, even before any message or notification worker.
+    let request = direct(&h, &outsider, "bob").await;
+    send(&h, &outsider, &request, "Request preview", None).await;
+    assert_count(1).await;
+    assert_eq!(
+        call(
+            &h.app,
+            "POST",
+            &format!("/api/dms/{request}/decline"),
+            Some(&bob.token),
+            None,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_count(0).await;
+    let (_, invitation) = space(&pool, &outsider, &[]).await;
+    assert_eq!(
+        call(
+            &h.app,
+            "POST",
+            &format!("/api/spaces/{invitation}/members"),
+            Some(&outsider.token),
+            None,
+            json!({"username":"bob"})
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    assert_count(1).await;
+    sqlx::query("UPDATE space_invitations SET updated_at=now()-interval '8 days' WHERE user_id=$1")
+        .bind(bob.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_count(0).await;
 }

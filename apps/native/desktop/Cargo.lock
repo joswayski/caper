@@ -837,6 +837,7 @@ dependencies = [
  "winreg",
  "winresource",
  "winrt-toast-reborn",
+ "zbus 5.19.0",
 ]
 
 [[package]]

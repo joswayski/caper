@@ -27,6 +27,13 @@
   --pin-wash: rgb(228 199 106 / 6%);
   /* Errors and destructive actions: readable on every dark surface. */
   --error-text: #ff9b82;
+  --danger: #b93646;
+  --danger-hover: #d44355;
+  --danger-wash: rgb(185 54 70 / 16%);
+  --on-danger: #fff;
+  /* Muted microphone, hang up and leave voice. */
+  --voice-off: #ff7182;
+  --voice-off-wash: rgb(212 67 85 / 18%);
   --radius: 8px;
   /* The account dock and message field share one bottom edge. */
   --workspace-bottom-inset: 16px;
