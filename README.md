@@ -3,131 +3,25 @@
 A place for your people. Text and voice conversations at [caper.chat](https://caper.chat).
 Early-stage and actively in development.
 
-Accounts receive a saved, random Caper avatar from 100 designs and eight colorways.
-People can replace it with their own picture, and space owners can give a space an
-icon, on web, Android, iPhone/Mac and Windows/Linux desktop. Animated GIFs play for
-everyone who sees them (a still frame with reduced motion). Removing a picture brings
-back the same mascot or the space's initial. There is no avatar gallery. See
-[custom pictures](docs/media.md#custom-profile-pictures-and-space-icons-october-14-2026).
+Caper runs on the web, Android, iPhone/Mac and Windows/Linux desktop. Phones install
+public betas from the homepage (TestFlight and a Google Play closed test).
 
-Signed-in members can attach up to 10 files per message on web, Android,
-iPhone/Mac and Windows/Linux desktop: images, video, audio and other files.
-Clients compress on the device: screenshots and graphics stay lossless, photos
-are re-encoded at very high quality (AVIF or WebP), and video is converted to
-H.264 up to 1440p so it plays everywhere, which loses some resolution and
-detail from 4K and HDR footage; other files upload unchanged and upload straight
-to private storage, within a per-person allowance (10 GB by default). Before
-sharing, the server removes location and descriptive metadata from supported
-images, GIFs, video and audio without recompression; media it cannot clean is
-refused. Documents and archives keep their contents. Desktop opens
-video and audio in the system player. See [Uploads and attachments](docs/media.md#uploads-and-attachments).
+## What works today
 
-Before sending, a pencil on an attached photo or video, or Crop, Draw and Text
-in its preview, opens an editor on every client: crop, rotate, draw and add
-text, with preset or custom colours and a size slider, plus undo, redo and
-reset. Saving replaces that file's upload with
-the original re-prepared with the edits, which stay editable until it is sent;
-an edit that cannot be applied fails instead of sending the unedited file.
-Drawings and text on a video stay for its whole length; Windows/Linux desktop
-can crop and rotate videos but not draw on them until its bundled FFmpeg gains
-an overlay filter. See
-[editing attachments](docs/media.md#editing-attachments-before-sending).
+- Spaces with text and voice channels, private channels and invite links ([invites](docs/media.md#invite-links))
+- Direct messages and notifications ([notifications](docs/notifications.md))
+- Threads, pins, forwarding, editing and deleting messages
+- File and media attachments, with an editor to crop, draw and add text ([uploads](docs/media.md#uploads-and-attachments))
+- Profile pictures and space icons ([pictures](docs/media.md#custom-profile-pictures-and-space-icons-october-14-2026))
+- `@feedback` in any conversation to reach the Caper team ([feedback](docs/media.md#feedback-in-place))
+- Desktop apps that update themselves ([native apps](apps/native/README.md))
 
-Space owners can share invite links like `caper.chat/invite/AbCdE12345`, Discord
-style: each link expires after a time you choose (1 minute to 365 days; 7 days by
-default) or never, can cap its uses (1 to 10,000; no limit by default), and opens in
-a chosen public channel. Anyone can preview a live link; signing in returns to it
-to join. Owners list, copy and revoke links in **Manage space**; signed-in people can
-also paste a link to join from web, Android, iPhone/Mac and desktop. Invite links open
-the installed app: iPhone and Android open `caper.chat/invite/...` directly, and the
-invite page's **Open in the Caper app** (`caper://invite/...`) opens the Mac, Windows
-and Linux apps, reusing an open Caper window. Android Play installs open links directly
-only once Play's app-signing fingerprint is published; until then they use that button
-([to do](docs/media.md#invite-links): that fingerprint and the iPhone signing check). See
-[invite links](docs/media.md#invite-links).
-
-Signed-in accounts can start persistent, private one-to-one messages by username.
-The new-message and invite fields suggest people you already share a space or DM
-with (avatar, display name and username); there is no account directory search.
-The Direct messages list is shared across spaces. Phone push is implemented behind
-server flags using APNs for iOS and FCM for Android, with sender avatars. Open web
-tabs and running desktop apps also implement local OS notifications; alerts after
-desktop quit or browser close are not implemented. Space/private-channel invites
-and new DM requests notify recipients and open explicit request review. Pending
-DM messages stay quiet until acceptance. Real-provider and physical-device validation
-is still pending. See [notification behavior and rollout](docs/notifications.md).
-
-Channel pins are shared with everyone who can read the channel. Joined members
-can pin or unpin in one action; the channel header opens the complete pins list.
-Native implementation and validation status are tracked in [the runbook](docs/media.md#message-pins).
-
-Channel messages support threads: replies stay with their parent, with reply counts
-and participant avatars in the channel. Desktop uses a right panel and mobile a
-full-screen view. **Also send to channel** shows the same reply in both places,
-sharing its reactions. Native release and validation gaps are tracked in
-[the runbook](docs/media.md#message-threads).
-
-**Forward message** shares a live, read-only conversation across spaces or into
-an existing DM, including edits, reactions and future replies. Destination readers do
-not need source membership; their replies stay in a separate destination thread.
-Native validation and rollout are tracked in
-[the runbook](docs/media.md#live-message-forwarding). This change is not deployed
-by merging alone.
-
-Writing `@feedback` (or `@caper`, `@admin`, `@mods`, `@support`, `@team`…) in any
-channel, thread, DM or personal note asks the Caper team to look. The message stays
-where it is, marked **Caper team has been notified 🫡**. Feedback team members get a
-push and an inbox of reports, and take part in that conversation like a member
-without joining it: they read it for context and reply in place with an **ADMIN**
-badge, so everyone there sees the answer. Messaging `@caper` (or `@feedback`) from
-**New message** opens a private DM where each message goes to the team. Team membership is managed in
-SQL. See [Feedback](docs/media.md#feedback-in-place).
-
-Authors can edit messages on web, Android, Apple and Rust desktop, including
-thread roots/replies and DMs. The edited indicator opens retained history with
-the previous/current versions side by side and older changes selectable below;
-broadcast replies update in both places. See platform validation gaps and
-[editing and rollout details](docs/media.md#message-editing).
-
-Authors can also delete their own messages on every client; a deleted message
-leaves "This message was deleted." in place and its thread stays reachable. See
-[message deletion](docs/media.md#message-deletion).
-
-Mac release downloads use a signed, notarized disk image: open it, drag Caper onto
-Applications, eject the image, then launch Caper from Applications. `~/Applications`
-also works without administrator access. Release copies outside these folders or
-in a non-writable folder show installation instructions and quit instead of leaving
-you using a copy that cannot reliably update. Windows Setup installs per-user and
-creates Start/Desktop shortcuts. Linux `.deb` installs use the package manager;
-only writable, self-contained Linux archive installs support in-app installation
-of updates. See [native installation details](apps/native/README.md#signed-builds-for-testers).
-
-Packaged Mac, Windows, and Linux apps check for updates 20 seconds after launch
-and every minute, using signed metadata cached on Caper's server for 60 seconds.
-Check manually with **Caper → Check for Updates…** on Mac or
-**User Settings → Settings… → Updates → Check for updates** on Windows/Linux.
-Installing requires confirmation and a restart; protected installs offer a download
-instead. Update prompts keep installation controls visible while version-grouped
-release notes scroll separately (expand **What’s new** on Windows/Linux).
-Failed attempts show their error and a manual-installer alternative after restart.
-Signed releases retain user-facing changes since
-earlier builds, excluding test-only, CI, infrastructure, tooling, documentation,
-and dependency-maintenance changes; the prompt says when older notes were never
-recorded or are no longer retained.
-Existing apps keep their previous update UI and schedule until updated once.
-Phones install public betas from the homepage: iPhone through a TestFlight public
-link and Android through a Google Play closed test. Both update automatically.
-
-Published builds also implement **What’s new** after an update, with retained
-history in User Settings. Release-time Claude summaries group user-facing changes
-and keep maintenance releases quiet. First installs establish a quiet baseline.
-This needs separate workflow-secret configuration and API/client rollout; merging
-does not activate it. See [release highlights](docs/media.md#release-highlights-whats-new).
+Per-feature details, rollout state and validation gaps live in [docs/media.md](docs/media.md).
 
 ## Development
 
-You'll need Node.js 24, npm 11+, Docker Compose, and AWS CLI access to the `staging` profile.
-Rust development uses Rust 1.94.
+You'll need Node.js 24, npm 11+, Docker Compose, Rust 1.94, and AWS CLI access to
+the `staging` profile.
 
 ```bash
 npm ci
@@ -135,63 +29,41 @@ aws sso login --profile staging
 npm run dev
 ```
 
-Open `http://localhost:3000/login`. Docker Compose runs the web app, API, gateway,
-and local Valkey. Configuration comes from AWS Secrets Manager (`staging/apps/caper`),
-with `.env` and Compose defaults as fallbacks. See [.env.example](.env.example)
-for available settings. Stop the stack with Ctrl-C.
+Open `http://localhost:3000/login`. Compose runs the web app, API, gateway and Valkey;
+config comes from AWS Secrets Manager (`staging/apps/caper`), with
+[.env.example](.env.example) listing the settings.
 
-JavaScript/TypeScript tooling uses Vite 8 (Rolldown/Oxc), Vitest 5, the native
-TypeScript 7 compiler (`tsc`), Oxlint, and Oxfmt. Node/npm remain the runtime and
-package manager; Rust keeps rustfmt/Clippy, and native clients keep their platform
-build/test tools. Run these commands from the repository root:
+Checks:
 
 ```bash
-npm test                 # Web unit tests and shared native fixture/icon tests
-npm run test:watch       # Vitest watch mode; add -- --project web to filter
-npm run test:native      # Shared JavaScript tests, not native device acceptance
-npm run typecheck        # Native TypeScript compiler; no production bundle
-npm run lint            # Oxlint correctness checks, warnings fail the command
-npm run fmt             # Oxfmt for first-party JS/TS/CSS and tooling JSON
-npm run check           # Lint, formatting check, production build + typecheck
+npm run check   # lint, format check, build, typecheck
+npm test        # unit tests
+npm run fmt     # format JS/TS/CSS
+
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Unit tests use separate Vitest configs so they do not start app build plugins or
-fetch GitHub history. Test files remain isolated; cleanup restores mocks, globals,
-and timers. Generated routes and vendored audio runtimes are excluded from lint;
-formatting also leaves versioned public assets untouched to preserve immutable
-cache URLs. Lint permits side-effect ternaries and object-rest omission;
-test mocks may retain their constructed instances via `this` aliases.
-
-Python tooling uses [uv](https://docs.astral.sh/uv/getting-started/installation/)
-0.12.23 and Ruff. `uv sync --locked` creates an isolated environment using the
-existing Python 3.12 CI version; it installs only development checks by default.
+Python tooling uses [uv](https://docs.astral.sh/uv/) and Ruff:
 
 ```bash
-uv sync --locked
 uv run --locked ruff check .
-uv run --locked ruff format --check .  # Omit --check to format Python
+uv run --locked ruff format --check .
 uv run --locked python -m unittest discover -s tests -p 'test_*.py' -v
-uv run --locked python shared/fonts/test_native_fonts.py -v
 ```
-
-The `publish`, `dmg`, and `audio` dependency groups separately lock store-upload,
-Mac disk-image, and offline ONNX-authoring tools. CI selects only the group each
-job needs; it no longer installs Python dependencies into the runner's global
-environment. Dependency-free scripts can still run directly with Python 3.11+.
-Native releases carry the workflow revision's Python tooling separately, so
-rebuilding historical app source does not require that source to contain a lockfile.
 
 ## Repository
 
 - [apps/web](apps/web) — TanStack Start web app
 - [apps/api](apps/api) — Rust API and WebSocket gateway
-- [apps/native](apps/native/README.md) — native development clients; not yet feature-parity releases
+- [apps/native](apps/native/README.md) — Android, Apple and desktop clients
 - [shared](shared) — shared design tokens
 
 ## Documentation
 
 - [Configuration, deployment, and testing](docs/media.md)
-- [Notifications: phone push, settings and design](docs/notifications.md)
-- [Native builds and platform status](apps/native/README.md)
+- [Notifications](docs/notifications.md)
+- [Native builds and installs](apps/native/README.md)
 - [Brand and style guide](docs/brand)
 - [Caper character catalog](assets/avatars/README.md)
