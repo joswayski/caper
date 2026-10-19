@@ -47,6 +47,7 @@ mod uploads;
 mod viewer;
 mod voice;
 mod whats_new;
+mod window_state;
 mod worker;
 
 use chrono::{DateTime, Local, TimeZone};
@@ -1034,6 +1035,7 @@ fn projected_reactions(
 
 struct CaperApp {
     daily_icon: Option<daily_icon::DailyIcon>,
+    window_state: Option<window_state::WindowState>,
     /// When files were first dragged over the window, for the drop overlay's animation.
     file_drop_since: Option<f64>,
     /// The `parity-file-drop` fixture shows the overlay without a drag.
@@ -1411,6 +1413,7 @@ impl CaperApp {
         reaction_textures.preload(context, emoji::CATEGORIES[0].0);
         let mut app = Self {
             daily_icon: None,
+            window_state: None,
             file_drop_since: None,
             file_drop_fixture: false,
             worker,
@@ -9055,6 +9058,9 @@ impl eframe::App for CaperApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if let Some(window) = &self.window_state {
+            window.save(storage);
+        }
         if let Some(icon) = &self.daily_icon {
             storage.set_string("daily-icon-day-v1", icon.day.clone());
             storage.set_string("daily-icon-index-v1", icon.index.to_string());
@@ -9073,6 +9079,9 @@ impl eframe::App for CaperApp {
     }
 
     fn update(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some(window) = &mut self.window_state {
+            window.update(context);
+        }
         if motion::reduced() && context.style().animation_time > 0.0 {
             // egui's own fades, scrolls and disclosures rest at once too.
             context.all_styles_mut(|style| {
@@ -28959,34 +28968,20 @@ fn main() -> eframe::Result {
         "Caper",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
-            // Saved minimized-window geometry can be tiny on Windows and
-            // overrides the builder's maximized flag. Stop saving geometry;
-            // account and settings persistence remain independent.
+            // Cache usable normal bounds ourselves; eframe otherwise saves
+            // minimized/maximized geometry instead of the restore rectangle.
             persist_window: false,
-            // This hook runs AFTER eframe restores old geometry, even when
-            // persist_window is false. On Windows, winit maximizes a hidden
-            // window with SW_MAXIMIZE then SW_HIDE, flashing it before paint.
-            // Start windowed and let the first-frame command below maximize it.
-            #[cfg(target_os = "windows")]
-            window_builder: Some(Box::new(|builder| {
-                builder.with_fullscreen(false).with_maximized(false)
-            })),
+            window_builder: fixture
+                .is_none()
+                .then(|| Box::new(window_state::window_builder) as eframe::WindowBuilderHook),
             viewport,
             ..Default::default()
         },
         Box::new(move |creation| {
-            if fixture.is_none() {
-                // eframe applies these commands after painting and showing the
-                // first frame. Keep Windows hidden until then, and override
-                // restored geometry elsewhere. Never maximize on every repaint.
-                creation
-                    .egui_ctx
-                    .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                creation
-                    .egui_ctx
-                    .send_viewport_cmd(egui::ViewportCommand::Maximized(true));
-            }
             let mut app = CaperApp::new(&creation.egui_ctx, api, fixture.as_deref());
+            if fixture.is_none() {
+                app.window_state = Some(window_state::WindowState::load(creation.storage));
+            }
             motion::watch_reduced(&creation.egui_ctx);
             if let Some(storage) = creation.storage {
                 app.restore_preferences(storage);

@@ -9285,3 +9285,32 @@ or Safari acceptance). Rust desktop has endpoint, state and rail tests; its
 connected and neutral badges were rendered and inspected in Linux/Xvfb fixtures.
 Android SDK and Apple/Xcode toolchains are unavailable in this Linux orb;
 their new API tests and native rendering still need platform validation.
+
+## Desktop window restoration (October 19, 2026)
+
+The Rust desktop client retains its normal window size/position and its
+maximized/fullscreen mode across normal exits and update restarts. Minimized
+geometry never replaces the last usable bounds; maximized/fullscreen bounds
+never replace the normal restore rectangle. Invalid legacy tiny saves fall back
+to the default window. Windows still starts hidden and applies the saved mode
+after the first painted frame rather than maximizing before paint. Fixtures do
+not save this state. The record uses eframe 0.33's `window` format so its existing
+monitor/DPI placement and off-screen clamping remain in effect.
+
+This starts remembering geometry with the fixed build; it cannot recover a
+layout the previous build never saved. macOS's separate SwiftUI client retains
+its system-managed window restoration; browser and mobile windows remain owned
+by their browser/OS, not the Rust updater.
+
+Validation: desktop `cargo test` passes (640 passed, 16 existing ignored),
+`cargo build`, package formatting and application Clippy pass on Linux.
+Regression coverage includes minimized and maximized bounds, saved fullscreen,
+asynchronous startup mode changes, scaled coordinates and invalid legacy sizes.
+Real Xvfb/Openbox relaunches preserve a 910×710 content area at outer position
+(170, 115), maximized state and normal bounds after closing while minimized.
+An explicitly seeded app-managed fullscreen record also reopens fullscreen and
+keeps its normal rectangle on exit.
+No Windows runtime, Windows snapping/multi-monitor/DPI-change acceptance, macOS
+runtime or signed installer update was exercised. A Linux window-manager-forced
+fullscreen check did not round-trip as fullscreen; app-managed fullscreen
+restoration does not establish support for that external window-manager mode.
