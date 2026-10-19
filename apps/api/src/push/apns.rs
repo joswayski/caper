@@ -93,7 +93,13 @@ impl Apns {
             .header("apns-priority", "10")
             .header(
                 "apns-expiration",
-                (chrono::Utc::now().timestamp() + EXPIRATION_SECONDS).to_string(),
+                (chrono::Utc::now().timestamp()
+                    + if alert.kind == "voice.started" {
+                        300
+                    } else {
+                        EXPIRATION_SECONDS
+                    })
+                .to_string(),
             )
             .json(&payload(alert));
         if let Some(id) = alert.collapse_id() {

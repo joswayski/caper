@@ -947,6 +947,9 @@ struct Participant {
     state_sequence: u64,
     lease: Timestamp,
     joined: Timestamp,
+    /// Existing shared sessions default to ready during a rolling upgrade.
+    #[serde(default)]
+    voice_join_pending: bool,
     tracks: HashMap<String, Track>,
     subscriptions: HashMap<String, Uuid>,
     pending_offer: bool,
@@ -2176,6 +2179,7 @@ async fn join(
         state_sequence: 0,
         lease: Timestamp::now(),
         joined: joined_at,
+        voice_join_pending: true,
         tracks: HashMap::new(),
         subscriptions: HashMap::new(),
         pending_offer: false,
@@ -2281,6 +2285,22 @@ async fn join(
             // Uncertain: clean up whatever may exist and pull after connecting.
             Err(error) => abandon_pull(&s, &session, Err(error)).await,
         }
+    }
+    if push::voice::joined(&s, id).await.is_err() {
+        // Notification outages must not tear down a working voice connection.
+        tracing::warn!(
+            event_name = "voice_notification_failed",
+            "voice notification unavailable"
+        );
+        // Best effort: subsequent starts should still see this working call.
+        let _ = s
+            .update(|r| {
+                if let Some(p) = r.participants.get_mut(&id) {
+                    p.voice_join_pending = false;
+                }
+                Ok(())
+            })
+            .await;
     }
     Ok(Json(response))
 }

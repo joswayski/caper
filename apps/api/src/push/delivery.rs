@@ -67,6 +67,7 @@ impl Claimed {
             "mention.everyone" => Kind::MentionEveryone,
             "space.invitation" | "channel.invitation" => Kind::Invitation,
             "direct.request" => Kind::DirectRequest,
+            "voice.started" => Kind::VoiceStarted,
             "feedback" => Kind::Feedback,
             _ => return false,
         };
@@ -117,6 +118,16 @@ impl Claimed {
                 id: self.channel_id.clone(),
             },
         };
+        if self.kind == "voice.started" {
+            return Alert::voice(
+                self.notification_id,
+                conversation,
+                &self.channel_name,
+                &self.sender,
+                &self.sender_id,
+                self.sender_avatar_id,
+            );
+        }
         Alert::new(
             &self.kind,
             &self.message_id,
@@ -175,7 +186,8 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                 (dev.revoked_at IS NULL AND a.revoked_at IS NULL AND a.expires_at > now()
                  AND a.user_id=dev.user_id AND dev.user_id=n.user_id) AS session_valid,
                 (s.deleted_at IS NULL AND (n.message_id IS NULL OR ch.deleted_at IS NULL)) AS conversation_live,
-                CASE WHEN n.kind='direct.request' THEN COALESCE(req.eligible,false)
+                CASE WHEN n.kind='voice.started' THEN COALESCE(voice.eligible,false)
+                WHEN n.kind='direct.request' THEN COALESCE(req.eligible,false)
                 WHEN n.message_id IS NULL THEN COALESCE(inv.eligible,false)
                 ELSE (recipient.deleted_at IS NULL AND m.deleted_at IS NULL AND author.id IS NOT NULL
                  AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.deleted_at IS NULL
@@ -222,6 +234,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
          LEFT JOIN public.spaces s ON s.id=n.space_id
          LEFT JOIN public.notification_invitation_sources inv ON inv.id=n.id
          LEFT JOIN public.notification_request_sources req ON req.id=n.id
+         LEFT JOIN public.notification_voice_sources voice ON voice.id=n.id
          JOIN public.users recipient ON recipient.id=n.user_id
          LEFT JOIN public.users author ON author.id=n.actor_id AND author.deleted_at IS NULL
          LEFT JOIN public.notification_settings ns ON ns.user_id=n.user_id
@@ -275,7 +288,7 @@ async fn attempt(workers: &Workers, claimed: &Claimed) -> Attempt {
     }
     let consent = matches!(
         claimed.kind.as_str(),
-        "space.invitation" | "channel.invitation" | "direct.request"
+        "space.invitation" | "channel.invitation" | "direct.request" | "voice.started"
     );
     if (claimed.held || consent) && claimed.mobile != "always" {
         // Still active on another session: that client already showed it.

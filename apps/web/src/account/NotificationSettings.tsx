@@ -1,6 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { NotificationLevel } from "../spaces/client.ts";
-import { refreshNotificationSettings, setNotificationLevel, useNotificationSettings } from "../spaces/notifications.ts";
+import {
+  refreshNotificationSettings,
+  setNotificationLevel,
+  setVoiceStarted,
+  useNotificationSettings,
+} from "../spaces/notifications.ts";
 import {
   browserNotificationPermission,
   browserNotificationsEnabled,
@@ -78,6 +83,26 @@ export default function NotificationSettings() {
             </span>
           </label>
         ))}
+      </fieldset>
+      <fieldset disabled={!settings.loaded} aria-busy={saving}>
+        <legend>Voice</legend>
+        <label>
+          <input
+            type="checkbox"
+            checked={settings.voiceStarted}
+            onChange={(event) => {
+              if (saving) return;
+              setSaving(true);
+              setError(undefined);
+              void setVoiceStarted(event.target.checked)
+                .catch(() => setError("That change wasn’t saved. Try again."))
+                .finally(() => setSaving(false));
+            }}
+          />
+          <span>
+            <strong>When voice starts in a space</strong>
+          </span>
+        </label>
       </fieldset>
       <fieldset>
         <legend>On this browser</legend>

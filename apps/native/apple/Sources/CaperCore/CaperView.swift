@@ -8288,6 +8288,10 @@ private struct NotificationsSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     levelSection
+                    Toggle("When voice starts in a space", isOn: Binding(
+                        get: { model.notificationSettings?.voiceStarted ?? true },
+                        set: { enabled in Task { await model.setVoiceStartedNotifications(enabled) } }))
+                        .disabled(model.notificationSettings == nil || model.accountNotificationsSaving.contains("voiceStarted"))
                     if model.pushAvailable { phoneSection }
                     status
                 }.padding(22).frame(maxWidth: .infinity, alignment: .leading)

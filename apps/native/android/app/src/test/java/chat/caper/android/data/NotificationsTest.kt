@@ -15,6 +15,20 @@ class NotificationsTest {
     private val utc = ZoneId.of("UTC")
     private fun decode(text: String) = json.decodeFromString<NotificationSettings>(text).normalized()
 
+    @Test fun `voice defaults inherit and voice-only overrides survive edits`() {
+        assertTrue(decode("{}").voiceStarted)
+        val settings = decode("""{"voiceStarted":false,"overrides":[{"spaceId":"space0000001","voiceStarted":true}]}""")
+        assertFalse(settings.voiceStarted)
+        val key = spaceKey("space0000001")
+        assertEquals(true, settings.withOverride(key, settings.override(key)).override(key)?.voiceStarted)
+        assertEquals("{\"voiceStarted\":null}", OverrideChange.VoiceStarted(null).body().toString())
+        val edits = NotificationEdits(settings)
+        val ticket = edits.begin(VOICE_KEY) { it.copy(voiceStarted = true) }
+        edits.failed(VOICE_KEY, ticket)
+        assertFalse(edits.shown.voiceStarted)
+        assertEquals(true, edits.shown.override(key)?.voiceStarted)
+    }
+
     @Test fun `settings decode with every scope`() {
         val settings = decode("""{"level":"all","mobile":"whenInactive","overrides":[
             {"spaceId":"space0000001","level":"mentions","mutedUntil":null},

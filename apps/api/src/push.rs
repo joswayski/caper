@@ -32,6 +32,7 @@ mod retraction;
 mod settings;
 #[cfg(test)]
 mod tests;
+pub(crate) mod voice;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Platform {
@@ -252,6 +253,27 @@ impl Alert {
             &format!("{sender} wants to message you."),
         );
         alert.title = "Message request".into();
+        alert.notification_id = Some(id.to_string());
+        alert
+    }
+
+    pub(crate) fn voice(
+        id: i64,
+        conversation: Conversation,
+        channel_name: &str,
+        sender: &str,
+        sender_id: &str,
+        avatar: Option<i16>,
+    ) -> Self {
+        let mut alert = Self::new(
+            "voice.started",
+            "",
+            conversation,
+            sender,
+            sender_id,
+            avatar,
+            &format!("{sender} joined voice in #{channel_name}."),
+        );
         alert.notification_id = Some(id.to_string());
         alert
     }

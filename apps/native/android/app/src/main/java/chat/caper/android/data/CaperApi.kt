@@ -106,9 +106,9 @@ class CaperApi(
     suspend fun notificationSettings(token: String): NotificationSettings =
         get<NotificationSettings>("/api/notifications/settings", token).normalized()
     /** Changes the account [level] and/or [mobile]; a null argument is left out and stays as it is. */
-    suspend fun updateNotificationSettings(token: String, level: String? = null, mobile: String? = null): NotificationSettings = request<NotificationSettings>(
+    suspend fun updateNotificationSettings(token: String, level: String? = null, mobile: String? = null, voiceStarted: Boolean? = null): NotificationSettings = request<NotificationSettings>(
         "/api/notifications/settings", "PUT", token,
-        buildJsonObject { level?.let { put("level", it) }; mobile?.let { put("mobile", it) } }.toString(),
+        buildJsonObject { level?.let { put("level", it) }; mobile?.let { put("mobile", it) }; voiceStarted?.let { put("voiceStarted", it) } }.toString(),
     ).normalized()
     suspend fun setSpaceNotifications(token: String, space: String, change: OverrideChange): NotificationOverride =
         setOverride("/api/spaces/${space.pathId()}/notifications", token, change, spaceKey(space))

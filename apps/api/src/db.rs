@@ -229,6 +229,11 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
         ),
         format!("GRANT SELECT ON public.notification_invitation_sources TO {role}"),
         format!("GRANT SELECT ON public.notification_request_sources TO {role}"),
+        format!("GRANT SELECT ON public.notification_voice_sources TO {role}"),
+        format!("GRANT SELECT, INSERT, UPDATE ON public.voice_notification_state TO {role}"),
+        format!(
+            "GRANT EXECUTE ON FUNCTION public.voice_notification_allowed(bigint, bigint, bigint) TO {role}"
+        ),
         format!(
             "GRANT SELECT, INSERT, UPDATE, DELETE ON public.notification_jobs, public.notification_deliveries, public.notification_retractions TO {role}"
         ),
@@ -481,6 +486,10 @@ mod tests {
             ("public.message_versions", "INSERT"),
             ("public.notification_devices", "UPDATE"),
             ("public.notification_overrides", "INSERT"),
+            ("public.notification_voice_sources", "SELECT"),
+            ("public.voice_notification_state", "SELECT"),
+            ("public.voice_notification_state", "INSERT"),
+            ("public.voice_notification_state", "UPDATE"),
             ("public.notification_jobs", "DELETE"),
             ("public.notification_deliveries", "DELETE"),
             ("public.notification_retractions", "INSERT"),

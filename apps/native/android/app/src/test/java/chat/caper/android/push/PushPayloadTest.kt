@@ -53,6 +53,17 @@ class PushPayloadTest {
         assertEquals("Maya · #general (Caper)", payload.title)
     }
 
+    @Test fun `voice start needs notification ID not message and has no thread target`() {
+        val data = (channel - "messageId") + mapOf("kind" to "voice.started", "notificationId" to "94", "threadRootId" to "message00000001")
+        val payload = requireNotNull(PushPayload.parse(data))
+        assertEquals("94", payload.notificationId)
+        assertEquals("voice:94", payload.messageId)
+        assertNull(payload.threadRootId)
+        assertFalse(payload.consent)
+        assertNull(PushPayload.parse(data - "notificationId"))
+        assertNull(PushPayload.parse(data + ("conversationId" to "direct000001")))
+    }
+
     @Test fun `mentions use the mentions channel and unknown kinds are plain messages`() {
         assertEquals(MENTIONS_CHANNEL, PushPayload.parse(channel + ("kind" to "mention.user"))?.channel)
         assertEquals(MENTIONS_CHANNEL, PushPayload.parse(channel + ("kind" to "mention.everyone"))?.channel)

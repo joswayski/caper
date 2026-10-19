@@ -254,7 +254,7 @@ pub(super) fn message(token: &str, alert: &Alert) -> Value {
         "message": {
             "token": token,
             "data": data,
-            "android": {"priority": "HIGH", "ttl": "86400s", "collapse_key": alert.thread()},
+            "android": {"priority": "HIGH", "ttl": if alert.kind == "voice.started" { "300s" } else { "86400s" }, "collapse_key": alert.thread()},
         }
     })
 }

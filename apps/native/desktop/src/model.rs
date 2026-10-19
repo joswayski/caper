@@ -460,6 +460,8 @@ impl<'de> Deserialize<'de> for NotificationLevel {
 pub struct NotificationSettings {
     pub level: NotificationLevel,
     pub mobile: String,
+    #[serde(default = "voice_started_default")]
+    pub voice_started: bool,
     #[serde(default)]
     pub overrides: Vec<NotificationOverride>,
 }
@@ -479,6 +481,12 @@ pub struct NotificationOverride {
     pub level: Option<NotificationLevel>,
     #[serde(default)]
     pub muted_until: Option<String>,
+    #[serde(default)]
+    pub voice_started: Option<bool>,
+}
+
+fn voice_started_default() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize)]

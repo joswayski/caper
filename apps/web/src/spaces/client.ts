@@ -229,11 +229,13 @@ export interface NotificationOverride {
   /** null inherits; a DM only uses `nothing` (notifications off). */
   level: NotificationLevel | null;
   mutedUntil: MutedUntil;
+  voiceStarted?: boolean | null;
 }
 
 export interface NotificationSettings {
   level: NotificationLevel;
   mobile: MobileNotifications;
+  voiceStarted: boolean;
   overrides: NotificationOverride[];
 }
 
@@ -241,6 +243,7 @@ export interface NotificationSettings {
 export interface NotificationChange {
   level?: NotificationLevel | null;
   mutedUntil?: MutedUntil;
+  voiceStarted?: boolean | null;
 }
 
 // Clients read an unknown future level as `mentions`.
@@ -259,6 +262,7 @@ function notificationOverride(value: NotificationOverride): NotificationOverride
 function notificationSettings(value: NotificationSettings): NotificationSettings {
   return {
     level: notificationLevel(value.level),
+    voiceStarted: value.voiceStarted !== false,
     mobile: value.mobile === "always" ? "always" : "whenInactive",
     overrides: (value.overrides ?? []).map(notificationOverride),
   };
@@ -268,7 +272,11 @@ export async function getNotificationSettings() {
   return notificationSettings(await request<NotificationSettings>("/api/notifications/settings"));
 }
 
-export async function updateNotificationSettings(change: { level?: NotificationLevel; mobile?: MobileNotifications }) {
+export async function updateNotificationSettings(change: {
+  level?: NotificationLevel;
+  mobile?: MobileNotifications;
+  voiceStarted?: boolean;
+}) {
   return notificationSettings(
     await request<NotificationSettings>("/api/notifications/settings", { method: "PUT", body: JSON.stringify(change) }),
   );

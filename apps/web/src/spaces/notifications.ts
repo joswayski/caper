@@ -56,6 +56,7 @@ export interface NotificationState {
   loaded: boolean;
   level: NotificationLevel;
   mobile: MobileNotifications;
+  voiceStarted: boolean;
   /** Keyed by `scopeKey`; scopes with nothing set are absent. */
   overrides: ReadonlyMap<string, NotificationOverride>;
 }
@@ -77,7 +78,13 @@ export function inheritedLevel(state: NotificationState, scope: NotificationScop
 }
 
 // One copy per tab, shared by the sidebar, every menu and the settings dialog.
-const INITIAL: NotificationState = { loaded: false, level: "all", mobile: "whenInactive", overrides: new Map() };
+const INITIAL: NotificationState = {
+  loaded: false,
+  level: "all",
+  mobile: "whenInactive",
+  voiceStarted: true,
+  overrides: new Map(),
+};
 let state = INITIAL;
 const listeners = new Set<() => void>();
 // Every local change bumps `revision`, so a slower response never undoes a newer choice.
@@ -100,7 +107,7 @@ function subscribe(listener: () => void) {
 }
 
 function put(overrides: Map<string, NotificationOverride>, key: string, override: NotificationOverride) {
-  if (override.level === null && override.mutedUntil === null) overrides.delete(key);
+  if (override.level === null && override.mutedUntil === null && override.voiceStarted == null) overrides.delete(key);
   else overrides.set(key, override);
 }
 
@@ -112,6 +119,7 @@ function withOverride(key: string, override: NotificationOverride) {
 
 function fromSettings(settings: NotificationSettings): NotificationState {
   return {
+    voiceStarted: settings.voiceStarted,
     loaded: true,
     level: settings.level,
     mobile: settings.mobile,
@@ -173,6 +181,22 @@ export async function setNotificationLevel(level: NotificationLevel) {
   }
 }
 
+export async function setVoiceStarted(voiceStarted: boolean) {
+  const previous = state.voiceStarted;
+  const mine = ++revision;
+  pending++;
+  publish({ ...state, voiceStarted });
+  try {
+    const settings = await updateNotificationSettings({ voiceStarted });
+    if (mine === revision) publish({ ...state, voiceStarted: settings.voiceStarted });
+  } catch (error) {
+    if (state.voiceStarted === voiceStarted) publish({ ...state, voiceStarted: previous });
+    throw error;
+  } finally {
+    pending--;
+  }
+}
+
 async function changeOverride(
   scope: NotificationScope,
   change: NotificationChange,
@@ -192,6 +216,8 @@ async function changeOverride(
     if ("level" in change && reverted.level === optimistic.level) reverted.level = before.level;
     if ("mutedUntil" in change && reverted.mutedUntil === optimistic.mutedUntil)
       reverted.mutedUntil = before.mutedUntil;
+    if ("voiceStarted" in change && reverted.voiceStarted === optimistic.voiceStarted)
+      reverted.voiceStarted = before.voiceStarted;
     publish(withOverride(key, reverted));
     throw error;
   } finally {

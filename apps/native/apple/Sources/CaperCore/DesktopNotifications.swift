@@ -76,7 +76,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func receive(_ event: [String: Any]) {
-        let prefix = event["kind"] as? String == "direct.request" ? "request" : "invitation"
+        let prefix = event["kind"] as? String == "voice.started" ? "voice" : event["kind"] as? String == "direct.request" ? "request" : "invitation"
         guard event["type"] as? String == "notification.created", let model, model.account?.id == accountID,
               let route = NotificationRoute(userInfo: event),
               let messageID = (event["notificationId"] as? String).map({ "\(prefix):\($0)" }) ?? event["messageId"] as? String,
