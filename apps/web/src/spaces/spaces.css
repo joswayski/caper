@@ -272,6 +272,61 @@
   min-height: 0;
   align-content: start;
 }
+.spaces-room .channel-navigation:has(> .sidebar-sections) {
+  overflow: hidden;
+}
+.sidebar-sections {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  margin-inline: calc(-1 * var(--channel-sidebar-inset));
+}
+.sidebar-section-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding-inline: var(--channel-sidebar-inset);
+  scrollbar-width: none;
+}
+.sidebar-section-scroll::-webkit-scrollbar {
+  display: none;
+}
+.sidebar-sections-resize {
+  position: relative;
+  height: 12px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.sidebar-sections-resize::before {
+  position: absolute;
+  inset: 5px 0 auto;
+  height: 1px;
+  background: var(--border);
+  content: "";
+  pointer-events: none;
+}
+.call-page .sidebar-sections-resize:focus-visible {
+  outline: 1px solid var(--text-muted);
+  outline-offset: -2px;
+}
+html:has(.sidebar-sections-resize:active) * {
+  cursor: ns-resize !important;
+}
+.sidebar-sections .direct-section {
+  margin-top: 0;
+  padding-top: 6px;
+}
+.spaces-room .sidebar-sections .direct-section::before {
+  content: none;
+}
+@media (pointer: coarse) {
+  .sidebar-sections-resize {
+    height: 24px;
+  }
+  .sidebar-sections-resize::before {
+    top: 11px;
+  }
+}
 /* Keep navigation and rosters scrollable without platform scrollbar chrome,
    matching the conversation timeline. This also covers the homepage demo. */
 .spaces-room :is(.space-rail, .channel-navigation, .people-panel ul, .space-member-presence) {
@@ -623,13 +678,6 @@
 .channel-section-menu summary::-webkit-details-marker {
   display: none;
 }
-.channel-section-menu .space-actions {
-  top: calc(100% + 4px);
-  left: auto;
-  right: 0;
-  width: 190px;
-  max-width: 100%;
-}
 .channel-section-menu .space-actions button {
   justify-content: flex-start;
   padding: 10px 8px;
@@ -749,19 +797,14 @@
 .channel-manage::-webkit-details-marker {
   display: none;
 }
-.channel-menu .space-actions {
-  top: calc(100% + 4px);
-  left: auto;
-  right: 6px;
-  width: 220px;
-  /* The scrolling column clips anything wider than the row, as in a narrow
-     Browse column or at the minimum sidebar width. */
-  max-width: calc(100% - 6px);
-}
-/* Set when the sidebar has no room below the row (see placeMenu). */
-.channel-menu[data-placement="above"] .space-actions {
-  top: auto;
-  bottom: calc(100% + 4px);
+/* Top-layer menus escape the split scrollports; placeMenu anchors them to the row. */
+.space-actions[popover] {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+  color: var(--text);
 }
 @media (max-width: 760px), (hover: none), (pointer: coarse) {
   .channel-select {
@@ -2622,7 +2665,7 @@
   .spaces-room .sidebar-channels {
     padding: 0 14px 18px;
   }
-  /* The navigation scrolls, not its lists, so row menus are never clipped. */
+  /* The navigation panes own scrolling, rather than adding nested list scrollbars. */
   .spaces-room .people-panel ul {
     max-height: none;
     overflow: visible;

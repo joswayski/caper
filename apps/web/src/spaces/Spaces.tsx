@@ -63,6 +63,7 @@ import { usePeopleSuggestions } from "../components/PeopleSuggestions";
 import { Dialog } from "./Dialog";
 import Call, { type VoiceSlot } from "../pages/Call";
 import ChannelSidebar from "../pages/ChannelSidebar";
+import SidebarSections from "./SidebarSections";
 import MemberPresence from "./MemberPresence";
 import SpacesLoading from "./SpacesLoading";
 import FeedbackInbox from "./FeedbackInbox";
@@ -174,17 +175,22 @@ function leaveMenu(event: FocusEvent<HTMLDetailsElement>) {
   if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false;
 }
 
-/** Row menus open upward when the scrolling sidebar has no room below them. */
+/** Use the top layer so short, independently scrolling panes never clip actions. */
 function placeMenu(menu: HTMLDetailsElement) {
-  delete menu.dataset.placement;
   const panel = menu.querySelector<HTMLElement>(".space-actions");
-  const scroller = menu.closest<HTMLElement>(".channel-navigation");
-  if (!menu.open || !panel || !scroller) return;
-  const area = scroller.getBoundingClientRect();
+  const scroller = menu.closest<HTMLElement>(".sidebar-section-scroll, .channel-navigation");
+  if (!panel || !scroller) return;
+  if (!menu.open) {
+    if (panel.matches(":popover-open")) panel.hidePopover();
+    return;
+  }
+  if (!panel.matches(":popover-open")) panel.showPopover();
   const row = menu.getBoundingClientRect();
-  const below = Math.min(area.bottom, window.innerHeight) - row.bottom;
-  const above = row.top - Math.max(area.top, 0);
-  if (panel.offsetHeight + 8 > below && above > below) menu.dataset.placement = "above";
+  const width = menu.classList.contains("channel-section-menu") ? 190 : 220;
+  panel.style.width = `${Math.min(width, scroller.clientWidth - 16)}px`;
+  panel.style.left = `${Math.max(8, Math.min(row.right - panel.offsetWidth - 6, window.innerWidth - panel.offsetWidth - 8))}px`;
+  const below = row.bottom + 4;
+  panel.style.top = `${Math.max(8, below + panel.offsetHeight > window.innerHeight - 8 ? row.top - panel.offsetHeight - 4 : below)}px`;
 }
 
 const menuObservers = new WeakMap<HTMLDetailsElement, ResizeObserver>();
@@ -203,7 +209,6 @@ function trackMenu(menu: HTMLDetailsElement) {
       return;
     }
     placeMenu(menu);
-    panel.scrollIntoView({ block: "nearest" });
   });
   observer.observe(panel);
   menuObservers.set(menu, observer);
@@ -2929,7 +2934,7 @@ export default function Spaces({
                     >
                       <MoreHorizontal aria-hidden="true" />
                     </summary>
-                    <div className="space-actions">
+                    <div className="space-actions" popover="manual">
                       <DirectNotificationItems
                         loaded={notifications.loaded}
                         off={conversationNotifications?.level === "nothing"}
@@ -3346,115 +3351,46 @@ export default function Spaces({
           )}
         </header>
       )}
-      {notificationAlert(`space:${detail.space.id}`)}
-      {/* Voice without a row below: your call in another space, or a visited room. */}
-      {liveNow}
-      {!!detail.space.id && !detail.space.demo && (
-        <div className="channel-section-heading">
-          <button
-            className="channel-section-toggle"
-            type="button"
-            aria-expanded={channelsExpanded}
-            aria-controls="space-channel-list"
-            onClick={() => setChannelsExpanded(!channelsExpanded)}
-          >
-            <ChevronDown aria-hidden="true" />
-            Channels<span className="section-count">{joinedChannels.length}</span>
-          </button>
-          {owner && (
-            <div className="channel-section-actions">
-              <button
-                type="button"
-                aria-label="Create channel"
-                title={
-                  canCreateChannel ? "Create channel" : `Channel limit reached (${limits?.channelsPerSpace ?? 100})`
-                }
-                disabled={!canCreateChannel}
-                onClick={() => setDialog("channel")}
-              >
-                <Plus aria-hidden="true" />
-              </button>
-              <details
-                ref={channelMenu}
-                className="channel-section-menu"
-                onKeyDown={(event) => {
-                  if (event.key === "Escape" && event.currentTarget.open) {
-                    // Handled here, so an open thread does not also close.
-                    event.preventDefault();
-                    event.currentTarget.open = false;
-                    event.currentTarget.querySelector("summary")?.focus();
+      <SidebarSections
+        resizable={!detail.space.demo}
+        directs={
+          <>
+            {feedbackNavigation}
+            {directNavigation}
+          </>
+        }
+      >
+        {notificationAlert(`space:${detail.space.id}`)}
+        {/* Voice without a row below: your call in another space, or a visited room. */}
+        {liveNow}
+        {!!detail.space.id && !detail.space.demo && (
+          <div className="channel-section-heading">
+            <button
+              className="channel-section-toggle"
+              type="button"
+              aria-expanded={channelsExpanded}
+              aria-controls="space-channel-list"
+              onClick={() => setChannelsExpanded(!channelsExpanded)}
+            >
+              <ChevronDown aria-hidden="true" />
+              Channels<span className="section-count">{joinedChannels.length}</span>
+            </button>
+            {owner && (
+              <div className="channel-section-actions">
+                <button
+                  type="button"
+                  aria-label="Create channel"
+                  title={
+                    canCreateChannel ? "Create channel" : `Channel limit reached (${limits?.channelsPerSpace ?? 100})`
                   }
-                }}
-                onBlur={leaveMenu}
-              >
-                <summary aria-label="Channel options" title="Channel options">
-                  <MoreHorizontal aria-hidden="true" />
-                </summary>
-                <div className="space-actions">
-                  <button
-                    type="button"
-                    disabled={!canCreateChannel}
-                    onClick={() => {
-                      closeMenu(channelMenu.current!);
-                      setDialog("channel");
-                    }}
-                  >
-                    <Plus aria-hidden="true" />
-                    Create channel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      closeMenu(channelMenu.current!);
-                      setChannelsExpanded((value) => !value);
-                    }}
-                  >
-                    {/* Every item has an icon, so the labels line up. */}
-                    {channelsExpanded ? <ChevronsDownUp aria-hidden="true" /> : <ChevronsUpDown aria-hidden="true" />}
-                    {channelsExpanded ? "Collapse" : "Expand"} channels
-                  </button>
-                </div>
-              </details>
-            </div>
-          )}
-        </div>
-      )}
-      <ul id="space-channel-list" data-collapsed={detail.space.demo || channelsExpanded ? undefined : ""}>
-        {joinedChannels.map((item) => {
-          const voice = voiceFor(item.id);
-          const itemNotifications = overrideFor(notifications, { spaceId: detail.space.id, channelId: item.id });
-          const itemMuted = isMuted(itemNotifications?.mutedUntil);
-          const line = (
-            <div className="channel-line">
-              <button
-                className="channel-select"
-                type="button"
-                aria-current={item.id === channel?.id ? "page" : undefined}
-                aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
-                onMouseEnter={() => prefetch(detail.space.id, item.id)}
-                onFocus={() => prefetch(detail.space.id, item.id)}
-                onClick={() => choose(detail.space.id, item.id)}
-              >
-                {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
-                <span>{item.name}</span>
-                {unreadSpaces.some((space) => space.channels.some((entry) => entry.id === item.id)) && (
-                  <>
-                    <i className="channel-unread" aria-hidden="true" />
-                    <span className="sr-only">, unread activity</span>
-                  </>
-                )}
-                {itemMuted && (
-                  <>
-                    <BellOff className="muted-icon" aria-hidden="true" />
-                    <span className="sr-only">, muted</span>
-                  </>
-                )}
-                {voice?.live}
-              </button>
-              {voice?.join}
-              {!detail.space.demo && (
+                  disabled={!canCreateChannel}
+                  onClick={() => setDialog("channel")}
+                >
+                  <Plus aria-hidden="true" />
+                </button>
                 <details
-                  className="channel-menu"
+                  ref={channelMenu}
+                  className="channel-section-menu"
                   onToggle={(event) => trackMenu(event.currentTarget)}
                   onKeyDown={(event) => {
                     if (event.key === "Escape" && event.currentTarget.open) {
@@ -3466,114 +3402,192 @@ export default function Spaces({
                   }}
                   onBlur={leaveMenu}
                 >
-                  <summary
-                    className="channel-manage"
-                    aria-label={`Manage ${item.name}`}
-                    title={`Channel actions for ${item.name}`}
-                  >
+                  <summary aria-label="Channel options" title="Channel options">
                     <MoreHorizontal aria-hidden="true" />
                   </summary>
-                  <div className="space-actions">
-                    {owner && !item.private && (
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          closeMenu(event.currentTarget.closest("details")!);
-                          setInviteChannelId(item.id);
-                          setDialog("invite-people");
-                        }}
-                      >
-                        <Plus aria-hidden="true" />
-                        Invite people…
-                      </button>
-                    )}
-                    <LevelNotificationItems
-                      noun="channel"
-                      loaded={notifications.loaded}
-                      level={itemNotifications?.level ?? null}
-                      inherited={inheritedLevel(notifications, { spaceId: detail.space.id, channelId: item.id })}
-                      mutedUntil={itemNotifications?.mutedUntil ?? null}
-                      mutedWithSpace={spaceMuted}
-                      onChange={(change) => {
-                        const spaceId = detail.space.id;
-                        saveNotifications(`channel:${item.id}`, () =>
-                          changeChannelNotifications(spaceId, item.id, change),
-                        );
+                  <div className="space-actions" popover="manual">
+                    <button
+                      type="button"
+                      disabled={!canCreateChannel}
+                      onClick={() => {
+                        closeMenu(channelMenu.current!);
+                        setDialog("channel");
                       }}
-                    />
-                    {owner && (
+                    >
+                      <Plus aria-hidden="true" />
+                      Create channel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        closeMenu(channelMenu.current!);
+                        setChannelsExpanded((value) => !value);
+                      }}
+                    >
+                      {/* Every item has an icon, so the labels line up. */}
+                      {channelsExpanded ? <ChevronsDownUp aria-hidden="true" /> : <ChevronsUpDown aria-hidden="true" />}
+                      {channelsExpanded ? "Collapse" : "Expand"} channels
+                    </button>
+                  </div>
+                </details>
+              </div>
+            )}
+          </div>
+        )}
+        <ul id="space-channel-list" data-collapsed={detail.space.demo || channelsExpanded ? undefined : ""}>
+          {joinedChannels.map((item) => {
+            const voice = voiceFor(item.id);
+            const itemNotifications = overrideFor(notifications, { spaceId: detail.space.id, channelId: item.id });
+            const itemMuted = isMuted(itemNotifications?.mutedUntil);
+            const line = (
+              <div className="channel-line">
+                <button
+                  className="channel-select"
+                  type="button"
+                  aria-current={item.id === channel?.id ? "page" : undefined}
+                  aria-busy={pending && detail.space.id === selected.spaceId && item.id === selected.channelId}
+                  onMouseEnter={() => prefetch(detail.space.id, item.id)}
+                  onFocus={() => prefetch(detail.space.id, item.id)}
+                  onClick={() => choose(detail.space.id, item.id)}
+                >
+                  {item.private ? <LockKeyhole aria-hidden="true" /> : <Hash aria-hidden="true" />}
+                  <span>{item.name}</span>
+                  {unreadSpaces.some((space) => space.channels.some((entry) => entry.id === item.id)) && (
+                    <>
+                      <i className="channel-unread" aria-hidden="true" />
+                      <span className="sr-only">, unread activity</span>
+                    </>
+                  )}
+                  {itemMuted && (
+                    <>
+                      <BellOff className="muted-icon" aria-hidden="true" />
+                      <span className="sr-only">, muted</span>
+                    </>
+                  )}
+                  {voice?.live}
+                </button>
+                {voice?.join}
+                {!detail.space.demo && (
+                  <details
+                    className="channel-menu"
+                    onToggle={(event) => trackMenu(event.currentTarget)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape" && event.currentTarget.open) {
+                        // Handled here, so an open thread does not also close.
+                        event.preventDefault();
+                        event.currentTarget.open = false;
+                        event.currentTarget.querySelector("summary")?.focus();
+                      }
+                    }}
+                    onBlur={leaveMenu}
+                  >
+                    <summary
+                      className="channel-manage"
+                      aria-label={`Manage ${item.name}`}
+                      title={`Channel actions for ${item.name}`}
+                    >
+                      <MoreHorizontal aria-hidden="true" />
+                    </summary>
+                    <div className="space-actions" popover="manual">
+                      {owner && !item.private && (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            closeMenu(event.currentTarget.closest("details")!);
+                            setInviteChannelId(item.id);
+                            setDialog("invite-people");
+                          }}
+                        >
+                          <Plus aria-hidden="true" />
+                          Invite people…
+                        </button>
+                      )}
+                      <LevelNotificationItems
+                        noun="channel"
+                        loaded={notifications.loaded}
+                        level={itemNotifications?.level ?? null}
+                        inherited={inheritedLevel(notifications, { spaceId: detail.space.id, channelId: item.id })}
+                        mutedUntil={itemNotifications?.mutedUntil ?? null}
+                        mutedWithSpace={spaceMuted}
+                        onChange={(change) => {
+                          const spaceId = detail.space.id;
+                          saveNotifications(`channel:${item.id}`, () =>
+                            changeChannelNotifications(spaceId, item.id, change),
+                          );
+                        }}
+                      />
+                      {owner && (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            const menu = event.currentTarget.closest("details")!;
+                            menu.open = false;
+                            menu.querySelector("summary")?.focus();
+                            setManageChannel(item);
+                          }}
+                        >
+                          <Settings aria-hidden="true" />
+                          Channel settings
+                        </button>
+                      )}
                       <button
                         type="button"
+                        disabled={membershipPending}
                         onClick={(event) => {
                           const menu = event.currentTarget.closest("details")!;
                           menu.open = false;
                           menu.querySelector("summary")?.focus();
-                          setManageChannel(item);
+                          setLeavingChannel(item);
                         }}
                       >
-                        <Settings aria-hidden="true" />
-                        Channel settings
+                        <LogOut aria-hidden="true" />
+                        Leave channel
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      disabled={membershipPending}
-                      onClick={(event) => {
-                        const menu = event.currentTarget.closest("details")!;
-                        menu.open = false;
-                        menu.querySelector("summary")?.focus();
-                        setLeavingChannel(item);
-                      }}
-                    >
-                      <LogOut aria-hidden="true" />
-                      Leave channel
-                    </button>
-                  </div>
-                </details>
-              )}
-            </div>
-          );
-          return (
-            <li
-              key={item.id}
-              data-voice={voice ? "" : undefined}
-              data-live={voice?.card ? "" : undefined}
-              data-muted={itemMuted || spaceMuted ? "" : undefined}
-            >
-              {/* A live channel's row grows into its card: your call, or a room to join. */}
-              {voice ? voice.frame(line) : line}
-              {notificationAlert(`channel:${item.id}`)}
-            </li>
-          );
-        })}
-      </ul>
-      {!!detail.channelInvitations?.length && (
-        <div className="pending-channel-invites">
-          <h2>Invitations</h2>
-          {detail.channelInvitations.map((item) => (
-            <button
-              className="pending-channel-invite"
-              key={item.channel.id}
-              type="button"
-              onClick={() => setChannelInvitation(item)}
-            >
-              <LockKeyhole aria-hidden="true" />
-              <span>{item.channel.name}</span>
-              <small>Invited</small>
+                    </div>
+                  </details>
+                )}
+              </div>
+            );
+            return (
+              <li
+                key={item.id}
+                data-voice={voice ? "" : undefined}
+                data-live={voice?.card ? "" : undefined}
+                data-muted={itemMuted || spaceMuted ? "" : undefined}
+              >
+                {/* A live channel's row grows into its card: your call, or a room to join. */}
+                {voice ? voice.frame(line) : line}
+                {notificationAlert(`channel:${item.id}`)}
+              </li>
+            );
+          })}
+        </ul>
+        {!!detail.channelInvitations?.length && (
+          <div className="pending-channel-invites">
+            <h2>Invitations</h2>
+            {detail.channelInvitations.map((item) => (
+              <button
+                className="pending-channel-invite"
+                key={item.channel.id}
+                type="button"
+                onClick={() => setChannelInvitation(item)}
+              >
+                <LockKeyhole aria-hidden="true" />
+                <span>{item.channel.name}</span>
+                <small>Invited</small>
+              </button>
+            ))}
+          </div>
+        )}
+        {error && (
+          <p className="space-sidebar-error" role="alert">
+            {error}
+            <button type="button" onClick={() => setSelected({ ...selected })}>
+              Retry opening
             </button>
-          ))}
-        </div>
-      )}
-      {feedbackNavigation}
-      {directNavigation}
-      {error && (
-        <p className="space-sidebar-error" role="alert">
-          {error}
-          <button type="button" onClick={() => setSelected({ ...selected })}>
-            Retry opening
-          </button>
-        </p>
-      )}
+          </p>
+        )}
+      </SidebarSections>
     </nav>
   );
 

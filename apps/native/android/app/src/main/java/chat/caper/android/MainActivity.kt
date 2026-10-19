@@ -775,6 +775,13 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
     val canCreateChannel = detail != null && state.limits?.let { channelCount < it.channelsPerSpace } == true
     var channelMenuOpen by remember(detail?.space?.id) { mutableStateOf(false) }
     var channelQuery by remember(detail?.space?.id) { mutableStateOf("") }
+    // Keep the two long lists independently reachable.  Persist a proportion rather
+    // than pixels so a rotation or freeform-window resize retains the intent.
+    val context = LocalContext.current
+    val preferences = remember(context) { context.getSharedPreferences("layout", android.content.Context.MODE_PRIVATE) }
+    var channelsShare by rememberSaveable(detail?.space?.id) {
+        mutableFloatStateOf(preferences.getFloat("channelSidebarChannelsShare", 0.5f).takeIf { it.isFinite() && it > 0f && it < 1f } ?: 0.5f)
+    }
     // Your call's row becomes its call card when its channel is listed here.
     val callRowId = callRowChannelId(detail, voice)
     Column(modifier.fillMaxHeight().background(SurfaceSidebar)) {
@@ -828,8 +835,26 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             if (detail != null) NotificationSaveError(state.notificationErrors[spaceKey(detail.space.id)]) { viewModel.dismissNotificationError(spaceKey(detail.space.id)) }
             HorizontalDivider(color = Border)
         }
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-            Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
+        BoxWithConstraints(Modifier.weight(1f)) {
+            // On a short window, reserve no more than a third for either list;
+            // otherwise each starts with a useful 96dp of visible rows.
+            val available = (maxHeight - if (state.account == null) 0.dp else 24.dp).coerceAtLeast(0.dp)
+            val minimum = minOf(96.dp, available / 3)
+            val minimumShare = if (available > 0.dp) (minimum / available).coerceIn(0f, 0.5f) else 1f / 3
+            val clampedShare = channelsShare.coerceIn(minimumShare, 1f - minimumShare)
+            val density = LocalDensity.current
+            val resizeFocus = remember { FocusRequester() }
+            fun saveShare() { preferences.edit().putFloat("channelSidebarChannelsShare", channelsShare).apply() }
+            fun resizeShare(value: Float) { channelsShare = value.coerceIn(minimumShare, 1f - minimumShare); saveShare() }
+            val dragState = rememberDraggableState { delta ->
+                val heightPx = with(density) { available.toPx() }
+                if (heightPx > 0f) {
+                    channelsShare = (clampedShare + delta / heightPx).coerceIn(minimumShare, 1f - minimumShare)
+                }
+            }
+            Column(Modifier.fillMaxSize()) {
+            Column(Modifier.weight(if (state.account == null) 1f else clampedShare).verticalScroll(rememberScrollState())) {
+                Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
             // Voice with no row in this list (your call elsewhere, a visited channel's room) sits above
             // Channels; listed channels show theirs in place. Joining keeps the chat being read.
             LiveNowSection(
@@ -982,10 +1007,45 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     TextButton(viewModel::retryOpening, shape = MaterialTheme.shapes.small) { Text("Retry opening", fontSize = 12.sp) }
                 }
             }
+                }
             }
             if (state.account != null) {
-                HorizontalDivider(color = Border)
-                Spacer(Modifier.height(12.dp))
+                // The divider is a slider for TalkBack and keyboard/accessibility
+                // services, and a vertical-resize pointer target on mouse devices.
+                Box(
+                    Modifier.fillMaxWidth().height(24.dp)
+                        .browseSwipeExcluded(LocalBrowseDrawer.current)
+                        .pointerHoverIcon(PointerIcon(android.view.PointerIcon.getSystemIcon(context, android.view.PointerIcon.TYPE_VERTICAL_DOUBLE_ARROW)))
+                        .focusRequester(resizeFocus)
+                        .onPreviewKeyEvent { event ->
+                            if (event.type != KeyEventType.KeyDown) false else {
+                                val step = 10f / available.value.coerceAtLeast(1f)
+                                val next = when (event.key) {
+                                    Key.DirectionUp -> clampedShare - step
+                                    Key.DirectionDown -> clampedShare + step
+                                    Key.MoveHome -> minimumShare
+                                    Key.MoveEnd -> 1f - minimumShare
+                                    else -> null
+                                }
+                                if (next == null) false else { resizeShare(next); true }
+                            }
+                        }
+                        .focusable()
+                        .draggable(dragState, Orientation.Vertical, onDragStarted = { resizeFocus.requestFocus() }, onDragStopped = { saveShare() })
+                        .pointerInput(minimumShare) {
+                            detectTapGestures(onTap = { resizeFocus.requestFocus() }, onDoubleTap = { resizeShare(0.5f); resizeFocus.requestFocus() })
+                        }
+                        .semantics {
+                            contentDescription = "Channels and direct messages divider"
+                            stateDescription = "${(clampedShare * 100).toInt()} percent channels"
+                            progressBarRangeInfo = ProgressBarRangeInfo(clampedShare, minimumShare..1f - minimumShare)
+                            setProgress { resizeShare(it); true }
+                            customActions = listOf(CustomAccessibilityAction("Reset channel and direct message heights") { resizeShare(0.5f); true })
+                        },
+                    contentAlignment = Alignment.Center,
+                ) { HorizontalDivider(Modifier.fillMaxWidth().padding(horizontal = 16.dp), color = Border) }
+                Column(Modifier.weight(1f - clampedShare).verticalScroll(rememberScrollState())) {
+                Spacer(Modifier.height(6.dp))
                 // Feedback team only: the `@feedback` inbox, beside the DMs.
                 if (state.account.feedbackTeam) {
                     val feedbackSelected = state.feedbackShown || state.visit != null
@@ -1082,6 +1142,8 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                     Spacer(Modifier.width(9.dp))
                     Text("New message", Modifier.weight(1f), color = TextMuted, fontSize = 13.sp)
                 }
+                }
+            }
             }
         }
         // Voice errors keep their panel above the account bar, with a dismiss button.
