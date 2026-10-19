@@ -72,13 +72,14 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   is unchanged.
 - File attachments, when the server has storage configured (otherwise the
   attach control stays disabled, without shifting the composer). Inline images show the uploaded preview, else
-  the PNG/JPEG/WebP/GIF original, decoded off the UI thread and cached by
+  the PNG/JPEG/WebP/GIF/AVIF original, decoded off the UI thread and cached by
   attachment id. Videos show their poster with a play button. Clicking an
   image or video opens the in-app viewer over the window (`viewer.rs`): the
   message's images and videos with arrows, Left/Right, an "n / m" counter,
   zoom (double-click, Ctrl+scroll or pinch) and pan, animated GIF/WebP,
   Save (file dialog), Open in browser and Esc to close. Full-size AVIF/HEIC
-  decode through the bundled FFmpeg. Videos play in the app (`player.rs`):
+  decode through the bundled FFmpeg, as do AVIF inline images and spoiler
+  previews. Videos play in the app (`player.rs`):
   FFmpeg decodes frames and PCM, rodio plays the sound and keeps time, with
   play/pause (Space), a seek bar and volume; the signed URL streams through a
   loopback range proxy (`media_proxy.rs`). Audio and other files show cards

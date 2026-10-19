@@ -75,6 +75,44 @@ pub fn command(binary: &Path) -> Command {
     command
 }
 
+/// Decode an AVIF/HEIC still at the caller's display bound. The container
+/// needs seeking, so use the same disposable scratch files as video uploads.
+pub fn decode_image(
+    bytes: &[u8],
+    content_type: &str,
+    max_edge: u32,
+) -> Option<eframe::egui::ColorImage> {
+    let binary = binary()?;
+    let extension = match content_type {
+        "image/avif" => "avif",
+        "image/heic" | "image/heif" => "heic",
+        _ => return None,
+    };
+    let scratch = crate::uploads::Scratch::new(extension);
+    std::fs::write(scratch.path(), bytes).ok()?;
+    let stream = probe(binary, scratch.path()).ok()?.video?;
+    let [width, height] = crate::player::output_size(
+        stream.width,
+        stream.height,
+        eframe::egui::vec2(max_edge as f32, max_edge as f32),
+    );
+    let output = command(binary)
+        .args(["-loglevel", "error", "-i"])
+        .arg(scratch.path())
+        .args([
+            "-frames:v",
+            "1",
+            "-vf",
+            &format!("scale={width}:{height}:flags=lanczos,format=rgba"),
+        ])
+        .args(["-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    (output.status.success() && output.stdout.len() == width * height * 4)
+        .then(|| eframe::egui::ColorImage::from_rgba_unmultiplied([width, height], &output.stdout))
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Probe {
     pub duration_ms: Option<u64>,

@@ -1364,7 +1364,8 @@ fn decode_full(bytes: &[u8], content_type: &str) -> Option<Vec<(egui::ColorImage
         }
         return Some(vec![(color_image(image.to_rgba8()), Duration::ZERO)]);
     }
-    decode_with_ffmpeg(bytes, content_type).map(|image| vec![(image, Duration::ZERO)])
+    crate::ffmpeg::decode_image(bytes, content_type, MAX_EDGE)
+        .map(|image| vec![(image, Duration::ZERO)])
 }
 
 fn animation<'a>(frames: image::Frames<'a>) -> Option<Vec<(egui::ColorImage, Duration)>> {
@@ -1395,41 +1396,6 @@ fn color_image(image: image::RgbaImage) -> egui::ColorImage {
         [image.width() as usize, image.height() as usize],
         image.as_raw(),
     )
-}
-
-/// AVIF and HEIC: one frame through the bundled FFmpeg, from a scratch file
-/// (their container needs seeking).
-fn decode_with_ffmpeg(bytes: &[u8], content_type: &str) -> Option<egui::ColorImage> {
-    let binary = crate::ffmpeg::binary()?;
-    let extension = match content_type {
-        "image/avif" => "avif",
-        "image/heic" | "image/heif" => "heic",
-        _ => return None,
-    };
-    let scratch = crate::uploads::Scratch::new(extension);
-    std::fs::write(scratch.path(), bytes).ok()?;
-    let probe = crate::ffmpeg::probe(binary, scratch.path()).ok()?;
-    let stream = probe.video?;
-    let [width, height] = player::output_size(
-        stream.width,
-        stream.height,
-        egui::vec2(MAX_EDGE as f32, MAX_EDGE as f32),
-    );
-    let output = crate::ffmpeg::command(binary)
-        .args(["-loglevel", "error", "-i"])
-        .arg(scratch.path())
-        .args([
-            "-frames:v",
-            "1",
-            "-vf",
-            &format!("scale={width}:{height}:flags=lanczos,format=rgba"),
-        ])
-        .args(["-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"])
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    (output.status.success() && output.stdout.len() == width * height * 4)
-        .then(|| egui::ColorImage::from_rgba_unmultiplied([width, height], &output.stdout))
 }
 
 #[cfg(test)]

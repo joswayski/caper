@@ -1599,8 +1599,8 @@ absent `status` means ready.
 
 Follow-ups:
 
-- Desktop cannot decode HEIC (uploads it unchanged) or AVIF (opens originals
-  in the browser; the inline image is the preview).
+- Desktop still uploads HEIC unchanged and cannot edit HEIC/AVIF. The bundled
+  FFmpeg decodes AVIF inline images/spoiler previews and AVIF/HEIC full-size images.
 - Server metadata stripping regression checks use real FFmpeg/ExifTool on
   synthetic geotagged fixtures plus a disposable Postgres and fake R2. Live R2,
   Apple picker/share workflows and physical native-device checks remain separate.
