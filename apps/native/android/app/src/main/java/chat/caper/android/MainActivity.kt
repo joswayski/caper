@@ -2275,7 +2275,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     forwardTarget?.let { target -> key(target.id) { ForwardPickerSheet(target, viewModel) { forwardTarget = null } } }
     conversationTarget?.let { target ->
         val current = state.messages.firstOrNull { it.id == target.id }
-        if (current != null) key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
+        if (current != null && current.deletedAt == null && current.forward?.message != null) key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
+        else LaunchedEffect(target.id) { conversationTarget = null }
     }
     historyTarget?.let { target ->
         val current = state.messages.find { it.id == target.id } ?: target
@@ -2763,7 +2764,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         }
     }
     conversationTarget?.let { target ->
-        state.displayedPins.firstOrNull { it.id == target.id }?.let { current ->
+        state.displayedPins.firstOrNull { it.id == target.id && it.deletedAt == null && it.forward?.message != null }?.let { current ->
             key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
         }
     }

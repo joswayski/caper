@@ -10,6 +10,9 @@ for (const url of [web, api]) assert.ok(["localhost", "127.0.0.1"].includes(new 
 const artifacts = process.env.MESSAGE_TEST_ARTIFACTS && resolve(process.env.MESSAGE_TEST_ARTIFACTS);
 if (artifacts) mkdirSync(artifacts, { recursive: true });
 const browser = (...args) => {
+  // Explicit opens start independent scenarios. Tear down the previous SPA
+  // first so its pending navigation cannot abort the next fixture page load.
+  if (args[0] === "open" && args[1] !== "about:blank") browser("open", "about:blank");
   const result = JSON.parse(
     execFileSync("agent-browser", ["--session", "forward-check", ...args, "--json"], {
       encoding: "utf8",
@@ -509,6 +512,7 @@ try {
   screenshot("forward-source-dm-narrow");
 
   // A delayed lookup cannot override navigation chosen while it was pending.
+  browser("open", "about:blank");
   browser("set", "viewport", "1440", "900", "2");
   browser("open", `${web}/spaces?space=space0000001&channel=chan00000001`);
   wait(
@@ -530,8 +534,57 @@ try {
   evaluate("window.releaseForwardLookup()");
   wait('document.querySelector("#chat-heading")?.textContent.includes("design")');
   assert.equal(evaluate('!!document.querySelector(".chat-forward-dialog")'), false);
+
+  // The destination-only reader must lose an already-open private excerpt
+  // immediately when its author deletes the wrapper in another client.
+  browser("cookies", "set", "caper_fixture", "other", "--url", web, "--path", "/", "--sameSite", "Lax");
+  for (const [width, height, name] of [
+    [1440, 900, "desktop"],
+    [390, 844, "narrow"],
+  ]) {
+    const shared = await request(
+      `/api/chat/channels/${wrapper.channelId}/forwards`,
+      {
+        sourceChannelId: source.channelId,
+        sourceMessageId: source.id,
+        clientMessageId: crypto.randomUUID(),
+      },
+      "owner",
+      "POST",
+      session.token,
+    );
+    assert.equal(shared.status, 200);
+    const row = `[data-message-key="${shared.value.clientMessageId}"]`;
+    browser("set", "viewport", String(width), String(height), "2");
+    browser("open", `${web}/spaces?space=space0000001&channel=chan00000001`);
+    wait(
+      `!!document.querySelector('${row} .chat-forward-card button') && !document.querySelector('.chat-initial-messages')`,
+    );
+    browser("scrollintoview", `${row} .chat-forward-card button`);
+    browser("click", `${row} .chat-forward-card button`);
+    wait('document.querySelector(".chat-forward-body h3")?.textContent === "2 replies"');
+    screenshot(`forward-before-deletion-${name}`);
+    const deleted = await request(
+      `/api/chat/channels/${wrapper.channelId}/messages/${shared.value.id}`,
+      undefined,
+      "owner",
+      "DELETE",
+      session.token,
+    );
+    assert.equal(deleted.status, 200);
+    wait(
+      `!document.querySelector('.chat-forward-dialog') && document.querySelector('${row}')?.textContent.includes('This message was deleted.')`,
+    );
+    assert.equal(evaluate(`!!document.querySelector('${row} .chat-forward-original')`), false);
+    assert.equal(
+      (await request(`/api/chat/channels/${wrapper.channelId}/forwards/${shared.value.id}/thread`, undefined, "other"))
+        .status,
+      404,
+    );
+    screenshot(`forward-after-deletion-${name}`);
+  }
   console.log(
-    "Forwarding browser checks passed: source navigation and focus on desktop/narrow, reply-thread and DM routes, lookup failure and stale-navigation guards; excerpt original without visible loading, single empty state, unavailable/error cache revocation and retry; aligned reaction chips and 2px subtitles, space/channel/token search, persistent multi-selection, cross-space/channel/DM delivery, partial retry deduplication, destination-only live edits/reactions/replies, read-only originals, independent destination thread.",
+    "Forwarding browser checks passed: deletion closes open private excerpts on desktop/narrow; source navigation and focus, reply-thread and DM routes, lookup failure and stale-navigation guards; excerpt original without visible loading, single empty state, unavailable/error cache revocation and retry; aligned reaction chips and 2px subtitles, space/channel/token search, persistent multi-selection, cross-space/channel/DM delivery, partial retry deduplication, destination-only live edits/reactions/replies, read-only originals, independent destination thread.",
   );
 } finally {
   browser("close");

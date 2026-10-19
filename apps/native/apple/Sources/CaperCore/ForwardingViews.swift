@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SharedOriginalView: View {
     let message: ChatMessage
+    var isAvailable: (() -> Bool)? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
@@ -25,7 +26,7 @@ struct SharedOriginalView: View {
             if !message.isDeleted, let attachments = message.content.attachments, !attachments.isEmpty {
                 // Another conversation's files: shown as delivered, without
                 // this timeline's URL refresh or upload progress.
-                MessageAttachmentsView(attachments: attachments, chat: nil)
+                MessageAttachmentsView(attachments: attachments, chat: nil, isAvailable: isAvailable)
             }
             ReactionFlowLayout(spacing: 8) {
                 ForEach((message.isDeleted ? nil : message.reactions) ?? []) { reaction in
@@ -41,13 +42,16 @@ struct SharedOriginalView: View {
 
 struct ForwardCardView: View {
     let message: ChatMessage
+    let chat: ChatModel
     let open: () -> Void
     var body: some View {
         if let forward = message.forward {
             VStack(alignment: .leading, spacing: 8) {
                 CaperLabel("Forwarded", icon: "forward", size: 12).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                 if let original = forward.message {
-                    SharedOriginalView(message: original)
+                    SharedOriginalView(message: original, isAvailable: {
+                        (chat.messages + chat.pinnedMessages).contains { $0.id == message.id && !$0.isDeleted && $0.forward?.message != nil }
+                    })
                     Button("\(original.thread.flatMap { $0.replyCount > 0 ? "\($0.replyCount) \($0.replyCount == 1 ? "reply" : "replies") · " : nil } ?? "")View conversation", action: open)
                         .buttonStyle(CaperSecondaryButton())
                 } else { Text("Original conversation unavailable.").foregroundStyle(CaperTheme.muted) }
@@ -164,18 +168,19 @@ struct ForwardConversationView: View {
     @State private var error: String?
     @State private var attempt = 0
     private var message: ChatMessage? { (chat.messages + chat.pinnedMessages).first { $0.id == messageID } }
-    private var root: ChatMessage? { if let conversation { conversation.root } else if error == nil { message?.forward?.message } else { nil } }
+    private var available: Bool { message?.isDeleted == false && message?.forward?.message != nil }
+    private var root: ChatMessage? { guard available else { return nil }; if let conversation { return conversation.root } else if error == nil { return message?.forward?.message } else { return nil } }
     var body: some View {
         VStack(spacing: 0) {
             HStack { Text("Forwarded conversation").font(CaperTheme.font(16, weight: .bold)); Spacer(); Button("Close") { dismiss() } }.padding(16)
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let root {
-                        SharedOriginalView(message: root)
+                        SharedOriginalView(message: root, isAvailable: { available })
                         let count = conversation?.root?.thread?.replyCount ?? conversation?.messages.count ?? 0
                         if count > 0 { Text("\(count) \(count == 1 ? "reply" : "replies")").font(CaperTheme.font(13, weight: .bold)) }
                         if conversation?.hasMore == true { Button("Load older replies") { pages += 1 }.disabled(loading) }
-                        ForEach(conversation?.messages ?? []) { SharedOriginalView(message: $0) }
+                        ForEach(conversation?.messages ?? []) { SharedOriginalView(message: $0, isAvailable: { available }) }
                         if conversation?.messages.isEmpty == true { Text("No replies yet.") }
                     } else if !loading && error == nil { Text("Original conversation unavailable.") }
                     if let error {
@@ -187,8 +192,9 @@ struct ForwardConversationView: View {
         }.background(CaperTheme.raised).foregroundStyle(CaperTheme.text).frame(idealWidth: 520, idealHeight: 560)
             // A sheet: only it can present the viewer over itself.
             .modifier(MediaViewerHost())
+            .onChange(of: available) { _, value in if !value { dismiss() } }
             .task(id: "\(message?.forward?.seq ?? "0"):\(pages):\(attempt)") {
-                guard let message else { conversation = nil; return }
+                guard available, let message else { conversation = nil; dismiss(); return }
                 loading = true; error = nil
                 defer { loading = false }
                 do {

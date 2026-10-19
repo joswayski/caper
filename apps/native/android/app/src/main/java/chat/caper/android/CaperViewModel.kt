@@ -2698,6 +2698,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         authoritativeReactionMessages[message.id]?.let { authoritativeReactionMessages[message.id] = mergeEdit(it, message) }
         pinSnapshots[message.id]?.let { pinSnapshots[message.id] = mergeEdit(it, message) }
+        forwardSnapshots[message.id]?.let { forwardSnapshots[message.id] = mergeEdit(it, message) }
         val deleted = message.deletedAt != null
         mutable.value = mutable.value.copy(
             messages = mutable.value.messages.map { mergeEdit(it, message).let { merged -> if (deleted) quoteDeleted(merged, message.id) else merged } },

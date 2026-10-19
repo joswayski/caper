@@ -26,6 +26,8 @@ internal fun mergeEdit(current: ChatMessage, incoming: ChatMessage): ChatMessage
         revision = incoming.revision, editedAt = incoming.editedAt, editSeq = incoming.editSeq,
         // A deletion arrives as an edit; its newer `attachmentsSeq` drops the files below.
         deletedAt = incoming.deletedAt ?: current.deletedAt,
+        forward = if (incoming.deletedAt != null) incoming.forward else current.forward,
+        forwardSeq = if (incoming.deletedAt != null) incoming.forwardSeq else current.forwardSeq,
     )
     return newerAttachments(edited, incoming)
 }

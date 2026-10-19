@@ -88,6 +88,35 @@ test("updates to unloaded wrappers remain scoped overlays until pagination loads
   assert.notEqual(timeline.messages[0].forward?.message, null, "access reset discards old scoped overlays");
 });
 
+test("deleting a forward clears its cached source and stale projections cannot restore it", () => {
+  const wrapper = forward("99", "1");
+  const timeline = new ChatTimeline();
+  timeline.reset([wrapper], "1");
+  const deleted: ChatMessage = {
+    ...wrapper,
+    content: { version: 1, type: "text", text: "Message deleted" },
+    revision: 2,
+    editSeq: "2",
+    deletedAt: "2026-10-06T12:00:00Z",
+    forward: { message: null, seq: "0" },
+    forwardSeq: "2",
+  };
+  timeline.applyEvent({
+    type: "message.edited",
+    schemaVersion: 1,
+    channelId: wrapper.channelId,
+    seq: "2",
+    message: deleted,
+  });
+  assert.equal(timeline.messages[0].forward?.message, null);
+  timeline.applyEvent(event("100", "1"));
+  timeline.prepend([wrapper]);
+  assert.equal(timeline.messages[0].forward?.message, null);
+  assert.equal(timeline.messages[0].forwardSeq, "2");
+  assert.equal(timeline.messages[0].deletedAt, deleted.deletedAt);
+  assert.equal(timeline.cursor, "2");
+});
+
 test("forward wire validation rejects cross-channel and revision mismatches, malformed originals and chains", () => {
   const valid = event("9007199254740993", "2");
   assert.ok(isChatForwardEvent(valid));

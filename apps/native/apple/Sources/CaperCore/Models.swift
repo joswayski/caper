@@ -1180,6 +1180,8 @@ struct EditSnapshots: Sendable {
         if snapshot.deletedAt != nil {
             // A deletion also drops the files, at the tombstone's newer `attachmentsSeq`.
             result.deletedAt = snapshot.deletedAt
+            result.forward = snapshot.forward
+            result.forwardSeq = snapshot.forwardSeq
             result.content.attachments = nil
             result.attachmentsSeq = snapshot.attachmentsSeq ?? message.attachmentsSeq
         }

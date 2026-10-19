@@ -593,6 +593,95 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
         request(&app, "GET", &path, "carol", Value::Null).await.1["root"]["thread"]["replyCount"],
         54
     );
+    // Deleting a wrapper revokes its scoped grant, not the independent DM
+    // forward. Subsequent source changes must never restore that grant.
+    let deleted = request(
+        &app,
+        "DELETE",
+        &format!(
+            "/api/chat/channels/destination/messages/{}",
+            forward["id"].as_str().unwrap()
+        ),
+        "alice",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(deleted.0, StatusCode::OK);
+    let unavailable = json!({"message":null,"seq":"0"});
+    assert_eq!(deleted.1["forward"], unavailable);
+    assert_eq!(deleted.1["forwardSeq"], deleted.1["editSeq"]);
+    let retry = request(
+        &app,
+        "POST",
+        "/api/chat/channels/destination/forwards",
+        "alice",
+        input.clone(),
+    )
+    .await;
+    assert_eq!(retry.0, StatusCode::OK);
+    assert_eq!(retry.1["forward"], unavailable);
+    assert_eq!(
+        request(&app, "GET", &path, "carol", Value::Null).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(request(&app, "POST", &format!("/api/chat/channels/{dm_id}/forwards"), "carol", json!({"sourceChannelId":"destination","sourceMessageId":forward["id"],"clientMessageId":Uuid::new_v4()})).await.0, StatusCode::NOT_FOUND);
+    persist_reaction(
+        &pool,
+        "source",
+        original["id"].as_str().unwrap(),
+        "bob",
+        "🔥",
+        true,
+    )
+    .await
+    .unwrap();
+    while publish_pending(&chat).await.unwrap() {}
+    let history = history_page(&pool, "destination", None, Some(users[2]))
+        .await
+        .unwrap();
+    let tombstone = history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == forward["id"])
+        .unwrap();
+    assert_eq!(tombstone["forward"], unavailable);
+    assert_eq!(tombstone["forwardSeq"], deleted.1["forwardSeq"]);
+    let replay: Vec<Value> = sqlx::query_scalar("SELECT payload FROM public.channel_events WHERE channel_id=$1 AND payload->'message'->>'id'=$2")
+        .bind(channels[1]).bind(forward["id"].as_str()).fetch_all(&pool).await.unwrap();
+    assert!(!replay.is_empty());
+    for event in replay {
+        assert_eq!(event["message"]["forward"], unavailable);
+        if event["type"] == "message.forward" {
+            // Redaction must preserve each projection event's wire revision.
+            assert_eq!(event["message"]["forwardSeq"], event["seq"]);
+        }
+    }
+    let control = request(&app, "GET", &dm_path, "dave", Value::Null).await;
+    assert_eq!(control.0, StatusCode::OK);
+    assert_eq!(control.1["root"]["id"], original["id"]);
+    // Legacy deleted wrappers can still contain a stored source snapshot.
+    sqlx::query(
+        "UPDATE public.messages SET payload=jsonb_set(payload,'{forward}',$2) WHERE external_id=$1",
+    )
+    .bind(forward["id"].as_str())
+    .bind(&forward["forward"])
+    .execute(&pool)
+    .await
+    .unwrap();
+    let legacy = request(
+        &app,
+        "GET",
+        &format!(
+            "/api/chat/channels/destination/messages/{}",
+            forward["id"].as_str().unwrap()
+        ),
+        "carol",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(legacy.0, StatusCode::OK);
+    assert_eq!(legacy.1["forward"], unavailable);
     // Removing destination membership revokes scoped reads, not just browsing.
     sqlx::query("UPDATE public.space_members SET deleted_at=now() WHERE user_id=$1")
         .bind(users[2])
@@ -670,7 +759,7 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
     );
     let (status, wrapper) = request(&app, "GET", &single, "alice", Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{wrapper}");
-    assert!(wrapper["forward"]["message"].is_object(), "{wrapper}");
+    assert_eq!(wrapper["forward"], json!({"message":null,"seq":"0"}));
     // A shared reply still hides its parent, but source members can navigate
     // to that exact reply in its real thread. Losing access clears this grant.
     let (status, reply_forward) = request(&app, "POST", "/api/chat/channels/destination/forwards", "alice",

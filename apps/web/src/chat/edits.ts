@@ -24,7 +24,9 @@ export function mergeEditedContent(current: ChatMessage, incoming: ChatMessage):
     revision: incoming.revision,
     editedAt: incoming.editedAt,
     editSeq: incoming.editSeq,
-    ...(incoming.deletedAt ? { deletedAt: incoming.deletedAt } : {}),
+    ...(incoming.deletedAt
+      ? { deletedAt: incoming.deletedAt, forward: incoming.forward, forwardSeq: incoming.forwardSeq }
+      : {}),
   };
   // The edit carries the files as of its own commit; keep a newer processing result.
   if (sequence(current.attachmentsSeq ?? "0") > sequence(incoming.attachmentsSeq ?? "0")) {
