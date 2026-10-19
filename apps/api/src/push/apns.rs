@@ -149,6 +149,9 @@ pub(super) fn payload(alert: &Alert) -> Value {
         "senderId": alert.sender_id,
         "senderAvatarId": alert.sender_avatar_id,
     });
+    if let Some(count) = alert.badge_count {
+        payload["aps"]["badge"] = json!(count);
+    }
     if let Some(root) = &alert.thread_root_id {
         payload["threadRootId"] = json!(root);
     }

@@ -522,7 +522,7 @@ class VoiceCallService : Service() {
     }
     private fun createNotificationChannel() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL, "Ongoing voice calls", NotificationManager.IMPORTANCE_LOW),
+            NotificationChannel(CHANNEL, "Ongoing voice calls", NotificationManager.IMPORTANCE_LOW).apply { setShowBadge(false) },
         )
     }
 

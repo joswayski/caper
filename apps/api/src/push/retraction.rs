@@ -28,6 +28,7 @@ struct Claimed {
     sender_id: String,
     sender: String,
     sender_avatar_id: Option<i16>,
+    recipient_id: i64,
 }
 
 impl Claimed {
@@ -76,7 +77,7 @@ pub(super) async fn retract_pending(workers: &Workers) -> Result<bool, ()> {
                 s.external_id AS space_id, s.name AS space_name,
                 COALESCE(author.external_id, m.payload->'author'->>'id', '') AS sender_id,
                 COALESCE(author.display_name, m.payload->'author'->>'name', '') AS sender,
-                author.avatar_id AS sender_avatar_id
+                author.avatar_id AS sender_avatar_id, n.user_id AS recipient_id
          FROM claimed c
          JOIN public.notifications n ON n.id=c.notification_id
          JOIN public.notification_devices dev ON dev.id=c.device_id
@@ -110,10 +111,13 @@ async fn attempt(workers: &Workers, claimed: &Claimed) -> Result<Outcome, &'stat
         return Err("expired");
     }
     let platform = Platform::parse(&claimed.transport).ok_or("platform unavailable")?;
-    Ok(workers
-        .push
-        .send(platform, &claimed.address, &claimed.alert())
-        .await)
+    let mut alert = claimed.alert();
+    if matches!(platform, Platform::Apns | Platform::ApnsSandbox) {
+        alert.badge_count = super::badge::count(&workers.pool, claimed.recipient_id)
+            .await
+            .ok();
+    }
+    Ok(workers.push.send(platform, &claimed.address, &alert).await)
 }
 
 async fn record(workers: &Workers, claimed: &Claimed, result: Result<Outcome, &'static str>) {

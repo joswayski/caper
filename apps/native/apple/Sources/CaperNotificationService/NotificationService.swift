@@ -42,6 +42,8 @@ final class NotificationService: UNNotificationServiceExtension {
                 finish(content); return
             }
             updated.attachments = content.attachments
+            // Communication decoration must not replace the server's account badge.
+            updated.badge = content.badge
             finish(updated)
         }
     }

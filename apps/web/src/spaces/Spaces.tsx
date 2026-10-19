@@ -37,6 +37,7 @@ import {
   type Account,
 } from "../account/client";
 import { watchBrowserNotifications } from "../account/browser-notifications";
+import { setApplicationBadge, UNREAD_CHANGED } from "../account/app-badge";
 import { watchLiveUpdates } from "../account/live-updates";
 import {
   getProfiles,
@@ -1760,8 +1761,16 @@ export default function Spaces({
       if (unreadAccount.current === accountId && unreadRevision.current === revision) {
         setUnreadSpaces(result.spaces);
         setFeedbackWaiting(result.feedbackWaiting ?? 0);
+        if (result.badgeCount !== undefined) setApplicationBadge(result.badgeCount);
       }
-    } catch {
+    } catch (error) {
+      if (
+        unreadAccount.current === accountId &&
+        unreadRevision.current === revision &&
+        error instanceof SpacesApiError &&
+        error.status === 401
+      )
+        setApplicationBadge(0);
       /* Keep the last known indicators during an outage. */
     }
   }, [account?.id]);
@@ -1770,17 +1779,26 @@ export default function Spaces({
     channelReads.current.clear();
     setUnreadSpaces([]);
     setFeedbackWaiting(0);
-    const refresh = () => {
-      if (!document.hidden) void refreshUnread();
+    // Background tabs still need to update their title and installed-app icon.
+    const refresh = () => void refreshUnread();
+    // Let read callbacks finish updating local cursors before starting a snapshot.
+    let readRefresh: ReturnType<typeof setTimeout> | undefined;
+    const onRead = () => {
+      unreadRevision.current++;
+      clearTimeout(readRefresh);
+      readRefresh = setTimeout(refresh, 100);
     };
     refresh();
     const timer = setInterval(refresh, 15_000);
     window.addEventListener("focus", refresh);
+    window.addEventListener(UNREAD_CHANGED, onRead);
     document.addEventListener("visibilitychange", refresh);
     return () => {
       unreadRevision.current++;
       clearInterval(timer);
+      clearTimeout(readRefresh);
       window.removeEventListener("focus", refresh);
+      window.removeEventListener(UNREAD_CHANGED, onRead);
       document.removeEventListener("visibilitychange", refresh);
     };
   }, [refreshUnread]);

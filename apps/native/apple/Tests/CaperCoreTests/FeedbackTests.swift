@@ -42,6 +42,38 @@ private func feedbackBody(_ request: URLRequest) throws -> Data {
 
 final class FeedbackTests: XCTestCase {
     @MainActor
+    func testApplicationBadgeUsesAuthoritativeCountAndClearsOnSessionInvalidation() async throws {
+        var payload = #"{"spaces":[],"badgeCount":137}"#
+        var status = 200
+        FeedbackMockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/api/spaces/unread")
+            return (status, Data(payload.utf8))
+        }
+        let model = AppModel(api: client())
+        model.account = Account(id: selfID, username: "team", displayName: "Team")
+        await model.refreshUnreadSpaces()
+        XCTAssertEqual(model.desiredBadgeCount, 137)
+        payload = #"{"spaces":[]}"#
+        await model.refreshUnreadSpaces()
+        XCTAssertEqual(model.desiredBadgeCount, 137, "older servers must not invent a zero badge")
+        payload = #"{"spaces":[],"badgeCount":0}"#
+        await model.refreshUnreadSpaces()
+        XCTAssertEqual(model.desiredBadgeCount, 0)
+        payload = #"{"spaces":[],"badgeCount":5}"#
+        await model.refreshUnreadSpaces()
+        status = 401
+        await model.refreshUnreadSpaces()
+        XCTAssertEqual(model.desiredBadgeCount, 0, "an invalid session clears its application badge")
+        status = 200
+        await model.refreshUnreadSpaces()
+        XCTAssertEqual(model.desiredBadgeCount, 5)
+        model.account = nil
+        XCTAssertEqual(model.desiredBadgeCount, 0)
+        await model.refreshUnreadSpaces()
+        XCTAssertEqual(model.desiredBadgeCount, 0, "signed-out polling cannot restore a badge")
+    }
+
+    @MainActor
     func testAnswerRefreshesWaitingBadgeWithoutWaitingForPoll() async throws {
         var waiting = 1
         FeedbackMockURLProtocol.handler = { request in

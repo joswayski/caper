@@ -53,6 +53,7 @@ struct Claimed {
     sender_avatar_id: Option<i16>,
     recipient_count: i64,
     recipient: String,
+    recipient_id: i64,
     mobile: String,
 }
 
@@ -210,6 +211,7 @@ pub(super) async fn deliver_pending(workers: &Workers) -> Result<bool, ()> {
                 author.avatar_id AS sender_avatar_id,
                 COALESCE(rc.recipient_count, 0) AS recipient_count,
                 recipient.external_id AS recipient,
+                recipient.id AS recipient_id,
                 COALESCE(ns.mobile, 'whenInactive') AS mobile
          FROM claimed c
          JOIN public.notifications n ON n.id=c.notification_id
@@ -294,16 +296,15 @@ async fn attempt(workers: &Workers, claimed: &Claimed) -> Attempt {
     let Some(platform) = Platform::parse(&claimed.transport) else {
         return Attempt::Dropped("platform unavailable");
     };
-    Attempt::Sent(
-        workers
-            .push
-            .send(
-                platform,
-                &claimed.address,
-                &claimed.alert(workers.cdn.as_deref()),
-            )
-            .await,
-    )
+    let mut alert = claimed.alert(workers.cdn.as_deref());
+    if matches!(platform, Platform::Apns | Platform::ApnsSandbox) {
+        // A snapshot, not +1: duplicates, retries and multiple devices cannot
+        // inflate the badge. A failed lookup must not erase a known count.
+        alert.badge_count = super::badge::count(&workers.pool, claimed.recipient_id)
+            .await
+            .ok();
+    }
+    Attempt::Sent(workers.push.send(platform, &claimed.address, &alert).await)
 }
 
 async fn record(workers: &Workers, claimed: &Claimed, result: Attempt) {

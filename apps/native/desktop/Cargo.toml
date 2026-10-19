@@ -79,12 +79,13 @@ avif-asm = ["rav1e/asm"]
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
 notify-rust = { version = "4.18.2", default-features = false, features = ["z"] }
+zbus = "=5.19.0"
 wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", "vulkan", "gles"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", "dx12"] }
-windows = { version = "0.61.3", features = ["UI_ViewManagement"] }
+windows = { version = "0.61.3", features = ["UI_ViewManagement", "UI_Notifications", "Data_Xml_Dom"] }
 winreg = "0.55"
 winrt-toast-reborn = "0.3.8"
 

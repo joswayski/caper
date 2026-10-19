@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod api;
+mod app_badge;
 mod app_link;
 mod attachment_edit;
 mod attachment_editor;
@@ -29747,6 +29748,7 @@ mod tests {
                 result: Ok(model::UnreadSpaces {
                     spaces,
                     feedback_waiting: 0,
+                    badge_count: None,
                 }),
             })
             .unwrap();
@@ -39915,6 +39917,7 @@ mod tests {
             Ok(crate::model::UnreadSpaces {
                 spaces: vec![],
                 feedback_waiting: 12,
+                badge_count: None,
             }),
         );
         app.receive();
@@ -39946,6 +39949,7 @@ mod tests {
             Ok(crate::model::UnreadSpaces {
                 spaces: vec![],
                 feedback_waiting: 99,
+                badge_count: None,
             }),
         );
         send(
@@ -39954,6 +39958,7 @@ mod tests {
             Ok(crate::model::UnreadSpaces {
                 spaces: vec![],
                 feedback_waiting: 99,
+                badge_count: None,
             }),
         );
         app.receive();
@@ -39967,6 +39972,7 @@ mod tests {
             Ok(crate::model::UnreadSpaces {
                 spaces: vec![],
                 feedback_waiting: 0,
+                badge_count: None,
             }),
         );
         app.receive();
