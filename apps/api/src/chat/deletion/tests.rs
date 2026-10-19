@@ -159,12 +159,13 @@ async fn deletion_keeps_the_row_scrubs_content_and_only_lets_the_author_delete()
         .bind(&root_id).fetch_one(&pool).await.unwrap();
     assert!(deleted_at.is_some());
     assert_eq!(kept["text"], "secret plans @delete-peer");
-    let events: Vec<Value> =
-        sqlx::query_scalar("SELECT payload FROM public.channel_events WHERE channel_id=$1")
-            .bind(channel)
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+    let events: Vec<Value> = sqlx::query_scalar(
+        "SELECT payload FROM public.channel_events WHERE channel_id=$1 ORDER BY seq",
+    )
+    .bind(channel)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     assert!(
         events
             .iter()

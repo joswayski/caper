@@ -233,6 +233,37 @@ final class GatewayLifecycleTests: XCTestCase {
         await subject.stop()
     }
 
+    func testCandidateResyncRetriesWithoutResettingActiveChat() async {
+        let factory = SocketFactory(); var events: [String] = []
+        let subject = gateway(factory)
+        _ = await subject.subscribeChat(channelID: "chat", after: "0") { events.append($0["type"] as! String) }
+        await eventually { factory.socket(0) != nil }; let old = factory.socket(0)!
+        old.push(["type": "hello"])
+        let id = await subscribeID(old, kind: "chat")
+        old.push(["type": "subscribed", "id": id])
+        old.push(["type": "event", "id": id, "event": ["type": "ready", "cursor": "0"]])
+        old.push(["type": "migrating"])
+        await eventually { factory.socket(1) != nil }; let candidate = factory.socket(1)!
+        candidate.push(["type": "hello"]); _ = await subscribeID(candidate, kind: "chat")
+        candidate.push(["type": "event", "id": id, "event": ["type": "resync_required"]])
+        await eventually("failed candidate was not discarded") { candidate.cancelled }
+        XCTAssertFalse(events.contains("resync_required"))
+        XCTAssertFalse(old.cancelled)
+        old.push(["type": "event", "id": id, "event": ["type": "message.created", "seq": "1"]])
+        await eventually { events.contains("message.created") }
+        await eventually("replacement was not retried") { factory.socket(2) != nil }
+        let retry = factory.socket(2)!
+        retry.push(["type": "hello"]); _ = await subscribeID(retry, kind: "chat")
+        XCTAssertEqual(retry.frames(type: "subscribe").first?["after"] as? String, "1")
+        retry.push(["type": "subscribed", "id": id])
+        retry.push(["type": "event", "id": id, "event": ["type": "ready", "cursor": "1"]])
+        await eventually { old.cancelled }
+        retry.push(["type": "event", "id": id, "event": ["type": "resync_required"]])
+        await eventually("authoritative resync must still reach chat") { events.contains("resync_required") }
+        XCTAssertEqual(events.filter { $0 == "resync_required" }.count, 1)
+        await subject.stop()
+    }
+
     func testCandidateFailureLeavesOldStreamDelivering() async {
         let factory = SocketFactory(); var delivered = 0; let subject = gateway(factory)
         _ = await subject.subscribeChat(channelID: "chat", after: "0") { if $0["type"] as? String == "message.created" { delivered += 1 } }
