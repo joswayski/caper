@@ -1154,6 +1154,45 @@ final class APIClientTests: XCTestCase {
     }
 
     @MainActor
+    func testWorkspaceCompletionAfterLogoutDoesNotStartServicesForNewAccount() async {
+        let model = AppModel(api: client())
+        let spacesStarted = expectation(description: "restoration spaces pending")
+        let staleServices = expectation(description: "stale workspace started signed-in services")
+        staleServices.isInverted = true
+        var delayedSpaces: MockURLProtocol?
+        MockURLProtocol.deferred = { request, urlRequest in
+            guard urlRequest.url?.path == "/api/spaces" else { return false }
+            delayedSpaces = request; spacesStarted.fulfill(); return true
+        }
+        MockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/account/me":
+                return (200, Data(#"{"id":"old","username":"old","displayName":"Old"}"#.utf8))
+            case "/api/auth/logout": return (204, Data())
+            default:
+                staleServices.fulfill()
+                return (503, Data())
+            }
+        }
+        let start = Task { await model.start() }
+        await fulfillment(of: [spacesStarted], timeout: 1)
+        XCTAssertTrue(model.restoringWorkspace)
+        await model.logout()
+        XCTAssertFalse(model.restoringWorkspace)
+        // An account alone is insufficient: only the original generation may
+        // start services. Stand in for a subsequent sign-in while the old list waits.
+        model.account = Account(id: "new", username: "new", displayName: "New")
+        model.phase = .ready
+        delayedSpaces?.respond(status: 200, data: Data(#"{"spaces":[],"invitations":[]}"#.utf8))
+        await start.value
+        await fulfillment(of: [staleServices], timeout: 0.2)
+        XCTAssertEqual(model.account?.id, "new")
+        XCTAssertFalse(model.restoringWorkspace)
+        XCTAssertFalse(model.spacesLoaded)
+        await model.logout()
+    }
+
+    @MainActor
     func testDelayedReconnectRefreshKeepsVisibleHistoryAndDraft() async throws {
         let channel = "Aaaaaaaaaaaa"
         var historyRequests = 0

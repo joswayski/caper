@@ -191,6 +191,46 @@ test("candidate gaps or failure cannot kill a healthy active stream", (t) => {
   assert.deepEqual(delivered, ["3"]);
 });
 
+test("candidate resync retries without resetting healthy chat; active resync still reaches chat", (t) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const f = setup(t);
+  let cursor = "5";
+  const delivered: string[] = [];
+  const subscription = f.gateway.subscribe(
+    { kind: "chat", channelId: "general", after: cursor },
+    {
+      cursor: () => cursor,
+      event: (event) => {
+        const value = event as { type: string; seq?: string };
+        delivered.push(value.type);
+        if (value.seq) cursor = value.seq;
+      },
+    },
+  );
+  t.onTestFinished(() => subscription.unsubscribe());
+  f.hello(0);
+  const id = f.subscribe(0).id;
+  f.sockets[0].frame({ type: "event", id, event: { type: "ready", cursor } });
+  f.sockets[0].frame({ type: "subscribed", id });
+  f.sockets[0].frame({ type: "migrating" });
+  f.hello(1);
+  f.sockets[1].frame({ type: "event", id, event: { type: "resync_required" } });
+  assert.deepEqual(delivered, ["ready"], "a failed replacement cannot request a history reload");
+  assert.equal(f.sockets[1].closed, true);
+  assert.equal(f.sockets[0].closed, false);
+  f.sockets[0].frame({ type: "event", id, event: { type: "message.created", seq: "6" } });
+  assert.equal(cursor, "6");
+  vi.advanceTimersByTime(1_000);
+  assert.equal(f.sockets.length, 3, "the replacement is retried");
+  f.hello(2);
+  assert.equal(f.subscribe(2).after, "6", "retry resumes at the latest applied cursor");
+  f.sockets[2].frame({ type: "event", id, event: { type: "ready", cursor } });
+  f.sockets[2].frame({ type: "subscribed", id });
+  assert.equal(f.sockets[0].closed, true);
+  f.sockets[2].frame({ type: "event", id, event: { type: "resync_required" } });
+  assert.deepEqual(delivered, ["ready", "message.created", "ready", "resync_required"]);
+});
+
 test("repeated deployments keep chat and media online through a failed candidate and delayed snapshots", (t) => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const f = setup(t);

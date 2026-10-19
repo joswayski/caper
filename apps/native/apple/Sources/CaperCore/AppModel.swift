@@ -607,7 +607,8 @@ public final class AppModel {
         }
         await loadSpaces()
         limit.cancel()
-        if generation == attempt { restoringWorkspace = false }
+        guard generation == attempt, account != nil else { return }
+        restoringWorkspace = false
         startDirectMessageRefresh()
     }
 
