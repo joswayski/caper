@@ -568,10 +568,31 @@ pub fn upload(
     Ok(Changed { applied, local })
 }
 
-pub fn restore(api: &Api, token: &str, asset: Option<&str>) -> Result<Changed, Failure> {
-    let account = api.restore_avatar(token, asset).map_err(|error| {
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviousPicture {
+    pub avatar_asset: String,
+    pub avatar_url: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct History {
+    pub pictures: Vec<PreviousPicture>,
+    pub next_cursor: Option<String>,
+}
+
+pub fn select(
+    api: &Api,
+    token: &str,
+    asset: &str,
+    expected: Option<&str>,
+) -> Result<Changed, Failure> {
+    let account = api.select_avatar(token, asset, expected).map_err(|error| {
         if error.status.is_some_and(|status| status.as_u16() == 409) {
-            Failure::new("Your picture changed elsewhere. Reopen your profile and try again.")
+            Failure::new(
+                "Your picture changed elsewhere. Close and reopen Previous pictures to try again.",
+            )
         } else {
             api_failure(&error, &Target::Avatar)
         }

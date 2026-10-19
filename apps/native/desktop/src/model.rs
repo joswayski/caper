@@ -243,8 +243,6 @@ pub struct Account {
     #[serde(default)]
     pub avatar_asset: Option<String>,
     #[serde(default)]
-    pub can_restore_avatar: bool,
-    #[serde(default)]
     pub avatar_url: Option<String>,
     pub username: Option<String>,
     pub display_name: Option<String>,
