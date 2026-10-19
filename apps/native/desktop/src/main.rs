@@ -9657,6 +9657,7 @@ impl CaperApp {
                     self.updates.dismiss();
                 }
             });
+        motion::modal(context, modal.response.layer_id);
         if modal.should_close() {
             self.updates.dismiss();
         }
@@ -19257,6 +19258,10 @@ impl CaperApp {
                     }
                 }
             });
+        // egui fades the window in; it also rises into place, like a menu.
+        if let Some(shown) = &shown {
+            motion::overlay(context, shown.response.layer_id, motion::BASE, 8.0, false);
+        }
         let escape =
             context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         let outside = shown.is_some_and(|shown| clicked_outside(context, &shown.response));
@@ -19540,6 +19545,9 @@ impl CaperApp {
                         }
                     });
             });
+        if let Some(shown) = &shown {
+            motion::overlay(context, shown.response.layer_id, motion::BASE, 8.0, false);
+        }
         self.emoji_picker_rect = shown.map(|shown| shown.response.rect);
         if let Some(emoji) = selected {
             match &target {
@@ -22292,6 +22300,7 @@ impl CaperApp {
                 }
             });
         });
+        motion::modal(context, modal.response.layer_id);
         if !pending && (cancel || modal.should_close()) {
             return;
         }
@@ -22377,6 +22386,7 @@ impl CaperApp {
                 if ui.button("Edit still image").clicked() { action = 2; }
                 if ui.button("Cancel").clicked() { action = 3; }
             });
+            motion::modal(context, modal.response.layer_id);
             if modal.should_close() {
                 action = 3;
             }

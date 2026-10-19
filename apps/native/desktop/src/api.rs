@@ -53,7 +53,8 @@ impl Api {
         if !base.username().is_empty() || base.password().is_some() {
             return Err("Caper API URLs cannot contain credentials.".into());
         }
-        let local = matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+        // `host_str` keeps an IPv6 address's brackets.
+        let local = matches!(base.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
         if base.scheme() != "https" && !(base.scheme() == "http" && local) {
             return Err("Caper requires HTTPS (plain HTTP is allowed only on loopback).".into());
         }
@@ -1742,6 +1743,21 @@ mod tests {
             assert!(api.whats_new().is_err());
         }
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn plain_http_is_allowed_only_on_loopback_including_ipv6() {
+        for local in [
+            "http://localhost:3000",
+            "http://127.0.0.1:9",
+            "http://[::1]:3000",
+        ] {
+            assert!(Api::new(local).is_ok(), "{local}");
+        }
+        for remote in ["http://caper.chat", "http://[::2]:3000", "ftp://127.0.0.1"] {
+            assert!(Api::new(remote).is_err(), "{remote}");
+        }
+        assert!(Api::new("https://user:secret@caper.chat").is_err());
     }
 
     #[test]
