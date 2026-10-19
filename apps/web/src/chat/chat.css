@@ -34,7 +34,7 @@
   padding: 16px;
   background: rgb(12 13 15 / 82%);
   pointer-events: none;
-  animation: chat-drop-fade var(--motion-fast) var(--ease-out) both;
+  animation: caper-fade-in var(--motion-fast) var(--ease-out) both;
 }
 .chat-drop-card {
   display: grid;
@@ -49,7 +49,7 @@
   background: var(--surface);
   box-shadow: 0 18px 48px rgb(0 0 0 / 45%);
   text-align: center;
-  animation: chat-drop-pop 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation: caper-dialog-in var(--motion-base) var(--ease-out) both;
 }
 .chat-drop-card strong {
   font-size: 18px;
@@ -80,7 +80,7 @@
   margin-left: -27px;
   transform: translate(var(--x), var(--y)) rotate(var(--turn));
   transform-origin: 50% 100%;
-  animation: chat-drop-fan 420ms cubic-bezier(0.34, 1.56, 0.64, 1) 60ms backwards;
+  animation: chat-drop-fan var(--motion-slow) var(--ease-out) 60ms backwards;
 }
 .chat-drop-file[data-position="0"] {
   --x: -46px;
@@ -137,7 +137,7 @@
   width: 76px;
   height: 76px;
   margin-left: -38px;
-  animation: chat-drop-rise 380ms cubic-bezier(0.34, 1.56, 0.64, 1) 120ms backwards;
+  animation: chat-drop-rise var(--motion-slow) var(--ease-out) 120ms backwards;
 }
 .chat-drop-character img {
   display: block;
@@ -147,21 +147,10 @@
   transform-origin: 50% 100%;
   animation: chat-drop-hop 1.6s ease-in-out 500ms infinite;
 }
-@keyframes chat-drop-fade {
-  from {
-    opacity: 0;
-  }
-}
-@keyframes chat-drop-pop {
-  from {
-    opacity: 0;
-    transform: scale(0.92);
-  }
-}
 @keyframes chat-drop-fan {
   from {
     opacity: 0;
-    transform: translate(0, 24px) rotate(0deg) scale(0.7);
+    transform: translate(0, 16px) rotate(0deg);
   }
 }
 @keyframes chat-drop-sway {
@@ -172,7 +161,7 @@
 @keyframes chat-drop-rise {
   from {
     opacity: 0;
-    transform: translateY(28px) scale(0.6);
+    transform: translateY(16px);
   }
 }
 /* A small hop with a squash on landing. */
@@ -356,23 +345,10 @@
   font-size: 0.78rem;
   font-weight: 700;
   pointer-events: none;
-  opacity: 0;
-  transform: translate(-50%, 4px);
-  transition:
-    opacity var(--motion-fast) var(--ease-out),
-    transform var(--motion-fast) var(--ease-out);
-}
-.chat-action-status[data-visible] {
-  opacity: 1;
   transform: translate(-50%, 0);
 }
 .chat-action-status:empty {
   display: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-action-status {
-    transition: none;
-  }
 }
 /* Before the scrolling list mounts: anchored to the bottom and at least full
    height, so a long history shows its newest messages (like the list will)
@@ -690,14 +666,14 @@
   margin: 6px auto 0;
   padding: 6px 14px;
   border: 1px solid transparent;
-  border-radius: 999px;
-  background: var(--text);
-  color: var(--blackout);
+  border-radius: var(--radius);
+  background: var(--action);
+  color: var(--on-action);
   font: inherit;
   font-size: 0.68rem;
   font-weight: 700;
   cursor: pointer;
-  transition: background-color 140ms ease;
+  transition: background-color var(--motion-fast) var(--ease-out);
 }
 .chat-reply-context[data-expanded="false"] .chat-reply-expand {
   position: absolute;
@@ -708,11 +684,11 @@
 }
 @media (hover: hover) {
   .chat-reply-expand:hover {
-    background: #fff;
+    background: var(--action-hover);
   }
 }
 .chat-reply-expand:active {
-  background: color-mix(in srgb, var(--text) 85%, var(--border));
+  background: var(--action-press);
 }
 .chat-reply-view {
   flex-shrink: 0;
@@ -890,9 +866,9 @@
 @media (hover: hover) and (prefers-reduced-motion: no-preference) {
   .call-page a.chat-link {
     transition:
-      color 100ms ease-in-out,
-      background-color 100ms ease-in-out,
-      box-shadow 100ms ease-in-out;
+      color var(--motion-fast) var(--ease-out),
+      background-color var(--motion-fast) var(--ease-out),
+      box-shadow var(--motion-fast) var(--ease-out);
   }
 }
 @media (hover: hover) {
@@ -1047,8 +1023,8 @@
 .chat-reaction {
   cursor: pointer;
   transition:
-    border-color 120ms ease,
-    background-color 120ms ease;
+    border-color var(--motion-fast) var(--ease-out),
+    background-color var(--motion-fast) var(--ease-out);
 }
 .chat-reaction[aria-pressed="true"] {
   border-color: var(--terracotta);
@@ -1271,9 +1247,9 @@
 .chat-reaction-picker-heading button,
 .chat-forward-destinations label {
   transition:
-    background-color 140ms ease,
-    border-color 140ms ease,
-    color 140ms ease;
+    background-color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
 @media (prefers-reduced-motion: reduce) {
   :is(.chat-message-actions, .chat-reactors, .chat-forward-dialog, .chat-mention-card) button,
@@ -1362,7 +1338,7 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: none;
   color: var(--text-muted);
   cursor: pointer;
@@ -1563,7 +1539,7 @@
 .chat-message > :where(:not(.chat-forward-card)) > p {
   margin: 4px 0 0;
   overflow-wrap: anywhere;
-  color: #dedfe0;
+  color: var(--text);
   font-size: 0.86rem;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -2052,8 +2028,8 @@
     background: var(--action-hover);
   }
   .chat-edit-dialog .chat-delete-confirm:hover:not(:disabled) {
-    border-color: #a33b48;
-    background: #a33b48;
+    border-color: var(--danger-hover);
+    background: var(--danger-hover);
   }
 }
 :is(
@@ -2227,20 +2203,10 @@
   padding-block: 0;
 }
 .chat-typing-content {
-  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 7px;
   min-width: 0;
-  opacity: 0;
-  transform: translateY(2px);
-  transition:
-    opacity 180ms ease-out,
-    transform 180ms ease-out;
-}
-.chat-typing-content[data-visible="true"] {
-  opacity: 1;
-  transform: translateY(0);
 }
 .chat-typing-content > span:last-child {
   overflow: hidden;
@@ -2279,9 +2245,6 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .chat-typing-content {
-    transition: none;
-  }
   .chat-typing-dots i {
     animation: none;
   }
@@ -2315,7 +2278,7 @@
   font: inherit;
   font-size: 0.85rem;
   line-height: 1.4;
-  transition: border-color 140ms ease;
+  transition: border-color var(--motion-fast) var(--ease-out);
 }
 :is(.chat-composer, .chat-profile-composer) textarea:focus-visible {
   outline: none;
@@ -2324,7 +2287,9 @@
   border-color: var(--terracotta);
 }
 @media (prefers-reduced-motion: reduce) {
-  .chat-composer textarea {
+  :is(.chat-composer, .chat-profile-composer) textarea,
+  .chat-reaction,
+  .chat-reply-expand {
     transition: none;
   }
 }
@@ -2593,15 +2558,9 @@ a.chat-draft-preview {
   width: max-content;
   max-width: calc(100vw - 24px);
   padding: 4px;
-  animation: chat-viewer-in var(--motion-fast) var(--ease-out);
 }
 .chat-draft-menu button {
   min-height: 44px;
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-draft-menu {
-    animation: none;
-  }
 }
 .chat-draft-status,
 .chat-draft-retry {
@@ -3158,7 +3117,7 @@ a.chat-draft-preview {
   color: var(--text);
   background: rgb(12 13 15 / 0.78);
   cursor: pointer;
-  transition: opacity 140ms ease;
+  transition: opacity var(--motion-fast) var(--ease-out);
 }
 .chat-media-expand:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -3609,12 +3568,6 @@ a.chat-draft-preview {
 .chat-viewer-overlay {
   z-index: 1200;
   background: rgb(0 0 0 / 92%);
-  animation: chat-viewer-in var(--motion-fast) var(--ease-out);
-}
-@keyframes chat-viewer-in {
-  from {
-    opacity: 0;
-  }
 }
 .chat-viewer {
   position: absolute;
@@ -3683,8 +3636,8 @@ a.chat-draft-preview {
   color: var(--text-muted);
   background: none;
   transition:
-    background-color 140ms ease,
-    color 140ms ease;
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
 @media (hover: hover) {
   .chat-viewer-bar :is(a, button, summary):hover {
@@ -3831,7 +3784,7 @@ a.chat-draft-preview {
   border-radius: 50%;
   color: var(--text);
   background: rgb(12 13 15 / 0.7);
-  transition: background-color 140ms ease;
+  transition: background-color var(--motion-fast) var(--ease-out);
 }
 .chat-viewer-nav[data-direction="previous"] {
   left: 16px;
@@ -3868,11 +3821,11 @@ a.chat-draft-preview {
   height: 36px;
   padding: 0 14px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   color: var(--text);
   background: none;
   font-weight: 500;
-  transition: background-color 140ms ease;
+  transition: background-color var(--motion-fast) var(--ease-out);
 }
 @media (hover: hover) {
   .chat-viewer-tools button:hover {
@@ -3928,9 +3881,6 @@ a.chat-draft-preview {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .chat-viewer-overlay {
-    animation: none;
-  }
   .chat-viewer-media,
   .chat-viewer-bar :is(a, button, summary),
   .chat-viewer-nav,
@@ -4832,9 +4782,9 @@ a.chat-draft-preview {
   background: var(--action);
 }
 .chat-edit-dialog .chat-delete-confirm {
-  border-color: #b93646;
-  color: #fff;
-  background: #b93646;
+  border-color: var(--danger);
+  color: var(--on-danger);
+  background: var(--danger);
 }
 .chat-edit-dialog button:disabled {
   opacity: 0.5;
@@ -5003,7 +4953,7 @@ a.chat-draft-preview {
   }
 }
 .chat-message-actions .message-action-danger {
-  color: #ff8c9a;
+  color: var(--error-text);
 }
 /* What remains of a deleted message, and of a reply's quote of one. */
 .chat-message p.chat-message-deleted,
@@ -5021,9 +4971,9 @@ a.chat-draft-preview {
 :is(.chat-composer-tool, .chat-composer-send),
 .chat-forward-destinations label {
   transition:
-    background-color 140ms ease,
-    border-color 140ms ease,
-    color 140ms ease;
+    background-color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
 @media (prefers-reduced-motion: reduce) {
   :is(.chat-message-actions, .chat-reaction-picker-heading, .chat-forward-dialog, .chat-edit-dialog, .chat-mention-card)

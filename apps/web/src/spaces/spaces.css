@@ -52,9 +52,9 @@
   text-decoration: none;
   cursor: pointer;
   transition:
-    border-color 150ms ease,
-    color 150ms ease,
-    background-color 150ms ease;
+    border-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    background-color var(--motion-fast) var(--ease-out);
 }
 /* Utility controls keep their hover treatment; space tiles use only the pill. */
 @media (hover: hover) {
@@ -459,7 +459,7 @@
   height: 16px;
   flex: 0 0 auto;
   color: var(--text-muted);
-  transition: transform 150ms ease;
+  transition: transform var(--motion-fast) var(--ease-out);
 }
 .space-menu[open] summary > svg {
   transform: rotate(180deg);
@@ -525,7 +525,7 @@
   place-items: center;
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: transparent;
   cursor: pointer;
@@ -562,7 +562,7 @@
   min-height: 28px;
   padding: 4px 6px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: transparent;
   font: inherit;
@@ -603,7 +603,7 @@
   width: 16px;
   height: 16px;
   flex: 0 0 auto;
-  transition: transform 150ms ease;
+  transition: transform var(--motion-fast) var(--ease-out);
 }
 .channel-section-toggle[aria-expanded="false"] svg {
   transform: rotate(-90deg);
@@ -638,7 +638,7 @@
   .channel-section-actions {
     opacity: 0;
     pointer-events: none;
-    transition: opacity 120ms ease;
+    transition: opacity var(--motion-fast) var(--ease-out);
   }
   .channel-section-heading:hover .channel-section-actions,
   .channel-section-heading:focus-within .channel-section-actions,
@@ -838,7 +838,7 @@
   width: 14px;
   height: 14px;
   color: var(--text-muted);
-  transition: transform 120ms ease;
+  transition: transform var(--motion-fast) var(--ease-out);
 }
 .space-actions [aria-expanded="true"] > .notification-chevron {
   transform: rotate(90deg);
@@ -916,7 +916,7 @@
   display: flex;
   align-items: center;
   border-radius: var(--radius);
-  transition: background-color 140ms ease;
+  transition: background-color var(--motion-fast) var(--ease-out);
 }
 .direct-line .direct-select,
 .direct-line .direct-select:hover,
@@ -1536,8 +1536,8 @@
   background: transparent;
   cursor: pointer;
   transition:
-    background-color 140ms ease,
-    color 140ms ease;
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
 @media (hover: hover) {
   .space-access-notice button:hover {
@@ -1713,9 +1713,9 @@
   background: var(--border);
   cursor: pointer;
   transition:
-    background-color 150ms ease,
-    border-color 150ms ease,
-    box-shadow 150ms ease;
+    background-color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out);
 }
 .channel-privacy input::after {
   position: absolute;
@@ -1726,7 +1726,7 @@
   border-radius: 50%;
   background: var(--text);
   content: "";
-  transition: transform 150ms ease;
+  transition: transform var(--motion-fast) var(--ease-out);
 }
 .channel-privacy input:checked {
   background: var(--terracotta);
@@ -1783,13 +1783,13 @@
   background: var(--action);
 }
 .space-dialog .danger {
-  border-color: #b93646;
-  background: #b93646;
-  color: #fff;
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--on-danger);
 }
 .space-dialog .danger-outline {
-  border-color: #a33b48;
-  color: #ff8c9a;
+  border-color: var(--danger);
+  color: var(--error-text);
   background: transparent;
 }
 .space-dialog button:disabled {
@@ -2190,7 +2190,7 @@
 }
 .delete-confirmation > .space-form-error {
   margin-top: 12px;
-  color: #ff8c9a;
+  color: var(--error-text);
 }
 .delete-confirmation .space-dialog-actions > button {
   flex: 1;
@@ -2388,11 +2388,11 @@
 :is(.space-dialog, .channel-navigation, .spaces-empty, .empty-channel) :is(button, summary),
 .navigation-toggle {
   transition:
-    background-color 140ms ease,
-    border-color 140ms ease,
-    color 140ms ease,
-    box-shadow 140ms ease,
-    opacity 140ms ease;
+    background-color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out),
+    opacity var(--motion-fast) var(--ease-out);
 }
 @media (hover: hover) {
   .space-dialog .secondary:hover:not(:disabled),
@@ -2412,16 +2412,16 @@
     background: var(--action-hover);
   }
   .space-dialog .danger:hover:not(:disabled) {
-    border-color: #d44355;
-    background: #d44355;
+    border-color: var(--danger-hover);
+    background: var(--danger-hover);
   }
   .space-dialog .danger-outline:hover:not(:disabled) {
-    border-color: #d44355;
-    color: #ffabb5;
-    background: rgb(185 54 70 / 0.16);
+    border-color: var(--danger-hover);
+    color: var(--error-text);
+    background: var(--danger-wash);
   }
   .member-manager li button:hover:not(:disabled) {
-    color: #ff8c9a;
+    color: var(--error-text);
     background: rgb(185 54 70 / 0.12);
   }
   /* Copy is not destructive: neutral hover beside Revoke's red one. */
@@ -2473,7 +2473,7 @@
   outline-offset: 2px;
 }
 .space-dialog :is(.danger, .danger-outline):focus-visible {
-  outline-color: #ff8c9a;
+  outline-color: var(--error-text);
 }
 /* Scrolling lists clip an outside ring at their edges; draw it inside instead. */
 .call-page .channel-navigation :focus-visible,
@@ -2698,7 +2698,7 @@
   flex: 0 0 30px;
   width: 30px;
   height: 16px;
-  transition: transform 150ms ease;
+  transition: transform var(--motion-fast) var(--ease-out);
 }
 .direct-requests[aria-expanded="false"] > svg {
   transform: rotate(-90deg);
@@ -2806,14 +2806,14 @@
   }
 }
 .direct-request-bar .danger-outline {
-  border-color: #a33b48;
-  color: #ff8c9a;
+  border-color: var(--danger);
+  color: var(--error-text);
   background: transparent;
 }
 @media (hover: hover) {
   .direct-request-bar .danger-outline:hover:not(:disabled) {
-    border-color: #d44355;
-    background: rgb(185 54 70 / 0.16);
+    border-color: var(--danger-hover);
+    background: var(--danger-wash);
   }
 }
 .direct-request-bar button:disabled {
@@ -2856,7 +2856,7 @@
 }
 .feedback-chevron {
   width: 14px !important;
-  transition: transform 160ms ease;
+  transition: transform var(--motion-fast) var(--ease-out);
 }
 .feedback-section-title[aria-expanded="false"] .feedback-chevron {
   transform: rotate(-90deg);

@@ -69,8 +69,10 @@
 .space-dialog[open]::backdrop,
 .chat-edit-dialog[open]::backdrop,
 .chat-forward-overlay,
-.chat-actions-overlay {
-  animation: caper-fade-in var(--motion-fast) ease-out;
+.chat-actions-overlay,
+.chat-viewer-overlay,
+.audio-dialog[open]::backdrop {
+  animation: caper-fade-in var(--motion-fast) var(--ease-out);
 }
 
 /* Menus, cards and tooltips anchored to a control. */
@@ -81,7 +83,11 @@
 .chat-reaction-tooltip,
 .chat-emoji-tooltip,
 .top-layer-tooltip:popover-open,
-:is(.space-menu, .channel-menu, .channel-section-menu)[open] > .space-actions {
+:is(.space-menu, .channel-menu, .channel-section-menu)[open] > .space-actions,
+.chat-title-menu[open] > .chat-header-menu,
+.chat-profile-menu,
+.chat-action-status:not(:empty),
+.chat-typing-content {
   animation: caper-rise-in var(--motion-fast) var(--ease-out);
 }
 /* The connection notice, shown after a second offline, fades in rather than blinking on. */
@@ -138,6 +144,8 @@
   .chat-forward-dialog,
   .chat-forward-overlay,
   .chat-actions-overlay,
+  .chat-viewer-overlay,
+  .audio-dialog[open]::backdrop,
   .chat-message-actions,
   .chat-message-actions:not(.chat-message-actions-drawer),
   .chat-reaction-picker,
@@ -154,6 +162,10 @@
   .chat-reply-draft,
   :is(.space-menu, .channel-menu, .channel-section-menu)[open] > .space-actions,
   .channel-menu[data-placement="above"][open] > .space-actions,
+  .chat-title-menu[open] > .chat-header-menu,
+  .chat-profile-menu,
+  .chat-action-status:not(:empty),
+  .chat-typing-content,
   .chat-thread-panel,
   .chat-message-arrive,
   .chat-empty-caper,

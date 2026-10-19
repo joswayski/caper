@@ -68,6 +68,7 @@ import MicPlayback, { SpeakerTest } from "./MicPlayback";
 import AudioDiagnostics from "./AudioDiagnostics";
 import AudioDevicePicker, { audioDeviceOptions } from "./AudioDevicePicker";
 import VoiceActivity from "./VoiceActivity";
+import { Speaking, SpeakingStore } from "./speaking";
 import ChannelSidebar from "./ChannelSidebar";
 import RoomResize from "./RoomResize";
 import { useBrowseSwipe } from "../spaces/browseTransition";
@@ -636,7 +637,7 @@ export default function Call({
   const [loggingOut, setLoggingOut] = useState(false);
   const [actionPending, setActionPending] = useState(false);
   const actionGeneration = useRef(0);
-  const [activeParticipants, setActiveParticipants] = useState<Set<string>>(() => new Set());
+  const [speakingStore] = useState(() => new SpeakingStore());
   const [participantVolumes, setParticipantVolumes] = useState<Record<string, number>>({});
   const [mutedParticipants, setMutedParticipants] = useState<Set<string>>(() => new Set());
   const [volumeParticipant, setVolumeParticipant] = useState<string>();
@@ -1276,10 +1277,10 @@ export default function Call({
   const voicePicture = <T extends Pick<Participant, "id" | "avatarId" | "avatarAsset" | "avatarUrl">>(
     participant: T,
   ) => (participant.id === state.selfId && account ? withPicture(participant, account) : participant);
-  const isSpeaking = (participant: { id: string; muted: boolean }) => {
-    const muted = participant.id === state.selfId ? state.muted : participant.muted;
-    return activeParticipants.has(participant.id) && !muted;
-  };
+  const audible = (participant: { id: string; muted: boolean }) => ({
+    id: participant.id,
+    muted: participant.id === state.selfId ? state.muted : participant.muted,
+  });
   const renderRoster = (people: typeof roster, own: boolean, label: string) => (
     <ul
       className={own && volumeParticipant ? "volume-menu-open" : undefined}
@@ -1291,7 +1292,7 @@ export default function Call({
         const participantMuted = self ? state.muted : participant.muted;
         const participantDeafened = self ? state.deafened : participant.deafened;
         const participantStatus = participantDeafened ? "Deafened" : participantMuted ? "Muted" : undefined;
-        const speaking = isSpeaking(participant);
+        const voice = [audible(participant)];
         return (
           <li
             ref={own && volumeParticipant === participant.id ? volumeMenuRef : undefined}
@@ -1307,29 +1308,37 @@ export default function Call({
             }
           >
             <span className="participant-avatar">
-              <span className={`avatar ${speaking ? "speaking" : "quiet"}`}>
-                <Avatar person={voicePicture(participant)} name={participantName} />
-              </span>
+              <Speaking store={speakingStore} people={voice}>
+                {(speaking) => (
+                  <span className={`avatar ${speaking ? "speaking" : "quiet"}`}>
+                    <Avatar person={voicePicture(participant)} name={participantName} />
+                  </span>
+                )}
+              </Speaking>
             </span>
-            <span className="participant-name" data-speaking={speaking ? "" : undefined}>
-              <strong>
-                {participantName}
-                {self ? " (you)" : ""}
-              </strong>
-              {participantStatus && (
-                <span className="participant-status" title={participantStatus}>
-                  {participantMuted && <MicOff aria-hidden="true" />}
-                  {participantDeafened && <HeadphoneOff aria-hidden="true" />}
-                  <span className="sr-only">{participantStatus}</span>
+            <Speaking store={speakingStore} people={voice}>
+              {(speaking) => (
+                <span className="participant-name" data-speaking={speaking ? "" : undefined}>
+                  <strong>
+                    {participantName}
+                    {self ? " (you)" : ""}
+                  </strong>
+                  {participantStatus && (
+                    <span className="participant-status" title={participantStatus}>
+                      {participantMuted && <MicOff aria-hidden="true" />}
+                      {participantDeafened && <HeadphoneOff aria-hidden="true" />}
+                      <span className="sr-only">{participantStatus}</span>
+                    </span>
+                  )}
+                  {!self && mutedParticipants.has(participant.id) && (
+                    <span className="participant-local-muted">
+                      <VolumeX aria-hidden="true" />
+                      You muted {participant.name}
+                    </span>
+                  )}
                 </span>
               )}
-              {!self && mutedParticipants.has(participant.id) && (
-                <span className="participant-local-muted">
-                  <VolumeX aria-hidden="true" />
-                  You muted {participant.name}
-                </span>
-              )}
-            </span>
+            </Speaking>
             {own && !self && (
               <button
                 className="participant-menu-button"
@@ -1548,10 +1557,15 @@ export default function Call({
       </button>
     </Tooltip>
   );
-  const liveFace = (participant: (typeof roster)[number]) => (
-    <span className="live-avatar" key={participant.id} data-speaking={isSpeaking(participant) ? "" : undefined}>
+  const liveAvatar = (participant: (typeof roster)[number], speaking: boolean) => (
+    <span className="live-avatar" key={participant.id} data-speaking={speaking ? "" : undefined}>
       <Avatar person={voicePicture(participant)} name={personName(participant)} />
     </span>
+  );
+  const liveFace = (participant: (typeof roster)[number]) => (
+    <Speaking key={participant.id} store={speakingStore} people={[audible(participant)]}>
+      {(speaking) => liveAvatar(participant, speaking)}
+    </Speaking>
   );
   // Your call's faces keep a stable order: you, then everyone else as they joined.
   const callPeople = () => {
@@ -1670,38 +1684,47 @@ export default function Call({
               const self = participant.id === state.selfId;
               const muted = self ? state.muted : participant.muted;
               const deafened = self ? state.deafened : participant.deafened;
-              const label = [
-                `${personName(participant)}${self ? " (you)" : ""}`,
-                isSpeaking(participant) && "speaking",
-                deafened ? "deafened" : muted && "muted",
-              ]
-                .filter(Boolean)
-                .join(", ");
+              const label = (speaking: boolean) =>
+                [
+                  `${personName(participant)}${self ? " (you)" : ""}`,
+                  speaking && "speaking",
+                  deafened ? "deafened" : muted && "muted",
+                ]
+                  .filter(Boolean)
+                  .join(", ");
               return (
                 <li key={participant.id} data-person={participant.id}>
                   <Tooltip content={personName(participant)}>
-                    <span className="live-face" role="img" aria-label={label}>
-                      {liveFace(participant)}
-                      {(muted || deafened) && (
-                        <span className="live-badge">
-                          {deafened ? <HeadphoneOff aria-hidden="true" /> : <MicOff aria-hidden="true" />}
+                    <Speaking store={speakingStore} people={[audible(participant)]}>
+                      {(speaking) => (
+                        <span className="live-face" role="img" aria-label={label(speaking)}>
+                          {liveAvatar(participant, speaking)}
+                          {(muted || deafened) && (
+                            <span className="live-badge">
+                              {deafened ? <HeadphoneOff aria-hidden="true" /> : <MicOff aria-hidden="true" />}
+                            </span>
+                          )}
                         </span>
                       )}
-                    </span>
+                    </Speaking>
                   </Tooltip>
                 </li>
               );
             })}
             {hidden.length > 0 && (
               <li data-person="">
-                <span
-                  className="live-more"
-                  role="img"
-                  data-speaking={hidden.some(isSpeaking) ? "" : undefined}
-                  aria-label={`${hidden.length} more: ${liveNames(hidden.map(personName))}`}
-                >
-                  +{hidden.length}
-                </span>
+                <Speaking store={speakingStore} people={hidden.map(audible)}>
+                  {(speaking) => (
+                    <span
+                      className="live-more"
+                      role="img"
+                      data-speaking={speaking ? "" : undefined}
+                      aria-label={`${hidden.length} more: ${liveNames(hidden.map(personName))}`}
+                    >
+                      +{hidden.length}
+                    </span>
+                  )}
+                </Speaking>
               </li>
             )}
           </ul>
@@ -1875,14 +1898,7 @@ export default function Call({
             self ? state.localMedia : state.remoteMedia.find((media) => media.participantId === participant.id)?.stream
           }
           muted={self ? state.muted : participant.muted}
-          onActivityChange={(active) =>
-            setActiveParticipants((current) => {
-              if (current.has(participant.id) === active) return current;
-              const next = new Set(current);
-              active ? next.add(participant.id) : next.delete(participant.id);
-              return next;
-            })
-          }
+          onActivityChange={(active) => speakingStore.set(participant.id, active)}
         />
       );
     });

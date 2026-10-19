@@ -317,9 +317,6 @@ export default function Chat({
     const timer = setTimeout(() => setActionStatusState(undefined), 3_000);
     return () => clearTimeout(timer);
   }, [actionStatus?.key]);
-  // Keeps the text while the visible confirmation fades out.
-  const lastActionStatus = useRef("");
-  if (actionStatus) lastActionStatus.current = actionStatus.text;
   const [reactionSaves, setReactionSaves] = useState<Record<string, ReactionSave | undefined>>({});
   const [mentionCard, setMentionCard] = useState<MentionCardTarget>();
   const [showPins, setShowPins] = useState(false);
@@ -1254,21 +1251,12 @@ export default function Chat({
       : typingNames.length
         ? `${typingNames.join(" and ")} ${typingNames.length === 1 ? "is" : "are"} typing…`
         : "";
-  const [displayedTypingLabel, setDisplayedTypingLabel] = useState("");
-  useEffect(() => {
-    if (typingLabel) {
-      setDisplayedTypingLabel(typingLabel);
-      return;
-    }
-    const timer = setTimeout(() => setDisplayedTypingLabel(""), 180);
-    return () => clearTimeout(timer);
-  }, [typingLabel]);
   useLayoutEffect(() => {
     // The typing row resizes the viewport; retain live follow without moving history readers.
     const scroller = scrollerRef.current;
     if (scroller && allowFollow.current && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80)
       scroller.scrollTop = scroller.scrollHeight;
-  }, [displayedTypingLabel]);
+  }, [typingLabel]);
   const sendDraft = async (text: string, threadRootId?: string, broadcast = false) => {
     const client = clientRef.current;
     const files = drafts.filter((draft) => draft.threadRootId === threadRootId);
@@ -2291,8 +2279,8 @@ export default function Chat({
             <p className="sr-only" role="status">
               {actionStatus?.text}
             </p>
-            <p className="chat-action-status" aria-hidden="true" data-visible={actionStatus ? "" : undefined}>
-              {lastActionStatus.current}
+            <p className="chat-action-status" aria-hidden="true" key={actionStatus?.key}>
+              {actionStatus?.text}
             </p>
           </div>
         </div>
@@ -2439,19 +2427,17 @@ export default function Chat({
             onClose={closeConversation}
           />
         )}
-        <p className="chat-typing" role="status" aria-atomic="true" data-visible={!!displayedTypingLabel}>
-          <span className="chat-typing-content" data-visible={!!typingLabel} aria-hidden={!typingLabel}>
-            {displayedTypingLabel && (
-              <>
-                <span className="chat-typing-dots" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                <span>{displayedTypingLabel}</span>
-              </>
-            )}
-          </span>
+        <p className="chat-typing" role="status" aria-atomic="true" data-visible={!!typingLabel}>
+          {typingLabel && (
+            <span className="chat-typing-content">
+              <span className="chat-typing-dots" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </span>
+              <span>{typingLabel}</span>
+            </span>
+          )}
         </p>
         {readOnly ? (
           <div className="chat-composer channel-preview">{composerNotice}</div>

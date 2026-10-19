@@ -1934,6 +1934,11 @@ export default function Spaces({
   const navigationRevision = useRef(0);
   const activeSpace = useRef(selected.spaceId);
   activeSpace.current = selected.spaceId;
+  // Effects that outlive a render (requests, polls) read the latest rail and selection.
+  const latestSpaces = useRef(spaces);
+  latestSpaces.current = spaces;
+  const latestSelected = useRef(selected);
+  latestSelected.current = selected;
   const membershipRevision = useRef(0);
   const membershipSubmitting = useRef(false);
   const [membershipPending, setMembershipPending] = useState(false);
@@ -2492,7 +2497,7 @@ export default function Spaces({
             navigation.current.forget(selected.spaceId!);
             setView((shown) => (shown?.detail.space.id === selected.spaceId ? undefined : shown));
             if (reason instanceof SpacesApiError && reason.status === 404 && reason.message === "resource not found") {
-              const remaining = spaces.filter((space) => space.id !== selected.spaceId);
+              const remaining = latestSpaces.current.filter((space) => space.id !== selected.spaceId);
               setSpaces(remaining);
               setDialog(undefined);
               setManageChannel(undefined);
@@ -2556,7 +2561,7 @@ export default function Spaces({
         const result = await listSpaces();
         if (!current) return;
         const available = new Set(result.spaces.map((space) => space.id));
-        for (const space of spaces) if (!available.has(space.id)) navigation.current.forget(space.id);
+        for (const space of latestSpaces.current) if (!available.has(space.id)) navigation.current.forget(space.id);
         setSpaces(unlessSame(result.spaces));
         setInvitations(unlessSame(result.invitations ?? []));
         if (detail?.space.id && !available.has(detail.space.id)) {
@@ -2564,10 +2569,10 @@ export default function Spaces({
           setDialog(undefined);
           setManageChannel(undefined);
           setNotice("This space is no longer available.");
-          choose(result.spaces[0]?.id, undefined, true, selected.dmId, selected.visit);
+          choose(result.spaces[0]?.id, undefined, true, selected.dmId, latestSelected.current.visit);
         }
         if (invitation && !(result.invitations ?? []).some((item) => item.id === invitation.id))
-          choose(result.spaces[0]?.id, undefined, true, selected.dmId, selected.visit);
+          choose(result.spaces[0]?.id, undefined, true, selected.dmId, latestSelected.current.visit);
         if (!selected.dmId && detail?.space.id && available.has(detail.space.id) && !membershipSubmitting.current) {
           const next = await getSpace(detail.space.id);
           // Replacing forgets every visited channel's saved history in the

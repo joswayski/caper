@@ -415,7 +415,7 @@
   animation: live-invite-in 0.7s 0.9s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 .live-activator:focus-visible .live-invite {
-  outline: calc(2px * var(--counter-scale)) solid #fff;
+  outline: calc(2px * var(--counter-scale)) solid var(--terracotta);
   outline-offset: 3px;
 }
 .live-invite i {

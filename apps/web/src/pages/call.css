@@ -126,13 +126,13 @@
   cursor: pointer;
 }
 .voice-hangup:focus-visible {
-  color: #ff7182;
-  background: rgb(212 67 85 / 0.18);
+  color: var(--voice-off);
+  background: var(--voice-off-wash);
 }
 @media (hover: hover) {
   .voice-hangup:hover {
-    color: #ff7182;
-    background: rgb(212 67 85 / 0.18);
+    color: var(--voice-off);
+    background: var(--voice-off-wash);
   }
 }
 .voice-hangup svg {
@@ -531,7 +531,7 @@
   flex: 0 0 auto;
   padding: 0 7px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
   color: var(--text-muted);
   background: transparent;
   font-size: 0.7rem;
@@ -689,7 +689,7 @@
   background: var(--text);
   box-shadow: 0 1px 4px rgb(0 0 0 / 0.35);
   cursor: grab;
-  transition: box-shadow 120ms ease;
+  transition: box-shadow var(--motion-fast) var(--ease-out);
 }
 .range-slider-default {
   position: absolute;
@@ -1165,22 +1165,22 @@
   background: rgb(212 67 85 / 0.14);
 }
 .call-account .voice-action-group.active :is(.voice-icon-button, .call-settings-trigger) {
-  color: #ed5265;
+  color: var(--voice-off);
   background: transparent;
 }
 .call-account
   .voice-action-group.active
   :is(.voice-icon-button:not([aria-disabled="true"]), .call-settings-trigger):focus-visible,
 .call-account .voice-action-group.active .call-settings-trigger[aria-expanded="true"] {
-  color: #ff7182;
-  background: rgb(212 67 85 / 0.18);
+  color: var(--voice-off);
+  background: var(--voice-off-wash);
 }
 @media (hover: hover) {
   .call-account
     .voice-action-group.active
     :is(.voice-icon-button:not([aria-disabled="true"]), .call-settings-trigger):hover {
-    color: #ff7182;
-    background: rgb(212 67 85 / 0.18);
+    color: var(--voice-off);
+    background: var(--voice-off-wash);
   }
 }
 .audio-device-picker .audio-device-summary,
@@ -1364,9 +1364,9 @@
   background: var(--border);
   cursor: pointer;
   transition:
-    background-color 150ms ease,
-    border-color 150ms ease,
-    box-shadow 150ms ease;
+    background-color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-fast) var(--ease-out);
 }
 .device-options input[role="switch"]::after {
   position: absolute;
@@ -1377,7 +1377,7 @@
   border-radius: 50%;
   background: var(--text);
   content: "";
-  transition: transform 150ms ease;
+  transition: transform var(--motion-fast) var(--ease-out);
 }
 .device-options input[role="switch"]:checked {
   background: var(--terracotta);
@@ -1435,25 +1435,16 @@
 .call-page :is(button, a, summary, .voice-action-group, .device-options label),
 .device-menu .call-settings-trigger svg {
   transition:
-    background-color 150ms ease-in-out,
-    border-color 150ms ease-in-out,
-    color 150ms ease-in-out,
-    opacity 150ms ease-in-out,
-    transform 150ms ease-in-out;
+    background-color var(--motion-fast) var(--ease-out),
+    border-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out),
+    opacity var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out);
 }
 .call-settings-panel:popover-open,
 .participant-volume:popover-open,
 .audio-dialog[open] {
   animation: audio-panel-in var(--motion-fast) var(--ease-out);
-}
-/* The scrim fades in with its panel, as space dialogs' do, instead of cutting in. */
-.audio-dialog[open]::backdrop {
-  animation: audio-backdrop-in var(--motion-fast) ease-out;
-}
-@keyframes audio-backdrop-in {
-  from {
-    opacity: 0;
-  }
 }
 @keyframes audio-panel-in {
   from {
@@ -1660,7 +1651,7 @@
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   border-radius: 8px;
-  transition: background-color 140ms ease;
+  transition: background-color var(--motion-fast) var(--ease-out);
 }
 .channel-row:has(.channel-link[aria-current]) {
   background: rgb(182 77 50 / 0.14);
@@ -1871,18 +1862,18 @@
   padding: 0 12px;
   border: 0;
   border-radius: 8px;
-  color: #ff7182;
+  color: var(--voice-off);
   background: transparent;
   font-size: 0.78rem;
   font-weight: 700;
 }
 .header-voice .voice-leave:focus-visible {
-  color: #ff7182;
+  color: var(--voice-off);
   background: var(--surface);
 }
 @media (hover: hover) {
   .header-voice .voice-leave:hover {
-    color: #ff7182;
+    color: var(--voice-off);
     background: var(--surface);
   }
 }
@@ -1940,11 +1931,11 @@
     place-items: center;
     padding: 0;
     border: 0;
-    border-radius: 6px;
+    border-radius: var(--radius);
     background: transparent;
   }
   .chat-heading .header-voice .voice-leave {
-    color: #ff7182;
+    color: var(--voice-off);
   }
   .chat-heading .header-voice-join[data-occupied]:not([aria-disabled="true"]) {
     background: rgb(182 77 50 / 0.16);
@@ -1954,7 +1945,7 @@
     height: 20px;
   }
   .header-voice .header-voice-mute.active {
-    color: #ff7182;
+    color: var(--voice-off);
   }
 }
 @media (hover: hover) {
@@ -1967,7 +1958,7 @@
   flex: none;
   width: 10px;
   height: 10px;
-  transition: transform 0.2s ease;
+  transition: transform var(--motion-base) var(--ease-out);
 }
 .voice-stack > .voice-connected-icon {
   width: 16px;
