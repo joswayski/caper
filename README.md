@@ -1,10 +1,22 @@
 # Caper
 
-A place for your people. Text and voice conversations at [caper.chat](https://caper.chat).
+A place for your people to chat about anything, at [caper.chat](https://caper.chat).
 Early-stage and actively in development.
 
-Caper runs on the web, Android, iPhone/Mac and Windows/Linux desktop. Phones install
-public betas from the homepage (TestFlight and a Google Play closed test).
+## Install
+
+Use it in the browser at [caper.chat](https://caper.chat), or install an app.
+All builds are on the [latest release](https://github.com/joswayski/caper/releases/tag/native-latest).
+
+| Platform | How to install |
+| --- | --- |
+| Mac | Download the [Apple Silicon](https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Apple-Silicon.dmg) or [Intel](https://github.com/joswayski/caper/releases/download/native-latest/Caper-macOS-Intel.dmg) `.dmg`, drag Caper onto Applications, then open it from Applications. |
+| Windows | Download and run [Setup](https://github.com/joswayski/caper/releases/download/native-latest/Caper-Windows-x64-Setup.exe). It installs for your user and opens Caper. |
+| Linux | Download the [`.deb`](https://github.com/joswayski/caper/releases/download/native-latest/Caper-Linux-x64.deb) (Ubuntu 24.04 or compatible), open it in your software installer, then launch Caper from the app menu. |
+| iPhone | Join the [TestFlight beta](https://testflight.apple.com/join/khGQMuYP) and install through TestFlight. |
+| Android | Join the [testers group](https://groups.google.com/g/caper-testers), opt in on [Google Play](https://play.google.com/apps/testing/chat.caper.android), then install Caper from Play. No Google Play? Use the [APK](https://github.com/joswayski/caper/releases/download/native-latest/Caper-Android.apk) (it doesn't update itself). |
+
+Desktop apps update themselves; phone apps update through TestFlight and Google Play.
 
 ## What works today
 
@@ -14,7 +26,6 @@ public betas from the homepage (TestFlight and a Google Play closed test).
 - File and media attachments, with an editor to crop, draw and add text ([uploads](docs/media.md#uploads-and-attachments))
 - Profile pictures and space icons ([pictures](docs/media.md#custom-profile-pictures-and-space-icons-october-14-2026))
 - `@feedback` in any conversation to reach the Caper team ([feedback](docs/media.md#feedback-in-place))
-- Desktop apps that update themselves ([native apps](apps/native/README.md))
 
 Per-feature details, rollout state and validation gaps live in [docs/media.md](docs/media.md).
 
