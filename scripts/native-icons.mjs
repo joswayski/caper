@@ -21,6 +21,7 @@ const names = {
   "bell-ring": "BellRing",
   bluetooth: "Bluetooth",
   brush: "Brush",
+  camera: "Camera",
   check: "Check",
   "chevron-down": "ChevronDown",
   "chevron-left": "ChevronLeft",
@@ -41,6 +42,7 @@ const names = {
   headphones: "Headphones",
   headset: "Headset",
   history: "History",
+  images: "Images",
   inbox: "Inbox",
   link: "Link",
   // Private channels use the keyhole lock on every client; the file keeps its name.

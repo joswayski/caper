@@ -426,7 +426,8 @@ export default function ProfileComposer({
         }}
       >
         <AttachmentPicker
-          disabled={locked || !settings || draft.files.length >= MAX_ATTACHMENTS}
+          disabled={locked || !settings}
+          count={draft.files.length}
           title={settings ? "Attach files" : settingsLoaded ? "File uploads are unavailable" : "Checking file uploads…"}
           onAdd={addFiles}
           onPickingChange={setChoosingFile}

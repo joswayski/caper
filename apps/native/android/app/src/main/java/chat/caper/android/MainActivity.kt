@@ -156,6 +156,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.platform.LocalView
 import chat.caper.android.data.WhatsNewSnapshot
+import chat.caper.android.data.AttachCapacity
 import chat.caper.android.data.AttachmentPolicy
 import chat.caper.android.data.FileDrop
 import chat.caper.android.data.LinkRange
@@ -1550,7 +1551,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         EmojiTextField(draft, change, Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field), placeholder = { Text("Reply to thread…", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 5,
                             visualTransformation = MentionVisualTransformation(mentionSource(state)),
                             leadingIcon = {
-                                AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) })
+                                AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
+                                    drawer = AttachDrawerHost(files, viewModel::removeDraft,
+                                        canSend = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null, send = ::send))
                             },
                             trailingIcon = { EmojiInsertButton(!thread.loading) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } } },
                             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors())
@@ -1835,7 +1838,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                             // Reserve the icon inside the field while uploads/session become ready.
                             // Read-only previews and locked DMs have no composer.
                             leadingIcon = {
-                                AttachButton(attachDisabledReason(state), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) })
+                                AttachButton(attachDisabledReason(state), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
+                                    drawer = AttachDrawerHost(state.drafts, viewModel::removeDraft,
+                                        canSend = hasContent && state.pendingMessage == null && state.chatAuthorId != null, send = ::sendDraft))
                             },
                             // The `:name:` shortcut still works; this is the visible way in.
                             trailingIcon = {
@@ -3213,15 +3218,21 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
     }
 }
 
-/** Photo picker for photos/videos plus the system document picker for any file. */
+/**
+ * The composer's attach control. With a [drawer] it opens the attach drawer (photo library, camera,
+ * Files and Send), which stays openable at the attachment limit to explain it; otherwise a menu of
+ * the system photo picker, the document picker and Paste.
+ */
 @Composable internal fun AttachButton(
     disabledReason: String?, add: (List<android.net.Uri>) -> Unit, interaction: (Boolean) -> Unit = {},
     /** Imports files copied to the clipboard, where a composer supports it. */
     paste: (() -> Unit)? = null,
     /** Conversation launchers live outside transient thread panels and retain their original target. */
     pick: ((Boolean) -> Unit)? = null,
+    drawer: AttachDrawerHost? = null,
 ) {
-    val enabled = disabledReason == null
+    val limitReason = "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files."
+    val enabled = disabledReason == null || (drawer != null && disabledReason == limitReason)
     var open by remember { mutableStateOf(false) }
     var picking by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(picking) { interaction(open || picking) }
@@ -3230,6 +3241,47 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
     }
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
         add(it); picking = false; interaction(open)
+    }
+    // The camera writes into a private file; saved so a capture survives the activity being recreated.
+    val context = LocalContext.current
+    var capture by rememberSaveable { mutableStateOf<String?>(null) }
+    val captured: (Boolean) -> Unit = { ok ->
+        capture?.let { if (ok) add(listOf(android.net.Uri.parse(it))) }
+        capture = null; picking = false; interaction(open)
+    }
+    val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture(), captured)
+    val recordVideo = rememberLauncherForActivityResult(ActivityResultContracts.CaptureVideo(), captured)
+    fun launch(photos: Boolean) {
+        if (pick != null) { pick(photos); return }
+        picking = true
+        runCatching {
+            if (photos) media.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+            else documents.launch(arrayOf("*/*"))
+        }.onFailure { picking = false; interaction(open) }
+    }
+    if (drawer != null) {
+        IconButton({ open = true; interaction(true) }, Modifier.size(48.dp).semantics {
+            contentDescription = "Attach files"
+            stateDescription = disabledReason?.takeIf { it != limitReason } ?: AttachCapacity.label(drawer.files.size)
+        }, enabled = enabled) {
+            Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp),
+                tint = if (!enabled) TextMuted.copy(alpha = 0.4f) else if (open) Text else TextMuted)
+        }
+        if (open && enabled) AttachDrawer(
+            drawer, add,
+            gallery = { open = false; launch(true) },
+            files = { open = false; launch(false) },
+            camera = { video ->
+                val uri = cameraCaptureUri(context, video)
+                if (uri != null) {
+                    capture = uri.toString(); picking = true
+                    runCatching { if (video) recordVideo.launch(uri) else takePhoto.launch(uri) }
+                        .onFailure { capture = null; picking = false }
+                }
+            },
+            onDismiss = { open = false; interaction(picking) },
+        )
+        return
     }
     Box {
         IconButton({ open = true; interaction(true) }, Modifier.size(48.dp).semantics {

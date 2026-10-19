@@ -53,6 +53,17 @@
     translate: 0 10px;
   }
 }
+/* A full attach drawer refuses more files with a short sideways shake. */
+@keyframes caper-limit-nudge {
+  20%,
+  60% {
+    translate: -4px 0;
+  }
+  40%,
+  80% {
+    translate: 4px 0;
+  }
+}
 @keyframes caper-chip-in {
   from {
     opacity: 0;
@@ -83,12 +94,16 @@
 .chat-reaction-tooltip,
 .chat-emoji-tooltip,
 .top-layer-tooltip:popover-open,
+.chat-attach-drawer:not(.chat-attach-drawer-sheet),
 :is(.space-menu, .channel-menu, .channel-section-menu)[open] > .space-actions,
 .chat-title-menu[open] > .chat-header-menu,
 .chat-profile-menu,
 .chat-action-status:not(:empty),
 .chat-typing-content {
   animation: caper-rise-in var(--motion-fast) var(--ease-out);
+}
+.chat-attach-meter[data-nudge] {
+  animation: caper-limit-nudge var(--motion-slow) var(--ease-out);
 }
 /* The connection notice, shown after a second offline, fades in rather than blinking on. */
 .chat-offline {
@@ -105,7 +120,13 @@
 }
 
 /* Touch sheets rise from the bottom edge. */
-:is(.chat-message-actions-drawer, .chat-reaction-picker-drawer, .chat-mention-card-drawer, .chat-reactors-drawer) {
+:is(
+  .chat-message-actions-drawer,
+  .chat-reaction-picker-drawer,
+  .chat-mention-card-drawer,
+  .chat-reactors-drawer,
+  .chat-attach-drawer-sheet
+) {
   animation: caper-sheet-in var(--motion-slow) var(--ease-out);
 }
 
@@ -154,6 +175,9 @@
   .chat-mention-card:not(.chat-mention-card-drawer),
   .chat-reactors,
   .chat-reactors:not(.chat-reactors-drawer),
+  .chat-attach-drawer,
+  .chat-attach-drawer:not(.chat-attach-drawer-sheet),
+  .chat-attach-meter[data-nudge],
   .chat-reaction-tooltip,
   .chat-emoji-tooltip,
   .top-layer-tooltip:popover-open,

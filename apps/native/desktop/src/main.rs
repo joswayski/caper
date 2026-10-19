@@ -3,6 +3,7 @@
 mod api;
 mod app_badge;
 mod app_link;
+mod attach_drawer;
 mod attachment_edit;
 mod attachment_editor;
 mod attachments;
@@ -7922,7 +7923,8 @@ impl CaperApp {
         }
     }
 
-    fn pick_files(&mut self, context: &egui::Context, root: Option<String>) {
+    /// Opens the system file dialog; `media` lists photos and videos first.
+    fn pick_files(&mut self, context: &egui::Context, root: Option<String>, media: bool) {
         if self.file_picker.is_some() || !self.can_attach() {
             return;
         }
@@ -7933,18 +7935,7 @@ impl CaperApp {
         let context = context.clone();
         // The native dialog blocks its own thread, never the UI.
         std::thread::spawn(move || {
-            let files = rfd::FileDialog::new()
-                .set_title("Attach files")
-                .add_filter(
-                    "Photos and videos",
-                    &[
-                        "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "avif", "bmp", "tif",
-                        "tiff", "mp4", "mov", "m4v", "webm", "mkv", "avi", "mpeg", "mpg", "3gp",
-                    ],
-                )
-                .add_filter("All files", &["*"])
-                .pick_files()
-                .unwrap_or_default();
+            let files = attach_dialog(media).pick_files().unwrap_or_default();
             let _ = sender.send(files);
             context.request_repaint();
         });
@@ -15603,9 +15594,8 @@ impl CaperApp {
                 let suggestions = self.suggestion_keys(ui, composer_id, &text);
                 let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| draft_layout(ui, text.as_str(), width, &people, specials, egui::FontId::proportional(13.6));
                 let files = self.draft_file_count(Some(&root));
-                let full = files >= uploads::MAX_ATTACHMENTS;
                 let attach_unavailable = self.attach_unavailable_reason();
-                let mut pick = false;
+                let mut pick = None;
                 let mut choose_emoji = false;
                 let mut send = false;
                 let draft = self.thread_drafts.entry(root.clone()).or_default();
@@ -15616,10 +15606,9 @@ impl CaperApp {
                         // The scrolling text stays inside the padded field.
                         ui.visuals_mut().clip_rect_margin = 0.0;
                         ui.horizontal_top(|ui| {
-                            pick = ui.add_enabled_ui(attach && !full && self.file_picker.is_none(), |ui| drawn_icon_button_sized(ui, NavIcon::Plus, "Attach files", 28.0))
-                                .inner.on_disabled_hover_text(if !attach { attach_unavailable.to_owned() }
-                                    else if full { format!("You can attach up to {} files.", uploads::MAX_ATTACHMENTS) }
-                                    else { "Attach files".to_owned() }).clicked();
+                            let button = ui.add_enabled_ui(attach && self.file_picker.is_none(), |ui| drawn_icon_button_sized(ui, NavIcon::Plus, "Attach files", 28.0))
+                                .inner.on_disabled_hover_text(if !attach { attach_unavailable.to_owned() } else { "Attach files".to_owned() });
+                            pick = attach_drawer::popup(&button, files, false);
                             let output = ui.allocate_ui_with_layout(egui::vec2(text_width, editor_height - 20.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                                 ui.set_width(text_width);
                                 ui.add_enabled_ui(!loading, |ui| {
@@ -15654,7 +15643,7 @@ impl CaperApp {
                 let mut output = editor.inner;
                 ui.painter().rect_stroke(editor.response.rect, 8.0, Stroke::new(1.0, if output.response.has_focus() { TERRACOTTA } else { BORDER }), egui::StrokeKind::Inside);
                 let text = draft.0.clone();
-                if pick { self.pick_files(ui.ctx(), Some(root.clone())); }
+                if let Some(choice) = pick { self.pick_files(ui.ctx(), Some(root.clone()), choice == attach_drawer::AttachChoice::Media); }
                 if let Some(value) = self.suggestion_popup(ui, &suggestions, &text, editor.response.rect, &mut output) {
                     self.thread_drafts.entry(root.clone()).or_default().0 = value;
                 }
@@ -16123,24 +16112,22 @@ impl CaperApp {
                         .corner_radius(8)
                         .inner_margin(egui::Margin::symmetric(6, 0))
                         .show(ui, |ui| {
-                            let full = self.draft_file_count(None) >= uploads::MAX_ATTACHMENTS;
-                            let mut pick = false;
+                            let attached = self.draft_file_count(None);
+                            let mut pick = None;
                             let mut choose_emoji = false;
                             let editor = ui.horizontal_top(|ui| {
                                 ui.vertical(|ui| {
                                     ui.add_space(7.0);
-                                    let enabled = attach && !full && self.file_picker.is_none();
+                                    let enabled = attach && self.file_picker.is_none();
                                     let button = ui
                                         .add_enabled_ui(enabled, |ui| drawn_icon_button(ui, NavIcon::Plus, "Attach files"))
                                         .inner
                                         .on_disabled_hover_text(if !attach {
                                             attach_unavailable.to_owned()
-                                        } else if full {
-                                            format!("You can attach up to {} files.", uploads::MAX_ATTACHMENTS)
                                         } else {
                                             "Attach files".to_owned()
                                         });
-                                    pick = button.clicked();
+                                    pick = attach_drawer::popup(&button, attached, false);
                                 });
                                 // Leave room for Emoji at the end of the field.
                                 let width = (ui.available_width() - 36.0).max(0.0);
@@ -16156,8 +16143,8 @@ impl CaperApp {
                                 });
                                 editor
                             }).inner;
-                            if pick {
-                                self.pick_files(ui.ctx(), None);
+                            if let Some(choice) = pick {
+                                self.pick_files(ui.ctx(), None, choice == attach_drawer::AttachChoice::Media);
                             }
                             (editor, choose_emoji)
                         });
@@ -20989,11 +20976,11 @@ impl CaperApp {
         let mut draft = self.profile_drafts.remove(person).unwrap_or_default();
         let id = EmojiTarget::Profile(person.to_owned()).editor();
         let editable = draft.editable() && !busy;
-        let can_attach = editable
+        let can_open_attach = editable
             && self.token.is_some()
             && self.uploads.is_some()
-            && self.profile_picker.is_none()
-            && draft.files.len() < uploads::MAX_ATTACHMENTS;
+            && self.profile_picker.is_none();
+        let can_attach = can_open_attach && draft.files.len() < uploads::MAX_ATTACHMENTS;
         // Ctrl/Cmd+V in the focused field imports copied files or an image;
         // ordinary text pastes stay with egui.
         let paste = can_attach
@@ -21135,7 +21122,8 @@ impl CaperApp {
             .as_ref()
             .is_some_and(|(id, _)| id == person);
         let can_send = draft.ready() && !busy && !pending_picker && self.token.is_some();
-        let mut pick = false;
+        // Some(true) for Photos and videos, Some(false) for Files.
+        let mut pick = None;
         let mut paste_now = false;
         let mut menu_open = false;
         let mut choose_emoji = false;
@@ -21153,32 +21141,21 @@ impl CaperApp {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     ui.vertical(|ui| {
                         ui.add_space(7.0);
+                        // The panel stays openable at the limit, where it explains it.
                         let attach = ui
-                            .add_enabled_ui(can_attach, |ui| {
+                            .add_enabled_ui(can_open_attach, |ui| {
                                 drawn_icon_button(ui, NavIcon::Plus, "Attach files")
                             })
                             .inner
-                            .on_disabled_hover_text(
-                                if draft.files.len() >= uploads::MAX_ATTACHMENTS {
-                                    format!(
-                                        "You can attach up to {} files.",
-                                        uploads::MAX_ATTACHMENTS
-                                    )
-                                } else {
-                                    "File uploads are not ready yet.".to_owned()
-                                },
-                            );
-                        // Also offer an explicit action when no keyboard is available.
-                        egui::Popup::menu(&attach).show(|ui| {
-                            if ui.button("Choose files…").clicked() {
-                                pick = true;
-                                ui.close();
+                            .on_disabled_hover_text("File uploads are not ready yet.");
+                        // Paste is also offered for when no keyboard is available.
+                        match attach_drawer::popup(&attach, draft.files.len(), true) {
+                            Some(attach_drawer::AttachChoice::Paste) => paste_now = true,
+                            Some(choice) => {
+                                pick = Some(choice == attach_drawer::AttachChoice::Media)
                             }
-                            if ui.button("Paste from clipboard").clicked() {
-                                paste_now = true;
-                                ui.close();
-                            }
-                        });
+                            None => {}
+                        }
                         menu_open = egui::Popup::menu(&attach).is_open();
                     });
                     let width = (ui.available_width() - 62.0).max(0.0);
@@ -21300,23 +21277,11 @@ impl CaperApp {
             let text = draft.text.clone();
             self.open_composer_emoji(EmojiTarget::Profile(person.to_owned()), &output, &text);
         }
-        if pick {
+        if let Some(media) = pick {
             let (sender, receiver) = std::sync::mpsc::channel();
             let context = ui.ctx().clone();
             std::thread::spawn(move || {
-                let files = rfd::FileDialog::new()
-                    .set_title("Attach files")
-                    .add_filter(
-                        "Photos and videos",
-                        &[
-                            "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "avif", "bmp",
-                            "tif", "tiff", "mp4", "mov", "m4v", "webm", "mkv", "avi", "mpeg",
-                            "mpg", "3gp",
-                        ],
-                    )
-                    .add_filter("All files", &["*"])
-                    .pick_files()
-                    .unwrap_or_default();
+                let files = attach_dialog(media).pick_files().unwrap_or_default();
                 let _ = sender.send(files);
                 context.request_repaint();
             });
@@ -25029,6 +24994,24 @@ fn send_icon_button_sized(
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
     response.on_hover_text(label)
+}
+
+/// The attach panel's system dialog: Photos and videos lists media first;
+/// Files shows everything.
+fn attach_dialog(media: bool) -> rfd::FileDialog {
+    let dialog = rfd::FileDialog::new().set_title("Attach files");
+    if !media {
+        return dialog;
+    }
+    dialog
+        .add_filter(
+            "Photos and videos",
+            &[
+                "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "avif", "bmp", "tif", "tiff",
+                "mp4", "mov", "m4v", "webm", "mkv", "avi", "mpeg", "mpg", "3gp",
+            ],
+        )
+        .add_filter("All files", &["*"])
 }
 
 fn drawn_icon_button(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Response {

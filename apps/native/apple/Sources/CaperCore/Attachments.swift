@@ -727,6 +727,8 @@ public struct AttachmentDraft: Identifiable, Equatable, Sendable {
     public var edit = AttachmentEdit.original
     /// A small render of `edit` for the chip while the edited file prepares.
     public var editPreviewURL: URL?
+    /// The photo-library item the attach drawer copied (`LocalAttachmentFile.source`).
+    public var source: String?
     public var needsUpload: Bool { attachment == nil || uploadedAt.map { Date().timeIntervalSince($0) >= 23 * 60 * 60 } == true }
 
     public init(id: String, name: String, kind: AttachmentKind, localURL: URL, sourceSize: Int) {

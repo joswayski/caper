@@ -13,6 +13,9 @@ public struct LocalAttachmentFile: Equatable, Sendable {
     public let name: String
     public let contentType: String
     public let size: Int
+    /// The photo-library item it was copied from (the attach drawer's
+    /// selection), or nil for files from anywhere else.
+    public var source: String? = nil
 }
 
 public enum AttachmentStaging {

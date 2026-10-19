@@ -5706,6 +5706,8 @@ private struct MentionCardView: View {
     @State private var insertEmoji: ((String) -> Void)?
     @State private var showingFiles = false
     @State private var showingPhotos = false
+    /// The attach drawer (iPhone and iPad).
+    @State private var showingDrawer = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var photoLoading: Task<Void, Never>?
     @State private var uploadsAvailable = false
@@ -6068,6 +6070,16 @@ private struct MentionCardView: View {
             }
             ComposerSuggestionsView(controller: autocomplete).disabled(!draft.editable || pending != nil)
             HStack(alignment: .bottom, spacing: 0) {
+                #if os(iOS)
+                Button { showingDrawer = true; updateDialogState() } label: {
+                    CaperIcon(name: "plus", size: 18).foregroundStyle(showingDrawer ? CaperTheme.text : CaperTheme.muted)
+                        .frame(width: 40, height: 42).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog)
+                .sheet(isPresented: $showingDrawer, onDismiss: updateDialogState) { AttachDrawer(draft: drawerDraft) }
+                #else
                 Menu {
                     Button { draft.presentingDialog = true; showingPhotos = true } label: {
                         Label("Photos and videos", systemImage: "photo.on.rectangle")
@@ -6082,6 +6094,7 @@ private struct MentionCardView: View {
                 .menuStyle(.button).menuOrder(.fixed).buttonStyle(.plain).menuIndicator(.hidden)
                 .fixedSize()
                 .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog || draft.files.count >= AttachmentPolicy.maxAttachments)
+                #endif
                 .opacity(uploadsAvailable ? 1 : 0.4)
                 .help(uploadsAvailable ? "Attach files" : "File uploads are unavailable")
                 .accessibilityLabel("Attach files")
@@ -6161,8 +6174,27 @@ private struct MentionCardView: View {
 
     private func updateDialogState() {
         draft.presentingDialog = showingFiles || showingPhotos || photoLoading != nil || showingEmojiPicker || previewFile != nil
-            || editingFile != nil || previewingFile != nil
+            || editingFile != nil || previewingFile != nil || showingDrawer
     }
+
+    #if os(iOS)
+    private var drawerDraft: AttachDrawerDraft {
+        let draft = draft, uploadsAvailable = uploadsAvailable
+        return AttachDrawerDraft(
+            files: { draft.files.map { AttachDrawerFile(id: $0.id, source: $0.local.source) } },
+            add: { draft.add($0) },
+            remove: { draft.remove(id: $0) },
+            canSend: { draft.canSend && !draft.sending },
+            sending: { draft.sending },
+            send: {
+                // Send refuses while a dialog is open, so close the drawer first.
+                showingDrawer = false
+                updateDialogState()
+                send()
+            },
+            valid: { uploadsAvailable && draft.editable })
+    }
+    #endif
 
     /// Files with the pencil open in the app's preview with the editor's
     /// tools; QuickLook shows the rest.

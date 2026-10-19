@@ -2445,6 +2445,150 @@ button.chat-mention-card-avatar {
   opacity: 0.45;
   cursor: not-allowed;
 }
+.chat-attach[aria-expanded="true"] {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+/* The attach drawer: a panel above the button, or a bottom sheet on touch. */
+.chat-attach-drawer {
+  z-index: 1001;
+  width: 264px;
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+}
+.chat-attach-drawer-sheet {
+  width: min(480px, 100%);
+  padding: 8px 16px max(16px, env(safe-area-inset-bottom));
+  gap: 14px;
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  box-shadow: none;
+}
+.chat-attach-heading {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 0.82rem;
+}
+.chat-attach-meter {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+.chat-attach-hint {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+.chat-attach-drawer-sheet .chat-attach-meter,
+.chat-attach-drawer-sheet .chat-attach-hint {
+  font-size: 0.82rem;
+}
+.chat-attach-pips {
+  display: flex;
+  gap: 3px;
+}
+.chat-attach-pips i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+  transition: background-color var(--motion-fast) ease;
+}
+.chat-attach-pips i[data-on] {
+  background: var(--text);
+}
+.chat-attach-drawer[data-full] .chat-attach-meter {
+  color: var(--terracotta-bright);
+}
+.chat-attach-drawer[data-full] .chat-attach-pips i {
+  background: var(--terracotta);
+}
+.chat-attach-close {
+  grid-column: 3;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: none;
+  cursor: pointer;
+}
+.chat-attach-close:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+}
+.chat-attach-options {
+  display: grid;
+  gap: 2px;
+}
+.chat-attach-options button {
+  min-height: 40px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-attach-options button svg {
+  color: var(--text-muted);
+}
+.chat-attach-options button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+  background: var(--surface-raised);
+}
+@media (hover: hover) {
+  .chat-attach-options button:hover:not([aria-disabled]) {
+    background: var(--surface-raised);
+  }
+  .chat-attach-close:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
+}
+.chat-attach-options button[aria-disabled] {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+.chat-attach-options button[aria-disabled] svg {
+  opacity: 0.5;
+}
+/* Touch: large tiles side by side, like a phone's attach tray. */
+.chat-attach-drawer-sheet .chat-attach-options {
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 8px;
+}
+.chat-attach-drawer-sheet .chat-attach-options button {
+  min-height: 88px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  font-size: 0.82rem;
+  text-align: center;
+}
 .chat-draft-notice {
   display: flex;
   align-items: flex-start;

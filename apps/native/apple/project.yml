@@ -278,15 +278,19 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CaperSourceRevision: $(CAPER_SOURCE_REVISION)
-        # WebRTC links camera APIs, so App Store processing (ITMS-90683) requires
-        # a purpose string even though Caper never opens the camera.
-        NSCameraUsageDescription: "Caper doesn't use your camera. Its voice calls are built on WebRTC, which includes camera support."
+        # The attach drawer's Camera tile takes a photo or video to attach.
+        NSCameraUsageDescription: Caper uses your camera when you take a photo or video to attach to a message.
         # Only standard protocols (HTTPS/TLS and WebRTC's DTLS-SRTP), no proprietary
         # crypto: declare exempt so each TestFlight build skips the compliance prompt.
         ITSAppUsesNonExemptEncryption: false
-        NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel.
+        NSMicrophoneUsageDescription: Caper uses your microphone when you join a voice channel or record a video to attach.
         # The media viewer's share sheet can save photos and videos to the library.
         NSPhotoLibraryAddUsageDescription: Caper saves photos and videos you choose to your library.
+        # The attach drawer shows recent photos and videos to tap into a message.
+        # Limited access works; nothing is uploaded until it is tapped.
+        NSPhotoLibraryUsageDescription: Caper shows your recent photos and videos so you can attach them to messages. Only items you choose are uploaded.
+        # The drawer offers "Manage" itself; skip iOS's automatic re-prompt at launch.
+        PHPhotoLibraryPreventAutomaticLimitedAccessAlert: true
         CaperAPNsEnvironment: $(CAPER_APNS_ENVIRONMENT)
         # caper://invite/<code>; https://caper.chat/invite/<code> opens through
         # the Associated Domains entitlement (universal links).

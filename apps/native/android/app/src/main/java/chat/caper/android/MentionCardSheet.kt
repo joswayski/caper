@@ -279,6 +279,7 @@ import kotlinx.coroutines.launch
                         !editable -> "Sending…"
                         else -> null
                     }, add, interaction = { filePicker = it; pickerInteraction(it || emojiPicker) }, paste = paste,
+                    drawer = AttachDrawerHost(draft.files, remove, canSend = writable && draft.canSend, send = send),
                 )
             },
             trailingIcon = {

@@ -4306,6 +4306,7 @@ public final class ChatModel {
             var draft = AttachmentDraft(id: id, name: file.name, kind: AttachmentKind.local(contentType: file.contentType),
                                         localURL: file.url, sourceSize: file.size)
             draft.original = file
+            draft.source = file.source
             stagedFiles[target, default: []].append(draft)
             uploadTasks[id] = Task { [weak self] in
                 // Only headers are read, so the pencil appears before compressing.

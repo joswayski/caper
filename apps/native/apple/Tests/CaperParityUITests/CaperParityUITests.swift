@@ -1102,6 +1102,42 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
     }
 
+    #if os(iOS)
+    /// The attach drawer asks for photo access the first time, then shows the
+    /// simulator's sample library; taps attach in order and fill the capacity line.
+    func testIPhoneAttachDrawerAddsLibraryItemsInTapOrder() async throws {
+        try await Self.fixtureControl(["reset": true, "uploadsEnabled": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let app = launch()
+        let attach = try require(app.buttons["attach-files-button"], timeout: 30, "Missing attach button")
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: attach)
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 15), .completed, "Uploads must enable Attach")
+        attach.tap()
+        // iOS asks once; any of its "allow" choices lets the drawer read the library.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let allow = springboard.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Full Access' OR label BEGINSWITH[c] 'Allow'")).firstMatch
+        if allow.waitForExistence(timeout: 5) { allow.tap() }
+        let capacity = try require(app.descendants(matching: .any)["attach-drawer-capacity"], timeout: 10, "Missing drawer capacity")
+        XCTAssertTrue(capacity.label.contains("Up to 10 files"), capacity.label)
+        let tiles = app.buttons.matching(identifier: "attach-drawer-tile")
+        XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 10), "The simulator's sample photos must appear")
+        capture("attach-drawer-open", app: app)
+        guard tiles.count >= 2 else { return }
+        tiles.element(boundBy: 1).tap()
+        tiles.element(boundBy: 0).tap()
+        let two = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "2 of 10 attached"), object: capacity)
+        XCTAssertEqual(XCTWaiter.wait(for: [two], timeout: 15), .completed, capacity.label)
+        let first = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Attached 1"), object: tiles.element(boundBy: 1))
+        XCTAssertEqual(XCTWaiter.wait(for: [first], timeout: 5), .completed, "The first tap is attached first")
+        XCTAssertTrue(app.buttons["attach-drawer-send"].waitForExistence(timeout: 5), "Send appears once files are attached")
+        capture("attach-drawer-selected", app: app)
+        // Tapping again removes it from the draft.
+        tiles.element(boundBy: 1).tap()
+        let one = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "1 of 10 attached"), object: capacity)
+        XCTAssertEqual(XCTWaiter.wait(for: [one], timeout: 5), .completed, capacity.label)
+    }
+    #endif
+
     #if os(macOS)
     func testGroupedAttachmentsStayBelowHoverActions() async throws {
         try await Self.fixtureControl(["reset": true])

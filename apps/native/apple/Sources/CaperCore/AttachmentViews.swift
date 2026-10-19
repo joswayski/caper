@@ -2918,6 +2918,46 @@ struct AttachmentPickerButton: View {
         !chat.canAttach ? chat.attachUnavailableReason : remaining == 0 ? "You can attach up to \(AttachmentPolicy.maxAttachments) files." : nil
     }
 
+    #if os(iOS)
+    @State private var showDrawer = false
+    @State private var drawerTarget: ChatModel.AttachmentTarget?
+
+    /// Phones and iPads open the attach drawer; it stays openable at the
+    /// limit, where it shows why nothing more can be added.
+    var body: some View {
+        Button {
+            drawerTarget = chat.attachmentTarget(inThread: inThread)
+            showDrawer = drawerTarget != nil
+        } label: {
+            Image("caper-plus").renderingMode(.template).resizable().frame(width: 18, height: 18)
+                .foregroundStyle(showDrawer ? CaperTheme.text : CaperTheme.muted)
+                .frame(width: 42, height: 42)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .disabled(!chat.canAttach)
+        .opacity(chat.canAttach ? 1 : 0.4)
+        .accessibilityLabel("Attach files")
+        .accessibilityValue(!chat.canAttach ? chat.attachUnavailableReason : AttachCapacity.label(AttachmentPolicy.maxAttachments - remaining))
+        .accessibilityIdentifier("attach-files-button")
+        .sheet(isPresented: $showDrawer) {
+            if let target = drawerTarget { AttachDrawer(draft: drawerDraft(target)) }
+        }
+    }
+
+    private func drawerDraft(_ target: ChatModel.AttachmentTarget) -> AttachDrawerDraft {
+        let chat = chat, inThread = inThread
+        return AttachDrawerDraft(
+            files: { chat.attachmentFiles(inThread: inThread).map { AttachDrawerFile(id: $0.id, source: $0.source) } },
+            add: { chat.addAttachments($0, to: target) },
+            remove: { chat.removeAttachmentDraft(id: $0) },
+            canSend: { chat.canSubmit(inThread: inThread) },
+            sending: { chat.sending },
+            send: { Task { await chat.send(inThread: inThread) } },
+            valid: { chat.canAttach && chat.attachmentTarget(inThread: inThread) == target })
+    }
+    #else
     var body: some View {
         Menu {
             Button {
@@ -2971,4 +3011,5 @@ struct AttachmentPickerButton: View {
             }
         }
     }
+    #endif
 }

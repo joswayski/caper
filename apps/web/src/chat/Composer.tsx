@@ -230,7 +230,8 @@ export default function Composer({
                   ? `You can attach up to ${MAX_ATTACHMENTS} files.`
                   : "Attach files"
             }
-            disabled={!canAttach || disabled || attachments.drafts.length >= MAX_ATTACHMENTS}
+            disabled={!canAttach || disabled}
+            count={attachments.drafts.length}
             onAdd={attachments.onAdd}
           />
         )}

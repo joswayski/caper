@@ -90,6 +90,7 @@ test.each([false, true])("the attachment slot stays present while availability c
   expect(attach).toContain(`title="${enabled ? "Attach files" : "File uploads are unavailable"}"`);
 });
 
+// Attach stays enabled at the limit: its drawer shows the full capacity line.
 test("a full tray explains the attachment limit", () => {
   const drafts = Array.from({ length: 10 }, (_, index) => ({
     key: `${index}`,
@@ -98,7 +99,7 @@ test("a full tray explains the attachment limit", () => {
     progress: 0,
   }));
   const attach = attachButton(true, drafts).match(/<button[^>]*aria-label="Attach files"[^>]*>/)?.[0];
-  expect(attach).toContain('disabled=""');
+  expect(attach).not.toContain('disabled=""');
   expect(attach).toContain('title="You can attach up to 10 files."');
 });
 

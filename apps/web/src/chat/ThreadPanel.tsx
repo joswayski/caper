@@ -728,7 +728,8 @@ export default function ThreadPanel({
                         ? `You can attach up to ${MAX_ATTACHMENTS} files.`
                         : "Attach files"
                   }
-                  disabled={!canAttach || attachments.drafts.length >= MAX_ATTACHMENTS}
+                  disabled={!canAttach}
+                  count={attachments.drafts.length}
                   onAdd={attachments.onAdd}
                 />
               )}
