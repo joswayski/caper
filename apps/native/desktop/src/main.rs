@@ -10807,28 +10807,17 @@ impl CaperApp {
                                     .to_uppercase()
                                     .to_string()
                             };
-                            // Like web, hover and press stay neutral until the
-                            // space opens. A temporary orange press would flash
-                            // back to neutral on release before selection commits.
-                            let tone = if active {
-                                let current = (PRESSED, Color32::from_rgb(128, 81, 67), TEXT);
-                                Tone {
-                                    rest: current,
-                                    hover: current,
-                                    press: current,
-                                }
-                            } else {
-                                Tone {
-                                    rest: (SURFACE, BORDER, MUTED),
-                                    hover: (RAISED, MUTED, TEXT),
-                                    press: (RAISED, MUTED, TEXT),
-                                }
+                            // Only the side indicator responds to hover/selection.
+                            let current = (SURFACE, Color32::TRANSPARENT, MUTED);
+                            let tone = Tone {
+                                rest: current,
+                                hover: current,
+                                press: current,
                             };
                             // Not `strong()`: that would pin the pressed text color.
                             let mut letter = RichText::new(text);
                             if muted.is_some() {
-                                letter =
-                                    letter.color(muted_color(if active { TEXT } else { MUTED }));
+                                letter = letter.color(muted_color(MUTED));
                             }
                             let button = egui::Button::new(letter).min_size(egui::vec2(40.0, 40.0));
                             let response = ui
@@ -10897,19 +10886,29 @@ impl CaperApp {
                                 )
                             });
                             let response = response.on_hover_text(description);
-                            if active {
-                                ui.painter().rect_filled(
-                                    egui::Rect::from_min_size(
-                                        egui::pos2(
-                                            ui.max_rect().left() - 9.0,
-                                            response.rect.top() + 8.0,
-                                        ),
-                                        egui::vec2(3.0, 24.0),
+                            let target = if active {
+                                32.0
+                            } else if response.hovered() {
+                                20.0
+                            } else {
+                                8.0
+                            };
+                            let height = ui.ctx().animate_value_with_time(
+                                egui::Id::new(("space-indicator", &id)),
+                                target,
+                                if motion::reduced() { 0.0 } else { 0.14 },
+                            );
+                            ui.painter().rect_filled(
+                                egui::Rect::from_center_size(
+                                    egui::pos2(
+                                        ui.max_rect().left() - 7.0,
+                                        response.rect.center().y,
                                     ),
-                                    2.0,
-                                    TERRACOTTA_BRIGHT,
-                                );
-                            }
+                                    egui::vec2(4.0, height),
+                                ),
+                                2.0,
+                                TEXT,
+                            );
                             if response.clicked() {
                                 self.select_space(id);
                             } else if response.hovered() || response.has_focus() {
@@ -38974,7 +38973,7 @@ mod tests {
     }
 
     #[test]
-    fn space_rail_press_keeps_hover_colors_until_selection_commits() {
+    fn space_rail_tiles_stay_borderless_on_hover_and_press() {
         for selected in [false, true] {
             let (context, mut app) = fixture("parity-desktop");
             context.enable_accesskit();
@@ -39009,14 +39008,7 @@ mod tests {
             };
             frame(vec![egui::Event::PointerMoved(bounds.center())]);
             let hover = painted(&frame(vec![]));
-            assert_eq!(
-                hover,
-                if selected {
-                    (super::PRESSED, egui::Color32::from_rgb(128, 81, 67))
-                } else {
-                    (super::RAISED, super::MUTED)
-                }
-            );
+            assert_eq!(hover, (super::SURFACE, egui::Color32::TRANSPARENT));
             let pressed = frame(vec![egui::Event::PointerButton {
                 pos: bounds.center(),
                 button: egui::PointerButton::Primary,
