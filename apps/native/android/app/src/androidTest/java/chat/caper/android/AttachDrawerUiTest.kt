@@ -9,17 +9,11 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
-import androidx.compose.ui.test.captureToImage
-import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
-import androidx.compose.ui.test.filterToOne
-import androidx.compose.ui.test.hasAnyDescendant
-import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -60,9 +54,10 @@ class AttachDrawerUiTest {
     private fun save(name: String) {
         val directory = File(requireNotNull(InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")))
         check(directory.mkdirs() || directory.isDirectory)
-        // The sheet is its own window: capture the root that holds the drawer.
-        val screenshot = compose.onAllNodes(isRoot()).filterToOne(hasAnyDescendant(hasText("Attach")))
-            .captureToImage().asAndroidBitmap()
+        // The sheet is its own window, which Compose's node capture draws blank:
+        // take the whole screen as the system shows it.
+        compose.waitForIdle()
+        val screenshot = requireNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
         try {
             File(directory, "$name.png").outputStream().use { check(screenshot.compress(Bitmap.CompressFormat.PNG, 100, it)) }
         } finally { screenshot.recycle() }
