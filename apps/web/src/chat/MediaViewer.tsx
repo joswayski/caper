@@ -7,7 +7,18 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Brush, ChevronLeft, ChevronRight, Crop, Download, ExternalLink, EyeOff, Type, X } from "lucide-react";
+import {
+  Brush,
+  ChevronLeft,
+  ChevronRight,
+  Crop,
+  Download,
+  Ellipsis,
+  ExternalLink,
+  EyeOff,
+  Type,
+  X,
+} from "lucide-react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -398,6 +409,7 @@ export default function MediaViewer({
   const reported = useRef(new Set<string>());
   const returnFocus = useRef(anchor);
   const closeButton = useRef<HTMLButtonElement>(null);
+  const actionsMenu = useRef<HTMLDetailsElement>(null);
   const titleId = useId();
   const counterId = useId();
   const { refs, context } = useFloating({ open: true });
@@ -420,6 +432,15 @@ export default function MediaViewer({
       : undefined;
   // What download costs; message files always carry their stored size.
   const size = current?.size ? formatBytes(current.size) : undefined;
+
+  useEffect(() => {
+    const dismiss = (event: PointerEvent) => {
+      const menu = actionsMenu.current;
+      if (menu?.open && event.target instanceof Node && !menu.contains(event.target)) menu.open = false;
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, []);
 
   useEffect(() => {
     // Back closes the viewer on phones and tablets, like the thread panel.
@@ -519,6 +540,7 @@ export default function MediaViewer({
                 <>
                   {/* The CDN is another origin, so browsers may open the file instead of saving it. */}
                   <a
+                    className="chat-viewer-desktop-action"
                     href={current.url}
                     download={current.name}
                     target="_blank"
@@ -529,6 +551,7 @@ export default function MediaViewer({
                     <Download size={20} aria-hidden="true" />
                   </a>
                   <a
+                    className="chat-viewer-desktop-action"
                     href={current.url}
                     target="_blank"
                     rel="noopener noreferrer"
@@ -537,6 +560,46 @@ export default function MediaViewer({
                   >
                     <ExternalLink size={20} aria-hidden="true" />
                   </a>
+                  <details
+                    key={current.id}
+                    ref={actionsMenu}
+                    className="chat-viewer-actions"
+                    onBlur={(event) => {
+                      // Safari may blur the summary without focusing the tapped link.
+                      // Outside taps are handled separately; keep the link until its click.
+                      if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget))
+                        event.currentTarget.open = false;
+                    }}
+                    onKeyDown={(event) => {
+                      if (!event.currentTarget.open) return;
+                      event.stopPropagation();
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.currentTarget.open = false;
+                        event.currentTarget.querySelector("summary")?.focus();
+                      }
+                    }}
+                  >
+                    <summary aria-label="More media actions" title="More media actions">
+                      <Ellipsis size={20} aria-hidden="true" />
+                    </summary>
+                    <div
+                      className="chat-viewer-actions-panel"
+                      onClick={() => {
+                        if (actionsMenu.current) actionsMenu.current.open = false;
+                        actionsMenu.current?.querySelector("summary")?.focus();
+                      }}
+                    >
+                      <a href={current.url} download={current.name} target="_blank" rel="noopener noreferrer">
+                        <Download size={20} aria-hidden="true" />
+                        Download
+                      </a>
+                      <a href={current.url} target="_blank" rel="noopener noreferrer">
+                        <ExternalLink size={20} aria-hidden="true" />
+                        Open in browser
+                      </a>
+                    </div>
+                  </details>
                 </>
               )}
               <button ref={closeButton} type="button" aria-label="Close viewer" title="Close" onClick={onClose}>

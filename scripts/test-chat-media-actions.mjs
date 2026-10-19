@@ -106,6 +106,38 @@ try {
     if (artifacts) browser("screenshot", `${artifacts}/${layout}.png`);
     browser("click", media);
     wait('!!document.querySelector(".chat-viewer")');
+    if (width <= 760) {
+      assert.equal(evaluate('document.querySelector(".chat-viewer-desktop-action").checkVisibility()'), false);
+      browser("click", '[aria-label="More media actions"]');
+      wait('document.querySelector(".chat-viewer-actions").open');
+      assert.deepEqual(
+        evaluate(
+          '[...document.querySelectorAll(".chat-viewer-actions-panel a")].map(a => [a.textContent.trim(), a.href])',
+        ),
+        [
+          ["Download", image],
+          ["Open in browser", image],
+        ],
+      );
+      browser("press", "Escape");
+      assert.equal(evaluate('document.querySelector(".chat-viewer-actions").open'), false);
+      assert.equal(
+        evaluate('!!document.querySelector(".chat-viewer")'),
+        true,
+        "Escape dismisses the menu, not the viewer",
+      );
+      assert.equal(evaluate('document.activeElement.getAttribute("aria-label")'), "More media actions");
+      browser("click", '[aria-label="More media actions"]');
+      browser("click", ".chat-viewer-title");
+      assert.equal(
+        evaluate('document.querySelector(".chat-viewer-actions").open'),
+        false,
+        "outside press dismisses the menu",
+      );
+    } else {
+      assert.equal(evaluate('document.querySelector(".chat-viewer-actions").checkVisibility()'), false);
+      assert.equal(evaluate('document.querySelector(".chat-viewer-desktop-action").checkVisibility()'), true);
+    }
     browser("press", "Escape");
     wait('!document.querySelector(".chat-viewer")');
     browser("hover", row);

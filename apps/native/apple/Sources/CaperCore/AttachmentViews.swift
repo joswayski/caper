@@ -1319,6 +1319,23 @@ private struct MediaViewer: View {
                 }
                 Spacer(minLength: 8)
                 if MediaViewerPolicy.isViewable(item), let raw = item.url, let url = URL(string: raw) {
+                    #if os(iOS)
+                    Menu {
+                        ShareLink(item: SharedAttachmentFile(item, url: url), preview: SharePreview(item.name)) {
+                            Label("Save or share", systemImage: "square.and.arrow.up")
+                        }
+                        .accessibilityIdentifier("media-viewer-download")
+                        Button { openAttachment(item, chat: request.chat, openURL: openURL) } label: {
+                            Label("Open in browser", systemImage: "arrow.up.right.square")
+                        }
+                        .accessibilityIdentifier("media-viewer-open")
+                    } label: {
+                        CaperIcon(name: "ellipsis", size: 20)
+                    }
+                    .buttonStyle(MediaViewerButton())
+                    .accessibilityLabel("More media actions")
+                    .accessibilityIdentifier("media-viewer-actions")
+                    #else
                     shareButton(item, url: url)
                     Button { openAttachment(item, chat: request.chat, openURL: openURL) } label: {
                         CaperIcon(name: "external-link", size: 18)
@@ -1327,6 +1344,7 @@ private struct MediaViewer: View {
                     .help("Open in browser")
                     .accessibilityLabel("Open in browser")
                     .accessibilityIdentifier("media-viewer-open")
+                    #endif
                 }
                 Button(action: close) { CaperIcon(name: "x", size: 20) }
                     .buttonStyle(MediaViewerButton())

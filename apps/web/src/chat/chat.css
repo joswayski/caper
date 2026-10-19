@@ -3588,7 +3588,7 @@ a.chat-draft-preview {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.chat-viewer-bar :is(a, button) {
+.chat-viewer-bar :is(a, button, summary) {
   display: grid;
   flex: none;
   place-items: center;
@@ -3603,14 +3603,38 @@ a.chat-draft-preview {
     color 140ms ease;
 }
 @media (hover: hover) {
-  .chat-viewer-bar :is(a, button):hover {
+  .chat-viewer-bar :is(a, button, summary):hover {
     color: var(--text);
     background: rgb(255 255 255 / 10%);
   }
 }
-.chat-viewer :is(a, button):focus-visible {
+.chat-viewer :is(a, button, summary):focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
+}
+.chat-viewer-actions {
+  position: relative;
+  display: none;
+}
+.chat-viewer-actions summary {
+  cursor: pointer;
+  list-style: none;
+}
+.chat-viewer-actions summary::-webkit-details-marker {
+  display: none;
+}
+.chat-viewer-actions-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 2;
+  width: 220px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 25%);
+  animation: chat-viewer-in var(--motion-fast) var(--ease-out);
 }
 .chat-viewer-stage {
   position: relative;
@@ -3766,9 +3790,28 @@ a.chat-draft-preview {
     padding: max(8px, env(safe-area-inset-top)) 4px 8px 16px;
     background: linear-gradient(rgb(0 0 0 / 70%), transparent);
   }
-  .chat-viewer-bar :is(a, button) {
+  .chat-viewer-bar :is(a, button, summary) {
     width: 44px;
     height: 44px;
+  }
+  .chat-viewer-bar .chat-viewer-desktop-action {
+    display: none;
+  }
+  .chat-viewer-actions {
+    display: block;
+  }
+  .chat-viewer-bar:has(details[open]) {
+    z-index: 2;
+  }
+  .chat-viewer-actions-panel a {
+    display: flex;
+    gap: 12px;
+    width: 100%;
+    height: 48px;
+    padding: 0 12px;
+    color: var(--text);
+    font-size: 0.875rem;
+    text-decoration: none;
   }
   .chat-viewer-frame {
     inset: 0;
@@ -3784,12 +3827,13 @@ a.chat-draft-preview {
     animation: none;
   }
   .chat-viewer-media,
-  .chat-viewer-bar :is(a, button),
+  .chat-viewer-bar :is(a, button, summary),
   .chat-viewer-nav,
   .chat-viewer-tools button {
     transition: none;
   }
-  .chat-viewer-media[data-enter] {
+  .chat-viewer-media[data-enter],
+  .chat-viewer-actions-panel {
     animation: none;
   }
 }
