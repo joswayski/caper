@@ -57,6 +57,8 @@ class AttachDrawerUiTest {
         // The sheet is its own window, which Compose's node capture draws blank:
         // take the whole screen as the system shows it.
         compose.waitForIdle()
+        // The sheet lays out before its window first reaches the screen.
+        Thread.sleep(1_000)
         val screenshot = requireNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
         try {
             File(directory, "$name.png").outputStream().use { check(screenshot.compress(Bitmap.CompressFormat.PNG, 100, it)) }

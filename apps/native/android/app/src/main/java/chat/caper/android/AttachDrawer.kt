@@ -89,7 +89,8 @@ private fun queryLibrary(context: Context): List<LibraryItem> {
     context.contentResolver.query(
         MediaStore.Files.getContentUri("external"), projection,
         "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (?, ?)", arrayOf(image.toString(), video.toString()),
-        "${MediaStore.Files.FileColumns.DATE_ADDED} DESC",
+        // Ties (a burst, or several saved at once) fall back to the newest row, so reloads keep the order.
+        "${MediaStore.Files.FileColumns.DATE_ADDED} DESC, ${MediaStore.Files.FileColumns._ID} DESC",
     )?.use { cursor ->
         val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
         val typeColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
