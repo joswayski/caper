@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
+import { MoveHorizontal, MoveVertical } from "lucide-react";
 
 const STORAGE_KEY = "caper:room-size";
 
@@ -9,15 +10,22 @@ export default function RoomResize({ room }: { room: RefObject<HTMLElement | nul
   const [bounds, setBounds] = useState({ width: 1400, height: 800 });
 
   useEffect(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-      setSize({
-        width: Number.isFinite(saved?.width) ? saved.width : undefined,
-        height: Number.isFinite(saved?.height) ? saved.height : undefined,
-      });
-    } catch {
-      /* Optional preference. */
-    }
+    const restore = () => {
+      try {
+        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
+        setSize({
+          width: Number.isFinite(saved?.width) ? saved.width : undefined,
+          height: Number.isFinite(saved?.height) ? saved.height : undefined,
+        });
+      } catch {
+        /* Optional preference. */
+      }
+    };
+    const storageChanged = (event: StorageEvent) => {
+      if (event.storageArea === localStorage && (event.key === STORAGE_KEY || event.key === null)) restore();
+    };
+    restore();
+    window.addEventListener("storage", storageChanged);
     const measure = () =>
       setBounds({ width: document.documentElement.clientWidth - 24, height: window.innerHeight - 104 });
     measure();
@@ -25,6 +33,7 @@ export default function RoomResize({ room }: { room: RefObject<HTMLElement | nul
     const observer = new ResizeObserver(measure);
     observer.observe(document.documentElement);
     return () => {
+      window.removeEventListener("storage", storageChanged);
       window.removeEventListener("resize", measure);
       observer.disconnect();
     };
@@ -117,7 +126,11 @@ export default function RoomResize({ room }: { room: RefObject<HTMLElement | nul
           );
         }}
         onKeyUp={save}
-      />
+      >
+        <span className="room-resize-icon" aria-hidden="true">
+          {axis === "width" ? <MoveHorizontal /> : <MoveVertical />}
+        </span>
+      </div>
     );
   });
 }

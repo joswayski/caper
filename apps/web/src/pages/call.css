@@ -1376,6 +1376,38 @@
     z-index: 8;
     touch-action: none;
   }
+  .room-resize-icon {
+    position: absolute;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    pointer-events: none;
+    opacity: 0;
+  }
+  .room-resize-icon svg {
+    width: 16px;
+    height: 16px;
+  }
+  .room-resize:is(:hover, :focus-visible, :active) .room-resize-icon {
+    opacity: 1;
+  }
+  .room-resize-left .room-resize-icon {
+    left: 0;
+    top: calc(50% - 12px);
+  }
+  .room-resize-right .room-resize-icon {
+    right: 0;
+    top: calc(50% - 12px);
+  }
+  .room-resize-bottom .room-resize-icon {
+    bottom: 0;
+    left: calc(50% - 12px);
+  }
   .room-resize-left,
   .room-resize-right {
     top: 0;

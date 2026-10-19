@@ -195,7 +195,7 @@ function fixture() {
 
 writeFileSync(init, `(${fixture.toString()})()`);
 const session = `nav-${process.pid}`;
-const args = ["--session", session, "--init-script", init];
+const args = ["--session", session, "--init-script", init, "--profile", join(directory, "browser-profile")];
 const browser = (...command) => {
   const output = JSON.parse(
     execFileSync("agent-browser", [...args, ...command, "--json"], { encoding: "utf8", timeout: 60_000 }),
@@ -317,6 +317,26 @@ try {
   browser("reload");
   wait('document.querySelector("#chat-message") && !document.querySelector("#chat-message").disabled');
   assert.deepEqual(roomSize(), resized, "Outer size survives reload");
+  browser("open", "about:blank");
+  browser("open", url.toString());
+  wait('!!document.querySelector(".room-resize-right")');
+  assert.deepEqual(roomSize(), resized, "Outer size survives leaving and returning");
+  browser("tab", "new", url.toString());
+  browser("set", "viewport", "1280", "900", "2");
+  wait('!!document.querySelector(".room-resize-right")');
+  assert.deepEqual(roomSize(), resized, "A new tab restores the same size");
+  browser("focus", ".room-resize-right");
+  browser("press", "ArrowLeft");
+  const fromOtherTab = roomSize();
+  assert.deepEqual(fromOtherTab, [resized[0] - 10, resized[1]]);
+  browser("tab", "t1");
+  wait(`document.querySelector(".call-room").getBoundingClientRect().width === ${fromOtherTab[0]}`);
+  assert.deepEqual(roomSize(), fromOtherTab, "Existing tabs pick up the changed size");
+  browser("close");
+  browser("open", url.toString());
+  browser("set", "viewport", "1280", "900", "2");
+  wait('!!document.querySelector(".room-resize-right")');
+  assert.deepEqual(roomSize(), fromOtherTab, "Size survives a real browser restart with the same profile");
   browser("set", "viewport", "390", "844", "2");
   assert.equal(evaluate('getComputedStyle(document.querySelector(".room-resize-right")).display'), "none");
   assert.ok(roomSize()[0] <= 390, "Saved desktop dimensions do not overflow mobile");
@@ -324,7 +344,7 @@ try {
   browser("dblclick", ".room-resize-right");
   assert.deepEqual(roomSize(), originalSize, "Double-click resets both outer dimensions");
   console.log(
-    "PASS: outer-edge pointer and keyboard resizing, draft preservation, reload persistence, mobile bounds, and reset",
+    "PASS: outer-edge pointer and keyboard resizing, draft preservation, reload/navigation/new-tab/browser-restart persistence, cross-tab sync, mobile bounds, and reset",
   );
   for (const width of [900, 1920, 1280]) {
     browser("set", "viewport", String(width), "900", "2");
