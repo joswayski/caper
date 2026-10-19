@@ -1925,6 +1925,7 @@
 .chat-mention-card-edit {
   width: 100%;
   margin-top: 10px;
+  text-align: center;
 }
 .chat-mention-card-action {
   display: flex;
