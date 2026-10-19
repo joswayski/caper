@@ -1382,19 +1382,6 @@ async fn account_me(
 pub(crate) async fn own_account(state: &AppState, user: &accounts::User) -> Value {
     let mut account =
         serde_json::to_value(user.own(&state.debug_users)).expect("account serializes");
-    account["canRestoreAvatar"] = json!(if let Some(pool) = &state.database {
-        if let Ok(mut connection) = pool.acquire().await {
-            pictures::restore_candidate(&mut connection, user.id)
-                .await
-                .ok()
-                .flatten()
-                .is_some()
-        } else {
-            false
-        }
-    } else {
-        false
-    });
     // Team members get the feedback inbox. A database outage only hides it.
     if let Some(pool) = &state.database
         && let Ok(mut connection) = pool.acquire().await

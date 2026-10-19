@@ -1861,17 +1861,29 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         )
     };
     let code = |error: ApiError| (error.status, error.code);
-    let restore = |who: &Principal, current: Option<&str>| {
-        crate::pictures::restore_avatar(
+    let select = |who: &Principal, target: &str, current: Option<&str>| {
+        crate::pictures::select_avatar(
             State(state.clone()),
             Extension(who.clone()),
-            Json(crate::pictures::RestoreAvatar {
-                avatar_asset: json!(current),
+            Json(crate::pictures::SelectAvatar {
+                avatar_asset: target.to_owned(),
+                expected_avatar_asset: json!(current),
             }),
         )
     };
+    let gallery = |who: &Principal, cursor: Option<String>| {
+        crate::pictures::avatar_history(
+            State(state.clone()),
+            Extension(who.clone()),
+            axum::extract::Query(crate::pictures::AvatarHistoryQuery { cursor }),
+        )
+    };
     assert_eq!(
-        restore(&owner, None).await.unwrap_err().status,
+        gallery(&owner, None).await.unwrap().0,
+        json!({"pictures": [], "nextCursor": null})
+    );
+    assert_eq!(
+        select(&owner, "missing", None).await.unwrap_err().status,
         StatusCode::NOT_FOUND
     );
 
@@ -1930,10 +1942,10 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
     let done = complete_as(&owner, &first_id).await.unwrap().0;
     assert_eq!(done["account"]["avatarAsset"], first_id.as_str());
     assert_eq!(done["account"]["avatarId"], mascot);
-    assert_eq!(done["account"]["canRestoreAvatar"], false);
+    assert!(done["account"].get("canRestoreAvatar").is_none());
     assert_eq!(
-        restore(&owner, Some(&first_id)).await.unwrap_err().status,
-        StatusCode::NOT_FOUND
+        gallery(&owner, None).await.unwrap().0["pictures"],
+        json!([{"avatarAsset": first_id}])
     );
     let usage_now = usage(State(state.clone()), Extension(owner.clone()))
         .await
@@ -1956,27 +1968,7 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         complete_as(&owner, &first_id).await.unwrap().0["account"]["avatarAsset"],
         second_id.as_str()
     );
-    assert_eq!(
-        restore(&owner, Some(&second_id)).await.unwrap().0["avatarAsset"],
-        first_id
-    );
-    assert_eq!(
-        restore(&owner, Some(&second_id)).await.unwrap_err().status,
-        StatusCode::CONFLICT
-    );
-    assert_eq!(
-        restore(&owner, Some(&first_id)).await.unwrap().0["avatarAsset"],
-        second_id
-    );
-    assert_eq!(
-        restore(&owner, Some(&second_id)).await.unwrap().0["avatarAsset"],
-        first_id
-    );
-    assert_eq!(
-        restore(&outsider, None).await.unwrap_err().status,
-        StatusCode::NOT_FOUND
-    );
-    // A new save remembers the actual displayed A, not the most recent upload B.
+    // Select a nonadjacent picture, not an inferred previous candidate.
     let (_, Json(third)) = create_as(&owner, picture("avatar", "image/jpeg", photo.len(), 640))
         .await
         .unwrap();
@@ -1987,16 +1979,31 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         third_id
     );
     assert_eq!(
-        restore(&owner, Some(third_id)).await.unwrap().0["avatarAsset"],
+        select(&owner, &first_id, Some(third_id)).await.unwrap().0["avatarAsset"],
         first_id
     );
-    // A reservation predating a restore may finish, but must not apply.
+    assert_eq!(
+        select(&owner, &second_id, Some(third_id))
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        select(&outsider, &first_id, None).await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        gallery(&outsider, None).await.unwrap().0["pictures"],
+        json!([])
+    );
+    // A reservation predating a selection may finish, but must not apply.
     let (_, Json(late)) = create_as(&owner, picture("avatar", "image/jpeg", photo.len(), 640))
         .await
         .unwrap();
     put(&late, "upload", &photo).await;
     assert_eq!(
-        restore(&owner, Some(&first_id)).await.unwrap().0["avatarAsset"],
+        select(&owner, third_id, Some(&first_id)).await.unwrap().0["avatarAsset"],
         third_id
     );
     assert_eq!(
@@ -2006,52 +2013,29 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
             .0["account"]["avatarAsset"],
         third_id
     );
+    let (_, Json(pending_remove)) =
+        create_as(&owner, picture("avatar", "image/jpeg", photo.len(), 640))
+            .await
+            .unwrap();
+    put(&pending_remove, "upload", &photo).await;
     let removed = crate::pictures::remove_avatar(State(state.clone()), Extension(owner.clone()))
         .await
         .unwrap()
         .0;
-    assert_eq!(removed["canRestoreAvatar"], true);
-    assert_eq!(
-        restore(&owner, None).await.unwrap().0["avatarAsset"],
-        third_id
-    );
-    // Legacy fallback uses reservation order, not the explicit history column.
-    sqlx::query("UPDATE public.users SET avatar_history_initialized=false WHERE id=$1")
-        .bind(owner.user.id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    assert_eq!(
-        restore(&owner, Some(third_id)).await.unwrap().0["avatarAsset"],
-        second_id
-    );
-    // Explicit history never grants access to another owner's picture.
-    sqlx::query("UPDATE public.users SET previous_avatar_asset=$2, avatar_history_initialized=true WHERE id=$1")
-        .bind(outsider.user.id).bind(&first_id).execute(&pool).await.unwrap();
-    assert_eq!(
-        restore(&outsider, None).await.unwrap_err().status,
-        StatusCode::NOT_FOUND
-    );
-
-    // Legacy accounts without a current custom picture use the latest retained upload.
-    sqlx::query(
-        "UPDATE public.users SET avatar_asset=NULL, avatar_history_initialized=false WHERE id=$1",
-    )
-    .bind(owner.user.id)
-    .execute(&pool)
-    .await
-    .unwrap();
-    assert_eq!(
-        restore(&owner, None).await.unwrap().0["avatarAsset"],
-        late["id"]
-    );
+    assert!(removed.get("avatarAsset").is_none());
     assert!(
-        serde_json::to_value(owner.user.public())
+        complete_as(&owner, pending_remove["id"].as_str().unwrap())
+            .await
             .unwrap()
-            .get("canRestoreAvatar")
+            .0["account"]
+            .get("avatarAsset")
             .is_none()
     );
-    // Invalid retained history is unavailable both in own-account capability and restore.
+    assert_eq!(
+        select(&owner, third_id, None).await.unwrap().0["avatarAsset"],
+        third_id
+    );
+    // Invalid retained pictures are neither listed nor selectable.
     for column in ["deleted_at", "purged_at", "uploaded_at"] {
         let value = if column == "uploaded_at" {
             "NULL"
@@ -2065,18 +2049,15 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query("UPDATE public.users SET previous_avatar_asset=$2 WHERE id=$1")
-            .bind(owner.user.id)
-            .bind(&first_id)
-            .execute(&pool)
-            .await
-            .unwrap();
-        assert_eq!(
-            crate::own_account(&state, &owner.user).await["canRestoreAvatar"],
-            false
+        assert!(
+            !gallery(&owner, None).await.unwrap().0["pictures"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["avatarAsset"] == first_id)
         );
         assert_eq!(
-            restore(&owner, late["id"].as_str())
+            select(&owner, &first_id, Some(third_id))
                 .await
                 .unwrap_err()
                 .status,
@@ -2095,6 +2076,40 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         .await
         .unwrap();
     }
+    let history_channel: i64 = sqlx::query_scalar(
+        "INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'history') RETURNING id",
+    ).bind(random_id(12)).bind(space_id).fetch_one(&pool).await.unwrap();
+    for purpose in ["attachment", "space_icon"] {
+        sqlx::query(
+            "UPDATE public.assets SET purpose=$2,space_id=$3,channel_id=$4 WHERE external_id=$1",
+        )
+        .bind(&first_id)
+        .bind(purpose)
+        .bind(space_id)
+        .bind(history_channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            select(&owner, &first_id, Some(third_id))
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::NOT_FOUND
+        );
+        assert!(
+            !gallery(&owner, None).await.unwrap().0["pictures"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["avatarAsset"] == first_id)
+        );
+    }
+    sqlx::query("UPDATE public.assets SET purpose='avatar',space_id=NULL,channel_id=NULL WHERE external_id=$1")
+        .bind(&first_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     // Uploads finishing out of order: the later choice wins even when the
     // earlier one completes last, and the earlier one is kept, not discarded.
     let mut chosen = Vec::new();
@@ -2403,6 +2418,45 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
                 .unwrap_err()
         ),
         (StatusCode::TOO_MANY_REQUESTS, Some("picture_rate_limited"))
+    );
+
+    // Walk all retained history across page boundaries, including timestamp
+    // ties. Compare with the retained set, not just the number of results.
+    let expected: Vec<String> = sqlx::query_scalar(
+        "SELECT external_id FROM public.assets WHERE owner_id=$1 AND purpose='avatar'
+         AND uploaded_at IS NOT NULL AND deleted_at IS NULL AND purged_at IS NULL
+         ORDER BY created_at DESC,id DESC",
+    )
+    .bind(owner.user.id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut listed = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = gallery(&owner, cursor).await.unwrap().0;
+        let items = page["pictures"].as_array().unwrap();
+        assert!(items.len() <= 40);
+        listed.extend(
+            items
+                .iter()
+                .map(|p| p["avatarAsset"].as_str().unwrap().to_owned()),
+        );
+        cursor = page["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+        assert_eq!(items.len(), 40);
+        assert_eq!(cursor.as_ref(), listed.last());
+    }
+    assert!(listed.len() > 40);
+    assert_eq!(listed, expected);
+    assert_eq!(
+        listed
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        listed.len()
     );
 
     drop(pool);

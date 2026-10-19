@@ -11,9 +11,9 @@ use crate::{
 };
 use axum::{
     Extension, Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
-    routing::{delete, post},
+    routing::{delete, get, post},
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -241,8 +241,8 @@ pub(crate) async fn apply(
         return Ok(Outcome::Gone);
     }
     if purpose == Purpose::Avatar {
-        let before_restore: bool = sqlx::query_scalar(
-            "SELECT a.created_at < u.avatar_restored_at FROM public.assets a
+        let before_selection: bool = sqlx::query_scalar(
+            "SELECT a.created_at <= u.avatar_selected_at FROM public.assets a
              JOIN public.users u ON u.id=$2 WHERE a.external_id=$1",
         )
         .bind(asset)
@@ -250,7 +250,7 @@ pub(crate) async fn apply(
         .fetch_one(&mut *tx)
         .await
         .map(|value: Option<bool>| value.unwrap_or(false))?;
-        if before_restore {
+        if before_selection {
             return Ok(Outcome::Superseded);
         }
     }
@@ -272,8 +272,7 @@ pub(crate) async fn apply(
     }
     let applied = match (purpose, space) {
         (Purpose::Avatar, _) => sqlx::query(
-            "UPDATE public.users SET previous_avatar_asset=avatar_asset,
-             avatar_history_initialized=true, avatar_asset=$1, updated_at=now()
+            "UPDATE public.users SET avatar_asset=$1, updated_at=now()
              WHERE id=$2 AND deleted_at IS NULL",
         )
         .bind(asset)
@@ -324,7 +323,8 @@ pub(crate) async fn applied_body(
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/account/avatar", delete(remove_avatar))
-        .route("/api/account/avatar/restore", post(restore_avatar))
+        .route("/api/account/avatar/history", get(avatar_history))
+        .route("/api/account/avatar/select", post(select_avatar))
         .route("/api/spaces/{space}/icon", delete(remove_icon))
 }
 
@@ -344,9 +344,9 @@ pub(crate) async fn remove_avatar(
 ) -> Result<Json<Value>, ApiError> {
     let pool = pool(&state)?;
     sqlx::query(
-        "UPDATE public.users SET previous_avatar_asset=avatar_asset,
-         avatar_history_initialized=true, avatar_asset=NULL, updated_at=now()
-         WHERE id=$1 AND avatar_asset IS NOT NULL AND deleted_at IS NULL",
+        "UPDATE public.users SET avatar_selected_at=clock_timestamp(),
+         avatar_asset=NULL, updated_at=now()
+         WHERE id=$1 AND deleted_at IS NULL",
     )
     .bind(principal.user.id)
     .execute(pool)
@@ -360,47 +360,57 @@ pub(crate) async fn remove_avatar(
     Ok(Json(crate::own_account(&state, &user).await))
 }
 
-/// Explicit history is authoritative. Legacy history approximates the prior
-/// displayed picture using reservation order; it cannot recover exact choices.
-pub(crate) async fn restore_candidate(
-    connection: &mut sqlx::PgConnection,
-    owner: i64,
-) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT a.external_id FROM public.users u JOIN public.assets a ON a.owner_id=u.id
-         WHERE u.id=$1 AND u.deleted_at IS NULL AND a.purpose='avatar'
+#[derive(Default, serde::Deserialize)]
+pub(crate) struct AvatarHistoryQuery {
+    pub cursor: Option<String>,
+}
+
+pub(crate) async fn avatar_history(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Query(query): Query<AvatarHistoryQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let mut pictures: Vec<String> = sqlx::query_scalar(
+        "SELECT a.external_id FROM public.assets a
+         WHERE a.owner_id=$1 AND a.purpose='avatar'
            AND a.uploaded_at IS NOT NULL AND a.deleted_at IS NULL AND a.purged_at IS NULL
-           AND a.external_id IS DISTINCT FROM u.avatar_asset
-           AND CASE WHEN u.avatar_history_initialized THEN a.external_id=u.previous_avatar_asset
-               ELSE u.avatar_asset IS NULL OR (a.created_at,a.id) <
-                 (SELECT c.created_at,c.id FROM public.assets c WHERE c.external_id=u.avatar_asset)
-               END
-         ORDER BY a.created_at DESC,a.id DESC LIMIT 1",
+           AND ($2::text IS NULL OR (a.created_at,a.id) <
+             (SELECT c.created_at,c.id FROM public.assets c
+              WHERE c.external_id=$2 AND c.owner_id=$1 AND c.purpose='avatar'))
+         ORDER BY a.created_at DESC,a.id DESC LIMIT 41",
     )
-    .bind(owner)
-    .fetch_optional(connection)
+    .bind(principal.user.id)
+    .bind(query.cursor)
+    .fetch_all(pool(&state)?)
     .await
+    .map_err(|_| crate::assets::unavailable())?;
+    let next = (pictures.len() > 40).then(|| pictures[39].clone());
+    pictures.truncate(40);
+    Ok(Json(
+        json!({"pictures": pictures.into_iter().map(|id| json!({"avatarAsset": id})).collect::<Vec<_>>(), "nextCursor": next}),
+    ))
 }
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct RestoreAvatar {
+pub(crate) struct SelectAvatar {
+    pub avatar_asset: String,
     // Value keeps the field required while allowing an explicit JSON null.
-    pub avatar_asset: Value,
+    pub expected_avatar_asset: Value,
 }
 
-pub(crate) async fn restore_avatar(
+pub(crate) async fn select_avatar(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
-    Json(request): Json<RestoreAvatar>,
+    Json(request): Json<SelectAvatar>,
 ) -> Result<Json<Value>, ApiError> {
-    let expected = match &request.avatar_asset {
+    let expected = match &request.expected_avatar_asset {
         Value::Null => None,
         Value::String(asset) => Some(asset.as_str()),
         _ => {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
-                "invalid avatarAsset",
+                "invalid expectedAvatarAsset",
             ));
         }
     };
@@ -424,21 +434,23 @@ pub(crate) async fn restore_avatar(
         ));
     }
     // Do not lock assets: completion locks its asset before locking the user.
-    let previous = restore_candidate(&mut tx, principal.user.id)
+    let target: Option<String> = sqlx::query_scalar(
+        "SELECT external_id FROM public.assets WHERE external_id=$1 AND owner_id=$2
+         AND purpose='avatar' AND uploaded_at IS NOT NULL AND deleted_at IS NULL AND purged_at IS NULL",
+    )
+        .bind(&request.avatar_asset)
+        .bind(principal.user.id)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(|_| crate::assets::unavailable())?
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::NOT_FOUND,
-                "No previous profile picture is available.",
-            )
-        })?;
+        .map_err(|_| crate::assets::unavailable())?;
+    let target = target
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Profile picture is unavailable."))?;
     sqlx::query(
-        "UPDATE public.users SET previous_avatar_asset=avatar_asset, avatar_asset=$2,
-         avatar_history_initialized=true, avatar_restored_at=clock_timestamp(), updated_at=now() WHERE id=$1",
+        "UPDATE public.users SET avatar_asset=$2,
+         avatar_selected_at=clock_timestamp(), updated_at=now() WHERE id=$1",
     )
     .bind(principal.user.id)
-    .bind(previous)
+    .bind(target)
     .execute(&mut *tx)
     .await
     .map_err(|_| crate::assets::unavailable())?;
