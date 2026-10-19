@@ -18,6 +18,7 @@ import type { Account } from "../account/client";
 import LiveWindow from "../components/LiveWindow";
 import Wordmark from "../components/Wordmark";
 import { liveRestScript } from "../components/liveMotion";
+import type { LatestChange } from "../release-highlights";
 import {
   desktopRelease,
   detectDownloadPlatform,

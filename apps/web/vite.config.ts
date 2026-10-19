@@ -4,23 +4,12 @@ import tailwindcss from "@tailwindcss/vite";
 import { nitro } from "nitro/vite";
 import { defineConfig, searchForWorkspaceRoot } from "vite";
 import { execFileSync } from "node:child_process";
+import { fetchHighlights, type LatestChange } from "./src/release-highlights";
 
 const repository = "joswayski/caper";
 const changeCount = 10;
-/** Claude-written highlights shown in place of commit titles once any are published. */
-const highlightCount = 8;
-const highlightsFeed = `https://github.com/${repository}/releases/download/whats-new-web/latest.json`;
 /** Fetch extra commits so Dependabot merges can be dropped without under-filling the list. */
 const fetchCount = 30;
-
-interface LatestChange {
-  sha: string;
-  title: string;
-  body: string | null;
-  url: string;
-  committedAt: string;
-  pullRequest: number | null;
-}
 
 interface GitHubCommit {
   sha: string;
@@ -100,41 +89,6 @@ async function latestChanges(): Promise<LatestChange[]> {
   return productChanges;
 }
 
-function plainText(value: unknown, max: number): value is string {
-  return typeof value === "string" && value.trim().length > 0 && [...value].length <= max;
-}
-
-/** Newest published web highlights, newest release first. */
-async function latestHighlights(): Promise<LatestChange[]> {
-  const response = await fetch(highlightsFeed, {
-    headers: { "User-Agent": "caper-web-build" },
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!response.ok) throw new Error(`Release highlights request failed with ${response.status}`);
-  const feed = (await response.json()) as { releases?: unknown };
-  if (!Array.isArray(feed.releases)) throw new Error("Release highlights feed has no releases");
-
-  const highlights: LatestChange[] = [];
-  for (const release of [...feed.releases].reverse()) {
-    const { revision, publishedAt, highlights: entries } = release ?? {};
-    if (typeof revision !== "string" || !/^[0-9a-f]{40}$/u.test(revision)) continue;
-    if (typeof publishedAt !== "string" || Number.isNaN(Date.parse(publishedAt)) || !Array.isArray(entries)) continue;
-    for (const entry of entries) {
-      if (!plainText(entry?.title, 100) || !plainText(entry?.body, 500)) continue;
-      highlights.push({
-        sha: revision,
-        title: entry.title,
-        body: entry.body,
-        url: `https://github.com/${repository}/commit/${revision}`,
-        committedAt: publishedAt,
-        pullRequest: null,
-      });
-    }
-    if (highlights.length >= highlightCount) break;
-  }
-  return highlights.slice(0, highlightCount);
-}
-
 export default defineConfig(async () => {
   let revision = process.env.CAPER_RELEASE_SHA?.trim() ?? "";
   if (revision && !/^[0-9a-f]{40}$/u.test(revision)) throw new Error("CAPER_RELEASE_SHA must be a full source SHA.");
@@ -150,7 +104,7 @@ export default defineConfig(async () => {
   }
   let changes: LatestChange[] = [];
   try {
-    changes = await latestHighlights();
+    changes = await fetchHighlights(AbortSignal.timeout(30_000));
     console.log(`Fetched ${changes.length} release highlights.`);
   } catch (error) {
     console.warn("Unable to load Caper release highlights:", error);
