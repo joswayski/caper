@@ -1400,6 +1400,26 @@ async fn exercise_media_privacy(
         }
         fixtures.push((mime, path));
     }
+    // TIFF-based raws, JPEG 2000 and the like keep their own tags; only the
+    // identifying ones go, and the pixels stay identical.
+    for (extension, mime) in [("tif", "image/tiff"), ("jp2", "image/jp2")] {
+        let path = dir.path().join(format!("tagged.{extension}"));
+        std::fs::write(&path, image_fixture(extension, 32, 24)).unwrap();
+        media_tool(
+            "exiftool",
+            &[
+                "-overwrite_original",
+                &format!("-XMP:Description={private}"),
+                &format!("-SerialNumber={private}"),
+                &format!("-Artist={private}"),
+                "-GPSLatitude=40.6892",
+                "-GPSLatitudeRef=N",
+                "-Make=Caper Test Camera",
+                path.to_str().unwrap(),
+            ],
+        );
+        fixtures.push((mime, path));
+    }
     let gif = dir.path().join("animated.gif");
     media_tool(
         "ffmpeg",
@@ -1651,6 +1671,11 @@ async fn exercise_media_privacy(
                     && !tags.contains("2021:04:03"),
                 "{mime}: {tags}"
             );
+        }
+        if matches!(mime, "image/tiff" | "image/jp2") {
+            // A targeted strip, not a wipe: the camera's own tags survive.
+            let make = media_tool("exiftool", &["-s3", "-Make", output.to_str().unwrap()]);
+            assert_eq!(String::from_utf8(make).unwrap().trim(), "Caper Test Camera");
         }
         if mime.starts_with("image/") || mime == "application/octet-stream" {
             let frames = |p: &std::path::Path| {

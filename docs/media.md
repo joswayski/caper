@@ -1590,10 +1590,18 @@ Client compression remains optional; server metadata removal does not.
   per-stream tags, capture dates, chapters, cover art and non-audio/video tracks
   (including GPS/timecode/data/subtitle tracks) are omitted. Audio/video samples,
   rotation, colour information and playback timing remain.
+- Files that need their own tags to decode — TIFF and the camera raws built on
+  it (DNG, NEF, CR2, ARW…), Panasonic RW2, Olympus ORF, Fujifilm RAF, Canon CRW,
+  JPEG XL containers, JPEG 2000 and Photoshop PSD — keep their format and every
+  other tag; ExifTool removes only GPS, XMP, IPTC, serial numbers, owner and
+  artist names, host computer and image IDs. The result is read back and refused
+  if any of those remain, or if ExifTool cannot rewrite the file. A bare JPEG XL
+  codestream has no metadata and is shared unchanged.
 - Detection uses bytes, not just filenames or MIME types; labelling a known
-  media file `application/octet-stream` does not bypass cleaning. Unsupported
-  declared media (including SVG, BMP and TIFF originals) is refused rather than
-  shared unchanged. Clients normally convert BMP/TIFF to a supported still format.
+  media file `application/octet-stream` does not bypass cleaning. Other
+  declared media nothing can clean (including SVG and BMP originals) is refused
+  rather than shared unchanged. Clients normally convert BMP/TIFF to a supported
+  still format.
 - This is **container metadata removal, not complete anonymisation**: it does
   not redact visible/audible locations, proprietary information embedded inside
   copied codec samples, ICC profile contents, or documents/archives and their

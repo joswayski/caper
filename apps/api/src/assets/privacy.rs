@@ -43,7 +43,24 @@ fn rejected() -> ApiError {
 enum Format {
     Image(&'static str),
     Streams(&'static str),
+    /// Camera raws, TIFF, JPEG XL containers, JPEG 2000 and Photoshop files.
+    /// Their own tags are needed to decode them, so only identifying ones go.
+    Tagged(&'static str),
 }
+
+/// Identifying tags removed from `Format::Tagged` files, and checked for
+/// again afterwards. Everything else, including the camera's maker notes that
+/// raw decoders need, stays.
+const IDENTIFYING: [&str; 8] = [
+    "-gps:all",
+    "-xmp:all",
+    "-iptc:all",
+    "-*serial*",
+    "-OwnerName",
+    "-Artist",
+    "-HostComputer",
+    "-ImageUniqueID",
+];
 
 /// Inspect bytes even for application/octet-stream or a misleading filename.
 /// Unknown declared media fails closed; ordinary documents remain downloads.
@@ -103,24 +120,29 @@ fn format(head: &[u8], content_type: &str) -> Result<Option<Format>, ApiError> {
             "mp3"
         })));
     }
+    // A bare JPEG XL codestream has nowhere to keep metadata; only its
+    // container does.
+    if at(0, b"\xff\x0a") {
+        return Ok(None);
+    }
+    for (matches, extension) in [
+        // TIFF and the camera raws built on it (DNG, NEF, CR2, ARW...).
+        (at(0, b"II\x2a\0") || at(0, b"MM\0\x2a"), "tif"),
+        (at(0, b"IIU\0"), "rw2"),
+        (at(0, b"IIRO") || at(0, b"IIRS") || at(0, b"MMOR"), "orf"),
+        (at(0, b"FUJIFILMCCD-RAW"), "raf"),
+        (at(0, b"II\x1a\0\0\0HEAPCCDR"), "crw"),
+        (at(0, b"\0\0\0\x0cJXL \r\n\x87\n"), "jxl"),
+        (at(0, b"\0\0\0\x0cjP  "), "jp2"),
+        (at(0, b"8BPS"), "psd"),
+    ] {
+        if matches {
+            return Ok(Some(Format::Tagged(extension)));
+        }
+    }
     if content_type.starts_with("image/")
         || content_type.starts_with("video/")
         || content_type.starts_with("audio/")
-        // TIFF and the camera raws built on it.
-        || at(0, b"II\x2a\0")
-        || at(0, b"MM\0\x2a")
-        // Panasonic RW2, Olympus ORF, Fujifilm RAF and Canon CRW raws.
-        || at(0, b"IIU\0")
-        || at(0, b"IIRO")
-        || at(0, b"IIRS")
-        || at(0, b"MMOR")
-        || at(0, b"FUJIFILMCCD-RAW")
-        || at(0, b"II\x1a\0\0\0HEAPCCDR")
-        // JPEG XL (bare codestream or container), JPEG 2000 and Photoshop.
-        || at(0, b"\xff\x0a")
-        || at(0, b"\0\0\0\x0cJXL \r\n\x87\n")
-        || at(0, b"\0\0\0\x0cjP  ")
-        || at(0, b"8BPS")
         || (at(0, b"BM")
             && head.get(14..18).is_some_and(|size| {
                 matches!(
@@ -163,6 +185,12 @@ async fn clean(input: &Path, output: &Path, format: Format, max_size: u64) -> Re
                     "-ColorSpaceTags",
                 ])
                 .arg(output);
+        }
+        Format::Tagged(_) => {
+            fs::rename(input, output).await.map_err(|_| unavailable())?;
+            command.args(["exiftool", "-config", "", "-overwrite_original"]);
+            command.args(IDENTIFYING.map(|tag| format!("{tag}=")));
+            command.arg(output);
         }
         Format::Streams(extension) => {
             // Only real audio/video: no GPS/data/timecode/subtitle tracks,
@@ -224,7 +252,34 @@ async fn clean(input: &Path, output: &Path, format: Format, max_size: u64) -> Re
     if !status.success() {
         return Err(rejected());
     }
+    if matches!(format, Format::Tagged(_)) {
+        identifying_tags_gone(output).await?;
+    }
     Ok(())
+}
+
+/// Reads the cleaned file back: a writer that skipped a tag, or a format that
+/// keeps it somewhere ExifTool could not rewrite, fails closed.
+async fn identifying_tags_gone(path: &Path) -> Result<(), ApiError> {
+    let child = Command::new("exiftool")
+        .args(["-config", "", "-q", "-q", "-s3"])
+        .args(IDENTIFYING)
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|_| unavailable())?;
+    let output = tokio::time::timeout(Duration::from_secs(65), child.wait_with_output())
+        .await
+        .map_err(|_| rejected())?
+        .map_err(|_| unavailable())?;
+    if output.status.success() && output.stdout.iter().all(u8::is_ascii_whitespace) {
+        Ok(())
+    } else {
+        Err(rejected())
+    }
 }
 
 /// Reads the exact reserved bytes into a private, automatically removed temp
@@ -284,7 +339,7 @@ async fn publish_inner(
     let output = match format {
         Some(format) => {
             let extension = match format {
-                Format::Image(ext) | Format::Streams(ext) => ext,
+                Format::Image(ext) | Format::Streams(ext) | Format::Tagged(ext) => ext,
             };
             // Supply our detected type, never the client's filename or declared
             // extension. ExifTool needs the extension for some container writers.
@@ -354,26 +409,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn uncleanable_images_and_raws_fail_closed_even_as_downloads() {
+    fn raws_and_tagged_images_are_cleaned_and_unknown_media_fails_closed() {
         let mut jpeg_xl = b"\0\0\0\x0cJXL \r\n\x87\n".to_vec();
         jpeg_xl.extend(b"\0\0\0\x14ftypjxl ");
-        for head in [
-            b"II\x2a\0private".as_slice(),
-            b"IIU\0\x18\0\0\0".as_slice(),
-            b"IIRO\x08\0\0\0".as_slice(),
-            b"IIRS\x08\0\0\0".as_slice(),
-            b"MMOR\0\0\0\x08".as_slice(),
-            b"FUJIFILMCCD-RAW 0201FF383501".as_slice(),
-            b"II\x1a\0\0\0HEAPCCDR\x02\0".as_slice(),
-            b"\xff\x0a\xfa\x7f".as_slice(),
-            jpeg_xl.as_slice(),
-            b"\0\0\0\x0cjP  \r\n\x87\n\0\0\0\x14ftypjp2 ".as_slice(),
-            b"8BPS\0\x01\0\0\0\0\0\0".as_slice(),
+        for (head, extension) in [
+            (b"II\x2a\0private".as_slice(), "tif"),
+            (b"MM\0\x2aprivate".as_slice(), "tif"),
+            (b"IIU\0\x18\0\0\0".as_slice(), "rw2"),
+            (b"IIRO\x08\0\0\0".as_slice(), "orf"),
+            (b"IIRS\x08\0\0\0".as_slice(), "orf"),
+            (b"MMOR\0\0\0\x08".as_slice(), "orf"),
+            (b"FUJIFILMCCD-RAW 0201FF383501".as_slice(), "raf"),
+            (b"II\x1a\0\0\0HEAPCCDR\x02\0".as_slice(), "crw"),
+            (jpeg_xl.as_slice(), "jxl"),
+            (
+                b"\0\0\0\x0cjP  \r\n\x87\n\0\0\0\x14ftypjp2 ".as_slice(),
+                "jp2",
+            ),
+            (b"8BPS\0\x01\0\0\0\0\0\0".as_slice(), "psd"),
+        ] {
+            for declared in ["application/octet-stream", "image/x-raw"] {
+                assert!(
+                    matches!(format(head, declared), Ok(Some(Format::Tagged(found))) if found == extension),
+                    "{head:?}"
+                );
+            }
+        }
+        // A bare JPEG XL codestream cannot carry metadata.
+        assert!(format(b"\xff\x0a\xfa\x7f", "image/jxl").unwrap().is_none());
+        // Declared media nothing can clean still fails closed.
+        for (head, declared) in [
+            (
+                b"BM\0\0\0\0\0\0\0\0\0\0\0\0\x28\0\0\0".as_slice(),
+                "image/bmp",
+            ),
+            (b"unknown".as_slice(), "image/x-unknown"),
+            (b"unknown".as_slice(), "video/x-unknown"),
         ] {
             assert_eq!(
-                format(head, "application/octet-stream")
-                    .err()
-                    .map(|error| error.status),
+                format(head, declared).err().map(|error| error.status),
                 Some(axum::http::StatusCode::UNPROCESSABLE_ENTITY),
                 "{head:?}"
             );
