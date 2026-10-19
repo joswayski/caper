@@ -137,13 +137,15 @@ public struct SpaceVoiceActivityResponse: Codable, Sendable {
 public struct UnreadSpacesResponse: Codable, Sendable {
     public let spaces: [UnreadSpace]
     public let feedbackWaiting: Int
+    public let badgeCount: Int?
 
-    private enum CodingKeys: String, CodingKey { case spaces, feedbackWaiting }
+    private enum CodingKeys: String, CodingKey { case spaces, feedbackWaiting, badgeCount }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         spaces = try values.decode([UnreadSpace].self, forKey: .spaces)
         feedbackWaiting = try values.decodeIfPresent(Int.self, forKey: .feedbackWaiting) ?? 0
+        badgeCount = try values.decodeIfPresent(Int.self, forKey: .badgeCount)
     }
 }
 

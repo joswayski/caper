@@ -7971,6 +7971,12 @@ higher-build-number release. No data rollback is needed.
 
 ## Space and channel unread indicators (October 11, 2026)
 
+App-icon badges use a separate `badgeCount` field on the same unread endpoint.
+See [the app-icon badge contract and platform limits](notifications.md#app-icon-badges):
+Apple/web/desktop consume an authoritative message count, Android follows
+active notifications, and Windows taskbar rendering remains unverified.
+This does not change the navigation-dot rules below.
+
 Web (desktop/mobile), Android, iOS/macOS and Rust desktop show a light dot on
 spaces with unread messages or direct mentions. A selected space keeps its dot
 until its other unread channels are viewed. Joined channel rows also show dots.

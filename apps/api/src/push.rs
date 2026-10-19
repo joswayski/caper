@@ -22,6 +22,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::Notify;
 
 mod apns;
+pub(crate) mod badge;
 mod credentials;
 mod delivery;
 mod expansion;
@@ -134,6 +135,8 @@ pub(crate) struct Alert {
     pub attachment: Option<Attachment>,
     /// The thread a reply belongs to, so a notification opens it there.
     pub thread_root_id: Option<String>,
+    /// Authoritative account count at delivery time; omitted by older senders.
+    pub badge_count: Option<i64>,
     /// Takes back the notification already shown for `message_id`, which
     /// was deleted: Android removes it, iPhone replaces it in place.
     pub retracts: bool,
@@ -180,6 +183,7 @@ impl Alert {
             sender_avatar_id: sender_avatar_id.filter(|id| (0..800).contains(id)),
             attachment: None,
             thread_root_id: None,
+            badge_count: None,
             retracts: false,
         }
     }

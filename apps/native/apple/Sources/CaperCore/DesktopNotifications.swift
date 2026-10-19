@@ -127,6 +127,7 @@ final class DesktopNotifications: NSObject, UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         guard let model, model.account?.id == accountID,
               notification.request.identifier.hasPrefix("\(accountID ?? ""):\(epoch):") else { return [] }
+        model.scheduleUnreadRefresh()
         if let route = NotificationRoute(userInfo: notification.request.content.userInfo), NSApp.isActive && !model.navigationOpen && model.isShowing(route) { return [] }
         return [.banner, .list, .sound]
     }

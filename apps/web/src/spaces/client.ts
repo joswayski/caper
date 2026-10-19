@@ -1,5 +1,6 @@
 import type { PersonPicture, SpaceIcon } from "../account/pictures.ts";
 import { observeProfiles, profileRevision } from "../account/profiles.ts";
+import { unreadChanged } from "../account/app-badge";
 import { directMessageErrors } from "./direct-errors.ts";
 
 /** `iconAsset`/`iconUrl`: the owner's custom icon; absent, the space shows its initial. */
@@ -98,8 +99,9 @@ export function createDirectConversation(username: string) {
   });
 }
 
-export function readDirectConversation(id: string, seq: string) {
-  return request<void>(`/api/dms/${pathId(id)}/read`, { method: "POST", body: JSON.stringify({ seq }) });
+export async function readDirectConversation(id: string, seq: string) {
+  await request<void>(`/api/dms/${pathId(id)}/read`, { method: "POST", body: JSON.stringify({ seq }) });
+  unreadChanged();
 }
 
 /** One `@feedback`, for the team's inbox. Replies belong in `threadRootId` (the message itself when top-level). */
@@ -159,14 +161,15 @@ export interface UnreadSpace {
 }
 
 export function listUnreadSpaces() {
-  return request<{ spaces: UnreadSpace[]; feedbackWaiting?: number }>("/api/spaces/unread");
+  return request<{ spaces: UnreadSpace[]; feedbackWaiting?: number; badgeCount?: number }>("/api/spaces/unread");
 }
 
-export function readChannel(spaceId: string, channelId: string, seq: string) {
-  return request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/read`, {
+export async function readChannel(spaceId: string, channelId: string, seq: string) {
+  await request<void>(`/api/spaces/${pathId(spaceId)}/channels/${pathId(channelId)}/read`, {
     method: "POST",
     body: JSON.stringify({ seq }),
   });
+  unreadChanged();
 }
 
 export function acceptDirectRequest(id: string) {

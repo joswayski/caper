@@ -562,14 +562,17 @@ async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_re
         let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
         (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
     }
-    let snapshot = |channels: Value| json!({"spaces":[{"id":"space1234567","channels":channels}],"feedbackWaiting":0});
+    let snapshot = |channels: Value, count: i64| json!({"spaces":[{"id":"space1234567","channels":channels}],"feedbackWaiting":0,"badgeCount":count});
     assert_eq!(
         call(&app, "GET", "/api/spaces/unread", Value::Null).await,
         (
             StatusCode::OK,
-            snapshot(json!([
-                {"id":"first1234567","lastSeq":"1","readSeq":"0"},{"id":"other1234567","lastSeq":"6","readSeq":"0"},{"id":"quiet1234567","lastSeq":"7","readSeq":"0"}
-            ]))
+            snapshot(
+                json!([
+                    {"id":"first1234567","lastSeq":"1","readSeq":"0"},{"id":"other1234567","lastSeq":"6","readSeq":"0"},{"id":"quiet1234567","lastSeq":"7","readSeq":"0"}
+                ]),
+                4
+            )
         )
     );
     let read = "/api/spaces/space1234567/channels/first1234567/read";
@@ -581,9 +584,12 @@ async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_re
     }
     assert_eq!(
         call(&app, "GET", "/api/spaces/unread", Value::Null).await.1,
-        snapshot(json!([
-            {"id":"other1234567","lastSeq":"6","readSeq":"0"},{"id":"quiet1234567","lastSeq":"7","readSeq":"0"}
-        ])),
+        snapshot(
+            json!([
+                {"id":"other1234567","lastSeq":"6","readSeq":"0"},{"id":"quiet1234567","lastSeq":"7","readSeq":"0"}
+            ]),
+            3
+        ),
         "reading one channel must preserve the space's other unread channels"
     );
     let other_read = "/api/spaces/space1234567/channels/other1234567/read";
@@ -595,9 +601,12 @@ async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_re
     }
     assert_eq!(
         call(&app, "GET", "/api/spaces/unread", Value::Null).await.1,
-        snapshot(json!([
-            {"id":"other1234567","lastSeq":"6","readSeq":"2"},{"id":"quiet1234567","lastSeq":"7","readSeq":"0"}
-        ])),
+        snapshot(
+            json!([
+                {"id":"other1234567","lastSeq":"6","readSeq":"2"},{"id":"quiet1234567","lastSeq":"7","readSeq":"0"}
+            ]),
+            2
+        ),
         "returning clients receive the saved read boundary, not the newest message"
     );
     for (path, status) in [
@@ -633,7 +642,7 @@ async fn unread_navigation_tracks_only_visible_messages_and_monotonic_channel_re
         .unwrap();
     assert_eq!(
         call(&app, "GET", "/api/spaces/unread", Value::Null).await.1,
-        json!({"spaces":[],"feedbackWaiting":0})
+        json!({"spaces":[],"feedbackWaiting":0,"badgeCount":0})
     );
     assert_eq!(
         call(&app, "POST", read, json!({"seq":"10"})).await.0,

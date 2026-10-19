@@ -19,6 +19,38 @@ over the original October 6 proposal and phased roadmap. Implementation is not
 production/device acceptance; see the validation boundary and rollout below and
 [media.md](media.md#mobile-push-phase-1-direct-apns-and-fcm).
 
+## App-icon badges
+
+`GET /api/spaces/unread` includes `badgeCount`: the number of unread messages
+from other accounts in accessible joined channels and accepted DMs, direct
+mentions in unjoined channels, and replies in participated threads. A message
+counts once, even if it is both broadcast and mentioned. Thread read markers
+clear replies; reading the channel alone does not clear participated threads.
+Pending message requests and unexpired space/private-channel invitations each
+add one. Own/deleted messages, blocked authors, revoked access, your own notes,
+edits and reactions do not add to the count. Muted conversations contribute
+only direct mentions; alert level, DND and OS permission do not affect it.
+Feedback reports accessible only through team visit permissions remain in the
+separate feedback inbox count, not this badge.
+
+Counts are snapshots, never increments per delivered push. Opening the app
+does not mark everything read. Successful reads refresh the count; logout and
+expired sessions clear it, while transient fetch failures retain it. Older
+servers may omit the field. No schema migration or new provider secret is needed.
+
+| Client | Implementation and limits |
+| --- | --- |
+| iPhone/iPad | APNs alerts and deletion replacements carry `aps.badge`, computed at send time. The open app reconciles with `setBadgeCount`. Requires Badges permission. Reads on another device while iOS is suspended reconcile on the next delivered push or app foreground; there is no silent-push read synchronization. OS delivery ordering/throttling can temporarily leave an older count. |
+| macOS | Updates the Dock badge from the authoritative unread poll while running. No updates after quit. |
+| Android | Supported notification-backed launcher dots/counts, with the number of accumulated messages per conversation (bounded at 1,000 retained identities, independent of the 25-line preview). Reading, dismissing or retracting notifications reduces it. Foreground polling clears fully read top-level conversations read elsewhere. Thread notifications are retained conservatively. Launcher and user settings decide whether a number or dot appears; this is **not** the server-wide total. Voice notifications do not badge. |
+| Web | `(N) Caper` tab title and feature-detected `setAppBadge`/`clearAppBadge` for supported installed apps. Background tabs poll, subject to browser throttling. No closed-browser Web Push yet. |
+| Rust desktop | Background polling, including while minimized. Linux emits Unity LauncherEntry counts for `caper.desktop`; only compatible launchers show them. Windows attempts WinRT badges with the app identity; unpackaged Windows/pinned taskbar behavior is **not verified** and may not be supported by the current installer. Both have the `(N) Caper` title fallback and stop after quit. |
+
+Validation must distinguish API/browser checks and Linux D-Bus protocol tests
+from actual launcher rendering. Apple builds/APNs presentation, Android launcher
+presentation, and Windows taskbar presentation still need native-device checks;
+Linux shells not implementing Unity's protocol have only the title fallback.
+
 **Owner decisions (October 6, 2026)**
 
 - **Content.** Notifications show the sender and a message preview, as Slack and

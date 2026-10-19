@@ -69,9 +69,12 @@ pub(super) async fn list(
             .push(json!({"id":channel,"lastSeq":seq.to_string(),"readSeq":read_seq.to_string()}));
     }
     let feedback_waiting = crate::feedback::waiting_count(pool(&state)?, principal.user.id).await?;
+    let badge_count = crate::push::badge::count(pool(&state)?, principal.user.id)
+        .await
+        .map_err(database_error)?;
     Ok(Json(
         json!({"spaces":spaces.into_iter().map(|(id,channels)|json!({"id":id,"channels":channels})).collect::<Vec<_>>(),
-            "feedbackWaiting": feedback_waiting}),
+            "feedbackWaiting": feedback_waiting, "badgeCount": badge_count}),
     ))
 }
 

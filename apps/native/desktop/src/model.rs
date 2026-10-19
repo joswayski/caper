@@ -291,6 +291,9 @@ pub struct UnreadSpaces {
     pub spaces: Vec<UnreadSpace>,
     #[serde(default, rename = "feedbackWaiting")]
     pub feedback_waiting: u64,
+    /// Authoritative messages plus pending invitations/requests. Old servers omit it.
+    #[serde(default, rename = "badgeCount")]
+    pub badge_count: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
