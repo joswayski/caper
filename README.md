@@ -1,7 +1,6 @@
 # Caper
 
-A place for your people to chat about anything, at [caper.chat](https://caper.chat).
-Early-stage and actively in development.
+[caper.chat](https://caper.chat)
 
 ## Install
 
