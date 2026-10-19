@@ -16293,9 +16293,16 @@ impl CaperApp {
             }
             // ScrollArea's paint margin must not bleed into the fixed heading or composer.
             let history_clip = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+            // Sticking to the scroll end does not bottom-align content shorter
+            // than the viewport. Measure the whole history (including its header
+            // and pending sends), and put spare space above it on the next pass.
+            let height_id = ui.id().with(("history-natural-height", &scope));
+            let natural_height = ui.ctx().data_mut(|data| data.get_temp::<f32>(height_id)).unwrap_or(0.0);
+            let top_space = if empty { 0.0 } else { (history_clip.height() - natural_height).max(0.0) };
             let history = history.show_viewport(ui, |ui, viewport| {
                     let origin = ui.max_rect().top();
                     ui.set_clip_rect(ui.clip_rect().intersect(history_clip));
+                    ui.add_space(top_space);
                     if let Some(error) = self.load_error.clone().filter(|_| empty) {
                         chat_state(ui, 2, |ui| {
                             ui.label(RichText::new(error).color(MUTED));
@@ -16446,6 +16453,13 @@ impl CaperApp {
                     }
                     Some((plan, drawn, start))
                 });
+            let measured_height = history.content_size.y - top_space;
+            ui.ctx().data_mut(|data| data.insert_temp(height_id, measured_height));
+            let measured_space = if empty { 0.0 } else { (history.inner_rect.height() - measured_height).max(0.0) };
+            if (measured_space - top_space).abs() > 0.5 {
+                ui.ctx().request_discard("bottom-align short conversations");
+                ui.ctx().request_repaint();
+            }
             if let Some((plan, drawn, start)) = &history.inner
                 && self.history_list.finish(plan, drawn, *start, history.content_size.y, history.state.offset.y)
             {
@@ -30818,6 +30832,36 @@ mod tests {
     }
 
     #[test]
+    fn short_conversations_keep_messages_above_the_composer() {
+        let context = egui::Context::default();
+        let mut app = scroll_fixture(&context, 1..=2);
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        let output = render(&mut app, &context, vec![]);
+        let first = text_position(&output, "Scroll fixture message 1");
+        let newest = text_position(&output, "Scroll fixture message 2");
+        assert!(first.y < newest.y, "messages remain chronological");
+        assert!(
+            newest.y > 700.0,
+            "short history sits near the composer, not the heading: {newest:?}"
+        );
+        app.draft = "one\ntwo\nthree\nfour".into();
+        let grown = render(&mut app, &context, vec![]);
+        let raised = text_position(&grown, "Scroll fixture message 2");
+        assert!(raised.y < newest.y, "short history rises with the composer");
+        for _ in 0..3 {
+            assert_eq!(
+                text_position(
+                    &render(&mut app, &context, vec![]),
+                    "Scroll fixture message 2"
+                ),
+                raised
+            );
+        }
+    }
+
+    #[test]
     fn a_growing_draft_moves_the_newest_message_in_the_same_frame() {
         let context = egui::Context::default();
         let mut app = scroll_fixture(&context, 1..=40);
@@ -34488,12 +34532,13 @@ mod tests {
             !texts(&list).contains(&"Audio"),
             "desktop controls hide at rest"
         );
-        let maya_name = text_position(&list, "Maya");
+        // Target the call overlay, not Maya's now-bottom-aligned chat message.
+        let maya_audio = node_bounds(&list, "Audio controls for Maya").unwrap();
         let alex_audio = node_bounds(&list, "Audio controls for Alex").unwrap();
         let hovered = render(
             &mut app,
             &context,
-            vec![egui::Event::PointerMoved(maya_name)],
+            vec![egui::Event::PointerMoved(maya_audio.center())],
         );
         assert_eq!(
             texts(&hovered)
@@ -34502,7 +34547,10 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(text_position(&hovered, "Maya"), maya_name);
+        assert_eq!(
+            node_bounds(&hovered, "Audio controls for Maya"),
+            Some(maya_audio)
+        );
         assert_eq!(
             node_bounds(&hovered, "Audio controls for Alex"),
             Some(alex_audio)
@@ -37961,12 +38009,12 @@ mod tests {
                         && *stroke == egui::Stroke::new(1.0, super::BORDER))),
             "no divider sets voice apart from Pins and Members"
         );
-        // Independent values from the current web CSS: 54px header, 44px history.
+        // Independent values from the current web CSS: 54px fixed header.
+        // The history header moves down with a short, bottom-aligned history.
         for (label, center) in [
             ("Fixture Studio", 27.0),
             ("# general", 27.0),
             ("Members", 27.0),
-            ("Beginning of conversation", 76.0),
         ] {
             let shape = text(label);
             assert!(
@@ -42303,6 +42351,12 @@ mod tests {
             );
             // The last message sits just above the composer.
             let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+            // An earlier mention leaves room for a card below it even when
+            // short histories are bottom-aligned.
+            messages[0].content.text = "Hello @alex".into();
+            messages[0].content.mentions = messages[2].content.mentions.clone();
+            messages[2].content.text = "Following conversation context\n".repeat(12);
+            messages[2].content.mentions.clear();
             messages[3].content.text = "Thanks @maya".into();
             messages[3].content.mentions = vec![model::Mention {
                 kind: "user".into(),
@@ -42347,7 +42401,7 @@ mod tests {
                 .unwrap();
             (pill, card)
         };
-        let (pill, card) = card_beside_pill(900.0, ALEX_MESSAGE, "@alex");
+        let (pill, card) = card_beside_pill(900.0, "Hello @alex", "@alex");
         assert!(card.top() >= pill.bottom(), "{pill:?} {card:?}");
         assert!(card.width() <= 320.0 + 0.5, "{card:?}");
         let (pill, card) = card_beside_pill(560.0, "Thanks @maya", "@maya");
