@@ -564,7 +564,7 @@ try {
     );
     assert.equal(removed.status, 200);
     wait(
-      `!document.querySelector('.chat-forward-dialog') && document.querySelector('${sharedRow}')?.textContent.includes('Message deleted')`,
+      `!document.querySelector('.chat-forward-dialog') && document.querySelector('${sharedRow}')?.textContent.includes('This message was deleted.')`,
     );
     assert.equal(evaluate(`!!document.querySelector('${sharedRow} .chat-forward-card')`), false);
     screenshot(`forward-after-deletion-${width}`);
