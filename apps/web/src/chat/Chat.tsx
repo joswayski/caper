@@ -1788,7 +1788,8 @@ export default function Chat({
                   )}
                 </>
               )}
-              {pending && state.sendError && (
+              {/* A pending thread reply shows its status beside the thread composer. */}
+              {pending && !inThread && state.sendError && (
                 <div className="chat-send-status chat-send-error" role="alert">
                   <span>
                     {!state.sendUploadFailed && (state.sendRejected ? "Not sent. " : "Not confirmed yet. ")}
@@ -2524,7 +2525,6 @@ export default function Chat({
         specialMentions={!direct}
         replyTo={state.thread ? replyTargets[state.thread.rootId] : undefined}
         onSend={(text, broadcast) => sendDraft(text, state.thread?.rootId, broadcast)}
-        localPreviews={localPreviews}
         attachments={
           signedIn || threadDrafts.length
             ? {
@@ -2546,7 +2546,6 @@ export default function Chat({
         onReplyChange={(reference) => {
           if (state.thread) setReplyTarget(state.thread.rootId, reference);
         }}
-        onOpenReference={(reference) => void goToMessage({ ...reference, channelId: state.channelId! })}
         blockedIds={blockedIds}
         renderMessage={renderMessage}
         arrivals={arrivals.current}

@@ -84,6 +84,15 @@
 :is(.space-menu, .channel-menu, .channel-section-menu)[open] > .space-actions {
   animation: caper-rise-in var(--motion-fast) var(--ease-out);
 }
+/* The connection notice, shown after a second offline, fades in rather than blinking on. */
+.chat-offline {
+  animation: caper-fade-in var(--motion-base) var(--ease-out);
+}
+/* Composer suggestions and the message being replied to rise from the field. */
+.chat-emoji-suggestions,
+.chat-reply-draft {
+  animation: caper-rise-in var(--motion-fast) var(--ease-out);
+}
 /* Menus flipped above their trigger come down from it instead. */
 .channel-menu[data-placement="above"][open] > .space-actions {
   animation-name: caper-drop-in;
@@ -140,6 +149,9 @@
   .chat-reaction-tooltip,
   .chat-emoji-tooltip,
   .top-layer-tooltip:popover-open,
+  .chat-offline,
+  .chat-emoji-suggestions,
+  .chat-reply-draft,
   :is(.space-menu, .channel-menu, .channel-section-menu)[open] > .space-actions,
   .channel-menu[data-placement="above"][open] > .space-actions,
   .chat-thread-panel,

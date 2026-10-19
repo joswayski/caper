@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 import ThreadPanel from "./ThreadPanel.tsx";
 import { Arrivals } from "./arrivals.ts";
-import { initialChatView, type ThreadViewState } from "./client.ts";
+import { initialChatView, type PendingChatMessage, type ThreadViewState } from "./client.ts";
 import type { ChatMessage } from "./types.ts";
 
 const root: ChatMessage = {
@@ -32,12 +32,10 @@ function render(
       direct={direct}
       readOnly={readOnly}
       specialMentions
-      localPreviews={{}}
       onSend={async () => {}}
       onReplyChange={() => {}}
-      onOpenReference={() => {}}
       blockedIds={new Set()}
-      renderMessage={(_index, message) => <p>{message.content.text}</p>}
+      renderMessage={(_index, message) => <p>{"content" in message ? message.content.text : message.text}</p>}
       arrivals={new Arrivals()}
       onClose={() => {}}
     />,
@@ -114,4 +112,51 @@ test("the reply composer offers the channel composer's emoji and mention suggest
   expect(markup).toMatch(/<textarea[^>]*id="chat-thread-reply"[^>]*aria-autocomplete="list"/);
   expect(markup).toContain('aria-describedby="chat-thread-composer-hint"');
   expect(markup).toContain("Type : to find emoji or @ to mention someone.");
+});
+
+test.each([
+  [false, /Latest reply<\/p><p data-key="pending-client">Pending reply<\/p><\/div>/],
+  [true, /Load newer replies<\/button><p data-key="pending-client">Pending reply<\/p>/],
+])("a pending reply renders like a reply, after the replies (newer pages: %s)", (hasNewer, order) => {
+  const reply: ChatMessage = {
+    ...root,
+    id: "reply",
+    clientMessageId: "reply-client",
+    seq: "2",
+    threadRootId: root.id,
+    content: { version: 1, type: "text", text: "Latest reply" },
+  };
+  const pendingSend: PendingChatMessage = {
+    clientMessageId: "pending-client",
+    text: "Pending reply",
+    createdAt: "2026-10-08T07:01:00Z",
+    threadRootId: root.id,
+  };
+  const markup = renderToStaticMarkup(
+    <ThreadPanel
+      state={{
+        ...initialChatView(),
+        phase: "ready",
+        messages: [root, reply],
+        pendingSend,
+        thread: { rootId: root.id, loading: false, loadingOlder: false, hasMore: false, hasNewer },
+      }}
+      channelName="general"
+      readOnly={false}
+      specialMentions
+      onSend={async () => {}}
+      onReplyChange={() => {}}
+      blockedIds={new Set()}
+      // At the live end the pending row shares the replies' keyed list, so its confirmed row is the same element.
+      renderMessage={(_index, message) => (
+        <p key={message.clientMessageId} data-key={message.clientMessageId}>
+          {"content" in message ? message.content.text : message.text}
+        </p>
+      )}
+      arrivals={new Arrivals()}
+      onClose={() => {}}
+    />,
+  );
+  expect(markup).toMatch(order);
+  expect(markup.match(/Pending reply/g)).toHaveLength(1);
 });

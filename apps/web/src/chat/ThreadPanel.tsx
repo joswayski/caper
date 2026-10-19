@@ -1,10 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Send, X } from "lucide-react";
 import AttachmentPicker from "./AttachmentPicker.tsx";
-import Avatar from "../components/Avatar";
 import MessageSkeleton from "./MessageSkeleton.tsx";
-import type { ChatClient, ChatViewState } from "./client.ts";
-import { DraftAttachments, MessageAttachments, type LocalPreview } from "./Attachments.tsx";
+import type { ChatClient, ChatViewState, PendingChatMessage } from "./client.ts";
+import { DraftAttachments } from "./Attachments.tsx";
 import type { ComposerAttachments } from "./Composer.tsx";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
@@ -18,7 +17,7 @@ import { insertEmoji } from "./emoji-autocomplete.ts";
 import MentionTextarea from "./MentionTextarea.tsx";
 import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage, type ChatReplyReference } from "./types.ts";
-import { ReplyContext, ReplyDraft } from "./Replies.tsx";
+import { ReplyDraft } from "./Replies.tsx";
 import { useTimelineKeyboardDismiss } from "./useTimelineKeyboardDismiss.ts";
 
 const DEFAULT_WIDTH = 340;
@@ -39,10 +38,8 @@ export default function ThreadPanel({
   specialMentions,
   replyTo,
   attachments,
-  localPreviews,
   onSend,
   onReplyChange,
-  onOpenReference,
   blockedIds,
   renderMessage,
   arrivals,
@@ -59,18 +56,16 @@ export default function ThreadPanel({
   specialMentions: boolean;
   replyTo?: ChatReplyReference;
   attachments?: ComposerAttachments;
-  localPreviews: Record<string, LocalPreview>;
   onSend: (text: string, broadcast: boolean) => Promise<unknown>;
   onReplyChange: (reference?: ChatReplyReference) => void;
-  /** Jumps to a pending reply's original, like the replies rendered by `renderMessage`. */
-  onOpenReference: (reference: ChatReplyReference) => void;
   blockedIds: ReadonlySet<string>;
+  /** Renders confirmed replies and the viewer's pending one alike. */
   renderMessage: (
     index: number,
-    message: ChatMessage,
+    message: ChatMessage | PendingChatMessage,
     inThread: boolean,
-    previous?: ChatMessage,
-    next?: ChatMessage,
+    previous?: ChatMessage | PendingChatMessage,
+    next?: ChatMessage | PendingChatMessage,
   ) => ReactNode;
   /** Shared with the channel list, whose rows render through `renderMessage`. */
   arrivals: Arrivals;
@@ -366,12 +361,14 @@ export default function ThreadPanel({
   );
   // Typing a reply changes only this panel's draft; keep the rendered messages.
   const renderedRoot = useMemo(() => root && renderMessage(0, root, true), [root, renderMessage]);
-  const renderedReplies = useMemo(
+  // At the live end a pending reply joins the keyed replies, so its confirmed
+  // row keeps the same element instead of mounting anew and replaying its entrance.
+  const pendingInline = !!pending && !state.thread?.hasNewer;
+  const renderedReplies = useMemo(() => {
+    const rows: (ChatMessage | PendingChatMessage)[] = pending && pendingInline ? [...replies, pending] : replies;
     // Replies group with the reply above them; the root never groups.
-    () =>
-      replies.map((message, index) => renderMessage(index + 1, message, true, replies[index - 1], replies[index + 1])),
-    [replies, renderMessage],
-  );
+    return rows.map((message, index) => renderMessage(index + 1, message, true, rows[index - 1], rows[index + 1]));
+  }, [replies, pending, pendingInline, renderMessage]);
   if (!state.thread) return null;
   const count = Array.from(draft.text).length;
   const sending = !!state.pendingSend && !state.sendError;
@@ -618,28 +615,7 @@ export default function ThreadPanel({
             {state.thread.loadingNewer ? "Loading…" : "Load newer replies"}
           </button>
         )}
-        {pending && (
-          <article className="chat-message chat-message-pending chat-message-arrive">
-            {pending.replyTo && (
-              <ReplyContext
-                motionKey={pending.clientMessageId}
-                reference={pending.replyTo}
-                hidden={blockedIds.has(pending.replyTo.author.id) && pending.replyTo.author.id !== state.author?.id}
-                onOpen={() => onOpenReference(pending.replyTo!)}
-              />
-            )}
-            <div className="chat-avatar">
-              <Avatar person={pending.author} name={pending.author?.name ?? ""} />
-            </div>
-            <div>
-              <header>
-                <strong>{pending.author?.name}</strong>
-              </header>
-              {pending.text && <p>{pending.text}</p>}
-              <MessageAttachments attachments={pending.attachments ?? []} localPreviews={localPreviews} />
-            </div>
-          </article>
-        )}
+        {pending && !pendingInline && renderMessage(replies.length + 1, pending, true, replies.at(-1))}
       </div>
       <div className="chat-composer chat-thread-composer">
         {readOnly ? (

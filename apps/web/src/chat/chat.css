@@ -34,7 +34,7 @@
   padding: 16px;
   background: rgb(12 13 15 / 82%);
   pointer-events: none;
-  animation: chat-drop-fade 140ms ease-out both;
+  animation: chat-drop-fade var(--motion-fast) var(--ease-out) both;
 }
 .chat-drop-card {
   display: grid;
@@ -359,8 +359,8 @@
   opacity: 0;
   transform: translate(-50%, 4px);
   transition:
-    opacity 160ms ease,
-    transform 160ms ease;
+    opacity var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out);
 }
 .chat-action-status[data-visible] {
   opacity: 1;
@@ -3579,7 +3579,7 @@ a.chat-draft-preview {
 .chat-viewer-overlay {
   z-index: 1200;
   background: rgb(0 0 0 / 92%);
-  animation: chat-viewer-in 140ms ease-out;
+  animation: chat-viewer-in var(--motion-fast) var(--ease-out);
 }
 @keyframes chat-viewer-in {
   from {
