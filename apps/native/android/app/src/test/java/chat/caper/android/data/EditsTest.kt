@@ -115,7 +115,7 @@ class EditsTest {
     }
 
     @Test fun `loaded replies stop quoting a deleted message`() {
-        val reference = MessageReply(original.id, author, "original", true, fullText = "original")
+        val reference = MessageReply(original.id, author, "original", true, fullText = "original", attachments = listOf(ChatAttachment("attachment", "image", "image/png", "photo.png", 1)))
         val reply = edited.copy(id = "message00000002", replyTo = reference)
         val quoted = quoteDeleted(reply, original.id).replyTo
         assertEquals(MessageReply(original.id, author, "", false, deleted = true), quoted)

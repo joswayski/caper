@@ -631,14 +631,31 @@ public struct MessageReply: Codable, Equatable, Sendable {
     public let fullText: String?
     public let hasAttachments: Bool
     public let threadRootId: String?
+    public var attachments: [ChatAttachment]? = nil
     /// The quoted message was deleted; its text is no longer sent.
     public var deleted: Bool? = nil
+    private enum CodingKeys: String, CodingKey {
+        case id, author, text, fullText, hasAttachments, threadRootId, attachments, deleted
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        author = try values.decode(ChatAuthor.self, forKey: .author)
+        deleted = try values.decodeIfPresent(Bool.self, forKey: .deleted)
+        text = deleted == true ? "" : try values.decode(String.self, forKey: .text)
+        fullText = deleted == true ? nil : try values.decodeIfPresent(String.self, forKey: .fullText)
+        hasAttachments = deleted == true ? false : try values.decode(Bool.self, forKey: .hasAttachments)
+        threadRootId = try values.decodeIfPresent(String.self, forKey: .threadRootId)
+        attachments = deleted == true ? nil : values.decodeLossyAttachments(forKey: .attachments)
+    }
     public init(message: ChatMessage) {
         id = message.id; author = message.author; threadRootId = message.threadRootId
         let source = message.content.text.isEmpty && message.forward != nil ? "Forwarded message" : message.content.text
-        text = String(String.UnicodeScalarView(source.unicodeScalars.prefix(200)))
-        fullText = source.unicodeScalars.count > 200 ? source : nil
-        hasAttachments = !(message.content.attachments ?? []).isEmpty
+        text = message.isDeleted ? "" : String(String.UnicodeScalarView(source.unicodeScalars.prefix(200)))
+        fullText = !message.isDeleted && source.unicodeScalars.count > 200 ? source : nil
+        hasAttachments = !message.isDeleted && !(message.content.attachments ?? []).isEmpty
+        attachments = message.isDeleted ? nil : message.content.attachments
+        deleted = message.isDeleted ? true : nil
     }
 }
 
@@ -1169,6 +1186,11 @@ struct EditSnapshots: Sendable {
     }
 
     func overlay(_ message: ChatMessage) -> ChatMessage {
+        var message = message
+        if let reference = message.replyTo, let source = values[reference.id], source.isDeleted,
+           source.channelId == message.channelId {
+            message.replyTo = MessageReply(message: source)
+        }
         guard let snapshot = values[message.id], snapshot.channelId == message.channelId,
               (snapshot.revision ?? 1) > (message.revision ?? 1) else { return message }
         var result = message

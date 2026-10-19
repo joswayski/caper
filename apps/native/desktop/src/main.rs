@@ -1780,7 +1780,7 @@ impl CaperApp {
                     app.timeline
                         .reset(messages, "4")
                         .expect("valid reaction fixture");
-                } else if name == "parity-replies" {
+                } else if name == "parity-replies" || name == "parity-reply-previews" {
                     let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
                     app.session = Some(ChatSession {
                         token: "fixture-token".into(),
@@ -1795,6 +1795,29 @@ impl CaperApp {
                     messages[2].reply_to = Some(model::MessageReply::from_message(&messages[1]));
                     messages[2].content.text =
                         "TEST FIXTURE — A reply is its own message in the conversation.".into();
+                    if name == "parity-reply-previews" {
+                        app.install_attachments_fixture();
+                        app.local_media.extend(
+                            app.local_media
+                                .clone()
+                                .into_iter()
+                                .map(|(id, image)| (format!("reply-preview-{id}"), image)),
+                        );
+                        let files = app
+                            .timeline
+                            .messages()
+                            .nth(2)
+                            .unwrap()
+                            .content
+                            .attachments
+                            .clone();
+                        messages[1].author = messages[0].author.clone();
+                        messages[1].content.text =
+                            "TEST FIXTURE — A few attachments for the plan.".into();
+                        messages[1].content.attachments = files;
+                        messages[2].reply_to =
+                            Some(model::MessageReply::from_message(&messages[1]));
+                    }
                     messages[3].reply_to = Some(model::MessageReply::from_message(&messages[2]));
                     messages[3].content.text =
                         "TEST FIXTURE — This reply can be replied to, too.".into();
@@ -16405,6 +16428,59 @@ impl CaperApp {
                                     .color(MUTED),
                             );
                         } else if !blocked {
+                            if !reference.attachments.is_empty() {
+                                ui.horizontal_wrapped(|ui| {
+                                    for attachment in reference.attachments.iter().take(3) {
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            egui::vec2(44.0, 44.0),
+                                            egui::Sense::click(),
+                                        );
+                                        ui.painter().rect_filled(rect, 6, BORDER);
+                                        let source = attachment.reply_preview_source();
+                                        let texture = source.and_then(|url| {
+                                            match self.media.image(
+                                                &format!("reply-preview-{}", attachment.id),
+                                                Some(url),
+                                            ) {
+                                                attachments::ImageState::Ready(texture) => {
+                                                    Some(texture)
+                                                }
+                                                _ => None,
+                                            }
+                                        });
+                                        if let Some(texture) = texture {
+                                            let width = attachment.width.unwrap_or(1).max(1) as f32;
+                                            let height =
+                                                attachment.height.unwrap_or(1).max(1) as f32;
+                                            let uv_size = egui::vec2(
+                                                (height / width).min(1.0),
+                                                (width / height).min(1.0),
+                                            );
+                                            egui::Image::new((texture, rect.size()))
+                                                .uv(egui::Rect::from_center_size(
+                                                    egui::pos2(0.5, 0.5),
+                                                    uv_size,
+                                                ))
+                                                .corner_radius(6)
+                                                .paint_at(ui, rect);
+                                        } else {
+                                            ui.painter().text(
+                                                rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                "File",
+                                                egui::FontId::proportional(11.0),
+                                                MUTED,
+                                            );
+                                        }
+                                        open |= response
+                                            .on_hover_text("View original message")
+                                            .clicked();
+                                    }
+                                    if reference.attachments.len() > 3 {
+                                        ui.label(format!("+{}", reference.attachments.len() - 3));
+                                    }
+                                });
+                            }
                             let text = reference.full_text.as_deref().unwrap_or(&reference.text);
                             let text = if text.is_empty() {
                                 if reference.has_attachments {
@@ -17659,7 +17735,21 @@ impl CaperApp {
                     });
                 }
             });
-        if mentioned && pinned.is_none() {
+        let incoming_reply = self.account.as_ref().is_some_and(|viewer| {
+            !message.is_deleted()
+                && message.author.id != viewer.id
+                && message
+                    .reply_to
+                    .as_ref()
+                    .is_some_and(|reply| reply.author.id == viewer.id)
+        });
+        let selected = self.focused_message.as_deref() == Some(&message.id)
+            || (!in_thread
+                && self
+                    .thread_view
+                    .as_ref()
+                    .is_some_and(|thread| thread.root == message.id));
+        if (mentioned || incoming_reply) && pinned.is_none() && !selected && !in_pins {
             // Messages that mention you: an 8% terracotta row with a 2px edge.
             let rect = egui::Rect::from_x_y_ranges(
                 ui.max_rect().x_range(),
@@ -17667,7 +17757,11 @@ impl CaperApp {
             );
             ui.painter().set(
                 tint,
-                egui::Shape::rect_filled(rect, 0.0, TERRACOTTA.gamma_multiply(0.08)),
+                egui::Shape::rect_filled(
+                    rect,
+                    0.0,
+                    TERRACOTTA.gamma_multiply(if incoming_reply { 0.12 } else { 0.08 }),
+                ),
             );
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())),

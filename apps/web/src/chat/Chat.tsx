@@ -1528,6 +1528,9 @@ export default function Chat({
             className={`chat-message${grouped ? " chat-message-grouped" : ""}${continued ? " chat-message-continued" : ""}${pending ? " chat-message-pending" : ""}${!pending && message.pin ? ` chat-message-pinned${message.pin.author.id === viewerId ? " chat-message-pinned-own" : ""}` : ""}${arrivals.current?.has(message.clientMessageId) ? " chat-message-arrive" : ""}${"id" in message && jumpMessage === message.id ? " chat-message-jump-target" : ""}${!pending && !message.pin && mentionsAccount(message, state.author?.id) ? " chat-message-mentioned" : ""}${!inThread && "id" in message && state.thread?.rootId === message.id ? " chat-message-thread-active" : ""}`}
             data-message-key={message.clientMessageId}
             data-message-id={"id" in message ? message.id : undefined}
+            data-reply-to-me={
+              !pending && !deleted && !!viewerId && message.replyTo?.author.id === viewerId && author?.id !== viewerId
+            }
             onPointerDown={(event) => {
               cancelPress();
               if (

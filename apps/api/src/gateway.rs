@@ -325,6 +325,9 @@ async fn catch_up(
                 )
             })
             .unzip();
+        crate::assets::reply_attachments(&state.chat.pool, &mut payloads)
+            .await
+            .map_err(|_| ())?;
         // Stored events still name files a later edit replaced.
         crate::assets::conceal_retired(&state.chat.pool, &mut payloads)
             .await

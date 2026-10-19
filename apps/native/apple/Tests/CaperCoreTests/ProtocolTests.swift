@@ -175,6 +175,29 @@ final class ProtocolTests: XCTestCase {
         let legacy = try reply(#"{"id":"quoted","author":{"id":"a","name":"A","isGuest":false},"text":"hello","hasAttachments":false}"#)
         XCTAssertNil(legacy.replyTo?.deleted)
         XCTAssertNil(MessageReply(message: legacy).deleted)
+        XCTAssertNil(legacy.replyTo?.attachments)
+        let file = ChatAttachment(id: "file", kind: .image, contentType: "image/png", name: "photo.png", size: 12, url: "https://example.com/photo.png")
+        var source = legacy
+        source.content.attachments = [file]
+        let local = MessageReply(message: source)
+        XCTAssertEqual(local.attachments, [file])
+        let encoded = try JSONEncoder().encode(local)
+        XCTAssertEqual(try JSONDecoder().decode(MessageReply.self, from: encoded).attachments, [file])
+        var deletedPayload = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        deletedPayload["deleted"] = true
+        let scrubbed = try JSONDecoder().decode(MessageReply.self, from: JSONSerialization.data(withJSONObject: deletedPayload))
+        XCTAssertNil(scrubbed.attachments)
+        XCTAssertEqual(scrubbed.text, "")
+        XCTAssertFalse(scrubbed.hasAttachments)
+        var response = legacy
+        response.replyTo = local
+        source.deletedAt = "2026-10-19T00:00:00Z"
+        source.revision = 2
+        var edits = EditSnapshots()
+        edits.seed([response])
+        edits.apply(source)
+        XCTAssertNil(edits.overlay(response).replyTo?.attachments)
+        XCTAssertEqual(edits.overlay(response).replyTo?.deleted, true)
         XCTAssertEqual(MessageDeletion.failureMessage(for: APIError(status: 429, message: "deleting too quickly; try again shortly")),
                        "Deleting too quickly. Try again shortly.")
         XCTAssertEqual(MessageDeletion.failureMessage(for: APIError(status: 403, message: "only the author can delete this message")),

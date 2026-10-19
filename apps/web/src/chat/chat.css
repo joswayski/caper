@@ -601,6 +601,27 @@
   width: 100%;
   min-height: 20px;
 }
+.chat-reply-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 5px;
+}
+.chat-reply-thumbnail {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+}
+.chat-reply-thumbnail img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 .chat-reply-connector {
   position: absolute;
   top: 0;
@@ -794,6 +815,14 @@
 .chat-message:where(:has(> .chat-reply-context)):focus-within {
   background: rgb(243 244 245 / 3%);
   box-shadow: inset 2px 0 var(--border);
+}
+/* Incoming replies to you stay distinct from ordinary and self replies.
+   Pins, source jumps and active threads retain their existing precedence. */
+.chat-message:where([data-reply-to-me="true"]),
+.chat-message:where([data-reply-to-me="true"]):hover,
+.chat-message:where([data-reply-to-me="true"]):focus-within {
+  background: rgb(182 77 50 / 12%);
+  box-shadow: inset 3px 0 var(--terracotta);
 }
 /* Your pins are terracotta; other people's pins keep the faded gold wash. */
 .chat-message-pinned-own {
