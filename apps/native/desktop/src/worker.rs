@@ -622,6 +622,11 @@ pub enum Event {
         request: Instant,
         result: Result<crate::pictures::History, String>,
     },
+    AvatarSelected {
+        epoch: u64,
+        result: Result<crate::pictures::Changed, crate::pictures::Failure>,
+        refreshed: Option<Account>,
+    },
     /// A live `profiles` change from the account feed.
     Profiles {
         epoch: u64,
@@ -1529,11 +1534,17 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             token,
             asset,
             expected,
-        } => Event::Picture {
-            epoch,
-            target: crate::pictures::Target::Avatar,
-            result: crate::pictures::select(api, &token, &asset, expected.as_deref()),
-        },
+        } => {
+            let result = crate::pictures::select(api, &token, &asset, expected.as_deref());
+            // Refresh after a failed selection so reopening the chooser can recover
+            // from another device's change even if its live event was missed.
+            let refreshed = result.is_err().then(|| api.me(&token).ok()).flatten();
+            Event::AvatarSelected {
+                epoch,
+                result,
+                refreshed,
+            }
+        }
         Command::Picture {
             epoch,
             token,

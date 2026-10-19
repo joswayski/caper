@@ -8996,24 +8996,18 @@ snapshot (a new revision) carries it to everyone watching the call.
 **Old pictures are kept.** Replacing or removing a picture leaves its row and R2
 object in place (rows were already retained; objects are small and changes are
 rare). They do not count toward the 10 GB file allowance, keep moderation history
-possible, and leave room for a later "recent pictures" picker. Profile settings
-offer **Restore previous picture** when a retained custom picture is available;
-there is no gallery. Abandoned, cancelled, rejected or orphaned (space deleted or transferred
+possible, and appear in the **Previous pictures** gallery in profile settings.
+Abandoned, cancelled, rejected or orphaned (space deleted or transferred
 mid-upload) picture uploads are purged like any other unsent upload. Removing a
 user's pictures from storage on account deletion belongs with that future flow.
 
-One-step restore (October 19, 2026) swaps the current and previous custom picture
-without uploading or re-encoding bytes. A new save remembers the picture actually
-displayed before it, not simply the newest upload. Remove remembers the removed
-picture too; restoring it leaves no prior custom picture, so Remove is how to
-return to the mascot. Migration `202610190001_avatar_restore.sql` adds nullable
-`previous_avatar_asset`, `avatar_history_initialized` (false by default), and
-nullable `avatar_restored_at`. Accounts without initialized history fall back to
-the latest retained upload preceding the current picture's reservation, or the
-latest retained upload if showing the mascot. This legacy fallback cannot
-reconstruct exact previous choices. Once a save, removal or restore initializes
-history, only the explicit previous picture is eligible. In-flight uploads
-reserved before a restore cannot overwrite it when they finish.
+The gallery lists retained, completed uploads newest first, including the current
+picture, in pages of 40. It does not reconstruct editing steps or recover cropped
+pixels; each thumbnail is a saved image. Selecting a thumbnail changes only the
+preview; **Save picture** applies that exact image without uploading or re-encoding.
+Cancel leaves the account alone. The gallery also works while showing the mascot.
+Migration `202610190001_avatar_restore.sql` adds nullable `avatar_selected_at`;
+uploads reserved before a selection or removal cannot overwrite it on completion.
 
 ### API
 
@@ -9023,7 +9017,8 @@ reserved before a restore cannot overwrite it when they finish.
 | `POST /api/assets/{id}/complete` | Checks size and magic bytes as for attachments, then the real pixel size read from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), ≤ 1024 px (`422 picture_invalid`). The first successful completion **applies** the picture and returns `account` (avatar) or `space` (icon); a retry returns the current state without re-applying, so a late retry never undoes a newer picture. Pictures are ordered by reservation: one that completes after a later-reserved picture already completed is kept but not applied, and the response shows the newer one. |
 | `POST /api/assets/{id}/cancel` | Cancels a picture before completion; `409` afterwards. |
 | `DELETE /api/account/avatar` | Back to the saved mascot; returns the account. |
-| `POST /api/account/avatar/restore` `{"avatarAsset": "current asset ID" \| null}` | Compares the supplied current picture under the account row lock, then swaps in the retained previous custom picture. Returns the account and broadcasts its profile change. `409` if the current picture changed; `404` if no valid previous picture exists. No caller-supplied restore target. Own-account responses include `canRestoreAvatar`; public profiles do not. |
+| `GET /api/account/avatar/history?cursor=<asset ID>` | Returns `{pictures:[{avatarAsset,avatarUrl}],nextCursor}` for your own retained, completed avatar uploads only. Stable newest-first pages of 40; `nextCursor: null` at the end. Includes the current picture. |
+| `POST /api/account/avatar/select` `{"avatarAsset":"chosen asset ID","expectedAvatarAsset":"current asset ID" \| null}` | Locks the account, compares the expected current image, and applies the chosen owned/completed/retained avatar. Returns the account and broadcasts its profile change. `409` if the current image changed; `404` for an invalid target (including another user's picture). |
 | `DELETE /api/spaces/{space}/icon` | Owner only; back to the initial; returns the space. |
 
 `avatarAsset`/`avatarUrl` join every person that has `avatarId`: the account,
@@ -9059,15 +9054,17 @@ tile. The mascot or initial underneath stays visible while loading or if a URL
 fails. Decoded pictures are cached by asset
 ID, since URLs re-sign daily. Edit profile and **Manage space** (owners
 only) show the picture or icon in a frame with an edit badge on its corner: the
-frame picks a picture, or, while a custom one is set, opens a menu to edit it,
-choose another or remove it. Editing the current picture downloads its saved
+profile frame opens a menu to choose a new picture or browse previous pictures,
+and, while a custom one is set, edit or remove it. A space icon without a custom
+image opens the file picker directly. Editing the current picture downloads its saved
 pixels; it cannot recover parts cropped out of an earlier upload (choose the
 original file again for those). Dropping a file onto the frame opens the same
 editor. Cancel leaves the saved picture unchanged and makes no upload reservation.
-Profile menus also offer **Restore previous picture** when `canRestoreAvatar`
-is true, including after removal while showing the mascot. Restore disables the
-frame while pending, refreshes the saved account on success, and leaves the
-picture alone with an inline error on failure. Space icons have no restore action.
+**Previous pictures** opens a thumbnail grid with a current marker and larger
+preview. Save is disabled until a different picture is selected, and while saving.
+The saved account refreshes on success; failures remain inline without applying
+the preview. Loading, empty history, retry and Load more are supported. Space
+icons have no history picker.
 GIFs offer **Keep original animation** or an explicitly acknowledged still-frame
 edit; cropping animation is not supported. Animated PNG/WebP require confirmation
 before becoming stills. The frame highlights the drop target;
@@ -9078,26 +9075,29 @@ up a "change me!" sign (`assets/avatars/change-me.svg`, one vector drawn over
 any mascot); a successful change updates the signed-in client everywhere through the
 existing own-profile refresh path.
 
-### Previous-picture restore validation (October 19, 2026)
+### Previous-picture gallery validation (October 19, 2026)
 
 - API: workspace tests, formatting and Clippy pass. The existing picture
-  integration test passes with disposable local PostgreSQL and fake R2: restore,
-  redo, save after restore, remove/restore, first picture, owner isolation,
-  invalid history, legacy fallback, stale requests and late upload completion.
+  integration test passes with disposable local PostgreSQL and fake R2: pagination,
+  nonadjacent selection, owner/purpose/completion/retention isolation, stale
+  requests and late upload completion after selection/removal.
 - Web: `npm run check` and 683 Vitest tests pass. Desktop and 390px touch Chromium
-  checks exercise restore/redo, no extra upload, pending/disabled state, focus
-  return, conflict errors, removal/restore and no-history hiding. These use mock
-  API/CDN/storage. The full `scripts/test-pictures.mjs` run stops at its existing
-  live-update assertion (also reproduced with the unchanged harness); a scratch
-  run omitting only that section passes the remaining checks. This is not a
+  checks exercise preview-only selection, pagination, Cancel/Escape/mobile Back,
+  explicit save, no extra upload, pending/disabled state, focus return, conflict
+  errors and empty/loading/error/retry states. These use mock
+  API/CDN/storage (`PICTURE_GALLERY_ONLY=1 node scripts/test-pictures.mjs`). The
+  full script still stops at its existing live-update assertion (also reproduced
+  with the unchanged harness during the initial one-step implementation). This is not a
   passing full browser suite or live-storage validation. Desktop/mobile
-  screenshots and a restore/redo pointer recording were inspected.
-- Android: Kotlin/Java and test compilation plus 488 unit tests pass. Full APK
-  assembly requires the missing prepared native-audio inputs; no device run.
-- Rust desktop: build, application Clippy (`--no-deps`, `-D warnings`) and 628
-  tests pass (15 ignored), including headless egui restore-menu and pending-state
-  checks. The 2x Linux/Xvfb profile menu was inspected. No Windows/macOS run.
-- Apple: iOS/macOS implementation and restore request/identity tests are included;
+  screenshots and a chooser pointer recording were inspected.
+- Android: Kotlin/Java and test compilation pass, with 488 unit tests passing.
+  Full APK assembly requires the missing prepared native-audio inputs; no device run.
+- Rust desktop: build, formatting and application Clippy (`--no-deps`, `-D warnings`)
+  pass. The full run passed 629 tests (15 ignored); the gallery test initially failed
+  because its mock account omitted profile names. After correcting the fixture,
+  that test passes, including preview/cancel/explicit-save and conflict/reopen with
+  three distinct pictures. The 2x Linux/Xvfb chooser was inspected. No Windows/macOS run.
+- Apple: iOS/macOS implementation and history/selection/identity tests are included;
   compilation, tests and visual validation still require Swift/Xcode on an Apple
   runner. Docker is unavailable here; application builds were run directly.
 

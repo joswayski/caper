@@ -61,7 +61,6 @@ import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.lazy.grid.*
-import androidx.compose.foundation.shape.CircleShape
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
@@ -308,7 +307,7 @@ private val FrameSide = 112.dp
     LaunchedEffect(Unit) { load() }
     AlertDialog(onDismissRequest = { if (!saving) close() }, title = { Text("Previous pictures") }, text = {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box(Modifier.size(144.dp).clip(CircleShape).background(SurfaceRaised), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(144.dp).clip(PictureShape).background(SurfaceRaised), contentAlignment = Alignment.Center) {
                 selected?.let { PictureImage(Picture(it.avatarAsset, it.avatarUrl), 144.dp, Modifier.fillMaxSize()) }
                     ?: Text("Select a picture", color = TextMuted)
             }

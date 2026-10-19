@@ -3565,6 +3565,16 @@ impl CaperApp {
                         }
                     }
                 }
+                Event::AvatarSelected {
+                    epoch,
+                    result,
+                    refreshed,
+                } if epoch == self.account_epoch => {
+                    if let Some(account) = refreshed {
+                        self.account_changed(account);
+                    }
+                    self.picture_changed(pictures::Target::Avatar, result);
+                }
                 Event::Picture {
                     epoch,
                     target,
@@ -22042,6 +22052,11 @@ impl CaperApp {
             return;
         };
         let pending = self.picture_edit.busy.is_some();
+        let stale = self
+            .account
+            .as_ref()
+            .and_then(|account| account.avatar_asset.as_ref())
+            != gallery.expected.as_ref();
         let mut cancel = false;
         let mut save = false;
         let mut load = false;
@@ -22136,9 +22151,14 @@ impl CaperApp {
             } else if gallery.pictures.is_empty() && gallery.error.is_none() {
                 ui.label("No previous pictures yet.");
             }
-            if let Some(error) = &gallery.error {
+            if stale {
+                ui.colored_label(
+                    ERROR,
+                    "Your picture changed elsewhere. Close and reopen to refresh.",
+                );
+            } else if let Some(error) = &gallery.error {
                 ui.colored_label(ERROR, error);
-                if !pending && ui.button("Retry").clicked() {
+                if !pending && !stale && ui.button("Retry").clicked() {
                     load = true;
                 }
             } else if gallery.next_cursor.is_some()
@@ -22150,8 +22170,11 @@ impl CaperApp {
                 load = true;
             }
             ui.horizontal(|ui| {
-                let can_save =
-                    !pending && gallery.selected.is_some() && gallery.selected != gallery.expected;
+                let can_save = !pending
+                    && !stale
+                    && !gallery.loading
+                    && gallery.selected.is_some()
+                    && gallery.selected != gallery.expected;
                 save = ui
                     .add_enabled(
                         can_save,
@@ -39867,7 +39890,8 @@ mod tests {
 
     #[test]
     fn previous_picture_gallery_previews_cancel_and_saves_only_the_chosen_nonadjacent_id() {
-        let (base, seen) = account_server_with(|route, body| match route {
+        let (base, seen) = account_server_with(|route, body| {
+            match route {
             "GET /api/account/avatar/history" => (
                 200,
                 serde_json::json!({
@@ -39879,16 +39903,22 @@ mod tests {
                 })
                 .to_string(),
             ),
+            "GET /api/account/me" => (200, serde_json::json!({"id":"fixture-owner", "username":"fixture_owner", "displayName":"Fixture Owner", "avatarAsset":"middle-portrait", "avatarUrl":"https://example.test/b"}).to_string()),
             "POST /api/account/avatar/select" => {
+                let request: serde_json::Value = serde_json::from_slice(body).unwrap();
+                if request["expectedAvatarAsset"] == "distant-landscape" {
+                    return (409, r#"{"error":"Picture changed elsewhere"}"#.into());
+                }
                 assert_eq!(
-                    serde_json::from_slice::<serde_json::Value>(body).unwrap(),
+                    request,
                     serde_json::json!({
                         "avatarAsset":"distant-landscape", "expectedAvatarAsset":"fixture-gif"
                     })
                 );
-                (200, serde_json::json!({"id":"fixture-owner", "avatarAsset":"distant-landscape", "avatarUrl":"https://example.test/c"}).to_string())
+                (200, serde_json::json!({"id":"fixture-owner", "username":"fixture_owner", "displayName":"Fixture Owner", "avatarAsset":"distant-landscape", "avatarUrl":"https://example.test/c"}).to_string())
             }
             _ => (404, "{}".into()),
+        }
         });
         let (context, mut app) = fixture("parity-pictures-profile");
         app.worker =
@@ -39991,6 +40021,40 @@ mod tests {
                 .filter(|request| request.starts_with("POST /api/account/avatar/select"))
                 .count(),
             1
+        );
+        // A missed live event is repaired on conflict; reopening uses the refreshed account.
+        click_label(&mut app, &context, "Change profile picture");
+        click_label(&mut app, &context, "Previous pictures");
+        receive_until(&mut app, |app| {
+            app.picture_edit
+                .gallery
+                .as_ref()
+                .is_some_and(|gallery| !gallery.loading)
+        });
+        click_label(&mut app, &context, "Previous picture 1");
+        click_label(&mut app, &context, "Save picture");
+        receive_until(&mut app, |app| app.picture_edit.busy.is_none());
+        assert_eq!(
+            app.account.as_ref().unwrap().avatar_asset.as_deref(),
+            Some("middle-portrait")
+        );
+        click_label(&mut app, &context, "Cancel");
+        click_label(&mut app, &context, "Change profile picture");
+        click_label(&mut app, &context, "Previous pictures");
+        receive_until(&mut app, |app| {
+            app.picture_edit
+                .gallery
+                .as_ref()
+                .is_some_and(|gallery| !gallery.loading)
+        });
+        assert_eq!(
+            app.picture_edit
+                .gallery
+                .as_ref()
+                .unwrap()
+                .expected
+                .as_deref(),
+            Some("middle-portrait")
         );
     }
 

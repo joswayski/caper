@@ -413,7 +413,7 @@ private struct AvatarHistoryChooser: View {
             Text("Previous pictures").font(CaperTheme.font(20))
             PictureImage(picture: selected?.avatarPicture, size: 144) {
                 Text("Select a picture").foregroundStyle(CaperTheme.muted)
-            }.frame(width: 144, height: 144).background(CaperTheme.raised).clipShape(Circle())
+            }.frame(width: 144, height: 144).background(CaperTheme.raised).clipShape(RoundedRectangle(cornerRadius: 43.2))
             ScrollView {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 12) {
                     ForEach(pictures.indices, id: \.self) { index in

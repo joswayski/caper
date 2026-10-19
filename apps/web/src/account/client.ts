@@ -7,8 +7,6 @@ export interface Account extends PersonPicture {
   username: string | null;
   displayName: string | null;
   debugEnabled?: boolean;
-  /** Only on your own account: a retained custom picture can be restored. */
-  canRestoreAvatar?: boolean;
   /** On the Caper feedback team: sees the feedback inbox and can visit reported conversations. */
   feedbackTeam?: boolean;
 }
@@ -135,14 +133,26 @@ export async function removeAvatar() {
   return rememberSavedAccount(await request<Account>("/api/account/avatar", { method: "DELETE" }));
 }
 
-/** Compare with the displayed picture so a stale tab cannot undo a newer change. */
-export async function restoreAvatar(avatarAsset: string | null) {
-  return rememberSavedAccount(
-    await request<Account>("/api/account/avatar/restore", {
-      method: "POST",
-      body: JSON.stringify({ avatarAsset }),
-    }),
+export interface PreviousPicture {
+  avatarAsset: string;
+  avatarUrl?: string;
+}
+
+export function getAvatarHistory(cursor?: string | null) {
+  return request<{ pictures: PreviousPicture[]; nextCursor: string | null }>(
+    `/api/account/avatar/history${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
   );
+}
+
+/** Selecting a retained picture is a save, not an upload. A stale chooser cannot replace a newer choice. */
+export async function selectAvatar(avatarAsset: string, expectedAvatarAsset: string | null) {
+  const owner = currentAccount?.id;
+  const saved = await request<Account>("/api/account/avatar/select", {
+    method: "POST",
+    body: JSON.stringify({ avatarAsset, expectedAvatarAsset }),
+  });
+  // A response from an account we signed out of must not sign it back in.
+  return currentAccount?.id === owner ? rememberSavedAccount(saved) : saved;
 }
 
 /** Browser storage key for the chat capability minted from the account session. */

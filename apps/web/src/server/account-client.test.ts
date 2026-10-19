@@ -4,10 +4,11 @@ import {
   AccountApiError,
   CHAT_SESSION_KEY,
   getAccount,
+  getAvatarHistory,
   getRememberedAccount,
   logout,
   requestEmailCode,
-  restoreAvatar,
+  selectAvatar,
   subscribeAccount,
   updateProfile,
   verifyEmailCode,
@@ -104,23 +105,33 @@ test("missing session is an ordinary signed-out state", async (t) => {
   assert.equal(await getAccount(), null);
 });
 
-test("restoring a picture sends the displayed asset, publishes the saved account, and leaves it alone on conflict", async (t) => {
-  const restored = { id: "self", username: "me", displayName: "Me", avatarAsset: "previous", canRestoreAvatar: true };
+test("browsing pictures does not save; selecting sends target and expected current, and a conflict leaves the account alone", async (t) => {
+  const restored = { id: "self", username: "me", displayName: "Me", avatarAsset: "third-oldest" };
   let expected: string | null = "current";
   let conflict = false;
+  const before = getRememberedAccount();
   mockFetch(t, (path, init) => {
-    assert.equal(path, "/api/account/avatar/restore");
+    if (path === "/api/account/avatar/history?cursor=older%2Fpicture") {
+      assert.equal(init?.method, undefined);
+      return Response.json({
+        pictures: [{ avatarAsset: "third-oldest", avatarUrl: "https://cdn.test/third" }],
+        nextCursor: null,
+      });
+    }
+    assert.equal(path, "/api/account/avatar/select");
     assert.equal(init?.method, "POST");
-    assert.deepEqual(JSON.parse(String(init?.body)), { avatarAsset: expected });
+    assert.deepEqual(JSON.parse(String(init?.body)), { avatarAsset: "third-oldest", expectedAvatarAsset: expected });
     return conflict ? Response.json({ error: "Picture changed" }, { status: 409 }) : Response.json(restored);
   });
-  assert.deepEqual(await restoreAvatar(expected), restored);
+  assert.equal((await getAvatarHistory("older/picture")).pictures[0].avatarAsset, "third-oldest");
+  assert.deepEqual(getRememberedAccount(), before);
+  assert.deepEqual(await selectAvatar("third-oldest", expected), restored);
   assert.deepEqual(getRememberedAccount(), restored);
   expected = null;
-  assert.deepEqual(await restoreAvatar(null), restored);
+  assert.deepEqual(await selectAvatar("third-oldest", null), restored);
   conflict = true;
   await assert.rejects(
-    restoreAvatar(null),
+    selectAvatar("third-oldest", null),
     (error: unknown) => error instanceof AccountApiError && error.status === 409,
   );
   assert.deepEqual(getRememberedAccount(), restored);

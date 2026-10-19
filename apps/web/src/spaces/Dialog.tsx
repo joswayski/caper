@@ -2,6 +2,7 @@ import { useId, useLayoutEffect, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { useBackdropDismiss } from "../components/dialogBackdrop";
 import { dialogKeyDown } from "../components/dialogKeyboard";
+import "./spaces.css";
 
 export function Dialog({
   title,
@@ -11,6 +12,7 @@ export function Dialog({
   children,
   width = "standard",
   dismissOnBackdrop = false,
+  closeDisabled = false,
 }: {
   title: string;
   titleIcon?: ReactNode;
@@ -19,6 +21,7 @@ export function Dialog({
   children: ReactNode;
   width?: "standard" | "wide";
   dismissOnBackdrop?: boolean;
+  closeDisabled?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -42,7 +45,7 @@ export function Dialog({
       onCancel={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        onClose();
+        if (!closeDisabled) onClose();
       }}
       {...backdrop}
     >
@@ -54,7 +57,7 @@ export function Dialog({
           </h2>
           {description && <p>{description}</p>}
         </div>
-        <button type="button" aria-label={`Close ${title}`} onClick={onClose}>
+        <button type="button" aria-label={`Close ${title}`} onClick={onClose} disabled={closeDisabled}>
           <X aria-hidden="true" />
         </button>
       </header>
