@@ -24093,24 +24093,36 @@ fn spoiler_hide_button(ui: &egui::Ui, bounds: egui::Rect, id: egui::Id) -> egui:
         ),
         egui::StrokeKind::Inside,
     );
+    let mut job = egui::text::LayoutJob::simple(
+        if compact {
+            "Hide\nspoiler"
+        } else {
+            "Hide spoiler"
+        }
+        .into(),
+        egui::FontId::proportional(12.0),
+        TEXT,
+        f32::INFINITY,
+    );
+    job.halign = egui::Align::Center;
+    let label = ui.painter().layout_job(job);
+    // Center the icon and measured label as one group, including wrapped labels.
+    let content = egui::Rect::from_center_size(
+        rect.center(),
+        egui::vec2(14.0 + 6.0 + label.size().x, label.size().y.max(14.0)),
+    );
     paint_icon(
         ui.painter(),
         egui::Rect::from_center_size(
-            rect.left_center() + egui::vec2(16.0, 0.0),
+            content.left_center() + egui::vec2(7.0, 0.0),
             egui::vec2(14.0, 14.0),
         ),
         NavIcon::EyeOff,
         TEXT,
     );
-    ui.painter().text(
-        rect.left_center() + egui::vec2(29.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        if compact {
-            "Hide\nspoiler"
-        } else {
-            "Hide spoiler"
-        },
-        egui::FontId::proportional(12.0),
+    ui.painter().galley(
+        content.left_center() + egui::vec2(20.0, -label.size().y / 2.0) - label.rect.min.to_vec2(),
+        label,
         TEXT,
     );
     response
@@ -45579,6 +45591,62 @@ mod tests {
             assert!(app.viewer.is_none(), "inline hide never opens the viewer");
             let output = draw(&mut app, vec![]);
             assert!(node_bounds(&output, &format!("View {}", files[visual].name)).is_none());
+        }
+    }
+
+    #[test]
+    fn hide_spoiler_centers_icon_and_label_at_normal_and_compact_widths() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            for width in [420.0, 130.0, 116.0, 104.0, 80.0] {
+                let context = egui::Context::default();
+                super::configure(&context);
+                context.set_pixels_per_point(scale);
+                context.enable_accesskit();
+                let bounds =
+                    egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(width, 200.0));
+                let draw = || {
+                    context.run(egui::RawInput::default(), |context| {
+                        egui::CentralPanel::default().show(context, |ui| {
+                            super::spoiler_hide_button(ui, bounds, ui.id().with("spoiler"));
+                        });
+                    })
+                };
+                draw();
+                let output = draw();
+                let button = node_bounds(&output, "Hide spoiler").unwrap();
+                let label = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.job.text.starts_with("Hide") => {
+                            Some(text)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                let text = label.galley.rect.translate(label.pos.to_vec2());
+                let icon = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh) => Some(mesh.calc_bounds()),
+                        _ => None,
+                    })
+                    .expect("eye-off icon is painted");
+                let content = icon.union(text);
+                assert!(button.contains_rect(content));
+                assert!(
+                    (content.center() - button.center()).length() < 1.0,
+                    "icon and label must center together at width {width}, scale {scale}: {content:?} in {button:?}"
+                );
+                assert!((icon.center().y - text.center().y).abs() < 1.0);
+                for row in &label.galley.rows {
+                    assert!(
+                        (row.rect().center().x - label.galley.rect.center().x).abs() < 1.0,
+                        "wrapped label lines must be centered"
+                    );
+                }
+            }
         }
     }
 
