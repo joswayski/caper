@@ -18,6 +18,18 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub enum Command {
+    AvatarHistory {
+        epoch: u64,
+        request: Instant,
+        token: String,
+        cursor: Option<String>,
+    },
+    SelectAvatar {
+        epoch: u64,
+        token: String,
+        asset: String,
+        expected: Option<String>,
+    },
     /// Upload (`path`) or remove (`None`) a profile picture or space icon.
     /// `animate` decodes an uploaded GIF's frames for immediate display.
     Picture {
@@ -605,6 +617,16 @@ pub enum AdminResult {
 }
 
 pub enum Event {
+    AvatarHistory {
+        epoch: u64,
+        request: Instant,
+        result: Result<crate::pictures::History, String>,
+    },
+    AvatarSelected {
+        epoch: u64,
+        result: Result<crate::pictures::Changed, crate::pictures::Failure>,
+        refreshed: Option<Account>,
+    },
     /// A live `profiles` change from the account feed.
     Profiles {
         epoch: u64,
@@ -1493,6 +1515,34 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 person,
                 send: operation,
                 result,
+            }
+        }
+        Command::AvatarHistory {
+            epoch,
+            request,
+            token,
+            cursor,
+        } => Event::AvatarHistory {
+            epoch,
+            request,
+            result: api
+                .avatar_history(&token, cursor.as_deref())
+                .map_err(|error| error.message),
+        },
+        Command::SelectAvatar {
+            epoch,
+            token,
+            asset,
+            expected,
+        } => {
+            let result = crate::pictures::select(api, &token, &asset, expected.as_deref());
+            // Refresh after a failed selection so reopening the chooser can recover
+            // from another device's change even if its live event was missed.
+            let refreshed = result.is_err().then(|| api.me(&token).ok()).flatten();
+            Event::AvatarSelected {
+                epoch,
+                result,
+                refreshed,
             }
         }
         Command::Picture {

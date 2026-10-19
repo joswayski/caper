@@ -1,4 +1,4 @@
-//! Local, per-person profile drafts. Only explicit Send or Open contacts the API.
+//! Per-person drafts. Files upload eagerly; only explicit Send writes a message.
 use crate::{
     api::Api,
     compress::{self, Compression},
@@ -8,12 +8,28 @@ use eframe::egui;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, atomic::AtomicBool};
 
+type Uploaded = Result<(String, model::Attachment, std::time::Instant), String>;
+
+struct Upload {
+    cancel: Arc<AtomicBool>,
+    result: Arc<OnceLock<Uploaded>>,
+}
+
+impl Drop for Upload {
+    fn drop(&mut self) {
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[derive(Clone)]
 pub struct File {
     pub path: PathBuf,
     /// Pasted images belong to the draft, including while a worker reads them.
     pub scratch: Option<Arc<uploads::Scratch>>,
     pub attachment: Option<model::Attachment>,
+    uploaded_at: Option<std::time::Instant>,
+    upload: Option<Arc<Upload>>,
     pub spoiler: bool,
     /// Bytes on disk when staged, for the composer chip.
     pub size: u64,
@@ -23,7 +39,7 @@ pub struct File {
     preview_requested: bool,
     /// Whether the file can be cropped, drawn on and so on before sending.
     pub editable: Option<crate::attachment_edit::Kind>,
-    /// Applied to the original when it is prepared at Send.
+    /// Applied to the original before preparing and uploading.
     pub edit: Option<crate::attachment_edit::Edit>,
 }
 
@@ -39,6 +55,8 @@ impl File {
             path,
             scratch,
             attachment: None,
+            uploaded_at: None,
+            upload: None,
             spoiler: false,
             preview: Arc::default(),
             texture: None,
@@ -54,6 +72,8 @@ impl File {
         edit: Option<crate::attachment_edit::Edit>,
         preview: Option<egui::ColorImage>,
     ) {
+        self.upload = None;
+        self.attachment = None;
         self.edit = edit;
         self.texture = None;
         self.preview_requested = preview.is_some();
@@ -136,6 +156,15 @@ impl File {
                 .map_or_else(|| "file".into(), |name| name.to_string_lossy().into_owned())
         }
     }
+
+    pub fn upload_status(&self) -> (&str, bool) {
+        match self.upload.as_ref().and_then(|upload| upload.result.get()) {
+            Some(Err(error)) => (error, true),
+            Some(Ok(_)) => ("", false),
+            None if self.upload.is_some() => ("Uploading…", false),
+            None => ("", false),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -150,6 +179,78 @@ pub struct Draft {
 }
 
 impl Draft {
+    pub fn needs_upload(&self) -> bool {
+        self.editable()
+            && self
+                .files
+                .iter()
+                .any(|file| file.upload.is_none() && file.attachment.is_none())
+    }
+
+    pub fn cancel_uploads(&self) {
+        for file in &self.files {
+            if let Some(upload) = &file.upload {
+                upload
+                    .cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Each file owns its worker; removing/editing it invalidates its result.
+    pub fn upload_files(
+        &mut self,
+        api: &Api,
+        token: &str,
+        (person, username): (&str, &str),
+        settings: &Compression,
+        context: &egui::Context,
+    ) {
+        if !self.editable() {
+            return;
+        }
+        for file in &mut self.files {
+            if file.upload.is_some() || file.attachment.is_some() {
+                continue;
+            }
+            let cancel = Arc::new(AtomicBool::new(false));
+            let result = Arc::new(OnceLock::new());
+            let mut send = Send {
+                person: person.into(),
+                username: username.into(),
+                name: String::new(),
+                client_id: String::new(),
+                text: String::new(),
+                files: vec![file.clone()],
+                settings: Some(settings.clone()),
+                cancel: cancel.clone(),
+                retrying: false,
+                open_only: false,
+                direct: None,
+            };
+            file.upload = Some(Arc::new(Upload {
+                cancel,
+                result: result.clone(),
+            }));
+            context.request_repaint();
+            let (api, token, context) = (api.clone(), token.to_owned(), context.clone());
+            std::thread::spawn(move || {
+                let uploaded = send
+                    .run_inner(&api, &token, &|_| {}, true)
+                    .map(|direct| {
+                        (
+                            direct.id,
+                            send.files[0].attachment.clone().expect("uploaded file"),
+                            std::time::Instant::now(),
+                        )
+                    })
+                    .map_err(|error| error.message);
+                let _ = result.set(uploaded);
+                context.request_repaint();
+            });
+        }
+    }
+
     pub fn editable(&self) -> bool {
         !self.sending && self.retry_id.is_none()
     }
@@ -215,13 +316,23 @@ pub struct Failure {
 }
 
 impl Send {
-    /// Resolves only on explicit Send/Open. Reuses uploaded IDs after a
-    /// failed write and uses the same compression/reservation/PUT pipeline.
+    /// Rechecks destination safety on Send, waits for eager uploads, and
+    /// reuses uploaded IDs after a failed write.
     pub fn run(
         &mut self,
         api: &Api,
         token: &str,
         status: &dyn Fn(String),
+    ) -> Result<model::DirectConversation, Failure> {
+        self.run_inner(api, token, status, false)
+    }
+
+    fn run_inner(
+        &mut self,
+        api: &Api,
+        token: &str,
+        status: &dyn Fn(String),
+        upload_only: bool,
     ) -> Result<model::DirectConversation, Failure> {
         let cancelled = || {
             if self.cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -246,6 +357,7 @@ impl Send {
             .conversations
             .into_iter()
             .find(|direct| direct.peer.id == self.person);
+        cancelled()?;
         let direct = match self.direct.clone() {
             Some(direct) => direct,
             None => api
@@ -275,11 +387,40 @@ impl Send {
                 uncertain: retrying,
             });
         }
-        let session = api
-            .chat_session(Some(token), &self.name)
-            .map_err(lookup_failure)?;
+        cancelled()?;
+        let session = if upload_only {
+            None
+        } else {
+            Some(
+                api.chat_session(Some(token), &self.name)
+                    .map_err(lookup_failure)?,
+            )
+        };
         for (index, file) in self.files.iter_mut().enumerate() {
             cancelled()?;
+            if let Some(upload) = file.upload.take() {
+                while upload.result.get().is_none() {
+                    cancelled()?;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                if let Some(Ok((destination, attachment, completed))) = upload.result.get()
+                    && destination == &direct.id
+                {
+                    file.attachment = Some(attachment.clone());
+                    file.uploaded_at = Some(*completed);
+                }
+                // A failed eager attempt is retried by explicit Send, never every frame.
+            }
+            if !retrying
+                && file
+                    .uploaded_at
+                    .is_some_and(|at| at.elapsed().as_secs() >= 23 * 60 * 60)
+            {
+                if let Some(attachment) = file.attachment.take() {
+                    api.cancel_asset(token, &attachment.id);
+                }
+                file.uploaded_at = None;
+            }
             if file.attachment.is_some() {
                 continue;
             }
@@ -325,8 +466,13 @@ impl Send {
                     uncertain: retrying,
                 })?,
             );
+            file.uploaded_at = Some(std::time::Instant::now());
         }
         cancelled()?;
+        if upload_only {
+            return Ok(direct);
+        }
+        let session = session.expect("explicit send session");
         status("Sending…".into());
         let ids = self
             .files
@@ -621,6 +767,57 @@ mod tests {
     }
 
     #[test]
+    fn eager_upload_does_not_send_and_explicit_send_reuses_it() {
+        let scratch = uploads::Scratch::new("txt");
+        std::fs::write(scratch.path(), b"receipt").unwrap();
+        let mut draft = Draft::default();
+        draft.add_files(vec![File::picked(scratch.path().to_owned())]);
+        let mut send = operation(Vec::new());
+        let client_id = send.client_id.clone();
+        let (api, requests) = server(move |base| {
+            vec![
+            (200, format!("{{\"conversations\":[{DIRECT}]}}")),
+            (201, json!({"id":"asset1","upload":{"method":"PUT","url":format!("{base}/storage/asset1"),"headers":{}}}).to_string()),
+            (200, String::new()),
+            (200, json!({"id":"asset1","kind":"file","contentType":"text/plain","name":"receipt.txt","size":7}).to_string()),
+            (200, format!("{{\"conversations\":[{DIRECT}]}}")),
+            (200, json!({"token":"chat","author":{"id":"owner","name":"Owner","isGuest":false}}).to_string()),
+            (200, json!({"id":"m1","channelId":"dm0000000002","seq":"1","createdAt":"2026-10-11T00:00:00Z","clientMessageId":client_id,"author":{"id":"owner","name":"Owner","isGuest":false},"content":{"version":1,"type":"text","text":"Receipt 🎉"}}).to_string()),
+        ]
+        });
+        draft.upload_files(
+            &api,
+            "account",
+            ("alex-id", "alex"),
+            &Compression::default(),
+            &egui::Context::default(),
+        );
+        let upload = draft.files[0].upload.as_ref().unwrap().clone();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while upload.result.get().is_none() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(upload.result.get().unwrap().is_ok());
+        send.files = draft.files.clone();
+        send.run(&api, "account", &|_| {}).unwrap();
+        let seen = requests.join().unwrap();
+        assert_eq!(seen[1].line, "POST /api/assets HTTP/1.1");
+        assert_eq!(seen[4].line, "GET /api/dms HTTP/1.1");
+        assert_eq!(
+            seen.len(),
+            7,
+            "no eager session/message or duplicate upload"
+        );
+        let sent: Value = serde_json::from_slice(&seen[6].body).unwrap();
+        assert_eq!(sent["attachmentIds"], json!(["asset1"]));
+        draft.files[0].set_edit(None, None);
+        assert!(draft.files[0].upload.is_none());
+        assert!(draft.files[0].attachment.is_none());
+        draft.cancel_uploads();
+    }
+
+    #[test]
     fn profile_send_uploads_once_and_uncertain_retry_keeps_the_exact_payload() {
         let scratch = uploads::Scratch::new("txt");
         std::fs::write(scratch.path(), b"receipt").unwrap();
@@ -766,7 +963,7 @@ mod tests {
             ),
             ("accepted", true, "Unblock this person to message them."),
         ] {
-            for retrying in [false, true] {
+            for (retrying, upload_only) in [(false, false), (true, false), (false, true)] {
                 let (api, requests) = server(move |_| {
                     vec![(200, json!({"conversations":[{
                 "id":"dm0000000002","peer":{"id":"alex-id","username":"alex","displayName":"Alex"},"lastSeq":"0","readSeq":"0","status":status,"blocked":blocked
@@ -774,7 +971,9 @@ mod tests {
                 });
                 let mut operation = operation(vec![File::picked(PathBuf::from("not-read.txt"))]);
                 operation.retrying = retrying;
-                let error = operation.run(&api, "account", &|_| {}).unwrap_err();
+                let error = operation
+                    .run_inner(&api, "account", &|_| {}, upload_only)
+                    .unwrap_err();
                 assert_eq!(error.message, expected);
                 assert_eq!(error.uncertain, retrying);
                 assert_eq!(operation.text, "Receipt 🎉");
@@ -783,6 +982,28 @@ mod tests {
                 assert_eq!(requests.join().unwrap()[0].line, "GET /api/dms HTTP/1.1");
             }
         }
+    }
+
+    #[test]
+    fn eager_upload_refuses_changed_recipient_and_cancelled_drafts() {
+        let (api, requests) = server(|_| {
+            vec![
+                (200, json!({"conversations":[]}).to_string()),
+                (201, DIRECT.replace("alex-id", "other-id")),
+            ]
+        });
+        let mut send = operation(vec![File::picked("not-read.txt".into())]);
+        let error = send.run_inner(&api, "account", &|_| {}, true).unwrap_err();
+        assert!(error.message.contains("username changed"));
+        assert_eq!(requests.join().unwrap().len(), 2);
+        send.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            send.run_inner(&api, "account", &|_| {}, true)
+                .unwrap_err()
+                .message,
+            "Send cancelled."
+        );
     }
 
     #[test]

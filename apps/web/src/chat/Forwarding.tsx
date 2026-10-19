@@ -15,7 +15,7 @@ import { apiError, ChatHistoryError } from "./client.ts";
 import { emojiAsset, emojiCode } from "./emoji.ts";
 import { attachmentsOf, isChatMessage, sequence, type ChatMessage } from "./types.ts";
 import { MessageAttachments } from "./Attachments.tsx";
-import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
+import MediaViewer, { type ViewAttachment, type ViewerTarget } from "./MediaViewer.tsx";
 
 export interface ForwardTarget {
   messageId: string;
@@ -118,13 +118,7 @@ function ForwardDialog({
   );
 }
 
-function OriginalMessage({
-  message,
-  onView,
-}: {
-  message: ChatMessage;
-  onView?: (attachmentId: string, anchor: HTMLElement) => void;
-}) {
+function OriginalMessage({ message, onView }: { message: ChatMessage; onView?: ViewAttachment }) {
   return (
     <article className="chat-forward-original">
       <header>
@@ -164,7 +158,7 @@ export function ForwardCard({
 }: {
   message: ChatMessage;
   onOpen: (anchor: HTMLElement) => void;
-  onView?: (attachmentId: string, anchor: HTMLElement) => void;
+  onView?: ViewAttachment;
 }) {
   if (!message.forward) return null;
   const original = message.forward.message;
@@ -323,7 +317,9 @@ export function ForwardPicker({
         </p>
         <OriginalMessage
           message={original}
-          onView={(attachmentId, anchor) => setViewer({ messageId: original.id, attachmentId, anchor })}
+          onView={(attachmentId, anchor, onHideSpoiler) =>
+            setViewer({ messageId: original.id, attachmentId, anchor, onHideSpoiler })
+          }
         />
         <label>
           Send to
@@ -402,6 +398,7 @@ export function ForwardPicker({
           author={original.author.name}
           sentAt={original.createdAt}
           onClose={closeViewer}
+          onHideSpoiler={viewer.onHideSpoiler}
         />
       )}
     </ForwardDialog>
@@ -425,8 +422,10 @@ export function ForwardConversation({
   const controller = useRef<AbortController | undefined>(undefined);
   const [viewer, setViewer] = useState<ViewerTarget>();
   const closeViewer = useCallback(() => setViewer(undefined), []);
-  const view = (messageId: string) => (attachmentId: string, anchor: HTMLElement) =>
-    setViewer({ messageId, attachmentId, anchor });
+  const view =
+    (messageId: string): ViewAttachment =>
+    (attachmentId, anchor, onHideSpoiler) =>
+      setViewer({ messageId, attachmentId, anchor, onHideSpoiler });
   // The card already has the original. Don't hide it while fetching replies;
   // a fetched null or an error must still revoke access to that cached original.
   const root = conversation ? conversation.root : error ? undefined : message.forward?.message;
@@ -542,6 +541,7 @@ export function ForwardConversation({
           author={viewed.author.name}
           sentAt={viewed.createdAt}
           onClose={closeViewer}
+          onHideSpoiler={viewer.onHideSpoiler}
         />
       )}
     </ForwardDialog>

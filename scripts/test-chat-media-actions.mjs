@@ -116,6 +116,99 @@ try {
     console.log(`PASS ${layout}: full media width, no toolbar overlap, media hit targets, viewer and actions menu`);
   }
 
+  // Revealing one spoiler must never reveal its neighbours. Both inline and
+  // fullscreen hiding return to the cover without changing the sent message.
+  for (const width of [1000, 390]) {
+    await control({
+      incomingEdit: {
+        channelId: "chan00000001",
+        messageId: "chan00000001m03",
+        text: "TEST FIXTURE — spoiler controls",
+        attachments: ["first", "second", "ordinary"].map((id) => ({
+          id: `spoiler${id}`,
+          kind: "image",
+          status: "ready",
+          name: `${id}-secret.png`,
+          contentType: "image/png",
+          size: 1024,
+          width: 512,
+          height: 512,
+          url: image,
+          spoiler: id !== "ordinary",
+        })),
+      },
+    });
+    browser("set", "viewport", String(width), "850", "2");
+    browser("reload");
+    const first = `${row} [data-spoiler-id="spoilerfirst"]`;
+    const second = `${row} [data-spoiler-id="spoilersecond"]`;
+    const covers = () =>
+      evaluate(`document.querySelectorAll('${row} [aria-label="Reveal spoiler attachment"]').length`);
+    wait(
+      `document.querySelectorAll('${row} [aria-label="Reveal spoiler attachment"]').length === 2 && !document.querySelector('.chat-initial-messages')`,
+    );
+    browser("hover", first);
+    assert.equal(covers(), 2, "hover never reveals content");
+    const hint = width > 760 ? "Click to reveal" : "Tap to reveal";
+    assert.ok(evaluate(`document.querySelector('${first}').innerText.includes('${hint}')`));
+    assert.ok(
+      evaluate(`(() => {
+      const cover = document.querySelector('${second}').getBoundingClientRect();
+      const label = document.querySelector('${second} .chat-spoiler-label').getBoundingClientRect();
+      return label.top >= cover.top && label.bottom <= cover.bottom && label.left >= cover.left && label.right <= cover.right;
+    })()`),
+      "the small cell must show its whole reveal hint",
+    );
+    assert.equal(evaluate(`!!document.querySelector('${row} img[alt="first-secret.png"]')`), false);
+    const galleryHeight = evaluate(`document.querySelector('${row} .chat-gallery').getBoundingClientRect().height`);
+    if (artifacts) browser("screenshot", `${artifacts}/spoilers-hidden-${width}.png`);
+    browser("focus", first);
+    browser("press", "Enter");
+    wait(`!!document.querySelector('${row} img[alt="first-secret.png"]')`);
+    assert.equal(covers(), 1);
+    assert.equal(evaluate("document.activeElement.textContent.trim()"), "Hide spoiler");
+    browser("click", second);
+    wait(`!!document.querySelector('${row} img[alt="second-secret.png"]')`);
+    assert.equal(covers(), 0);
+    browser("click", first);
+    assert.equal(covers(), 1);
+    assert.equal(evaluate(`!!document.querySelector('${row} img[alt="second-secret.png"]')`), true);
+    assert.equal(evaluate("document.activeElement.getAttribute('aria-label')"), "Reveal spoiler attachment");
+    browser("hover", `${row} img[alt="ordinary-secret.png"]`);
+    assert.equal(
+      evaluate(`document.querySelector('${second}').checkVisibility()`),
+      true,
+      "hide stays visible without hover",
+    );
+    if (width === 390) assert.ok(evaluate(`document.querySelector('${second}').getBoundingClientRect().height`) >= 44);
+    assert.equal(
+      evaluate(`document.querySelector('${row} .chat-gallery').getBoundingClientRect().height`),
+      galleryHeight,
+    );
+    if (artifacts) browser("screenshot", `${artifacts}/spoilers-revealed-${width}.png`);
+    // In a tiny cell, the persistent hide target occupies its top half. Click
+    // the exposed image below it, not the centre of the overlaid button.
+    const point = evaluate(`(() => {
+      const rect = document.querySelector('${row} img[alt="second-secret.png"]').getBoundingClientRect();
+      return [Math.round(rect.left + rect.width / 2), Math.round(rect.bottom - 10)];
+    })()`);
+    browser("mouse", "move", ...point.map(String));
+    browser("mouse", "down", "left");
+    browser("mouse", "up", "left");
+    wait('!!document.querySelector(".chat-viewer")');
+    assert.equal(evaluate('document.querySelector(".chat-viewer-title strong").textContent'), "second-secret.png");
+    // The still-hidden first image is excluded from the viewer's pages.
+    assert.equal(evaluate('document.querySelector(".chat-viewer-counter .sr-only").textContent.trim()'), "1 of 2");
+    if (artifacts) browser("screenshot", `${artifacts}/spoilers-viewer-${width}.png`);
+    browser("click", ".chat-viewer .chat-spoiler-hide");
+    wait('!document.querySelector(".chat-viewer")');
+    assert.equal(covers(), 2);
+    assert.equal(evaluate(`!!document.querySelector('${row} img[alt="second-secret.png"]')`), false);
+    console.log(
+      `PASS ${width}px spoilers: hover concealment, visible hint, keyboard reveal/focus, independent rehide, stable gallery, viewer hide`,
+    );
+  }
+
   // A three-colour GIF, one second per frame. The opening history must not
   // briefly animate one image and then replace it with a restarted player.
   writeFileSync(

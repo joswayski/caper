@@ -157,13 +157,19 @@ internal fun durationLabel(durationMs: Long?): String? {
     // The system browser downloads or shows the file and handles `Content-Encoding: gzip` itself.
     val open: (String) -> Unit = { url -> runCatching { uriHandler.openUri(url) } }
     val host = LocalMediaViewerHost.current
+    val hide: (String) -> Unit = { id ->
+        revealed = revealed - id
+        if (playing == id) playing = null
+        viewer = null
+        host?.open = null
+    }
     val view: (ChatAttachment) -> (() -> Unit)? = { attachment ->
         if (pending) null else ({
             val pages = viewerPages(attachments, attachment.id, revealed)
-            if (host != null) host.open = pages?.let { OpenViewer(it, caption) } else viewer = pages
+            if (host != null) host.open = pages?.let { OpenViewer(it, caption, hide) } else viewer = pages
         })
     }
-    @Composable fun RenderAttachment(attachment: ChatAttachment, modifier: Modifier, shape: Shape) {
+    @Composable fun AttachmentContent(attachment: ChatAttachment, modifier: Modifier, shape: Shape) {
         val url = attachment.url
         val visual = attachment.kind == "image" || attachment.kind == "video"
         val status = when {
@@ -185,7 +191,7 @@ internal fun durationLabel(durationMs: Long?): String? {
                 } else null
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     SpoilerThumbnail(source, "${attachment.id}:spoiler") { onLoadFailed(attachment, it.httpStatus()) }
-                    Text("SPOILER · Tap to reveal", Modifier.background(Blackout.copy(alpha = 0.8f), MaterialTheme.shapes.small).padding(12.dp), color = Text, fontSize = 12.sp)
+                    SpoilerBadge(revealHint = true)
                 }
             }
             visual && status != null -> MediaFrame(attachment, null, description = "${attachment.name}, $status", modifier = modifier, shape = shape) {
@@ -226,6 +232,21 @@ internal fun durationLabel(durationMs: Long?): String? {
             else -> FileCard(attachment, if (pending) null else ({ open(url) }))
         }
     }
+    @Composable fun RenderAttachment(attachment: ChatAttachment, modifier: Modifier, shape: Shape) {
+        if (!attachment.spoiler || attachment.id !in revealed) {
+            AttachmentContent(attachment, modifier, shape)
+        } else if (attachment.kind == "image" || attachment.kind == "video") {
+            Box(modifier) {
+                AttachmentContent(attachment, if (modifier == Modifier) Modifier else Modifier.fillMaxSize(), shape)
+                HideSpoilerButton({ hide(attachment.id) }, Modifier.align(Alignment.TopEnd).padding(4.dp))
+            }
+        } else {
+            Column(modifier) {
+                HideSpoilerButton({ hide(attachment.id) }, Modifier.align(Alignment.End))
+                AttachmentContent(attachment, Modifier, shape)
+            }
+        }
+    }
     val (visuals, files) = attachments.partition { it.kind == "image" || it.kind == "video" }
     Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (visuals.size == 1) RenderAttachment(visuals.single(), Modifier, MaterialTheme.shapes.small)
@@ -260,7 +281,7 @@ internal fun durationLabel(durationMs: Long?): String? {
             }
         }
     }
-    viewer?.let { MediaViewer(it, attachments, caption, close = { viewer = null }, open = open, onLoadFailed = onLoadFailed) }
+    viewer?.let { MediaViewer(it, attachments, caption, close = { viewer = null }, open = open, onLoadFailed = onLoadFailed, hideSpoiler = hide) }
     attachments.firstOrNull { it.id == playing && it.url != null && it.state == AttachmentState.READY }?.let { attachment ->
         MediaPlayerDialog(attachment, close = { playing = null }, open = open, onLoadFailed = onLoadFailed)
     }
@@ -594,7 +615,6 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
                                 if (draft.spoiler) {
                                     val source = draftSpoilerSource(draft)
                                     SpoilerThumbnail(source, "draft:${draft.key}:$source:spoiler")
-                                    if (!crowded) Text("SPOILER", Modifier.offset(y = bar / 4).background(Blackout.copy(alpha = 0.8f)).padding(4.dp), color = Text, fontSize = 11.sp)
                                 }
                                 else if (thumbnail != null) AsyncImage(
                                     // Keyed by the file too, so an edited thumbnail never shows the picture it replaced.
@@ -607,6 +627,7 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
                             }
                             Column(Modifier.fillMaxSize().padding(top = bar)) {
                                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                    if (draft.spoiler && !crowded) SpoilerBadge(revealHint = false)
                                     if (draft.kind == "video" && !draft.spoiler && !crowded) {
                                         // Shrinks to fit between the action bar and the upload status.
                                         Box(Modifier.heightIn(max = 32.dp).fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true)

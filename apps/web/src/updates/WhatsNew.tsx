@@ -190,7 +190,7 @@ export default function WhatsNew({
               rel="noreferrer"
               title="View this version on GitHub"
             >
-              Web build {revision.slice(0, 7)}
+              Installed build {revision.slice(0, 7)}
             </a>
           )}
         </div>
@@ -224,18 +224,18 @@ export default function WhatsNew({
             </time>
             {dayReleases.map((release) => (
               <div className="whats-new-entry" key={release.sequence}>
-                <a
-                  className="whats-new-source"
-                  href={`https://github.com/joswayski/caper/commit/${release.revision}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  title="View this version on GitHub"
-                >
-                  Commit {release.revision.slice(0, 7)}
-                </a>
                 {release.highlights.map((highlight, index) => (
                   <article key={index}>
                     <h3>{highlight.title}</h3>
+                    <a
+                      className="whats-new-source"
+                      href={`https://github.com/joswayski/caper/commit/${release.revision}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="View this version on GitHub"
+                    >
+                      {release.revision.slice(0, 7)}
+                    </a>
                     <p>{highlight.body}</p>
                   </article>
                 ))}

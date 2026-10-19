@@ -133,6 +133,28 @@ export async function removeAvatar() {
   return rememberSavedAccount(await request<Account>("/api/account/avatar", { method: "DELETE" }));
 }
 
+export interface PreviousPicture {
+  avatarAsset: string;
+  avatarUrl?: string;
+}
+
+export function getAvatarHistory(cursor?: string | null) {
+  return request<{ pictures: PreviousPicture[]; nextCursor: string | null }>(
+    `/api/account/avatar/history${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+  );
+}
+
+/** Selecting a retained picture is a save, not an upload. A stale chooser cannot replace a newer choice. */
+export async function selectAvatar(avatarAsset: string, expectedAvatarAsset: string | null) {
+  const owner = currentAccount?.id;
+  const saved = await request<Account>("/api/account/avatar/select", {
+    method: "POST",
+    body: JSON.stringify({ avatarAsset, expectedAvatarAsset }),
+  });
+  // A response from an account we signed out of must not sign it back in.
+  return currentAccount?.id === owner ? rememberSavedAccount(saved) : saved;
+}
+
 /** Browser storage key for the chat capability minted from the account session. */
 export const CHAT_SESSION_KEY = "caper.chat.session";
 

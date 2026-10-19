@@ -1601,6 +1601,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     } else if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
                         Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
                     }
+                    if (visit == null && channel.direct) state.selectedDirect?.peer?.let { peer ->
+                        Avatar(peer.displayName, 28.dp, avatarId = peer.avatarId, avatarAsset = peer.avatarAsset, avatarUrl = peer.avatarUrl)
+                    }
                     // Phones: the name opens the conversation's menu, as in Slack; Pins, Members and Block move there.
                     if (narrow) Column(Modifier.weight(1f).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
                         .background(if (channelMenuOpen) Surface else Color.Transparent)
@@ -1620,9 +1623,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     if (!narrow && !channel.direct && joined && visit == null) IconButton(toggleMembers, Modifier.size(48.dp)) {
                         Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
                             Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
-                    }
-                    if (!narrow && direct != null && (direct.blocked || direct.peer.canBlock)) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
-                        Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                     if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Join channel") }
                     if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
@@ -2169,9 +2169,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         onAttachmentFailed = viewModel::reportAttachmentFailure,
                         grouped = message.id != newMessagesId && row is TimelineRow.Message && groupsWithPrevious(row.above, message, inThread, state.focusedMessageId),
                     )
-                    if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp), verticalAlignment = Alignment.CenterVertically) {
-                        message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach { Avatar(it.name, 24.dp, avatarId = it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl) }
-                        TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }, shape = MaterialTheme.shapes.small) {
+                    if (!inThread && (message.threadRootId != null || (message.thread?.replyCount ?: 0) > 0)) Row(Modifier.padding(start = 62.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton({ viewModel.openThread(message.threadRootId ?: message.id) }, modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp), shape = MaterialTheme.shapes.small) {
+                            message.thread?.takeIf { message.threadRootId == null }?.participants?.forEach {
+                                Avatar(it.name, 24.dp, avatarId = it.avatarId, avatarAsset = it.avatarAsset, avatarUrl = it.avatarUrl)
+                                Spacer(Modifier.width(6.dp))
+                            }
                             val summary = message.thread?.takeIf { message.threadRootId == null }
                             // As on web: the reply count in bold terracotta, then a quiet "View thread".
                             if (summary != null) Text(buildAnnotatedString {
@@ -2183,6 +2186,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 }
                                 withStyle(SpanStyle(color = TextMuted)) { append("  View thread") }
                             }) else Text("Replied to a thread · View thread")
+                            Spacer(Modifier.weight(1f))
                         }
                     }
                 }
@@ -2521,7 +2525,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
             onLongClickLabel = "Message actions for ${message.author.name}",
         )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) } }
         // A team mention (`@feedback`, `@admin`, …): the server told the Caper team, who can read and reply here.
-        if (!deleted && notifiesCaperTeam(message.content)) Text(CAPER_TEAM_NOTIFIED, Modifier.padding(start = 62.dp, end = 18.dp, bottom = 6.dp), color = TextMuted, fontSize = 11.sp)
+        if (!deleted && notifiesCaperTeam(message.content)) Text(CAPER_TEAM_NOTIFIED, Modifier.padding(start = 62.dp, end = 18.dp, bottom = 2.dp), color = TextMuted, fontSize = 11.sp)
         if (!deleted) Box(Modifier.combinedClickable(
             onClick = { openConversation(message) },
             onLongClick = { openActions(message) },

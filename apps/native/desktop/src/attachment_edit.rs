@@ -343,6 +343,45 @@ pub fn drag_crop(start: Crop, handle: Handle, dx: f64, dy: f64, min: (f64, f64))
     }
 }
 
+/// Resize an already square picture crop without moving its opposite corner
+/// (or opposite edge's midpoint). Fractions need not be square on a non-square image.
+pub fn drag_square_crop(start: Crop, handle: Handle, dx: f64, dy: f64, min: (f64, f64)) -> Crop {
+    if handle == Handle::Move {
+        return drag_crop(start, handle, dx, dy, min);
+    }
+    let (hx, hy) = handle.anchor();
+    let (ax, ay) = (1.0 - f64::from(hx), 1.0 - f64::from(hy));
+    let (x, y) = (start.x + ax * start.width, start.y + ay * start.height);
+    let sx = dx * (f64::from(hx) * 2.0 - 1.0) / start.width;
+    let sy = dy * (f64::from(hy) * 2.0 - 1.0) / start.height;
+    // Corners follow the axis with the larger relative motion; edges ignore
+    // motion along the edge. Clamp the scale, never translate the result.
+    let change = if sx.abs() > sy.abs() { sx } else { sy };
+    let limit = |anchor: f64, fraction: f64, size: f64| {
+        let before = if fraction > 0.0 {
+            anchor / fraction
+        } else {
+            f64::INFINITY
+        };
+        let after = if fraction < 1.0 {
+            (1.0 - anchor) / (1.0 - fraction)
+        } else {
+            f64::INFINITY
+        };
+        before.min(after) / size
+    };
+    let maximum = limit(x, ax, start.width).min(limit(y, ay, start.height));
+    let minimum = (min.0 / start.width).max(min.1 / start.height);
+    let scale = (1.0 + change).max(minimum).min(maximum);
+    let (width, height) = (start.width * scale, start.height * scale);
+    Crop {
+        x: x - ax * width,
+        y: y - ay * height,
+        width,
+        height,
+    }
+}
+
 /// What a draft's editor opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -863,6 +902,79 @@ mod tests {
         assert!(close(shrunk.y, 0.6) && close(shrunk.height, 0.1));
         assert_eq!(Handle::NE.anchor(), (1.0, 0.0));
         assert_eq!(Handle::S.anchor(), (0.5, 1.0));
+    }
+
+    #[test]
+    fn square_crop_handles_resize_without_drifting() {
+        // A 300px square on a 1000 × 500 image, deliberately off center.
+        let start = Crop {
+            x: 0.2,
+            y: 0.15,
+            width: 0.3,
+            height: 0.6,
+        };
+        let check = |actual: Crop, x, y, width, height| {
+            assert!(
+                close(actual.x, x)
+                    && close(actual.y, y)
+                    && close(actual.width, width)
+                    && close(actual.height, height),
+                "{actual:?}"
+            );
+        };
+        for (handle, dx, dy, x, y) in [
+            (Handle::NW, -0.06, -0.09, 0.14, 0.03),
+            (Handle::N, 0.1, -0.12, 0.17, 0.03),
+            (Handle::NE, 0.06, -0.09, 0.2, 0.03),
+            (Handle::E, 0.06, 0.3, 0.2, 0.09),
+            (Handle::SE, 0.06, 0.09, 0.2, 0.15),
+            (Handle::S, 0.1, 0.12, 0.17, 0.15),
+            (Handle::SW, -0.06, 0.09, 0.14, 0.15),
+            (Handle::W, -0.06, 0.3, 0.14, 0.09),
+        ] {
+            check(
+                drag_square_crop(start, handle, dx, dy, (0.04, 0.1)),
+                x,
+                y,
+                0.36,
+                0.72,
+            );
+            check(
+                drag_square_crop(start, handle, -dx, -dy, (0.04, 0.1)),
+                0.4 - x,
+                0.3 - y,
+                0.24,
+                0.48,
+            );
+        }
+        check(
+            drag_square_crop(start, Handle::SE, 2.0, 3.0, (0.04, 0.1)),
+            0.2,
+            0.15,
+            0.425,
+            0.85,
+        );
+        check(
+            drag_square_crop(start, Handle::SE, -2.0, -3.0, (0.04, 0.1)),
+            0.2,
+            0.15,
+            0.05,
+            0.1,
+        );
+        check(
+            drag_square_crop(start, Handle::E, 0.0, 0.2, (0.04, 0.1)),
+            0.2,
+            0.15,
+            0.3,
+            0.6,
+        );
+        check(
+            drag_square_crop(start, Handle::Move, 2.0, -3.0, (0.04, 0.1)),
+            0.7,
+            0.0,
+            0.3,
+            0.6,
+        );
     }
 
     #[test]

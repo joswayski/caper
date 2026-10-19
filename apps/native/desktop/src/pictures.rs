@@ -568,6 +568,42 @@ pub fn upload(
     Ok(Changed { applied, local })
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviousPicture {
+    pub avatar_asset: String,
+    pub avatar_url: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct History {
+    pub pictures: Vec<PreviousPicture>,
+    pub next_cursor: Option<String>,
+}
+
+pub fn select(
+    api: &Api,
+    token: &str,
+    asset: &str,
+    expected: Option<&str>,
+) -> Result<Changed, Failure> {
+    let account = api.select_avatar(token, asset, expected).map_err(|error| {
+        if error.status.is_some_and(|status| status.as_u16() == 409) {
+            Failure::new(
+                "Your picture changed elsewhere. Close and reopen Previous pictures to try again.",
+            )
+        } else {
+            api_failure(&error, &Target::Avatar)
+        }
+    })?;
+    api.reset_chat_session();
+    Ok(Changed {
+        applied: Applied::Account(account),
+        local: None,
+    })
+}
+
 /// `DELETE` the picture: back to the saved mascot or the space initial.
 pub fn remove(api: &Api, token: &str, target: &Target) -> Result<Changed, Failure> {
     let applied = match target {

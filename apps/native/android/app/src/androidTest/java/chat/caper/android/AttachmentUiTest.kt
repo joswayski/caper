@@ -12,6 +12,15 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -31,6 +40,38 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class AttachmentUiTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun viewerHideClosesAndConcealsTheOriginatingAttachment() {
+        val file = ChatAttachment("viewer-spoiler", "image", "image/png", "secret.png", 10,
+            spoiler = true, width = 240, height = 180, url = "https://cdn.invalid/secret")
+        compose.setContent {
+            CaperTheme { MessageAttachments(listOf(file), pending = false, onLoadFailed = { _, _ -> }) }
+        }
+        compose.onNodeWithText("Tap to reveal").performClick()
+        compose.onNodeWithContentDescription("secret.png").performClick()
+        compose.onNode(hasText("Hide spoiler") and hasAnyAncestor(isDialog())).performClick()
+        compose.onNodeWithContentDescription("Close viewer").assertDoesNotExist()
+        compose.onAllNodesWithText("Tap to reveal").assertCountEquals(1)
+        compose.onNodeWithContentDescription("secret.png").assertDoesNotExist()
+    }
+
+    @Test fun hidingOneSpoilerPreservesOtherRevealsAndConcealsItsFilename() {
+        val files = listOf("first", "second").map { id ->
+            ChatAttachment(id, "file", "text/plain", "$id-secret.txt", 10, spoiler = true,
+                url = "https://cdn.invalid/$id")
+        }
+        compose.setContent {
+            CaperTheme { MessageAttachments(files, pending = false, onLoadFailed = { _, _ -> }) }
+        }
+        compose.onNodeWithText("first-secret.txt").assertDoesNotExist()
+        compose.onAllNodesWithText("Tap to reveal").onFirst().performClick()
+        compose.onAllNodesWithText("Tap to reveal").onFirst().performClick()
+        compose.onAllNodesWithText("Hide spoiler").assertCountEquals(2)
+        compose.onAllNodesWithText("Hide spoiler").onFirst().performClick()
+        compose.onNodeWithText("first-secret.txt").assertDoesNotExist()
+        compose.onAllNodesWithText("Hide spoiler").assertCountEquals(1)
+        compose.onAllNodesWithText("Tap to reveal").assertCountEquals(1)
+    }
 
     @Test fun confirmationRetainsPixelsUntilTheServerPreviewIsReady() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

@@ -164,6 +164,30 @@ class AttachmentEditsTest {
         assertRect("south only moves the bottom", EditRect(0.2, 0.2, 0.5, 0.8), AttachmentEdits.dragCrop(start, CropHandle.S, 0.3, 0.5, 0.05, 0.05))
     }
 
+    @Test fun `square crop handles resize without drifting`() {
+        // A 300px square on a 1000 × 500 image, deliberately off center.
+        val start = EditRect(0.2, 0.15, 0.3, 0.6)
+        val cases = listOf(
+            CropHandle.NW to listOf(-0.06, -0.09, 0.14, 0.03),
+            CropHandle.N to listOf(0.1, -0.12, 0.17, 0.03),
+            CropHandle.NE to listOf(0.06, -0.09, 0.2, 0.03),
+            CropHandle.E to listOf(0.06, 0.3, 0.2, 0.09),
+            CropHandle.SE to listOf(0.06, 0.09, 0.2, 0.15),
+            CropHandle.S to listOf(0.1, 0.12, 0.17, 0.15),
+            CropHandle.SW to listOf(-0.06, 0.09, 0.14, 0.15),
+            CropHandle.W to listOf(-0.06, 0.3, 0.14, 0.09),
+        )
+        for ((handle, values) in cases) {
+            val (dx, dy, x, y) = values
+            assertRect("$handle grows", EditRect(x, y, 0.36, 0.72), AttachmentEdits.dragSquareCrop(start, handle, dx, dy, 0.04, 0.1))
+            assertRect("$handle shrinks", EditRect(0.4 - x, 0.3 - y, 0.24, 0.48), AttachmentEdits.dragSquareCrop(start, handle, -dx, -dy, 0.04, 0.1))
+        }
+        assertRect("bounded", EditRect(0.2, 0.15, 0.425, 0.85), AttachmentEdits.dragSquareCrop(start, CropHandle.SE, 2.0, 3.0, 0.04, 0.1))
+        assertRect("minimum", EditRect(0.2, 0.15, 0.05, 0.1), AttachmentEdits.dragSquareCrop(start, CropHandle.SE, -2.0, -3.0, 0.04, 0.1))
+        assertRect("along edge", start, AttachmentEdits.dragSquareCrop(start, CropHandle.E, 0.0, 0.2, 0.04, 0.1))
+        assertRect("move", EditRect(0.7, 0.0, 0.3, 0.6), AttachmentEdits.dragSquareCrop(start, CropHandle.MOVE, 2.0, -3.0, 0.04, 0.1))
+    }
+
     @Test fun `regions map back to the unturned picture`() {
         // 40 × 30 picture; a crop of its rotated pixel space maps to the same pixels unturned.
         val crop = PixelRect(5, 7, 10, 12)

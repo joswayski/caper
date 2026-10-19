@@ -90,8 +90,7 @@ enum MentionCard {
     }
 }
 
-/// Account-scoped, per-person profile drafts. Picking only stages local files;
-/// Send resolves a destination before using the normal preparation/upload pipeline.
+/// Account-scoped, per-person profile drafts with eager, coalesced uploads.
 @MainActor @Observable
 final class ProfileMessageDraft {
     struct File: Identifiable {
@@ -99,6 +98,7 @@ final class ProfileMessageDraft {
         let local: LocalAttachmentFile
         var prepared: PreparedAttachment?
         var attachment: ChatAttachment?
+        var uploadedAt: Date?
         var spoiler = false
         var uploadError: String?
         var progress: Double?
@@ -121,6 +121,45 @@ final class ProfileMessageDraft {
     /// including asset ids, until a retry confirms it or it is definitively refused.
     var pending: PendingMessage?
     private(set) var discarded = false
+    var prepareUploads: (() async throws -> Void)?
+    private var uploadTask: Task<Void, Error>?
+    private var uploadGeneration = UUID()
+    private var uploadAPI: APIClient?
+
+    func startUploads() {
+        guard !discarded, pending == nil, uploadTask == nil, !files.isEmpty,
+              let prepareUploads else { return }
+        let generation = uploadGeneration
+        uploadTask = Task { [weak self] in
+            defer {
+                if self?.uploadGeneration == generation {
+                    self?.uploadTask = nil
+                    self?.progress = nil
+                }
+            }
+            do { try await prepareUploads() }
+            catch {
+                if let self, self.uploadGeneration == generation, !self.discarded, !(error is CancellationError) {
+                    self.error = FriendlyError.message(for: error)
+                }
+                throw error
+            }
+        }
+    }
+
+    func awaitUploads() async throws {
+        if let uploadTask { try await uploadTask.value }
+    }
+
+    private func invalidateUploads() {
+        uploadGeneration = UUID()
+        uploadTask?.cancel()
+        uploadTask = nil
+    }
+
+    private func cancelAsset(_ file: File) {
+        if let id = file.attachment?.id, let api = uploadAPI { Task { await api.cancelAsset(id: id) } }
+    }
     var editable: Bool { !discarded && !sending && pending == nil }
     var preventsImplicitDismissal: Bool { sending || presentingDialog }
     var canSend: Bool {
@@ -141,22 +180,28 @@ final class ProfileMessageDraft {
                 self.files[index].editable = editable
             }
         }
+        startUploads()
     }
 
     func remove(id: String) {
         guard editable, let file = files.first(where: { $0.id == id }) else { return }
+        invalidateUploads()
+        cancelAsset(file)
         Self.removeFiles(of: file)
         files.removeAll { $0.id == id }
         error = nil
+        startUploads()
     }
 
-    /// The editor's change to a staged file, applied when Send prepares it.
+    /// The editor's change to a staged file starts a replacement upload.
     /// Anything prepared or uploaded before is dropped, as Remove drops it.
     func setEdit(id: String, edit: AttachmentEdit, preview: URL?) {
         guard editable, let index = files.firstIndex(where: { $0.id == id }), files[index].editable, files[index].edit != edit else {
             if let preview { AttachmentStaging.remove(preview) }
             return
         }
+        invalidateUploads()
+        cancelAsset(files[index])
         if let prepared = files[index].prepared, prepared.fileURL != files[index].local.url { AttachmentStaging.remove(prepared.fileURL) }
         if let old = files[index].editPreview { AttachmentStaging.remove(old) }
         files[index].prepared = nil
@@ -167,6 +212,7 @@ final class ProfileMessageDraft {
         files[index].editPreview = edit.isEdited ? preview : nil
         if !edit.isEdited, let preview { AttachmentStaging.remove(preview) }
         error = nil
+        startUploads()
     }
 
     private static func removeFiles(of file: File) {
@@ -194,24 +240,40 @@ final class ProfileMessageDraft {
     }
 
     func upload(channelID: String, api: APIClient) async throws -> [ChatAttachment] {
+        uploadAPI = api
+        let generation = uploadGeneration
+        func current(_ id: String) throws -> Int {
+            try checkActive()
+            guard uploadGeneration == generation, let index = files.firstIndex(where: { $0.id == id }) else { throw CancellationError() }
+            return index
+        }
         guard !files.isEmpty else { return [] }
+        // Renew before the unsent-asset cleanup, but never mutate an uncertain POST.
+        if pending == nil {
+            for index in files.indices where files[index].uploadedAt.map({ Date().timeIntervalSince($0) >= 23 * 60 * 60 }) == true {
+                cancelAsset(files[index])
+                files[index].attachment = nil
+                files[index].uploadedAt = nil
+            }
+        }
         if files.allSatisfy({ $0.attachment != nil }) { return attachmentsToSend }
         let usage = try await api.assetUsage()
         try checkActive()
-        for index in files.indices {
+        while let id = files.first(where: { $0.attachment == nil })?.id {
+            var index = try current(id)
             if files[index].attachment != nil { continue }
             let file = files[index].local
             if files[index].prepared == nil {
                 progress = "Preparing \(file.name)…"
                 // An edit that can't be applied stops the send; the original never goes instead.
                 guard let prepared = try? await AttachmentPreparer.prepare(file, edit: files[index].edit, settings: usage.compression) else {
-                    try checkActive()
+                    index = try current(id)
                     files[index].uploadError = AttachmentEdit.failureMessage
                     throw UserFacingError(message: AttachmentEdit.failureMessage)
                 }
-                if discarded || Task.isCancelled {
-                    AttachmentStaging.remove(prepared.fileURL)
-                    try checkActive()
+                do { index = try current(id) } catch {
+                    if prepared.fileURL != file.url { AttachmentStaging.remove(prepared.fileURL) }
+                    throw error
                 }
                 files[index].prepared = prepared
             }
@@ -219,31 +281,36 @@ final class ProfileMessageDraft {
             progress = "Uploading \(remaining) \(remaining == 1 ? "file" : "files")… Your message won’t send until every file is ready."
             files[index].uploadError = nil
             files[index].progress = 0
-            let id = files[index].id
             let attachment: ChatAttachment
             do {
                 attachment = try await AttachmentUploader.upload(files[index].prepared!, channelID: channelID, api: api) { fraction in
                     Task { @MainActor [weak self] in
-                        guard let self, !self.discarded,
+                        guard let self, !self.discarded, self.uploadGeneration == generation,
                               let current = self.files.firstIndex(where: { $0.id == id }), self.files[current].progress != nil else { return }
                         self.files[current].progress = fraction
                     }
                 }
             } catch {
-                if !discarded, let current = files.firstIndex(where: { $0.id == id }) {
+                if !discarded, uploadGeneration == generation, let current = files.firstIndex(where: { $0.id == id }) {
                     files[current].progress = nil
                     if !(error is CancellationError) { files[current].uploadError = "Failed to upload." }
                 }
                 throw error
             }
-            try checkActive()
+            do { index = try current(id) } catch {
+                await api.cancelAsset(id: attachment.id)
+                throw error
+            }
             files[index].attachment = attachment
+            files[index].uploadedAt = Date()
             files[index].progress = nil
         }
         return attachmentsToSend
     }
 
     func clear() {
+        invalidateUploads()
+        if pending == nil { files.forEach(cancelAsset) }
         files.forEach(Self.removeFiles)
         text = ""; files = []; pending = nil; conversation = nil; error = nil; progress = nil
     }

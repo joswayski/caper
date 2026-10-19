@@ -145,6 +145,30 @@ object AttachmentEdits {
         return EditRect(left, top, right - left, bottom - top)
     }
 
+    /** Resize an already pixel-square crop about its opposite corner or edge midpoint, without recentering it. */
+    fun dragSquareCrop(start: EditRect, handle: CropHandle, dx: Double, dy: Double, minWidth: Double, minHeight: Double): EditRect {
+        if (handle == CropHandle.MOVE) return dragCrop(start, handle, dx, dy, minWidth, minHeight)
+        val ax = if (handle.left) 1.0 else if (handle.right) 0.0 else 0.5
+        val ay = if (handle.top) 1.0 else if (handle.bottom) 0.0 else 0.5
+        val x = start.x + ax * start.width
+        val y = start.y + ay * start.height
+        val sx = dx * (1 - 2 * ax) / start.width
+        val sy = dy * (1 - 2 * ay) / start.height
+        // Corners follow the larger relative motion; edges ignore motion along the edge.
+        val change = if (abs(sx) > abs(sy)) sx else sy
+        fun limit(anchor: Double, fraction: Double, size: Double): Double {
+            val before = if (fraction > 0) anchor / fraction else Double.POSITIVE_INFINITY
+            val after = if (fraction < 1) (1 - anchor) / (1 - fraction) else Double.POSITIVE_INFINITY
+            return min(before, after) / size
+        }
+        val maximum = min(limit(x, ax, start.width), limit(y, ay, start.height))
+        val minimum = max(minWidth / start.width, minHeight / start.height)
+        val scale = min(max(1 + change, minimum), maximum)
+        val width = start.width * scale
+        val height = start.height * scale
+        return EditRect(x - ax * width, y - ay * height, width, height)
+    }
+
     /**
      * [edit] with a text field committed (web `withField`): a new mark at [x], [y], or mark [index]
      * changed. The text is trimmed and at most [MAX_TEXT] characters; an empty one removes the

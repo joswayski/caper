@@ -237,6 +237,7 @@ public final class AppModel {
     public let voicePresence: VoicePresenceModel
     private let preferredInitialSpaceID: String?
     private var generation = 0
+    public var accountEpoch: Int { generation }
     private var navigationGeneration = 0
     private var openingForward = false
     private var profileMessageDrafts: [String: ProfileMessageDraft] = [:]
@@ -296,6 +297,7 @@ public final class AppModel {
         chatModel.onMessageSent = { [weak self] in
             guard let self, self.isFeedbackTeam, self.visit != nil || self.feedbackLoaded else { return }
             Task { await self.refreshFeedback() }
+            Task { await self.refreshUnreadSpaces() }
         }
         chatModel.viewerAccountID = { [weak self] in self?.account?.id }
         chatModel.viewerProfile = { [weak self] in self?.account }
@@ -534,6 +536,31 @@ public final class AppModel {
         refreshOwnIdentity(updated)
     }
 
+    public func avatarHistory(cursor: String?) async throws -> AvatarHistory {
+        let attempt = generation
+        let result = try await api.avatarHistory(cursor: cursor)
+        guard generation == attempt, account != nil else { throw CancellationError() }
+        return result
+    }
+
+    public func selectAvatar(_ asset: String, expected: String?) async throws {
+        guard let current = account else { throw CancellationError() }
+        let attempt = generation
+        let updated: Account
+        do { updated = try await api.selectAvatar(avatarAsset: asset, expectedAvatarAsset: expected) }
+        catch let failure as APIError where failure.status == 409 {
+            if let refreshed = try? await api.account(), generation == attempt,
+               account?.id == current.id, refreshed.id == current.id {
+                account = refreshed
+                refreshOwnIdentity(refreshed)
+            }
+            throw failure
+        }
+        guard generation == attempt, account?.id == current.id, updated.id == current.id else { throw CancellationError() }
+        account = updated
+        refreshOwnIdentity(updated)
+    }
+
     public func logout() async {
         // Opt out synchronously. Session revocation handles server cleanup;
         // optional provider/network work must never hold the signed-in UI open.
@@ -712,12 +739,47 @@ public final class AppModel {
         return draft
     }
 
-    /// Only explicit Send resolves a DM. Incoming requests stay read-only.
+    func profileMessageDraft(person: MentionCardPerson) -> ProfileMessageDraft {
+        let draft = profileMessageDraft(personID: person.id)
+        draft.prepareUploads = { [weak self, weak draft] in
+            guard let self, let draft else { throw CancellationError() }
+            let conversation = try await self.profileDestination(person: person, draft: draft)
+            _ = try await draft.upload(channelID: conversation.id, api: self.api)
+        }
+        return draft
+    }
+
+    private func profileDestination(person: MentionCardPerson, draft: ProfileMessageDraft) async throws -> DirectMessageConversation {
+        let attempt = generation
+        guard account != nil, !person.isSelf, let username = person.username else { throw CancellationError() }
+        guard !blockedIDs.contains(person.id) else { throw APIError(status: 403, message: "This person is blocked.", code: "dm_blocked") }
+        let conversation: DirectMessageConversation
+        if let known = directMessages.first(where: { $0.peer.id == person.id }) ?? draft.conversation { conversation = known }
+        else {
+            let conversations = try await fetchingProfiles({ try await api.directMessages() }, people: { $0.map(\.peer.profile) })
+            try draft.checkActive()
+            guard generation == attempt, !blockedIDs.contains(person.id) else { throw CancellationError() }
+            directMessages = conversations
+            if let known = conversations.first(where: { $0.peer.id == person.id }) { conversation = known }
+            else { conversation = try await api.createDirectMessage(username: username) }
+        }
+        try draft.checkActive()
+        guard generation == attempt, !blockedIDs.contains(person.id) else { throw CancellationError() }
+        guard conversation.peer.id == person.id else {
+            throw UserFacingError(message: "This username no longer belongs to this person. Reopen their profile and try again.")
+        }
+        if conversation.blocked { throw APIError(status: 403, message: "This person is blocked.", code: "dm_blocked") }
+        if conversation.status == .incoming { throw UserFacingError(message: "Open conversation and accept this message request before sending.") }
+        draft.conversation = conversation
+        return conversation
+    }
+
+    /// Only explicit Send posts a message. Incoming requests stay read-only.
     /// Nothing touches the active
     /// ChatModel's composer or navigation until the message is confirmed.
     func sendProfileMessage(to person: MentionCardPerson) async -> Bool {
         let draft = profileMessageDraft(personID: person.id)
-        guard let account, !person.isSelf, let username = person.username, draft.canSend else { return false }
+        guard let account, !person.isSelf, person.username != nil, draft.canSend else { return false }
         guard !blockedIDs.contains(person.id) else {
             draft.error = DirectMessageErrors.message(code: "dm_blocked")
             return false
@@ -727,29 +789,8 @@ public final class AppModel {
         var attemptedSend = false
         defer { draft.sending = false; draft.progress = nil }
         do {
-            let conversation: DirectMessageConversation
-            if let known = directMessages.first(where: { $0.peer.id == person.id }) ?? draft.conversation { conversation = known }
-            else {
-                // POST /api/dms accepts an existing incoming request. Look it
-                // up first so profile Send never silently accepts one.
-                let conversations = try await fetchingProfiles({ try await api.directMessages() }, people: { $0.map(\.peer.profile) })
-                try draft.checkActive()
-                guard generation == attempt else { throw CancellationError() }
-                directMessages = conversations
-                if let known = conversations.first(where: { $0.peer.id == person.id }) { conversation = known }
-                else { conversation = try await api.createDirectMessage(username: username) }
-            }
-            try draft.checkActive()
-            guard generation == attempt else { throw CancellationError() }
-            // A stale username must never send this person's draft to a new owner.
-            guard conversation.peer.id == person.id else {
-                throw UserFacingError(message: "This username no longer belongs to this person. Reopen their profile and try again.")
-            }
-            if conversation.blocked { throw APIError(status: 403, message: DirectMessageErrors.message(code: "dm_blocked")!, code: "dm_blocked") }
-            if conversation.status == .incoming {
-                throw UserFacingError(message: "Open conversation and accept this message request before sending.")
-            }
-            draft.conversation = conversation
+            try await draft.awaitUploads()
+            let conversation = try await profileDestination(person: person, draft: draft)
             replaceDirectMessage(conversation)
             let session = try await api.chatSession(name: account.displayName ?? "")
             try draft.checkActive()
@@ -3854,6 +3895,7 @@ public final class ChatModel {
                    delivery.confirmGateway(clientMessageID: message.clientMessageId, authorID: message.author.id, ownAuthorID: session?.author.id) {
                     error = nil
                     releasePendingUploads()
+                    onMessageSent?()
                 }
                 if let subscriptionID {
                     let cursor = delivery.cursor

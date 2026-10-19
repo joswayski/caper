@@ -3778,6 +3778,12 @@ private struct ChatView: View {
                 if narrow {
                     Button(action: SwipeTapGuard.unlessSwiping(browse)) { CaperIcon(name: "arrow-left", size: 20).frame(width: 44, height: 44).contentShape(Rectangle()) }
                         .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("Back to Browse")
+                }
+                if model.visit == nil, let conversation = model.selectedDirectMessage {
+                    Avatar(name: conversation.peer.displayName, size: 28, avatarID: conversation.peer.avatarId, picture: conversation.peer.avatarPicture)
+                        .accessibilityHidden(true)
+                }
+                if narrow {
                     // Phones: the name opens the conversation's menu, as in Slack; Pins,
                     // Members and a 1:1 DM's Block move there.
                     titleMenu
@@ -5022,11 +5028,11 @@ private struct MessageRow: View {
                                 CaperIcon(name: "thread", size: 14); Text("Replied to a thread · View thread")
                             }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
-                    }.buttonStyle(.plain).frame(minHeight: 32)
+                            .padding(.horizontal, 6)
+                            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                    }.buttonStyle(ProfileButtonStyle())
                         #if os(macOS)
-                        .focused($threadLinkFocused).modifier(ControlHover(isFocused: threadLinkFocused))
-                        #else
-                        .modifier(ControlHover())
+                        .focused($threadLinkFocused).modifier(ControlHover(isFocused: threadLinkFocused, wash: false))
                         #endif
                         .accessibilityLabel(chat.threadUnread(message.threadRootId ?? message.id) ? "View thread, unread" : "View thread")
                 }
@@ -5678,7 +5684,7 @@ private struct MentionCardView: View {
 
     init(model: AppModel, person: MentionCardPerson, requestBlock: @escaping (BlockTarget) -> Void, close: @escaping () -> Void) {
         self.model = model
-        self.draft = model.profileMessageDraft(personID: person.id)
+        self.draft = model.profileMessageDraft(person: person)
         self.person = person
         self.requestBlock = requestBlock
         self.close = close
@@ -8615,18 +8621,28 @@ private struct ProfileSheet: View {
         if let account = model.account {
             let name = account.displayName ?? account.username ?? "You"
             let side = PictureEditor<EmptyView>.side
+            let epoch = model.accountEpoch
             PictureEditor(purpose: .avatar, hasPicture: account.avatarAsset != nil, currentURL: account.avatarPicture?.url,
                           upload: {
                               guard model.account?.id == account.id else { throw CancellationError() }
                               try await model.changeAvatar($0)
-                          }, remove: { try await model.removeAvatar() }) {
+                          }, remove: {
+                              guard model.account?.id == account.id else { throw CancellationError() }
+                              try await model.removeAvatar()
+                          }, currentAsset: account.avatarAsset, history: { cursor in
+                              guard model.account?.id == account.id, model.accountEpoch == epoch else { throw CancellationError() }
+                              return try await model.avatarHistory(cursor: cursor)
+                          }, select: { asset, expected in
+                              guard model.account?.id == account.id, model.accountEpoch == epoch else { throw CancellationError() }
+                              try await model.selectAvatar(asset, expected: expected)
+                          }) {
                 if account.avatarAsset == nil {
                     ChangeMeMascot(name: name, avatarID: account.avatarId, size: side)
                 } else {
                     Avatar(name: name, size: side, avatarID: account.avatarId, picture: account.avatarPicture)
                 }
             }
-            .id(account.id)
+            .id("\(account.id):\(epoch)")
             Divider().overlay(CaperTheme.border)
         }
     }

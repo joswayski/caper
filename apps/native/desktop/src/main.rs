@@ -922,10 +922,22 @@ struct PictureEdit {
     )>,
     /// A change in flight: its target, and whether it removes the picture.
     busy: Option<(pictures::Target, bool)>,
+    gallery: Option<AvatarGallery>,
     /// The last failure and the target it concerns.
     error: Option<(pictures::Target, String)>,
     /// The server has no picture storage (`503`): uploads step back.
     unavailable: bool,
+}
+
+#[derive(Default)]
+struct AvatarGallery {
+    request: Option<Instant>,
+    expected: Option<String>,
+    selected: Option<String>,
+    pictures: Vec<pictures::PreviousPicture>,
+    next_cursor: Option<String>,
+    loading: bool,
+    error: Option<String>,
 }
 
 /// The native dialog may finish after its conversation or thread closes.
@@ -2828,7 +2840,7 @@ impl CaperApp {
             }
         }
         // Your own picture never loads in this fixture: the mascot shows.
-        let own = if name == "parity-pictures-profile" {
+        let own = if matches!(name, "parity-pictures-profile" | "parity-pictures-gallery") {
             "fixture-gif"
         } else {
             "fixture-missing"
@@ -2880,7 +2892,23 @@ impl CaperApp {
         );
         self.members_visible = true;
         match name {
+            "parity-pictures-gallery" => {
+                self.dialog = Some(Dialog::Profile);
+                self.picture_edit.gallery = Some(AvatarGallery {
+                    expected: Some("fixture-gif".into()),
+                    selected: Some("fixture-icon".into()),
+                    pictures: ["fixture-gif", "fixture-still", "fixture-icon"]
+                        .into_iter()
+                        .map(|asset| pictures::PreviousPicture {
+                            avatar_asset: asset.into(),
+                            avatar_url: String::new(),
+                        })
+                        .collect(),
+                    ..Default::default()
+                });
+            }
             "parity-pictures-profile" => {
+                self.token = Some("fixture-only".into());
                 self.username = "fixture_owner".into();
                 self.display_name = "Fixture Owner".into();
                 self.dialog = Some(Dialog::Profile);
@@ -3512,6 +3540,43 @@ impl CaperApp {
         let identities = events.iter().any(carries_identities);
         for event in events {
             match event {
+                Event::AvatarHistory {
+                    epoch,
+                    request,
+                    result,
+                } if epoch == self.account_epoch => {
+                    if let Some(gallery) = &mut self.picture_edit.gallery
+                        && gallery.request == Some(request)
+                    {
+                        gallery.loading = false;
+                        match result {
+                            Ok(page) => {
+                                for picture in page.pictures {
+                                    if !gallery
+                                        .pictures
+                                        .iter()
+                                        .any(|old| old.avatar_asset == picture.avatar_asset)
+                                    {
+                                        gallery.pictures.push(picture);
+                                    }
+                                }
+                                gallery.next_cursor = page.next_cursor;
+                                gallery.error = None;
+                            }
+                            Err(error) => gallery.error = Some(error),
+                        }
+                    }
+                }
+                Event::AvatarSelected {
+                    epoch,
+                    result,
+                    refreshed,
+                } if epoch == self.account_epoch => {
+                    if let Some(account) = refreshed {
+                        self.account_changed(account);
+                    }
+                    self.picture_changed(pictures::Target::Avatar, result);
+                }
                 Event::Picture {
                     epoch,
                     target,
@@ -4631,6 +4696,9 @@ impl CaperApp {
         self.account_epoch += 1;
         if let Some(cancel) = self.profile_send_cancel.take() {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        for draft in self.profile_drafts.values() {
+            draft.cancel_uploads();
         }
         self.profile_drafts.clear();
         self.profile_picker = None;
@@ -6894,6 +6962,10 @@ impl CaperApp {
                     self.pending = None;
                     self.release_pending_files();
                     self.error = None;
+                    if self.visiting().is_some() {
+                        self.load_feedback(false);
+                        self.refresh_unread();
+                    }
                 }
                 // Requests and blocked authors never play message sounds.
                 let remote = self
@@ -7134,6 +7206,7 @@ impl CaperApp {
                     // A reply can answer a report.
                     if self.visiting().is_some() {
                         self.load_feedback(false);
+                        self.refresh_unread();
                     }
                     if root.is_none() && self.has_newer {
                         self.reload_channel();
@@ -9261,8 +9334,11 @@ impl CaperApp {
             self.shell(context);
             if self.updates.available().is_none() {
                 self.pins_dialog(context);
-                self.dialogs(context, dialog_was_open);
+                if self.picture_edit.gallery.is_none() {
+                    self.dialogs(context, dialog_was_open);
+                }
                 self.message_edit_dialogs(context);
+                self.avatar_gallery(context);
             }
             self.dismiss_emoji_picker_outside(context);
         }
@@ -10731,20 +10807,21 @@ impl CaperApp {
                                     .to_uppercase()
                                     .to_string()
                             };
-                            // Web: hover stays neutral; terracotta marks only the
-                            // current space.
+                            // Like web, hover and press stay neutral until the
+                            // space opens. A temporary orange press would flash
+                            // back to neutral on release before selection commits.
                             let tone = if active {
                                 let current = (PRESSED, Color32::from_rgb(128, 81, 67), TEXT);
                                 Tone {
                                     rest: current,
                                     hover: current,
-                                    press: (current.0, TERRACOTTA_BRIGHT, TEXT),
+                                    press: current,
                                 }
                             } else {
                                 Tone {
                                     rest: (SURFACE, BORDER, MUTED),
                                     hover: (RAISED, MUTED, TEXT),
-                                    press: (PRESSED, TERRACOTTA_BRIGHT, TEXT),
+                                    press: (RAISED, MUTED, TEXT),
                                 }
                             };
                             // Not `strong()`: that would pin the pressed text color.
@@ -12242,7 +12319,7 @@ impl CaperApp {
                 .is_some_and(|detail| !detail.members.is_empty())
     }
 
-    /// Join channel for a preview, or Block for a 1:1 DM.
+    /// Join channel for a preview, or return from a visit.
     fn header_channel_actions(&mut self, ui: &mut egui::Ui) {
         // A visit has no join, leave or settings: only the way back.
         if let Some(origin) = self.visiting().map(|visit| visit.origin.clone()) {
@@ -12255,46 +12332,18 @@ impl CaperApp {
             }
             return;
         }
-        if self.selected_direct.is_none() {
-            if let (Some(space), Some(channel)) =
+        if self.selected_direct.is_none()
+            && let (Some(space), Some(channel)) =
                 (self.selected_space.clone(), self.selected_channel.clone())
-                && let Some(entry) = self
-                    .detail
-                    .as_ref()
-                    .and_then(|detail| detail.channels.iter().find(|item| item.id == channel))
-                    .cloned()
-                && !entry.joined
-                && secondary_button(ui, "Join channel", true).clicked()
-            {
-                self.admin(AdminOperation::JoinChannel { space, channel });
-            }
-        } else if let Some(direct) = self.selected_direct_conversation().cloned()
-            && (direct.blocked
-                || self.is_blocked(&direct.peer.id)
-                || !self.protected_account(&direct.peer.id))
-            && self
-                .account
+            && let Some(entry) = self
+                .detail
                 .as_ref()
-                .is_some_and(|account| account.id != direct.peer.id)
+                .and_then(|detail| detail.channels.iter().find(|item| item.id == channel))
+                .cloned()
+            && !entry.joined
+            && secondary_button(ui, "Join channel", true).clicked()
         {
-            // 1:1 DMs only; personal notes have no peer to block.
-            let blocked = direct.blocked || self.is_blocked(&direct.peer.id);
-            let account = Self::peer_account(&direct.peer);
-            if secondary_button(
-                ui,
-                if blocked { "Unblock" } else { "Block" },
-                !self.block_busy,
-            )
-            .clicked()
-            {
-                if blocked {
-                    self.unblock(account);
-                } else {
-                    let request =
-                        (direct.status == model::DirectStatus::Incoming).then(|| direct.id.clone());
-                    self.confirm_block(account, request);
-                }
-            }
+            self.admin(AdminOperation::JoinChannel { space, channel });
         }
     }
 
@@ -12305,6 +12354,21 @@ impl CaperApp {
         ui.spacing_mut().item_spacing.x = 8.0;
         if navigation_toggle(ui, NavIcon::Menu, "Browse").clicked() {
             self.navigation_open = true;
+        }
+        if self.visiting().is_none()
+            && let Some(direct) = self
+                .selected_direct
+                .as_ref()
+                .and_then(|id| self.directs.iter().find(|item| &item.id == id))
+        {
+            avatar(
+                ui,
+                &direct.peer.display_name,
+                direct.peer.avatar_id,
+                direct.peer.picture(),
+                28.0,
+                false,
+            );
         }
         let voice_channel = self.header_voice_channel();
         let members = self.header_members();
@@ -15564,6 +15628,9 @@ impl CaperApp {
                                 egui::vec2((ui.available_width() - actions_width - 12.0).max(40.0), 38.0),
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
+                                    if visit.is_none() && let Some(item) = direct {
+                                        avatar(ui, &item.peer.display_name, item.peer.avatar_id, item.peer.picture(), 28.0, false);
+                                    }
                                     ui.add(egui::Label::new(RichText::new(match (direct, visit) {
                                         // "#plans · Studio", or "Alice & Bob".
                                         (_, Some(title)) => title,
@@ -15928,7 +15995,10 @@ impl CaperApp {
                     ui.ctx().request_discard("jump to the latest message");
                 }
             }
+            // ScrollArea's paint margin must not bleed into the fixed heading or composer.
+            let history_clip = ui.available_rect_before_wrap().intersect(ui.clip_rect());
             let history = history.show(ui, |ui| {
+                    ui.set_clip_rect(ui.clip_rect().intersect(history_clip));
                     if let Some(error) = self.load_error.clone().filter(|_| empty) {
                         chat_state(ui, 2, |ui| {
                             ui.label(RichText::new(error).color(MUTED));
@@ -17352,6 +17422,20 @@ impl CaperApp {
                     });
             });
         }
+        // The message body already ends with 10px padding. Keep its compact
+        // footer 4px below the text rather than stacking that padding and the
+        // timeline's default item gap above it.
+        if mentions::notifies_team(&message.content.mentions)
+            || (!in_thread && message.thread_root_id.is_none() && message.thread.is_some())
+        {
+            let body_padding =
+                if message.content.attachments.is_empty() && message.forward.is_none() {
+                    8.0
+                } else {
+                    0.0
+                };
+            ui.add_space(-ui.spacing().item_spacing.y - body_padding);
+        }
         let controls = egui::Frame::new()
             .inner_margin(egui::Margin {
                 left: 62,
@@ -17360,32 +17444,38 @@ impl CaperApp {
                 bottom: 5,
             })
             .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
                 // Below a message that asked the team (any team name). The
                 // salute is drawn from the emoji sheet, like reactions.
                 if mentions::notifies_team(&message.content.mentions) {
-                    let notice = ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        match emoji::find("🫡") {
-                            Some(entry) => {
-                                ui.label(
-                                    RichText::new(
-                                        mentions::FEEDBACK_NOTICE.trim_end_matches(" 🫡"),
-                                    )
-                                    .size(11.0)
-                                    .color(MUTED),
-                                );
-                                let salute = self.reaction_textures.image(ui, entry, 13.0);
-                                ui.add(salute);
-                            }
-                            None => {
-                                ui.label(
-                                    RichText::new(mentions::FEEDBACK_NOTICE)
-                                        .size(11.0)
-                                        .color(MUTED),
-                                );
-                            }
-                        }
-                    });
+                    let notice = ui
+                        .scope(|ui| {
+                            ui.spacing_mut().interact_size.y = 0.0;
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                match emoji::find("🫡") {
+                                    Some(entry) => {
+                                        ui.label(
+                                            RichText::new(
+                                                mentions::FEEDBACK_NOTICE.trim_end_matches(" 🫡"),
+                                            )
+                                            .size(11.0)
+                                            .color(MUTED),
+                                        );
+                                        let salute = self.reaction_textures.image(ui, entry, 13.0);
+                                        ui.add(salute);
+                                    }
+                                    None => {
+                                        ui.label(
+                                            RichText::new(mentions::FEEDBACK_NOTICE)
+                                                .size(11.0)
+                                                .color(MUTED),
+                                        );
+                                    }
+                                }
+                            })
+                        })
+                        .inner;
                     notice.response.widget_info(|| {
                         egui::WidgetInfo::labeled(
                             egui::WidgetType::Label,
@@ -17484,27 +17574,54 @@ impl CaperApp {
                     && message.thread_root_id.is_none()
                     && let Some(summary) = &message.thread
                 {
-                    ui.horizontal(|ui| {
-                        for author in &summary.participants {
-                            avatar(
+                    let background = ui.painter().add(egui::Shape::Noop);
+                    let row = ui.scope(|ui| {
+                        ui.spacing_mut().interact_size.y = 32.0;
+                        ui.horizontal(|ui| {
+                            ui.set_min_width(ui.available_width());
+                            for author in &summary.participants {
+                                avatar(
+                                    ui,
+                                    &author.name,
+                                    author.avatar_id,
+                                    author.picture(),
+                                    24.0,
+                                    false,
+                                );
+                            }
+                            thread_summary_link(
                                 ui,
-                                &author.name,
-                                author.avatar_id,
-                                author.picture(),
-                                24.0,
-                                false,
-                            );
-                        }
-                        if thread_summary_link(
-                            ui,
-                            summary.reply_count,
-                            self.thread_unread.contains_key(&message.id),
-                        )
-                        .clicked()
-                        {
-                            self.open_thread(message.id.clone());
-                        }
+                                summary.reply_count,
+                                self.thread_unread.contains_key(&message.id),
+                            )
+                        })
                     });
+                    let response = row
+                        .response
+                        // Extend the pointer target without adding a second,
+                        // unnamed keyboard stop beside the labelled button.
+                        .interact(egui::Sense::CLICK)
+                        .union(row.inner.inner)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if response.hovered() || response.is_pointer_button_down_on() {
+                        ui.painter().set(
+                            background,
+                            egui::Shape::rect_filled(
+                                response.rect,
+                                8.0,
+                                Color32::from_white_alpha(
+                                    if response.is_pointer_button_down_on() {
+                                        20
+                                    } else {
+                                        15
+                                    },
+                                ),
+                            ),
+                        );
+                    }
+                    if response.clicked() {
+                        self.open_thread(message.id.clone());
+                    }
                 }
                 if let Some(error) = self.reaction_errors.get(&message.id).cloned() {
                     ui.horizontal(|ui| {
@@ -17900,12 +18017,23 @@ impl CaperApp {
                                         Color32::from_black_alpha(70),
                                     );
                                 }
-                                ui.painter().text(
-                                    rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    "SPOILER",
-                                    egui::FontId::proportional(12.0),
-                                    TEXT,
+                                let painter = ui.painter_at(rect.shrink(2.0));
+                                let mut x = rect.left() - rect.height();
+                                while x < rect.right() {
+                                    painter.line_segment(
+                                        [
+                                            egui::pos2(x, rect.bottom()),
+                                            egui::pos2(x + rect.height(), rect.top()),
+                                        ],
+                                        Stroke::new(1.0, Color32::from_white_alpha(12)),
+                                    );
+                                    x += 12.0;
+                                }
+                                spoiler_badge(
+                                    ui,
+                                    rect,
+                                    true,
+                                    response.hovered() || response.has_focus(),
                                 );
                                 response.widget_info(|| {
                                     egui::WidgetInfo::labeled(
@@ -17914,10 +18042,7 @@ impl CaperApp {
                                         "Reveal spoiler attachment",
                                     )
                                 });
-                                if response
-                                    .on_hover_text("Reveal spoiler attachment")
-                                    .clicked()
-                                {
+                                if response.clicked() {
                                     ui.ctx().data_mut(|data| {
                                         data.insert_temp(
                                             reveal_scope
@@ -17929,12 +18054,38 @@ impl CaperApp {
                                 continue;
                             }
                             let progress = self.attachment_progress.get(&attachment.id).copied();
+                            let mut card_rect = None;
                             let clicked = if tiles {
                                 self.media_tile(ui, attachment, pending, progress, placed)
-                            } else {
+                            } else if !attachment.spoiler {
                                 file_card(ui, attachment, pending, progress)
+                            } else {
+                                let card =
+                                    ui.scope(|ui| file_card(ui, attachment, pending, progress));
+                                card_rect = Some(card.response.rect);
+                                card.inner
                             };
-                            if clicked && !pending {
+                            let mut hide = false;
+                            if attachment.spoiler
+                                && let Some(rect) = placed.map(|(rect, _)| rect).or(card_rect)
+                            {
+                                hide = spoiler_hide_button(
+                                    ui,
+                                    rect,
+                                    ui.id().with(("hide-spoiler", &attachment.id)),
+                                )
+                                .clicked();
+                            }
+                            if hide {
+                                ui.ctx().data_mut(|data| {
+                                    data.insert_temp(
+                                        reveal_scope.with(("attachment-spoiler", &attachment.id)),
+                                        false,
+                                    )
+                                });
+                                ui.ctx().request_repaint();
+                            }
+                            if clicked && !hide && !pending {
                                 if tiles && viewer::viewable(attachment) {
                                     // This message's images and videos, starting here.
                                     let items: Vec<_> = resolved
@@ -17947,7 +18098,10 @@ impl CaperApp {
                                         .iter()
                                         .position(|item| item.id == attachment.id)
                                         .unwrap_or(0);
-                                    self.viewer = Some(viewer::Viewer::open(items, index));
+                                    self.viewer = Some(
+                                        viewer::Viewer::open(items, index)
+                                            .with_reveal_scope(reveal_scope),
+                                    );
                                     ui.ctx().request_repaint();
                                 } else {
                                     self.media.open(ui.ctx(), attachment, unix_now);
@@ -18235,13 +18389,7 @@ impl CaperApp {
                                 .paint_at(ui, thumb);
                         }
                     }
-                    painter.text(
-                        content.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "SPOILER",
-                        egui::FontId::proportional(11.0),
-                        MUTED,
-                    );
+                    spoiler_badge(ui, content, false, false);
                 } else if let Some(texture) = &draft.thumbnail {
                     // Centre-crop the local preview into the square.
                     let [width, height] = texture.size().map(|value| value.max(1) as f32);
@@ -20408,11 +20556,8 @@ impl CaperApp {
                 for (index, file) in draft.files.iter_mut().enumerate() {
                     let name = file.name();
                     let url = url::Url::from_file_path(&file.path).ok().map(String::from);
-                    let status = if file.attachment.is_some() || !draft.sending {
-                        String::new()
-                    } else {
-                        "Sending…".into()
-                    };
+                    let (status, failed) = file.upload_status();
+                    let status = status.to_owned();
                     let (can_edit, spoiler) = (file.editable.is_some(), file.spoiler);
                     let clicks = file_chip(
                         ui,
@@ -20422,7 +20567,7 @@ impl CaperApp {
                             name: &name,
                             status,
                             detail: uploads::size_label(file.size, None),
-                            error: false,
+                            error: failed,
                             thumbnail: file.thumbnail(&context),
                             progress: None,
                             url,
@@ -20723,11 +20868,21 @@ impl CaperApp {
         if let Some(error) = &draft.error {
             ui.label(RichText::new(error).size(12.0).color(ERROR));
         }
+        if draft.needs_upload()
+            && !busy
+            && !self.is_blocked(person)
+            && let (Some(token), Some(settings), Ok(api)) = (
+                self.token.as_deref(),
+                self.uploads.as_ref(),
+                api::Api::new(self.api_base.as_str()),
+            )
+        {
+            draft.upload_files(&api, token, (person, username), settings, ui.ctx());
+        }
         self.profile_drafts.insert(person.to_owned(), draft);
         send || (enter && can_send)
     }
 
-    /// Only explicit Send/Open resolves the canonical DM; Open never writes a message.
     /// Posts a failed update's error as `@feedback` in your personal notes,
     /// where the Caper team can read it and reply.
     fn send_update_report(&mut self, error: String, target_version: &str) {
@@ -21439,20 +21594,23 @@ impl CaperApp {
                     }
                     ui.add_space(16.0);
                     let label = release.version.as_ref().map_or_else(
-                        || format!("Commit {}", &release.revision[..7]),
+                        || release.revision[..7].to_owned(),
                         |version| format!("Version {version}"),
-                    );
-                    release_link(
-                        ui,
-                        &label,
-                        12.0,
-                        &updates::commit_url(&release.revision)
-                            .expect("validated release revision"),
                     );
                     for highlight in release.highlights {
                         ui.add_space(10.0);
-                        ui.label(bold(highlight.title).size(16.0));
-                        ui.label(highlight.body);
+                        ui.scope(|ui| {
+                            ui.spacing_mut().item_spacing.y = 4.0;
+                            ui.label(bold(highlight.title).size(16.0));
+                            release_link(
+                                ui,
+                                &label,
+                                12.0,
+                                &updates::commit_url(&release.revision)
+                                    .expect("validated release revision"),
+                            );
+                            ui.label(highlight.body);
+                        });
                     }
                 }
             }
@@ -21978,6 +22136,184 @@ impl CaperApp {
         self.picture_edit.downloading = Some((self.account_epoch, target, receiver));
     }
 
+    fn avatar_gallery(&mut self, context: &egui::Context) {
+        let Some(mut gallery) = self.picture_edit.gallery.take() else {
+            return;
+        };
+        let pending = self.picture_edit.busy.is_some();
+        let stale = self
+            .account
+            .as_ref()
+            .and_then(|account| account.avatar_asset.as_ref())
+            != gallery.expected.as_ref();
+        let mut cancel = false;
+        let mut save = false;
+        let mut load = false;
+        let modal = egui::Modal::new(egui::Id::new("avatar-gallery")).show(context, |ui| {
+            ui.set_width(420.0);
+            ui.heading("Previous pictures");
+            ui.label("Choose a picture to preview. Save when you’re ready.");
+            if let Some(picture) = gallery
+                .pictures
+                .iter()
+                .find(|picture| Some(&picture.avatar_asset) == gallery.selected.as_ref())
+            {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(176.0, 176.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 16.0, RAISED);
+                pictures::paint(
+                    ui,
+                    rect,
+                    16,
+                    pictures::Source {
+                        asset: &picture.avatar_asset,
+                        url: Some(&picture.avatar_url),
+                    },
+                );
+            }
+            egui::ScrollArea::vertical()
+                .max_height(270.0)
+                .show(ui, |ui| {
+                    egui::Grid::new("avatar-history-grid")
+                        .num_columns(4)
+                        .spacing(egui::vec2(12.0, 12.0))
+                        .show(ui, |ui| {
+                            for (index, picture) in gallery.pictures.iter().enumerate() {
+                                ui.vertical(|ui| {
+                                    let selected =
+                                        gallery.selected.as_deref() == Some(&picture.avatar_asset);
+                                    let (rect, response) = ui.allocate_exact_size(
+                                        egui::vec2(88.0, 88.0),
+                                        egui::Sense::click(),
+                                    );
+                                    response.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            !pending,
+                                            format!("Previous picture {}", index + 1),
+                                        )
+                                    });
+                                    ui.painter().rect_filled(rect, 8.0, RAISED);
+                                    pictures::paint(
+                                        ui,
+                                        rect.shrink(3.0),
+                                        8,
+                                        pictures::Source {
+                                            asset: &picture.avatar_asset,
+                                            url: Some(&picture.avatar_url),
+                                        },
+                                    );
+                                    ui.painter().rect_stroke(
+                                        rect,
+                                        8.0,
+                                        Stroke::new(
+                                            if selected { 2.0 } else { 1.0 },
+                                            if selected { TERRACOTTA } else { BORDER },
+                                        ),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    if selected {
+                                        ui.painter().text(
+                                            rect.right_top() + egui::vec2(-14.0, 14.0),
+                                            egui::Align2::CENTER_CENTER,
+                                            "✓",
+                                            egui::FontId::proportional(20.0),
+                                            TERRACOTTA,
+                                        );
+                                    }
+                                    if response.clicked() && !pending {
+                                        gallery.selected = Some(picture.avatar_asset.clone());
+                                    }
+                                    if gallery.expected.as_deref() == Some(&picture.avatar_asset) {
+                                        ui.label("Current");
+                                    }
+                                });
+                                if index % 4 == 3 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                });
+            if gallery.loading {
+                ui.spinner();
+                ui.label("Loading pictures…");
+            } else if gallery.pictures.is_empty() && gallery.error.is_none() {
+                ui.label("No previous pictures yet.");
+            }
+            if stale {
+                ui.colored_label(
+                    ERROR,
+                    "Your picture changed elsewhere. Close and reopen to refresh.",
+                );
+            } else if let Some(error) = &gallery.error {
+                ui.colored_label(ERROR, error);
+                if !pending && !stale && ui.button("Retry").clicked() {
+                    load = true;
+                }
+            } else if gallery.next_cursor.is_some()
+                && !gallery.loading
+                && ui
+                    .add_enabled(!pending, egui::Button::new("Load more"))
+                    .clicked()
+            {
+                load = true;
+            }
+            ui.horizontal(|ui| {
+                let can_save = !pending
+                    && !stale
+                    && !gallery.loading
+                    && gallery.selected.is_some()
+                    && gallery.selected != gallery.expected;
+                save = ui
+                    .add_enabled(
+                        can_save,
+                        egui::Button::new(RichText::new("Save picture").color(if can_save {
+                            ON_ACTION
+                        } else {
+                            MUTED
+                        }))
+                        .fill(if can_save { ACTION } else { BORDER }),
+                    )
+                    .clicked();
+                cancel = ui
+                    .add_enabled(!pending, egui::Button::new("Cancel"))
+                    .clicked();
+                if pending {
+                    ui.spinner();
+                    ui.label("Saving…");
+                }
+            });
+        });
+        if !pending && (cancel || modal.should_close()) {
+            return;
+        }
+        if let Some(token) = self.token.clone() {
+            if save && let Some(asset) = gallery.selected.clone() {
+                self.worker.send(Command::SelectAvatar {
+                    epoch: self.account_epoch,
+                    token,
+                    asset,
+                    expected: gallery.expected.clone(),
+                });
+                self.picture_edit.busy = Some((pictures::Target::Avatar, false));
+                self.picture_edit.error = None;
+                gallery.error = None;
+            } else if load && !gallery.loading {
+                let request = Instant::now();
+                self.worker.send(Command::AvatarHistory {
+                    epoch: self.account_epoch,
+                    request,
+                    token,
+                    cursor: gallery.next_cursor.clone(),
+                });
+                gallery.request = Some(request);
+                gallery.loading = true;
+                gallery.error = None;
+            }
+        }
+        self.picture_edit.gallery = Some(gallery);
+    }
+
     /// Picker results, local previews of uploaded pictures, and picture loads.
     fn picture_housekeeping(&mut self, context: &egui::Context) {
         if self
@@ -22129,6 +22465,7 @@ impl CaperApp {
         self.picture_edit.busy = None;
         match result {
             Ok(changed) => {
+                self.picture_edit.gallery = None;
                 self.local_pictures.extend(changed.local);
                 match changed.applied {
                     pictures::Applied::Account(account) => self.account_changed(account),
@@ -22136,6 +22473,9 @@ impl CaperApp {
                 }
             }
             Err(failure) => {
+                if let Some(gallery) = &mut self.picture_edit.gallery {
+                    gallery.error = Some(failure.message.clone());
+                }
                 self.picture_edit.unavailable |= failure.unavailable;
                 self.picture_edit.error = Some((target, failure.message));
             }
@@ -22175,6 +22515,7 @@ impl CaperApp {
             pictures::Target::Avatar => ("Change profile picture", "picture"),
             pictures::Target::SpaceIcon(_) => ("Change space icon", "icon"),
         };
+        let gallery_available = target == pictures::Target::Avatar;
         let edit = &self.picture_edit;
         let busy = edit
             .busy
@@ -22194,7 +22535,7 @@ impl CaperApp {
             .map(|(_, error)| error.clone());
         let unavailable = edit.unavailable;
         // With uploads unavailable, a custom picture can still be removed.
-        let enabled = idle && (custom || !unavailable);
+        let enabled = idle && (custom || gallery_available || !unavailable);
         let side = PICTURE_FRAME;
         let (outer, response) = ui.allocate_exact_size(
             egui::vec2(side + PICTURE_BADGE_OVERHANG, side + PICTURE_BADGE_OVERHANG),
@@ -22282,12 +22623,16 @@ impl CaperApp {
                 ui,
                 egui::Rect::from_center_size(badge.center(), egui::vec2(15.0, 15.0)),
             );
-        let (mut change, mut remove, mut adjust) = (false, false, false);
-        if custom {
+        let (mut change, mut remove, mut adjust, mut restore) = (false, false, false, false);
+        if custom || gallery_available {
             egui::Popup::menu(&response).show(|ui| {
-                if ui
-                    .add_enabled(!unavailable, egui::Button::new(format!("Edit {noun}…")))
-                    .clicked()
+                if !idle {
+                    ui.disable();
+                }
+                if custom
+                    && ui
+                        .add_enabled(!unavailable, egui::Button::new(format!("Edit {noun}…")))
+                        .clicked()
                 {
                     adjust = true;
                     ui.close();
@@ -22302,7 +22647,11 @@ impl CaperApp {
                     change = true;
                     ui.close();
                 }
-                if ui.button(format!("Remove {noun}")).clicked() {
+                if gallery_available && ui.button("Previous pictures").clicked() {
+                    restore = true;
+                    ui.close();
+                }
+                if custom && ui.button(format!("Remove {noun}")).clicked() {
                     remove = true;
                     ui.close();
                 }
@@ -22315,7 +22664,9 @@ impl CaperApp {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().size(12.0).color(MUTED));
                 ui.label(
-                    RichText::new(if removing {
+                    RichText::new(if self.picture_edit.gallery.is_some() {
+                        "Saving…"
+                    } else if removing {
                         "Removing…"
                     } else {
                         "Uploading…"
@@ -22335,6 +22686,24 @@ impl CaperApp {
             self.download_picture(ui.ctx(), target);
         } else if change {
             self.pick_picture(ui.ctx(), target);
+        } else if restore {
+            if let (Some(token), Some(account)) = (self.token.clone(), self.account.as_ref()) {
+                let request = Instant::now();
+                self.worker.send(Command::AvatarHistory {
+                    epoch: self.account_epoch,
+                    request,
+                    token,
+                    cursor: None,
+                });
+                self.picture_edit.error = None;
+                self.picture_edit.gallery = Some(AvatarGallery {
+                    request: Some(request),
+                    expected: account.avatar_asset.clone(),
+                    selected: account.avatar_asset.clone(),
+                    loading: true,
+                    ..Default::default()
+                });
+            }
         } else if remove {
             self.change_picture(target, None);
         }
@@ -23642,6 +24011,95 @@ fn tile_actions(
     })
 }
 
+fn spoiler_badge(ui: &egui::Ui, bounds: egui::Rect, instruction: bool, emphasized: bool) {
+    let center = bounds.center();
+    let rect = egui::Rect::from_center_size(
+        center,
+        egui::vec2(
+            (if instruction { 134.0_f32 } else { 88.0 }).min((bounds.width() - 8.0).max(0.0)),
+            if instruction { 50.0 } else { 28.0 },
+        ),
+    );
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        8,
+        BLACKOUT,
+        Stroke::new(1.0, if emphasized { MUTED } else { BORDER }),
+        egui::StrokeKind::Inside,
+    );
+    let y = rect.top() + 14.0;
+    paint_icon(
+        painter,
+        egui::Rect::from_center_size(egui::pos2(center.x - 26.0, y), egui::vec2(14.0, 14.0)),
+        NavIcon::EyeOff,
+        TEXT,
+    );
+    painter.text(
+        egui::pos2(center.x - 13.0, y),
+        egui::Align2::LEFT_CENTER,
+        "Spoiler",
+        egui::FontId::new(12.0, egui::FontFamily::Name("Satoshi Bold".into())),
+        TEXT,
+    );
+    if instruction {
+        painter.text(
+            egui::pos2(center.x, rect.bottom() - 12.0),
+            egui::Align2::CENTER_CENTER,
+            "Click to reveal",
+            egui::FontId::proportional(11.0),
+            MUTED,
+        );
+    }
+}
+
+fn spoiler_hide_button(ui: &egui::Ui, bounds: egui::Rect, id: egui::Id) -> egui::Response {
+    let width = 126.0_f32.min((bounds.width() - 8.0).max(0.0));
+    let compact = width < 116.0;
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(bounds.right() - width - 4.0, bounds.top() + 4.0),
+        egui::vec2(width, if compact { 42.0 } else { 30.0 }),
+    );
+    let response = ui.interact(rect, id, egui::Sense::click());
+    ui.painter().rect(
+        rect,
+        8,
+        BLACKOUT,
+        Stroke::new(
+            1.0,
+            if response.hovered() || response.has_focus() {
+                MUTED
+            } else {
+                BORDER
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    paint_icon(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            rect.left_center() + egui::vec2(16.0, 0.0),
+            egui::vec2(14.0, 14.0),
+        ),
+        NavIcon::EyeOff,
+        TEXT,
+    );
+    ui.painter().text(
+        rect.left_center() + egui::vec2(29.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        if compact {
+            "Hide\nspoiler"
+        } else {
+            "Hide spoiler"
+        },
+        egui::FontId::proportional(12.0),
+        TEXT,
+    );
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Hide spoiler"));
+    response
+}
+
 /// What was clicked in a tile's action bar.
 #[derive(Debug, Default, PartialEq)]
 struct TileClicks {
@@ -23951,7 +24409,14 @@ fn file_chip(ui: &mut egui::Ui, width: f32, chip: FileChip) -> ChipClicks {
     // Edit only where the file can still change, as Remove.
     let editable = chip.removable && chip.editable;
     let actions = tile_actions(rect, chip.removable, editable, chip.removable, chip.touch);
-    if video {
+    if chip.spoiler {
+        spoiler_badge(
+            ui,
+            tile_content(rect, actions.as_ref(), has_footer),
+            false,
+            false,
+        );
+    } else if video {
         paint_draft_video_play(&painter, tile_content(rect, actions.as_ref(), has_footer));
     }
     let mut preview = None;
@@ -24093,8 +24558,8 @@ fn update_highlight(ui: &mut egui::Ui, title: &str, body: &str) {
             MUTED,
         );
         ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
             ui.add(egui::Label::new(bold(title).size(15.0).color(TEXT)).wrap());
-            ui.add_space(2.0);
             ui.add(egui::Label::new(RichText::new(body).color(MUTED).size(14.0)).wrap());
         });
     });
@@ -26837,28 +27302,52 @@ fn copy_items(ui: &mut egui::Ui, message: &model::Message) {
     }
 }
 
-/// Web's `.chat-thread-summary`: the reply count in bold terracotta, then a
-/// quiet "View thread", without a button frame.
-/// A muted, underlined link to a release's source that brightens on hover or
-/// keyboard focus, so it reads as clickable. Used wherever a version is shown.
+/// Muted release links keep real hyperlink behavior, with visible pointer and keyboard feedback.
 fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::Response {
     let galley =
         ui.painter()
             .layout_no_wrap(label.to_owned(), egui::FontId::proportional(size), MUTED);
     let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::click());
-    let color = if response.hovered() || response.has_focus() {
+    let pressed = response.is_pointer_button_down_on();
+    let color = if pressed {
+        TERRACOTTA_BRIGHT
+    } else if response.hovered() {
+        ACTION_HOVER
+    } else if response.has_focus() {
         TEXT
     } else {
-        MUTED
+        MUTED.gamma_multiply(0.72)
     };
     if ui.is_rect_visible(rect) {
+        if response.hovered() || pressed {
+            ui.painter().rect_filled(
+                rect.expand(2.0),
+                2.0,
+                TERRACOTTA.gamma_multiply(if pressed { 0.24 } else { 0.12 }),
+            );
+        }
         ui.painter()
             .galley_with_override_text_color(rect.min, galley, color);
         ui.painter().hline(
             rect.x_range(),
             rect.bottom() - 0.5,
-            Stroke::new(1.0, color.gamma_multiply(0.7)),
+            Stroke::new(
+                if response.hovered() || pressed {
+                    2.0
+                } else {
+                    1.0
+                },
+                color.gamma_multiply(0.7),
+            ),
         );
+        if response.has_focus() {
+            ui.painter().rect_stroke(
+                rect.expand(3.0),
+                2.0,
+                Stroke::new(2.0, TERRACOTTA),
+                egui::StrokeKind::Outside,
+            );
+        }
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, label));
     let response = response
@@ -26870,6 +27359,8 @@ fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::R
     response
 }
 
+/// Web's `.chat-thread-summary`: the reply count in bold terracotta, then a
+/// quiet "View thread", without a button frame.
 fn thread_summary_link(ui: &mut egui::Ui, replies: u64, unread: bool) -> egui::Response {
     let mut job = egui::text::LayoutJob::default();
     let count = format!(
@@ -26898,7 +27389,7 @@ fn thread_summary_link(ui: &mut egui::Ui, replies: u64, unread: bool) -> egui::R
     );
     let response = ui
         .scope(|ui| {
-            ui.spacing_mut().button_padding = egui::vec2(0.0, 4.0);
+            ui.spacing_mut().button_padding = egui::vec2(6.0, 3.0);
             ui.add(egui::Button::new(job).frame(false))
         })
         .inner;
@@ -28898,6 +29389,49 @@ mod tests {
     }
 
     #[test]
+    fn message_history_does_not_paint_over_the_heading() {
+        for width in [1200.0, 390.0] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-direct"),
+            );
+            let mut output = None;
+            for _ in 0..3 {
+                app.history_offset = Some(0.0);
+                output = Some(context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 700.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().frame(egui::Frame::NONE).show(
+                            context,
+                            |ui| {
+                                app.channel_conversation(ui, width < 760.0);
+                            },
+                        );
+                    },
+                ));
+            }
+            let output = output.unwrap();
+            let history = output.shapes.iter().find(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == "Beginning of conversation"
+                    || text.galley.job.text == "Load older messages"
+            )).expect("history header is rendered at the top");
+            assert!(
+                history.clip_rect.top() >= 54.0,
+                "{width}: history can paint above its viewport: {:?}",
+                history.clip_rect
+            );
+        }
+    }
+
+    #[test]
     fn thread_and_channel_header_dividers_align_without_clipping_controls() {
         for width in [1200.0, 840.0, 390.0] {
             for name in ["general".to_owned(), "long-channel-name-".repeat(3)] {
@@ -30768,7 +31302,8 @@ mod tests {
         }
         let output = render(&mut app, &context, vec![]);
         let title = text_position(&output, "Edit your messages");
-        for offset in [-9.0, -6.0, 22.0, 25.0] {
+        // The former gap below the title now contains the release link.
+        for offset in [-9.0, -6.0] {
             let pos = title + egui::vec2(10.0, offset);
             render(&mut app, &context, vec![egui::Event::PointerMoved(pos)]);
             let output = render(&mut app, &context, vec![egui::Event::PointerMoved(pos)]);
@@ -30816,9 +31351,16 @@ mod tests {
             if route == "Done" {
                 // The installed version under the title opens the installed commit.
                 let installed = crate::updates::version_label();
+                let title = text_position(&output, "Find your conversations");
+                let source = text_position(&output, "2222222");
+                let body = text_position(
+                    &output,
+                    "Move between your spaces and direct messages while keeping your drafts.",
+                );
+                assert!(title.y < source.y && source.y < body.y);
                 for (label, revision) in [
                     ("Version 0.1.112", whats_new::REVISION.to_owned()),
-                    ("Commit 2222222", "2".repeat(40)),
+                    ("2222222", "2".repeat(40)),
                     (installed.as_str(), whats_new::REVISION.to_owned()),
                 ] {
                     let output = render(&mut app, &context, vec![]);
@@ -30838,6 +31380,11 @@ mod tests {
                             ],
                         );
                         if !pressed {
+                            assert_eq!(
+                                output.platform_output.cursor_icon,
+                                egui::CursorIcon::PointingHand,
+                                "{label} advertises its link action under the pointer"
+                            );
                             assert!(output.platform_output.commands.iter().any(|command| matches!(command,
                                 egui::OutputCommand::OpenUrl(url)
                                     if url.url == format!("https://github.com/joswayski/caper/commit/{revision}"))),
@@ -34037,6 +34584,10 @@ mod tests {
         assert!(texts.contains(&"No messages yet."));
         assert!(!texts.contains(&"Message #general"));
         assert!(!texts.contains(&"Members"));
+        assert!(
+            !texts.contains(&"Block"),
+            "blocking belongs in the profile menu"
+        );
 
         // The same display name is not enough: only the peer's account ID changes.
         app.directs[0].peer.id = app.account.as_ref().unwrap().id.clone();
@@ -38423,6 +38974,67 @@ mod tests {
     }
 
     #[test]
+    fn space_rail_press_keeps_hover_colors_until_selection_commits() {
+        for selected in [false, true] {
+            let (context, mut app) = fixture("parity-desktop");
+            context.enable_accesskit();
+            let space = app.spaces.iter().find(|space| !space.demo).unwrap().clone();
+            app.selected_space = selected.then(|| space.id.clone());
+            let mut frame = |events| {
+                context.run(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().show(context, |ui| app.rail(ui));
+                    },
+                )
+            };
+            frame(vec![]);
+            let bounds = node_bounds(&frame(vec![]), &space.name).unwrap();
+            let painted = |output: &egui::FullOutput| {
+                output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.rect == bounds && rect.stroke.width > 0.0 =>
+                        {
+                            Some((rect.fill, rect.stroke.color))
+                        }
+                        _ => None,
+                    })
+                    .expect("space tile background and border")
+            };
+            frame(vec![egui::Event::PointerMoved(bounds.center())]);
+            let hover = painted(&frame(vec![]));
+            assert_eq!(
+                hover,
+                if selected {
+                    (super::PRESSED, egui::Color32::from_rgb(128, 81, 67))
+                } else {
+                    (super::RAISED, super::MUTED)
+                }
+            );
+            let pressed = frame(vec![egui::Event::PointerButton {
+                pos: bounds.center(),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            }]);
+            assert_eq!(painted(&pressed), hover, "press must not flash orange");
+            let released = frame(vec![egui::Event::PointerButton {
+                pos: bounds.center(),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            }]);
+            assert_eq!(painted(&released), hover, "release must not flash back");
+        }
+    }
+
+    #[test]
     fn voice_activity_rail_distinguishes_connected_from_browsing_and_connecting() {
         let (context, mut app) = fixture("parity-feedback-zero");
         context.enable_accesskit();
@@ -38889,6 +39501,86 @@ mod tests {
         );
         assert!(app.visit_request.is_none());
         assert!(app.feedback_open && app.context_loading);
+    }
+
+    #[test]
+    fn answering_feedback_refreshes_badge_before_the_next_poll() {
+        use std::io::{BufRead, BufReader, Write};
+        for via_gateway in [false, true] {
+            let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            server.set_nonblocking(true).unwrap();
+            let api =
+                crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+            let requests = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while Instant::now() < deadline {
+                    let Ok((stream, _)) = server.accept() else {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    };
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(1)))
+                        .unwrap();
+                    let mut reader = BufReader::new(stream);
+                    let mut request = String::new();
+                    reader.read_line(&mut request).unwrap();
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" || line.is_empty() {
+                            break;
+                        }
+                    }
+                    let unread = request.starts_with("GET /api/spaces/unread ");
+                    let body = if unread {
+                        r#"{"spaces":[],"feedbackWaiting":0}"#
+                    } else {
+                        r#"{"reports":[],"cursor":null}"#
+                    };
+                    let _ = write!(
+                        reader.get_mut(),
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    if unread {
+                        return;
+                    }
+                }
+            });
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(&context, api, Some("parity-feedback-visit"));
+            app.token = Some("fixture-only-token".into());
+            app.session = Some(session());
+            app.feedback_waiting = 1;
+            app.draft = "Thanks for the report".into();
+            app.send_message();
+            let mut message = app.timeline.messages().last().unwrap().clone();
+            message.seq = (message.seq.parse::<u64>().unwrap() + 1).to_string();
+            message.id = "confirmation".into();
+            message.client_message_id = app.pending.as_ref().unwrap().id.clone();
+            message.content.text = "Thanks for the report".into();
+            message.author = app.session.as_ref().unwrap().author.clone();
+            if via_gateway {
+                app.gateway(crate::gateway::GatewayEvent::Message {
+                    generation: app.generation,
+                    channel: message.channel_id.clone(),
+                    message: Box::new(message),
+                });
+            } else {
+                app.sent(Ok(message));
+            }
+            // Receive the authoritative count without running the periodic UI update.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while app.feedback_waiting != 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+                app.receive();
+            }
+            assert_eq!(
+                app.feedback_waiting, 0,
+                "gateway confirmation: {via_gateway}"
+            );
+            requests.join().unwrap();
+        }
     }
 
     #[test]
@@ -39546,12 +40238,54 @@ mod tests {
     #[test]
     fn picture_editor_covers_settings_and_cancel_returns_without_uploading() {
         let (context, mut app) = fixture("parity-pictures-editor");
-        render(&mut app, &context, vec![]);
-        let output = render(&mut app, &context, vec![]);
+        let output = editor_ready(&mut app, &context);
         assert!(shows(&output, "Done"));
         assert!(
             !shows(&output, "Save profile"),
             "settings must not cover the editor"
+        );
+        let frame = node_bounds(&output, "Crop frame").unwrap();
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        render(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(frame.max),
+                button(frame.max, true),
+            ],
+        );
+        // Unequal axis movements used to recenter the square, moving its
+        // opposite corner. Shrink then expand during the same held drag.
+        for by in [egui::vec2(-80.0, -35.0), egui::vec2(-40.0, -10.0)] {
+            render(
+                &mut app,
+                &context,
+                vec![egui::Event::PointerMoved(frame.max + by)],
+            );
+            let output = render(&mut app, &context, vec![]);
+            let resized = node_bounds(&output, "Crop frame").unwrap();
+            assert!(
+                (resized.min - frame.min).length() < 0.1,
+                "opposite corner moved: {resized:?}"
+            );
+            assert!((resized.width() - (frame.width() + by.x)).abs() < 0.1);
+            assert!((resized.width() - resized.height()).abs() < 0.1);
+        }
+        render(
+            &mut app,
+            &context,
+            vec![button(frame.max + egui::vec2(-40.0, -10.0), false)],
+        );
+        let output = click_label(&mut app, &context, "Undo");
+        let restored = node_bounds(&output, "Crop frame").unwrap();
+        assert!(
+            (restored.size() - frame.size()).length() < 0.1,
+            "one undo restores the whole drag"
         );
         render(&mut app, &context, press(egui::Key::Escape));
         // The settings area measures its first frame before painting.
@@ -39559,6 +40293,201 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         assert!(shows(&output, "Save profile"), "{:?}", texts(&output));
         assert!(app.picture_edit.busy.is_none(), "Cancel must not upload");
+    }
+
+    #[test]
+    fn avatar_history_pages_and_select_sends_explicit_null_and_explains_conflicts() {
+        let (base, seen) = account_server_with(|route, body| {
+            match route {
+            "GET /api/account/avatar/history?cursor=asset000003" => (200, r#"{"pictures":[{"avatarAsset":"asset000001","avatarUrl":"https://example.test/one"}],"nextCursor":null}"#.into()),
+            "POST /api/account/avatar/select" => {
+                assert_eq!(serde_json::from_slice::<serde_json::Value>(body).unwrap(), serde_json::json!({"avatarAsset":"asset000001","expectedAvatarAsset":null}));
+                (409, r#"{"error":"avatar_changed"}"#.into())
+            }
+            _ => (404, "{}".into()),
+        }
+        });
+        let api = crate::api::Api::new(&base).unwrap();
+        let page = api
+            .avatar_history("fixture-token", Some("asset000003"))
+            .unwrap();
+        assert_eq!(page.pictures[0].avatar_asset, "asset000001");
+        assert!(page.next_cursor.is_none());
+        let failure = crate::pictures::select(&api, "fixture-token", "asset000001", None)
+            .err()
+            .unwrap();
+        assert!(failure.message.contains("changed elsewhere"));
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn previous_picture_gallery_previews_cancel_and_saves_only_the_chosen_nonadjacent_id() {
+        let (base, seen) = account_server_with(|route, body| {
+            match route {
+            "GET /api/account/avatar/history" => (
+                200,
+                serde_json::json!({
+                    "pictures": [
+                        {"avatarAsset":"fixture-gif", "avatarUrl":"https://example.test/a"},
+                        {"avatarAsset":"middle-portrait", "avatarUrl":"https://example.test/b"},
+                        {"avatarAsset":"distant-landscape", "avatarUrl":"https://example.test/c"}
+                    ], "nextCursor": null
+                })
+                .to_string(),
+            ),
+            "GET /api/account/me" => (200, serde_json::json!({"id":"fixture-owner", "username":"fixture_owner", "displayName":"Fixture Owner", "avatarAsset":"middle-portrait", "avatarUrl":"https://example.test/b"}).to_string()),
+            "POST /api/account/avatar/select" => {
+                let request: serde_json::Value = serde_json::from_slice(body).unwrap();
+                if request["expectedAvatarAsset"] == "distant-landscape" {
+                    return (409, r#"{"error":"Picture changed elsewhere"}"#.into());
+                }
+                assert_eq!(
+                    request,
+                    serde_json::json!({
+                        "avatarAsset":"distant-landscape", "expectedAvatarAsset":"fixture-gif"
+                    })
+                );
+                (200, serde_json::json!({"id":"fixture-owner", "username":"fixture_owner", "displayName":"Fixture Owner", "avatarAsset":"distant-landscape", "avatarUrl":"https://example.test/c"}).to_string())
+            }
+            _ => (404, "{}".into()),
+        }
+        });
+        let (context, mut app) = fixture("parity-pictures-profile");
+        app.worker =
+            crate::worker::Worker::new(crate::api::Api::new(&base).unwrap(), context.clone());
+        app.token = Some("fixture-token".into());
+        for (asset, color) in [
+            ("middle-portrait", egui::Color32::RED),
+            ("distant-landscape", egui::Color32::BLUE),
+        ] {
+            app.pictures.insert(
+                &context,
+                asset,
+                vec![(egui::ColorImage::filled([8, 8], color), Duration::ZERO)],
+            );
+        }
+        for cancel_with_escape in [false, true] {
+            click_label(&mut app, &context, "Change profile picture");
+            click_label(&mut app, &context, "Previous pictures");
+            receive_until(&mut app, |app| {
+                app.picture_edit
+                    .gallery
+                    .as_ref()
+                    .is_some_and(|gallery| !gallery.loading)
+            });
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            assert!(shows(&output, "Current"), "{:?}", texts(&output));
+            assert_eq!(app.picture_edit.gallery.as_ref().unwrap().pictures.len(), 3);
+            click_label(&mut app, &context, "Save picture");
+            assert!(
+                app.picture_edit.busy.is_none(),
+                "the current selection cannot save"
+            );
+            click_label(&mut app, &context, "Previous picture 3");
+            let output = render(&mut app, &context, vec![]);
+            let texture = app.pictures.texture_id("distant-landscape").unwrap();
+            assert!(
+                painted(&output, texture)
+                    .iter()
+                    .any(|image| image.rect.size() == egui::vec2(176.0, 176.0)),
+                "the chosen tile updates the large preview"
+            );
+            assert_eq!(
+                app.picture_edit
+                    .gallery
+                    .as_ref()
+                    .unwrap()
+                    .selected
+                    .as_deref(),
+                Some("distant-landscape")
+            );
+            assert_eq!(
+                app.account.as_ref().unwrap().avatar_asset.as_deref(),
+                Some("fixture-gif")
+            );
+            if cancel_with_escape {
+                render(&mut app, &context, press(egui::Key::Escape));
+            } else {
+                click_label(&mut app, &context, "Cancel");
+            }
+            assert!(app.picture_edit.gallery.is_none());
+            assert!(
+                !seen
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|request| request.starts_with("POST"))
+            );
+        }
+        click_label(&mut app, &context, "Change profile picture");
+        click_label(&mut app, &context, "Previous pictures");
+        receive_until(&mut app, |app| {
+            app.picture_edit
+                .gallery
+                .as_ref()
+                .is_some_and(|gallery| !gallery.loading)
+        });
+        assert_eq!(
+            app.picture_edit
+                .gallery
+                .as_ref()
+                .unwrap()
+                .selected
+                .as_deref(),
+            Some("fixture-gif")
+        );
+        click_label(&mut app, &context, "Previous picture 3");
+        click_label(&mut app, &context, "Save picture");
+        click_label(&mut app, &context, "Save picture");
+        receive_until(&mut app, |app| app.picture_edit.busy.is_none());
+        assert_eq!(
+            app.account.as_ref().unwrap().avatar_asset.as_deref(),
+            Some("distant-landscape")
+        );
+        assert!(app.picture_edit.gallery.is_none());
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|request| request.starts_with("POST /api/account/avatar/select"))
+                .count(),
+            1
+        );
+        // A missed live event is repaired on conflict; reopening uses the refreshed account.
+        click_label(&mut app, &context, "Change profile picture");
+        click_label(&mut app, &context, "Previous pictures");
+        receive_until(&mut app, |app| {
+            app.picture_edit
+                .gallery
+                .as_ref()
+                .is_some_and(|gallery| !gallery.loading)
+        });
+        click_label(&mut app, &context, "Previous picture 1");
+        click_label(&mut app, &context, "Save picture");
+        receive_until(&mut app, |app| app.picture_edit.busy.is_none());
+        assert_eq!(
+            app.account.as_ref().unwrap().avatar_asset.as_deref(),
+            Some("middle-portrait")
+        );
+        click_label(&mut app, &context, "Cancel");
+        click_label(&mut app, &context, "Change profile picture");
+        click_label(&mut app, &context, "Previous pictures");
+        receive_until(&mut app, |app| {
+            app.picture_edit
+                .gallery
+                .as_ref()
+                .is_some_and(|gallery| !gallery.loading)
+        });
+        assert_eq!(
+            app.picture_edit
+                .gallery
+                .as_ref()
+                .unwrap()
+                .expected
+                .as_deref(),
+            Some("middle-portrait")
+        );
     }
 
     #[test]
@@ -39632,6 +40561,12 @@ mod tests {
         );
         let output = render(&mut app, &context, vec![]);
         assert!(!shows(&output, "Remove picture") && !shows(&output, "Removing…"));
+        egui::Popup::close_all(&context);
+        click(&mut app, &context, frame);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Previous pictures"));
+        assert!(!shows(&output, "Edit picture…") && !shows(&output, "Remove picture"));
+        app.picture_edit.busy = Some((Target::Avatar, false));
         // An upload shows its own decoded picture at once, everywhere you appear.
         account.avatar_asset = Some("new-picture".into());
         account.avatar_url = Some("https://cdn.caper.chat/assets/new-picture?exp=1&sig=x".into());
@@ -40452,9 +41387,13 @@ mod tests {
         assert_eq!(app.profile_drafts["fixture-alex"].text, retained);
         assert_eq!(app.profile_drafts["fixture-alex"].files.len(), 1);
         assert!(
-            seen.lock().unwrap().is_empty(),
-            "picking files does not create a DM or upload"
+            seen.lock()
+                .unwrap()
+                .iter()
+                .all(|line| line == "GET /api/dms"),
+            "this fixture refuses destination lookup; picking never sends a message"
         );
+        assert!(!app.profile_drafts["fixture-alex"].needs_upload());
         app.logout();
         assert!(app.profile_drafts.is_empty());
         assert!(app.profile_picker.is_none());
@@ -44577,7 +45516,64 @@ mod tests {
                 );
             }
             click(&mut app, revealed.center());
-            assert_eq!(app.viewer.take().unwrap().len(), visual_count);
+            let mut viewer = app.viewer.take().unwrap();
+            assert_eq!(viewer.len(), visual_count);
+            // The modal action closes and writes the exact originating key,
+            // so the message cover returns without changing saved metadata.
+            let mut show_viewer = |viewer: &mut crate::viewer::Viewer, events| {
+                let mut keep = true;
+                let output = context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(1440.0, 900.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |context| {
+                        keep = viewer.show(
+                            context,
+                            &mut app.media,
+                            &mut app.media_proxy,
+                            chrono::Utc::now().timestamp(),
+                        );
+                    },
+                );
+                (keep, output)
+            };
+            show_viewer(&mut viewer, vec![]);
+            let (_, output) = show_viewer(&mut viewer, vec![]);
+            let hide = node_bounds(&output, "Hide spoiler").unwrap();
+            let mut keep = true;
+            for pressed in [true, false] {
+                keep = show_viewer(
+                    &mut viewer,
+                    vec![
+                        egui::Event::PointerMoved(hide.center()),
+                        egui::Event::PointerButton {
+                            pos: hide.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                )
+                .0;
+            }
+            assert!(!keep, "hide closes the viewer");
+            drop(viewer);
+            draw(&mut app, vec![]);
+            let output = draw(&mut app, vec![]);
+            assert!(node_bounds(&output, &format!("View {}", files[visual].name)).is_none());
+            assert!(files[visual].spoiler, "saved spoiler metadata is unchanged");
+            click(&mut app, cover.center());
+            let output = draw(&mut app, vec![]);
+            let hide = node_bounds(&output, "Hide spoiler").unwrap();
+            click(&mut app, hide.center());
+            assert!(app.viewer.is_none(), "inline hide never opens the viewer");
+            let output = draw(&mut app, vec![]);
+            assert!(node_bounds(&output, &format!("View {}", files[visual].name)).is_none());
         }
     }
 
@@ -46327,7 +47323,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_card_files_keep_their_edit_until_send() {
+    fn profile_card_files_restart_uploads_after_edits_without_sending() {
         let context = egui::Context::default();
         let (base, _) = account_server(Vec::new());
         let mut app = CaperApp::new(
@@ -46376,7 +47372,13 @@ mod tests {
             .flatten()
             .expect("an edited preview");
         assert!(preview.size[1] > preview.size[0]);
-        assert!(file.attachment.is_none(), "uploads wait for Send");
+        render(&mut app, &context, vec![]);
+        assert!(
+            !app.profile_drafts["fixture-alex"].needs_upload(),
+            "the edit starts a fresh upload"
+        );
+        assert!(!app.profile_drafts["fixture-alex"].sending);
+        assert!(app.selected_direct.is_none(), "uploading never navigates");
         // Spoiler leads the card tile's bar; marking the file keeps its edit.
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
@@ -46396,7 +47398,7 @@ mod tests {
         assert_eq!(click_opening(&mut app, &context, spot), None);
         let output = preview_ready(&mut app, &context);
         assert!(app.mention_card.is_some(), "the card stays under it");
-        // Its edit is applied only at Send, so opening it prepares it first.
+        // Opening the local original prepares the edit independently of its upload.
         let open = node_bounds(&output, "Open in default app")
             .unwrap()
             .center();

@@ -51,7 +51,7 @@ import type { MentionCandidate } from "../chat/mentions";
 import type { Space } from "../spaces/client";
 import Slider from "../components/Slider";
 import PresenceDot from "../components/PresenceDot";
-import Avatar from "../components/Avatar";
+import Avatar, { type AvatarPerson } from "../components/Avatar";
 import Tooltip from "../components/Tooltip";
 import Wordmark from "../components/Wordmark";
 import { useBackdropDismiss } from "../components/dialogBackdrop";
@@ -68,6 +68,7 @@ import MicPlayback, { SpeakerTest } from "./MicPlayback";
 import AudioDiagnostics from "./AudioDiagnostics";
 import VoiceActivity from "./VoiceActivity";
 import ChannelSidebar from "./ChannelSidebar";
+import RoomResize from "./RoomResize";
 import { useBrowseSwipe } from "../spaces/browseTransition";
 import { useMembersDrawer } from "../spaces/membersDrawer";
 import { STRIP_FACES, callCardFaces, liveNames } from "../media/live-now";
@@ -440,6 +441,7 @@ interface CallProps {
     demo?: boolean;
     direct?: boolean;
     directPeerId?: string;
+    directPeer?: AvatarPerson;
     /** A DM with the Caper account: messages go to the feedback team. */
     team?: boolean;
     joined?: boolean;
@@ -1959,6 +1961,7 @@ export default function Call({
           members.swipe.onClickCapture(event);
         }}
       >
+        {!embedded && account && <RoomResize room={roomRef} />}
         {typeof spaceRail === "function" ? spaceRail(connected ? voiceChannel?.spaceId : undefined) : spaceRail}
         <ChannelSidebar>
           <div className="sidebar-channels">{navigation}</div>
@@ -2206,6 +2209,7 @@ export default function Call({
               identityReady={identityReady && engaged}
               direct={channel?.direct}
               directPeerId={channel?.directPeerId}
+              directPeer={channel?.directPeer}
               team={!!channel?.team}
               onReadCursor={onReadCursor}
               readActive={engaged && !browsing}

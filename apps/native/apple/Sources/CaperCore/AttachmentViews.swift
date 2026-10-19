@@ -303,7 +303,27 @@ struct MessageAttachmentsView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Reveal spoiler attachment")
             .accessibilityHint("Shows the hidden file")
-        } else if attachment.unavailable {
+        } else {
+            revealedAttachmentView(attachment)
+                .overlay(alignment: .topTrailing) {
+                    if attachment.spoiler {
+                        Button { revealed.remove(attachment.id) } label: {
+                            Label {
+                                Text("Hide spoiler").font(CaperTheme.font(11, weight: .bold)).lineLimit(2)
+                            } icon: { Image(systemName: "eye.slash").font(.system(size: 14)) }
+                        }
+                        .buttonStyle(MediaViewerButton(labelled: true))
+                        .labelStyle(.titleAndIcon)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(4)
+                    }
+                }
+                .transaction { if attachment.spoiler { $0.animation = nil } }
+        }
+    }
+
+    @ViewBuilder private func revealedAttachmentView(_ attachment: ChatAttachment) -> some View {
+        if attachment.unavailable {
             SentAttachmentPlaceholder(attachment: attachment, label: "File removed")
         } else if attachment.status == .failed {
             SentAttachmentPlaceholder(attachment: attachment, label: "Processing failed")
@@ -332,7 +352,8 @@ struct MessageAttachmentsView: View {
         guard let mediaViewer else { return nil }
         let items = MediaViewerPolicy.items(attachments, revealedSpoilerIDs: revealed)
         guard let start = items.firstIndex(where: { $0.id == attachment.id }) else { return nil }
-        return { mediaViewer(MediaViewerRequest(items: items, start: start, chat: chat)) }
+        return { mediaViewer(MediaViewerRequest(items: items, start: start, chat: chat,
+                                                hideSpoiler: { revealed.remove($0) })) }
     }
 }
 
@@ -487,6 +508,7 @@ private struct AttachmentSpoilerView: View {
     let chat: ChatModel?
     @Environment(\.sentGalleryCell) private var galleryCell
     @State private var image: CGImage?
+    @State private var hovered = false
 
     private var visual: Bool {
         !attachment.unavailable && attachment.status != .failed &&
@@ -496,15 +518,16 @@ private struct AttachmentSpoilerView: View {
     var body: some View {
         Group {
             if galleryCell || visual {
-                SpoilerThumbnail(image: image)
+                SpoilerThumbnail(image: image, revealHint: true, emphasized: hovered)
                     .modifier(AttachmentFrame(attachment: attachment, fallback: (240, 180)))
             } else {
-                SpoilerThumbnail(image: nil)
+                SpoilerThumbnail(image: nil, revealHint: true, emphasized: hovered)
                     .frame(maxWidth: .infinity, minHeight: 80, maxHeight: 80)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
         .accessibilityHidden(true)
+        .onHover { hovered = $0 }
         .task(id: "\(attachment.id):\(attachment.previewUrl ?? ""):\(attachment.url ?? ""):\(visual)") {
             image = nil
             guard visual else { return }
@@ -532,6 +555,8 @@ private struct SpoilerThumbnail: View {
     /// False where the caller places `SpoilerLabel` itself: a staged tile
     /// whose action bar spans its top edge centres it below the bar.
     var labelled = true
+    var revealHint = false
+    var emphasized = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -543,7 +568,17 @@ private struct SpoilerThumbnail: View {
                         .blur(radius: max(geometry.size.width, geometry.size.height) * 0.24, opaque: true)
                         .clipped()
                 }
-                if labelled { SpoilerLabel() }
+                CaperTheme.blackout.opacity(0.55)
+                Canvas { context, size in
+                    var lines = Path()
+                    for x in stride(from: -size.height, through: size.width, by: 12) {
+                        lines.move(to: CGPoint(x: x, y: 0))
+                        lines.addLine(to: CGPoint(x: x + size.height, y: size.height))
+                    }
+                    context.stroke(lines, with: .color(.white.opacity(0.035)), lineWidth: 1)
+                }
+                .allowsHitTesting(false)
+                if labelled { SpoilerLabel(revealHint: revealHint, emphasized: emphasized) }
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
@@ -553,14 +588,29 @@ private struct SpoilerThumbnail: View {
     }
 }
 
-/// The readable "SPOILER" pill over a blurred cover.
+/// Compact badge shared by sent covers and staged attachments.
 private struct SpoilerLabel: View {
+    var revealHint = false
+    var emphasized = false
+
     var body: some View {
-        Text("SPOILER")
-            .font(CaperTheme.font(11, weight: .bold))
-            .foregroundStyle(CaperTheme.text)
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(CaperTheme.blackout.opacity(0.8), in: RoundedRectangle(cornerRadius: 8))
+        VStack(spacing: 3) {
+            HStack(spacing: 5) {
+                Image(systemName: "eye.slash").font(.system(size: 14)).accessibilityHidden(true)
+                Text("Spoiler").font(CaperTheme.font(12, weight: .bold))
+            }
+            if revealHint {
+                #if os(iOS)
+                Text("Tap to reveal").font(CaperTheme.font(11))
+                #else
+                Text("Click to reveal").font(CaperTheme.font(11))
+                #endif
+            }
+        }
+        .foregroundStyle(CaperTheme.text)
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(CaperTheme.blackout.opacity(emphasized ? 0.98 : 0.9), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(emphasized ? CaperTheme.muted : CaperTheme.border))
     }
 }
 
@@ -1105,6 +1155,7 @@ struct MediaViewerRequest: Identifiable {
     /// Follows refreshed URLs and removals; nil for another conversation's
     /// files, shown as delivered.
     let chat: ChatModel?
+    let hideSpoiler: (String) -> Void
 }
 
 /// Opens the media viewer from attachments below a `MediaViewerHost`.
@@ -1170,6 +1221,7 @@ private struct MediaViewer: View {
     @FocusState private var focused: Bool
     #endif
     @State private var index: Int
+    @State private var hidingSpoiler = false
 
     init(request: MediaViewerRequest, close: @escaping () -> Void) {
         self.request = request
@@ -1201,8 +1253,10 @@ private struct MediaViewer: View {
                 .onTapGesture(perform: close)
                 #endif
                 .accessibilityHidden(true)
-            pages(items)
-            if items.indices.contains(position) { chrome(items[position], position: position, count: items.count) }
+            if !hidingSpoiler {
+                pages(items)
+                if items.indices.contains(position) { chrome(items[position], position: position, count: items.count) }
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(items.indices.contains(position) && items[position].kind == .video ? "Video viewer" : "Image viewer")
@@ -1283,6 +1337,24 @@ private struct MediaViewer: View {
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
             .background(LinearGradient(gradient: Gradient(colors: [Color.black.opacity(0.7), Color.black.opacity(0)]), startPoint: .top, endPoint: .bottom))
+            if item.spoiler {
+                HStack {
+                    Spacer(minLength: 0)
+                    Button {
+                        // Unmount playback even while iOS dismisses its full-screen cover.
+                        hidingSpoiler = true
+                        request.hideSpoiler(item.id)
+                        close()
+                    } label: {
+                        Label { Text("Hide spoiler") } icon: { Image(systemName: "eye.slash").font(.system(size: 14)) }
+                    }
+                    .buttonStyle(MediaViewerButton(labelled: true))
+                    .labelStyle(.titleAndIcon)
+                    .fixedSize()
+                    .accessibilityIdentifier("media-viewer-hide-spoiler")
+                }
+                .padding(.horizontal, 12)
+            }
             Spacer(minLength: 0)
         }
         .overlay {
@@ -1373,16 +1445,25 @@ private struct SharedAttachmentFile: Transferable, Sendable {
     }
 }
 
-/// The viewer's round controls over its dark backdrop.
+/// Round viewer controls, with a compact labelled variant for spoiler hiding.
 private struct MediaViewerButton: ButtonStyle {
+    var labelled = false
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(.white)
-            .frame(width: 36, height: 36)
-            .background(Circle().fill(Color.black.opacity(configuration.isPressed ? 0.8 : 0.55)))
-            .overlay(Circle().stroke(Color.white.opacity(0.14)))
+            .padding(.horizontal, labelled ? 8 : 0)
+            .frame(width: labelled ? nil : 36, height: 36)
+            .background {
+                if labelled {
+                    RoundedRectangle(cornerRadius: 8).fill(CaperTheme.blackout.opacity(configuration.isPressed ? 0.98 : 0.9))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                } else {
+                    Circle().fill(Color.black.opacity(configuration.isPressed ? 0.8 : 0.55))
+                        .overlay(Circle().stroke(Color.white.opacity(0.14)))
+                }
+            }
             #if os(iOS)
             .frame(minWidth: 44, minHeight: 44)
             #endif

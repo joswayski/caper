@@ -287,7 +287,7 @@ private struct UpdateHighlightRow: View {
             Circle().fill(CaperTheme.muted).frame(width: 5, height: 5)
                 .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(CaperTheme.font(15, weight: .bold)).foregroundStyle(CaperTheme.text)
                 Text(text).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted).lineSpacing(3)
             }.textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)

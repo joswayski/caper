@@ -188,6 +188,31 @@ class PicturesTest {
         assertEquals("/api/spaces/space0000001/icon", icon.path)
     }
 
+    @Test fun `history pages and selection sends target and explicit expected including null`() = runBlocking {
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        server.enqueue(MockResponse().setBody("""{"pictures":[{"avatarAsset":"$id","avatarUrl":"https://cdn.caper.chat/picture"}],"nextCursor":"$id"}"""))
+        val page = api.avatarHistory("account-secret")
+        assertEquals(id, page.pictures.single().avatarAsset)
+        assertEquals(id, page.nextCursor)
+        assertEquals("/api/account/avatar/history", server.takeRequest().path)
+        server.enqueue(MockResponse().setBody("""{"pictures":[],"nextCursor":null}"""))
+        assertTrue(api.avatarHistory("account-secret", page.nextCursor).pictures.isEmpty())
+        assertEquals("/api/account/avatar/history?cursor=$id", server.takeRequest().path)
+        for (asset in listOf(id, null)) {
+            server.enqueue(MockResponse().setBody("""{"id":"account00001","avatarAsset":"$id"}"""))
+            assertEquals(id, api.selectAvatar("account-secret", id, asset).avatarAsset)
+            val request = server.takeRequest()
+            assertEquals("POST", request.method)
+            assertEquals("/api/account/avatar/select", request.path)
+            val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+            assertEquals("\"$id\"", body["avatarAsset"].toString())
+            assertEquals(if (asset == null) "null" else "\"$asset\"", body["expectedAvatarAsset"].toString())
+        }
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"error":"stale avatar"}"""))
+        val error = runCatching { api.selectAvatar("account-secret", id, null) }.exceptionOrNull()
+        assertTrue(error is ApiException && error.status == 409)
+    }
+
     @Test fun `empty pictures are refused before reserving`() = runBlocking {
         val error = runCatching {
             PictureUploader(CaperApi(baseUrl = server.url("/").toString()))

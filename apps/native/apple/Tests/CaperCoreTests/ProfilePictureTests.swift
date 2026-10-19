@@ -475,6 +475,34 @@ final class ProfilePictureTests: XCTestCase {
     // MARK: Own profile refresh
 
     @MainActor
+    func testHistoryPaginationAndStaleSelectionKeepCurrentIdentity() async throws {
+        PictureURLProtocol.handler = { request in
+            if request.httpMethod == "POST" { return (409, Data(#"{"error":"stale avatar"}"#.utf8)) }
+            if request.url?.path == "/api/account/me" {
+                return (200, Data(#"{"id":"self","username":"me","avatarId":4}"#.utf8))
+            }
+            if request.url?.query != nil { return (200, Data(#"{"pictures":[],"nextCursor":null}"#.utf8)) }
+            return (200, Data(#"{"pictures":[{"avatarAsset":"\#(pictureID)","avatarUrl":"\#(pictureURL)"}],"nextCursor":"\#(pictureID)"}"#.utf8))
+        }
+        let model = AppModel(api: client())
+        model.account = Account(id: "self", username: "me", avatarId: 4, avatarAsset: pictureID, avatarUrl: pictureURL)
+        let page = try await model.avatarHistory(cursor: nil)
+        let last = try await model.avatarHistory(cursor: page.nextCursor)
+        XCTAssertTrue(last.pictures.isEmpty)
+        XCTAssertNil(last.nextCursor)
+        XCTAssertEqual(PictureURLProtocol.requests.last?.url.query, "cursor=\(pictureID)")
+        do {
+            try await model.selectAvatar(pictureID, expected: pictureID)
+            XCTFail("stale selection must fail")
+        } catch { XCTAssertEqual((error as? APIError)?.status, 409) }
+        XCTAssertNil(model.account?.avatarAsset, "stale selection refreshes the current identity before reopening")
+        let request = try XCTUnwrap(PictureURLProtocol.requests.first(where: { $0.method == "POST" }))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.body)) as? [String: Any])
+        XCTAssertEqual(body["avatarAsset"] as? String, pictureID)
+        XCTAssertEqual(body["expectedAvatarAsset"] as? String, pictureID)
+    }
+
+    @MainActor
     func testOwnPictureChangesRefreshRetainedIdentitiesAndRemovalRestoresTheSameMascot() async throws {
         let account = #"{"id":"self","username":"me","displayName":"Me","avatarId":4"#
         PictureURLProtocol.handler = { request in
@@ -484,6 +512,10 @@ final class ProfilePictureTests: XCTestCase {
             case ("POST", "/api/assets/\(pictureID)/complete"):
                 return (200, Data(#"{"id":"\#(pictureID)","kind":"image","account":\#(account),"avatarAsset":"\#(pictureID)","avatarUrl":"\#(pictureURL)"}}"#.utf8))
             case ("DELETE", "/api/account/avatar"): return (200, Data((account + "}").utf8))
+            case ("GET", "/api/account/avatar/history"):
+                return (200, Data(#"{"pictures":[{"avatarAsset":"\#(pictureID)","avatarUrl":"\#(pictureURL)"}],"nextCursor":null}"#.utf8))
+            case ("POST", "/api/account/avatar/select"):
+                return (200, Data((account + ",\"avatarAsset\":\"\(pictureID)\",\"avatarUrl\":\"\(pictureURL)\"}").utf8))
             default: throw URLError(.badURL)
             }
         }
@@ -529,6 +561,18 @@ final class ProfilePictureTests: XCTestCase {
         XCTAssertEqual(model.detail?.members.first?.avatarId, 4)
         XCTAssertNil(model.chat.messages.first?.author.avatarPicture)
         XCTAssertNil(model.chat.messages.last?.replyTo?.author.avatarPicture)
+        let page = try await model.avatarHistory(cursor: nil)
+        XCTAssertEqual(page.pictures.first?.avatarAsset, pictureID)
+        XCTAssertNil(page.nextCursor)
+        XCTAssertNil(model.account?.avatarAsset, "browsing history does not apply a picture")
+        try await model.selectAvatar(pictureID, expected: nil)
+        XCTAssertEqual(model.account?.avatarAsset, pictureID)
+        XCTAssertEqual(model.chat.messages.first?.author.avatarPicture?.asset, pictureID)
+        let restored = try XCTUnwrap(PictureURLProtocol.requests.last)
+        XCTAssertEqual(restored.url.path, "/api/account/avatar/select")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(restored.body)) as? [String: Any])
+        XCTAssertEqual(body["avatarAsset"] as? String, pictureID)
+        XCTAssertTrue(body["expectedAvatarAsset"] is NSNull)
     }
 
     @MainActor

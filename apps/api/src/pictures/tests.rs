@@ -1,5 +1,22 @@
 use super::*;
 
+#[test]
+fn selecting_requires_an_explicit_expected_picture() {
+    assert!(serde_json::from_value::<SelectAvatar>(json!({"avatarAsset": "target"})).is_err());
+    assert!(
+        serde_json::from_value::<SelectAvatar>(
+            json!({"avatarAsset": "target", "expectedAvatarAsset": null})
+        )
+        .is_ok()
+    );
+    assert!(
+        serde_json::from_value::<SelectAvatar>(
+            json!({"avatarAsset": "target", "expectedAvatarAsset": "current"})
+        )
+        .is_ok()
+    );
+}
+
 fn gif(width: u16, height: u16) -> Vec<u8> {
     let mut bytes = b"GIF89a".to_vec();
     bytes.extend(width.to_le_bytes());

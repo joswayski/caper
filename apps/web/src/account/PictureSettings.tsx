@@ -1,4 +1,4 @@
-import { ImageUp, Pencil, Trash2 } from "lucide-react";
+import { Images, ImageUp, Pencil, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import AttachmentEditor from "../chat/AttachmentEditor";
 import type { AttachmentEdit } from "../chat/edit";
@@ -9,6 +9,7 @@ import SpaceIcon from "../components/SpaceIcon";
 import { removeSpaceIcon, SpacesApiError, type Space } from "../spaces/client";
 import { avatarUrl } from "./avatar";
 import { AccountApiError, getRememberedAccount, removeAvatar, subscribeAccount, type Account } from "./client";
+import AvatarHistory from "./AvatarHistory";
 import { PictureError, uploadAvatar, uploadSpaceIcon } from "./picture-upload";
 import { gifSize, pictureErrorMessage, pictureMessages } from "./pictures";
 import "./pictures.css";
@@ -31,6 +32,7 @@ function PictureEditor({
   removeFailed,
   onUpload,
   onRemove,
+  onHistory,
 }: {
   title: string;
   preview: ReactNode;
@@ -41,6 +43,7 @@ function PictureEditor({
   removeFailed: (error: unknown) => string;
   onUpload: (file: Blob, progress: (fraction: number) => void, edit?: AttachmentEdit) => Promise<void>;
   onRemove: () => Promise<void>;
+  onHistory?: () => void;
 }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [error, setError] = useState<string>();
@@ -71,7 +74,7 @@ function PictureEditor({
     if (!document.activeElement || document.activeElement === document.body)
       frame.current?.querySelector<HTMLButtonElement>(".picture-settings-edit")?.focus();
   }, [busy]);
-  const offersMenu = removable;
+  const offersMenu = removable || !!onHistory;
 
   // A click or tap anywhere else closes the menu.
   useEffect(() => {
@@ -219,21 +222,24 @@ function PictureEditor({
               items[(at + step + items.length) % items.length]?.focus();
             }}
           >
+            {removable && (
+              <button
+                type="button"
+                role="menuitem"
+                autoFocus
+                disabled={unavailable || !currentUrl}
+                onClick={() => {
+                  if (currentUrl) void choose(currentUrl);
+                }}
+              >
+                <Pencil size={16} aria-hidden="true" />
+                Edit {noun}
+              </button>
+            )}
             <button
               type="button"
               role="menuitem"
-              autoFocus
-              disabled={unavailable || !currentUrl}
-              onClick={() => {
-                if (currentUrl) void choose(currentUrl);
-              }}
-            >
-              <Pencil size={16} aria-hidden="true" />
-              Edit {noun}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
+              autoFocus={!removable}
               disabled={unavailable}
               onClick={() => {
                 setMenu(false);
@@ -243,23 +249,47 @@ function PictureEditor({
               <ImageUp size={16} aria-hidden="true" />
               Choose a new {noun}
             </button>
-            <button
-              type="button"
-              role="menuitem"
-              className="picture-settings-remove"
-              onClick={() => {
-                setMenu(false);
-                void remove();
-              }}
-            >
-              <Trash2 size={16} aria-hidden="true" />
-              Remove {noun}
-            </button>
+            {onHistory && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenu(false);
+                  setDone(undefined);
+                  setError(undefined);
+                  frame.current?.querySelector<HTMLButtonElement>(".picture-settings-edit")?.focus();
+                  onHistory();
+                }}
+              >
+                <Images size={16} aria-hidden="true" />
+                Previous pictures
+              </button>
+            )}
+            {removable && (
+              <button
+                type="button"
+                role="menuitem"
+                className="picture-settings-remove"
+                onClick={() => {
+                  setMenu(false);
+                  void remove();
+                }}
+              >
+                <Trash2 size={16} aria-hidden="true" />
+                Remove {noun}
+              </button>
+            )}
           </div>
         )}
       </div>
       <input
-        ref={input}
+        ref={(element) => {
+          input.current = element;
+          // Canceling the native picker must not dismiss any enclosing dialogs.
+          const cancel = (event: Event) => event.stopPropagation();
+          element?.addEventListener("cancel", cancel);
+          return () => element?.removeEventListener("cancel", cancel);
+        }}
         type="file"
         accept="image/*"
         hidden
@@ -341,28 +371,34 @@ export function ProfilePictureSettings({ account: initial }: { account: Account 
   const remembered = useSyncExternalStore(subscribeAccount, getRememberedAccount, () => undefined);
   const account = remembered?.id === initial.id ? remembered : initial;
   const name = account.displayName ?? account.username ?? "You";
+  const [history, setHistory] = useState<Account>();
+  const closeHistory = useCallback(() => setHistory(undefined), []);
   return (
-    <PictureEditor
-      key={account.id}
-      title="Profile picture"
-      noun="picture"
-      preview={
-        account.avatarAsset || !avatarUrl(account.avatarId) ? (
-          <Avatar person={account} name={name} />
-        ) : (
-          <ChangeMe avatarId={account.avatarId} />
-        )
-      }
-      removable={!!account.avatarAsset}
-      currentUrl={account.avatarUrl}
-      removeFailed={(error) => removalError(error, "avatar", "Your picture couldn’t be removed. Try again.")}
-      onUpload={async (file, progress, edit) => {
-        await uploadAvatar(file, progress, undefined, edit);
-      }}
-      onRemove={async () => {
-        await removeAvatar();
-      }}
-    />
+    <>
+      <PictureEditor
+        key={account.id}
+        title="Profile picture"
+        noun="picture"
+        preview={
+          account.avatarAsset || !avatarUrl(account.avatarId) ? (
+            <Avatar person={account} name={name} />
+          ) : (
+            <ChangeMe avatarId={account.avatarId} />
+          )
+        }
+        removable={!!account.avatarAsset}
+        currentUrl={account.avatarUrl}
+        removeFailed={(error) => removalError(error, "avatar", "Your picture couldn’t be removed. Try again.")}
+        onUpload={async (file, progress, edit) => {
+          await uploadAvatar(file, progress, undefined, edit);
+        }}
+        onRemove={async () => {
+          await removeAvatar();
+        }}
+        onHistory={() => setHistory(account)}
+      />
+      {history?.id === account.id && <AvatarHistory account={history} onClose={closeHistory} />}
+    </>
   );
 }
 

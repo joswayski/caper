@@ -91,6 +91,46 @@ test("members start open in the initial markup, before responsive hydration", ()
   expect(markup).toContain('aria-label="Hide member list" aria-expanded="true"');
 });
 
+test.each(["peer", "self", "space", "visit"])("conversation header avatars are scoped to DMs: %s", (kind) => {
+  const direct = kind !== "space";
+  const peer = { id: kind === "self" ? "me" : "other", avatarId: 3, avatarAsset: "peer-picture" };
+  const markup = renderToStaticMarkup(
+    <Call
+      initialAccount={{ id: "me", username: "me", displayName: "Me" }}
+      channel={{
+        id: "conversation",
+        name: "Same name",
+        spaceName: "Space",
+        direct,
+        directPeerId: kind === "visit" ? undefined : peer.id,
+        directPeer: kind === "visit" ? undefined : peer,
+        visitor: kind === "visit",
+      }}
+      initialHistory={{
+        space: { id: "space", name: "Space" },
+        channel: { id: "conversation", name: "Same name", direct },
+        cursor: "0",
+        hasMore: false,
+        messages: [],
+      }}
+    />,
+  );
+  const header = markup.match(/<header class="chat-heading">(.*?)<\/header>/)?.[1];
+  expect(header).toBeDefined();
+  const desktop = header!.match(/<h2[^>]*>(.*?)<\/h2>/)?.[1];
+  const mobile = header!.match(/<summary[^>]*>(.*?)<\/summary>/)?.[1];
+  for (const title of [desktop, mobile]) {
+    expect(title).toBeDefined();
+    if (kind === "peer" || kind === "self") {
+      expect(title).toContain('class="chat-peer-avatar"');
+      expect(title).toContain('data-avatar-id="3"');
+      expect(title).toContain('data-avatar-asset="peer-picture"');
+    } else {
+      expect(title).not.toContain('class="chat-peer-avatar"');
+    }
+  }
+});
+
 test.each([
   [true, "me", "me", "You can message yourself here to keep notes, reminders, and ideas."],
   [true, "other", "me", "Only you and Same name can read this conversation."],

@@ -137,7 +137,7 @@ internal fun downloadName(name: String): String =
     name.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_").trim().trimStart('.').ifEmpty { "file" }
 
 /** A timeline's open viewer: the files it pages through and the caption under their names. */
-internal data class OpenViewer(val pages: ViewerPages, val caption: String?)
+internal data class OpenViewer(val pages: ViewerPages, val caption: String?, val hideSpoiler: (String) -> Unit)
 
 /**
  * Holds a timeline's media viewer above its LazyColumn. A viewer composed in its message row
@@ -171,7 +171,7 @@ internal fun liveAttachments(state: AppUiState, ids: List<String>): List<ChatAtt
     if (attachments.isEmpty()) return SideEffect { host.open = null }
     val uriHandler = LocalUriHandler.current
     key(open) {
-        MediaViewer(open.pages, attachments, open.caption, close = { host.open = null }, open = { url -> runCatching { uriHandler.openUri(url) } }, onLoadFailed = onLoadFailed)
+        MediaViewer(open.pages, attachments, open.caption, close = { host.open = null }, open = { url -> runCatching { uriHandler.openUri(url) } }, onLoadFailed = onLoadFailed, hideSpoiler = open.hideSpoiler)
     }
 }
 
@@ -186,6 +186,7 @@ private const val DOUBLE_TAP_ZOOM = 2f
 @Composable internal fun MediaViewer(
     pages: ViewerPages, attachments: List<ChatAttachment>, caption: String?, close: () -> Unit,
     open: (String) -> Unit, onLoadFailed: (ChatAttachment, Int?) -> Unit,
+    hideSpoiler: (String) -> Unit,
 ) {
     val ids = pages.ids
     val names = remember { attachments.associate { it.id to it.name } }
@@ -251,6 +252,11 @@ private const val DOUBLE_TAP_ZOOM = 2f
                     Icon(painterResource(R.drawable.lucide_external_link), null, Modifier.size(20.dp), tint = tint)
                 }
                 IconButton(close, Modifier.semantics { contentDescription = "Close viewer" }) { Icon(painterResource(R.drawable.lucide_x), null, tint = Text) }
+            }
+            // Separate row keeps the labelled action readable on narrow phones.
+            if (attachments.firstOrNull { it.id == ids[page] }?.spoiler == true) {
+                HideSpoilerButton({ close(); hideSpoiler(ids[page]) }, Modifier.align(Alignment.End)
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)).padding(horizontal = 8.dp))
             }
             Box(
                 Modifier.weight(1f).fillMaxWidth().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal))

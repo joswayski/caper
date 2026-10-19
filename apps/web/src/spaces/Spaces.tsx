@@ -78,7 +78,6 @@ import {
   refreshNotificationSettings,
   useNotificationSettings,
 } from "./notifications";
-import Tooltip from "../components/Tooltip";
 import {
   createDirectNavigation,
   createSpaceNavigation,
@@ -2593,7 +2592,7 @@ export default function Spaces({
     leaveRequest(request);
   };
   const directPeer = (conversation: DirectConversation): BlockedAccount => ({ ...conversation.peer });
-  // Phones hide the header's Block button, so it moves into the name menu like Members.
+  // Keep blocking secondary: the name menu on phones and the profile menu elsewhere.
   const directMenuItems =
     currentDirect &&
     currentDirect.peer.id !== account?.id &&
@@ -2616,17 +2615,6 @@ export default function Spaces({
         onDecline={() => declineRequest(currentDirect)}
         onBlock={() => setBlockTarget(directPeer(currentDirect))}
       />
-    ) : directCanBlock ? (
-      <Tooltip content={`Block @${currentDirect.peer.username}`}>
-        <button
-          type="button"
-          className="member-list-toggle"
-          aria-label={`Block @${currentDirect.peer.username}`}
-          onClick={() => setBlockTarget(directPeer(currentDirect))}
-        >
-          <Ban aria-hidden="true" />
-        </button>
-      </Tooltip>
     ) : undefined;
   const visitHistory = visitView?.history;
   const channel = visitView
@@ -3661,6 +3649,7 @@ export default function Spaces({
                 demo: detail.space.demo,
                 direct: !!directView,
                 directPeerId: currentDirect?.peer.id,
+                directPeer: currentDirect?.peer,
                 team: currentDirect?.peer.team,
                 // An open request or a blocked DM replaces the composer.
                 joined: currentDirect ? !directLocked : channel.joined,
@@ -3762,7 +3751,14 @@ export default function Spaces({
         // Forwarded conversations retain their explicit source-thread behavior.
         focusThread={!visit}
         // A reply from the team answers the report in the inbox.
-        onSent={visitView ? () => void refreshFeedback() : undefined}
+        onSent={
+          visitView
+            ? () => {
+                void refreshFeedback();
+                void refreshUnread();
+              }
+            : undefined
+        }
         onHistoryChange={(history) => {
           navigation.current.rememberHistory(history);
           directCache.current.rememberHistory(history);
