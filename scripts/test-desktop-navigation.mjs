@@ -295,6 +295,37 @@ try {
   browser("open", url.toString());
   wait('document.querySelector("#chat-message") && !document.querySelector("#chat-message").disabled');
   evaluate("document.fonts.ready.then(() => true)");
+  const roomSize = () =>
+    evaluate(
+      '(() => { const r = document.querySelector(".call-room").getBoundingClientRect(); return [r.width, r.height]; })()',
+    );
+  const originalSize = roomSize();
+  browser("fill", "#chat-message", "draft survives outer resize");
+  const edge = evaluate(
+    '(() => { const r = document.querySelector(".room-resize-right").getBoundingClientRect(); return [Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2)]; })()',
+  );
+  browser("mouse", "move", ...edge.map(String));
+  browser("mouse", "down", "left");
+  browser("mouse", "move", String(edge[0] - 90), String(edge[1]));
+  browser("mouse", "up", "left");
+  assert.deepEqual(roomSize(), [originalSize[0] - 180, originalSize[1]], "Centered outer edge follows the pointer");
+  assert.equal(evaluate('document.querySelector("#chat-message").value'), "draft survives outer resize");
+  browser("focus", ".room-resize-bottom");
+  browser("press", "ArrowUp");
+  const resized = roomSize();
+  assert.deepEqual(resized, [originalSize[0] - 180, originalSize[1] - 10]);
+  browser("reload");
+  wait('document.querySelector("#chat-message") && !document.querySelector("#chat-message").disabled');
+  assert.deepEqual(roomSize(), resized, "Outer size survives reload");
+  browser("set", "viewport", "390", "844", "2");
+  assert.equal(evaluate('getComputedStyle(document.querySelector(".room-resize-right")).display'), "none");
+  assert.ok(roomSize()[0] <= 390, "Saved desktop dimensions do not overflow mobile");
+  browser("set", "viewport", "1280", "900", "2");
+  browser("dblclick", ".room-resize-right");
+  assert.deepEqual(roomSize(), originalSize, "Double-click resets both outer dimensions");
+  console.log(
+    "PASS: outer-edge pointer and keyboard resizing, draft preservation, reload persistence, mobile bounds, and reset",
+  );
   for (const width of [900, 1920, 1280]) {
     browser("set", "viewport", String(width), "900", "2");
     for (const draft of ["", "One line", "First line\nSecond line\nThird line"]) {
