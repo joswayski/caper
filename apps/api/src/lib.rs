@@ -69,6 +69,7 @@ mod feedback;
 pub mod gateway;
 mod media_store;
 mod mentions;
+mod names;
 mod notifications;
 mod pictures;
 mod presence;
@@ -1439,9 +1440,13 @@ async fn account_profile(
 ) -> Result<Json<Value>, ApiError> {
     let username = input.username.trim().to_ascii_lowercase();
     let display_name = input.display_name.trim();
+    // A name saved before invisible characters were refused stays savable
+    // while it is unchanged, so editing the username alone still works.
+    let unchanged = principal.user.display_name.as_deref().map(str::trim) == Some(display_name);
     if !accounts::valid_username(&username)
         || !(1..=64).contains(&display_name.chars().count())
         || display_name.chars().any(char::is_control)
+        || (!unchanged && !names::visible(display_name))
     {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid profile"));
     }
@@ -1882,17 +1887,20 @@ async fn join(
     } else {
         None
     };
-    let name = account
-        .as_ref()
-        .and_then(|(name, _, _, _)| name.as_deref())
-        .unwrap_or(submitted_name)
-        .trim();
+    let profile_name = account.as_ref().and_then(|(name, _, _, _)| name.as_deref());
+    let name = profile_name.unwrap_or(submitted_name).trim();
     let avatar_id = account.as_ref().map(|(_, (avatar_id, _), _, _)| *avatar_id);
     let avatar_asset = account
         .as_ref()
         .and_then(|(_, (_, asset), _, _)| asset.clone());
     let user_id = account.as_ref().map(|(_, _, _, user)| *user);
-    if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
+    // Saved profile names were checked when saved (older ones may predate the
+    // invisible-character rule); a name the client submits is checked now.
+    if name.is_empty()
+        || name.chars().count() > 64
+        || name.chars().any(char::is_control)
+        || (profile_name.is_none() && !names::visible(name))
+    {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid name"));
     }
     if input

@@ -423,7 +423,7 @@ public final class AppModel {
 
     public func saveProfile(username: String, displayName: String) async {
         guard !busy else { return }
-        if let validation = ProfileValidation.error(username: username, displayName: displayName) {
+        if let validation = ProfileValidation.error(username: username, displayName: displayName, saved: account?.displayName) {
             error = validation
             return
         }

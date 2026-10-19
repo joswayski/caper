@@ -649,6 +649,34 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNotNil(ProfileValidation.error(username: "user", displayName: String(repeating: "e\u{301}", count: 33)))
         XCTAssertNotNil(ProfileValidation.error(username: "user", displayName: " \n "))
         XCTAssertNotNil(ProfileValidation.error(username: "user", displayName: "Name\u{0007}"))
+        XCTAssertEqual(ProfileValidation.error(username: "user", displayName: "Jo\u{200B}se"),
+                       "Display names cannot contain invisible or text-direction characters.")
+        XCTAssertNil(ProfileValidation.error(username: "user", displayName: "Family 👨‍👩‍👧‍👦"))
+        // A name saved before the invisible-character rule stays savable unchanged.
+        XCTAssertNil(ProfileValidation.error(username: "user", displayName: " Legacy\u{200B}Name ", saved: "Legacy\u{200B}Name"))
+        XCTAssertNotNil(ProfileValidation.error(username: "user", displayName: "Other\u{200B}Name", saved: "Legacy\u{200B}Name"))
+        XCTAssertEqual(WorkspaceValidation.spaceNameError("Team\u{202E}maeT"),
+                       "Space names cannot contain invisible or text-direction characters.")
+        XCTAssertNil(WorkspaceValidation.spaceNameError("Family 👨‍👩‍👧‍👦"))
+    }
+
+    /// The same cases as apps/api/src/names.rs.
+    func testNameCharactersMatchTheServerRule() {
+        for name in [
+            "Café Society", "José 🌱", "مرحبا بالعالم", "👨‍👩‍👧‍👦 family", "👩🏽‍💻", "❤️‍🔥", "🏳️‍🌈", "🏳️‍⚧️", "1️⃣", "☺︎ text style",
+            "🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F} England",
+            "می\u{200C}خواهم", "क्\u{200D}ष", "葛\u{E0100}城", "Screenshot at 10.00.00\u{202F}AM",
+        ] {
+            XCTAssertFalse(NameCharacters.hasHidden(name), name)
+        }
+        for name in [
+            "a\u{0}b", "admin\u{202E}nimda", "\u{202A}x\u{202C}", "\u{2066}x\u{2069}", "a\u{200B}b", "\u{200E}left", "\u{200F}right",
+            "\u{061C}x", "a\u{2060}b", "\u{FEFF}bom", "soft\u{00AD}hyphen", "a\u{034F}b", "\u{115F}", "\u{3164}", "\u{FFA0}", "\u{2800}",
+            "a\u{180E}b", "hidden\u{E0041}\u{E0042}", "\u{FE0F}", "a \u{FE0F}", "a\u{FE0F}\u{FE0F}", "\u{200D}a", "a\u{200D}",
+            "a\u{200D}\u{200D}b", "a \u{200D}b", "a\u{200D} b", "🏴\u{E0067}\u{E0062}", "🏴\u{E007F}", "x\u{E0067}\u{E007F}",
+        ] {
+            XCTAssertTrue(NameCharacters.hasHidden(name), name.unicodeScalars.map { String($0.value, radix: 16) }.joined(separator: " "))
+        }
     }
 
     func testMessageValidationCountsCharactersAndRejectsControls() {

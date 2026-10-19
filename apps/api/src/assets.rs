@@ -683,13 +683,16 @@ struct CreateInput {
 }
 
 fn filename(value: &str) -> Result<String, ApiError> {
-    let name = value.rsplit(['/', '\\']).next().unwrap_or_default().trim();
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.chars().count() > 255
-        || name.chars().any(char::is_control)
-    {
+    let name = value.rsplit(['/', '\\']).next().unwrap_or_default();
+    if name.chars().any(char::is_control) {
+        return Err(invalid("invalid file name"));
+    }
+    // Names come from the sender's file system, so invisible and
+    // text-direction characters (which could disguise "fdp.exe" as "exe.pdf")
+    // are dropped rather than failing the upload.
+    let name = crate::names::without_hidden(name);
+    let name = name.trim();
+    if name.is_empty() || name == "." || name == ".." || name.chars().count() > 255 {
         return Err(invalid("invalid file name"));
     }
     Ok(name.to_owned())

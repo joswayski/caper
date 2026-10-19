@@ -345,6 +345,9 @@ async fn profile_format_validation_happens_in_the_app_before_database_access() {
         ("other".to_owned(), "  ".to_owned()),
         ("other".to_owned(), "🌱".repeat(65)),
         ("other".to_owned(), "line\nbreak".to_owned()),
+        ("other".to_owned(), "admin\u{202E}nimda".to_owned()),
+        ("other".to_owned(), "\u{3164}".to_owned()),
+        ("other".to_owned(), "Jo\u{200B}se".to_owned()),
     ] {
         let (status, _) = call(
             router.clone(),
@@ -520,6 +523,61 @@ async fn profile_updates_preserve_reserved_names_but_reject_new_claims(pool: sql
             }
         );
     }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable Postgres DATABASE_URL"]
+async fn profile_keeps_an_unchanged_legacy_display_name_but_rejects_new_hidden_characters(
+    pool: sqlx::PgPool,
+) {
+    let user_id: i64 = sqlx::query_scalar(
+        "INSERT INTO public.users(external_id,username,display_name) VALUES ('legacy-name','legacy',$1) RETURNING id",
+    )
+    .bind("Legacy\u{200B}Name")
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 hour')")
+        .bind(Sha256::digest(b"legacy-session").as_slice())
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (mut state, _) = state();
+    state.database = Some(pool.clone());
+    state.auth = auth::AuthVerifier::new();
+    let router = app(state);
+    for (username, display_name, expected) in [
+        ("renamed", " Legacy\u{200B}Name ", StatusCode::OK),
+        ("renamed", "Other\u{200B}Name", StatusCode::BAD_REQUEST),
+        ("renamed", "Legacy\u{202E}Name", StatusCode::BAD_REQUEST),
+        ("renamed", "Fresh Name 👩🏽‍💻", StatusCode::OK),
+        ("renamed", "Legacy\u{200B}Name", StatusCode::BAD_REQUEST),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/account/profile")
+                    .header("content-type", "application/json")
+                    .header("cookie", "caper_session=legacy-session")
+                    .body(Body::from(
+                        json!({"username":username,"displayName":display_name}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "{display_name:?}");
+    }
+    let saved: (String, String) =
+        sqlx::query_as("SELECT username,display_name FROM public.users WHERE id=$1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(saved, ("renamed".into(), "Fresh Name 👩🏽‍💻".into()));
 }
 
 #[tokio::test]

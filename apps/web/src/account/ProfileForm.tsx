@@ -1,5 +1,12 @@
 import { useState, type FormEvent } from "react";
-import { AccountApiError, normalizeUsername, updateProfile, usernameError, type Account } from "./client";
+import {
+  AccountApiError,
+  displayNameError,
+  normalizeUsername,
+  updateProfile,
+  usernameError,
+  type Account,
+} from "./client";
 import { fieldClass, primaryButtonClass, Spinner } from "./controls";
 import { ProfilePictureSettings } from "./PictureSettings";
 
@@ -19,7 +26,7 @@ export default function ProfileForm({
     event.preventDefault();
     if (pending) return;
     // The form shows its own errors instead of the browser's validation bubbles.
-    const invalid = usernameError(username) ?? (displayName.trim() ? undefined : "Enter a display name.");
+    const invalid = usernameError(username) ?? displayNameError(displayName, account.displayName);
     if (invalid) return setError(invalid);
     setPending(true);
     setError(undefined);

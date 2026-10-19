@@ -990,7 +990,8 @@ requests exceeding those limits.
 Space and channel external IDs use the existing 12-character cryptographically
 random alphanumeric generator with database uniqueness constraints; internal
 joins use bigint IDs. Names are not authorization tokens. Space names contain
-1–80 Unicode characters after trimming and no control characters. New channel
+1–80 Unicode characters after trimming, with no control, invisible or
+text-direction characters (see "Name characters" below). New channel
 names contain 1–80 characters matching `[a-z]+(-[a-z]+)*`: lowercase ASCII
 letters with single dashes between segments. Channel names are unique among
 active channels of one space. Renaming does not change IDs. Deletion is a
@@ -1006,6 +1007,26 @@ Text history and
 commands use `/api/chat/channels/{channel}/...`;
 WebSocket subscriptions still use `/api/chat/events`. Both command and gateway
 paths check membership and channel visibility, including replay and live delivery.
+
+#### Name characters
+
+Display names, space names and guest names refuse characters that can make a
+name look empty, hide text or reorder what it shows: control characters, the
+Unicode `Default_Ignorable_Code_Point` set (bidi embeddings, overrides, isolates
+and LRM/RLM/ALM, zero-width space, word joiner and invisible operators, BOM,
+soft hyphen, combining grapheme joiner, Hangul fillers, tag characters,
+Mongolian vowel separator) and U+2800 BRAILLE PATTERN BLANK. Emoji and scripts
+keep what they need: a single ZWJ/ZWNJ between two visible characters, one
+variation selector right after a visible character, and tag characters only
+inside a subdivision flag (U+1F3F4 … U+E007F). The rule is
+`apps/api/src/names.rs`, mirrored for inline errors by `apps/web/src/names.ts`,
+Android `model/Names.kt`, Apple `NameCharacters` and desktop `src/names.rs`.
+New writes are checked; stored names are read unchanged and no data is
+rewritten. A display name saved before the rule stays savable while it is
+unchanged, so editing only the username works; a space rename must use a valid
+name. Attachment file names come from the sender's file system, so those
+characters are removed instead of failing the upload (control characters still
+fail as before). Message text is not checked by this rule.
 
 ### Invite links
 
@@ -5718,7 +5739,8 @@ to resolve the demo space/channel IDs. Existing `General` seed rows retain their
 IDs and stored spelling for compatibility; the API returns `general`, and new
 seeds use lowercase. No data migration is required.
 The API accepts guest names of 1–64 Unicode characters after trimming,
-with no control characters. Guest names are unverified, nonunique, and not reserved.
+with no control, invisible or text-direction characters. Guest names are
+unverified, nonunique, and not reserved.
 When a valid account bearer token or browser session cookie accompanies a join, the
 API uses the stored display name instead of the submitted name. Country codes
 are neither stored nor shown. The web login page sends email codes and then requires a unique

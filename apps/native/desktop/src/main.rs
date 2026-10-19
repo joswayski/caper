@@ -34,6 +34,7 @@ mod message_selection;
 mod metadata;
 mod model;
 mod motion;
+mod names;
 mod navigation;
 mod notifications;
 mod os_notifications;
@@ -10012,10 +10013,14 @@ impl CaperApp {
                             );
                             focus_frame(ui, &field);
                             ui.add_space(6.0);
+                            let name_error = self.display_name_error();
                             ui.label(
-                                RichText::new("This is what people see in conversations.")
-                                    .size(12.8)
-                                    .color(MUTED),
+                                RichText::new(
+                                    name_error
+                                        .unwrap_or("This is what people see in conversations."),
+                                )
+                                .size(12.8)
+                                .color(if name_error.is_some() { ERROR } else { MUTED }),
                             );
                             if let Some(error) = &self.error {
                                 ui.add_space(16.0);
@@ -10028,7 +10033,8 @@ impl CaperApp {
                                 "Finish account",
                                 self.loading
                                     || self.username.len() < 3
-                                    || self.display_name.trim().is_empty(),
+                                    || self.display_name.trim().is_empty()
+                                    || self.display_name_error().is_some(),
                             )
                             .clicked()
                             {
@@ -22242,6 +22248,16 @@ impl CaperApp {
         }
     }
 
+    /// The invisible-character rule for the display name being edited.
+    fn display_name_error(&self) -> Option<&'static str> {
+        names::display_name_error(
+            &self.display_name,
+            self.account
+                .as_ref()
+                .and_then(|account| account.display_name.as_deref()),
+        )
+    }
+
     fn profile_dialog(&mut self, ui: &mut egui::Ui) {
         if let Some(account) = self
             .account
@@ -22287,15 +22303,18 @@ impl CaperApp {
                 .char_limit(64),
         );
         focus_frame(ui, &field);
+        let name_error = self.display_name_error();
         ui.label(
-            RichText::new("This is what people see in conversations.")
+            RichText::new(name_error.unwrap_or("This is what people see in conversations."))
                 .small()
-                .color(MUTED),
+                .color(if name_error.is_some() { ERROR } else { MUTED }),
         );
         // Web's compact, end-aligned primary (sized so "Saving…" doesn't
         // resize it); Log out stays apart at the start of the row.
-        let enabled =
-            !self.loading && self.username.len() >= 3 && !self.display_name.trim().is_empty();
+        let enabled = !self.loading
+            && self.username.len() >= 3
+            && !self.display_name.trim().is_empty()
+            && name_error.is_none();
         ui.add_space(20.0);
         let (log_out, save) = ui
             .horizontal(|ui| {
@@ -25288,6 +25307,8 @@ fn space_name_error(name: &str) -> Option<&'static str> {
         Some("Space names can be at most 80 characters.")
     } else if trimmed.chars().any(char::is_control) {
         Some("Space names cannot contain control characters.")
+    } else if names::has_hidden(trimmed) {
+        Some("Space names cannot contain invisible or text-direction characters.")
     } else {
         None
     }
@@ -37505,6 +37526,11 @@ mod tests {
     fn space_and_channel_names_use_webs_validation_copy() {
         assert_eq!(crate::space_name_error("  "), Some("Enter a space name."));
         assert_eq!(crate::space_name_error("Studio"), None);
+        assert_eq!(
+            crate::space_name_error("Team\u{202E}maeT"),
+            Some("Space names cannot contain invisible or text-direction characters.")
+        );
+        assert_eq!(crate::space_name_error("Family 👨‍👩‍👧‍👦"), None);
         assert_eq!(crate::channel_name_error(""), Some("Enter a channel name."));
         assert_eq!(
             crate::channel_name_error("a--b"),

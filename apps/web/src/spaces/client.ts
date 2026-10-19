@@ -2,6 +2,7 @@ import type { PersonPicture, SpaceIcon } from "../account/pictures.ts";
 import { observeProfiles, profileRevision } from "../account/profiles.ts";
 import { unreadChanged } from "../account/app-badge";
 import { directMessageErrors } from "./direct-errors.ts";
+import { hasHiddenNameCharacters } from "../names.ts";
 
 /** `iconAsset`/`iconUrl`: the owner's custom icon; absent, the space shows its initial. */
 export interface Space extends SpaceIcon {
@@ -337,6 +338,7 @@ export function spaceNameError(name: string) {
   if (!trimmed) return "Enter a space name.";
   if (Array.from(trimmed).length > 80) return "Space names can be at most 80 characters.";
   if (CONTROL.test(trimmed)) return "Space names cannot contain control characters.";
+  if (hasHiddenNameCharacters(trimmed)) return "Space names cannot contain invisible or text-direction characters.";
 }
 
 export function channelNameError(name: string) {

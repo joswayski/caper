@@ -382,7 +382,7 @@ pub(crate) fn routes() -> Router<AppState> {
 
 fn space_name(value: &str) -> Result<String, ApiError> {
     let value = value.trim();
-    if value.is_empty() || value.chars().count() > 80 || value.chars().any(char::is_control) {
+    if value.is_empty() || value.chars().count() > 80 || !crate::names::visible(value) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "invalid space name"));
     }
     Ok(value.to_owned())
@@ -1244,6 +1244,9 @@ mod tests {
     fn validates_names_at_exact_boundaries() {
         assert_eq!(space_name("  Café  ").unwrap(), "Café");
         assert!(space_name("\0bad").is_err());
+        assert!(space_name("Team\u{202E}maeT").is_err());
+        assert!(space_name("\u{3164}").is_err());
+        assert!(space_name("Family 👨‍👩‍👧‍👦").is_ok());
         assert!(space_name(&"🙂".repeat(80)).is_ok());
         assert!(space_name(&"🙂".repeat(81)).is_err());
         for valid in ["a", "general", "one-two", "a-b-c"] {

@@ -7463,8 +7463,9 @@ private struct ProfileView: View {
                 Text("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 CaperField(title: "Display name", text: $displayName, focus: $displayNameFocused)
-                Text("This is what people see in conversations.")
-                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                let nameError = ProfileValidation.hiddenCharacterError(displayName: displayName, saved: model.account?.displayName)
+                Text(nameError ?? "This is what people see in conversations.")
+                    .font(CaperTheme.font(12)).foregroundStyle(nameError == nil ? CaperTheme.muted : CaperTheme.error)
                 if let error = model.error {
                     Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         .fixedSize(horizontal: false, vertical: true)
@@ -7474,7 +7475,7 @@ private struct ProfileView: View {
                     LoginActionLabel(title: "Finish account", busyTitle: "Saving…", busy: model.busy)
                 }
                     .buttonStyle(LoginActionButton(minWidth: 200))
-                    .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName) != nil)
+                    .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName, saved: model.account?.displayName) != nil)
                     .accessibilityLabel(model.busy ? "Saving…" : "Finish account")
                     .accessibilityIdentifier("profile-continue")
                     .frame(maxWidth: .infinity, alignment: .trailing)
@@ -8651,7 +8652,9 @@ private struct ProfileSheet: View {
                         // Return saves: on iPhone an error line can push Save
                         // profile under the keyboard.
                         .submitLabel(.done).onSubmit(save)
-                    Text("This is what people see in conversations.").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+                    let nameError = ProfileValidation.hiddenCharacterError(displayName: displayName, saved: model.account?.displayName)
+                    Text(nameError ?? "This is what people see in conversations.").font(CaperTheme.font(12))
+                        .foregroundStyle(nameError == nil ? CaperTheme.muted : CaperTheme.error)
                     Text(saveError ?? " ").font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                         .opacity(saveError == nil ? 0 : 1).accessibilityHidden(saveError == nil)
@@ -8676,7 +8679,7 @@ private struct ProfileSheet: View {
     }
 
     private var canSave: Bool {
-        !model.busy && ProfileValidation.error(username: username, displayName: displayName) == nil
+        !model.busy && ProfileValidation.error(username: username, displayName: displayName, saved: model.account?.displayName) == nil
     }
 
     /// The current picture in its frame; without one, the mascot asks to be changed.

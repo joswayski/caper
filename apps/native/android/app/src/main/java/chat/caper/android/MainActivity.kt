@@ -3557,12 +3557,14 @@ internal fun counterTone(count: Int): Color = when {
         OutlinedTextField(username, { username = normalizeUsername(it) }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Next),
             supportingText = { Text("Must be unique across Caper. 3–32 lowercase letters, numbers, or underscores.", color = TextMuted) })
+        val nameError = displayNameError(name, account.displayName)
         OutlinedTextField(name, { name = it.codePointTake(64) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            supportingText = { Text("This is what people see in conversations.", color = TextMuted) })
+            isError = nameError != null,
+            supportingText = { Text(nameError ?: "This is what people see in conversations.", color = if (nameError != null) ErrorText else TextMuted) })
         Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
             error?.takeIf { submitted }?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         }
-        PrimaryButton(if (account.username.isNullOrEmpty()) "Finish account" else "Save profile", "Saving…", busy, profileValid(username, name),
+        PrimaryButton(if (account.username.isNullOrEmpty()) "Finish account" else "Save profile", "Saving…", busy, profileValid(username, name, account.displayName),
             Modifier.align(Alignment.End), minWidth = if (close == null) 200.dp else 148.dp,
             contentPadding = PaddingValues(horizontal = if (close == null) 20.dp else 16.dp, vertical = if (close == null) 16.dp else 8.dp)) { submitted = true; submit(username, name) }
     }
@@ -3946,6 +3948,7 @@ internal fun spaceNameError(name: String): String? {
         trimmed.isEmpty() -> "Enter a space name."
         trimmed.codePointCount(0, trimmed.length) > 80 -> "Space names can be at most 80 characters."
         trimmed.any { it.isISOControl() } -> "Space names cannot contain control characters."
+        hasHiddenNameCharacters(trimmed) -> "Space names cannot contain invisible or text-direction characters."
         else -> null
     }
 }
@@ -3977,9 +3980,14 @@ internal fun memberAddError(message: String): String = when (message) {
     "invalid username" -> "Use 3–32 lowercase letters, numbers, or underscores."
     else -> message
 }
-internal fun profileValid(username: String, displayName: String) =
+/** Web's displayNameError: [saved], the account's current name, stays savable unchanged even if it predates the invisible-character rule. */
+internal fun displayNameError(displayName: String, saved: String?): String? =
+    displayName.trim().takeIf { it != saved?.trim() && hasHiddenNameCharacters(it) }
+        ?.let { "Display names cannot contain invisible or text-direction characters." }
+internal fun profileValid(username: String, displayName: String, saved: String? = null) =
     usernameValid(username) && displayName.isNotBlank() &&
-        displayName.codePointCount(0, displayName.length) <= 64 && displayName.none { it.isISOControl() }
+        displayName.codePointCount(0, displayName.length) <= 64 && displayName.none { it.isISOControl() } &&
+        displayNameError(displayName, saved) == null
 private fun normalizeChannel(value: String) = value.lowercase().replace(Regex("\\s+"), "-").filter { it in 'a'..'z' || it == '-' }.replace(Regex("-+"), "-").removePrefix("-").take(80)
 private fun channelInvalid(value: String) = !Regex("^[a-z]+(?:-[a-z]+)*$").matches(value.removeSuffix("-"))
 private fun String.codePointTake(max: Int): String = if (codePointCount(0, length) <= max) this else substring(0, offsetByCodePoints(0, max))

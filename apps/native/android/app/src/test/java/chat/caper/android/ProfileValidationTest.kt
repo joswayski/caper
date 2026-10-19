@@ -50,5 +50,14 @@ class ProfileValidationTest {
         assertFalse(profileValid("ab_", " \t"))
         assertFalse(profileValid("ab_", "Jo\u0000se"))
         assertFalse(profileValid("ab_", "Jo\u0085se"))
+        assertFalse(profileValid("ab_", "Jo​se"))
+        assertFalse(profileValid("ab_", "admin‮nimda"))
+        assertTrue(profileValid("ab_", "Family 👨‍👩‍👧‍👦"))
+        // A name saved before the invisible-character rule stays savable unchanged.
+        assertTrue(profileValid("ab_", " Legacy​Name ", "Legacy​Name"))
+        assertFalse(profileValid("ab_", "Other​Name", "Legacy​Name"))
+        assertEquals("Display names cannot contain invisible or text-direction characters.", displayNameError("ㅤ", null))
+        assertEquals("Space names cannot contain invisible or text-direction characters.", spaceNameError("Team‮maeT"))
+        assertNull(spaceNameError("Family 👨‍👩‍👧‍👦"))
     }
 }

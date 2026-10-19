@@ -371,6 +371,7 @@ public enum WorkspaceValidation {
         if name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
             return "Space names cannot contain control characters."
         }
+        if NameCharacters.hasHidden(name) { return "Space names cannot contain invisible or text-direction characters." }
         return nil
     }
 
@@ -1006,7 +1007,9 @@ public enum ProfileValidation {
         String(value.lowercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }.prefix(32))
     }
 
-    public static func error(username: String, displayName: String) -> String? {
+    /// `saved` is the account's current name: one stored before the
+    /// invisible-character rule stays savable while it is unchanged.
+    public static func error(username: String, displayName: String, saved: String? = nil) -> String? {
         let username = username.trimmingCharacters(in: .whitespacesAndNewlines)
         if !(3...32).contains(username.utf8.count) || !username.utf8.allSatisfy({
             (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 95
@@ -1016,7 +1019,14 @@ public enum ProfileValidation {
             || name.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) {
             return "Display name must be 1–64 characters without control characters."
         }
-        return nil
+        return hiddenCharacterError(displayName: name, saved: saved)
+    }
+
+    /// Shown under the display name field before saving, as on web and Android.
+    public static func hiddenCharacterError(displayName: String, saved: String?) -> String? {
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard name != saved?.trimmingCharacters(in: .whitespacesAndNewlines), NameCharacters.hasHidden(name) else { return nil }
+        return "Display names cannot contain invisible or text-direction characters."
     }
 }
 

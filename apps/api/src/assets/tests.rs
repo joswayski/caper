@@ -322,6 +322,12 @@ fn names_and_types_are_normalized() {
     assert_eq!(filename("../../etc/passwd").unwrap(), "passwd");
     assert!(filename("..").is_err());
     assert!(filename("a\nb").is_err());
+    assert_eq!(
+        filename("invoice\u{202E}fdp.exe").unwrap(),
+        "invoicefdp.exe"
+    );
+    assert_eq!(filename("\u{200E}photo 👩🏽‍💻.png").unwrap(), "photo 👩🏽‍💻.png");
+    assert!(filename("\u{200B}\u{2066}").is_err());
     assert!(filename(&"a".repeat(256)).is_err());
     assert_eq!(content_type("").unwrap(), "application/octet-stream");
     assert_eq!(content_type("Image/PNG; charset=x").unwrap(), "image/png");

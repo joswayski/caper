@@ -1,6 +1,7 @@
 import { withPicture, type PersonPicture } from "./pictures.ts";
 import { withProfile, type Profiles } from "./profiles.ts";
 import { setApplicationBadge, unreadChanged } from "./app-badge";
+import { hasHiddenNameCharacters } from "../names.ts";
 
 export interface Account extends PersonPicture {
   id: string;
@@ -21,6 +22,14 @@ export function normalizeUsername(value: string) {
 
 export function usernameError(value: string) {
   if (!/^[a-z0-9_]{3,32}$/.test(value)) return "Use 3–32 lowercase letters, numbers, or underscores.";
+}
+
+/** `saved` is the account's current name: one stored before the invisible-character rule stays savable unchanged. */
+export function displayNameError(value: string, saved?: string | null) {
+  const name = value.trim();
+  if (!name) return "Enter a display name.";
+  if (name !== saved?.trim() && hasHiddenNameCharacters(name))
+    return "Display names cannot contain invisible or text-direction characters.";
 }
 
 export class AccountApiError extends Error {
