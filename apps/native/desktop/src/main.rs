@@ -12276,6 +12276,21 @@ impl CaperApp {
         if navigation_toggle(ui, NavIcon::Menu, "Browse").clicked() {
             self.navigation_open = true;
         }
+        if self.visiting().is_none()
+            && let Some(direct) = self
+                .selected_direct
+                .as_ref()
+                .and_then(|id| self.directs.iter().find(|item| &item.id == id))
+        {
+            avatar(
+                ui,
+                &direct.peer.display_name,
+                direct.peer.avatar_id,
+                direct.peer.picture(),
+                28.0,
+                false,
+            );
+        }
         let voice_channel = self.header_voice_channel();
         let members = self.header_members();
         // A visit is titled "#plans · Studio" or "Alice & Bob".
@@ -15534,6 +15549,9 @@ impl CaperApp {
                                 egui::vec2((ui.available_width() - actions_width - 12.0).max(40.0), 38.0),
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
+                                    if visit.is_none() && let Some(item) = direct {
+                                        avatar(ui, &item.peer.display_name, item.peer.avatar_id, item.peer.picture(), 28.0, false);
+                                    }
                                     ui.add(egui::Label::new(RichText::new(match (direct, visit) {
                                         // "#plans · Studio", or "Alice & Bob".
                                         (_, Some(title)) => title,
@@ -15898,7 +15916,10 @@ impl CaperApp {
                     ui.ctx().request_discard("jump to the latest message");
                 }
             }
+            // ScrollArea's paint margin must not bleed into the fixed heading or composer.
+            let history_clip = ui.available_rect_before_wrap().intersect(ui.clip_rect());
             let history = history.show(ui, |ui| {
+                    ui.set_clip_rect(ui.clip_rect().intersect(history_clip));
                     if let Some(error) = self.load_error.clone().filter(|_| empty) {
                         chat_state(ui, 2, |ui| {
                             ui.label(RichText::new(error).color(MUTED));
@@ -28908,6 +28929,49 @@ mod tests {
                     "long drafts must leave room for replies"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn message_history_does_not_paint_over_the_heading() {
+        for width in [1200.0, 390.0] {
+            let context = egui::Context::default();
+            let mut app = CaperApp::new(
+                &context,
+                crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+                Some("parity-direct"),
+            );
+            let mut output = None;
+            for _ in 0..3 {
+                app.history_offset = Some(0.0);
+                output = Some(context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 700.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |context| {
+                        egui::CentralPanel::default().frame(egui::Frame::NONE).show(
+                            context,
+                            |ui| {
+                                app.channel_conversation(ui, width < 760.0);
+                            },
+                        );
+                    },
+                ));
+            }
+            let output = output.unwrap();
+            let history = output.shapes.iter().find(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == "Beginning of conversation"
+                    || text.galley.job.text == "Load older messages"
+            )).expect("history header is rendered at the top");
+            assert!(
+                history.clip_rect.top() >= 54.0,
+                "{width}: history can paint above its viewport: {:?}",
+                history.clip_rect
+            );
         }
     }
 

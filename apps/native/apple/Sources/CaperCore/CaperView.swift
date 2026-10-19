@@ -3777,6 +3777,12 @@ private struct ChatView: View {
                 if narrow {
                     Button(action: SwipeTapGuard.unlessSwiping(browse)) { CaperIcon(name: "arrow-left", size: 20).frame(width: 44, height: 44).contentShape(Rectangle()) }
                         .buttonStyle(.plain).foregroundStyle(CaperTheme.muted).modifier(ControlHover()).accessibilityLabel("Back to Browse")
+                }
+                if model.visit == nil, let conversation = model.selectedDirectMessage {
+                    Avatar(name: conversation.peer.displayName, size: 28, avatarID: conversation.peer.avatarId, picture: conversation.peer.avatarPicture)
+                        .accessibilityHidden(true)
+                }
+                if narrow {
                     // Phones: the name opens the conversation's menu, as in Slack; Pins,
                     // Members and a 1:1 DM's Block move there.
                     titleMenu
