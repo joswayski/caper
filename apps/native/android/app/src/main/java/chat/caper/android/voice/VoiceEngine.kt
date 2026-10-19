@@ -84,6 +84,7 @@ class VoiceEngine(
     private val connectionState = MutableStateFlow(PeerConnection.PeerConnectionState.NEW)
     private var turn: TurnGeneration? = null
     private var stateSequence = 0L
+    private var snapshotRevision: Long? = null
     private val restarts = IceRestartLedger()
     val muted get() = localMute.muted
     val deafened get() = localMute.deafened
@@ -246,6 +247,12 @@ class VoiceEngine(
 
     private suspend fun reconcile(snapshot: MediaSnapshot, onParticipants: (MediaSnapshot) -> Unit, token: String) {
         check(resources.isOpen) { "Voice call ended." }
+        // HTTP lease refreshes and gateway events share one per-engine cursor.
+        // Equal snapshots still retry tracks that were not ready at the SFU.
+        snapshotRevision?.let { latest ->
+            if (snapshot.revision == null || snapshot.revision < latest) return
+        }
+        snapshotRevision = snapshot.revision
         onParticipants(snapshot)
         synchronized(remoteLock) {
             check(resources.isOpen) { "Voice call ended." }

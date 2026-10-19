@@ -140,6 +140,7 @@ class VoiceCallService : Service() {
             ACTION_MUTE -> scope.launch {
                 if (state.value.monitoring) return@launch
                 val (current, attempt) = currentCall() ?: return@launch
+                mutedForFocus = false
                 runCatching { current.setMuted(!current.muted) {
                     commitCallResult(current, attempt) { it.copy(muted = current.muted, deafened = current.deafened) }
                 } }
@@ -149,6 +150,7 @@ class VoiceCallService : Service() {
             ACTION_DEAFEN -> scope.launch {
                 if (state.value.monitoring) return@launch
                 val (current, attempt) = currentCall() ?: return@launch
+                mutedForFocus = false
                 runCatching { current.setDeafened(!current.deafened) {
                     commitCallResult(current, attempt) { it.copy(deafened = current.deafened, muted = current.muted) }
                 } }
@@ -440,7 +442,8 @@ class VoiceCallService : Service() {
         val restore = when (change) {
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> return
             AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                if (!current.muted) mutedForFocus = change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+                if (change == AudioManager.AUDIOFOCUS_LOSS) mutedForFocus = false
+                else if (!current.muted) mutedForFocus = true
                 true
             }
             AudioManager.AUDIOFOCUS_GAIN -> if (mutedForFocus) { mutedForFocus = false; false } else return
