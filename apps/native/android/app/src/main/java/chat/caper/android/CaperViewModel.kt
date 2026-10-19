@@ -1953,7 +1953,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val text = message.content.text.ifEmpty { if (message.forward != null) "Forwarded message" else "" }
         val excerpt = text.substring(0, text.offsetByCodePoints(0, minOf(200, text.codePointCount(0, text.length))))
         val reference = MessageReply(message.id, message.author, excerpt, message.content.attachments.isNotEmpty(), message.threadRootId,
-            fullText = text.takeIf { it.codePointCount(0, it.length) > 200 })
+            fullText = text.takeIf { it.codePointCount(0, it.length) > 200 }, attachments = message.content.attachments)
         mutable.value = state.copy(replyTargets = state.replyTargets + (key to reference))
         if (!inThread && root != null) openThread(root)
     }
@@ -2698,6 +2698,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         authoritativeReactionMessages[message.id]?.let { authoritativeReactionMessages[message.id] = mergeEdit(it, message) }
         pinSnapshots[message.id]?.let { pinSnapshots[message.id] = mergeEdit(it, message) }
+        forwardSnapshots[message.id]?.let { forwardSnapshots[message.id] = mergeEdit(it, message) }
         val deleted = message.deletedAt != null
         mutable.value = mutable.value.copy(
             messages = mutable.value.messages.map { mergeEdit(it, message).let { merged -> if (deleted) quoteDeleted(merged, message.id) else merged } },

@@ -29,6 +29,7 @@ mod media;
 mod media_gateway;
 mod media_proxy;
 mod mentions;
+mod message_selection;
 mod metadata;
 mod model;
 mod motion;
@@ -1177,6 +1178,8 @@ struct CaperApp {
     composer_emoji: Option<(EmojiTarget, emoji::Token)>,
     /// Where the composer's Emoji button was clicked; the picker opens above it.
     composer_emoji_anchor: Option<egui::Pos2>,
+    /// The message control that opened the reaction picker.
+    reaction_picker_anchor: Option<egui::Pos2>,
     /// What the emoji picker shows (composer target, reaction message) and the
     /// frame it first showed that, so the opening click is not an outside click.
     emoji_picker_shown: Option<((Option<EmojiTarget>, String), u64)>,
@@ -1519,6 +1522,7 @@ impl CaperApp {
             composer_emoji: None,
             profile_attach_menu: false,
             composer_emoji_anchor: None,
+            reaction_picker_anchor: None,
             emoji_picker_shown: None,
             emoji_picker_rect: None,
             profile_send_cancel: None,
@@ -1777,7 +1781,7 @@ impl CaperApp {
                     app.timeline
                         .reset(messages, "4")
                         .expect("valid reaction fixture");
-                } else if name == "parity-replies" {
+                } else if name == "parity-replies" || name == "parity-reply-previews" {
                     let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
                     app.session = Some(ChatSession {
                         token: "fixture-token".into(),
@@ -1792,6 +1796,29 @@ impl CaperApp {
                     messages[2].reply_to = Some(model::MessageReply::from_message(&messages[1]));
                     messages[2].content.text =
                         "TEST FIXTURE — A reply is its own message in the conversation.".into();
+                    if name == "parity-reply-previews" {
+                        app.install_attachments_fixture();
+                        app.local_media.extend(
+                            app.local_media
+                                .clone()
+                                .into_iter()
+                                .map(|(id, image)| (format!("reply-preview-{id}"), image)),
+                        );
+                        let files = app
+                            .timeline
+                            .messages()
+                            .nth(2)
+                            .unwrap()
+                            .content
+                            .attachments
+                            .clone();
+                        messages[1].author = messages[0].author.clone();
+                        messages[1].content.text =
+                            "TEST FIXTURE — A few attachments for the plan.".into();
+                        messages[1].content.attachments = files;
+                        messages[2].reply_to =
+                            Some(model::MessageReply::from_message(&messages[1]));
+                    }
                     messages[3].reply_to = Some(model::MessageReply::from_message(&messages[2]));
                     messages[3].content.text =
                         "TEST FIXTURE — This reply can be replied to, too.".into();
@@ -16402,6 +16429,59 @@ impl CaperApp {
                                     .color(MUTED),
                             );
                         } else if !blocked {
+                            if !reference.attachments.is_empty() {
+                                ui.horizontal_wrapped(|ui| {
+                                    for attachment in reference.attachments.iter().take(3) {
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            egui::vec2(44.0, 44.0),
+                                            egui::Sense::click(),
+                                        );
+                                        ui.painter().rect_filled(rect, 6, BORDER);
+                                        let source = attachment.reply_preview_source();
+                                        let texture = source.and_then(|url| {
+                                            match self.media.image(
+                                                &format!("reply-preview-{}", attachment.id),
+                                                Some(url),
+                                            ) {
+                                                attachments::ImageState::Ready(texture) => {
+                                                    Some(texture)
+                                                }
+                                                _ => None,
+                                            }
+                                        });
+                                        if let Some(texture) = texture {
+                                            let width = attachment.width.unwrap_or(1).max(1) as f32;
+                                            let height =
+                                                attachment.height.unwrap_or(1).max(1) as f32;
+                                            let uv_size = egui::vec2(
+                                                (height / width).min(1.0),
+                                                (width / height).min(1.0),
+                                            );
+                                            egui::Image::new((texture, rect.size()))
+                                                .uv(egui::Rect::from_center_size(
+                                                    egui::pos2(0.5, 0.5),
+                                                    uv_size,
+                                                ))
+                                                .corner_radius(6)
+                                                .paint_at(ui, rect);
+                                        } else {
+                                            ui.painter().text(
+                                                rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                "File",
+                                                egui::FontId::proportional(11.0),
+                                                MUTED,
+                                            );
+                                        }
+                                        open |= response
+                                            .on_hover_text("View original message")
+                                            .clicked();
+                                    }
+                                    if reference.attachments.len() > 3 {
+                                        ui.label(format!("+{}", reference.attachments.len() - 3));
+                                    }
+                                });
+                            }
                             let text = reference.full_text.as_deref().unwrap_or(&reference.text);
                             let text = if text.is_empty() {
                                 if reference.has_attachments {
@@ -16932,18 +17012,39 @@ impl CaperApp {
                 .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
                 .at_pointer_fixed()
                 .show(|ui| {
-                    if !deleted
-                        && ui
-                            .add_enabled(
-                                can_react && self.pending.is_none(),
-                                egui::Button::new("Reply"),
-                            )
+                    ui.set_width(244.0);
+                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
+                    let selected = ui
+                        .ctx()
+                        .plugin::<message_selection::MessageSelection>()
+                        .lock()
+                        .text
+                        .clone();
+                    if !selected.is_empty() {
+                        if message_menu_item(ui, NavIcon::Copy, "Copy selected text", true)
                             .clicked()
+                        {
+                            ui.ctx().copy_text(selected);
+                            ui.close();
+                        }
+                        ui.separator();
+                    }
+                    if !deleted
+                        && message_menu_item(
+                            ui,
+                            NavIcon::Reply,
+                            "Reply",
+                            can_react && self.pending.is_none(),
+                        )
+                        .clicked()
                     {
                         self.select_reply(ui.ctx(), message, in_thread);
                         ui.close();
                     }
-                    if forwardable && ui.button("Forward message").clicked() {
+                    if forwardable
+                        && message_menu_item(ui, NavIcon::Forward, "Forward message", true)
+                            .clicked()
+                    {
                         self.forwarding.picker(
                             &self.worker,
                             self.generation,
@@ -16952,12 +17053,17 @@ impl CaperApp {
                         );
                         ui.close();
                     }
-                    if !reactions.is_empty() && ui.button("View reactions").clicked() {
+                    if !reactions.is_empty()
+                        && message_menu_item(ui, NavIcon::Users, "View reactions", true).clicked()
+                    {
                         self.reactors_view = Some((message.id.clone(), reactions[0].emoji.clone()));
                         ui.close();
                     }
+                    ui.separator();
                     copy_items(ui, message);
-                    if self.can_delete(message) && ui.button("Delete message").clicked() {
+                    if self.can_delete(message)
+                        && danger_menu_item(ui, NavIcon::Trash, "Delete message").clicked()
+                    {
                         self.open_delete(message);
                         ui.close();
                     }
@@ -17227,7 +17333,9 @@ impl CaperApp {
                         self.reaction_textures
                             .preload(ui.ctx(), emoji::CATEGORIES[0].0);
                     }
-                    if emoji.on_hover_text("Add reaction").clicked() && can_react {
+                    let emoji = emoji.on_hover_text("Add reaction");
+                    if emoji.clicked() && can_react {
+                        self.reaction_picker_anchor = Some(emoji.rect.left_bottom());
                         self.reaction_picker = Some(message.id.clone());
                         self.composer_emoji = None;
                         self.reaction_search.clear();
@@ -17290,14 +17398,14 @@ impl CaperApp {
                                         ui.close();
                                     }
                                 }
-                                if drawn_icon_button_sized(
+                                let add = drawn_icon_button_sized(
                                     ui,
                                     NavIcon::SmilePlus,
                                     "Add reaction",
                                     32.0,
-                                )
-                                .clicked()
-                                {
+                                );
+                                if add.clicked() {
+                                    self.reaction_picker_anchor = Some(add.rect.left_bottom());
                                     self.reaction_picker = Some(message.id.clone());
                                     self.composer_emoji = None;
                                     self.reaction_search.clear();
@@ -17559,6 +17667,7 @@ impl CaperApp {
                                     .preload(ui.ctx(), emoji::CATEGORIES[0].0);
                             }
                             if add.clicked() {
+                                self.reaction_picker_anchor = Some(add.rect.left_bottom());
                                 self.reaction_picker = Some(message.id.clone());
                                 self.composer_emoji = None;
                                 self.reaction_search.clear();
@@ -17653,7 +17762,21 @@ impl CaperApp {
                     });
                 }
             });
-        if mentioned && pinned.is_none() {
+        let incoming_reply = self.account.as_ref().is_some_and(|viewer| {
+            !message.is_deleted()
+                && message.author.id != viewer.id
+                && message
+                    .reply_to
+                    .as_ref()
+                    .is_some_and(|reply| reply.author.id == viewer.id)
+        });
+        let selected = self.focused_message.as_deref() == Some(&message.id)
+            || (!in_thread
+                && self
+                    .thread_view
+                    .as_ref()
+                    .is_some_and(|thread| thread.root == message.id));
+        if (mentioned || incoming_reply) && pinned.is_none() && !selected && !in_pins {
             // Messages that mention you: an 8% terracotta row with a 2px edge.
             let rect = egui::Rect::from_x_y_ranges(
                 ui.max_rect().x_range(),
@@ -17661,7 +17784,11 @@ impl CaperApp {
             );
             ui.painter().set(
                 tint,
-                egui::Shape::rect_filled(rect, 0.0, TERRACOTTA.gamma_multiply(0.08)),
+                egui::Shape::rect_filled(
+                    rect,
+                    0.0,
+                    TERRACOTTA.gamma_multiply(if incoming_reply { 0.12 } else { 0.08 }),
+                ),
             );
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())),
@@ -18314,6 +18441,37 @@ impl CaperApp {
         let response = response
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text(label);
+        if !video {
+            if response.secondary_clicked() && !self.media.copying() {
+                self.media.copy_status = None;
+            }
+            response.context_menu(|ui| {
+                ui.set_width(244.0);
+                ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
+                if message_menu_item(ui, NavIcon::Copy, "Copy image", !self.media.copying())
+                    .clicked()
+                {
+                    self.media.copy_image(ui.ctx(), attachment);
+                }
+                if message_menu_item(ui, NavIcon::Link, "Copy image link", true).clicked() {
+                    if let Some(url) = &attachment.url {
+                        ui.ctx().copy_text(url.clone());
+                    }
+                    ui.close();
+                }
+                if message_menu_item(ui, NavIcon::ExternalLink, "Open image in browser", true)
+                    .clicked()
+                {
+                    self.media
+                        .open(ui.ctx(), attachment, chrono::Utc::now().timestamp());
+                    ui.close();
+                }
+                if let Some(status) = self.media.copy_status {
+                    ui.separator();
+                    ui.label(RichText::new(status).size(12.0).color(MUTED));
+                }
+            });
+        }
         response.clicked()
     }
 
@@ -19409,6 +19567,12 @@ impl CaperApp {
             window = window
                 .pivot(egui::Align2::RIGHT_BOTTOM)
                 .fixed_pos(anchor + egui::vec2(14.0, -18.0));
+        } else if !profile && let Some(anchor) = self.reaction_picker_anchor {
+            // Override the composer's saved position and pivot. egui constrains
+            // the window to the viewport when the control is near an edge.
+            window = window
+                .pivot(egui::Align2::LEFT_TOP)
+                .fixed_pos(anchor + egui::vec2(0.0, 4.0));
         }
         let shown = window
             // Above the Pins overlay, as its sublayer, when opened from a pin.
@@ -26849,7 +27013,13 @@ fn rich_text(
     let linked = runs.iter().any(|run| matches!(run, Run::Link(..)));
     let emojis = emoji::inline(text);
     if pills.is_empty() && !linked && !edited && emojis.is_empty() {
-        ui.label(RichText::new(text).font(plain.font_id).color(plain.color));
+        let (position, galley, response) =
+            egui::Label::new(RichText::new(text).font(plain.font_id).color(plain.color))
+                .layout_in_ui(ui);
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
+        });
+        message_selection::paint(ui, &response, position, galley);
         return Body::default();
     }
     let ids: Vec<_> = (0..pills.len())
@@ -26989,14 +27159,7 @@ fn rich_text(
                 );
             }
         }
-        egui::text_selection::LabelSelectionState::label_text_selection(
-            ui,
-            &response,
-            position,
-            galley.clone(),
-            ui.visuals().text_color(),
-            Stroke::NONE,
-        );
+        message_selection::paint(ui, &response, position, galley.clone());
     }
     if !emojis.is_empty() && ui.is_rect_visible(response.rect) {
         let textures = emoji::Textures::shared(ui.ctx());
@@ -27281,15 +27444,13 @@ fn message_menu_item_in(
             ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), egui::Sense::click());
         ui.painter().rect_filled(
             rect,
-            0.0,
+            4.0,
             if response.hovered() || response.has_focus() {
                 BORDER
             } else {
-                RAISED
+                Color32::TRANSPARENT
             },
         );
-        ui.painter()
-            .hline(rect.x_range(), rect.top(), Stroke::new(1.0, BORDER));
         paint_icon(
             ui.painter(),
             egui::Rect::from_center_size(
@@ -27334,6 +27495,17 @@ fn copy_items(ui: &mut egui::Ui, message: &model::Message) {
 
 /// Muted release links keep real hyperlink behavior, with visible pointer and keyboard feedback.
 fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::Response {
+    external_link(ui, label, size, url, MUTED.gamma_multiply(0.72))
+        .on_hover_text("View this version on GitHub")
+}
+
+fn external_link(
+    ui: &mut egui::Ui,
+    label: &str,
+    size: f32,
+    url: &str,
+    color: Color32,
+) -> egui::Response {
     let galley =
         ui.painter()
             .layout_no_wrap(label.to_owned(), egui::FontId::proportional(size), MUTED);
@@ -27350,7 +27522,7 @@ fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::R
     } else if response.has_focus() {
         TEXT
     } else {
-        MUTED.gamma_multiply(0.72)
+        color
     };
     if ui.is_rect_visible(rect) {
         if response.hovered() || pressed {
@@ -27388,9 +27560,7 @@ fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::R
         }
     }
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, label));
-    let response = response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("View this version on GitHub");
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if response.clicked() {
         ui.ctx().open_url(egui::OpenUrl::new_tab(url));
     }
@@ -28067,6 +28237,7 @@ fn short_time(timestamp: &str) -> String {
 
 fn configure(context: &egui::Context) {
     egui_extras::install_image_loaders(context);
+    context.add_plugin(message_selection::MessageSelection::default());
     let mut fonts = egui::FontDefinitions::default();
     for (name, bytes) in [
         (
@@ -28880,16 +29051,7 @@ fn notices(ui: &mut egui::Ui, error: &Option<String>, warning: &Option<String>) 
 
 /// Part of the Privacy section: opens the account deletion instructions.
 fn delete_account_settings(ui: &mut egui::Ui) {
-    ui.label(RichText::new("Delete account").size(13.0).color(TEXT));
-    ui.add_space(6.0);
-    let link = RichText::new("How to delete your account")
-        .size(13.0)
-        .color(TEXT)
-        .underline();
-    if ui.link(link).clicked() {
-        ui.ctx()
-            .open_url(egui::OpenUrl::new_tab(DELETE_ACCOUNT_URL));
-    }
+    external_link(ui, "Delete account", 13.0, DELETE_ACCOUNT_URL, ERROR);
 }
 
 fn endpoint(args: &[String], fixture: Option<&str>) -> Result<String, String> {
@@ -30309,6 +30471,130 @@ mod tests {
                 assert!(texts(&output).contains(&"Unpin message"));
             }
         }
+    }
+
+    #[test]
+    fn right_click_preserves_selection_and_copies_only_selected_text() {
+        let (context, mut app) = fixture("parity-channel");
+        app.dialog = None;
+        app.token = Some("fixture-only".into());
+        app.session = Some(session());
+        let mut message = app.timeline.messages().next().unwrap().clone();
+        message.content.text = "Before copy only this after".into();
+        message.content.attachments.clear();
+        app.timeline.reset(vec![message], "7").unwrap();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Before copy only this after" => {
+                    Some(text)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let position = |index| {
+            text.pos
+                + text
+                    .galley
+                    .pos_from_cursor(egui::text::CCursor::new(index))
+                    .center()
+                    .to_vec2()
+        };
+        let start = position(7);
+        let end = position(21);
+        render(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(start),
+                egui::Event::PointerButton {
+                    pos: start,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        render(&mut app, &context, vec![egui::Event::PointerMoved(end)]);
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        click_with(
+            &mut app,
+            &context,
+            start + egui::vec2(10.0, 0.0),
+            egui::PointerButton::Secondary,
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let copy = node_bounds(&output, "Copy selected text").expect("selected text action");
+        assert!(
+            copy.width() <= 250.0,
+            "context menu must not inherit row width"
+        );
+        render(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(copy.center()),
+                egui::Event::PointerButton {
+                    pos: copy.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        let copied = render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: copy.center(),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(
+            copied
+                .platform_output
+                .commands
+                .iter()
+                .any(|command| matches!(command,
+                    egui::OutputCommand::CopyText(text) if text == "copy only this"
+                ))
+        );
+        // This is a new single click, not egui's time-based double/triple click.
+        let time = context.input(|input| input.time) + 1.0;
+        let _ = context.run(
+            egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            },
+            |context| app.page(context),
+        );
+        click(&mut app, &context, start);
+        click_with(&mut app, &context, start, egui::PointerButton::Secondary);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            node_bounds(&output, "Copy selected text").is_none(),
+            "a plain click is not a text selection"
+        );
+        assert!(
+            node_bounds(&output, "Copy text").is_some(),
+            "whole-message copying remains available"
+        );
     }
 
     #[test]
@@ -31936,12 +32222,7 @@ mod tests {
             "{labels:?}"
         );
         assert_eq!(
-            click_opening(
-                &mut app,
-                &context,
-                text_position(&output, "How to delete your account"),
-            )
-            .as_deref(),
+            click_opening(&mut app, &context, text_position(&output, "Delete account"),).as_deref(),
             Some(DELETE_ACCOUNT_URL)
         );
         let output = scroll_modal_to_bottom(&mut app, &context);
@@ -34137,6 +34418,12 @@ mod tests {
                 })
         };
         let add = row_shortcut(&output).expect("inline shortcut without hovering");
+        // First open the composer picker at the opposite side of the window:
+        // reactions must not reuse that window's persisted position or pivot.
+        let composer = labelled_center(&output, "Insert emoji").expect("composer emoji button");
+        click(&mut app, &context, composer);
+        render(&mut app, &context, vec![]);
+        app.close_emoji_picker(&context, false);
         app.reaction_search = "stale search".into();
         app.reaction_category = 2;
         click(&mut app, &context, add);
@@ -34144,6 +34431,13 @@ mod tests {
         assert!(app.reaction_search.is_empty());
         assert_eq!(app.reaction_category, 0);
         assert!(app.pending_reactions.is_empty(), "opening does not react");
+        render(&mut app, &context, vec![]);
+        let picker = app.emoji_picker_rect.expect("reaction picker drawn");
+        assert!(
+            picker.distance_to_pos(add) < 40.0,
+            "picker should open beside the reaction button: {picker:?}, {add:?}"
+        );
+        assert!(context.content_rect().contains_rect(picker));
 
         app.reaction_picker = None;
         message.reactions.clear();

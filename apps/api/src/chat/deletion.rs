@@ -117,8 +117,11 @@ pub(super) async fn persist_delete(
     payload["editSeq"] = json!(seq.to_string());
     payload["attachmentsSeq"] = json!(seq.to_string());
     payload["deletedAt"] = json!(now.to_rfc3339());
+    // A wrapper's deletion revokes the excerpt as well as its note. Advance
+    // its independent merge clock along with the deletion edit.
     if payload.get("forward").is_some() {
         payload["forward"] = json!({"message":null,"seq":"0"});
+        payload["forwardSeq"] = json!(seq.to_string());
     }
     sqlx::query("UPDATE public.messages SET payload=$2,deleted_at=$3 WHERE id=$1")
         .bind(message_id)

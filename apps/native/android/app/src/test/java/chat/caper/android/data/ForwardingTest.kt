@@ -5,20 +5,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ForwardingTest {
-    @Test fun `deletion clears a forward and stale overlays cannot restore it`() {
-        val original = wrapper("20", "12")
-        val tombstone = original.copy(content = ChatContent(1, "text", ""), revision = 2,
-            deletedAt = "2026-10-07T00:00:00Z", forward = MessageForward(null, "0"))
-        val deleted = mergeEdit(original, tombstone)
+    @Test fun `deleted wrapper clears projection and rejects stale replay and history`() {
+        val old = wrapper("99", "1")
+        val deletion = old.copy(revision = 2, editSeq = "4", deletedAt = "2026-10-06T12:02:00Z",
+            forward = MessageForward(null, "0"), forwardSeq = "4")
+        val deleted = mergeEdit(old, deletion)
         assertNull(deleted.forward?.message)
-        assertEquals("0", deleted.forward?.seq)
-        assertEquals("12", deleted.forwardSeq)
-        assertEquals(deleted, mergeEdit(deleted, original))
-        assertEquals(deleted, mergeForward(deleted, original))
-        val snapshots = mutableMapOf<String, ChatMessage>()
-        cacheEditSnapshot(snapshots, tombstone, emptySet())
-        cacheEditSnapshot(snapshots, original, emptySet())
-        assertNull(mergeForward(mergeEdit(original, snapshots.getValue(original.id)), original).forward?.message)
+        assertEquals("4", deleted.forwardSeq)
+        assertEquals(deleted, mergeForward(deleted, old))
+        assertNull(mergeForward(mergeEdit(old, deletion), old).forward?.message)
     }
 
     private fun wrapper(sourceSeq: String, destinationSeq: String): ChatMessage {

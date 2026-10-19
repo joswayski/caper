@@ -49,6 +49,12 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   validation rejection unlocks editing and the next send gets a new UUID. A
   matching gateway delivery confirms the pending write even if HTTP finishes
   late or fails.
+- Compact right-click message menus preserve highlighted text and offer
+  **Copy selected text** separately from **Copy text** (the whole message).
+  Revealed, ready images have **Copy image**, **Copy image link**, and
+  **Open image in browser**. Image copying fetches the original rather than
+  the cropped preview, uses the viewer's decode limits, and copies the first
+  frame of animations as a still image.
 - Unified `/api/chat/events` gateway subscriptions with ordered replay,
   deduplication, gap resync, heartbeat handling, reconnect status, and stale
   result isolation across logout/channel changes.

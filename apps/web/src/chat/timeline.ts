@@ -179,7 +179,8 @@ export class ChatTimeline {
   }
 
   private mergeForwardMessage(message: ChatMessage) {
-    if (!message.forward || message.deletedAt || this.editUpdates.get(message.id)?.deletedAt) return;
+    message = this.withEdit(message);
+    if (!message.forward) return;
     const previous = this.forwardUpdates.get(message.id);
     // Source snapshots may be fresher than the asynchronous projection. Its
     // source cursor and the destination replay revision are independent.
@@ -215,6 +216,13 @@ export class ChatTimeline {
     const previous = this.editUpdates.get(message.id);
     if (!previous || (message.revision ?? 1) > (previous.revision ?? 1)) this.editUpdates.set(message.id, message);
     for (const collection of [this.byId, this.pinnedById, this.pinUpdates]) {
+      if (message.deletedAt) {
+        for (const [id, item] of collection) {
+          if (item.replyTo?.id !== message.id) continue;
+          collection.set(id, this.withEdit(item));
+          if (collection === this.byId) this.sortedMessages = undefined;
+        }
+      }
       const current = collection.get(message.id);
       if (!current) continue;
       const updated = mergeEditedContent(current, message);
@@ -223,9 +231,24 @@ export class ChatTimeline {
         if (collection === this.byId) this.sortedMessages = undefined;
       }
     }
+    if (message.deletedAt) this.mergeForwardMessage(message);
   }
 
   private withEdit(message: ChatMessage) {
+    const reference = message.replyTo;
+    if (reference && this.editUpdates.get(reference.id)?.deletedAt) {
+      message = {
+        ...message,
+        replyTo: {
+          ...reference,
+          text: "",
+          fullText: undefined,
+          hasAttachments: false,
+          attachments: undefined,
+          deleted: true,
+        },
+      };
+    }
     const edit = this.editUpdates.get(message.id);
     return edit ? mergeEditedContent(message, edit) : message;
   }

@@ -152,18 +152,24 @@
   color: var(--text-muted);
   font-size: 0.78rem;
 }
-.privacy-settings section > p a {
+.privacy-delete-account {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 4px;
+  min-height: 44px;
   border-radius: 2px;
-  color: var(--text);
+  color: var(--error-text);
+  font-size: 0.78rem;
+  text-decoration: none;
   text-underline-offset: 3px;
-  transition: color 140ms ease;
 }
 @media (hover: hover) {
-  .privacy-settings section > p a:hover {
-    color: var(--terracotta-bright);
+  .privacy-delete-account:hover {
+    text-decoration: underline;
   }
 }
-.privacy-settings section > p a:focus-visible {
+.privacy-delete-account:focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
 }

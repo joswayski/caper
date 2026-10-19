@@ -208,6 +208,14 @@ public final class VoiceClient {
     public func join(channelID: String?, context: VoiceContext, name: String,
                      joinStartedAt: Int64 = Int64(Date().timeIntervalSince1970 * 1_000), sessionStartedAt: Double? = nil) async {
         guard phase == .idle || phase == .failed else { return }
+        reconnectAttempts = 0
+        await joinCall(channelID: channelID, context: context, name: name,
+                       joinStartedAt: joinStartedAt, sessionStartedAt: sessionStartedAt)
+    }
+
+    private func joinCall(channelID: String?, context: VoiceContext, name: String,
+                          joinStartedAt: Int64 = Int64(Date().timeIntervalSince1970 * 1_000), sessionStartedAt: Double? = nil) async {
+        guard phase == .idle || phase == .failed else { return }
         #if os(iOS)
         // A prejoin comparison must be stopped before this new generation can
         // claim the same ADM. The sheet's later cleanup is intentionally stale.
@@ -424,6 +432,7 @@ public final class VoiceClient {
     /// Silences local audio and clears call state synchronously. iOS hardware
     /// disposal and remote cleanup must not block the UI or revive an old call.
     public func leaveImmediately() {
+        reconnectAttempts = 0
         #if os(iOS)
         guard phase != .idle || comparisonGeneration != nil else { return }
         #else
@@ -729,7 +738,7 @@ public final class VoiceClient {
             self.reconnectTask = nil
             self.phase = .idle
             guard let oldContext else { return }
-            await self.join(channelID: oldChannelID, context: oldContext, name: oldName)
+            await self.joinCall(channelID: oldChannelID, context: oldContext, name: oldName)
         }
     }
 

@@ -2,7 +2,60 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 import { DraftAttachments, MessageAttachments, type DraftAttachment } from "./Attachments.tsx";
 import Composer from "./Composer.tsx";
+import { ReplyContext } from "./Replies.tsx";
 import type { ChatAttachment } from "./types.ts";
+
+test("reply previews stay bounded and never load concealed media or video originals", () => {
+  const photo: ChatAttachment = {
+    id: "photo",
+    kind: "image",
+    contentType: "image/png",
+    name: "Photo",
+    size: 10,
+    url: "https://cdn.test/photo",
+    previewUrl: "https://cdn.test/preview",
+  };
+  const render = (files: ChatAttachment[], hidden = false, deleted = false) =>
+    renderToStaticMarkup(
+      <ReplyContext
+        motionKey="reply"
+        reference={{
+          id: "source",
+          author: { id: "me", name: "Me", isGuest: false },
+          text: "Photo",
+          hasAttachments: true,
+          attachments: files,
+          deleted,
+        }}
+        hidden={hidden}
+        onOpen={() => {}}
+      />,
+    );
+  const markup = render([
+    photo,
+    {
+      ...photo,
+      id: "spoiler",
+      spoiler: true,
+      url: "https://cdn.test/secret",
+      previewUrl: "https://cdn.test/secret-preview",
+    },
+    { ...photo, id: "video", kind: "video", previewUrl: undefined, url: "https://cdn.test/video" },
+    { ...photo, id: "overflow" },
+  ]);
+  expect(markup).toContain('src="https://cdn.test/preview"');
+  expect(markup).not.toContain("https://cdn.test/secret");
+  expect(markup).not.toContain("https://cdn.test/video");
+  expect(markup).toContain("+1");
+  for (const file of [
+    { ...photo, unavailable: true },
+    { ...photo, status: "processing" as const },
+    { ...photo, status: "failed" as const },
+  ])
+    expect(render([file])).not.toContain("https://cdn.test/");
+  expect(render([photo], true)).not.toContain("https://cdn.test/");
+  expect(render([photo], false, true)).not.toContain("https://cdn.test/");
+});
 
 const attachButton = (enabled: boolean, drafts: DraftAttachment[] = []) =>
   renderToStaticMarkup(

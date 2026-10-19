@@ -147,6 +147,7 @@ internal fun durationLabel(durationMs: Long?): String? {
     progress: Map<String, Int> = emptyMap(),
     localPreviews: Map<String, String> = emptyMap(),
     caption: String? = null,
+    forwardOwnerId: String? = null,
 ) {
     if (attachments.isEmpty()) return
     var viewer by remember { mutableStateOf<ViewerPages?>(null) }
@@ -166,7 +167,7 @@ internal fun durationLabel(durationMs: Long?): String? {
     val view: (ChatAttachment) -> (() -> Unit)? = { attachment ->
         if (pending) null else ({
             val pages = viewerPages(attachments, attachment.id, revealed)
-            if (host != null) host.open = pages?.let { OpenViewer(it, caption, hide) } else viewer = pages
+            if (host != null) host.open = pages?.let { OpenViewer(it, caption, hide, forwardOwnerId) } else viewer = pages
         })
     }
     @Composable fun AttachmentContent(attachment: ChatAttachment, modifier: Modifier, shape: Shape) {
@@ -366,6 +367,28 @@ internal fun durationLabel(durationMs: Long?): String? {
             .semantics { contentDescription = description },
         content = content,
     )
+}
+
+/** Quote previews never reveal spoilers or start media playback; the quote owns the tap. */
+internal fun replyAttachmentPreviewUrl(attachment: ChatAttachment): String? = when {
+    attachment.spoiler || attachment.unavailable || attachment.state != AttachmentState.READY -> null
+    attachment.kind !in setOf("image", "video") -> null
+    else -> attachment.previewUrl ?: attachment.url.takeIf { attachment.kind == "image" && !attachment.animated && attachment.contentType != "image/gif" }
+}
+
+@Composable internal fun ReplyAttachmentPreviews(attachments: List<ChatAttachment>) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        attachments.take(3).forEach { attachment ->
+            val source = replyAttachmentPreviewUrl(attachment)
+            var failed by remember(attachment.id, source) { mutableStateOf(false) }
+            Box(Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)).background(Surface)
+                .border(1.dp, Border, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+                if (source != null && !failed) AttachmentImage(attachment, source, "reply", Modifier.fillMaxSize(), ContentScale.Crop, { _, _ -> failed = true })
+                else Icon(painterResource(R.drawable.lucide_file_text), if (attachment.spoiler) "Spoiler attachment" else "Attachment", Modifier.size(18.dp), tint = TextMuted)
+            }
+        }
+        if (attachments.size > 3) Text("+${attachments.size - 3}", color = TextMuted, fontSize = 12.sp)
+    }
 }
 
 @Composable internal fun AttachmentImage(

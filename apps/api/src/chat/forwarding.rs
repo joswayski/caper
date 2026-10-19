@@ -404,7 +404,7 @@ pub(super) async fn project_events(
     let parents: Vec<String> = sqlx::query_scalar("SELECT root.external_id FROM public.messages m JOIN public.messages root ON root.id=m.thread_root_id WHERE m.external_id=ANY($1)")
         .bind(&targets).fetch_all(&mut **tx).await.map_err(database_error)?;
     targets.extend(parents);
-    let destinations: Vec<i64> = sqlx::query_scalar("SELECT DISTINCT f.channel_id FROM public.messages f JOIN public.messages source ON source.id=f.forward_source_id JOIN public.channels c ON c.id=f.channel_id WHERE source.external_id=ANY($1) AND c.deleted_at IS NULL ORDER BY f.channel_id")
+    let destinations: Vec<i64> = sqlx::query_scalar("SELECT DISTINCT f.channel_id FROM public.messages f JOIN public.messages source ON source.id=f.forward_source_id JOIN public.channels c ON c.id=f.channel_id WHERE source.external_id=ANY($1) AND f.deleted_at IS NULL AND c.deleted_at IS NULL ORDER BY f.channel_id")
         .bind(&targets).fetch_all(&mut **tx).await.map_err(database_error)?;
     // Most messages were never forwarded: skip the locks and snapshot read.
     if destinations.is_empty() {

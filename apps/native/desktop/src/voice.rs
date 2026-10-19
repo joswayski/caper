@@ -130,6 +130,7 @@ pub struct Voice {
     speaker_control: Option<SpeakerTestControl>,
     device_request: u64,
     participant_playback: BTreeMap<String, TrackPlayback>,
+    snapshot_revision: Option<u64>,
     base: Url,
     control: Option<JoinControl>,
     commands: Option<Sender<Operation>>,
@@ -214,6 +215,7 @@ impl Voice {
             speaker_control: None,
             device_request: 0,
             participant_playback: BTreeMap::new(),
+            snapshot_revision: None,
             base,
             control: None,
             commands: None,
@@ -508,6 +510,7 @@ impl Voice {
         self.commands = None;
         self.active_space = None;
         self.participants.clear();
+        self.snapshot_revision = None;
         self.session_started_at = None;
         self.self_id.clear();
         self.diagnostics = None;
@@ -866,6 +869,14 @@ impl Voice {
     }
 
     fn roster(&mut self, snapshot: Snapshot) {
+        // HTTP and gateway snapshots share a cursor; equal revisions may retry.
+        if self
+            .snapshot_revision
+            .is_some_and(|latest| snapshot.revision.is_none_or(|revision| revision < latest))
+        {
+            return;
+        }
+        self.snapshot_revision = snapshot.revision;
         self.session_started_at = snapshot.session_started_at;
         self.participants = snapshot.participants;
         self.apply_playback();
@@ -1270,6 +1281,57 @@ mod tests {
             200
         );
         assert_eq!(Preferences::restore("broken"), Preferences::default());
+    }
+
+    #[test]
+    fn roster_reports_cannot_roll_back_and_leave_resets_revision() {
+        let mut voice = Voice::new(
+            Url::parse("http://127.0.0.1:9/").unwrap(),
+            egui::Context::default(),
+        );
+        let generation = voice.state.generation;
+        let snapshot = |revision: Option<u64>, started: u64| {
+            serde_json::from_value::<Snapshot>(serde_json::json!({
+                "revision": revision, "sessionStartedAt": started,
+                "participants": [{"id": "peer", "name": started.to_string(), "muted": false,
+                    "deafened": false, "tracks": []}]
+            }))
+            .unwrap()
+        };
+        for (revision, started, expected) in [
+            (Some(8_u64), 80_u64, 80_u64),
+            (Some(7), 70, 80),
+            (None, 60, 80),
+            (Some(8), 81, 81),
+            (Some(9), 90, 90),
+        ] {
+            let snapshot = snapshot(revision, started);
+            let report = if started == 80 || started == 81 {
+                Report::Gateway(
+                    generation,
+                    media_gateway::Event::Snapshot {
+                        generation,
+                        snapshot,
+                    },
+                )
+            } else {
+                Report::Roster(generation, snapshot)
+            };
+            voice.events.send(report).unwrap();
+            voice.receive();
+            assert_eq!(voice.session_started_at, Some(expected));
+            assert_eq!(voice.participants[0].name, expected.to_string());
+        }
+        voice.leave();
+        voice
+            .events
+            .send(Report::Roster(
+                voice.state.generation,
+                snapshot(Some(1), 10),
+            ))
+            .unwrap();
+        voice.receive();
+        assert_eq!(voice.session_started_at, Some(10));
     }
 
     #[test]

@@ -336,6 +336,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     for (const [wrapperId, sourceId] of state.forwardSources) {
       if (sourceId !== changed.id && sourceId !== changed.threadRootId) continue;
       const wrapper = messageFor(wrapperId);
+      if (wrapper.deletedAt) continue;
       wrapper.forward = snapshot(messageFor(sourceId));
       wrapper.forwardSeq = String(BigInt(channelHead(wrapper.channelId)) + 1n);
       const event = {
@@ -399,9 +400,14 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     message.editedAt = now;
     message.deletedAt = now;
     message.content = { version: 1, type: "text", text: "" };
+    if (message.forward) {
+      message.forward = { message: null, seq: "0" };
+      message.forwardSeq = message.editSeq;
+    }
     for (const reply of state.messages.get(channel.id) ?? [])
       if (reply.replyTo?.id === message.id) {
         delete reply.replyTo.fullText;
+        delete reply.replyTo.attachments;
         Object.assign(reply.replyTo, { text: "", hasAttachments: false, deleted: true });
       }
     const event = {
@@ -1039,7 +1045,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (method === "GET" && forwardPath[2]) {
           const wrapper = state.messages.get(channel.id)?.find((message) => message.id === forwardPath[2]);
           const source = wrapper && messageFor(state.forwardSources.get(wrapper.id));
-          if (!wrapper || !state.forwardSources.has(wrapper.id)) return reject(response, 404, "Forward not found.");
+          if (!wrapper || wrapper.deletedAt || !state.forwardSources.has(wrapper.id))
+            return reject(response, 404, "Forward not found.");
           const before = url.searchParams.get("before");
           if (before !== null && !/^(0|[1-9]\d*)$/.test(before)) return reject(response, 400, "invalid cursor");
           const replies = source
@@ -1073,7 +1080,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             .get(body.sourceChannelId)
             ?.find((message) => message.id === body.sourceMessageId);
           const source = selected && messageFor(state.forwardSources.get(selected.id) ?? selected.id);
-          if (!source) return reject(response, 404, "Original not found.");
+          if (!source || source.deletedAt || selected.deletedAt) return reject(response, 404, "Original not found.");
           if (
             typeof body.clientMessageId !== "string" ||
             typeof (body.text ?? "") !== "string" ||
@@ -1091,7 +1098,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             return previous.token === request.headers["x-caper-chat-token"] &&
               previous.text === (body.text ?? "") &&
               previous.source === source.id
-              ? json(response, 200, { ...previous.message, forward: snapshot(source) })
+              ? json(response, 200, {
+                  ...previous.message,
+                  forward: snapshot(previous.message.deletedAt ? null : source),
+                })
               : reject(response, 409, "Message ID already used.");
           const seq = String(BigInt(channelHead(channel.id)) + 1n);
           const wrapper = {
@@ -1354,6 +1364,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               text: characters.slice(0, 200).join(""),
               ...(characters.length > 200 ? { fullText: text } : {}),
               hasAttachments: !!target.content.attachments?.length,
+              ...(target.content.attachments ? { attachments: clone(target.content.attachments) } : {}),
               ...(target.threadRootId ? { threadRootId: target.threadRootId } : {}),
             };
           }

@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { ExternalLink } from "lucide-react";
 import Avatar from "../components/Avatar";
 import { refreshBlocks, unblock, useBlocks } from "../spaces/blocks.ts";
 import { getDirectPrivacy, setDirectPrivacy, type DirectPrivacy } from "../spaces/client.ts";
@@ -150,14 +151,10 @@ export default function PrivacySettings() {
         )}
       </section>
       {/* Google Play requires an in-app path to account deletion; requests go by email. */}
-      <section aria-labelledby={`${name}-delete`}>
-        <h4 id={`${name}-delete`}>Delete account</h4>
-        <p>
-          <a href={deleteAccountUrl} target="_blank" rel="noreferrer">
-            How to delete your account
-          </a>
-        </p>
-      </section>
+      <a className="privacy-delete-account" href={deleteAccountUrl} target="_blank" rel="noreferrer">
+        Delete account
+        <ExternalLink size={12} aria-hidden="true" />
+      </a>
     </section>
   );
 }

@@ -123,6 +123,7 @@ export interface ChatReplyReference {
   text: string;
   fullText?: string;
   hasAttachments: boolean;
+  attachments?: ChatAttachment[];
   threadRootId?: string;
   /** The quoted message was deleted; `text` is empty. */
   deleted?: boolean;
@@ -238,6 +239,7 @@ export function isChatMessage(value: unknown): value is ChatMessage {
         (message.replyTo.fullText === undefined ||
           (typeof message.replyTo.fullText === "string" && Array.from(message.replyTo.fullText).length <= 4000)) &&
         typeof message.replyTo.hasAttachments === "boolean" &&
+        (message.replyTo.attachments === undefined || Array.isArray(message.replyTo.attachments)) &&
         (message.replyTo.deleted === undefined || typeof message.replyTo.deleted === "boolean") &&
         (message.replyTo.threadRootId === undefined ||
           (typeof message.replyTo.threadRootId === "string" && !!message.replyTo.threadRootId)))) &&

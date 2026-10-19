@@ -137,7 +137,7 @@ internal fun downloadName(name: String): String =
     name.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_").trim().trimStart('.').ifEmpty { "file" }
 
 /** A timeline's open viewer: the files it pages through and the caption under their names. */
-internal data class OpenViewer(val pages: ViewerPages, val caption: String?, val hideSpoiler: (String) -> Unit)
+internal data class OpenViewer(val pages: ViewerPages, val caption: String?, val hideSpoiler: (String) -> Unit, val forwardOwnerId: String? = null)
 
 /**
  * Holds a timeline's media viewer above its LazyColumn. A viewer composed in its message row
@@ -167,6 +167,9 @@ internal fun liveAttachments(state: AppUiState, ids: List<String>): List<ChatAtt
 /** [host]'s viewer over its files as [state] has them now; it closes once none is loaded (another conversation opened). */
 @Composable internal fun HostedMediaViewer(host: MediaViewerHost, state: AppUiState, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
     val open = host.open ?: return
+    if (open.forwardOwnerId != null && (state.messages + state.pinnedMessages).none {
+        it.id == open.forwardOwnerId && it.deletedAt == null && it.forward?.message != null
+    }) return SideEffect { host.open = null }
     val attachments = remember(state.messages, state.pinnedMessages, state.freshAttachmentUrls, open) { liveAttachments(state, open.pages.ids) }
     if (attachments.isEmpty()) return SideEffect { host.open = null }
     val uriHandler = LocalUriHandler.current
@@ -242,14 +245,26 @@ private const val DOUBLE_TAP_ZOOM = 2f
                     Text(it, Modifier.padding(horizontal = 8.dp).semantics { contentDescription = "File ${page + 1} of ${ids.size}"; liveRegion = LiveRegionMode.Polite },
                         color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
-                val tint = if (url != null) Text else TextMuted.copy(alpha = 0.4f)
-                IconButton({
-                    if (current != null && url != null) notice = if (download(context, current, url)) "Downloading ${current.name}…" else "Couldn’t start the download."
-                }, Modifier.semantics { contentDescription = "Download" }, enabled = url != null) {
-                    Icon(painterResource(R.drawable.lucide_download), null, Modifier.size(20.dp), tint = tint)
-                }
-                IconButton({ url?.let(open) }, Modifier.semantics { contentDescription = "Open in browser" }, enabled = url != null) {
-                    Icon(painterResource(R.drawable.lucide_external_link), null, Modifier.size(20.dp), tint = tint)
+                var actionsOpen by remember(current?.id, url) { mutableStateOf(false) }
+                Box {
+                    IconButton({ actionsOpen = true }, Modifier.semantics { contentDescription = "More media actions" }, enabled = url != null) {
+                        Icon(painterResource(R.drawable.lucide_ellipsis), null, Modifier.size(20.dp), tint = if (url != null) Text else TextMuted.copy(alpha = 0.4f))
+                    }
+                    DropdownMenu(actionsOpen, { actionsOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small) {
+                        DropdownMenuItem(
+                            text = { Text("Download", color = Text) },
+                            leadingIcon = { Icon(painterResource(R.drawable.lucide_download), null, tint = Text) },
+                            onClick = {
+                                actionsOpen = false
+                                if (current != null && url != null) notice = if (download(context, current, url)) "Downloading ${current.name}…" else "Couldn’t start the download."
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Open in browser", color = Text) },
+                            leadingIcon = { Icon(painterResource(R.drawable.lucide_external_link), null, tint = Text) },
+                            onClick = { actionsOpen = false; url?.let(open) },
+                        )
+                    }
                 }
                 IconButton(close, Modifier.semantics { contentDescription = "Close viewer" }) { Icon(painterResource(R.drawable.lucide_x), null, tint = Text) }
             }

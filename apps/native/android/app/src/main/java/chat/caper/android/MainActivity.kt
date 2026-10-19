@@ -2275,7 +2275,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     forwardTarget?.let { target -> key(target.id) { ForwardPickerSheet(target, viewModel) { forwardTarget = null } } }
     conversationTarget?.let { target ->
         val current = state.messages.firstOrNull { it.id == target.id }
-        if (current != null) key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
+        if (current != null && current.deletedAt == null && current.forward?.message != null) key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
+        else LaunchedEffect(target.id) { conversationTarget = null }
     }
     historyTarget?.let { target ->
         val current = state.messages.find { it.id == target.id } ?: target
@@ -2498,7 +2499,8 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     // Pin ownership takes precedence over the mention wash; inline mention pills remain visible.
     val mentioned = message.pin == null && mentionsMe(message.content.mentions, message.author.id, state.account?.id ?: state.chatAuthorId)
     val replyWash = !deleted && message.replyTo != null && message.pin == null && state.focusedMessageId != message.id && state.thread?.rootId != message.id
-    Column((if (!mentioned) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = 0.08f)).drawBehind {
+    val replyToMe = replyWash && own != null && message.author.id != own && message.replyTo?.author?.id == own
+    Column((if (!mentioned && !replyToMe) Modifier.background(if (replyWash) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.03f) else Color.Transparent) else Modifier.background(Terracotta.copy(alpha = if (replyToMe) 0.12f else 0.08f)).drawBehind {
         val edge = 2.dp.toPx()
         drawRect(Terracotta, topLeft = Offset(if (layoutDirection == LayoutDirection.Rtl) size.width - edge else 0f, 0f), size = Size(edge, size.height))
     }).drawBehind {
@@ -2763,7 +2765,7 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
         }
     }
     conversationTarget?.let { target ->
-        state.displayedPins.firstOrNull { it.id == target.id }?.let { current ->
+        state.displayedPins.firstOrNull { it.id == target.id && it.deletedAt == null && it.forward?.message != null }?.let { current ->
             key(target.id) { ForwardConversationSheet(current, viewModel) { conversationTarget = null } }
         }
     }
@@ -2863,6 +2865,8 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current.density
     val canExpand = !hidden && (preview != text || clipped)
+    // The collapsed expansion pill stays over the excerpt, above the 44dp tiles and 3dp gap.
+    val attachmentOffset = if (!hidden && !reference.deleted && reference.attachments.isNotEmpty()) 47 * density else 0f
     var excerptHeight by remember(reference.id) { mutableIntStateOf((54 * density).toInt()) }
     var buttonHeight by remember(reference.id) { mutableIntStateOf((48 * density).toInt()) }
     // Match the other clients: each replying message has stable spring settings,
@@ -2942,12 +2946,13 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
                     }, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp, fontStyle = if (reference.deleted) FontStyle.Italic else null,
                         maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
                         onTextLayout = { if (!expanded) clipped = it.hasVisualOverflow })
+                    if (!hidden && !reference.deleted && reference.attachments.isNotEmpty()) ReplyAttachmentPreviews(reference.attachments)
                 }
                 if (canExpand) {
                     val interaction = remember { MutableInteractionSource() }
                     val hovered by interaction.collectIsHoveredAsState()
                     Button({ expanded = !expanded }, Modifier.align(Alignment.BottomCenter)
-                        .offset { IntOffset(0, if (expanded) 0 else (buttonHeight / 2f - excerptHeight * 0.3f).toInt()) }
+                        .offset { IntOffset(0, if (expanded) 0 else (buttonHeight / 2f - excerptHeight * 0.3f - attachmentOffset).toInt()) }
                         .heightIn(min = 44.dp).onSizeChanged { buttonHeight = it.height },
                         shape = RoundedCornerShape(percent = 50), interactionSource = interaction,
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),

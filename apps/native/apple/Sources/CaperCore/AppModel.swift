@@ -2986,6 +2986,7 @@ public final class ChatModel {
         guard !editSnapshots.unseenOverflowed else { return false }
         messages = messages.map { editSnapshots.overlay($0) }
         pinnedMessages = pinnedMessages.map { editSnapshots.overlay($0) }
+        forwardSnapshots.seed((messages + pinnedMessages).filter { $0.isDeleted })
         return true
     }
 

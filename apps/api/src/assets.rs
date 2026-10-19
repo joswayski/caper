@@ -430,11 +430,13 @@ fn attachment_pointers(payload: &Value) -> &'static [&'static str] {
         &[
             "/message/content/attachments",
             "/message/forward/message/content/attachments",
+            "/message/replyTo/attachments",
         ]
     } else {
         &[
             "/content/attachments",
             "/forward/message/content/attachments",
+            "/replyTo/attachments",
         ]
     }
 }
@@ -1667,12 +1669,64 @@ pub(crate) async fn edit_sources(
         .collect())
 }
 
+/// Reply media is projected at delivery, never frozen in the stored quote.
+/// Old replies gain previews too; edits, processing and deletion use the
+/// source's current files. References were authorized when the reply was sent.
+pub(crate) async fn reply_attachments<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    payloads: &mut [Value],
+) -> Result<(), sqlx::Error> {
+    let ids: Vec<String> = payloads
+        .iter()
+        .filter_map(|payload| {
+            payload.get("message").unwrap_or(payload)["replyTo"]["id"]
+                .as_str()
+                .map(str::to_owned)
+        })
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let sources: Vec<(String, String, Value)> = sqlx::query_as(
+        "SELECT m.external_id,c.external_id,m.payload->'content' FROM public.messages m
+         JOIN public.channels c ON c.id=m.channel_id
+         WHERE m.external_id=ANY($1) AND m.deleted_at IS NULL",
+    )
+    .bind(&ids)
+    .fetch_all(executor)
+    .await?;
+    for payload in payloads {
+        let message = if payload.get("message").is_some() {
+            &mut payload["message"]
+        } else {
+            payload
+        };
+        let files = sources
+            .iter()
+            .find(|(id, channel, _)| {
+                message["replyTo"]["id"].as_str() == Some(id)
+                    && message["channelId"].as_str() == Some(channel)
+                    && message["replyTo"]["deleted"] != true
+            })
+            .and_then(|(_, _, content)| content.get("attachments"))
+            .cloned();
+        if let Some(reference) = message.get_mut("replyTo").and_then(Value::as_object_mut) {
+            reference.remove("attachments");
+            if let Some(files) = files {
+                reference.insert("attachments".into(), files);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Marks history attachments whose files were deleted, so clients show a
 /// placeholder instead of a broken link before the objects are purged.
 pub(crate) async fn mark_deleted(pool: &PgPool, messages: &mut [Value]) -> Result<(), ApiError> {
-    const LISTS: [&str; 2] = [
+    const LISTS: [&str; 3] = [
         "/content/attachments",
         "/forward/message/content/attachments",
+        "/replyTo/attachments",
     ];
     let ids: Vec<String> = messages
         .iter()

@@ -23,7 +23,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -233,9 +232,11 @@ import kotlinx.coroutines.launch
     if (state.blocksError != null) TextButton(viewModel::refreshBlocks, shape = MaterialTheme.shapes.small) { Text("Retry") }
 
     HorizontalDivider(color = Border)
-    SettingLabel("Delete account")
     val uriHandler = LocalUriHandler.current
-    TextButton({ runCatching { uriHandler.openUri(DELETE_ACCOUNT_URL) } }, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
-        Text("How to delete your account", color = Text, fontSize = 13.sp, textDecoration = TextDecoration.Underline)
+    TextButton({ runCatching { uriHandler.openUri(DELETE_ACCOUNT_URL) } }, Modifier.heightIn(min = 48.dp),
+        shape = MaterialTheme.shapes.small, colors = ButtonDefaults.textButtonColors(contentColor = ErrorText)) {
+        Text("Delete account", fontSize = 13.sp)
+        Spacer(Modifier.width(4.dp))
+        Icon(painterResource(R.drawable.lucide_external_link), null, Modifier.size(12.dp))
     }
 }

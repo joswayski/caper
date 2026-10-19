@@ -2,24 +2,21 @@ import XCTest
 @testable import CaperCore
 
 final class ForwardingTests: XCTestCase {
-    func testDeletionClearsForwardAndStaleOverlaysCannotRestoreIt() throws {
-        let original = try wrapper("20", "12")
-        var tombstone = original
-        tombstone.content = ChatContent(version: 1, type: "text", text: ""); tombstone.revision = 2
-        tombstone.deletedAt = "2026-10-07T00:00:00Z"
-        tombstone.forward = MessageForward(message: nil, seq: "0")
+    func testDeletedWrapperRejectsStaleProjectionReplayAndHistory() throws {
+        let old = try wrapper("99", "1")
+        var deletion = old
+        deletion.revision = 2; deletion.editSeq = "4"
+        deletion.editedAt = "2026-10-06T12:02:00Z"
+        deletion.deletedAt = "2026-10-06T12:02:00Z"
+        deletion.forward = MessageForward(message: nil, seq: "0"); deletion.forwardSeq = "4"
         var edits = EditSnapshots()
-        edits.seed([tombstone, original])
-        let deleted = edits.overlay(original)
-        XCTAssertTrue(deleted.isDeleted)
-        XCTAssertNil(deleted.forward?.message)
-        XCTAssertEqual(deleted.forward?.seq, "0")
-        XCTAssertEqual(deleted.forwardSeq, "12")
+        edits.apply(deletion)
         var forwards = ForwardSnapshots()
-        forwards.seed([original])
-        XCTAssertNil(forwards.overlay(deleted).forward?.message)
-        XCTAssertNil(edits.overlay(forwards.overlay(original)).forward?.message)
-        XCTAssertNil(mergeForward(deleted, original).forward?.message)
+        forwards.seed([old])
+        let deleted = forwards.overlay(edits.overlay(old))
+        XCTAssertNil(deleted.forward?.message)
+        XCTAssertEqual(deleted.forwardSeq, "4")
+        XCTAssertNil(mergeForward(deleted, old).forward?.message)
     }
 
     private func wrapper(_ sourceSeq: String, _ destinationSeq: String) throws -> ChatMessage {

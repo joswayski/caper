@@ -106,6 +106,65 @@ try {
     if (artifacts) browser("screenshot", `${artifacts}/${layout}.png`);
     browser("click", media);
     wait('!!document.querySelector(".chat-viewer")');
+    if (width <= 760) {
+      assert.equal(evaluate('document.querySelector(".chat-viewer-desktop-action").checkVisibility()'), false);
+      browser("click", '[aria-label="More media actions"]');
+      wait('document.querySelector(".chat-viewer-actions").open');
+      assert.deepEqual(
+        evaluate(
+          '[...document.querySelectorAll(".chat-viewer-actions-panel a")].map(a => [a.textContent.trim(), a.href])',
+        ),
+        [
+          ["Download", image],
+          ["Open in browser", image],
+        ],
+      );
+      browser("press", "Escape");
+      assert.equal(evaluate('document.querySelector(".chat-viewer-actions").open'), false);
+      assert.equal(
+        evaluate('!!document.querySelector(".chat-viewer")'),
+        true,
+        "Escape dismisses the menu, not the viewer",
+      );
+      assert.equal(evaluate('document.activeElement.getAttribute("aria-label")'), "More media actions");
+      browser("click", '[aria-label="More media actions"]');
+      browser("click", ".chat-viewer-title");
+      assert.equal(
+        evaluate('document.querySelector(".chat-viewer-actions").open'),
+        false,
+        "outside press dismisses the menu",
+      );
+    } else {
+      assert.equal(evaluate('document.querySelector(".chat-viewer-desktop-action").checkVisibility()'), true);
+      browser("click", '[aria-label="More media actions"]');
+      assert.deepEqual(
+        evaluate(
+          '[...document.querySelectorAll(".chat-viewer-actions-panel button")].filter(b => b.checkVisibility()).map(b => b.textContent.trim())',
+        ),
+        ["Copy image", "Copy media link"],
+      );
+      // Exercise the real fetch/decode path, with a deterministic clipboard boundary.
+      evaluate(`Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+        writeText: async text => { window.copiedMediaLink = text; },
+        write: async items => {
+          const bitmap = await createImageBitmap(await items[0].getType('image/png'));
+          window.copiedMediaImage = [bitmap.width, bitmap.height];
+          bitmap.close();
+        }
+      } });`);
+      browser("click", ".chat-viewer-actions-panel button:last-of-type");
+      wait('document.querySelector(".chat-viewer-copy-status")?.textContent === "Media link copied"');
+      assert.equal(evaluate("window.copiedMediaLink"), image);
+      browser("click", '[aria-label="More media actions"]');
+      browser("click", ".chat-viewer-actions-panel button:first-of-type");
+      wait('document.querySelector(".chat-viewer-copy-status")?.textContent === "Image copied"');
+      assert.deepEqual(evaluate("window.copiedMediaImage"), [512, 512]);
+      evaluate('navigator.clipboard.write = async () => { throw new DOMException("Denied", "NotAllowedError"); }');
+      browser("click", '[aria-label="More media actions"]');
+      browser("click", ".chat-viewer-actions-panel button:first-of-type");
+      wait('document.querySelector(".chat-viewer-copy-status")?.textContent.startsWith("Couldn’t copy image")');
+      assert.equal(evaluate('document.querySelector(".chat-viewer-actions").open'), false);
+    }
     browser("press", "Escape");
     wait('!document.querySelector(".chat-viewer")');
     browser("hover", row);

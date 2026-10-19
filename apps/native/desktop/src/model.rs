@@ -728,6 +728,31 @@ fn preview_marker<S: serde::Serializer>(_: &bool, serializer: S) -> Result<S::Ok
 }
 
 impl Attachment {
+    /// Reply quotes never reveal spoilers or download video/animated originals.
+    pub fn reply_preview_source(&self) -> Option<&str> {
+        if self.spoiler || self.unavailable || self.status != AttachmentStatus::Ready {
+            return None;
+        }
+        if !matches!(self.kind, AttachmentKind::Image | AttachmentKind::Video) {
+            return None;
+        }
+        self.preview_url.as_deref().or_else(|| {
+            (self.kind == AttachmentKind::Image
+                && !self.animated
+                && matches!(
+                    self.content_type.as_str(),
+                    "image/png"
+                        | "image/jpeg"
+                        | "image/webp"
+                        | "image/avif"
+                        | "image/bmp"
+                        | "image/tiff"
+                ))
+            .then_some(self.url.as_deref())
+            .flatten()
+        })
+    }
+
     /// Mirrors web `isChatAttachment`: required strings and kind, optional
     /// non-negative numbers, and only http(s) URLs.
     pub fn parse(value: &serde_json::Value) -> Option<Self> {
@@ -1108,6 +1133,12 @@ pub struct MessageReply {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_text: Option<String>,
     pub has_attachments: bool,
+    #[serde(
+        default,
+        deserialize_with = "tolerant_attachments",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub attachments: Vec<Attachment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_root_id: Option<String>,
     /// The quoted message was deleted; `text` is then empty.
@@ -1120,14 +1151,21 @@ impl MessageReply {
         Self {
             id: message.id.clone(),
             author: message.author.clone(),
-            text: if message.content.text.is_empty() && message.forward.is_some() {
+            text: if message.is_deleted() {
+                String::new()
+            } else if message.content.text.is_empty() && message.forward.is_some() {
                 "Forwarded message".into()
             } else {
                 message.content.text.chars().take(200).collect()
             },
-            full_text: (message.content.text.chars().count() > 200)
+            full_text: (!message.is_deleted() && message.content.text.chars().count() > 200)
                 .then(|| message.content.text.clone()),
-            has_attachments: !message.content.attachments.is_empty(),
+            has_attachments: !message.is_deleted() && !message.content.attachments.is_empty(),
+            attachments: if message.is_deleted() {
+                Vec::new()
+            } else {
+                message.content.attachments.clone()
+            },
             thread_root_id: message.thread_root_id.clone(),
             deleted: message.deleted_at.is_some(),
         }
@@ -1369,8 +1407,17 @@ impl Message {
     }
 
     fn merge_edit(&mut self, incoming: &Self) {
-        if !self.is_deleted()
-            && self.id == incoming.id
+        if incoming.is_deleted()
+            && let Some(reply) = &mut self.reply_to
+            && reply.id == incoming.id
+        {
+            reply.deleted = true;
+            reply.text.clear();
+            reply.full_text = None;
+            reply.has_attachments = false;
+            reply.attachments.clear();
+        }
+        if self.id == incoming.id
             && self.channel_id == incoming.channel_id
             && incoming.revision > self.revision
         {
@@ -1386,8 +1433,9 @@ impl Message {
             self.edited_at.clone_from(&incoming.edited_at);
             self.edit_seq.clone_from(&incoming.edit_seq);
             self.deleted_at.clone_from(&incoming.deleted_at);
-            if self.is_deleted() {
+            if incoming.deleted_at.is_some() {
                 self.forward.clone_from(&incoming.forward);
+                self.forward_seq.clone_from(&incoming.forward_seq);
             }
         }
     }
@@ -1759,6 +1807,9 @@ impl Timeline {
             return Ok(false);
         }
         let message = self.remember_edit(message);
+        if let Some(snapshot) = self.forward_updates.get_mut(&message.id) {
+            snapshot.merge_edit(&message);
+        }
         for loaded in self
             .messages
             .values_mut()
@@ -2194,7 +2245,7 @@ fn overlay_reactions(current: &mut Message, incoming: &Message) {
 }
 
 fn overlay_forward(current: &mut Message, incoming: &Message) {
-    if current.is_deleted() {
+    if current.deleted_at.is_some() {
         return;
     }
     let Some(next) = &incoming.forward else {
@@ -2892,6 +2943,25 @@ mod tests {
             seq: "9007199254740995".into(),
         }));
         wrapper.forward_seq = Some("1".into());
+        // Deleting a wrapper is an edit, not a source-forward revision.
+        let mut deleted = wrapper.clone();
+        deleted.revision = 2;
+        deleted.edit_seq = Some("4".into());
+        deleted.edited_at = Some("2026-10-06T12:02:00Z".into());
+        deleted.deleted_at = Some("2026-10-06T12:02:00Z".into());
+        deleted.forward = Some(Box::new(MessageForward {
+            message: None,
+            seq: "0".into(),
+        }));
+        deleted.forward_seq = Some("4".into());
+        let mut deletion_timeline = Timeline::default();
+        deletion_timeline.reset(vec![wrapper.clone()], "1").unwrap();
+        deletion_timeline.merge_edit_snapshot(deleted).unwrap();
+        deletion_timeline.merge_forward(&wrapper);
+        deletion_timeline.prepend(vec![wrapper.clone()]).unwrap();
+        let tombstone = deletion_timeline.messages().next().unwrap();
+        assert!(tombstone.forward.as_ref().unwrap().message.is_none());
+        assert_eq!(tombstone.forward_seq.as_deref(), Some("4"));
         let mut timeline = Timeline::default();
         timeline.reset(vec![wrapper.clone()], "1").unwrap();
         let mut stale = wrapper.clone();
@@ -4172,6 +4242,7 @@ mod tests {
         }))
         .unwrap();
         assert!(!reply.deleted, "replyTo.deleted defaults to false");
+        assert!(reply.attachments.is_empty());
         assert!(
             serde_json::to_value(&reply)
                 .unwrap()
@@ -4179,6 +4250,38 @@ mod tests {
                 .is_none()
         );
         assert!(MessageReply::from_message(&deleted).deleted);
+    }
+
+    #[test]
+    fn reply_previews_conceal_sensitive_media_and_never_load_video_originals() {
+        let mut attachment = Attachment::parse(&serde_json::json!({
+            "id":"file", "kind":"image", "contentType":"image/png",
+            "name":"photo.png", "size":100, "url":"https://example.com/original",
+            "previewUrl":"https://example.com/preview"
+        }))
+        .unwrap();
+        assert_eq!(
+            attachment.reply_preview_source(),
+            attachment.preview_url.as_deref()
+        );
+        attachment.spoiler = true;
+        assert_eq!(attachment.reply_preview_source(), None);
+        attachment.spoiler = false;
+        attachment.unavailable = true;
+        assert_eq!(attachment.reply_preview_source(), None);
+        attachment.unavailable = false;
+        attachment.status = AttachmentStatus::Failed;
+        assert_eq!(attachment.reply_preview_source(), None);
+        attachment.status = AttachmentStatus::Processing;
+        assert_eq!(attachment.reply_preview_source(), None);
+        attachment.status = AttachmentStatus::Ready;
+        attachment.preview_url = None;
+        assert_eq!(attachment.reply_preview_source(), attachment.url.as_deref());
+        attachment.kind = AttachmentKind::Video;
+        assert_eq!(attachment.reply_preview_source(), None);
+        attachment.kind = AttachmentKind::Image;
+        attachment.animated = true;
+        assert_eq!(attachment.reply_preview_source(), None);
     }
 
     #[test]
@@ -4226,36 +4329,28 @@ mod tests {
     }
 
     #[test]
-    fn deleted_forward_cannot_be_restored_by_stale_history_or_forward_overlay() {
-        let mut original = message("wrapper", 1);
-        original.forward = Some(Box::new(MessageForward {
-            message: Some(message("source", 2)),
-            seq: "20".into(),
-        }));
-        original.forward_seq = Some("12".into());
-        let mut deleted = tombstone(original.clone(), 13, 2).message;
-        deleted.forward = Some(Box::new(MessageForward {
-            message: None,
-            seq: "0".into(),
-        }));
+    fn deleting_source_scrubs_loaded_reply_attachments() {
+        let original = with_files("one", 1, "ready", Some("2"));
+        let mut quoted = message("two", 3);
+        quoted.reply_to = Some(MessageReply::from_message(&original));
+        let reference = quoted.reply_to.as_ref().unwrap();
+        assert_eq!(reference.attachments, original.content.attachments);
+        let decoded: MessageReply =
+            serde_json::from_value(serde_json::to_value(reference).unwrap()).unwrap();
+        assert_eq!(decoded.attachments, reference.attachments);
         let mut timeline = Timeline::default();
-        timeline.reset(vec![original.clone()], "12").unwrap();
-        timeline.merge_edit_ack(deleted).unwrap();
-        timeline.merge_edit_ack(original.clone()).unwrap();
-        timeline.prepend(vec![original.clone()]).unwrap();
-        timeline
-            .apply_forward(ForwardUpdate {
-                kind: "message.forward".into(),
-                schema_version: 1,
-                channel_id: original.channel_id.clone(),
-                seq: "12".into(),
-                message: original,
-            })
+        timeline.reset(vec![original.clone(), quoted], "3").unwrap();
+        timeline.apply_edit(tombstone(original, 4, 2)).unwrap();
+        let reply = timeline
+            .messages()
+            .find(|item| item.id == "two")
+            .unwrap()
+            .reply_to
+            .as_ref()
             .unwrap();
-        let loaded = timeline.messages().next().unwrap();
-        assert!(loaded.is_deleted());
-        assert!(loaded.forward.as_ref().unwrap().message.is_none());
-        assert_eq!(loaded.forward.as_ref().unwrap().seq, "0");
-        assert_eq!(loaded.forward_seq.as_deref(), Some("12"));
+        assert!(reply.deleted);
+        assert!(reply.attachments.is_empty());
+        assert!(!reply.has_attachments);
+        assert!(reply.text.is_empty());
     }
 }

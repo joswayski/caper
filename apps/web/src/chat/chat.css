@@ -601,6 +601,27 @@
   width: 100%;
   min-height: 20px;
 }
+.chat-reply-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 5px;
+}
+.chat-reply-thumbnail {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+}
+.chat-reply-thumbnail img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 .chat-reply-connector {
   position: absolute;
   top: 0;
@@ -794,6 +815,14 @@
 .chat-message:where(:has(> .chat-reply-context)):focus-within {
   background: rgb(243 244 245 / 3%);
   box-shadow: inset 2px 0 var(--border);
+}
+/* Incoming replies to you stay distinct from ordinary and self replies.
+   Pins, source jumps and active threads retain their existing precedence. */
+.chat-message:where([data-reply-to-me="true"]),
+.chat-message:where([data-reply-to-me="true"]):hover,
+.chat-message:where([data-reply-to-me="true"]):focus-within {
+  background: rgb(182 77 50 / 12%);
+  box-shadow: inset 3px 0 var(--terracotta);
 }
 /* Your pins are terracotta; other people's pins keep the faded gold wash. */
 .chat-message-pinned-own {
@@ -3643,7 +3672,7 @@ a.chat-draft-preview {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.chat-viewer-bar :is(a, button) {
+.chat-viewer-bar :is(a, button, summary) {
   display: grid;
   flex: none;
   place-items: center;
@@ -3658,14 +3687,68 @@ a.chat-draft-preview {
     color 140ms ease;
 }
 @media (hover: hover) {
-  .chat-viewer-bar :is(a, button):hover {
+  .chat-viewer-bar :is(a, button, summary):hover {
     color: var(--text);
     background: rgb(255 255 255 / 10%);
   }
 }
-.chat-viewer :is(a, button):focus-visible {
+.chat-viewer :is(a, button, summary):focus-visible {
   outline: 2px solid var(--terracotta);
   outline-offset: 2px;
+}
+.chat-viewer-actions {
+  position: relative;
+  z-index: 2;
+}
+.chat-viewer-actions summary {
+  cursor: pointer;
+  list-style: none;
+}
+.chat-viewer-actions summary::-webkit-details-marker {
+  display: none;
+}
+.chat-viewer-actions-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 2;
+  width: 220px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 25%);
+  animation: chat-viewer-in var(--motion-fast) var(--ease-out);
+}
+.chat-viewer-bar .chat-viewer-actions-panel :is(a, button) {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  height: 44px;
+  padding: 0 12px;
+  color: var(--text);
+  font-size: 0.875rem;
+  text-decoration: none;
+}
+.chat-viewer-actions-panel button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.chat-viewer-bar a.chat-viewer-mobile-action {
+  display: none;
+}
+.chat-viewer-copy-status {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  max-width: calc(100% - 32px);
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 0.875rem;
 }
 .chat-viewer-stage {
   position: relative;
@@ -3821,9 +3904,19 @@ a.chat-draft-preview {
     padding: max(8px, env(safe-area-inset-top)) 4px 8px 16px;
     background: linear-gradient(rgb(0 0 0 / 70%), transparent);
   }
-  .chat-viewer-bar :is(a, button) {
+  .chat-viewer-bar :is(a, button, summary) {
     width: 44px;
     height: 44px;
+  }
+  .chat-viewer-bar :is(a, button).chat-viewer-desktop-action {
+    display: none;
+  }
+  .chat-viewer-bar:has(details[open]) {
+    z-index: 2;
+  }
+  .chat-viewer-bar a.chat-viewer-mobile-action {
+    display: flex;
+    height: 48px;
   }
   .chat-viewer-frame {
     inset: 0;
@@ -3839,12 +3932,13 @@ a.chat-draft-preview {
     animation: none;
   }
   .chat-viewer-media,
-  .chat-viewer-bar :is(a, button),
+  .chat-viewer-bar :is(a, button, summary),
   .chat-viewer-nav,
   .chat-viewer-tools button {
     transition: none;
   }
-  .chat-viewer-media[data-enter] {
+  .chat-viewer-media[data-enter],
+  .chat-viewer-actions-panel {
     animation: none;
   }
 }

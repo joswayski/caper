@@ -20,13 +20,14 @@ internal fun EditUpdate.validated(expectedChannel: String): EditUpdate {
  * "ready" file back to an older "processing" one.
  */
 internal fun mergeEdit(current: ChatMessage, incoming: ChatMessage): ChatMessage {
-    if (current.deletedAt != null || current.id != incoming.id || current.channelId != incoming.channelId || incoming.revision <= current.revision) return current
+    if (current.id != incoming.id || current.channelId != incoming.channelId || incoming.revision <= current.revision) return current
     val edited = current.copy(
         content = incoming.content.copy(attachments = current.content.attachments),
         revision = incoming.revision, editedAt = incoming.editedAt, editSeq = incoming.editSeq,
         // A deletion arrives as an edit; its newer `attachmentsSeq` drops the files below.
         deletedAt = incoming.deletedAt ?: current.deletedAt,
         forward = if (incoming.deletedAt != null) incoming.forward else current.forward,
+        forwardSeq = if (incoming.deletedAt != null) incoming.forwardSeq else current.forwardSeq,
     )
     return newerAttachments(edited, incoming)
 }
@@ -34,7 +35,7 @@ internal fun mergeEdit(current: ChatMessage, incoming: ChatMessage): ChatMessage
 /** A loaded reply stops quoting [deletedId] once it is deleted, as a reload would show it. */
 internal fun quoteDeleted(message: ChatMessage, deletedId: String): ChatMessage =
     message.replyTo?.takeIf { it.id == deletedId && !it.deleted }?.let {
-        message.copy(replyTo = it.copy(text = "", fullText = null, hasAttachments = false, deleted = true))
+        message.copy(replyTo = it.copy(text = "", fullText = null, hasAttachments = false, deleted = true, attachments = emptyList()))
     } ?: message
 
 /** Keep loaded overlays; bound only edits awaiting an unloaded page. */

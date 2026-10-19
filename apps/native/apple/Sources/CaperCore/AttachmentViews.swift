@@ -118,6 +118,21 @@ final class AttachmentImageLoader: @unchecked Sendable {
         }
     }
 
+    #if os(macOS)
+    /// Copy original pixels, with orientation applied; animations contribute their first frame.
+    func clipboardImage(_ url: URL) async throws -> CGImage {
+        let data = try await fetch(url)
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+              let width = properties[kCGImagePropertyPixelWidth as String] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight as String] as? Int,
+              let image = Self.decodeStill(source, maxPixelSize: max(width, height)) else {
+            throw AttachmentLoadError.undecodable
+        }
+        return image
+    }
+    #endif
+
     func load(key: String, url: URL, maxPixelSize: Int) async throws -> CGImage {
         if let hit = cached(key) { return hit }
         let data = try await fetch(url)
@@ -316,6 +331,38 @@ private func loadAttachmentOriginal(_ attachment: ChatAttachment, chat: ChatMode
 
 // MARK: Message attachments
 
+/// A quote is navigation, not a media player or a spoiler reveal surface.
+struct ReplyAttachmentThumbnail: View {
+    let attachment: ChatAttachment
+    let chat: ChatModel
+    @State private var image: CGImage?
+    private var source: String? {
+        guard !attachment.spoiler, !attachment.unavailable, attachment.status == .ready else { return nil }
+        guard attachment.kind == .image || attachment.kind == .video else { return nil }
+        return attachment.previewUrl ?? (attachment.kind == .image && !attachment.animated && attachment.contentType != "image/gif" ? attachment.url : nil)
+    }
+    var body: some View {
+        ZStack {
+            CaperTheme.text.opacity(0.06)
+            if source != nil, let image {
+                Image(decorative: image, scale: 1).resizable().scaledToFill()
+            } else {
+                Image(systemName: attachment.spoiler ? "eye.slash" : "paperclip")
+                    .font(.system(size: 14)).foregroundStyle(CaperTheme.muted)
+            }
+        }
+        .frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 6))
+        .accessibilityHidden(true)
+        .task(id: source) {
+            image = nil
+            guard source != nil else { return }
+            let result = await loadAttachmentImage(attachment, preview: true, chat: chat, maxPixelSize: 132)
+            guard !Task.isCancelled else { return }
+            image = result.image
+        }
+    }
+}
+
 /// Files under a message's text. `chat` is nil for the optimistic pending
 /// row, whose attachments point at local copies, and for another
 /// conversation's files. Below a `MediaViewerHost`, images and videos open
@@ -323,6 +370,7 @@ private func loadAttachmentOriginal(_ attachment: ChatAttachment, chat: ChatMode
 struct MessageAttachmentsView: View {
     let attachments: [ChatAttachment]
     let chat: ChatModel?
+    var isAvailable: (() -> Bool)? = nil
     @Environment(\.mediaViewer) private var mediaViewer
     @State private var revealed: Set<String> = []
 
@@ -422,7 +470,7 @@ struct MessageAttachmentsView: View {
         let items = MediaViewerPolicy.items(attachments, revealedSpoilerIDs: revealed)
         guard let start = items.firstIndex(where: { $0.id == attachment.id }) else { return nil }
         return { mediaViewer(MediaViewerRequest(items: items, start: start, chat: chat,
-                                                hideSpoiler: { revealed.remove($0) })) }
+                                                hideSpoiler: { revealed.remove($0) }, isAvailable: isAvailable)) }
     }
 }
 
@@ -1225,6 +1273,7 @@ struct MediaViewerRequest: Identifiable {
     /// files, shown as delivered.
     let chat: ChatModel?
     let hideSpoiler: (String) -> Void
+    var isAvailable: (() -> Bool)? = nil
 }
 
 /// Opens the media viewer from attachments below a `MediaViewerHost`.
@@ -1288,6 +1337,8 @@ private struct MediaViewer: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     #else
     @FocusState private var focused: Bool
+    @State private var copyingImage = false
+    @State private var copyStatus: String?
     #endif
     @State private var index: Int
     @State private var hidingSpoiler = false
@@ -1315,6 +1366,7 @@ private struct MediaViewer: View {
 
     var body: some View {
         let items = self.items
+        let available = request.isAvailable?() ?? true
         let position = min(max(0, index), max(0, items.count - 1))
         ZStack {
             Color.black.opacity(0.92).ignoresSafeArea()
@@ -1322,7 +1374,7 @@ private struct MediaViewer: View {
                 .onTapGesture(perform: close)
                 #endif
                 .accessibilityHidden(true)
-            if !hidingSpoiler {
+            if available && !hidingSpoiler {
                 pages(items)
                 if items.indices.contains(position) { chrome(items[position], position: position, count: items.count) }
             }
@@ -1331,6 +1383,7 @@ private struct MediaViewer: View {
         .accessibilityLabel(items.indices.contains(position) && items[position].kind == .video ? "Video viewer" : "Image viewer")
         .accessibilityAddTraits(.isModal)
         .accessibilityIdentifier("media-viewer")
+        .onChange(of: available, initial: true) { _, value in if !value { close() } }
         .onChange(of: index) { _, value in
             guard items.indices.contains(value) else { return }
             announceMediaPosition("\(items[value].name), \(value + 1) of \(items.count)")
@@ -1388,6 +1441,23 @@ private struct MediaViewer: View {
                 }
                 Spacer(minLength: 8)
                 if MediaViewerPolicy.isViewable(item), let raw = item.url, let url = URL(string: raw) {
+                    #if os(iOS)
+                    Menu {
+                        ShareLink(item: SharedAttachmentFile(item, url: url), preview: SharePreview(item.name)) {
+                            Label("Save or share", systemImage: "square.and.arrow.up")
+                        }
+                        .accessibilityIdentifier("media-viewer-download")
+                        Button { openAttachment(item, chat: request.chat, openURL: openURL) } label: {
+                            Label("Open in browser", systemImage: "arrow.up.right.square")
+                        }
+                        .accessibilityIdentifier("media-viewer-open")
+                    } label: {
+                        CaperIcon(name: "ellipsis", size: 20)
+                    }
+                    .buttonStyle(MediaViewerButton())
+                    .accessibilityLabel("More media actions")
+                    .accessibilityIdentifier("media-viewer-actions")
+                    #else
                     shareButton(item, url: url)
                     Button { openAttachment(item, chat: request.chat, openURL: openURL) } label: {
                         CaperIcon(name: "external-link", size: 18)
@@ -1396,6 +1466,31 @@ private struct MediaViewer: View {
                     .help("Open in browser")
                     .accessibilityLabel("Open in browser")
                     .accessibilityIdentifier("media-viewer-open")
+                    Menu {
+                        if item.kind == .image {
+                            Button { copyImage(url) } label: {
+                                Label("Copy image", systemImage: "doc.on.doc")
+                            }
+                            .disabled(copyingImage)
+                        }
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            copyStatus = NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                                ? "Media link copied" : "Couldn’t copy media link."
+                        } label: {
+                            Label("Copy media link", systemImage: "link")
+                        }
+                        .disabled(copyingImage)
+                    } label: {
+                        CaperIcon(name: "ellipsis", size: 20)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .buttonStyle(MediaViewerButton())
+                    .help("More media actions")
+                    .accessibilityLabel("More media actions")
+                    #endif
                 }
                 Button(action: close) { CaperIcon(name: "x", size: 20) }
                     .buttonStyle(MediaViewerButton())
@@ -1425,6 +1520,22 @@ private struct MediaViewer: View {
                 .padding(.horizontal, 12)
             }
             Spacer(minLength: 0)
+            #if os(macOS)
+            if let copyStatus {
+                Text(copyStatus)
+                    .font(CaperTheme.font(13))
+                    .foregroundStyle(CaperTheme.text)
+                    .padding(12)
+                    .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.bottom, 16)
+                    .accessibilityLabel(copyStatus)
+                    .task(id: copyStatus) {
+                        guard !copyingImage else { return }
+                        try? await Task.sleep(for: .seconds(4))
+                        if !Task.isCancelled { self.copyStatus = nil }
+                    }
+            }
+            #endif
         }
         .overlay {
             if showsArrows && count > 1 {
@@ -1461,6 +1572,25 @@ private struct MediaViewer: View {
         .accessibilityLabel("Save or share")
         .accessibilityIdentifier("media-viewer-download")
     }
+
+    #if os(macOS)
+    private func copyImage(_ url: URL) {
+        copyingImage = true
+        copyStatus = "Copying image…"
+        Task {
+            do {
+                let image = try await AttachmentImageLoader.shared.clipboardImage(url)
+                NSPasteboard.general.clearContents()
+                let copied = NSPasteboard.general.writeObjects([NSImage(cgImage: image, size: .zero)])
+                copyingImage = false
+                copyStatus = copied ? "Image copied" : "Couldn’t copy image."
+            } catch {
+                copyingImage = false
+                copyStatus = "Couldn’t copy image. Try saving it instead."
+            }
+        }
+    }
+    #endif
 
     private func move(_ delta: Int, count: Int) {
         let next = MediaViewerPolicy.step(index, by: delta, count: count)
