@@ -3751,7 +3751,14 @@ export default function Spaces({
         // Forwarded conversations retain their explicit source-thread behavior.
         focusThread={!visit}
         // A reply from the team answers the report in the inbox.
-        onSent={visitView ? () => void refreshFeedback() : undefined}
+        onSent={
+          visitView
+            ? () => {
+                void refreshFeedback();
+                void refreshUnread();
+              }
+            : undefined
+        }
         onHistoryChange={(history) => {
           navigation.current.rememberHistory(history);
           directCache.current.rememberHistory(history);

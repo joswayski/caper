@@ -41,6 +41,33 @@ private func feedbackBody(_ request: URLRequest) throws -> Data {
 }
 
 final class FeedbackTests: XCTestCase {
+    @MainActor
+    func testAnswerRefreshesWaitingBadgeWithoutWaitingForPoll() async throws {
+        var waiting = 1
+        FeedbackMockURLProtocol.handler = { request in
+            switch request.url?.path {
+            case "/api/spaces/unread":
+                return (200, Data("{\"spaces\":[],\"feedbackWaiting\":\(waiting)}".utf8))
+            case "/api/feedback":
+                return (200, Data(self.samplePage.utf8))
+            default: throw URLError(.badURL)
+            }
+        }
+        let model = AppModel(api: client())
+        model.account = Account(id: selfID, username: "team", displayName: "Team", feedbackTeam: true)
+        await model.refreshFeedback()
+        await model.refreshUnreadSpaces()
+        XCTAssertEqual(model.feedbackWaiting, 1)
+
+        waiting = 0
+        model.chat.onMessageSent?()
+        // No polling loop is started: only the confirmed reply can update the badge.
+        for _ in 0..<100 where model.feedbackWaiting != 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(model.feedbackWaiting, 0)
+    }
+
     func testUnreadPollingIncludesExactWaitingCountAndSupportsOlderServers() async throws {
         for (payload, expected) in [
             (#"{"spaces":[],"feedbackWaiting":137}"#, 137),
