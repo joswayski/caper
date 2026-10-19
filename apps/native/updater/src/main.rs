@@ -926,7 +926,7 @@ fn log_path() -> Option<PathBuf> {
 }
 
 /// `$XDG_STATE_HOME/caper`, else `~/.local/state/caper`.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 fn linux_log_folder(xdg_state: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
     xdg_state
         .filter(|path| path.is_absolute())
@@ -1530,6 +1530,7 @@ mod tests {
         assert!(!is_relocation_folder(Path::new("/opt/caper-updater-x")));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn linux_log_lives_in_the_users_state_folder() {
         assert_eq!(
