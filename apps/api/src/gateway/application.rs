@@ -528,6 +528,10 @@ async fn serve(socket: WebSocket, state: Gateway, identity: Identity) {
                     }
                     Frame::Unsubscribe { id } => { if let Some(task) = subscriptions.remove(&id) { task.abort(); } }
                     Frame::Subscribe(subscription) => {
+                        // A subscription that already ended (refused, revoked,
+                        // closed) sent its error; it must not hold one of the
+                        // socket's slots until the client happens to reuse its ID.
+                        subscriptions.retain(|_, task| !task.is_finished());
                         if subscription.id.is_empty() || subscription.id.len() > 64 || subscriptions.len() >= MAX_SUBSCRIPTIONS { break; }
                         if let Some(task) = subscriptions.remove(&subscription.id) { task.abort(); }
                         let state = state.clone(); let identity = identity.clone(); let out = out.clone();
@@ -849,9 +853,16 @@ async fn media_subscription(
     let mut updates = room.room_updates();
     let mut repair = tokio::time::interval(Duration::from_secs(10));
     let mut revision = None;
+    // Every room change wakes every subscriber. A join or renegotiation is a
+    // burst of changes, so like typing they reuse an access check from the
+    // last second; the repair tick always rechecks.
+    let mut checked: Option<tokio::time::Instant> = None;
     loop {
-        identity.check(state).await?;
-        room.check_media_access().await?;
+        if checked.is_none_or(|at| at.elapsed() >= EPHEMERAL_RECHECK) {
+            identity.check(state).await?;
+            room.check_media_access().await?;
+            checked = Some(tokio::time::Instant::now());
+        }
         let value = room
             .read(|registry| {
                 if let Some(token) = &sub.token {
@@ -879,7 +890,7 @@ async fn media_subscription(
             }
             revision = Some(next);
         }
-        tokio::select! { _ = updates.changed() => {}, _ = repair.tick() => {} }
+        tokio::select! { _ = updates.changed() => {}, _ = repair.tick() => checked = None }
     }
 }
 

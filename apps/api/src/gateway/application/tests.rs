@@ -282,6 +282,26 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
         "{fields:?}"
     );
 
+    // Subscriptions that ended with an error free their slot without an
+    // explicit unsubscribe, so they cannot exhaust the socket's limit.
+    let mut refused = connect(gateways[0].1, &token).await;
+    for index in 0..=MAX_SUBSCRIPTIONS {
+        let id = format!("refused-{index}");
+        transmit(
+            &mut refused,
+            json!({"type":"subscribe","kind":"unknown","id":id}),
+        )
+        .await;
+        assert_eq!(next(&mut refused, "error", Some(&id)).await["status"], 400);
+    }
+    transmit(
+        &mut refused,
+        json!({"type":"subscribe","kind":"profiles","id":"profiles"}),
+    )
+    .await;
+    next(&mut refused, "subscribed", Some("profiles")).await;
+    drop(refused);
+
     // Commit two events but publish only the second: replay must repair the gap
     // and preserve order, rather than treating the broker as an ordered log.
     let mut tx = pool.begin().await.unwrap();

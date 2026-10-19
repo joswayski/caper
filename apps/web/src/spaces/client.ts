@@ -123,7 +123,26 @@ export function listFeedback(before?: string, archived = false) {
   const query = new URLSearchParams();
   if (before) query.set("before", before);
   if (archived) query.set("archived", "true");
-  return request<{ reports: FeedbackReport[]; cursor: string | null }>(`/api/feedback${query.size ? `?${query}` : ""}`);
+  return request<FeedbackPage>(`/api/feedback${query.size ? `?${query}` : ""}`);
+}
+
+export interface FeedbackPage {
+  reports: FeedbackReport[];
+  cursor: string | null;
+}
+
+/**
+ * A background refresh of the newest page. Older pages the team already loaded
+ * with "Show more" stay below it instead of vanishing on every poll.
+ */
+export function refreshedFeedback(current: FeedbackPage | undefined, page: FeedbackPage): FeedbackPage {
+  if (!current || !page.cursor) return page;
+  const last = page.reports.at(-1);
+  const index = last ? current.reports.findIndex((report) => report.id === last.id) : -1;
+  if (index < 0) return page;
+  const ids = new Set(page.reports.map((report) => report.id));
+  const older = current.reports.slice(index + 1).filter((report) => !ids.has(report.id));
+  return older.length ? { reports: [...page.reports, ...older], cursor: current.cursor } : page;
 }
 
 /** Hides a reported thread from the whole team's inbox, or brings it back. */

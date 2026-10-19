@@ -117,6 +117,9 @@ pub(super) async fn persist_delete(
     payload["editSeq"] = json!(seq.to_string());
     payload["attachmentsSeq"] = json!(seq.to_string());
     payload["deletedAt"] = json!(now.to_rfc3339());
+    if payload.get("forward").is_some() {
+        payload["forward"] = json!({"message":null,"seq":"0"});
+    }
     sqlx::query("UPDATE public.messages SET payload=$2,deleted_at=$3 WHERE id=$1")
         .bind(message_id)
         .bind(&payload)
@@ -148,6 +151,11 @@ pub(super) async fn persist_delete(
     sqlx::query("UPDATE public.channel_events SET payload=jsonb_set(payload,'{message,content}',$3) WHERE channel_id=$1 AND seq>=$4 AND payload->'message'->>'id'=$2 AND jsonb_typeof(payload->'message'->'content')='object'")
         .bind(channel_id).bind(message).bind(tombstone_content()).bind(message_seq)
         .execute(&mut *tx).await.map_err(database_error)?;
+    if payload.get("forward").is_some() {
+        sqlx::query("UPDATE public.channel_events SET payload=jsonb_set(payload,'{message,forward}',$3) WHERE channel_id=$1 AND seq>=$4 AND payload->'message'->>'id'=$2 AND jsonb_typeof(payload->'message'->'forward')='object'")
+            .bind(channel_id).bind(message).bind(&payload["forward"]).bind(message_seq)
+            .execute(&mut *tx).await.map_err(database_error)?;
+    }
     sqlx::query("UPDATE public.channel_events e SET payload=jsonb_set(e.payload,'{message,forward}',jsonb_build_object('message',NULL,'seq','0'))
                  FROM public.messages f WHERE f.forward_source_id=$1 AND e.channel_id=f.channel_id AND e.seq>=f.channel_seq
                    AND e.payload->'message'->>'id'=f.external_id AND jsonb_typeof(e.payload->'message'->'forward')='object'")

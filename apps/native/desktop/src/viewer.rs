@@ -1446,7 +1446,7 @@ impl Zoom {
 fn decode_original(bytes: &[u8], content_type: &str) -> Option<image::RgbaImage> {
     use image::ImageDecoder;
     if matches!(content_type, "image/avif" | "image/heic" | "image/heif") {
-        return decode_ffmpeg_pixels(bytes, content_type, None);
+        return decode_ffmpeg_pixels(bytes, content_type);
     }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
@@ -1496,7 +1496,8 @@ fn decode_full(bytes: &[u8], content_type: &str) -> Option<Vec<(egui::ColorImage
         }
         return Some(vec![(color_image(image.to_rgba8()), Duration::ZERO)]);
     }
-    decode_with_ffmpeg(bytes, content_type).map(|image| vec![(image, Duration::ZERO)])
+    crate::ffmpeg::decode_image(bytes, content_type, MAX_EDGE)
+        .map(|image| vec![(image, Duration::ZERO)])
 }
 
 fn animation<'a>(frames: image::Frames<'a>) -> Option<Vec<(egui::ColorImage, Duration)>> {
@@ -1529,17 +1530,9 @@ fn color_image(image: image::RgbaImage) -> egui::ColorImage {
     )
 }
 
-/// AVIF and HEIC: one frame through the bundled FFmpeg, from a scratch file
-/// (their container needs seeking).
-fn decode_with_ffmpeg(bytes: &[u8], content_type: &str) -> Option<egui::ColorImage> {
-    decode_ffmpeg_pixels(bytes, content_type, Some(MAX_EDGE)).map(color_image)
-}
-
-fn decode_ffmpeg_pixels(
-    bytes: &[u8],
-    content_type: &str,
-    max_edge: Option<u32>,
-) -> Option<image::RgbaImage> {
+/// Clipboard originals need full-resolution, straight-alpha pixels rather than
+/// the bounded, premultiplied display image returned by ffmpeg::decode_image.
+fn decode_ffmpeg_pixels(bytes: &[u8], content_type: &str) -> Option<image::RgbaImage> {
     let binary = crate::ffmpeg::binary()?;
     let extension = match content_type {
         "image/avif" => "avif",
@@ -1550,15 +1543,7 @@ fn decode_ffmpeg_pixels(
     std::fs::write(scratch.path(), bytes).ok()?;
     let probe = crate::ffmpeg::probe(binary, scratch.path()).ok()?;
     let stream = probe.video?;
-    let [width, height] = if let Some(edge) = max_edge {
-        player::output_size(
-            stream.width,
-            stream.height,
-            egui::vec2(edge as f32, edge as f32),
-        )
-    } else {
-        [stream.width as usize, stream.height as usize]
-    };
+    let [width, height] = [stream.width as usize, stream.height as usize];
     if width == 0
         || height == 0
         || width > 16_384

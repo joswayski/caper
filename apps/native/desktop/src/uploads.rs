@@ -66,9 +66,21 @@ pub struct Scratch(PathBuf);
 impl Scratch {
     /// A fresh path in the temp directory with the given extension.
     pub fn new(extension: &str) -> Self {
-        Self(
-            std::env::temp_dir().join(format!("caper-upload-{}.{extension}", uuid::Uuid::new_v4())),
-        )
+        let path =
+            std::env::temp_dir().join(format!("caper-upload-{}.{extension}", uuid::Uuid::new_v4()));
+        // Linux's /tmp is shared and listable: create the file owner-only now,
+        // so the private photos, videos and pictures later written here (which
+        // truncate it, keeping its mode) are never readable by other accounts.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path);
+        }
+        Self(path)
     }
 
     pub fn path(&self) -> &Path {

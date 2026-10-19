@@ -34,7 +34,7 @@
   padding: 16px;
   background: rgb(12 13 15 / 82%);
   pointer-events: none;
-  animation: chat-drop-fade 140ms ease-out both;
+  animation: chat-drop-fade var(--motion-fast) var(--ease-out) both;
 }
 .chat-drop-card {
   display: grid;
@@ -359,8 +359,8 @@
   opacity: 0;
   transform: translate(-50%, 4px);
   transition:
-    opacity 160ms ease,
-    transform 160ms ease;
+    opacity var(--motion-fast) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out);
 }
 .chat-action-status[data-visible] {
   opacity: 1;
@@ -837,30 +837,45 @@
   vertical-align: baseline;
 }
 .chat-link {
-  color: var(--terracotta-bright);
-  text-decoration: underline;
+  color: var(--link);
+  background: color-mix(in srgb, var(--link) 10%, transparent);
+  border-radius: 4px;
+  padding: 1px 3px;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--link) 8%, transparent);
+  box-decoration-break: clone;
+  text-decoration: none;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
   overflow-wrap: anywhere;
+}
+.chat-link-end {
+  white-space: nowrap;
+}
+.chat-link-end svg {
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  margin-left: 2px;
+  vertical-align: -0.05em;
 }
 @media (hover: hover) and (prefers-reduced-motion: no-preference) {
   .call-page a.chat-link {
     transition:
       color 100ms ease-in-out,
       background-color 100ms ease-in-out,
-      text-decoration-thickness 100ms ease-in-out;
+      box-shadow 100ms ease-in-out;
   }
 }
 @media (hover: hover) {
   .chat-link:hover {
-    color: var(--action-hover);
-    background: rgb(182 77 50 / 12%);
-    text-decoration-thickness: 2px;
+    color: var(--link-hover);
+    background: color-mix(in srgb, var(--link) 18%, transparent);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--link) 14%, transparent);
+    text-decoration-line: underline;
   }
 }
 .chat-link:focus-visible {
-  border-radius: 2px;
-  outline: 2px solid var(--terracotta);
+  outline: 2px solid var(--link);
   outline-offset: 2px;
 }
 /* Including hover/focus, which would otherwise swap the tint for the plain row highlight. */
@@ -1910,6 +1925,7 @@
 .chat-mention-card-edit {
   width: 100%;
   margin-top: 10px;
+  text-align: center;
 }
 .chat-mention-card-action {
   display: flex;
@@ -2350,6 +2366,45 @@
   background: rgb(182 77 50 / 24%);
   color: transparent;
   border-radius: 3px;
+}
+.chat-mention-input-mirror .chat-draft-link {
+  background: color-mix(in srgb, var(--link) 14%, transparent);
+  border-radius: 4px;
+  box-decoration-break: clone;
+  /* Visual padding only: the mirror must wrap at the textarea's exact glyph positions. */
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--link) 14%, transparent),
+    0 0 6px color-mix(in srgb, var(--link) 8%, transparent);
+}
+/* A textarea cannot colour individual ranges. When URLs exist, the aligned
+   mirror paints the text; the real textarea still owns editing and the caret. */
+.chat-mention-input:has(.chat-draft-link) > textarea {
+  color: transparent;
+  caret-color: var(--text);
+}
+.chat-mention-input:has(.chat-draft-link) > textarea::selection {
+  color: transparent;
+  background: rgb(105 207 255 / 28%);
+}
+.chat-mention-input:has(.chat-draft-link) .chat-mention-input-mirror,
+.chat-mention-input:has(.chat-draft-link) mark {
+  color: var(--text);
+}
+.chat-mention-input:has(.chat-draft-link) .chat-draft-link {
+  color: var(--link);
+}
+@media (forced-colors: active) {
+  .chat-mention-input:has(.chat-draft-link) .chat-mention-input-mirror {
+    visibility: hidden;
+  }
+  .chat-mention-input:has(.chat-draft-link) > textarea {
+    color: CanvasText;
+    caret-color: CanvasText;
+  }
+  .chat-mention-input:has(.chat-draft-link) > textarea::selection {
+    color: HighlightText;
+    background: Highlight;
+  }
 }
 .chat-mention-input[data-disabled] .chat-mention-input-mirror {
   opacity: 0.55;
@@ -3525,7 +3580,7 @@ a.chat-draft-preview {
 .chat-viewer-overlay {
   z-index: 1200;
   background: rgb(0 0 0 / 92%);
-  animation: chat-viewer-in 140ms ease-out;
+  animation: chat-viewer-in var(--motion-fast) var(--ease-out);
 }
 @keyframes chat-viewer-in {
   from {

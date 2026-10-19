@@ -585,7 +585,7 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
                 drafts.forEach { draft -> key(draft.key) {
                     var menuOpen by remember { mutableStateOf(false) }
                     LaunchedEffect(enabled) { if (!enabled) menuOpen = false }
-                    Surface(Modifier.entrance(MOTION_BASE).size(tileSize), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {
+                    Surface(Modifier.entrance(MOTION_BASE, scale = 0.94f).size(tileSize), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {
                         Box(Modifier.fillMaxSize()) {
                             // Files the editor can open preview in the app, with its tools; the system viewer can't host them.
                             val editable = edit != null && draft.editKind != null

@@ -186,7 +186,10 @@ async fn grant_runtime_access(pool: &PgPool, runtime_role: &str) -> Result<(), S
         format!(
             "GRANT SELECT, INSERT, UPDATE, DELETE ON public.direct_conversations, public.direct_reads TO {role}"
         ),
-        format!("GRANT SELECT, INSERT, UPDATE ON public.channel_reads TO {role}"),
+        // Read positions are retained and only ever advanced in place.
+        format!(
+            "GRANT SELECT, INSERT, UPDATE ON public.channel_reads, public.thread_reads TO {role}"
+        ),
         format!("GRANT SELECT, INSERT, UPDATE ON public.user_blocks TO {role}"),
         // Operators manage the feedback team; the API only reads it. Every
         // access check reads both tables through `feedback_access`. Reports
@@ -451,6 +454,10 @@ mod tests {
             ("public.feedback_reports", "SELECT"),
             ("public.feedback_reports", "INSERT"),
             ("public.feedback_reports", "UPDATE"),
+            ("public.channel_reads", "UPDATE"),
+            ("public.thread_reads", "SELECT"),
+            ("public.thread_reads", "INSERT"),
+            ("public.thread_reads", "UPDATE"),
         ] {
             assert!(
                 sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, $3)")
@@ -482,6 +489,8 @@ mod tests {
             "public.notifications",
             "public.feedback_team",
             "public.feedback_reports",
+            "public.channel_reads",
+            "public.thread_reads",
         ] {
             assert!(
                 !sqlx::query_scalar::<_, bool>("SELECT has_table_privilege($1, $2, 'DELETE')")

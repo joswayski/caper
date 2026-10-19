@@ -59,6 +59,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -694,17 +698,19 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             val unread = state.unreadSpaces.any { it.id == space.id }
             val connected = state.account != null && voice.phase == VoiceState.Phase.CONNECTED && voice.spaceId == space.id
             val voiceActive = state.account != null && (connected || space.id in state.voiceActivitySpaceIds)
+            val interaction = remember(space.id) { MutableInteractionSource() }
+            val hovered by interaction.collectIsHoveredAsState()
+            // Compose's animation clock honors the system animator duration scale.
+            val indicatorHeight by animateFloatAsState(if (selected) 32f else if (hovered) 20f else 8f, tween(140), label = "Space indicator")
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.width(3.dp).height(if (selected) 24.dp else 0.dp).background(if (selected) TerracottaBright else Color.Transparent))
-                Spacer(Modifier.width(3.dp))
+                Box(Modifier.width(4.dp).height(indicatorHeight.dp).background(Text, RoundedCornerShape(topEnd = 4.dp, bottomEnd = 4.dp)))
+                Spacer(Modifier.width(2.dp))
                 Box {
                     Surface(
-                        // Clipped first, so the press ripple keeps the tile's corners.
-                        Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clip(MaterialTheme.shapes.medium).clickable { viewModel.selectSpace(space.id) }
+                        Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clip(MaterialTheme.shapes.medium).hoverable(interaction).clickable(interactionSource = interaction, indication = null) { viewModel.selectSpace(space.id) }
                             .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread activity" else null, if (muted) "Muted" else null, if (connected) "Connected to voice" else if (voiceActive) "Voice active" else null).joinToString(", ") },
-                        color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
-                        border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
-                    ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, if (selected) Color.White else TextMuted) }
+                        color = Surface, shape = MaterialTheme.shapes.medium,
+                    ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, TextMuted) }
                     if (muted) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
                     if (voiceActive) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp).size(18.dp).background(if (connected) VoiceSessionGreen else Blackout, CircleShape).border(2.dp, Blackout, CircleShape).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
                         Icon(painterResource(R.drawable.lucide_volume_2), null, Modifier.size(11.dp), tint = Text)
@@ -795,6 +801,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         ScopeMenuContent(
                             spaceMenuPage, { spaceMenuPage = it }, "space", settings?.override(spaceKey(detail.space.id)), settings?.inheritedLevel(),
                             { viewModel.setSpaceNotifications(detail.space.id, it) }, closeSpaceMenu,
+                            saving = spaceKey(detail.space.id) in state.notificationSaving,
                             before = {
                                 DropdownMenuItem(
                                     text = { Text(if (browsing) "Joined channels" else "Browse channels") },
@@ -937,6 +944,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                     if (notifiable) ScopeMenuContent(
                                         channelMenuPage, { channelMenuPage = it }, "channel", settings?.override(channelKey(channel.id)), settings?.inheritedLevel(detail.space.id),
                                         { viewModel.setChannelNotifications(detail.space.id, channel.id, it) }, closeChannelMenu,
+                                        saving = channelKey(channel.id) in state.notificationSaving,
                                         spaceMuted = settings?.spaceMuted(detail.space.id, now) == true, fontSize = 13.sp, before = settingsItem, after = leaveItem,
                                     ) else { settingsItem(); leaveItem() }
                                 }
@@ -1059,7 +1067,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                             if (unread) Box(Modifier.size(8.dp).background(TerracottaBright, CircleShape).semantics { contentDescription = "Unread" })
                             Box {
                                 IconButton(openOptions, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_ellipsis), "${direct.peer.displayName} options", Modifier.size(18.dp), tint = TextMuted) }
-                                DirectOptionsMenu(optionsOpen, { optionsOpen = false }, settings?.override(directKey(direct.id)), settings != null) {
+                                DirectOptionsMenu(optionsOpen, { optionsOpen = false }, settings?.override(directKey(direct.id)), settings != null && directKey(direct.id) !in state.notificationSaving) {
                                     viewModel.setDirectNotifications(direct.id, it)
                                 }
                             }
@@ -2522,7 +2530,11 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
         )) { MessageRow(message, state, onAttachmentFailed, openMention, { mentionCard(it.id, it.username.orEmpty(), state).title }, openAuthor, grouped) { if (message.forward == null) openHistory(message) } }
         // A team mention (`@feedback`, `@admin`, …): the server told the Caper team, who can read and reply here.
         if (!deleted && notifiesCaperTeam(message.content)) Text(CAPER_TEAM_NOTIFIED, Modifier.padding(start = 62.dp, end = 18.dp, bottom = 2.dp), color = TextMuted, fontSize = 11.sp)
-        if (!deleted) ForwardCard(message, state, onAttachmentFailed) { openConversation(message) }
+        if (!deleted) Box(Modifier.combinedClickable(
+            onClick = { openConversation(message) },
+            onLongClick = { openActions(message) },
+            onLongClickLabel = "Message actions for ${message.author.name}",
+        )) { ForwardCard(message, state, onAttachmentFailed) { openConversation(message) } }
         if (!deleted) FlowRow(Modifier.padding(start = 62.dp, end = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             message.reactions.forEach { reaction ->
                 val selected = own != null && own in reaction.authorIds
@@ -2581,6 +2593,14 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
 ) {
     val context = LocalContext.current
     val clipboard = context.getSystemService(ClipboardManager::class.java)
+    val uriHandler = LocalUriHandler.current
+    // Include both a forwarding note and its visible original, but never deleted text.
+    val links = if (message.deletedAt != null) emptyList() else
+        listOfNotNull(message, message.forward?.message).filter { it.deletedAt == null }.flatMap { linkedMessage ->
+            val text = linkedMessage.content.text
+            linkRanges(text, highlightedMentions(text, linkedMessage.content.mentions).map { it.start until it.end })
+                .map { link -> text.substring(link.start, link.end) to link.href }
+        }.distinct()
     val own = state.chatAuthorId ?: state.account?.id
     // A deleted message keeps only its thread and its ID.
     val deleted = message.deletedAt != null
@@ -2632,6 +2652,11 @@ private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
                         HorizontalDivider(color = Border)
                     }
                     // An attachment-only message has no text to copy.
+                    links.forEach { (label, href) ->
+                        SheetAction("Open link: $label") { openExternalLink(uriHandler, href); onDismiss() }
+                        SheetAction("Copy link: $label") { copy("Link", href) }
+                        HorizontalDivider(color = Border)
+                    }
                     if (message.content.text.isNotBlank()) {
                         SheetAction("Copy text") { copy("Message text", message.content.text) }
                         HorizontalDivider(color = Border)
@@ -3056,7 +3081,7 @@ internal const val DELETED_REPLY = "Original message was deleted."
                     }
                     val people = linked?.let { mentions.mapNotNull { span -> mentionedUser(span, it) }.distinct() }.orEmpty()
                     // TalkBack also reaches each pill, link and the inline "(edited)" through labelled custom actions.
-                    Text(
+                    MessageLinkText(
                         annotated,
                         if (people.isEmpty() && links.isEmpty() && !inlineEdited) Modifier else Modifier.semantics {
                             customActions = people.map { user -> CustomAccessibilityAction("Open profile for ${mentionLabel(user)}") { open?.invoke(user); true } } +
@@ -3171,23 +3196,31 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
 
 /**
  * Message text: resolved mentions as pills (text #F3F4F5, one weight step bolder, terracotta at 24%),
- * then [links] (found outside the mentions, `data/Links.kt`) in terracotta-bright with an underline.
- * `SpanStyle` backgrounds cannot round corners or pad, so Android pills are square-edged.
+ * then [links] (found outside the mentions, `data/Links.kt`) in baby-blue rounded pills.
+ * Inline icon placeholders are presentation only; message actions use the original content text.
+ * URL backgrounds are drawn by [MessageLinkText]; mention backgrounds remain span styles.
  * [openHistory] appends a grouped row's "(edited)" marker right after the text.
  */
 internal fun messageText(
     text: String, mentions: List<MentionSpan>, entries: List<MessageMention>? = null, links: List<LinkRange> = emptyList(),
     open: (MessageMention) -> Unit = {}, openLink: (String) -> Unit = {}, openHistory: (() -> Unit)? = null,
 ) = buildAnnotatedString {
-    append(text)
+    var cursor = 0
+    links.forEach { link ->
+        append(text.substring(cursor, link.end))
+        appendInlineContent(ExternalLinkInline)
+        cursor = link.end
+    }
+    append(text.substring(cursor))
+    fun displayed(offset: Int) = offset + links.count { it.end <= offset }
     mentions.forEach { span ->
         // With [entries], a person's pill is a link (focusable, Enter-activatable; 32% while hovered, focused or pressed).
         val user = entries?.let { mentionedUser(span, it) }
-        if (user == null) addStyle(MentionPill, span.start, span.end)
-        else addLink(LinkAnnotation.Clickable("mention:${span.name}", MentionPillLink) { open(user) }, span.start, span.end)
+        if (user == null) addStyle(MentionPill, displayed(span.start), displayed(span.end))
+        else addLink(LinkAnnotation.Clickable("mention:${span.name}", MentionPillLink) { open(user) }, displayed(span.start), displayed(span.end))
     }
     // Only http(s) URLs reach here, and they open outside the app.
-    links.forEach { link -> addLink(LinkAnnotation.Url(link.href, MessageLink) { openLink(link.href) }, link.start, link.end) }
+    links.forEach { link -> addLink(LinkAnnotation.Url(link.href, MessageLink) { openLink(link.href) }, displayed(link.start), displayed(link.end)) }
     openHistory?.let { history ->
         append(" ")
         withLink(LinkAnnotation.Clickable("edited", EditedMarker) { history() }) { append("(edited)") }
@@ -3197,9 +3230,15 @@ internal fun messageText(
 private val MentionPill = SpanStyle(color = Text, fontWeight = FontWeight.Medium, background = Terracotta.copy(alpha = 0.24f))
 private val MentionPillActive = SpanStyle(background = Terracotta.copy(alpha = 0.32f))
 private val MentionPillLink = TextLinkStyles(MentionPill, focusedStyle = MentionPillActive, hoveredStyle = MentionPillActive, pressedStyle = MentionPillActive)
-private val MessageLinkActive = SpanStyle(background = TerracottaWash)
+internal const val ExternalLinkInline = "external-link"
+@Composable internal fun messageInlineContent() = mapOf(ExternalLinkInline to InlineTextContent(
+    Placeholder(14.sp, 12.sp, PlaceholderVerticalAlign.TextCenter),
+) {
+    Icon(painterResource(R.drawable.lucide_external_link), null, Modifier.fillMaxSize().padding(start = 3.dp), tint = LinkBlue)
+})
+private val MessageLinkActive = SpanStyle(color = LinkBlueActive, textDecoration = TextDecoration.Underline)
 internal val MessageLink = TextLinkStyles(
-    SpanStyle(color = TerracottaBright, textDecoration = TextDecoration.Underline),
+    SpanStyle(color = LinkBlue),
     focusedStyle = MessageLinkActive, hoveredStyle = MessageLinkActive, pressedStyle = MessageLinkActive,
 )
 private val EditedMarker = TextLinkStyles(SpanStyle(color = TextMuted, fontSize = 10.sp))

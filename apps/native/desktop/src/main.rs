@@ -47,6 +47,7 @@ mod uploads;
 mod viewer;
 mod voice;
 mod whats_new;
+mod window_state;
 mod worker;
 
 use chrono::{DateTime, Local, TimeZone};
@@ -91,6 +92,8 @@ const TEXT: Color32 = Color32::from_rgb(243, 244, 245);
 const MUTED: Color32 = Color32::from_rgb(185, 188, 190);
 const TERRACOTTA: Color32 = Color32::from_rgb(182, 77, 50);
 const TERRACOTTA_BRIGHT: Color32 = Color32::from_rgb(219, 104, 73);
+const LINK: Color32 = Color32::from_rgb(105, 207, 255);
+const LINK_ACTIVE: Color32 = Color32::from_rgb(169, 229, 255);
 /// Primary actions are eggshell with blackout labels (shared/design.css `--action`);
 /// terracotta stays for selection and focus.
 const ACTION: Color32 = Color32::from_rgb(241, 237, 228);
@@ -1032,6 +1035,7 @@ fn projected_reactions(
 
 struct CaperApp {
     daily_icon: Option<daily_icon::DailyIcon>,
+    window_state: Option<window_state::WindowState>,
     /// When files were first dragged over the window, for the drop overlay's animation.
     file_drop_since: Option<f64>,
     /// The `parity-file-drop` fixture shows the overlay without a drag.
@@ -1409,6 +1413,7 @@ impl CaperApp {
         reaction_textures.preload(context, emoji::CATEGORIES[0].0);
         let mut app = Self {
             daily_icon: None,
+            window_state: None,
             file_drop_since: None,
             file_drop_fixture: false,
             worker,
@@ -9053,6 +9058,9 @@ impl eframe::App for CaperApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        if let Some(window) = &self.window_state {
+            window.save(storage);
+        }
         if let Some(icon) = &self.daily_icon {
             storage.set_string("daily-icon-day-v1", icon.day.clone());
             storage.set_string("daily-icon-index-v1", icon.index.to_string());
@@ -9071,6 +9079,9 @@ impl eframe::App for CaperApp {
     }
 
     fn update(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some(window) = &mut self.window_state {
+            window.update(context);
+        }
         if motion::reduced() && context.style().animation_time > 0.0 {
             // egui's own fades, scrolls and disclosures rest at once too.
             context.all_styles_mut(|style| {
@@ -9646,6 +9657,7 @@ impl CaperApp {
                     self.updates.dismiss();
                 }
             });
+        motion::modal(context, modal.response.layer_id);
         if modal.should_close() {
             self.updates.dismiss();
         }
@@ -10805,28 +10817,17 @@ impl CaperApp {
                                     .to_uppercase()
                                     .to_string()
                             };
-                            // Like web, hover and press stay neutral until the
-                            // space opens. A temporary orange press would flash
-                            // back to neutral on release before selection commits.
-                            let tone = if active {
-                                let current = (PRESSED, Color32::from_rgb(128, 81, 67), TEXT);
-                                Tone {
-                                    rest: current,
-                                    hover: current,
-                                    press: current,
-                                }
-                            } else {
-                                Tone {
-                                    rest: (SURFACE, BORDER, MUTED),
-                                    hover: (RAISED, MUTED, TEXT),
-                                    press: (RAISED, MUTED, TEXT),
-                                }
+                            // Only the side indicator responds to hover/selection.
+                            let current = (SURFACE, Color32::TRANSPARENT, MUTED);
+                            let tone = Tone {
+                                rest: current,
+                                hover: current,
+                                press: current,
                             };
                             // Not `strong()`: that would pin the pressed text color.
                             let mut letter = RichText::new(text);
                             if muted.is_some() {
-                                letter =
-                                    letter.color(muted_color(if active { TEXT } else { MUTED }));
+                                letter = letter.color(muted_color(MUTED));
                             }
                             let button = egui::Button::new(letter).min_size(egui::vec2(40.0, 40.0));
                             let response = ui
@@ -10895,19 +10896,29 @@ impl CaperApp {
                                 )
                             });
                             let response = response.on_hover_text(description);
-                            if active {
-                                ui.painter().rect_filled(
-                                    egui::Rect::from_min_size(
-                                        egui::pos2(
-                                            ui.max_rect().left() - 9.0,
-                                            response.rect.top() + 8.0,
-                                        ),
-                                        egui::vec2(3.0, 24.0),
+                            let target = if active {
+                                32.0
+                            } else if response.hovered() {
+                                20.0
+                            } else {
+                                8.0
+                            };
+                            let height = ui.ctx().animate_value_with_time(
+                                egui::Id::new(("space-indicator", &id)),
+                                target,
+                                if motion::reduced() { 0.0 } else { 0.14 },
+                            );
+                            ui.painter().rect_filled(
+                                egui::Rect::from_center_size(
+                                    egui::pos2(
+                                        ui.max_rect().left() - 7.0,
+                                        response.rect.center().y,
                                     ),
-                                    2.0,
-                                    TERRACOTTA_BRIGHT,
-                                );
-                            }
+                                    egui::vec2(4.0, height),
+                                ),
+                                2.0,
+                                TEXT,
+                            );
                             if response.clicked() {
                                 self.select_space(id);
                             } else if response.hovered() || response.has_focus() {
@@ -19247,6 +19258,10 @@ impl CaperApp {
                     }
                 }
             });
+        // egui fades the window in; it also rises into place, like a menu.
+        if let Some(shown) = &shown {
+            motion::overlay(context, shown.response.layer_id, motion::BASE, 8.0, false);
+        }
         let escape =
             context.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         let outside = shown.is_some_and(|shown| clicked_outside(context, &shown.response));
@@ -19530,6 +19545,9 @@ impl CaperApp {
                         }
                     });
             });
+        if let Some(shown) = &shown {
+            motion::overlay(context, shown.response.layer_id, motion::BASE, 8.0, false);
+        }
         self.emoji_picker_rect = shown.map(|shown| shown.response.rect);
         if let Some(emoji) = selected {
             match &target {
@@ -22282,6 +22300,7 @@ impl CaperApp {
                 }
             });
         });
+        motion::modal(context, modal.response.layer_id);
         if !pending && (cancel || modal.should_close()) {
             return;
         }
@@ -22367,6 +22386,7 @@ impl CaperApp {
                 if ui.button("Edit still image").clicked() { action = 2; }
                 if ui.button("Cancel").clicked() { action = 3; }
             });
+            motion::modal(context, modal.response.layer_id);
             if modal.should_close() {
                 action = 3;
             }
@@ -24073,24 +24093,36 @@ fn spoiler_hide_button(ui: &egui::Ui, bounds: egui::Rect, id: egui::Id) -> egui:
         ),
         egui::StrokeKind::Inside,
     );
+    let mut job = egui::text::LayoutJob::simple(
+        if compact {
+            "Hide\nspoiler"
+        } else {
+            "Hide spoiler"
+        }
+        .into(),
+        egui::FontId::proportional(12.0),
+        TEXT,
+        f32::INFINITY,
+    );
+    job.halign = egui::Align::Center;
+    let label = ui.painter().layout_job(job);
+    // Center the icon and measured label as one group, including wrapped labels.
+    let content = egui::Rect::from_center_size(
+        rect.center(),
+        egui::vec2(14.0 + 6.0 + label.size().x, label.size().y.max(14.0)),
+    );
     paint_icon(
         ui.painter(),
         egui::Rect::from_center_size(
-            rect.left_center() + egui::vec2(16.0, 0.0),
+            content.left_center() + egui::vec2(7.0, 0.0),
             egui::vec2(14.0, 14.0),
         ),
         NavIcon::EyeOff,
         TEXT,
     );
-    ui.painter().text(
-        rect.left_center() + egui::vec2(29.0, 0.0),
-        egui::Align2::LEFT_CENTER,
-        if compact {
-            "Hide\nspoiler"
-        } else {
-            "Hide spoiler"
-        },
-        egui::FontId::proportional(12.0),
+    ui.painter().galley(
+        content.left_center() + egui::vec2(20.0, -label.size().y / 2.0) - label.rect.min.to_vec2(),
+        label,
         TEXT,
     );
     response
@@ -26681,7 +26713,7 @@ struct Body {
     pill: Option<PillClick>,
     /// Where a grouped row's inline "(edited)" marker was drawn.
     edited: Option<egui::Rect>,
-    /// The pointer is over a link, so the row's own menu stays closed.
+    /// A link is hovered or owns an open menu, so the row's own menu stays closed.
     link_hovered: bool,
 }
 
@@ -26694,7 +26726,7 @@ enum Run {
     Link(std::ops::Range<usize>, String),
 }
 
-/// Background-only mention styling keeps editable glyph metrics and cursor offsets unchanged.
+/// Colour-only highlights keep editable glyph metrics and cursor positions unchanged.
 fn draft_layout(
     ui: &egui::Ui,
     text: &str,
@@ -26710,20 +26742,26 @@ fn draft_layout(
     };
     let mut job = egui::text::LayoutJob::default();
     job.wrap.max_width = width;
-    let mut cursor = 0;
-    for range in mentions::draft_highlights(text, people, specials) {
-        job.append(&text[cursor..range.start], 0.0, plain.clone());
+    let ranges = mentions::draft_highlights(text, people, specials);
+    if text.is_empty() {
+        job.append(text, 0.0, plain.clone());
+    }
+    for run in message_runs(text, &ranges) {
+        let (range, background, color) = match run {
+            Run::Plain(range) => (range, Color32::TRANSPARENT, plain.color),
+            Run::Pill(range, _) => (range, TERRACOTTA.gamma_multiply(0.24), plain.color),
+            Run::Link(range, _) => (range, LINK.gamma_multiply(0.14), LINK),
+        };
         job.append(
-            &text[range.clone()],
+            &text[range],
             0.0,
             egui::TextFormat {
-                background: TERRACOTTA.gamma_multiply(0.24),
+                background,
+                color,
                 ..plain.clone()
             },
         );
-        cursor = range.end;
     }
-    job.append(&text[cursor..], 0.0, plain);
     ui.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
@@ -26756,6 +26794,8 @@ fn message_runs(text: &str, pills: &[std::ops::Range<usize>]) -> Vec<Run> {
 /// Inline emoji are drawn a little larger than the text around them, as the
 /// color emoji fonts other clients use are.
 const INLINE_EMOJI_SCALE: f32 = 1.2;
+/// 11px external-link vector plus 2px breathing room on either side.
+const LINK_ICON_SPACE: f32 = 15.0;
 
 /// Message text in the 14px message style; see `rich_text`.
 fn message_body(
@@ -26781,7 +26821,7 @@ fn linked_text(ui: &mut egui::Ui, message: &str, text: &str) {
 }
 
 /// Message text with resolved mentions drawn as pills and links drawn
-/// terracotta-bright and underlined. Pills are one weight bolder, primary
+/// baby-blue and underlined. Pills are one weight bolder, primary
 /// text color and a terracotta background (24%, or 32% while hovered or
 /// focused) with 2px side padding. egui `LayoutJob` backgrounds are plain
 /// rectangles, so pills have square corners rather than the 4px corners other
@@ -26831,20 +26871,39 @@ fn rich_text(
         ..Default::default()
     };
     let link = egui::TextFormat {
-        color: TERRACOTTA_BRIGHT,
-        underline: Stroke::new(1.0, TERRACOTTA_BRIGHT),
+        color: LINK,
         ..plain.clone()
     };
     let mut job = egui::text::LayoutJob::default();
     let mut after_pill = false;
+    let mut after_link = false;
     for run in &runs {
         let (range, format, is_pill) = match run {
             Run::Plain(range) => (range, plain.clone(), false),
-            Run::Link(range, _) => (range, link.clone(), false),
+            Run::Link(range, _) => {
+                let id = ui.make_persistent_id(("message-link-hot", message, range.start));
+                let hot = ui.data(|data| data.get_temp::<bool>(id)).unwrap_or(false);
+                (
+                    range,
+                    egui::TextFormat {
+                        color: if hot { LINK_ACTIVE } else { LINK },
+                        underline: if hot {
+                            Stroke::new(1.0, LINK_ACTIVE)
+                        } else {
+                            Stroke::NONE
+                        },
+                        ..link.clone()
+                    },
+                    false,
+                )
+            }
             Run::Pill(range, index) => (range, pill(hot[*index]), true),
         };
         // Pills keep 2px on either side for their background.
         let mut gap = if is_pill || after_pill { 2.0 } else { 0.0 };
+        if after_link {
+            gap += LINK_ICON_SPACE;
+        }
         // Emoji are laid out as invisible glyphs and drawn in color below.
         let mut start = range.start;
         for (emoji, _) in emojis
@@ -26880,12 +26939,56 @@ fn rich_text(
             job.append(&text[start..range.end], gap, format);
         }
         after_pill = is_pill;
+        after_link = matches!(run, Run::Link(..));
     }
-    let (position, galley, response) = egui::Label::new(job).layout_in_ui(ui);
+    // LayoutSection::leading_space reserves room before the following text,
+    // without adding a character to selection/copy or shifting mention ranges.
+    // Leave the same gutter at the right edge: a wrapping boundary may discard
+    // that leading space, and a final URL has no following section at all.
+    let (position, galley, response) = if linked {
+        ui.scope(|ui| {
+            ui.set_max_width((ui.available_width() - LINK_ICON_SPACE).max(1.0));
+            egui::Label::new(job).layout_in_ui(ui)
+        })
+        .inner
+    } else {
+        egui::Label::new(job).layout_in_ui(ui)
+    };
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
     });
+    let characters = |range: &std::ops::Range<usize>| {
+        text[..range.start].chars().count()..text[..range.end].chars().count()
+    };
     if ui.is_rect_visible(response.rect) {
+        // Paint behind the selectable galley. Wrapped URLs get one rounded
+        // background per line, with the icon inside the final piece.
+        for run in &runs {
+            let Run::Link(range, _) = run else { continue };
+            let id = ui.make_persistent_id(("message-link-hot", message, range.start));
+            let hot = ui.data(|data| data.get_temp::<bool>(id)).unwrap_or(false);
+            let mut rects = pill_rects(&galley, characters(range));
+            if let Some(last) = rects.last_mut() {
+                last.max.x += LINK_ICON_SPACE;
+            }
+            for rect in rects {
+                let rect = rect
+                    .translate(position.to_vec2())
+                    .expand2(egui::vec2(2.0, 1.0));
+                let glow = egui::Shadow {
+                    offset: [0, 0],
+                    blur: if hot { 8 } else { 6 },
+                    spread: 0,
+                    color: LINK.gamma_multiply(if hot { 0.14 } else { 0.08 }),
+                };
+                ui.painter().add(glow.as_shape(rect, 4));
+                ui.painter().rect_filled(
+                    rect,
+                    4,
+                    LINK.gamma_multiply(if hot { 0.18 } else { 0.10 }),
+                );
+            }
+        }
         egui::text_selection::LabelSelectionState::label_text_selection(
             ui,
             &response,
@@ -26895,9 +26998,6 @@ fn rich_text(
             Stroke::NONE,
         );
     }
-    let characters = |range: &std::ops::Range<usize>| {
-        text[..range.start].chars().count()..text[..range.end].chars().count()
-    };
     if !emojis.is_empty() && ui.is_rect_visible(response.rect) {
         let textures = emoji::Textures::shared(ui.ctx());
         let size = INLINE_EMOJI_SCALE * plain.font_id.size;
@@ -26957,10 +27057,28 @@ fn rich_text(
     });
     for (index, (range, href)) in links.enumerate() {
         let id = ui.make_persistent_id(("message-link", message, index));
-        for (row, rect) in pill_rects(&galley, characters(range))
-            .into_iter()
-            .enumerate()
-        {
+        let hot_id = ui.make_persistent_id(("message-link-hot", message, range.start));
+        let mut hot = false;
+        let mut rects = pill_rects(&galley, characters(range));
+        if let Some(last) = rects.last_mut() {
+            last.max.x += LINK_ICON_SPACE;
+            let icon = egui::Rect::from_center_size(
+                egui::pos2(last.right() - LINK_ICON_SPACE / 2.0, last.center().y),
+                egui::vec2(11.0, 11.0),
+            )
+            .translate(position.to_vec2());
+            let was_hot = ui
+                .data(|data| data.get_temp::<bool>(hot_id))
+                .unwrap_or(false);
+            paint_icon(
+                ui.painter(),
+                icon,
+                NavIcon::ExternalLink,
+                if was_hot { LINK_ACTIVE } else { LINK },
+            );
+            ui.expand_to_include_rect(last.translate(position.to_vec2()));
+        }
+        for (row, rect) in rects.into_iter().enumerate() {
             let rect = rect.translate(position.to_vec2());
             let (piece, sense) = if row == 0 {
                 (id, egui::Sense::click())
@@ -26979,14 +27097,32 @@ fn rich_text(
                 ui.painter().rect_stroke(
                     rect.expand(1.0),
                     2.0,
-                    Stroke::new(1.0, TERRACOTTA_BRIGHT),
+                    Stroke::new(1.0, LINK_ACTIVE),
                     egui::StrokeKind::Outside,
                 );
             }
-            body.link_hovered |= target.hovered();
+            target.context_menu(|ui| {
+                if ui.button("Open link").clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(href));
+                    ui.close();
+                }
+                if ui.button("Copy link").clicked() {
+                    ui.ctx().copy_text(href.clone());
+                    ui.close();
+                }
+            });
+            hot |= target.hovered() || target.has_focus() || target.context_menu_opened();
+            body.link_hovered |= target.hovered() || target.context_menu_opened();
             if target.clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(href));
             }
+        }
+        let was_hot = ui
+            .data(|data| data.get_temp::<bool>(hot_id))
+            .unwrap_or(false);
+        if hot != was_hot {
+            ui.data_mut(|data| data.insert_temp(hot_id, hot));
+            ui.ctx().request_repaint();
         }
     }
     if edited {
@@ -26999,6 +27135,12 @@ fn rich_text(
             .rows
             .last()
             .map(|row| row.rect().translate(position.to_vec2()))
+            .map(|mut row| {
+                if after_link {
+                    row.max.x += LINK_ICON_SPACE;
+                }
+                row
+            })
             .filter(|row| row.right() + 4.0 + size.x <= ui.max_rect().right())
             .map_or_else(
                 || ui.allocate_exact_size(size, egui::Sense::hover()).0,
@@ -27195,7 +27337,11 @@ fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::R
     let galley =
         ui.painter()
             .layout_no_wrap(label.to_owned(), egui::FontId::proportional(size), MUTED);
-    let (rect, response) = ui.allocate_exact_size(galley.size(), egui::Sense::click());
+    let text_size = galley.size();
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(text_size.x + 16.0, text_size.y.max(12.0)),
+        egui::Sense::click(),
+    );
     let pressed = response.is_pointer_button_down_on();
     let color = if pressed {
         TERRACOTTA_BRIGHT
@@ -27216,18 +27362,22 @@ fn release_link(ui: &mut egui::Ui, label: &str, size: f32, url: &str) -> egui::R
         }
         ui.painter()
             .galley_with_override_text_color(rect.min, galley, color);
-        ui.painter().hline(
-            rect.x_range(),
-            rect.bottom() - 0.5,
-            Stroke::new(
-                if response.hovered() || pressed {
-                    2.0
-                } else {
-                    1.0
-                },
-                color.gamma_multiply(0.7),
+        paint_icon(
+            ui.painter(),
+            egui::Rect::from_min_size(
+                egui::pos2(rect.right() - 12.0, rect.center().y - 6.0),
+                egui::vec2(12.0, 12.0),
             ),
+            NavIcon::ExternalLink,
+            color,
         );
+        if response.hovered() || response.has_focus() || pressed {
+            ui.painter().hline(
+                rect.left()..=rect.left() + text_size.x,
+                rect.bottom() - 0.5,
+                Stroke::new(2.0, color.gamma_multiply(0.7)),
+            );
+        }
         if response.has_focus() {
             ui.painter().rect_stroke(
                 rect.expand(3.0),
@@ -28848,34 +28998,20 @@ fn main() -> eframe::Result {
         "Caper",
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
-            // Saved minimized-window geometry can be tiny on Windows and
-            // overrides the builder's maximized flag. Stop saving geometry;
-            // account and settings persistence remain independent.
+            // Cache usable normal bounds ourselves; eframe otherwise saves
+            // minimized/maximized geometry instead of the restore rectangle.
             persist_window: false,
-            // This hook runs AFTER eframe restores old geometry, even when
-            // persist_window is false. On Windows, winit maximizes a hidden
-            // window with SW_MAXIMIZE then SW_HIDE, flashing it before paint.
-            // Start windowed and let the first-frame command below maximize it.
-            #[cfg(target_os = "windows")]
-            window_builder: Some(Box::new(|builder| {
-                builder.with_fullscreen(false).with_maximized(false)
-            })),
+            window_builder: fixture
+                .is_none()
+                .then(|| Box::new(window_state::window_builder) as eframe::WindowBuilderHook),
             viewport,
             ..Default::default()
         },
         Box::new(move |creation| {
-            if fixture.is_none() {
-                // eframe applies these commands after painting and showing the
-                // first frame. Keep Windows hidden until then, and override
-                // restored geometry elsewhere. Never maximize on every repaint.
-                creation
-                    .egui_ctx
-                    .send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
-                creation
-                    .egui_ctx
-                    .send_viewport_cmd(egui::ViewportCommand::Maximized(true));
-            }
             let mut app = CaperApp::new(&creation.egui_ctx, api, fixture.as_deref());
+            if fixture.is_none() {
+                app.window_state = Some(window_state::WindowState::load(creation.storage));
+            }
             motion::watch_reduced(&creation.egui_ctx);
             if let Some(storage) = creation.storage {
                 app.restore_preferences(storage);
@@ -28898,11 +29034,10 @@ mod tests {
     use super::{
         AccountOperation, CaperApp, ComposerToken, ConnectionReport, DELETE_ACCOUNT_URL, Dialog,
         GatewayEvent, MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingReaction, PendingSend,
-        Phase, RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA,
-        TERRACOTTA_BRIGHT, TEXT, display_time, endpoint, media, member_page_ids, message_runs,
-        normalize_channel, permanent_send_rejection, pill_rects, projected_reactions,
-        redundant_invitation, resend_countdown, resend_wait, short_time, take_date_divider,
-        timestamp_parts, voice,
+        Phase, RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT,
+        display_time, endpoint, media, member_page_ids, message_runs, normalize_channel,
+        permanent_send_rejection, pill_rects, projected_reactions, redundant_invitation,
+        resend_countdown, resend_wait, short_time, take_date_divider, timestamp_parts, voice,
     };
     use crate::{mentions, navigation, whats_new};
     use std::time::{Duration, Instant};
@@ -38863,7 +38998,7 @@ mod tests {
     }
 
     #[test]
-    fn space_rail_press_keeps_hover_colors_until_selection_commits() {
+    fn space_rail_tiles_stay_borderless_on_hover_and_press() {
         for selected in [false, true] {
             let (context, mut app) = fixture("parity-desktop");
             context.enable_accesskit();
@@ -38898,14 +39033,7 @@ mod tests {
             };
             frame(vec![egui::Event::PointerMoved(bounds.center())]);
             let hover = painted(&frame(vec![]));
-            assert_eq!(
-                hover,
-                if selected {
-                    (super::PRESSED, egui::Color32::from_rgb(128, 81, 67))
-                } else {
-                    (super::RAISED, super::MUTED)
-                }
-            );
+            assert_eq!(hover, (super::SURFACE, egui::Color32::TRANSPARENT));
             let pressed = frame(vec![egui::Event::PointerButton {
                 pos: bounds.center(),
                 button: egui::PointerButton::Primary,
@@ -42263,6 +42391,142 @@ mod tests {
     }
 
     #[test]
+    fn draft_links_highlight_and_preserve_cursor_metrics() {
+        let context = egui::Context::default();
+        let text = "Join HTTPS://Caper.Example/invite/AbC or www.Example.com/Path.";
+        let _ = context.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let font = egui::FontId::proportional(13.6);
+                let galley = super::draft_layout(
+                    ui,
+                    text,
+                    300.0,
+                    &[],
+                    mentions::Specials::default(),
+                    font.clone(),
+                );
+                assert_eq!(galley.job.text, text);
+                let links: Vec<_> = galley
+                    .job
+                    .sections
+                    .iter()
+                    .filter(|section| {
+                        section.format.underline != egui::Stroke::NONE
+                            || section.format.background != egui::Color32::TRANSPARENT
+                    })
+                    .map(|section| {
+                        assert_eq!(section.format.color, super::LINK);
+                        &text[section.byte_range.clone()]
+                    })
+                    .collect();
+                assert_eq!(
+                    links,
+                    ["HTTPS://Caper.Example/invite/AbC", "www.Example.com/Path"]
+                );
+                assert!(
+                    galley
+                        .job
+                        .sections
+                        .iter()
+                        .all(|section| section.format.font_id == font)
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn message_link_icons_reserve_space_and_open_from_their_hit_area() {
+        for width in [140.0, 400.0] {
+            let context = egui::Context::default();
+            let text = "(https://example.com/long/path), www.example.org/end";
+            assert_eq!(
+                message_runs(text, &[])
+                    .iter()
+                    .filter(|run| matches!(run, Run::Link(..)))
+                    .count(),
+                2
+            );
+            let draw = |events| {
+                context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 600.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            super::message_body(
+                                ui,
+                                "icon-test",
+                                text,
+                                &[],
+                                |_| String::new(),
+                                true,
+                            );
+                        });
+                    },
+                )
+            };
+            let output = draw(vec![]);
+            let shape = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::epaint::Shape::Text(shape) if shape.galley.job.text == text => {
+                        Some(shape)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(shape.galley.text(), text, "no decorative copy characters");
+            if width == 140.0 {
+                assert!(shape.galley.rows.len() > 1);
+            }
+            for run in message_runs(text, &[]) {
+                let Run::Link(range, href) = run else {
+                    continue;
+                };
+                let chars = text[..range.start].chars().count()..text[..range.end].chars().count();
+                let rects = super::pill_rects(&shape.galley, chars.clone());
+                let last = rects.last().unwrap().translate(shape.pos.to_vec2());
+                let icon = egui::pos2(last.right() + super::LINK_ICON_SPACE / 2.0, last.center().y);
+                assert!(
+                    icon.x + 5.5 <= width,
+                    "final/wrapped icon stays inside the panel"
+                );
+                if range.end < text.len() {
+                    let next = super::pill_rects(&shape.galley, chars.end..chars.end + 1)[0]
+                        .translate(shape.pos.to_vec2());
+                    assert!(
+                        next.top() >= last.bottom()
+                            || next.left() >= last.right() + super::LINK_ICON_SPACE - 0.5,
+                        "punctuation cannot overlap the icon"
+                    );
+                }
+                draw(vec![
+                    egui::Event::PointerMoved(icon),
+                    egui::Event::PointerButton {
+                        pos: icon,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]);
+                let clicked = draw(vec![egui::Event::PointerButton {
+                    pos: icon,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }]);
+                assert_eq!(opened_url(&clicked), Some(href.as_str()));
+            }
+        }
+    }
+
+    #[test]
     fn message_links_open_in_the_browser_and_keep_the_row_menu_off() {
         const LINKED: &str = "Notes at www.example.com/notes, and (https://caper.example/a_(b)).";
         const ORIGINAL: &str = "Forwarded from https://example.com/original";
@@ -42288,8 +42552,17 @@ mod tests {
         let output = render(&mut app, &context, vec![]);
         for token in ["www.example.com/notes", "https://caper.example/a_(b)"] {
             let format = section_format(&output, LINKED, token);
-            assert_eq!(format.color, TERRACOTTA_BRIGHT, "{token}");
-            assert_eq!(format.underline, egui::Stroke::new(1.0, TERRACOTTA_BRIGHT));
+            assert_eq!(format.color, super::LINK, "{token}");
+            assert_eq!(format.underline, egui::Stroke::NONE);
+            let center = pill_center(&output, LINKED, token);
+            assert!(
+                output.shapes.iter().any(|shape| matches!(
+                    &shape.shape, egui::epaint::Shape::Rect(rect)
+                    if rect.rect.contains(center) && rect.fill == super::LINK.gamma_multiply(0.10)
+                        && rect.corner_radius == egui::CornerRadius::same(4)
+                )),
+                "{token} has a rounded background even before hovering"
+            );
         }
         let plain = section_format(&output, LINKED, "Notes at ");
         assert_eq!(plain.color, MESSAGE_TEXT);
@@ -42301,7 +42574,7 @@ mod tests {
         );
         assert_eq!(
             section_format(&output, ORIGINAL, "https://example.com/original").color,
-            TERRACOTTA_BRIGHT,
+            super::LINK,
             "forwarded originals link too"
         );
 
@@ -42311,6 +42584,19 @@ mod tests {
             hovered.platform_output.cursor_icon,
             egui::CursorIcon::PointingHand
         );
+        let hovered = render(&mut app, &context, vec![]);
+        assert_eq!(
+            section_format(&hovered, LINKED, "www.example.com/notes").color,
+            super::LINK_ACTIVE
+        );
+        assert_eq!(
+            section_format(&hovered, LINKED, "www.example.com/notes").underline,
+            egui::Stroke::new(1.0, super::LINK_ACTIVE)
+        );
+        assert!(hovered.shapes.iter().any(|shape| matches!(
+            &shape.shape, egui::epaint::Shape::Rect(rect)
+            if rect.rect.contains(link) && rect.fill == super::LINK.gamma_multiply(0.18)
+        )));
         let clicked = click_at(&mut app, &context, link);
         assert_eq!(opened_url(&clicked), Some("https://www.example.com/notes"));
 
@@ -42337,6 +42623,19 @@ mod tests {
         };
         let output = right_click(&mut app, link);
         assert!(!texts(&output).contains(&"Forward message"));
+        assert!(texts(&output).contains(&"Open link"));
+        assert!(texts(&output).contains(&"Copy link"));
+        let copy = text_position(&output, "Copy link");
+        let output = click_at(&mut app, &context, copy);
+        assert!(output.platform_output.commands.iter().any(|command| {
+            matches!(command, egui::OutputCommand::CopyText(text) if text == "https://www.example.com/notes")
+        }));
+        let output = right_click(&mut app, link);
+        let open = text_position(&output, "Open link");
+        let output = render(&mut app, &context, vec![egui::Event::PointerMoved(open)]);
+        assert!(!texts(&output).contains(&"Forward message"));
+        let output = click_at(&mut app, &context, open);
+        assert_eq!(opened_url(&output), Some("https://www.example.com/notes"));
         let output = right_click(&mut app, pill_center(&output, LINKED, "Notes at "));
         assert!(
             texts(&output).contains(&"Forward message"),
@@ -45292,6 +45591,62 @@ mod tests {
             assert!(app.viewer.is_none(), "inline hide never opens the viewer");
             let output = draw(&mut app, vec![]);
             assert!(node_bounds(&output, &format!("View {}", files[visual].name)).is_none());
+        }
+    }
+
+    #[test]
+    fn hide_spoiler_centers_icon_and_label_at_normal_and_compact_widths() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            for width in [420.0, 130.0, 116.0, 104.0, 80.0] {
+                let context = egui::Context::default();
+                super::configure(&context);
+                context.set_pixels_per_point(scale);
+                context.enable_accesskit();
+                let bounds =
+                    egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(width, 200.0));
+                let draw = || {
+                    context.run(egui::RawInput::default(), |context| {
+                        egui::CentralPanel::default().show(context, |ui| {
+                            super::spoiler_hide_button(ui, bounds, ui.id().with("spoiler"));
+                        });
+                    })
+                };
+                draw();
+                let output = draw();
+                let button = node_bounds(&output, "Hide spoiler").unwrap();
+                let label = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.job.text.starts_with("Hide") => {
+                            Some(text)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                let text = label.galley.rect.translate(label.pos.to_vec2());
+                let icon = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh) => Some(mesh.calc_bounds()),
+                        _ => None,
+                    })
+                    .expect("eye-off icon is painted");
+                let content = icon.union(text);
+                assert!(button.contains_rect(content));
+                assert!(
+                    (content.center() - button.center()).length() < 1.0,
+                    "icon and label must center together at width {width}, scale {scale}: {content:?} in {button:?}"
+                );
+                assert!((icon.center().y - text.center().y).abs() < 1.0);
+                for row in &label.galley.rows {
+                    assert!(
+                        (row.rect().center().x - label.galley.rect.center().x).abs() < 1.0,
+                        "wrapped label lines must be centered"
+                    );
+                }
+            }
         }
     }
 

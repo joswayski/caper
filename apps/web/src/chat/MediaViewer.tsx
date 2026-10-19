@@ -30,6 +30,7 @@ import {
   useRole,
 } from "@floating-ui/react";
 import { movesOf, Velocity } from "../components/swipe.ts";
+import GifImage from "./GifImage.tsx";
 import type { EditTool } from "./edit.ts";
 import type { ChatAttachment } from "./types.ts";
 import { formatBytes } from "./uploads.ts";
@@ -98,6 +99,10 @@ function ViewerItem({
 }) {
   const stage = useRef<HTMLDivElement>(null);
   const frame = useRef<HTMLDivElement>(null);
+  const video = useRef<HTMLVideoElement>(null);
+  const [reducedMotion, setReducedMotion] = useState(
+    () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
   const [box, setBox] = useState<Size>();
   const [measured, setMeasured] = useState<Size>();
   const [loaded, setLoaded] = useState(false);
@@ -110,6 +115,19 @@ function ViewerItem({
   const lastTap = useRef<{ time: number; point: Point }>(undefined);
   const image = attachment.kind === "image";
   const animated = !image && !!attachment.animated;
+  const Image = attachment.contentType === "image/gif" ? GifImage : "img";
+
+  useEffect(() => {
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const apply = () => {
+      setReducedMotion(motion.matches);
+      // Changing autoPlay alone does not stop an already-playing loop.
+      if (animated && motion.matches) video.current?.pause();
+    };
+    apply();
+    motion.addEventListener("change", apply);
+    return () => motion.removeEventListener("change", apply);
+  }, [animated]);
   // The loaded file's own size wins over the stored one, so it never stretches.
   const natural =
     measured ??
@@ -277,7 +295,6 @@ function ViewerItem({
     } else lastTap.current = { time: event.timeStamp, point };
   };
 
-  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   return (
     <div
       ref={stage}
@@ -316,7 +333,7 @@ function ViewerItem({
                 }}
               >
                 {!loaded && attachment.previewUrl && <img src={attachment.previewUrl} alt="" decoding="async" />}
-                <img
+                <Image
                   src={attachment.url}
                   alt={attachment.name}
                   decoding="async"
@@ -331,6 +348,7 @@ function ViewerItem({
               </div>
             ) : (
               <video
+                ref={video}
                 src={attachment.url}
                 poster={attachment.previewUrl}
                 aria-label={attachment.name}

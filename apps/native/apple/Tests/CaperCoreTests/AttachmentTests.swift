@@ -19,6 +19,8 @@ private final class AttachmentURLProtocol: URLProtocol, @unchecked Sendable {
     struct Recorded { let method: String; let url: URL; let headers: [String: String]; let body: Data? }
     private static let lock = NSLock()
     nonisolated(unsafe) static var handler: ((URLRequest, Data?) throws -> (Int, Data))?
+    nonisolated(unsafe) static var responseHeaders: [String: String] = ["content-type": "application/json"]
+    nonisolated(unsafe) static var extraChunks: [Data] = []
     nonisolated(unsafe) private static var recorded: [Recorded] = []
     /// Each test's clients tag requests with the generation they were made in, so
     /// fire-and-forget work an earlier test left behind (a discarded draft's
@@ -28,7 +30,12 @@ private final class AttachmentURLProtocol: URLProtocol, @unchecked Sendable {
     static var generation: Int { lock.withLock { current } }
 
     static var requests: [Recorded] { lock.withLock { recorded } }
-    static func reset() { lock.withLock { recorded = []; handler = nil; current += 1 } }
+    static func reset() {
+        lock.withLock {
+            recorded = []; handler = nil; current += 1
+            responseHeaders = ["content-type": "application/json"]; extraChunks = []
+        }
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -46,8 +53,9 @@ private final class AttachmentURLProtocol: URLProtocol, @unchecked Sendable {
             guard let handler = Self.handler else { throw URLError(.badURL) }
             let (status, data) = try handler(request, body)
             client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil,
-                                                                  headerFields: ["content-type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+                                                                  headerFields: Self.responseHeaders)!, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
+            for chunk in Self.extraChunks { client?.urlProtocol(self, didLoad: chunk) }
             client?.urlProtocolDidFinishLoading(self)
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
@@ -485,6 +493,51 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(MessageValidation.error(for: "  "), "Write a message first.")
         XCTAssertNil(MessageValidation.error(for: "", attachmentCount: 1))
         XCTAssertNotNil(MessageValidation.error(for: "", attachmentCount: 11))
+    }
+
+    func testRemoteImageDownloadBoundsDeclaredAndReceivedBytes() async throws {
+        let encoded = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(encoded as CFMutableData, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, rgbaImage(width: 2, height: 2) { _, _ in [255, 0, 0, 255] }, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let png = encoded as Data
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AttachmentURLProtocol.self]
+        let loader = AttachmentImageLoader(configuration: configuration)
+        let url = URL(string: "https://caper.invalid/image.png")!
+        let limit = 40 * 1024 * 1024
+        AttachmentURLProtocol.handler = { _, _ in (200, png) }
+        let image = try await loader.load(key: "normal", url: url, maxPixelSize: 2)
+        XCTAssertEqual(image.width, 2)
+
+        // A valid image body makes rejection depend on the transport bound,
+        // not on a later ImageIO decode failure.
+        for (key, headers, chunks) in [
+            ("declared", ["Content-Length": String(limit + 1)], [Data]()),
+            ("unknown", [String: String](), Array(repeating: Data(repeating: 0, count: 1024 * 1024), count: 40)),
+            ("chunked", ["Transfer-Encoding": "chunked"], Array(repeating: Data(repeating: 0, count: 1024 * 1024), count: 40)),
+            ("misleading", ["Content-Length": String(png.count)], Array(repeating: Data(repeating: 0, count: 1024 * 1024), count: 40)),
+        ] {
+            AttachmentURLProtocol.responseHeaders = headers
+            AttachmentURLProtocol.extraChunks = chunks
+            do {
+                _ = try await loader.loadFrames(key: key, url: url, maxPixelSize: 2)
+                XCTFail("accepted oversized \(key) image")
+            } catch {
+                XCTAssertEqual((error as? URLError)?.code, .dataLengthExceedsMaximum, key)
+            }
+            XCTAssertNil(loader.cached(key))
+        }
+        AttachmentURLProtocol.extraChunks = []
+        AttachmentURLProtocol.responseHeaders = ["Content-Length": String(limit + 1)]
+        AttachmentURLProtocol.handler = { _, _ in (403, png) }
+        do {
+            _ = try await loader.load(key: "forbidden", url: url, maxPixelSize: 2)
+            XCTFail("accepted error response")
+        } catch AttachmentLoadError.status(let status) {
+            XCTAssertEqual(status, 403)
+        }
+        XCTAssertNil(loader.cached("forbidden"))
     }
 
     func testInlineGIFKeepsFramesAndTimingWithinItsMemoryBudget() async throws {

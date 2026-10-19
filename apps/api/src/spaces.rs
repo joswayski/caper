@@ -231,6 +231,33 @@ pub(crate) async fn space_channel_participants(
         .collect())
 }
 
+/// For many channels at once: the space of each one `user` takes part in,
+/// with the same checks as `channel_participation`, in one round trip.
+async fn participating_channel_spaces(
+    pool: &PgPool,
+    channels: &[String],
+    user: i64,
+) -> Result<std::collections::HashMap<String, i64>, ApiError> {
+    // The shared predicate, evaluated per listed channel ($1 becomes it).
+    static SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        format!(
+            "SELECT t.channel, access.space_id FROM unnest($1::text[]) AS t(channel)
+             CROSS JOIN LATERAL ({}) AS access(id, last_seq, space_id)
+             WHERE access.space_id IS NOT NULL",
+            channel_access_sql!().replace("$1", "t.channel")
+        )
+    });
+    Ok(sqlx::query_as::<_, (String, i64)>(&SQL)
+        .bind(channels)
+        .bind(user)
+        .bind(true)
+        .fetch_all(pool)
+        .await
+        .map_err(database_error)?
+        .into_iter()
+        .collect())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Space {

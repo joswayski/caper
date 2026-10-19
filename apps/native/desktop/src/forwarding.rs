@@ -437,6 +437,15 @@ impl Forwarding {
                 if let Some(error) = &self.error { ui.colored_label(crate::ERROR, error); }
             });
         });
+        if let Some(shown) = &shown {
+            crate::motion::overlay(
+                context,
+                shown.response.layer_id,
+                crate::motion::BASE,
+                8.0,
+                false,
+            );
+        }
         // As on web, Escape or a click outside the dialog closes it.
         let outside = !fresh && shown.is_some_and(|shown| shown.response.clicked_elsewhere());
         if !open

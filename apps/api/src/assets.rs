@@ -1817,24 +1817,27 @@ impl PurgeSweep {
         // Advance even on delete failure; the next pass retries without
         // letting a few failing keys starve all the later records.
         let mut deleted = Vec::new();
+        let mut failed = false;
         for (id, external, preview, remove_all) in rows {
             if remove_all {
                 deleted.push((id, external, preview));
             } else {
-                assets
+                failed |= assets
                     .r2
                     .delete(&privacy::staged(&original_key(&external)))
-                    .await?;
+                    .await
+                    .is_err();
                 if preview {
-                    assets
+                    failed |= assets
                         .r2
                         .delete(&privacy::staged(&preview_key(&external)))
-                        .await?;
+                        .await
+                        .is_err();
                 }
             }
         }
         delete_objects(assets, deleted).await?;
-        Ok(())
+        if failed { Err(()) } else { Ok(()) }
     }
 }
 

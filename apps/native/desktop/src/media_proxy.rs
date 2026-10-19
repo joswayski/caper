@@ -76,6 +76,9 @@ struct Request {
 }
 
 fn parse(reader: &mut impl BufRead) -> Option<Request> {
+    // `read_line` buffers a whole line before it can be counted: cap the head
+    // itself, so a local client cannot grow one endless line without bound.
+    let mut reader = reader.take(MAX_HEAD_BYTES as u64 + 1);
     let mut line = String::new();
     reader.read_line(&mut line).ok()?;
     let mut parts = line.split_whitespace();
@@ -236,6 +239,23 @@ mod tests {
             .map(|value| value.to_str().unwrap().to_owned())
             .unwrap_or_default();
         (status, content_range, response.bytes().unwrap().to_vec())
+    }
+
+    #[test]
+    fn endless_request_heads_are_refused_without_buffering_them() {
+        let mut endless = BufReader::new(std::io::repeat(b'a'));
+        assert!(parse(&mut endless).is_none());
+        let mut header = BufReader::new(
+            std::io::Cursor::new(&b"GET /media/token HTTP/1.1\r\nRange: "[..])
+                .chain(std::io::repeat(b'b')),
+        );
+        assert!(parse(&mut header).is_none());
+        let mut valid =
+            BufReader::new(&b"HEAD /media/token HTTP/1.1\r\nRange: bytes=0-1\r\n\r\n"[..]);
+        let request = parse(&mut valid).unwrap();
+        assert!(request.head);
+        assert_eq!(request.token, "token");
+        assert_eq!(request.range.as_deref(), Some("bytes=0-1"));
     }
 
     #[test]

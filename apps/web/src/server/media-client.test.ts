@@ -3216,6 +3216,26 @@ for (const refusal of [{ status: 409, code: "warm_unavailable" }, { status: 422 
     assert.equal(states.at(-1)?.phase, "connected");
   });
 
+test("switching channels while a warm pair is being created warms the new channel", async (t) => {
+  setup(t);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let answer!: () => void;
+  const requests = await warmed(t, () => new Promise((resolve) => (answer = () => resolve(warmAnswer()))));
+  keepVoiceWarm("/api/channels/next00000000/media");
+  answer();
+  await tick();
+  assert.equal(hasWarmVoice(), false, "the old channel's pair is closed");
+  vi.advanceTimersByTime(0);
+  await tick();
+  assert.deepEqual(
+    requests.map((request) => request.channelId),
+    ["warm00000000", "next00000000"],
+  );
+  answer();
+  await tick();
+  assert.equal(hasWarmVoice(), true);
+});
+
 test("a warm connection that fails is replaced; an API without warm sessions is not asked again", async (t) => {
   setup(t);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

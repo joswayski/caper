@@ -1383,6 +1383,103 @@ mod tests {
         server.join().unwrap();
     }
 
+    /// The old socket ends while its replacement is still catching up: the
+    /// rosters it fed are stale, so the client resets voice state and reports
+    /// itself offline before reconnecting from the last applied cursor.
+    #[test]
+    fn old_socket_ending_mid_handoff_resets_media_and_goes_offline() {
+        type Socket = tungstenite::WebSocket<std::net::TcpStream>;
+        fn send(socket: &mut Socket, frame: Value) {
+            socket
+                .send(WsMessage::Text(frame.to_string().into()))
+                .unwrap();
+        }
+        fn accept(listener: &TcpListener) -> (Socket, BTreeMap<String, (String, Value)>) {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            send(&mut socket, json!({"type":"hello"}));
+            let mut ids = BTreeMap::new();
+            for _ in 0..2 {
+                let frame: Value =
+                    serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+                let kind = frame["kind"].as_str().unwrap().to_owned();
+                let id = frame["id"].as_str().unwrap().to_owned();
+                send(&mut socket, json!({"type":"subscribed", "id":id}));
+                ids.insert(kind, (id, frame["after"].clone()));
+            }
+            (socket, ids)
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (advance, advanced) = mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            let (mut old, ids) = accept(&listener);
+            let (chat, media) = (&ids["chat"].0, &ids["media"].0);
+            send(
+                &mut old,
+                json!({"type":"event", "id":chat, "event":{"type":"ready", "cursor":"37"}}),
+            );
+            send(
+                &mut old,
+                json!({"type":"event", "id":media, "event":{"type":"snapshot", "revision":7,
+                    "participants":[{"id":"speaker", "name":"Speaker", "muted":false, "deafened":false}]}}),
+            );
+            advanced.recv_timeout(Duration::from_secs(5)).unwrap();
+            send(&mut old, json!({"type":"migrating"}));
+            // Subscribed, but never ready: still catching up.
+            let (mut candidate, _) = accept(&listener);
+            drop(old);
+            advanced.recv_timeout(Duration::from_secs(5)).unwrap();
+            let _ = candidate.close(None);
+            let (_reconnected, ids) = accept(&listener);
+            assert_eq!(ids["chat"].1, "37", "resumes from the applied cursor");
+            advanced.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        let (events, incoming) = mpsc::channel();
+        let control = spawn(
+            &url::Url::parse(&format!("http://{address}")).unwrap(),
+            Some("account".into()),
+            4,
+            "text".into(),
+            "37".into(),
+            None,
+            MediaWatch {
+                epoch: 91,
+                channels: vec![MediaChannel {
+                    id: "voice".into(),
+                    demo: false,
+                }],
+            },
+            events,
+        );
+        let next = || incoming.recv_timeout(Duration::from_secs(5)).unwrap();
+        while !matches!(next(), GatewayEvent::VoiceRoster { .. }) {}
+        advance.send(()).unwrap();
+        let mut reset = false;
+        loop {
+            match next() {
+                GatewayEvent::VoiceReset { generation } => {
+                    assert_eq!(generation, 91);
+                    reset = true;
+                }
+                GatewayEvent::Status { online: false, .. } if reset => break,
+                GatewayEvent::Status { online: false, .. } => {
+                    panic!("voice state must be reset as the socket ends")
+                }
+                GatewayEvent::Status { online: true, .. } => {}
+                other => panic!("unexpected event mid-handoff: {other:?}"),
+            }
+        }
+        advance.send(()).unwrap();
+        while !matches!(next(), GatewayEvent::Status { online: true, .. }) {}
+        advance.send(()).unwrap();
+        control.stop();
+        server.join().unwrap();
+    }
+
     #[test]
     fn denied_upgrade_is_terminal() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

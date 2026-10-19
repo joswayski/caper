@@ -47,6 +47,7 @@ chmod 0755 "$ffmpeg_dir/ffmpeg"
 python3 "$root/scripts/native_fonts.py"
 cargo fmt --manifest-path "$native/Cargo.toml" --package caper-desktop -- --check
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop
+CAPER_FFMPEG="$ffmpeg_dir/ffmpeg" cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop avif_originals_decode_for_inline_and_spoiler_display -- --ignored
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop native_inference_is_finite_and_owns_fresh_state -- --ignored
 cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-desktop --all-targets --no-deps -- -D warnings
 # rav1e's assembly halves AVIF photo encode time when NASM is available.

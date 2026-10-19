@@ -135,6 +135,49 @@ class GatewayClientTest {
         }
     }
 
+    @Test fun `candidate failing after the old stream ended publishes disconnected`() {
+        val server = MockWebServer()
+        val sockets = ArrayBlockingQueue<WebSocket>(4)
+        val frames = ArrayBlockingQueue<String>(16)
+        repeat(3) {
+            server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    sockets.add(webSocket); webSocket.send("""{"type":"hello","serverTime":1}""")
+                }
+                override fun onMessage(webSocket: WebSocket, text: String) { frames.add(text) }
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
+            }))
+        }
+        val resets = AtomicInteger()
+        val gateway = GatewayClient(
+            server.url("/").toString().trimEnd('/'), null, "chat00000001", "7", {},
+            onMediaDisconnected = { resets.incrementAndGet() },
+            onAccessDenied = { fail("a dropped handoff is not revocation") }, onResync = { fail("a dropped handoff must not resync") },
+        )
+        try {
+            gateway.start()
+            val old = sockets.poll(2, TimeUnit.SECONDS)!!
+            val chat = Json.parseToJsonElement(frames.poll(2, TimeUnit.SECONDS)!!).jsonObject.getValue("id").jsonPrimitive.content
+            old.send("""{"type":"subscribed","id":"$chat"}""")
+            val deadline = System.currentTimeMillis() + 2_000
+            while (gateway.status.value != GatewayStatus.LIVE && System.currentTimeMillis() < deadline) Thread.sleep(10)
+            assertEquals(GatewayStatus.LIVE, gateway.status.value)
+            old.send("""{"type":"migrating"}""")
+            val candidate = sockets.poll(2, TimeUnit.SECONDS)!!
+            assertNotNull(frames.poll(2, TimeUnit.SECONDS))
+            old.close(1001, "draining")
+            Thread.sleep(250)
+            assertEquals("the candidate is still catching up", 0, resets.get())
+            candidate.close(1011, "candidate lost")
+            val until = System.currentTimeMillis() + 2_000
+            while (resets.get() == 0 && System.currentTimeMillis() < until) Thread.sleep(10)
+            assertEquals(1, resets.get())
+            assertNotEquals(GatewayStatus.LIVE, gateway.status.value)
+        } finally {
+            gateway.close(); server.close()
+        }
+    }
+
     @Test fun `candidate waits for fresh presence while old stream continues delivery`() {
         val server = MockWebServer()
         val sockets = ArrayBlockingQueue<WebSocket>(2)

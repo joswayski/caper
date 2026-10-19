@@ -831,9 +831,19 @@ int32_t AdmProxy::PlayoutDelay(uint16_t* delayMS) const {
 }
 
 bool AdmProxy::BuiltInAECIsAvailable() const {
+#if defined(_WIN32)
+  // The WASAPI built-in AEC (Voice Capture DMO) makes StartRecording() fail
+  // unless this same ADM is already playing. Recording and playout are gated
+  // separately here, and callers may capture on one factory while playing on
+  // another, so WebRtcVoiceEngine would enable it for any echo-cancelled
+  // device track and the microphone could never start. Keep WebRTC's
+  // software AEC instead.
+  return false;
+#else
   return WithPlatformAdm<bool>(false, [](webrtc::AudioDeviceModule& adm) {
     return adm.BuiltInAECIsAvailable();
   });
+#endif
 }
 
 bool AdmProxy::BuiltInAGCIsAvailable() const {
@@ -849,6 +859,12 @@ bool AdmProxy::BuiltInNSIsAvailable() const {
 }
 
 int32_t AdmProxy::EnableBuiltInAEC(bool enable) {
+#if defined(_WIN32)
+  // See BuiltInAECIsAvailable(): never enable the Windows DMO, only clear it.
+  if (enable) {
+    return -1;
+  }
+#endif
   return WithPlatformAdm<int32_t>(-1, [enable](webrtc::AudioDeviceModule& adm) {
     return adm.EnableBuiltInAEC(enable);
   });

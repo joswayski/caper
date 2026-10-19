@@ -1599,8 +1599,8 @@ absent `status` means ready.
 
 Follow-ups:
 
-- Desktop cannot decode HEIC (uploads it unchanged) or AVIF (opens originals
-  in the browser; the inline image is the preview).
+- Desktop still uploads HEIC unchanged and cannot edit HEIC/AVIF. The bundled
+  FFmpeg decodes AVIF inline images/spoiler previews and AVIF/HEIC full-size images.
 - Server metadata stripping regression checks use real FFmpeg/ExifTool on
   synthetic geotagged fixtures plus a disposable Postgres and fake R2. Live R2,
   Apple picker/share workflows and physical native-device checks remain separate.
@@ -4539,6 +4539,23 @@ Those measurements describe the initial web-only Leave fix. The reliability
 changes below also require an API rollout. Do not treat background request
 duration as local leave latency.
 
+On native iOS, Leave gates microphone publication and playback and clears call
+state immediately. Ending a microphone comparison, disabling WebRTC tracks,
+closing the old peer (including VoiceProcessingIO disposal), and deactivating
+`RTCAudioSession` run off the main actor. Previously those synchronous operations
+ran on the main actor, so even an already-idle model could not render until audio
+shutdown returned. A new join or microphone preparation awaits pending cleanup
+before reusing the shared audio device/session; cancelling that join invalidates
+it before it can activate audio. Remote `/leave` cleanup remains independent.
+
+The iOS regression tests hold the audio-session configuration lock while checking
+immediate Leave and cancelled rejoin, and use synthetic PCM through local WebRTC
+peers to check silence before peer disposal and playback after reopening its gate.
+These tests require Xcode/iOS Simulator and have not been run in the Linux orb.
+Physical-iPhone Leave timing (speaker and Bluetooth), rapid leave/rejoin, and
+leaving during a microphone comparison still need device validation. No new
+native latency measurements are claimed here.
+
 ## Provider failures and cleanup
 
 Caper HTTP 502 does **not** prove Cloudflare returned 502. Provider HTTP errors,
@@ -6274,6 +6291,17 @@ another application's exclusive access. If initialization/start fails, check
 apps access your microphone**, or select an available input in Caper. Disconnect
 from Discord temporarily to isolate a sharing/driver problem; muting Discord
 may leave capture open. The generic failure does not establish a Discord conflict.
+
+Earlier Windows builds failed every call and microphone test with "Microphone
+could not start", whatever the device or privacy setting. The capture track
+asks for echo cancellation, so WebRTC switched the capture ADM to Windows'
+built-in AEC (the Voice Capture DMO) whenever that DMO existed, which is on
+nearly every PC. WASAPI then refuses `StartRecording` unless the same ADM is
+already playing, and Caper captures on a factory whose playout stays off, with
+speakers on another. The vendored `AdmProxy` now reports the built-in AEC as
+unavailable on Windows and refuses to enable it, so WebRTC keeps its software
+AEC. Verify on a Windows PC: Settings › Audio test records, and a voice join
+connects with the microphone live.
 
 **System default** means the normal Windows input/output default, including at
 startup, replay, and fresh microphone reopen. WebRTC's implicit default is the
@@ -9257,3 +9285,32 @@ or Safari acceptance). Rust desktop has endpoint, state and rail tests; its
 connected and neutral badges were rendered and inspected in Linux/Xvfb fixtures.
 Android SDK and Apple/Xcode toolchains are unavailable in this Linux orb;
 their new API tests and native rendering still need platform validation.
+
+## Desktop window restoration (October 19, 2026)
+
+The Rust desktop client retains its normal window size/position and its
+maximized/fullscreen mode across normal exits and update restarts. Minimized
+geometry never replaces the last usable bounds; maximized/fullscreen bounds
+never replace the normal restore rectangle. Invalid legacy tiny saves fall back
+to the default window. Windows still starts hidden and applies the saved mode
+after the first painted frame rather than maximizing before paint. Fixtures do
+not save this state. The record uses eframe 0.33's `window` format so its existing
+monitor/DPI placement and off-screen clamping remain in effect.
+
+This starts remembering geometry with the fixed build; it cannot recover a
+layout the previous build never saved. macOS's separate SwiftUI client retains
+its system-managed window restoration; browser and mobile windows remain owned
+by their browser/OS, not the Rust updater.
+
+Validation: desktop `cargo test` passes (640 passed, 16 existing ignored),
+`cargo build`, package formatting and application Clippy pass on Linux.
+Regression coverage includes minimized and maximized bounds, saved fullscreen,
+asynchronous startup mode changes, scaled coordinates and invalid legacy sizes.
+Real Xvfb/Openbox relaunches preserve a 910×710 content area at outer position
+(170, 115), maximized state and normal bounds after closing while minimized.
+An explicitly seeded app-managed fullscreen record also reopens fullscreen and
+keeps its normal rectangle on exit.
+No Windows runtime, Windows snapping/multi-monitor/DPI-change acceptance, macOS
+runtime or signed installer update was exercised. A Linux window-manager-forced
+fullscreen check did not round-trip as fullscreen; app-managed fullscreen
+restoration does not establish support for that external window-manager mode.

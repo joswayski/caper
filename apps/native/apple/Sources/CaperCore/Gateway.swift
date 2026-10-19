@@ -332,6 +332,11 @@ public actor Gateway {
     private func receiveEvent(_ event: [String: Any], id: String, from stream: Stream) async throws {
         guard var logical = subscriptions[id], var streamState = stream.subscriptions[id], let kind = logical.frame["kind"] as? String else { return }
         if kind == "chat" {
+            // A failed replacement must not reset the healthy authoritative chat.
+            if stream === candidate, event["type"] as? String == "resync_required" {
+                await failed(stream)
+                return
+            }
             if let eventType = event["type"] as? String, ["message.created", "message.reactions", "message.attachments", "message.pin", "message.edited", "message.forward"].contains(eventType) {
                 guard let next = sequence(event["seq"]) else { throw URLError(.cannotParseResponse) }
                 if let position = streamState.position, next > position &+ 1 { throw URLError(.cannotParseResponse) }

@@ -68,6 +68,7 @@ import MicPlayback, { SpeakerTest } from "./MicPlayback";
 import AudioDiagnostics from "./AudioDiagnostics";
 import VoiceActivity from "./VoiceActivity";
 import ChannelSidebar from "./ChannelSidebar";
+import RoomResize from "./RoomResize";
 import { useBrowseSwipe } from "../spaces/browseTransition";
 import { useMembersDrawer } from "../spaces/membersDrawer";
 import { STRIP_FACES, callCardFaces, liveNames } from "../media/live-now";
@@ -1960,6 +1961,7 @@ export default function Call({
           members.swipe.onClickCapture(event);
         }}
       >
+        {!embedded && account && <RoomResize room={roomRef} />}
         {typeof spaceRail === "function" ? spaceRail(connected ? voiceChannel?.spaceId : undefined) : spaceRail}
         <ChannelSidebar>
           <div className="sidebar-channels">{navigation}</div>

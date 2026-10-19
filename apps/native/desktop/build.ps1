@@ -56,6 +56,9 @@ cargo fmt --manifest-path (Join-Path $Native "Cargo.toml") --package caper-deskt
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$env:CAPER_FFMPEG = Join-Path $FfmpegExtract 'ffmpeg.exe'
+cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked avif_originals_decode_for_inline_and_spoiler_display -- --ignored
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked native_inference_is_finite_and_owns_fresh_state -- --ignored
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked --all-targets --no-deps -- -D warnings

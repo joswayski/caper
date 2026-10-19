@@ -22,6 +22,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic) NSInteger inputGain;
 @property(nonatomic) NSInteger processingStrength;
 @property(nonatomic) BOOL publicationEnabled;
+/// Atomic playback gate: silence Leave immediately, before slow hardware teardown.
+@property(nonatomic) BOOL playoutEnabled;
 @property(nonatomic, readonly) NSInteger denoiseMode;
 @property(nonatomic, readonly) BOOL denoiseFailed;
 @property(nonatomic, readonly, nullable) CaperIOSAudioProcessingReport *audioProcessingReport;

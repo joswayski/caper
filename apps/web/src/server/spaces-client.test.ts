@@ -17,7 +17,9 @@ import {
   directUnread,
   deleteSpace,
   normalizeChannelName,
+  refreshedFeedback,
   spaceNameError,
+  type FeedbackReport,
 } from "../spaces/client.ts";
 
 test("DM requests are global and unread comparisons preserve large sequence values", async () => {
@@ -382,4 +384,24 @@ test("returning restores each channel snapshot, rechecks access, and forgets rev
   await assert.rejects(navigation.take("space1234567", "first1234567"), /Access removed/);
   navigation.rememberHistory(liveSnapshot);
   assert.equal(navigation.peek("space1234567"), undefined, "cleanup must not resurrect revoked snapshots");
+});
+
+test("a feedback refresh keeps older pages already loaded with Show more", () => {
+  const report = (id: string) => ({ id }) as FeedbackReport;
+  const ids = (page: { reports: FeedbackReport[] }) => page.reports.map((item) => item.id);
+  const loaded = { reports: ["f", "e", "d", "c", "b"].map(report), cursor: "older" };
+  // A new report arrived and "e" was archived: the newest page shifts by one.
+  const refreshed = refreshedFeedback(loaded, { reports: ["g", "f", "d"].map(report), cursor: "page" });
+  assert.deepEqual(ids(refreshed), ["g", "f", "d", "c", "b"]);
+  assert.equal(refreshed.cursor, "older");
+  // Only the first page was loaded: the refresh replaces it outright.
+  const first = { reports: ["c", "b"].map(report), cursor: "x" };
+  assert.deepEqual(refreshedFeedback(first, { reports: ["d", "c", "b"].map(report), cursor: "y" }), {
+    reports: ["d", "c", "b"].map(report),
+    cursor: "y",
+  });
+  // A complete newest page, or one sharing nothing with the loaded list, replaces it.
+  assert.deepEqual(ids(refreshedFeedback(loaded, { reports: ["g"].map(report), cursor: null })), ["g"]);
+  assert.deepEqual(ids(refreshedFeedback(loaded, { reports: ["z"].map(report), cursor: "p" })), ["z"]);
+  assert.deepEqual(ids(refreshedFeedback(undefined, { reports: ["a"].map(report), cursor: "p" })), ["a"]);
 });

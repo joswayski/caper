@@ -555,9 +555,11 @@ try {
       browser("focus", ".chat-scroller");
       browser("press", "End");
       settle();
+      // The composer intentionally pads its input; measure the timeline edge,
+      // not the textarea inside that padding.
       const gap = evaluate(`(() => {
         const last = [...document.querySelectorAll('.chat-scroller .chat-message')].at(-1);
-        return document.querySelector('#chat-message').getBoundingClientRect().top - last.getBoundingClientRect().bottom;
+        return document.querySelector('.chat-composer').getBoundingClientRect().top - last.getBoundingClientRect().bottom;
       })()`);
       assert.ok(Math.abs(gap) < 1, `${layout} at ${resizedHeight}px: ${gap}px of empty space below newest message`);
     }

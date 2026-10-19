@@ -101,6 +101,7 @@ import {
   declineDirectRequest,
   listDirectConversations,
   listFeedback,
+  refreshedFeedback,
   archiveFeedback,
   listPeople,
   readDirectConversation,
@@ -1955,9 +1956,11 @@ export default function Spaces({
         const page = await listFeedback(before, feedbackArchived);
         if (revision !== feedbackRevision.current) return;
         setFeedbackError(undefined);
-        // A refresh replaces the newest page; "Show more" appends an older one.
+        // A refresh replaces the newest page and keeps loaded older ones; "Show more" appends an older one.
         setFeedback((current) =>
-          before && current ? { reports: [...current.reports, ...page.reports], cursor: page.cursor } : page,
+          before && current
+            ? { reports: [...current.reports, ...page.reports], cursor: page.cursor }
+            : refreshedFeedback(current, page),
         );
       } catch (reason) {
         if (revision === feedbackRevision.current) setFeedbackError(errorMessage(reason));

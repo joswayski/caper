@@ -9,9 +9,8 @@
 //! idle, well inside the refresh margin.
 //!
 //! Inline images come from the `previewUrl` clients upload for large stills
-//! (JPEG), else from the PNG/JPEG/WebP/GIF original. AVIF and HEIC originals
-//! are never decoded (the pure-Rust `image` codecs cannot read them) and open
-//! in the system browser instead.
+//! (JPEG), else from the PNG/JPEG/WebP/GIF/AVIF original. AVIF thumbnails
+//! use the same bundled FFmpeg decoder as the full-size viewer.
 
 use crate::model::{Attachment, AttachmentKind, AttachmentStatus};
 use eframe::egui;
@@ -95,8 +94,7 @@ pub fn resolve(attachment: &Attachment, fresh: Option<&FreshUrl>) -> Attachment 
 }
 
 /// Still formats the bundled pure-Rust codecs decode. Originals in these
-/// formats load inline when they have no preview; AVIF, HEIC and anything
-/// else never do.
+/// formats use `image`; AVIF uses the bundled FFmpeg instead.
 pub fn decodable(content_type: &str) -> bool {
     matches!(
         content_type,
@@ -116,9 +114,9 @@ pub fn inline_source(attachment: &Attachment) -> Option<&str> {
     attachment.preview_url.as_deref().or_else(|| {
         (attachment.kind == AttachmentKind::Image
             && attachment.status == AttachmentStatus::Ready
-            && decodable(&attachment.content_type))
-        .then_some(attachment.url.as_deref())
-        .flatten()
+            && (decodable(&attachment.content_type) || attachment.content_type == "image/avif"))
+            .then_some(attachment.url.as_deref())
+            .flatten()
     })
 }
 
@@ -199,6 +197,9 @@ pub fn decode_thumbnail(bytes: &[u8]) -> Option<egui::ColorImage> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
+    if reader.format() == Some(image::ImageFormat::Avif) {
+        return crate::ffmpeg::decode_image(bytes, "image/avif", THUMBNAIL_EDGE);
+    }
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16_384);
     limits.max_image_height = Some(16_384);
@@ -981,12 +982,14 @@ mod tests {
     }
 
     #[test]
-    fn inline_images_use_the_preview_and_never_fetch_avif_originals() {
+    fn inline_images_use_the_preview_or_decodable_originals() {
         let mut photo = attachment(Some(&signed(NOW)));
         photo.content_type = "image/avif".into();
         assert_eq!(inline_source(&photo), photo.preview_url.as_deref());
         photo.preview_url = None;
-        assert_eq!(inline_source(&photo), None, "AVIF opens in the browser");
+        assert_eq!(inline_source(&photo), photo.url.as_deref());
+        photo.status = AttachmentStatus::Processing;
+        assert_eq!(inline_source(&photo), None);
         // A legacy PNG without a preview still loads its original.
         let mut legacy = attachment(Some(&signed(NOW)));
         legacy.preview_url = None;
@@ -1007,6 +1010,26 @@ mod tests {
         gif.animated = true;
         gif.preview_url = None;
         assert_eq!(inline_source(&gif), None, "MP4s are never decoded");
+    }
+
+    #[test]
+    #[ignore = "needs CAPER_FFMPEG with AVIF decoding (the bundled release binary)"]
+    fn avif_originals_decode_for_inline_and_spoiler_display() {
+        let original = image::RgbImage::from_fn(960, 480, |x, _| {
+            if x < 480 {
+                image::Rgb([220, 20, 20])
+            } else {
+                image::Rgb([20, 20, 220])
+            }
+        });
+        let bytes = crate::avif::encode(&original, 85, crate::avif::Primaries::Srgb).unwrap();
+        let decoded = decode_thumbnail(&bytes).expect("AVIF original must render inline");
+        assert_eq!(decoded.size, [720, 360]);
+        let left = decoded.pixels[180 * 720 + 90];
+        let right = decoded.pixels[180 * 720 + 630];
+        assert!(left.r() > 180 && left.b() < 60);
+        assert!(right.b() > 180 && right.r() < 60);
+        assert!(decode_thumbnail(&bytes[..bytes.len() / 2]).is_none());
     }
 
     #[test]

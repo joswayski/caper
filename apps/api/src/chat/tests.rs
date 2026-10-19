@@ -3546,6 +3546,30 @@ async fn thread_unread_http_contract(pool: PgPool) {
         request("reader0", "GET", list.clone(), Value::Null).await.1,
         json!({"threads":[]})
     );
+    // A reply deleted before it was read leaves only a tombstone, not news.
+    let deleted = persist_message(
+        &pool,
+        "unread-channel",
+        "reader3",
+        Uuid::new_v4(),
+        "deleted reply",
+        Some(root),
+        false,
+    )
+    .await
+    .unwrap();
+    deletion::persist_delete(
+        &pool,
+        "unread-channel",
+        deleted["id"].as_str().unwrap(),
+        "reader3",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        request("reader0", "GET", list.clone(), Value::Null).await.1,
+        json!({"threads":[]})
+    );
     sqlx::query("UPDATE public.channels SET private=true WHERE id=$1")
         .bind(channel)
         .execute(&pool)

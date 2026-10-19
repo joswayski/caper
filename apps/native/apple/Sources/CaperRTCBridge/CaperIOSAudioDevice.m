@@ -36,7 +36,7 @@ static const unsigned kCaperIOSComparisonActive = 1u << 31;
 @implementation CaperIOSAudioDevice {
     id<RTCAudioDeviceDelegate> _delegate;
     AudioUnit _unit;
-    _Atomic bool _recording, _playing, _publicationEnabled;
+    _Atomic bool _recording, _playing, _publicationEnabled, _playoutEnabled;
     _Atomic unsigned _comparisonState, _comparisonFrames;
     _Atomic uint32_t _publicationEpoch;
     _Atomic int _gain, _strength, _syntheticPeak;
@@ -58,6 +58,7 @@ static const unsigned kCaperIOSComparisonActive = 1u << 31;
     if ((self = [super init])) {
         atomic_init(&_gain, 100); atomic_init(&_strength, 25);
         atomic_init(&_publicationEpoch, 1); atomic_init(&_publicationEnabled, false);
+        atomic_init(&_playoutEnabled, true);
         atomic_init(&_recording, false); atomic_init(&_playing, false);
         atomic_init(&_comparisonState, 0);
         atomic_init(&_comparisonFrames, 0); atomic_init(&_sampleRate, 0);
@@ -81,6 +82,8 @@ static const unsigned kCaperIOSComparisonActive = 1u << 31;
 }
 - (NSInteger)processingStrength { return atomic_load(&_strength); }
 - (void)setProcessingStrength:(NSInteger)value { atomic_store(&_strength, (int)MAX(0, MIN(100, value))); }
+- (BOOL)playoutEnabled { return atomic_load(&_playoutEnabled); }
+- (void)setPlayoutEnabled:(BOOL)value { atomic_store(&_playoutEnabled, value); }
 - (BOOL)publicationEnabled { return atomic_load(&_publicationEnabled); }
 - (void)setPublicationEnabled:(BOOL)value {
     if (atomic_load(&_publicationEnabled) != value) {
@@ -225,13 +228,13 @@ static OSStatus CaperIOSInput(void *context, AudioUnitRenderActionFlags *flags,
 static OSStatus CaperIOSOutput(void *context, AudioUnitRenderActionFlags *flags,
                                const AudioTimeStamp *time, UInt32 bus, UInt32 frames, AudioBufferList *data) {
     CaperIOSAudioDevice *device = (__bridge CaperIOSAudioDevice *)context;
-    if (!device->_delegate || !device->_playing) {
+    if (!device->_delegate || !device->_playing || !atomic_load(&device->_playoutEnabled)) {
         for (UInt32 i = 0; i < data->mNumberBuffers; ++i) memset(data->mBuffers[i].mData, 0, data->mBuffers[i].mDataByteSize);
         *flags |= kAudioUnitRenderAction_OutputIsSilence;
         return noErr;
     }
     OSStatus result = device->_delegate.getPlayoutData(flags, time, bus, frames, data);
-    if (result != noErr) {
+    if (result != noErr || !atomic_load(&device->_playoutEnabled)) {
         for (UInt32 i = 0; i < data->mNumberBuffers; ++i) memset(data->mBuffers[i].mData, 0, data->mBuffers[i].mDataByteSize);
         *flags |= kAudioUnitRenderAction_OutputIsSilence;
     }

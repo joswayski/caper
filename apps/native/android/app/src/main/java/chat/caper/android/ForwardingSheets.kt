@@ -13,8 +13,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.LinkAnnotation
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -75,12 +73,9 @@ import java.util.UUID
     if (links.isEmpty()) return Text(text, fontSize = fontSize)
     val uriHandler = LocalUriHandler.current
     val annotated = remember(text, links, uriHandler) {
-        buildAnnotatedString {
-            append(text)
-            links.forEach { link -> addLink(LinkAnnotation.Url(link.href, MessageLink) { openExternalLink(uriHandler, link.href) }, link.start, link.end) }
-        }
+        messageText(text, emptyList(), links = links, openLink = { openExternalLink(uriHandler, it) })
     }
-    Text(annotated, fontSize = fontSize)
+    MessageLinkText(annotated, fontSize = fontSize)
 }
 
 @Composable internal fun ForwardCard(

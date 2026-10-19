@@ -447,6 +447,11 @@ export class AppGateway {
     if (!event || typeof event !== "object") throw new Error("Invalid gateway event.");
     const value = event as Record<string, unknown>;
     if (subscription.request.kind === "chat") {
+      // A failed replacement must not reset the healthy authoritative chat.
+      if (stream === this.candidate && value.type === "resync_required") {
+        this.failed(stream);
+        return;
+      }
       if (
         value.type === "message.created" ||
         value.type === "message.reactions" ||
