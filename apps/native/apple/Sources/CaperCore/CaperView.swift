@@ -8188,7 +8188,7 @@ private struct NotificationsSheet: View {
                 SettingsChoiceRow(title: level.accountTitle, selected: model.notificationSettings?.level == level) {
                     Task { await model.setAccountNotificationLevel(level) }
                 }
-                .disabled(model.notificationSettings == nil)
+                .disabled(model.notificationSettings == nil || model.accountNotificationsSaving.contains("level"))
                 .accessibilityIdentifier("notify-level-\(level.rawValue)")
             }
         }
@@ -8204,7 +8204,7 @@ private struct NotificationsSheet: View {
                 SettingsChoiceRow(title: policy.title, selected: model.notificationSettings?.mobile == policy) {
                     Task { await model.setMobilePushPolicy(policy) }
                 }
-                .disabled(model.notificationSettings == nil)
+                .disabled(model.notificationSettings == nil || model.accountNotificationsSaving.contains("mobile"))
                 .accessibilityIdentifier("notify-mobile-\(policy.rawValue)")
             }
             Toggle("Notifications on this phone", isOn: pushBinding)

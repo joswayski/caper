@@ -253,6 +253,129 @@ async fn deletion_keeps_the_row_scrubs_content_and_only_lets_the_author_delete()
         .0,
         StatusCode::NOT_FOUND
     );
+    // A deleted original no longer shares its replies through a forward.
+    let (_, thread) = command(
+        &app,
+        "GET",
+        &format!(
+            "/api/chat/channels/delete-channel/forwards/{}/thread",
+            forward["id"].as_str().unwrap()
+        ),
+        "delete-peer",
+        Value::Null,
+    )
+    .await;
+    assert!(thread["root"].is_null(), "{thread}");
+    assert_eq!(thread["messages"], json!([]));
+
+    let (_, original) = command(
+        &app,
+        "POST",
+        base,
+        "delete-author",
+        json!({
+            "clientMessageId":Uuid::new_v4(), "text":"still-private original"
+        }),
+    )
+    .await;
+    let (status, child) = command(&app, "POST", base, "delete-peer", json!({
+        "clientMessageId":Uuid::new_v4(), "text":"private thread reply", "threadRootId":original["id"]
+    })).await;
+    assert_eq!(status, StatusCode::OK);
+    let input = json!({"sourceChannelId":"delete-channel", "sourceMessageId":original["id"], "clientMessageId":Uuid::new_v4()});
+    let forwards = "/api/chat/channels/delete-channel/forwards";
+    let (status, wrapper) = command(&app, "POST", forwards, "delete-peer", input.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let wrapper_id = wrapper["id"].as_str().unwrap();
+    let (status, shared) = command(
+        &app,
+        "GET",
+        &format!("{forwards}/{wrapper_id}/thread"),
+        "delete-peer",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(shared["messages"][0]["id"], child["id"]);
+    let (status, removed) = command(
+        &app,
+        "DELETE",
+        &format!("{base}/{wrapper_id}"),
+        "delete-peer",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(removed["forward"]["message"].is_null(), "{removed}");
+    // Deletion revokes this wrapper's read and re-forward grants, even while
+    // the original remains live. History and retry responses stay tombstones.
+    assert_eq!(
+        command(
+            &app,
+            "GET",
+            &format!("{forwards}/{wrapper_id}/thread"),
+            "delete-peer",
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(command(&app, "POST", forwards, "delete-peer", json!({
+        "sourceChannelId":"delete-channel", "sourceMessageId":wrapper_id, "clientMessageId":Uuid::new_v4()
+    })).await.0, StatusCode::NOT_FOUND);
+    let (status, retry) = command(&app, "POST", forwards, "delete-peer", input).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(retry["deletedAt"].is_string());
+    assert!(retry["forward"]["message"].is_null(), "{retry}");
+    let (_, history) = command(&app, "GET", base, "delete-peer", Value::Null).await;
+    let deleted_wrapper = history["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == wrapper_id)
+        .unwrap();
+    assert!(
+        deleted_wrapper["forward"]["message"].is_null(),
+        "{deleted_wrapper}"
+    );
+    let events: Vec<Value> = sqlx::query_scalar("SELECT payload FROM public.channel_events WHERE channel_id=$1 AND payload->'message'->>'id'=$2")
+        .bind(channel).bind(wrapper_id).fetch_all(&pool).await.unwrap();
+    assert!(!events.is_empty());
+    assert!(
+        events
+            .iter()
+            .all(|e| e["message"]["forward"]["message"].is_null())
+    );
+    // A live wrapper also loses its grant when its original is removed;
+    // replies remain available through the source channel's own membership.
+    let (status, live) = command(&app, "POST", forwards, "delete-peer", json!({
+        "sourceChannelId":"delete-channel", "sourceMessageId":original["id"], "clientMessageId":Uuid::new_v4()
+    })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        command(
+            &app,
+            "DELETE",
+            &format!("{base}/{}", original["id"].as_str().unwrap()),
+            "delete-author",
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (status, thread) = command(
+        &app,
+        "GET",
+        &format!("{forwards}/{}/thread", live["id"].as_str().unwrap()),
+        "delete-peer",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(thread["root"].is_null());
+    assert_eq!(thread["messages"], json!([]));
     drop(pool);
     admin
         .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())

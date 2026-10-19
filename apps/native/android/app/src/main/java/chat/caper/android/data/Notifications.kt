@@ -163,8 +163,8 @@ internal fun NotificationSettings.withSettingFrom(key: String, source: Notificat
 
 /**
  * Optimistic notification edits. [shown] applies each edit at once and [confirmed] holds the
- * server's answers. A failed edit puts its setting back to the confirmed value, unless a newer
- * edit of the same setting is still saving.
+ * server's answers. Each setting permits one save at a time; a failed edit restores its
+ * confirmed value without disturbing independent settings.
  */
 internal class NotificationEdits(initial: NotificationSettings) {
     var confirmed = initial
@@ -174,19 +174,24 @@ internal class NotificationEdits(initial: NotificationSettings) {
     private val latest = mutableMapOf<String, Long>()
     private var tickets = 0L
 
-    /** Applies [edit] to [key] and returns the ticket that settles it. */
-    fun begin(key: String, edit: (NotificationSettings) -> NotificationSettings): Long {
+    val saving: Set<String> get() = latest.keys.toSet()
+
+    /** Rejects a repeated save until this setting settles. */
+    fun begin(key: String, edit: (NotificationSettings) -> NotificationSettings): Long? {
+        if (key in latest) return null
         shown = edit(shown)
         return (++tickets).also { latest[key] = it }
     }
 
     /** The server saved the edit; [answer] writes its value for [key]. */
-    fun succeeded(key: String, ticket: Long, answer: (NotificationSettings) -> NotificationSettings) {
+    fun succeeded(key: String, ticket: Long?, answer: (NotificationSettings) -> NotificationSettings) {
+        if (ticket == null) return
+        if (latest[key] != ticket) return
         confirmed = answer(confirmed)
         settle(key, ticket)
     }
 
-    fun failed(key: String, ticket: Long) = settle(key, ticket)
+    fun failed(key: String, ticket: Long?) { if (ticket != null) settle(key, ticket) }
 
     /** A fresh load. Settings still saving keep the value being saved. */
     fun loaded(settings: NotificationSettings) {

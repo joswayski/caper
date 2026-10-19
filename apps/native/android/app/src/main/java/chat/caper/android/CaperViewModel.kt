@@ -1149,19 +1149,25 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val token = accountToken ?: return
         val edits = notificationEdits ?: return
         val request = accountGeneration
-        val ticket = edits.begin(key, edit)
-        mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationErrors = mutable.value.notificationErrors - key)
+        val ticket = edits.begin(key, edit) ?: return
+        mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationSaving = edits.saving, notificationErrors = mutable.value.notificationErrors - key)
         viewModelScope.launch {
             try {
                 val answer = save(token)
                 if (request != accountGeneration) return@launch
                 edits.succeeded(key, ticket, answer)
-                mutable.value = mutable.value.copy(notificationSettings = edits.shown)
-            } catch (error: CancellationException) { throw error }
+                mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationSaving = edits.saving)
+            } catch (error: CancellationException) {
+                if (request == accountGeneration) {
+                    edits.failed(key, ticket)
+                    mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationSaving = edits.saving)
+                }
+                throw error
+            }
             catch (error: Throwable) {
                 if (request != accountGeneration) return@launch
                 edits.failed(key, ticket)
-                mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationErrors = mutable.value.notificationErrors + (key to NOTIFICATION_SAVE_ERROR))
+                mutable.value = mutable.value.copy(notificationSettings = edits.shown, notificationSaving = edits.saving, notificationErrors = mutable.value.notificationErrors + (key to NOTIFICATION_SAVE_ERROR))
             }
         }
     }

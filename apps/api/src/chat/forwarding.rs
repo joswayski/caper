@@ -126,7 +126,7 @@ async fn persist_forward(
     // Reading a forward is also permission to forward its original again.
     // No client-provided source payload or source-access bypass is accepted.
     let source = source.0;
-    let forward = source_snapshot(&mut tx, source)
+    let forward = source_snapshot(&mut tx, source, &input.source_message_id)
         .await?
         .ok_or_else(not_found)?;
     let hash = Sha256::digest(
@@ -143,7 +143,11 @@ async fn persist_forward(
                 "retry key already used for a different forward",
             ));
         }
-        payload["forward"] = forward;
+        payload["forward"] = if payload["deletedAt"].is_string() {
+            json!({"message":null,"seq":"0"})
+        } else {
+            forward
+        };
         return Ok(enrich_author(
             payload,
             avatar_id,
@@ -229,9 +233,12 @@ fn shared_message(mut message: Value) -> Value {
 async fn source_snapshot(
     tx: &mut Transaction<'_, Postgres>,
     source: i64,
+    selected: &str,
 ) -> Result<Option<Value>, ApiError> {
-    let row: Option<(Value, i64, Option<i16>, Option<String>)> = sqlx::query_as("SELECT m.payload,c.last_seq,u.avatar_id,u.display_name FROM public.messages m JOIN public.channels c ON c.id=m.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.id=$1 AND m.deleted_at IS NULL AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL)")
-        .bind(source).fetch_optional(&mut **tx).await.map_err(database_error)?;
+    // The selected wrapper is the grant, not just a way to find the original.
+    // Recheck under channel locks: deletion may have won while we waited.
+    let row: Option<(Value, i64, Option<i16>, Option<String>)> = sqlx::query_as("SELECT m.payload,c.last_seq,u.avatar_id,u.display_name FROM public.messages m JOIN public.messages selected ON selected.external_id=$2 AND selected.deleted_at IS NULL JOIN public.channels c ON c.id=m.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE m.id=$1 AND m.deleted_at IS NULL AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL)")
+        .bind(source).bind(selected).fetch_optional(&mut **tx).await.map_err(database_error)?;
     Ok(row.map(|(message, head, avatar, name)| json!({"message":shared_message(enrich_author(message,avatar,name.as_deref())),"seq":head.to_string()})))
 }
 
@@ -255,7 +262,7 @@ pub(super) async fn hydrate(
     // Keep unavailable sources in the result so cached content is cleared.
     let rows: Vec<ForwardSourceRow> = sqlx::query_as(
         "SELECT f.external_id,
-                CASE WHEN m.deleted_at IS NULL AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) THEN m.payload END,
+                CASE WHEN f.deleted_at IS NULL AND m.deleted_at IS NULL AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) THEN m.payload END,
                 c.last_seq,u.avatar_id,u.display_name
          FROM public.messages f JOIN public.messages m ON m.id=f.forward_source_id
          JOIN public.channels c ON c.id=m.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id
@@ -299,11 +306,11 @@ async fn thread(
         .await
         .map_err(database_error)?;
     channel_access(&mut *tx, &channel, user).await?;
-    let source: i64 = sqlx::query_scalar("SELECT forward_source_id FROM public.messages WHERE channel_id=$1 AND external_id=$2 AND forward_source_id IS NOT NULL")
+    let source: i64 = sqlx::query_scalar("SELECT forward_source_id FROM public.messages WHERE channel_id=$1 AND external_id=$2 AND forward_source_id IS NOT NULL AND deleted_at IS NULL")
         .bind(id).bind(&message).fetch_optional(&mut *tx).await.map_err(database_error)?.ok_or_else(not_found)?;
     // One repeatable snapshot for the root, replies, and their source cursor.
     // The destination grant authorizes only direct children of this original.
-    let rows: Vec<(Value, Option<i16>, i64, Option<String>)> = sqlx::query_as("SELECT m.payload,u.avatar_id,c.last_seq,u.display_name FROM public.messages root JOIN public.channels c ON c.id=root.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id JOIN public.messages m ON m.channel_id=root.channel_id AND (m.id=root.id OR m.thread_root_id=root.id) JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE root.id=$1 AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) AND (m.id=root.id OR $2::bigint IS NULL OR m.channel_seq<$2) ORDER BY (m.id=root.id) DESC,m.channel_seq DESC LIMIT $3")
+    let rows: Vec<(Value, Option<i16>, i64, Option<String>)> = sqlx::query_as("SELECT m.payload,u.avatar_id,c.last_seq,u.display_name FROM public.messages root JOIN public.channels c ON c.id=root.channel_id LEFT JOIN public.spaces s ON s.id=c.space_id JOIN public.messages m ON m.channel_id=root.channel_id AND (m.id=root.id OR m.thread_root_id=root.id) JOIN public.chat_sessions cs ON cs.id=m.session_id LEFT JOIN public.users u ON u.id=cs.user_id AND u.deleted_at IS NULL WHERE root.id=$1 AND root.deleted_at IS NULL AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL) AND (m.id=root.id OR $2::bigint IS NULL OR m.channel_seq<$2) ORDER BY (m.id=root.id) DESC,m.channel_seq DESC LIMIT $3")
         .bind(source).bind(before).bind(PAGE+2).fetch_all(&mut *tx).await.map_err(database_error)?;
     let mut root = Value::Null;
     let mut source = Value::Null;

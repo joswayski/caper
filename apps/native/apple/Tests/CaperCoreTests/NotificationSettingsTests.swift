@@ -427,4 +427,44 @@ final class NotificationModelTests: XCTestCase {
         XCTAssertNil(model.notificationError)
         XCTAssertFalse(model.notificationsMuted(general))
     }
+
+    func testOverlappingSavesAreRejectedWithoutBlockingOtherFieldsAndScopes() async throws {
+        let model = AppModel(api: client())
+        model.account = Account(id: "owner0000001", username: "owner", displayName: "Owner")
+        var writes = 0
+        let responses = DispatchSemaphore(value: 0)
+        defer { for _ in 0..<5 { responses.signal() } }
+        NotificationsMockURLProtocol.handler = { request in
+            if request.httpMethod == "GET" { return (200, Data(sampleSettings.utf8)) }
+            XCTAssertEqual(responses.wait(timeout: .now() + 5), .success)
+            writes += 1
+            return (503, Data(#"{"error":"unavailable"}"#.utf8))
+        }
+        await model.loadNotificationSettings()
+        let before = model.notificationSettings
+        let scope = NotificationScope.space("space0000001")
+        let other = NotificationScope.direct("dm0000000001")
+        // Main-actor tasks enter their optimistic state before suspending for HTTP.
+        let level = Task { await model.setAccountNotificationLevel(.nothing) }
+        while !model.accountNotificationsSaving.contains("level") { await Task.yield() }
+        await model.setAccountNotificationLevel(.mentions)
+        XCTAssertEqual(model.notificationSettings?.level, .nothing)
+        let mobile = Task { await model.setMobilePushPolicy(.always) }
+        let mute = Task { await model.setMute(.forever, for: scope) }
+        while !model.notificationScopesSaving.contains(scope) { await Task.yield() }
+        await model.setNotificationLevel(.nothing, for: scope)
+        XCTAssertEqual(model.notificationSettings?.overrideLevel(for: scope), before?.overrideLevel(for: scope))
+        let direct = Task { await model.setMute(nil, for: other) }
+        while !model.notificationScopesSaving.contains(other) { await Task.yield() }
+        XCTAssertTrue(model.accountNotificationsSaving.contains("mobile"))
+        for _ in 0..<4 { responses.signal() }
+        await level.value; await mobile.value; await mute.value; await direct.value
+        XCTAssertEqual(writes, 4, "one request per independent field/scope, none for rejected edits")
+        XCTAssertEqual(model.notificationSettings, before, "all failures restore confirmed values, not optimistic snapshots")
+        XCTAssertTrue(model.accountNotificationsSaving.isEmpty)
+        XCTAssertTrue(model.notificationScopesSaving.isEmpty)
+        responses.signal()
+        await model.setAccountNotificationLevel(.mentions)
+        XCTAssertEqual(writes, 5, "failure permits a retry")
+    }
 }

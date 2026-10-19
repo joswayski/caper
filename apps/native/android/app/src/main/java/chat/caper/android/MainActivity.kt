@@ -801,6 +801,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         ScopeMenuContent(
                             spaceMenuPage, { spaceMenuPage = it }, "space", settings?.override(spaceKey(detail.space.id)), settings?.inheritedLevel(),
                             { viewModel.setSpaceNotifications(detail.space.id, it) }, closeSpaceMenu,
+                            saving = spaceKey(detail.space.id) in state.notificationSaving,
                             before = {
                                 DropdownMenuItem(
                                     text = { Text(if (browsing) "Joined channels" else "Browse channels") },
@@ -943,6 +944,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                     if (notifiable) ScopeMenuContent(
                                         channelMenuPage, { channelMenuPage = it }, "channel", settings?.override(channelKey(channel.id)), settings?.inheritedLevel(detail.space.id),
                                         { viewModel.setChannelNotifications(detail.space.id, channel.id, it) }, closeChannelMenu,
+                                        saving = channelKey(channel.id) in state.notificationSaving,
                                         spaceMuted = settings?.spaceMuted(detail.space.id, now) == true, fontSize = 13.sp, before = settingsItem, after = leaveItem,
                                     ) else { settingsItem(); leaveItem() }
                                 }
@@ -1065,7 +1067,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                             if (unread) Box(Modifier.size(8.dp).background(TerracottaBright, CircleShape).semantics { contentDescription = "Unread" })
                             Box {
                                 IconButton(openOptions, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_ellipsis), "${direct.peer.displayName} options", Modifier.size(18.dp), tint = TextMuted) }
-                                DirectOptionsMenu(optionsOpen, { optionsOpen = false }, settings?.override(directKey(direct.id)), settings != null) {
+                                DirectOptionsMenu(optionsOpen, { optionsOpen = false }, settings?.override(directKey(direct.id)), settings != null && directKey(direct.id) !in state.notificationSaving) {
                                     viewModel.setDirectNotifications(direct.id, it)
                                 }
                             }
