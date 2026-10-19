@@ -281,6 +281,11 @@ async function testDirectMessages() {
     'document.querySelector(".chat-heading")?.textContent.includes("TEST FIXTURE Alex") && !document.querySelector(".space-dialog[open]")',
   );
   assert.equal(
+    evaluate(`!!document.querySelector('.chat-heading button[aria-label^="Block"]')`),
+    false,
+    "Blocking stays in secondary menus, not the accepted DM header",
+  );
+  assert.equal(
     evaluate(
       'document.querySelector(".direct-select:not(.direct-self) .direct-avatar [data-avatar-id]")?.dataset.avatarId',
     ),

@@ -1617,9 +1617,6 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         Icon(painterResource(R.drawable.lucide_users), if (membersVisible) "Hide member list" else "Show member list",
                             Modifier.size(20.dp), tint = if (membersVisible) Text else TextMuted)
                     }
-                    if (!narrow && direct != null && (direct.blocked || direct.peer.canBlock)) TextButton(::toggleBlock, Modifier.heightIn(min = 48.dp), shape = MaterialTheme.shapes.small) {
-                        Text(if (direct.blocked) "Unblock" else "Block", color = if (direct.blocked) TextMuted else ErrorText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
                     if (!channel.direct && !joined) Button({ viewModel.joinChannel(channel) }, enabled = !state.busy, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text("Join channel") }
                     if (!live && showConnection) Text(if (state.gateway == GatewayStatus.ERROR || state.messagesError != null) "Offline" else "Connecting…", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
