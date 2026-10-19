@@ -1125,13 +1125,13 @@ private struct SpaceRail: View {
 /// checker handles each piece in reasonable time.
 private struct SpaceRailButton: View {
     @Bindable var model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hovered = false
     let space: Space
     let narrow: Bool
     private var selected: Bool { model.selectedSpaceID == space.id }
     private var name: String { space.demo == true ? "Caper" : space.name }
     private let corner: CGFloat = 12
-    private var fill: Color { selected ? Color(red: 57/255, green: 35/255, blue: 30/255) : CaperTheme.surface }
-    private var edge: Color { selected ? Color(red: 128/255, green: 81/255, blue: 67/255) : CaperTheme.border }
     private var muted: Bool { space.demo != true && model.notificationsMuted(.space(space.id)) }
     private var unread: Bool { model.unreadSpaces.contains { $0.id == space.id } }
     private var connected: Bool { model.account != nil && model.voice.phase == .connected && model.voice.context?.spaceID == space.id }
@@ -1145,8 +1145,7 @@ private struct SpaceRailButton: View {
         Button { if !SwipeTapGuard.swiping { Task { await model.select(space: space) } } } label: {
             // The space's icon fills the tile; badges stay on top of it.
             SpaceIconTile(name: space.demo == true ? "C" : space.name, picture: space.iconPicture, size: narrow ? 44 : 40,
-                          fill: fill, corner: corner, dimmed: muted)
-                .overlay(RoundedRectangle(cornerRadius: corner).stroke(edge))
+                          fill: CaperTheme.surface, corner: corner, dimmed: muted)
                 .overlay(alignment: .bottomTrailing) { mutedBadge }
                 .overlay(alignment: .topTrailing) {
                     if voiceActive {
@@ -1170,10 +1169,13 @@ private struct SpaceRailButton: View {
         .modifier(NavigationPrefetchModifier { model.prefetch(space: space) })
         .accessibilityLabel(name)
         .accessibilityValue(state)
+        .onHover { hovered = $0 }
         .overlay(alignment: .leading) {
-            if selected {
-                RoundedRectangle(cornerRadius: 2).fill(CaperTheme.terracottaBright).frame(width: 3, height: 24).offset(x: -10)
-            }
+            RoundedRectangle(cornerRadius: 2).fill(CaperTheme.text)
+                .frame(width: 4, height: selected ? 32 : hovered ? 20 : 8).offset(x: -10)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: selected)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hovered)
+                .accessibilityHidden(true)
         }
     }
 

@@ -694,17 +694,19 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
             val unread = state.unreadSpaces.any { it.id == space.id }
             val connected = state.account != null && voice.phase == VoiceState.Phase.CONNECTED && voice.spaceId == space.id
             val voiceActive = state.account != null && (connected || space.id in state.voiceActivitySpaceIds)
+            val interaction = remember(space.id) { MutableInteractionSource() }
+            val hovered by interaction.collectIsHoveredAsState()
+            // Compose's animation clock honors the system animator duration scale.
+            val indicatorHeight by animateFloatAsState(if (selected) 32f else if (hovered) 20f else 8f, tween(140), label = "Space indicator")
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.width(3.dp).height(if (selected) 24.dp else 0.dp).background(if (selected) TerracottaBright else Color.Transparent))
-                Spacer(Modifier.width(3.dp))
+                Box(Modifier.width(4.dp).height(indicatorHeight.dp).background(Text, RoundedCornerShape(topEnd = 4.dp, bottomEnd = 4.dp)))
+                Spacer(Modifier.width(2.dp))
                 Box {
                     Surface(
-                        // Clipped first, so the press ripple keeps the tile's corners.
-                        Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clip(MaterialTheme.shapes.medium).clickable { viewModel.selectSpace(space.id) }
+                        Modifier.size(48.dp).alpha(if (muted) MUTED_ALPHA else 1f).clip(MaterialTheme.shapes.medium).hoverable(interaction).clickable(interactionSource = interaction, indication = null) { viewModel.selectSpace(space.id) }
                             .semantics { contentDescription = space.name; stateDescription = listOfNotNull(if (unread) "Unread activity" else null, if (muted) "Muted" else null, if (connected) "Connected to voice" else if (voiceActive) "Voice active" else null).joinToString(", ") },
-                        color = if (selected) TerracottaDark else Surface, shape = MaterialTheme.shapes.medium,
-                        border = BorderStroke(1.dp, if (selected) TerracottaBorder else Border),
-                    ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, if (selected) Color.White else TextMuted) }
+                        color = Surface, shape = MaterialTheme.shapes.medium,
+                    ) { SpaceTileFace(space.name, space.iconAsset, space.iconUrl, 48.dp, TextMuted) }
                     if (muted) Box(Modifier.align(Alignment.BottomEnd).offset(x = 3.dp, y = 3.dp).background(Blackout, CircleShape).padding(2.dp).clearAndSetSemantics {}) { MutedBell() }
                     if (voiceActive) Box(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp).size(18.dp).background(if (connected) VoiceSessionGreen else Blackout, CircleShape).border(2.dp, Blackout, CircleShape).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
                         Icon(painterResource(R.drawable.lucide_volume_2), null, Modifier.size(11.dp), tint = Text)
