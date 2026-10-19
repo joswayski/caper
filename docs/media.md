@@ -797,7 +797,14 @@ measures variable-height rows and renders only the visible region plus overscan.
 Prepending history preserves the reading position; live arrivals follow the
 bottom only when the reader is already there. Loaded message data stays in tab
 memory; virtualization bounds mounted DOM rows, not the history cache. Reloading
-starts again at the latest page.
+starts again at the latest page. The Rust desktop history does the same in
+egui (`src/virtual_list.rs`): it lays out only rows within 600 points of the
+viewport, caches each row's measured height by message and layout revision,
+and keeps the first visible row's place when rows above it are prepended,
+measured or change height; a jump centres its target as nearby rows are
+measured. Headless egui tests cover this, and a 600-row local scratch history
+was scrolled from the live end to its first message and back under Xvfb
+(software GL); jumps, resizing and HiDPI were not checked on a display.
 
 The browser immediately shows an optimistic message (without a `Sending…` label) and clears the
 composer. It keeps one outstanding command; a new draft can be typed while it

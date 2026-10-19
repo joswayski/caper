@@ -48,6 +48,7 @@ mod update_art;
 mod updates;
 mod uploads;
 mod viewer;
+mod virtual_list;
 mod voice;
 mod whats_new;
 mod window_state;
@@ -1074,6 +1075,11 @@ struct CaperApp {
     history_viewport: f32,
     history_at_end: bool,
     history_offset: Option<f32>,
+    /// Lays out only the history rows near the viewport (see `virtual_list`).
+    history_list: virtual_list::VirtualList,
+    /// The history scroll area, to read its offset before the next pass.
+    history_area: Option<egui::Id>,
+    history_dates: DisplayDates,
     has_more: bool,
     history_request: u64,
     context_window: Option<MessageWindow>,
@@ -1447,6 +1453,9 @@ impl CaperApp {
             history_viewport: 0.0,
             history_at_end: true,
             history_offset: None,
+            history_list: virtual_list::VirtualList::default(),
+            history_area: None,
+            history_dates: DisplayDates::default(),
             has_more: false,
             history_request: 0,
             context_window: None,
@@ -12097,6 +12106,34 @@ impl CaperApp {
         self.revealed_blocked.contains(key)
     }
 
+    /// One virtualised history row (see `history_plan`).
+    fn history_item(
+        &mut self,
+        ui: &mut egui::Ui,
+        messages: &[&model::Message],
+        item: &HistoryItem,
+    ) {
+        if let Some(label) = &item.run_date {
+            date_divider(ui, label);
+        }
+        let draw = |app: &mut Self, ui: &mut egui::Ui| {
+            for (message, row) in messages[item.range.clone()].iter().zip(&item.messages) {
+                if let Some(label) = &row.date {
+                    date_divider(ui, label);
+                }
+                if row.unread {
+                    new_messages_divider(ui);
+                }
+                app.message(ui, message, false, row.grouped);
+            }
+        };
+        if let Some(key) = &item.blocked {
+            self.blocked_run(ui, key, item.range.len(), draw);
+        } else {
+            draw(self, ui);
+        }
+    }
+
     /// Paint one shared surface behind the notice and every revealed message.
     fn blocked_run(
         &mut self,
@@ -16191,10 +16228,67 @@ impl CaperApp {
             // Web's End key on the message list jumps to the latest message.
             let jump_latest = ui.memory(|memory| memory.focused().is_none())
                 && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::End));
+            // Plan the rows before the scroll area, so anchoring can choose
+            // this pass's offset (see `virtual_list`).
+            let me = self.account.as_ref().map(|account| account.id.clone());
+            let blocked_ids = self.blocked_ids();
+            let messages = history_messages(&self.timeline, &self.thread_only_rows, self.context_window);
+            let unread_row = {
+                self.unread_boundary.filter(|(boundary, _)| {
+                    self.selected_direct.is_none() && self.visiting().is_none()
+                        && !self.showing_pins && self.context_window.is_none()
+                        && (!self.has_more || self.timeline.messages().next().is_some_and(|message| {
+                            model::sequence(&message.seq).is_ok_and(|seq| seq <= boundary.saturating_add(1))
+                        }))
+                }).and_then(|(boundary, last)| messages.iter().find(|message| {
+                    model::sequence(&message.seq).is_ok_and(|seq| seq > boundary && seq <= last)
+                        && me.as_deref() != Some(message.author.id.as_str())
+                        && !blocked_ids.contains(&message.author.id)
+                })).map(|message| message.id.clone())
+            };
+            let plan = history_plan(
+                &messages,
+                &HistoryInputs {
+                    blocked: &blocked_ids,
+                    me: me.as_deref(),
+                    unread: unread_row.as_deref(),
+                    focused: self.focused_message.as_deref(),
+                    reveal_focused: self.scroll_to_target,
+                    width: ui.available_width(),
+                    zoom: ui.ctx().zoom_factor(),
+                },
+                &mut self.revealed_blocked,
+                &mut self.history_dates,
+            );
+            drop(messages);
+            // The list centres a jump target itself, re-centring as the rows
+            // around it are measured, instead of the row's one-off scroll.
+            let jump = (self.scroll_to_target && !self.showing_pins && !self.opening)
+                .then(|| self.focused_message.as_deref().and_then(|focused| plan.key_of(focused)))
+                .flatten();
+            if jump.is_some() {
+                self.scroll_to_target = false;
+            }
+            let frozen = self.showing_pins || self.opening || self.history_offset.is_some() || jump_latest;
+            let frame = virtual_list::Frame {
+                offset: self
+                    .history_area
+                    .and_then(|id| egui::scroll_area::State::load(ui.ctx(), id))
+                    .map_or(0.0, |state| state.offset.y),
+                viewport: self.history_viewport,
+                at_end: self.history_at_end,
+                scrolled: ui.input(|input| input.raw_scroll_delta.y != 0.0 || input.pointer.is_decidedly_dragging()),
+                frozen,
+                now: ui.input(|input| input.time),
+            };
+            let scope = self.selected_direct.as_deref().or(self.selected_channel.as_deref()).unwrap_or_default().to_owned();
+            let HistoryPlan { items, rows, mut previous, mut last_date } = plan;
+            let (layout, anchored) = self.history_list.begin(&scope, rows, jump, frame);
             let mut history = egui::ScrollArea::vertical()
                 // The conversation stays mounted behind the separate Pins modal.
                 .id_salt("history")
-                .stick_to_bottom(!self.showing_pins)
+                // A jump leaves the live end: sticking would pull it back.
+                .stick_to_bottom(!self.showing_pins && !self.history_list.jumping())
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .auto_shrink([false, false]);
             if !self.showing_pins && !self.opening {
@@ -16205,11 +16299,14 @@ impl CaperApp {
                     // That offset is clamped only as the pass ends; don't
                     // show the empty pass drawn past the end.
                     ui.ctx().request_discard("jump to the latest message");
+                } else if let Some(offset) = anchored {
+                    history = history.vertical_scroll_offset(offset);
                 }
             }
             // ScrollArea's paint margin must not bleed into the fixed heading or composer.
             let history_clip = ui.available_rect_before_wrap().intersect(ui.clip_rect());
-            let history = history.show(ui, |ui| {
+            let history = history.show_viewport(ui, |ui, viewport| {
+                    let origin = ui.max_rect().top();
                     ui.set_clip_rect(ui.clip_rect().intersect(history_clip));
                     if let Some(error) = self.load_error.clone().filter(|_| empty) {
                         chat_state(ui, 2, |ui| {
@@ -16227,7 +16324,7 @@ impl CaperApp {
                                 self.reload_channel();
                             }
                         });
-                        return;
+                        return None;
                     }
                     // Web's history header: older-page status above the messages.
                     self.history_header(ui);
@@ -16238,66 +16335,46 @@ impl CaperApp {
                     // content and reactions) on every frame. Restore it before
                     // pending/empty state and paging can inspect the timeline.
                     let timeline = std::mem::take(&mut self.timeline);
-                    let mut last_date = None;
-                    let messages: Vec<_> = timeline.messages().filter(|message| message.is_channel_message() && !self.thread_only_rows.contains(&message.id) && self.context_window.is_none_or(|window| window.contains(message))).collect();
-                    let me = self.account.as_ref().map(|account| account.id.clone());
-                    let blocked_ids = self.blocked_ids();
-                    let unread_row = self.unread_boundary.filter(|(boundary, _)| {
-                        self.selected_direct.is_none() && self.visiting().is_none()
-                            && !self.showing_pins && self.context_window.is_none()
-                            && (!self.has_more || timeline.messages().next().is_some_and(|message| {
-                                model::sequence(&message.seq).is_ok_and(|seq| seq <= boundary.saturating_add(1))
-                            }))
-                    }).and_then(|(boundary, last)| messages.iter().find(|message| {
-                        model::sequence(&message.seq).is_ok_and(|seq| seq > boundary && seq <= last)
-                            && me.as_deref() != Some(message.author.id.as_str())
-                            && !blocked_ids.contains(&message.author.id)
-                    })).map(|message| message.id.clone());
-                    // The row above for grouping; dividers and placeholders clear it.
-                    let mut previous: Option<grouping::Row> = None;
-                    for row in blocking::rows(&messages, &blocked_ids, me.as_deref()) {
-                        let (range, blocked) = match row {
-                            blocking::Row::Message(index) => (index..index + 1, None),
-                            blocking::Row::Blocked { range, key } => (range, Some(key)),
-                        };
-                        if let Some(key) = &blocked {
-                            previous = None;
-                            if let Some(date) = display_date(&messages[range.start].created_at)
-                                && take_date_divider(&mut last_date, &date.key)
-                            {
-                                date_divider(ui, &date.label);
-                            }
-                            if self.scroll_to_target && messages[range.clone()].iter().any(|message| self.focused_message.as_deref() == Some(&message.id)) {
-                                self.revealed_blocked.insert(key.clone());
-                            }
-                        }
-                        let count = range.len();
-                        let draw = |app: &mut Self, ui: &mut egui::Ui| {
-                        for message in &messages[range] {
-                            if let Some(date) = display_date(&message.created_at)
-                                && take_date_divider(&mut last_date, &date.key)
-                            {
-                                date_divider(ui, &date.label);
-                                previous = None;
-                            }
-                            // A "Replied to a thread" broadcast keeps its header.
-                            if unread_row.as_deref() == Some(message.id.as_str()) {
-                                new_messages_divider(ui);
-                                previous = None;
-                            }
-                            let current = grouping::Row::new(&message.author.id, &message.created_at, message.thread_root_id.is_some() || message.reply_to.is_some());
-                            let grouped = grouping::grouped(previous.as_ref(), &current);
-                            // Nothing groups under a highlighted jump target.
-                            previous = (app.focused_message.as_deref() != Some(&message.id)).then_some(current);
-                            app.message(ui, message, false, grouped);
-                        }
-                        };
-                        if let Some(key) = blocked {
-                            self.blocked_run(ui, &key, count, draw);
-                        } else {
-                            draw(self, ui);
-                        }
+                    let messages = history_messages(&timeline, &self.thread_only_rows, self.context_window);
+                    let start = ui.cursor().top() - origin;
+                    let plan = self.history_list.plan(layout, viewport.min.y - start, ui.max_rect().height());
+                    let mut drawn = Vec::with_capacity(plan.above.len() + plan.flow.len());
+                    let row_ui = |index: usize| {
+                        egui::UiBuilder::new()
+                            .id_salt(("history-row", &items[index].key))
+                            .global_scope(true)
+                    };
+                    // Rows just above the viewport are drawn only to measure
+                    // them: at their estimated tops, clipped above the
+                    // viewport, so a wrong estimate never moves visible rows.
+                    let above_clip = ui.clip_rect().intersect(egui::Rect::everything_above(origin + viewport.min.y));
+                    for index in plan.above.clone() {
+                        let mut row = ui.new_child(row_ui(index).max_rect(egui::Rect::from_min_size(
+                            egui::pos2(ui.max_rect().left(), origin + start + plan.layout.top(index)),
+                            ui.max_rect().size(),
+                        )));
+                        row.set_clip_rect(above_clip);
+                        self.history_item(&mut row, &messages, &items[index]);
+                        drawn.push(virtual_list::Drawn {
+                            index,
+                            top: plan.layout.top(index),
+                            height: row.min_rect().height() + row.spacing().item_spacing.y,
+                        });
                     }
+                    let flow_top = if plan.flow.is_empty() { plan.layout.total() } else { plan.layout.top(plan.flow.start) };
+                    ui.add_space(flow_top);
+                    for index in plan.flow.clone() {
+                        let top = ui.cursor().top();
+                        ui.scope_builder(row_ui(index), |ui| self.history_item(ui, &messages, &items[index]));
+                        drawn.push(virtual_list::Drawn {
+                            index,
+                            top: top - origin - start,
+                            height: ui.cursor().top() - top,
+                        });
+                    }
+                    let flow_end = if plan.flow.is_empty() { plan.layout.total() } else { plan.layout.top(plan.flow.end) };
+                    ui.add_space(plan.layout.total() - flow_end);
+                    drop(messages);
                     self.timeline = timeline;
                     if self.has_newer && history_row(ui, |ui| centered_history_button(ui, "Load newer messages", !self.context_loading)).clicked() { self.load_newer_context(None); }
                     if self.has_newer && history_row(ui, |ui| centered_history_button(ui, "Back to latest messages", true)).clicked() { self.reload_channel(); }
@@ -16379,7 +16456,15 @@ impl CaperApp {
                             });
                         });
                     }
+                    Some((plan, drawn, start))
                 });
+            if let Some((plan, drawn, start)) = &history.inner
+                && self.history_list.finish(plan, drawn, *start, history.content_size.y, history.state.offset.y)
+            {
+                ui.ctx().request_discard("keep the reading position as rows are measured");
+                ui.ctx().request_repaint();
+            }
+            self.history_area = Some(history.id);
             self.file_drop_overlay(ui.ctx(), conversation, None);
             self.after_history(ui, &history, heading.response.rect);
         });
@@ -16457,14 +16542,16 @@ impl CaperApp {
     fn after_history(
         &mut self,
         ui: &mut egui::Ui,
-        history: &egui::scroll_area::ScrollAreaOutput<()>,
+        history: &egui::scroll_area::ScrollAreaOutput<impl Sized>,
         heading: egui::Rect,
     ) {
         if !self.showing_pins && !self.opening {
             let height = history.content_size.y;
             let viewport = history.inner_rect.height();
             let offset = history.state.offset.y;
-            if let Some(previous) = self.older_anchor.take() {
+            if let Some(previous) = self.older_anchor.take()
+                && !self.history_list.anchoring()
+            {
                 // Keep the reader's place after older messages arrive above.
                 self.history_offset = Some(offset + (height - previous).max(0.0));
                 // This pass drew the new page at the old offset, pushing the
@@ -28514,6 +28601,216 @@ fn display_date(timestamp: &str) -> Option<DisplayDate> {
     timestamp_parts(timestamp, &Local).map(|parts| parts.0)
 }
 
+/// [`display_date`] per timestamp, so planning a long history every frame
+/// does not reformat every date. Cleared when the local UTC offset changes.
+#[derive(Default)]
+struct DisplayDates {
+    offset: i32,
+    dates: std::collections::HashMap<String, Option<DisplayDate>>,
+}
+
+impl DisplayDates {
+    fn refresh(&mut self) {
+        let offset = Local::now().offset().local_minus_utc();
+        if offset != self.offset || self.dates.len() > 50_000 {
+            self.offset = offset;
+            self.dates.clear();
+        }
+    }
+
+    fn get(&mut self, timestamp: &str) -> Option<&DisplayDate> {
+        if !self.dates.contains_key(timestamp) {
+            self.dates
+                .insert(timestamp.to_owned(), display_date(timestamp));
+        }
+        self.dates.get(timestamp).and_then(Option::as_ref)
+    }
+}
+
+/// The channel history's messages, oldest first: channel rows of the open
+/// window, without rows loaded only for a thread.
+fn history_messages<'a>(
+    timeline: &'a Timeline,
+    thread_only: &BTreeSet<String>,
+    window: Option<MessageWindow>,
+) -> Vec<&'a model::Message> {
+    timeline
+        .messages()
+        .filter(|message| {
+            message.is_channel_message()
+                && !thread_only.contains(&message.id)
+                && window.is_none_or(|window| window.contains(message))
+        })
+        .collect()
+}
+
+/// One row of the virtualised history: a message, or a run of blocked
+/// messages, with the dividers drawn above it.
+struct HistoryItem {
+    /// The first message's id, or the blocked run's key.
+    key: String,
+    range: std::ops::Range<usize>,
+    blocked: Option<String>,
+    /// A blocked run's message ids, so a jump can find the run.
+    ids: Vec<String>,
+    /// The date divider above a blocked run's notice.
+    run_date: Option<String>,
+    /// Each drawn message's dividers and grouping: every message of a plain
+    /// row or a revealed run, none of a collapsed run.
+    messages: Vec<HistoryMessage>,
+}
+
+struct HistoryMessage {
+    date: Option<String>,
+    unread: bool,
+    grouped: bool,
+}
+
+struct HistoryPlan {
+    items: Vec<HistoryItem>,
+    rows: Vec<virtual_list::Row>,
+    /// Grouping and date state after the last row, for the pending send.
+    previous: Option<grouping::Row>,
+    last_date: Option<String>,
+}
+
+impl HistoryPlan {
+    /// The row holding message `id`.
+    fn key_of(&self, id: &str) -> Option<String> {
+        self.items
+            .iter()
+            .find(|item| item.key == id || item.ids.iter().any(|known| known == id))
+            .map(|item| item.key.clone())
+    }
+}
+
+struct HistoryInputs<'a> {
+    blocked: &'a BTreeSet<String>,
+    me: Option<&'a str>,
+    unread: Option<&'a str>,
+    focused: Option<&'a str>,
+    /// A jump to `focused` reveals the blocked run holding it.
+    reveal_focused: bool,
+    width: f32,
+    zoom: f32,
+}
+
+/// Dividers, grouping and a layout revision for every history row, without
+/// laying any of them out. Mirrors how rows are drawn: a date divider or the
+/// "new messages" divider ends a group, a blocked run's notice separates the
+/// rows around it, and nothing groups under a highlighted jump target.
+fn history_plan(
+    messages: &[&model::Message],
+    inputs: &HistoryInputs,
+    revealed: &mut BTreeSet<String>,
+    dates: &mut DisplayDates,
+) -> HistoryPlan {
+    use std::hash::{Hash, Hasher};
+    dates.refresh();
+    let mut previous: Option<grouping::Row> = None;
+    let mut last_date = None;
+    let mut items = Vec::new();
+    let mut rows = Vec::new();
+    for row in blocking::rows(messages, inputs.blocked, inputs.me) {
+        let (range, blocked) = match row {
+            blocking::Row::Message(index) => (index..index + 1, None),
+            blocking::Row::Blocked { range, key } => (range, Some(key)),
+        };
+        let mut run_date = None;
+        if let Some(key) = &blocked {
+            previous = None;
+            if let Some(date) = dates.get(&messages[range.start].created_at)
+                && take_date_divider(&mut last_date, &date.key)
+            {
+                run_date = Some(date.label.clone());
+            }
+            if inputs.reveal_focused
+                && messages[range.clone()]
+                    .iter()
+                    .any(|message| inputs.focused == Some(message.id.as_str()))
+            {
+                revealed.insert(key.clone());
+            }
+        }
+        let shown = blocked.as_ref().is_none_or(|key| revealed.contains(key));
+        let mut rows_meta = Vec::new();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (inputs.width.round() as i32, inputs.zoom.to_bits(), shown).hash(&mut hasher);
+        run_date.hash(&mut hasher);
+        for message in &messages[range.clone()] {
+            if shown {
+                let mut date = None;
+                if let Some(display) = dates.get(&message.created_at)
+                    && take_date_divider(&mut last_date, &display.key)
+                {
+                    date = Some(display.label.clone());
+                    previous = None;
+                }
+                // A "Replied to a thread" broadcast keeps its header.
+                let unread = inputs.unread == Some(message.id.as_str());
+                if unread {
+                    previous = None;
+                }
+                let current = grouping::Row::new(
+                    &message.author.id,
+                    &message.created_at,
+                    message.thread_root_id.is_some() || message.reply_to.is_some(),
+                );
+                let grouped = grouping::grouped(previous.as_ref(), &current);
+                previous = (inputs.focused != Some(message.id.as_str())).then_some(current);
+                (&date, unread, grouped).hash(&mut hasher);
+                rows_meta.push(HistoryMessage {
+                    date,
+                    unread,
+                    grouped,
+                });
+            }
+            (
+                &message.id,
+                message.revision,
+                message.deleted_at.is_some(),
+                message.content.text.len(),
+                message.content.attachments.len(),
+                message.thread.as_ref().map(|thread| thread.reply_count),
+                message.pin.is_some(),
+                message.forward.is_some(),
+            )
+                .hash(&mut hasher);
+            for reaction in &message.reactions {
+                (&reaction.emoji, reaction.author_ids.len()).hash(&mut hasher);
+            }
+        }
+        let key = blocked
+            .clone()
+            .unwrap_or_else(|| messages[range.start].id.clone());
+        rows.push(virtual_list::Row {
+            key: key.clone(),
+            revision: hasher.finish(),
+        });
+        items.push(HistoryItem {
+            key,
+            ids: if blocked.is_some() {
+                messages[range.clone()]
+                    .iter()
+                    .map(|message| message.id.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            range,
+            blocked,
+            run_date,
+            messages: rows_meta,
+        });
+    }
+    HistoryPlan {
+        items,
+        rows,
+        previous,
+        last_date,
+    }
+}
+
 fn take_date_divider(previous: &mut Option<String>, date: &str) -> bool {
     if previous.as_deref() == Some(date) {
         return false;
@@ -30376,6 +30673,164 @@ mod tests {
         assert_eq!(text_position(&arrived, anchor), position);
         let settled = render(&mut app, &context, vec![]);
         assert_eq!(text_position(&settled, anchor), position);
+    }
+
+    /// Scroll fixture rows painted in this frame, and those actually visible
+    /// (inside their clip), by number with their text position.
+    fn painted_rows(output: &egui::FullOutput) -> (usize, Vec<(u32, egui::Pos2)>) {
+        let mut painted = 0;
+        let mut visible = Vec::new();
+        for shape in &output.shapes {
+            if let egui::Shape::Text(text) = &shape.shape
+                && let Some(number) = text.galley.job.text.strip_prefix("Scroll fixture message ")
+                && let Ok(number) = number.parse::<u32>()
+            {
+                painted += 1;
+                let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                if shape.clip_rect.intersects(rect) {
+                    visible.push((number, text.pos));
+                }
+            }
+        }
+        visible.sort_by_key(|(number, _)| *number);
+        (painted, visible)
+    }
+
+    fn wheel(delta: f32) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(egui::pos2(900.0, 400.0)),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, delta),
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]
+    }
+
+    #[test]
+    fn long_history_lays_out_only_rows_near_the_viewport() {
+        let context = egui::Context::default();
+        let mut app = scroll_fixture(&context, 1..=600);
+        let mut output = None;
+        for _ in 0..3 {
+            output = Some(render(&mut app, &context, vec![]));
+        }
+        let (painted, visible) = painted_rows(&output.unwrap());
+        assert!(painted < 80, "{painted} of 600 rows were laid out");
+        assert_eq!(visible.last().map(|(number, _)| *number), Some(600));
+        assert!(app.history_at_end);
+        // The reader can still scroll all the way back to the first message.
+        let mut reached = false;
+        for _ in 0..200 {
+            let output = render(&mut app, &context, wheel(2_000.0));
+            let (painted, visible) = painted_rows(&output);
+            assert!(painted < 80, "{painted} rows laid out while scrolling");
+            if visible.first().is_some_and(|(number, _)| *number == 1) {
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached, "scrolling up reaches the first message");
+        // And back down to the live end, where new messages stick.
+        for _ in 0..200 {
+            render(&mut app, &context, wheel(-2_000.0));
+            if app.history_at_end {
+                break;
+            }
+        }
+        for _ in 0..30 {
+            render(&mut app, &context, vec![]);
+        }
+        assert!(app.history_at_end);
+        let newest = scroll_messages(&app, 601..=601);
+        app.timeline
+            .reset(
+                app.timeline.messages().cloned().chain(newest).collect(),
+                "601",
+            )
+            .unwrap();
+        let mut output = render(&mut app, &context, vec![]);
+        for _ in 0..30 {
+            output = render(&mut app, &context, vec![]);
+        }
+        let (_, visible) = painted_rows(&output);
+        assert_eq!(visible.last().map(|(number, _)| *number), Some(601));
+    }
+
+    #[test]
+    fn rows_above_the_reader_changing_height_do_not_move_the_visible_rows() {
+        let context = egui::Context::default();
+        let mut app = scroll_fixture(&context, 1..=300);
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        for _ in 0..4 {
+            render(&mut app, &context, wheel(3_000.0));
+        }
+        for _ in 0..40 {
+            render(&mut app, &context, vec![]);
+        }
+        let before = render(&mut app, &context, vec![]);
+        let (_, visible) = painted_rows(&before);
+        let (watched, position) = visible[visible.len() / 2];
+        assert!(watched > 20, "scrolled into the middle, at {watched}");
+        // A row above the viewport (laid out only in the overscan) grows a
+        // lot, as when it is edited or its image loads.
+        let above = watched - (visible.len() as u32 / 2) - 2;
+        let id = format!("scroll-{above}");
+        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+        let grown = messages
+            .iter_mut()
+            .find(|message| message.id == id)
+            .unwrap();
+        grown.content.text = "Taller\n".repeat(12) + &format!("Scroll fixture message {above}");
+        app.timeline.reset(messages, "300").unwrap();
+        for _ in 0..5 {
+            let output = render(&mut app, &context, vec![]);
+            let (_, visible) = painted_rows(&output);
+            let now = visible
+                .iter()
+                .find(|(number, _)| *number == watched)
+                .map(|(_, position)| *position);
+            assert_eq!(now, Some(position), "message {watched} stays in place");
+        }
+    }
+
+    #[test]
+    fn jumping_far_up_a_long_history_centres_the_target() {
+        let context = egui::Context::default();
+        let mut app = scroll_fixture(&context, 1..=500);
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        // What a found search result or a reply's "View original" does once
+        // the target's context has loaded.
+        app.focused_message = Some("scroll-60".into());
+        app.scroll_to_target = true;
+        let mut output = render(&mut app, &context, vec![]);
+        for _ in 0..10 {
+            output = render(&mut app, &context, vec![]);
+        }
+        let (_, visible) = painted_rows(&output);
+        let target = visible
+            .iter()
+            .find(|(number, _)| *number == 60)
+            .expect("the jump target is on screen")
+            .1;
+        let (first, last) = (visible.first().unwrap().1, visible.last().unwrap().1);
+        let middle = (first.y + last.y) / 2.0;
+        assert!(
+            (target.y - middle).abs() < 120.0,
+            "target at {} between {} and {}",
+            target.y,
+            first.y,
+            last.y
+        );
+        // It stays put afterwards, and does not re-centre over the reader.
+        let settled = render(&mut app, &context, vec![]);
+        let (_, visible) = painted_rows(&settled);
+        assert!(visible.contains(&(60, target)));
+        assert!(!app.history_list.jumping());
     }
 
     #[test]
