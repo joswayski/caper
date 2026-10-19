@@ -260,7 +260,8 @@ until they update once. Development builds and static fixtures do not check.
 to quit, verifies the download's SHA-256 (and, on Mac, its Developer ID team),
 swaps in the new copy and reopens it. If downloading, verification or installation
 fails, it reopens the existing copy and records the error in `caper-updater.log`
-in the system temporary directory. Mac reopening uses LaunchServices and checks
+(Linux: `~/.local/state/caper`, or `$XDG_STATE_HOME/caper`; elsewhere the user's
+temporary directory). Mac reopening uses LaunchServices and checks
 the launch request's result. A copy it cannot replace, such as the Linux `.deb`
 or a Mac app whose folder permissions changed after launch, gets a **Download** link instead.
 That link downloads the matching Mac architecture's DMG, Windows Setup, or Linux

@@ -5900,7 +5900,10 @@ null standard streams and, on Unix, its own process group. Successful swaps reop
 the new app; failed download/verification/swap attempts reopen the working install
 after the original process exits. macOS uses `/usr/bin/open -n` through
 LaunchServices and checks its exit status. Errors and launch requests are recorded
-in the system temporary directory's `caper-updater.log`. Local Linux subprocess
+in `caper-updater.log`: on Linux in `~/.local/state/caper` (or
+`$XDG_STATE_HOME/caper`), elsewhere in the user's temporary directory. The updater
+stages relocation copies, downloads and unpacked builds in new, randomly named
+0700 folders, never fixed paths in a shared `/tmp`. Local Linux subprocess
 checks cover relocation, replacement/relaunch, and failure recovery, not a live
 signed-release update or a macOS/Windows GUI launch. Those platform checks remain
 release acceptance. Install the fixed native release manually once if the old
