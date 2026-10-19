@@ -703,7 +703,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       const user = identity(request);
       if (path === "/api/assets/usage")
         return user && state.uploadsEnabled
-          ? json(response, 200, { compression: {} })
+          ? json(response, 200, { used: 0, limit: 1024 ** 3, compression: {} })
           : reject(response, 503, "TEST FIXTURE: uploads disabled.");
       if (path === "/api/assets" && method === "POST") {
         if (!user || !state.uploadsEnabled) return reject(response, 503, "Uploads unavailable.");
