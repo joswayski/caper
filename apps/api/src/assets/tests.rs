@@ -34,6 +34,72 @@ fn presigning_matches_the_aws_s3_documented_example() {
 }
 
 #[test]
+fn header_signing_matches_botocore() {
+    // Expected signatures from botocore's SigV4Auth (service s3, region auto,
+    // UNSIGNED-PAYLOAD) for the same requests, credentials and time.
+    let signer = Signer {
+        scheme_host: "https://acct.r2.cloudflarestorage.com",
+        access_key: "AKIAIOSFODNN7EXAMPLE",
+        secret_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        region: "auto",
+        now: DateTime::parse_from_rfc3339("2013-05-24T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc),
+    };
+    let signature = |method, path, query: &[(&str, &str)], headers: &[(&str, &str)]| {
+        let (url, headers) = signer.authorize(method, path, query, headers);
+        let authorization = headers
+            .iter()
+            .find(|(name, _)| name == "authorization")
+            .unwrap()
+            .1
+            .clone();
+        (url, authorization)
+    };
+    let (url, authorization) = signature(
+        "POST",
+        "/bucket/staging/original/abc",
+        &[("uploads", "")],
+        &[],
+    );
+    assert_eq!(
+        url,
+        "https://acct.r2.cloudflarestorage.com/bucket/staging/original/abc?uploads="
+    );
+    assert!(authorization.ends_with(
+        "SignedHeaders=host;x-amz-content-sha256;x-amz-date,Signature=0d945c371d65f86a5a7fa71ae5aae6bcba371f8394beda10e96cb927b377c178"
+    ));
+    let (_, authorization) = signature(
+        "GET",
+        "/bucket/staging/original/abc",
+        &[
+            ("uploadId", "xyz+1"),
+            ("max-parts", "1000"),
+            ("part-number-marker", "0"),
+        ],
+        &[],
+    );
+    assert!(
+        authorization.ends_with(
+            "Signature=b28ad472015754e8779d9452244af521bae6394aacf814f2e5a774784dc8ffd6"
+        )
+    );
+    let (_, authorization) = signature(
+        "PUT",
+        "/bucket/original/abc",
+        &[],
+        &[
+            ("x-amz-copy-source", "/bucket/staging/original/abc"),
+            ("x-amz-metadata-directive", "REPLACE"),
+            ("content-type", "application/pdf"),
+        ],
+    );
+    assert!(authorization.ends_with(
+        "SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-copy-source;x-amz-date;x-amz-metadata-directive,Signature=ac8bbd9d4e4ead3f2c8d34538ed07391f4d2545f71cc8d4f1a5f9c4d45808b8a"
+    ));
+}
+
+#[test]
 fn upload_urls_sign_the_exact_type_length_and_name() {
     let r2 = R2::new(
         "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com".into(),
@@ -342,67 +408,157 @@ fn names_and_types_are_normalized() {
 type Store = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 type DeleteFailures = Arc<Mutex<std::collections::HashSet<String>>>;
 type ReadDelays = Arc<Mutex<HashMap<String, Duration>>>;
+/// Unfinished multipart uploads: upload ID to (key, parts by number).
+type Uploads = Arc<Mutex<HashMap<String, (String, std::collections::BTreeMap<i64, Vec<u8>>)>>>;
 
-/// Minimal path-style S3 stand-in. It records objects but does not verify
-/// signatures; live R2 validation is a separate deployment check.
+/// Minimal path-style S3 stand-in. It records objects and multipart uploads
+/// but does not verify signatures; live R2 validation is a separate
+/// deployment check, and signing is checked against botocore above.
 async fn fake_r2() -> (String, Store, DeleteFailures, ReadDelays) {
+    let (endpoint, store, failures, delays, _) = fake_r2_with_uploads().await;
+    (endpoint, store, failures, delays)
+}
+
+async fn fake_r2_with_uploads() -> (String, Store, DeleteFailures, ReadDelays, Uploads) {
+    use axum::http::Method;
     let store: Store = Arc::default();
     let failures: DeleteFailures = Arc::default();
     let delays: ReadDelays = Arc::default();
-    let shared = store.clone();
+    let uploads: Uploads = Arc::default();
+    let copy_source = |headers: &HeaderMap, store: &Store| -> Option<Vec<u8>> {
+        let source = headers.get("x-amz-copy-source")?.to_str().ok()?;
+        let key = source.trim_start_matches('/').split_once('/')?.1;
+        let body = store.lock().unwrap().get(key)?.clone();
+        Some(
+            match headers
+                .get("x-amz-copy-source-range")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("bytes="))
+                .and_then(|v| v.split_once('-'))
+            {
+                Some((start, end)) => {
+                    body[start.parse::<usize>().unwrap()..=end.parse::<usize>().unwrap()].to_vec()
+                }
+                None => body,
+            },
+        )
+    };
     let app = Router::new().route(
         "/{bucket}/{*key}",
-        get({
-            let store = shared.clone();
-            let delays = delays.clone();
+        axum::routing::any({
+            let (store, failures, delays, uploads) =
+                (store.clone(), failures.clone(), delays.clone(), uploads.clone());
             move |AxumPath((_, key)): AxumPath<(String, String)>,
-                  method: axum::http::Method,
-                  headers: HeaderMap| async move {
-                if method == axum::http::Method::GET && !headers.contains_key("range") {
-                    let delay = delays.lock().unwrap().remove(&key);
-                    if let Some(delay) = delay {
-                        tokio::time::sleep(delay).await;
+                  method: Method,
+                  axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>,
+                  headers: HeaderMap,
+                  body: Bytes| async move {
+                let upload = query.get("uploadId").cloned();
+                let part = query.get("partNumber").and_then(|n| n.parse::<i64>().ok());
+                match (method, upload, part) {
+                    (Method::POST, None, None) if query.contains_key("uploads") => {
+                        let id = format!("upload-{}", Uuid::new_v4());
+                        uploads.lock().unwrap().insert(id.clone(), (key, Default::default()));
+                        format!("<InitiateMultipartUploadResult><UploadId>{id}</UploadId></InitiateMultipartUploadResult>")
+                            .into_response()
                     }
+                    (Method::PUT, Some(upload), Some(number)) => {
+                        let copied = copy_source(&headers, &store);
+                        let bytes = copied.clone().unwrap_or_else(|| body.to_vec());
+                        let etag = format!("\"{}-{}\"", number, bytes.len());
+                        let mut all = uploads.lock().unwrap();
+                        let Some((_, parts)) = all.get_mut(&upload) else {
+                            return StatusCode::NOT_FOUND.into_response();
+                        };
+                        parts.insert(number, bytes);
+                        if copied.is_some() {
+                            format!("<CopyPartResult><ETag>{}</ETag></CopyPartResult>", etag.replace('"', "&quot;"))
+                                .into_response()
+                        } else {
+                            ([("etag", etag)], "").into_response()
+                        }
+                    }
+                    (Method::GET, Some(upload), None) => {
+                        let all = uploads.lock().unwrap();
+                        let Some((_, parts)) = all.get(&upload) else {
+                            return StatusCode::NOT_FOUND.into_response();
+                        };
+                        let listed: String = parts
+                            .iter()
+                            .map(|(n, b)| format!("<Part><PartNumber>{n}</PartNumber><ETag>&quot;{n}-{}&quot;</ETag><Size>{}</Size></Part>", b.len(), b.len()))
+                            .collect();
+                        format!("<ListPartsResult><IsTruncated>false</IsTruncated>{listed}</ListPartsResult>").into_response()
+                    }
+                    (Method::POST, Some(upload), None) => {
+                        let Some((target, parts)) = uploads.lock().unwrap().remove(&upload) else {
+                            return StatusCode::NOT_FOUND.into_response();
+                        };
+                        let request = String::from_utf8_lossy(&body).to_string();
+                        let mut object = Vec::new();
+                        for number in request.split("<PartNumber>").skip(1) {
+                            let number: i64 = number.split('<').next().unwrap().parse().unwrap();
+                            object.extend(&parts[&number]);
+                        }
+                        store.lock().unwrap().insert(target, object);
+                        "<CompleteMultipartUploadResult></CompleteMultipartUploadResult>".into_response()
+                    }
+                    (Method::DELETE, Some(upload), None) => {
+                        if uploads.lock().unwrap().remove(&upload).is_some() {
+                            StatusCode::NO_CONTENT.into_response()
+                        } else {
+                            StatusCode::NOT_FOUND.into_response()
+                        }
+                    }
+                    (method @ (Method::GET | Method::HEAD), None, None) => {
+                        if method == Method::GET && !headers.contains_key("range") {
+                            let delay = delays.lock().unwrap().remove(&key);
+                            if let Some(delay) = delay {
+                                tokio::time::sleep(delay).await;
+                            }
+                        }
+                        let Some(body) = store.lock().unwrap().get(&key).cloned() else {
+                            return StatusCode::NOT_FOUND.into_response();
+                        };
+                        // Only the `bytes=0-{end}` prefixes the API asks for.
+                        let end = headers
+                            .get("range")
+                            .and_then(|value| value.to_str().ok())
+                            .and_then(|value| value.strip_prefix("bytes=0-"))
+                            .and_then(|end| end.parse::<usize>().ok());
+                        let body = match end {
+                            Some(end) => body.into_iter().take(end + 1).collect(),
+                            None => body,
+                        };
+                        ([("content-length", body.len().to_string())], body).into_response()
+                    }
+                    (Method::PUT, None, None) => {
+                        let bytes = copy_source(&headers, &store).unwrap_or_else(|| body.to_vec());
+                        store.lock().unwrap().insert(key, bytes);
+                        StatusCode::OK.into_response()
+                    }
+                    (Method::DELETE, None, None) => {
+                        if failures.lock().unwrap().remove(&key) {
+                            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                        }
+                        store.lock().unwrap().remove(&key);
+                        StatusCode::NO_CONTENT.into_response()
+                    }
+                    _ => StatusCode::BAD_REQUEST.into_response(),
                 }
-                let Some(body) = store.lock().unwrap().get(&key).cloned() else {
-                    return StatusCode::NOT_FOUND.into_response();
-                };
-                // Only the `bytes=0-{end}` prefixes the API asks for.
-                let end = headers
-                    .get("range")
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.strip_prefix("bytes=0-"))
-                    .and_then(|end| end.parse::<usize>().ok());
-                let body = match end {
-                    Some(end) => body.into_iter().take(end + 1).collect(),
-                    None => body,
-                };
-                ([("content-length", body.len().to_string())], body).into_response()
-            }
-        })
-        .put({
-            let store = shared.clone();
-            move |AxumPath((_, key)): AxumPath<(String, String)>, body: Bytes| async move {
-                store.lock().unwrap().insert(key, body.to_vec());
-                StatusCode::OK
-            }
-        })
-        .delete({
-            let store = shared.clone();
-            let failures = failures.clone();
-            move |AxumPath((_, key)): AxumPath<(String, String)>| async move {
-                if failures.lock().unwrap().remove(&key) {
-                    return StatusCode::SERVICE_UNAVAILABLE;
-                }
-                store.lock().unwrap().remove(&key);
-                StatusCode::NO_CONTENT
             }
         }),
-    );
+    )
+    .layer(axum::extract::DefaultBodyLimit::disable());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("http://{address}"), store, failures, delays)
+    (
+        format!("http://{address}"),
+        store,
+        failures,
+        delays,
+        uploads,
+    )
 }
 
 fn principal(id: i64, external_id: &str) -> Principal {
@@ -2598,4 +2754,251 @@ async fn pictures_apply_on_completion_are_kept_outside_quota_and_sign_on_the_way
         .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
         .await
         .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL"]
+async fn multipart_uploads_assemble_parts_copy_documents_and_abort_on_cancel() {
+    let url = std::env::var("CHAT_TEST_DATABASE_URL")
+        .expect("CHAT_TEST_DATABASE_URL must point at disposable Postgres");
+    let options = PgConnectOptions::from_str(&url).unwrap();
+    assert!(matches!(options.get_host(), "127.0.0.1" | "localhost"));
+    let mut admin = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    let database = format!("assets_test_{}", Uuid::new_v4().simple());
+    admin
+        .execute(format!("CREATE DATABASE {database}").as_str())
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect_with(options.database(&database))
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let mut people = Vec::new();
+    for name in ["Owner", "Outsider"] {
+        let external = random_id(12);
+        let id: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,lower($2),$2) RETURNING id")
+            .bind(&external).bind(name).fetch_one(&pool).await.unwrap();
+        people.push(principal(id, &external));
+    }
+    let (owner, outsider) = (&people[0], &people[1]);
+    let space: i64 = sqlx::query_scalar(
+        "INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,'Friends',$2) RETURNING id",
+    )
+    .bind(random_id(12))
+    .bind(owner.user.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+        .bind(space)
+        .bind(owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let channel = random_id(12);
+    sqlx::query("INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'general')")
+        .bind(&channel)
+        .bind(space)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&channel)
+        .bind(owner.user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (endpoint, store, _, _, uploads) = fake_r2_with_uploads().await;
+    let mut state = AppState::with_database(
+        Config::test(false),
+        Arc::new(Cloudflare::new()),
+        Some(pool.clone()),
+    );
+    state.assets = Some(Assets::new(
+        pool.clone(),
+        R2::new(endpoint, "test".into(), "key".into(), "secret".into()),
+        20 * 1024 * 1024 * 1024,
+    ));
+    let mut chat = Chat::new(
+        pool.clone(),
+        redis::Client::open("redis://127.0.0.1:1").unwrap(),
+    );
+    chat.cdn = Some(Arc::new(CdnSigner::new(
+        "https://cdn.test".into(),
+        vec![9; 32],
+    )));
+    state.chat = Some(chat);
+    let reserve = |who: &Principal, content_type: &str, size: i64, multipart: bool| {
+        let input = serde_json::from_value::<CreateInput>(json!({
+            "channelId": channel, "filename": "big.bin", "contentType": content_type,
+            "byteSize": size, "multipart": multipart,
+        }))
+        .unwrap();
+        create(State(state.clone()), Extension(who.clone()), Json(input))
+    };
+    let part_urls = |who: &Principal, id: &str, numbers: Vec<i64>| {
+        parts(
+            State(state.clone()),
+            Extension(who.clone()),
+            Path(id.to_owned()),
+            Json(PartsInput { parts: numbers }),
+        )
+    };
+    let finish = |id: &str| {
+        complete(
+            State(state.clone()),
+            Extension(owner.clone()),
+            Path(id.to_owned()),
+        )
+    };
+    let send_part = |url: &str, bytes: &[u8]| {
+        let request = reqwest::Client::new().put(url).body(bytes.to_vec());
+        async move { assert!(request.send().await.unwrap().status().is_success()) }
+    };
+    let five_gib = multipart::MAX_SINGLE_BYTES;
+
+    // Clients that can't upload in parts keep the single-PUT limit, and media
+    // stays within what the scratch disk can clean.
+    let old = reserve(owner, "application/zip", five_gib + 1, false)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (old.status, old.code),
+        (StatusCode::PAYLOAD_TOO_LARGE, Some("file_too_large"))
+    );
+    let video = reserve(owner, "video/mp4", five_gib + 1, true)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (video.status, video.code),
+        (StatusCode::PAYLOAD_TOO_LARGE, Some("media_too_large"))
+    );
+    // A large document that fits the owner's storage reserves in parts.
+    let (_, Json(big)) = reserve(owner, "application/zip", five_gib * 2, true)
+        .await
+        .unwrap();
+    assert!(big.get("upload").is_none());
+    assert_eq!(big["multipart"]["partBytes"], multipart::PART_BYTES);
+    assert_eq!(big["multipart"]["partCount"], 160);
+    // Small files still use one PUT, even from clients that can do parts.
+    let (_, Json(small)) = reserve(owner, "application/zip", 10, true).await.unwrap();
+    assert!(small.get("multipart").is_none() && small.get("upload").is_some());
+
+    // A document just over one part: two parts, assembled and then copied.
+    let size = multipart::PART_BYTES + 100;
+    let mut document = b"%PDF-1.7 multipart".to_vec();
+    document.resize(size as usize, b'x');
+    let (_, Json(reserved)) = reserve(owner, "application/pdf", size, true).await.unwrap();
+    let id = reserved["id"].as_str().unwrap();
+    assert_eq!(reserved["multipart"]["partCount"], 2);
+    assert_eq!(
+        part_urls(outsider, id, vec![1]).await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+    for invalid in [vec![], vec![0], vec![3], (1..=101).collect()] {
+        assert_eq!(
+            part_urls(owner, id, invalid).await.unwrap_err().status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let Json(urls) = part_urls(owner, id, vec![2, 1, 1]).await.unwrap();
+    let urls = urls["parts"].as_array().unwrap();
+    assert_eq!(urls.len(), 2);
+    assert_eq!(urls[0]["number"], 1);
+    let first = &document[..multipart::PART_BYTES as usize];
+    let second = &document[multipart::PART_BYTES as usize..];
+    send_part(urls[0]["url"].as_str().unwrap(), first).await;
+    let early = finish(id).await.unwrap_err();
+    assert_eq!(
+        (early.status, early.code),
+        (StatusCode::CONFLICT, Some("upload_incomplete"))
+    );
+    send_part(urls[1]["url"].as_str().unwrap(), second).await;
+    let Json(done) = finish(id).await.unwrap();
+    assert_eq!(done["size"], size);
+    assert_eq!(store.lock().unwrap()[&original_key(id)], document);
+    let upload_id: String =
+        sqlx::query_scalar("SELECT multipart_upload_id FROM public.assets WHERE external_id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        !uploads.lock().unwrap().contains_key(&upload_id),
+        "the upload was completed"
+    );
+    // Retrying completion is idempotent, and finished uploads issue no URLs.
+    assert_eq!(finish(id).await.unwrap().0["size"], size);
+    assert_eq!(
+        part_urls(owner, id, vec![1]).await.unwrap_err().status,
+        StatusCode::NOT_FOUND
+    );
+
+    // A part with the wrong size can't match the reservation.
+    let (_, Json(reserved)) = reserve(owner, "application/pdf", size, true).await.unwrap();
+    let id = reserved["id"].as_str().unwrap();
+    let Json(urls) = part_urls(owner, id, vec![1, 2]).await.unwrap();
+    send_part(urls["parts"][0]["url"].as_str().unwrap(), first).await;
+    send_part(urls["parts"][1]["url"].as_str().unwrap(), &second[1..]).await;
+    assert_eq!(
+        finish(id).await.unwrap_err().status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // Cancelling aborts the upload, so its part URLs stop working.
+    let (_, Json(reserved)) = reserve(owner, "application/pdf", size, true).await.unwrap();
+    let id = reserved["id"].as_str().unwrap().to_owned();
+    let Json(urls) = part_urls(owner, &id, vec![1]).await.unwrap();
+    let upload_id: String =
+        sqlx::query_scalar("SELECT multipart_upload_id FROM public.assets WHERE external_id=$1")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(uploads.lock().unwrap().contains_key(&upload_id));
+    cancel(
+        State(state.clone()),
+        Extension(owner.clone()),
+        Path(id.clone()),
+    )
+    .await
+    .unwrap();
+    assert!(!uploads.lock().unwrap().contains_key(&upload_id));
+    let late = reqwest::Client::new()
+        .put(urls["parts"][0]["url"].as_str().unwrap())
+        .body(first.to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(late.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // Media sent in parts is still cleaned, not copied.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("large.png");
+    std::fs::write(&path, png(size as usize)).unwrap();
+    media_tool(
+        "exiftool",
+        &[
+            "-overwrite_original",
+            "-Comment=PRIVATE_MULTIPART_MARKER",
+            path.to_str().unwrap(),
+        ],
+    );
+    let image = std::fs::read(&path).unwrap();
+    let marker = |bytes: &[u8]| bytes.windows(24).any(|w| w == b"PRIVATE_MULTIPART_MARKER");
+    assert!(marker(&image));
+    let (_, Json(reserved)) = reserve(owner, "image/png", image.len() as i64, true)
+        .await
+        .unwrap();
+    let id = reserved["id"].as_str().unwrap();
+    let Json(urls) = part_urls(owner, id, vec![1, 2]).await.unwrap();
+    let split = multipart::PART_BYTES as usize;
+    send_part(urls["parts"][0]["url"].as_str().unwrap(), &image[..split]).await;
+    send_part(urls["parts"][1]["url"].as_str().unwrap(), &image[split..]).await;
+    assert!(finish(id).await.unwrap().0["size"].as_i64().unwrap() > 0);
+    let published = store.lock().unwrap()[&original_key(id)].clone();
+    assert!(published.starts_with(b"\x89PNG"));
+    assert!(!marker(&published), "the comment was removed");
 }

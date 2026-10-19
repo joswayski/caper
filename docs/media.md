@@ -1446,8 +1446,24 @@ replies, are also refreshed for readers of a channel holding a live forward.
   storage writes may briefly recreate uncharged bytes until the
   reconciliation sweep removes them; quota is accounting, not a strict ceiling
   on instantaneous R2 bytes. Reservation rate limits remain in place.
-- Single `PUT` uploads (R2 allows up to 5 GiB). Multipart/resumable uploads are
-  not implemented.
+- Files up to one part (64 MiB) upload with a single `PUT`. Larger files from
+  clients that send `"multipart": true` upload in parts: `create` answers
+  `multipart: {partBytes, partCount}` instead of `upload`, clients ask
+  `POST /api/assets/{id}/parts` (`{"parts": [numbers]}`, up to 100) for
+  presigned part `PUT`s valid 15 minutes, send each byte range with no extra
+  headers (retrying a part with a fresh URL), then call `complete` as before.
+  The server lists the parts, checks every size against the reservation and
+  assembles them; `upload_incomplete` (409) means parts are missing. Part size
+  is 64 MiB, growing so no file needs more than 10,000 parts.
+- A file can be as large as its owner's remaining storage (10 GiB by default).
+  Photos, video and audio stay within 5 GiB (`media_too_large`), because they
+  are cleaned on the API pod's scratch disk; clients that don't upload in parts
+  keep the 5 GiB single-`PUT` limit (`file_too_large`). Assembled documents and
+  archives are copied inside R2 instead of passing through the pod.
+- Asking for part URLs keeps an upload alive: an unfinished upload is abandoned
+  an hour after its last request. Cancelling, abandoning or purging aborts the
+  multipart upload, so its part URLs stop working at once; R2 also aborts
+  incomplete uploads after seven days.
 
 ### Delivery and URL signing
 

@@ -27,8 +27,12 @@ use std::{collections::HashMap, fmt::Write as _, sync::Arc, time::Duration};
 const DEFAULT_QUOTA_BYTES: i64 = 10 * 1024 * 1024 * 1024;
 const PREVIEW_MAX_BYTES: i64 = 512 * 1024;
 const UPLOAD_URL_SECONDS: u64 = 15 * 60;
-/// R2's limit for one `PUT`; there are no multipart uploads.
-const MAX_FILE_BYTES: i64 = 5 * 1024 * 1024 * 1024;
+/// Photos, video and audio are cleaned on the API pod's scratch disk, which
+/// holds the source and the result at once, so they stay within one `PUT`.
+/// Other files can be as large as the owner's storage allows.
+const MAX_CLEANED_BYTES: i64 = multipart::MAX_SINGLE_BYTES;
+/// Part URLs requested at once.
+const MAX_PART_URLS: usize = 100;
 /// Unsent rows keep their reservation until every presigned `PUT` for them has
 /// expired, with a margin for an upload that started just before expiry, so a
 /// reused URL can't store bytes the quota no longer counts.
@@ -44,6 +48,7 @@ const PURGE_DELAY_HOURS: i32 = 24;
 const DAY: i64 = 24 * 60 * 60;
 const HOUR: i64 = 60 * 60;
 
+mod multipart;
 mod privacy;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -146,9 +151,177 @@ fn uri_encode(value: &str, encode_slash: bool) -> String {
     out
 }
 
+/// Who signs, where and when: the parts of an AWS Signature Version 4 that
+/// do not depend on the request.
+struct Signer<'a> {
+    scheme_host: &'a str,
+    access_key: &'a str,
+    secret_key: &'a str,
+    region: &'a str,
+    now: DateTime<Utc>,
+}
+
+impl Signer<'_> {
+    fn scope(&self) -> String {
+        format!(
+            "{}/{}/s3/aws4_request",
+            self.now.format("%Y%m%d"),
+            self.region
+        )
+    }
+
+    fn stamp(&self) -> String {
+        self.now.format("%Y%m%dT%H%M%SZ").to_string()
+    }
+
+    /// Signs one canonical request (S3 dialect, unsigned payload). Returns the
+    /// encoded path and query, the signed header names and the signature.
+    fn sign(
+        &self,
+        method: &str,
+        path: &str,
+        query: &[(String, String)],
+        headers: &[(String, String)],
+    ) -> (String, String, String, String) {
+        let host = self
+            .scheme_host
+            .split_once("://")
+            .map_or(self.scheme_host, |(_, host)| host);
+        let mut signed: Vec<(String, String)> = headers
+            .iter()
+            .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
+            .chain([("host".to_owned(), host.to_owned())])
+            .collect();
+        signed.sort();
+        let signed_names = signed
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(";");
+        let mut encoded = query
+            .iter()
+            .map(|(name, value)| format!("{}={}", uri_encode(name, true), uri_encode(value, true)))
+            .collect::<Vec<_>>();
+        encoded.sort();
+        let encoded = encoded.join("&");
+        let canonical_headers: String = signed
+            .iter()
+            .map(|(name, value)| format!("{name}:{value}\n"))
+            .collect();
+        let path = uri_encode(path, false);
+        let canonical = format!(
+            "{method}\n{path}\n{encoded}\n{canonical_headers}\n{signed_names}\nUNSIGNED-PAYLOAD"
+        );
+        let to_sign = format!(
+            "AWS4-HMAC-SHA256\n{}\n{}\n{}",
+            self.stamp(),
+            self.scope(),
+            hex(&Sha256::digest(canonical.as_bytes()))
+        );
+        let date = self.now.format("%Y%m%d").to_string();
+        let key = [self.region.as_bytes(), b"s3", b"aws4_request"]
+            .iter()
+            .fold(
+                hmac(
+                    format!("AWS4{}", self.secret_key).as_bytes(),
+                    date.as_bytes(),
+                ),
+                |key, part| hmac(&key, part),
+            );
+        let signature = hex(&hmac(&key, to_sign.as_bytes()));
+        (path, encoded, signed_names, signature)
+    }
+
+    /// Query presigning: a URL anyone can use until it expires. `headers` are
+    /// signed in addition to `host`, so the client must send them
+    /// byte-for-byte; R2 rejects any other Content-Type or Content-Length.
+    fn presign(
+        &self,
+        method: &str,
+        path: &str,
+        expires: u64,
+        query: &[(&str, &str)],
+        headers: &[(&str, &str)],
+    ) -> String {
+        let headers: Vec<(String, String)> = headers
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        let names = {
+            let mut names: Vec<String> = headers
+                .iter()
+                .map(|(name, _)| name.to_ascii_lowercase())
+                .chain(["host".to_owned()])
+                .collect();
+            names.sort();
+            names.join(";")
+        };
+        let query: Vec<(String, String)> = query
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .chain([
+                ("X-Amz-Algorithm".to_owned(), "AWS4-HMAC-SHA256".to_owned()),
+                (
+                    "X-Amz-Credential".to_owned(),
+                    format!("{}/{}", self.access_key, self.scope()),
+                ),
+                ("X-Amz-Date".to_owned(), self.stamp()),
+                ("X-Amz-Expires".to_owned(), expires.to_string()),
+                ("X-Amz-SignedHeaders".to_owned(), names),
+            ])
+            .collect();
+        let (path, query, _, signature) = self.sign(method, path, &query, &headers);
+        format!(
+            "{}{path}?{query}&X-Amz-Signature={signature}",
+            self.scheme_host
+        )
+    }
+
+    /// Header signing, for operations R2 does not accept as presigned URLs
+    /// (such as the POSTs that start and finish multipart uploads). Returns
+    /// the URL and every header to send, including `headers`.
+    fn authorize(
+        &self,
+        method: &str,
+        path: &str,
+        query: &[(&str, &str)],
+        headers: &[(&str, &str)],
+    ) -> (String, Vec<(String, String)>) {
+        let mut headers: Vec<(String, String)> = headers
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .chain([
+                (
+                    "x-amz-content-sha256".to_owned(),
+                    "UNSIGNED-PAYLOAD".to_owned(),
+                ),
+                ("x-amz-date".to_owned(), self.stamp()),
+            ])
+            .collect();
+        let query: Vec<(String, String)> = query
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        let (path, encoded, names, signature) = self.sign(method, path, &query, &headers);
+        headers.push((
+            "authorization".to_owned(),
+            format!(
+                "AWS4-HMAC-SHA256 Credential={}/{},SignedHeaders={names},Signature={signature}",
+                self.access_key,
+                self.scope()
+            ),
+        ));
+        let url = if encoded.is_empty() {
+            format!("{}{path}", self.scheme_host)
+        } else {
+            format!("{}{path}?{encoded}", self.scheme_host)
+        };
+        (url, headers)
+    }
+}
+
 /// AWS Signature Version 4 query presigning (S3 dialect, unsigned payload).
-/// `headers` are signed in addition to `host`, so the client must send them
-/// byte-for-byte; R2 rejects any other Content-Type or Content-Length.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn presign_v4(
     method: &str,
@@ -161,52 +334,14 @@ fn presign_v4(
     expires: u64,
     headers: &[(&str, &str)],
 ) -> String {
-    let host = scheme_host
-        .split_once("://")
-        .map_or(scheme_host, |(_, host)| host);
-    let date = now.format("%Y%m%d").to_string();
-    let stamp = now.format("%Y%m%dT%H%M%SZ").to_string();
-    let scope = format!("{date}/{region}/s3/aws4_request");
-    let mut signed: Vec<(String, String)> = headers
-        .iter()
-        .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_owned()))
-        .chain([("host".to_owned(), host.to_owned())])
-        .collect();
-    signed.sort();
-    let signed_names = signed
-        .iter()
-        .map(|(name, _)| name.as_str())
-        .collect::<Vec<_>>()
-        .join(";");
-    let mut query = [
-        ("X-Amz-Algorithm", "AWS4-HMAC-SHA256".to_owned()),
-        ("X-Amz-Credential", format!("{access_key}/{scope}")),
-        ("X-Amz-Date", stamp.clone()),
-        ("X-Amz-Expires", expires.to_string()),
-        ("X-Amz-SignedHeaders", signed_names.clone()),
-    ]
-    .into_iter()
-    .map(|(name, value)| format!("{}={}", uri_encode(name, true), uri_encode(&value, true)))
-    .collect::<Vec<_>>();
-    query.sort();
-    let query = query.join("&");
-    let canonical_headers: String = signed
-        .iter()
-        .map(|(name, value)| format!("{name}:{value}\n"))
-        .collect();
-    let path = uri_encode(path, false);
-    let canonical =
-        format!("{method}\n{path}\n{query}\n{canonical_headers}\n{signed_names}\nUNSIGNED-PAYLOAD");
-    let to_sign = format!(
-        "AWS4-HMAC-SHA256\n{stamp}\n{scope}\n{}",
-        hex(&Sha256::digest(canonical.as_bytes()))
-    );
-    let key = [region.as_bytes(), b"s3", b"aws4_request"].iter().fold(
-        hmac(format!("AWS4{secret_key}").as_bytes(), date.as_bytes()),
-        |key, part| hmac(&key, part),
-    );
-    let signature = hex(&hmac(&key, to_sign.as_bytes()));
-    format!("{scheme_host}{path}?{query}&X-Amz-Signature={signature}")
+    Signer {
+        scheme_host,
+        access_key,
+        secret_key,
+        region,
+        now,
+    }
+    .presign(method, path, expires, &[], headers)
 }
 
 fn loopback_http(value: &str) -> bool {
@@ -277,16 +412,22 @@ impl R2 {
         }
     }
 
+    fn signer(&self) -> Signer<'_> {
+        Signer {
+            scheme_host: &self.endpoint,
+            access_key: &self.access_key,
+            secret_key: &self.secret_key,
+            region: "auto",
+            now: Utc::now(),
+        }
+    }
+
     fn presign(&self, method: &str, key: &str, expires: u64, headers: &[(&str, &str)]) -> String {
-        presign_v4(
+        self.signer().presign(
             method,
-            &self.endpoint,
             &format!("/{}/{key}", self.bucket),
-            &self.access_key,
-            &self.secret_key,
-            "auto",
-            Utc::now(),
             expires,
+            &[],
             headers,
         )
     }
@@ -650,6 +791,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/assets", post(create))
         .route("/api/assets/usage", get(usage))
         .route("/api/assets/urls", post(urls))
+        .route("/api/assets/{asset}/parts", post(parts))
         .route("/api/assets/{asset}/complete", post(complete))
         .route("/api/assets/{asset}/cancel", post(cancel))
 }
@@ -680,6 +822,15 @@ struct CreateInput {
     height: Option<i32>,
     duration_ms: Option<i32>,
     preview: Option<PreviewInput>,
+    /// The client can upload in parts (`POST /api/assets/{id}/parts`).
+    #[serde(default)]
+    multipart: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartsInput {
+    parts: Vec<i64>,
 }
 
 fn filename(value: &str) -> Result<String, ApiError> {
@@ -766,8 +917,10 @@ struct Row {
     preview_content_type: Option<String>,
     preview_byte_size: Option<i64>,
     uploaded_at: Option<DateTime<Utc>>,
+    multipart_upload_id: Option<String>,
+    part_bytes: Option<i64>,
 }
-const COLUMNS: &str = "external_id,purpose,space_id,kind,content_type,filename,byte_size,width,height,duration_ms,preview_content_type,preview_byte_size,uploaded_at";
+const COLUMNS: &str = "external_id,purpose,space_id,kind,content_type,filename,byte_size,width,height,duration_ms,preview_content_type,preview_byte_size,uploaded_at,multipart_upload_id,part_bytes";
 
 /// The attachment shape embedded in message content (without URLs).
 fn describe(row: &Row) -> Value {
@@ -823,11 +976,25 @@ async fn create(
     if input.byte_size < 1 || input.source_byte_size.is_some_and(|v| v < 1) {
         return Err(invalid("invalid file size"));
     }
-    if input.byte_size > MAX_FILE_BYTES {
+    // Anything larger than one part goes up in parts when the client can.
+    let multipart =
+        input.multipart && !purpose.is_picture() && input.byte_size > multipart::PART_BYTES;
+    if !multipart && input.byte_size > multipart::MAX_SINGLE_BYTES {
         return Err(
             ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "files can be up to 5 GiB")
                 .with_code("file_too_large"),
         );
+    }
+    if ["image/", "video/", "audio/"]
+        .iter()
+        .any(|prefix| content_type.starts_with(prefix))
+        && input.byte_size > MAX_CLEANED_BYTES
+    {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "photos, videos and audio can be up to 5 GiB",
+        )
+        .with_code("media_too_large"));
     }
     let width = optional_range(input.width, MAX_DIMENSION, 1)?;
     let height = optional_range(input.height, MAX_DIMENSION, 1)?;
@@ -957,16 +1124,62 @@ async fn create(
         ("content-length", length.as_str()),
         ("content-disposition", disposition.as_str()),
     ];
-    let mut body = json!({
-        "id": id,
-        "kind": kind,
-        "upload": upload(assets.r2.presign("PUT", &privacy::staged(&original_key(&id)), UPLOAD_URL_SECONDS, &headers), &headers[..1]),
-    });
+    let mut body = json!({"id": id, "kind": kind});
+    if multipart {
+        // The staged object only ever exists as the assembly of these parts:
+        // no single PUT URL is issued for it, so it can't change afterwards.
+        let started = assets
+            .r2
+            .start_multipart(&privacy::staged(&original_key(&id)), &[])
+            .await;
+        let part_bytes = multipart::part_bytes(input.byte_size);
+        let stored = match &started {
+            Ok(upload_id) => sqlx::query(
+                "UPDATE public.assets SET multipart_upload_id=$2, part_bytes=$3, upload_active_at=now() WHERE external_id=$1",
+            )
+            .bind(&id)
+            .bind(upload_id)
+            .bind(part_bytes)
+            .execute(&assets.pool)
+            .await
+            .map_err(database_error)
+            .map(drop),
+            Err(_) => Err(unavailable()),
+        };
+        if let Err(error) = stored {
+            // Release the reservation; the purge loop aborts any started upload.
+            let _ = sqlx::query("UPDATE public.assets SET deleted_at=now() WHERE external_id=$1")
+                .bind(&id)
+                .execute(&assets.pool)
+                .await;
+            if let Ok(upload_id) = &started {
+                let _ = assets
+                    .r2
+                    .abort_multipart(&privacy::staged(&original_key(&id)), upload_id)
+                    .await;
+            }
+            return Err(error);
+        }
+        body["multipart"] = json!({
+            "partBytes": part_bytes,
+            "partCount": multipart::part_count(input.byte_size, part_bytes),
+        });
+    } else {
+        body["upload"] = upload(
+            assets.r2.presign(
+                "PUT",
+                &privacy::staged(&original_key(&id)),
+                UPLOAD_URL_SECONDS,
+                &headers,
+            ),
+            &headers[..1],
+        );
+        // Browsers set Content-Length themselves; clients send only the listed headers.
+        body["upload"]["headers"]["content-disposition"] = json!(disposition);
+    }
     if !purpose.is_picture() {
         body["storage"] = json!({"used": used + total, "limit": assets.quota_bytes});
     }
-    // Browsers set Content-Length themselves; clients send only the listed headers.
-    body["upload"]["headers"]["content-disposition"] = json!(disposition);
     if let Some((preview_type, preview_size)) = &preview {
         let length = preview_size.to_string();
         let headers = [
@@ -993,6 +1206,53 @@ fn content_type_for_preview(value: &str) -> Result<String, ApiError> {
     } else {
         Err(invalid("invalid preview"))
     }
+}
+
+/// Presigned `PUT`s for some of a multipart upload's parts, valid for
+/// `UPLOAD_URL_SECONDS`. Clients ask as they go, so a slow upload never holds
+/// an expired URL and each request shows the upload is still alive.
+async fn parts(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(asset): Path<String>,
+    Json(input): Json<PartsInput>,
+) -> Result<Json<Value>, ApiError> {
+    let assets = enabled(&state)?;
+    let (upload_id, byte_size, part_bytes): (String, i64, i64) = sqlx::query_as(
+        "UPDATE public.assets SET upload_active_at=now()
+         WHERE external_id=$1 AND owner_id=$2 AND deleted_at IS NULL AND uploaded_at IS NULL
+           AND multipart_upload_id IS NOT NULL
+         RETURNING multipart_upload_id, byte_size, part_bytes",
+    )
+    .bind(&asset)
+    .bind(principal.user.id)
+    .fetch_optional(&assets.pool)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(not_found)?;
+    let count = multipart::part_count(byte_size, part_bytes);
+    let mut numbers = input.parts;
+    numbers.sort_unstable();
+    numbers.dedup();
+    if numbers.is_empty()
+        || numbers.len() > MAX_PART_URLS
+        || numbers.iter().any(|n| !(1..=count).contains(n))
+    {
+        return Err(invalid("invalid part numbers"));
+    }
+    let key = privacy::staged(&original_key(&asset));
+    let urls: Vec<Value> = numbers
+        .into_iter()
+        .map(|number| {
+            json!({
+                "number": number,
+                "method": "PUT",
+                "url": assets.r2.part_url(&key, &upload_id, number, UPLOAD_URL_SECONDS),
+                "headers": {},
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "parts": urls })))
 }
 
 async fn complete(
@@ -1044,6 +1304,29 @@ async fn complete_inner(
         tx.commit().await.map_err(database_error)?;
         return completed(&state, assets, &row, principal.user.id).await;
     }
+    if let (Some(upload_id), Some(part_bytes)) = (&row.multipart_upload_id, row.part_bytes) {
+        let staged = privacy::staged(&original_key(&asset));
+        // A retry after assembly finds the object already there.
+        if assets.r2.size(&staged).await?.is_none() {
+            let listed = assets.r2.list_parts(&staged, upload_id).await?;
+            match multipart::assemble(listed, row.byte_size, part_bytes) {
+                Ok(parts) => {
+                    assets
+                        .r2
+                        .complete_multipart(&staged, upload_id, &parts)
+                        .await?;
+                }
+                Err(multipart::Incomplete::Missing) => {
+                    return Err(ApiError::new(StatusCode::CONFLICT, "upload not finished")
+                        .with_code("upload_incomplete"));
+                }
+                Err(multipart::Incomplete::Mismatched) => {
+                    tx.rollback().await.map_err(database_error)?;
+                    return reject(assets, &asset, purpose).await;
+                }
+            }
+        }
+    }
     let mut checks = vec![(
         original_key(&asset),
         row.byte_size,
@@ -1086,6 +1369,8 @@ async fn complete_inner(
             *expected,
             content_type,
             (index == 0).then_some(row.filename.as_str()),
+            // Only the assembled original is beyond the client's reach.
+            index == 0 && row.multipart_upload_id.is_some(),
         )
         .await
         {
@@ -1235,8 +1520,8 @@ async fn cancel(
 ) -> Result<StatusCode, ApiError> {
     let assets = enabled(&state)?;
     let mut tx = assets.pool.begin().await.map_err(database_error)?;
-    let (message, purpose, uploaded): (Option<i64>, String, bool) = sqlx::query_as(
-        "SELECT message_id, purpose, uploaded_at IS NOT NULL FROM public.assets WHERE external_id=$1 AND owner_id=$2 FOR UPDATE",
+    let (message, purpose, uploaded, upload_id): (Option<i64>, String, bool, Option<String>) = sqlx::query_as(
+        "SELECT message_id, purpose, uploaded_at IS NOT NULL, multipart_upload_id FROM public.assets WHERE external_id=$1 AND owner_id=$2 FOR UPDATE",
     )
     .bind(&asset)
     .bind(principal.user.id)
@@ -1261,6 +1546,13 @@ async fn cancel(
     .await
     .map_err(database_error)?;
     tx.commit().await.map_err(database_error)?;
+    // Stop the part URLs now; the purge loop retries if this fails.
+    if let (Some(upload_id), false) = (upload_id, uploaded) {
+        let _ = assets
+            .r2
+            .abort_multipart(&privacy::staged(&original_key(&asset)), &upload_id)
+            .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1881,9 +2173,11 @@ impl PurgeSweep {
                 ceiling
             }
         };
-        let rows: Vec<(i64, String, bool, bool)> = sqlx::query_as(
+        let rows: Vec<(i64, String, bool, bool, Option<String>)> = sqlx::query_as(
             "SELECT id, external_id, preview_content_type IS NOT NULL,
-                    deleted_at IS NOT NULL AND message_id IS NULL FROM public.assets
+                    deleted_at IS NOT NULL AND message_id IS NULL,
+                    CASE WHEN uploaded_at IS NULL THEN multipart_upload_id END
+             FROM public.assets
              WHERE ((deleted_at IS NOT NULL AND message_id IS NULL)
                     OR (uploaded_at IS NOT NULL AND created_at < now() - interval '15 minutes'))
                AND id > $1 AND id <= $2
@@ -1894,7 +2188,7 @@ impl PurgeSweep {
         .fetch_all(&assets.pool)
         .await
         .map_err(|_| ())?;
-        if let Some((last, _, _, _)) = rows.last() {
+        if let Some((last, _, _, _, _)) = rows.last() {
             self.cursor = *last;
         }
         if rows.len() < 25 || self.cursor >= ceiling {
@@ -1905,9 +2199,9 @@ impl PurgeSweep {
         // letting a few failing keys starve all the later records.
         let mut deleted = Vec::new();
         let mut failed = false;
-        for (id, external, preview, remove_all) in rows {
+        for (id, external, preview, remove_all, upload_id) in rows {
             if remove_all {
-                deleted.push((id, external, preview));
+                deleted.push((id, external, preview, upload_id));
             } else {
                 failed |= assets
                     .r2
@@ -1934,7 +2228,7 @@ pub(crate) async fn purge(assets: &Assets) -> Result<usize, ()> {
         // when they completed and are kept.
         "UPDATE public.assets SET deleted_at=now()
          WHERE deleted_at IS NULL AND message_id IS NULL
-           AND ((uploaded_at IS NULL AND created_at < now() - interval '1 hour')
+           AND ((uploaded_at IS NULL AND COALESCE(upload_active_at, created_at) < now() - interval '1 hour')
              OR (purpose='attachment' AND uploaded_at < now() - interval '24 hours'))",
     )
     .execute(&assets.pool)
@@ -1944,8 +2238,10 @@ pub(crate) async fn purge(assets: &Assets) -> Result<usize, ()> {
     // are idempotent, so a replica repeating one only repeats its deletes.
     // Unsent files wait for their upload URLs to expire: deleting earlier would
     // release quota while a reused URL could still store the bytes again.
-    let rows: Vec<(i64, String, bool)> = sqlx::query_as(
-        "SELECT id, external_id, preview_content_type IS NOT NULL FROM public.assets
+    let rows: Vec<(i64, String, bool, Option<String>)> = sqlx::query_as(
+        "SELECT id, external_id, preview_content_type IS NOT NULL,
+                CASE WHEN uploaded_at IS NULL THEN multipart_upload_id END
+         FROM public.assets
          WHERE deleted_at IS NOT NULL AND purged_at IS NULL
            AND (CASE WHEN message_id IS NULL THEN created_at < now() - make_interval(secs => $2)
                      ELSE deleted_at < now() - make_interval(hours => $1) END)
@@ -1959,11 +2255,24 @@ pub(crate) async fn purge(assets: &Assets) -> Result<usize, ()> {
     delete_objects(assets, rows).await
 }
 
-async fn delete_objects(assets: &Assets, rows: Vec<(i64, String, bool)>) -> Result<usize, ()> {
+/// Rows to purge: id, external id, whether it has a preview, and the
+/// multipart upload to abort first when it never finished.
+type PurgeRow = (i64, String, bool, Option<String>);
+
+async fn delete_objects(assets: &Assets, rows: Vec<PurgeRow>) -> Result<usize, ()> {
     let attempted = rows.len();
     let done: Vec<i64> = futures_util::stream::iter(rows)
-        .map(|(id, external, preview)| async move {
-            let mut ok = assets.r2.delete(&original_key(&external)).await.is_ok();
+        .map(|(id, external, preview, upload_id)| async move {
+            // Abort first, so no part URL can recreate what is deleted next.
+            let mut ok = match &upload_id {
+                Some(upload_id) => assets
+                    .r2
+                    .abort_multipart(&privacy::staged(&original_key(&external)), upload_id)
+                    .await
+                    .is_ok(),
+                None => true,
+            };
+            ok &= assets.r2.delete(&original_key(&external)).await.is_ok();
             ok &= assets
                 .r2
                 .delete(&privacy::staged(&original_key(&external)))

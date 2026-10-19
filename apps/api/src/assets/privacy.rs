@@ -1,7 +1,7 @@
 //! Publish only cleaned media, never a client-writable upload object. This is
 //! container metadata removal, not anonymisation of visible/audible content or
 //! arbitrary documents/archives. Keep colour, orientation and playback timing.
-use super::{R2, disposition, sniff, unavailable};
+use super::{MAX_CLEANED_BYTES, R2, disposition, sniff, unavailable};
 use crate::ApiError;
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::{
@@ -285,19 +285,68 @@ async fn identifying_tags_gone(path: &Path) -> Result<(), ApiError> {
 /// Reads the exact reserved bytes into a private, automatically removed temp
 /// directory. Only the result is PUT to the CDN key; retries cannot publish a
 /// staged source and later client PUTs can never overwrite the result.
+/// `assembled` marks a staged object built from multipart parts: no client URL
+/// can write it any more, so what is checked now is what gets published.
 pub(super) async fn publish(
     r2: &R2,
     key: &str,
     expected: i64,
     content_type: &str,
     name: Option<&str>,
+    assembled: bool,
 ) -> Result<i64, ApiError> {
-    tokio::time::timeout(
-        deadline(expected),
-        publish_inner(r2, key, expected, content_type, name),
-    )
+    tokio::time::timeout(deadline(expected), async {
+        if assembled
+            && let Some(size) = copy_unless_media(r2, key, expected, content_type, name).await?
+        {
+            return Ok(size);
+        }
+        publish_inner(r2, key, expected, content_type, name).await
+    })
     .await
     .map_err(|_| unavailable())?
+}
+
+/// Documents and archives need no cleaning, so an assembled one is copied
+/// inside the bucket rather than through the pod's scratch disk. Media still
+/// goes through `publish_inner`, within the size the disk can clean.
+async fn copy_unless_media(
+    r2: &R2,
+    key: &str,
+    expected: i64,
+    content_type: &str,
+    name: Option<&str>,
+) -> Result<Option<i64>, ApiError> {
+    let staged = staged(key);
+    let head = r2.head_bytes(&staged, 64).await?;
+    if !sniff(content_type, &head) {
+        return Err(rejected());
+    }
+    if format(&head, content_type)?.is_some() {
+        return if expected > MAX_CLEANED_BYTES {
+            Err(media_too_large())
+        } else {
+            Ok(None)
+        };
+    }
+    let disposition = name.map(disposition);
+    let mut headers = vec![("content-type", content_type)];
+    if let Some(value) = &disposition {
+        headers.push(("content-disposition", value));
+    }
+    r2.copy(&staged, key, expected, &headers).await?;
+    if r2.size(key).await? != Some(expected) {
+        return Err(unavailable());
+    }
+    Ok(Some(expected))
+}
+
+fn media_too_large() -> ApiError {
+    ApiError::new(
+        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        "photos, videos and audio can be up to 5 GiB",
+    )
+    .with_code("media_too_large")
 }
 
 async fn publish_inner(
