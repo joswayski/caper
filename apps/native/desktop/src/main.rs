@@ -1177,6 +1177,8 @@ struct CaperApp {
     composer_emoji: Option<(EmojiTarget, emoji::Token)>,
     /// Where the composer's Emoji button was clicked; the picker opens above it.
     composer_emoji_anchor: Option<egui::Pos2>,
+    /// The message control that opened the reaction picker.
+    reaction_picker_anchor: Option<egui::Pos2>,
     /// What the emoji picker shows (composer target, reaction message) and the
     /// frame it first showed that, so the opening click is not an outside click.
     emoji_picker_shown: Option<((Option<EmojiTarget>, String), u64)>,
@@ -1519,6 +1521,7 @@ impl CaperApp {
             composer_emoji: None,
             profile_attach_menu: false,
             composer_emoji_anchor: None,
+            reaction_picker_anchor: None,
             emoji_picker_shown: None,
             emoji_picker_rect: None,
             profile_send_cancel: None,
@@ -17226,7 +17229,9 @@ impl CaperApp {
                         self.reaction_textures
                             .preload(ui.ctx(), emoji::CATEGORIES[0].0);
                     }
-                    if emoji.on_hover_text("Add reaction").clicked() && can_react {
+                    let emoji = emoji.on_hover_text("Add reaction");
+                    if emoji.clicked() && can_react {
+                        self.reaction_picker_anchor = Some(emoji.rect.left_bottom());
                         self.reaction_picker = Some(message.id.clone());
                         self.composer_emoji = None;
                         self.reaction_search.clear();
@@ -17289,14 +17294,14 @@ impl CaperApp {
                                         ui.close();
                                     }
                                 }
-                                if drawn_icon_button_sized(
+                                let add = drawn_icon_button_sized(
                                     ui,
                                     NavIcon::SmilePlus,
                                     "Add reaction",
                                     32.0,
-                                )
-                                .clicked()
-                                {
+                                );
+                                if add.clicked() {
+                                    self.reaction_picker_anchor = Some(add.rect.left_bottom());
                                     self.reaction_picker = Some(message.id.clone());
                                     self.composer_emoji = None;
                                     self.reaction_search.clear();
@@ -17558,6 +17563,7 @@ impl CaperApp {
                                     .preload(ui.ctx(), emoji::CATEGORIES[0].0);
                             }
                             if add.clicked() {
+                                self.reaction_picker_anchor = Some(add.rect.left_bottom());
                                 self.reaction_picker = Some(message.id.clone());
                                 self.composer_emoji = None;
                                 self.reaction_search.clear();
@@ -19404,6 +19410,12 @@ impl CaperApp {
             window = window
                 .pivot(egui::Align2::RIGHT_BOTTOM)
                 .fixed_pos(anchor + egui::vec2(14.0, -18.0));
+        } else if !profile && let Some(anchor) = self.reaction_picker_anchor {
+            // Override the composer's saved position and pivot. egui constrains
+            // the window to the viewport when the control is near an edge.
+            window = window
+                .pivot(egui::Align2::LEFT_TOP)
+                .fixed_pos(anchor + egui::vec2(0.0, 4.0));
         }
         let shown = window
             // Above the Pins overlay, as its sublayer, when opened from a pin.
@@ -34115,6 +34127,12 @@ mod tests {
                 })
         };
         let add = row_shortcut(&output).expect("inline shortcut without hovering");
+        // First open the composer picker at the opposite side of the window:
+        // reactions must not reuse that window's persisted position or pivot.
+        let composer = labelled_center(&output, "Insert emoji").expect("composer emoji button");
+        click(&mut app, &context, composer);
+        render(&mut app, &context, vec![]);
+        app.close_emoji_picker(&context, false);
         app.reaction_search = "stale search".into();
         app.reaction_category = 2;
         click(&mut app, &context, add);
@@ -34122,6 +34140,13 @@ mod tests {
         assert!(app.reaction_search.is_empty());
         assert_eq!(app.reaction_category, 0);
         assert!(app.pending_reactions.is_empty(), "opening does not react");
+        render(&mut app, &context, vec![]);
+        let picker = app.emoji_picker_rect.expect("reaction picker drawn");
+        assert!(
+            picker.distance_to_pos(add) < 40.0,
+            "picker should open beside the reaction button: {picker:?}, {add:?}"
+        );
+        assert!(context.content_rect().contains_rect(picker));
 
         app.reaction_picker = None;
         message.reactions.clear();
