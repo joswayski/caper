@@ -328,7 +328,11 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         peopleRefresh?.cancel(); peopleRefresh = null
         tokens.clear()
         drafts.clear()
-        profileDrafts.clear().forEach { discardDraftFiles(it.key) }
+        profileDrafts.clear().forEach { draft ->
+            draft.attachment?.id?.let { id -> if (token != null) viewModelScope.launch(NonCancellable) { api.cancelAsset(token, id) } }
+            discardDraftFiles(draft.key)
+        }
+        profileRecipients.clear()
         notificationEdits = null
         pendingInvitationIntent = null
         pendingChannelIntent = null
@@ -728,7 +732,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Only Send resolves/uploads a profile draft; opening happens after a confirmed message. */
+    /** Only Send posts a profile message; opening happens after a confirmed message. */
     internal fun sendProfileMessage(person: String, id: String?, username: String, done: () -> Unit) {
         val token = accountToken ?: return
         val request = accountGeneration
@@ -2139,16 +2143,21 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         addAttachments(uris, null, target)
     }
 
-    internal fun addProfileAttachments(person: String, uris: List<Uri>) = addAttachments(uris, person)
+    private val profileRecipients = mutableMapOf<String, Pair<String?, String>>()
+
+    internal fun addProfileAttachments(person: String, id: String?, username: String, uris: List<Uri>) {
+        profileRecipients[person] = id to username
+        addAttachments(uris, person)
+    }
 
     /** Clipboard providers grant URI access; copy the bytes locally just like picked files. */
-    internal fun pasteProfileAttachments(person: String) {
+    internal fun pasteProfileAttachments(person: String, id: String?, username: String) {
         val clipboard = getApplication<Application>().getSystemService(ClipboardManager::class.java)
         val clip = clipboard.primaryClip
         val uris = (0 until (clip?.itemCount ?: 0)).mapNotNull { clip?.getItemAt(it)?.uri }
             .filter { it.scheme == "content" }.distinct()
         if (uris.isEmpty()) profileDrafts.error(person, "No files on the clipboard. Copy a file or use Attach files.")
-        else addProfileAttachments(person, uris)
+        else addProfileAttachments(person, id, username, uris)
     }
 
     private fun addAttachments(uris: List<Uri>, person: String?, target: AttachmentDraftTarget? = null) {
@@ -2177,35 +2186,43 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 retryDraft(key)
                 return@forEach
             }
-            // Profile files stay local until Send supplies a real DM destination.
+            // Resolve a destination and upload without touching navigation or the chat composer.
             profileDrafts.add(person, listOf(draft))
             prepareProfileDraft(person, key, settings, request)
         }
         if (person != null && uris.size > room) profileDrafts.error(person, "Only $room more file${if (room == 1) "" else "s"} can be attached.")
     }
 
-    /** Copies a profile file (once) and prepares it, with its edit, for Send to upload. */
+    /** Copies a profile file (once), prepares its edit, and eagerly uploads it. */
     private fun prepareProfileDraft(person: String, key: String, settings: CompressionSettings = compression, request: Long = accountGeneration) {
         val directory = draftDirectories[key] ?: return
         val uri = profileDrafts[person].files.find { it.key == key }?.pickedUri?.let(Uri::parse) ?: return
         uploadJobs[key] = viewModelScope.launch {
             try {
-                val picked = pickedDrafts[key] ?: preparer.copy(uri, directory).also { copy -> recordPicked(key, person, uri, copy) }
-                val edit = profileDrafts[person].files.find { it.key == key }?.edit
-                val prepared = preparer.prepare(picked, settings, draftOutput(key, directory), progressReporter(key, person), edit)
-                if (request != accountGeneration) return@launch
-                profileDrafts.ready(person, key, prepared)
-                updateDraft(key, person) {
-                    it.copy(
-                        name = prepared.name, kind = prepared.kind, storedSize = prepared.file.length(), compressing = false, progress = 0f,
-                        thumbnail = (prepared.preview ?: prepared.file.takeIf { prepared.kind == "image" })?.let { file -> Uri.fromFile(file).toString() } ?: it.thumbnail,
-                        localUrl = Uri.fromFile(prepared.file).toString(),
-                    )
+                if (profileDrafts[person].files.find { it.key == key }?.localUrl == null) {
+                    val picked = pickedDrafts[key] ?: preparer.copy(uri, directory).also { copy -> recordPicked(key, person, uri, copy) }
+                    val edit = profileDrafts[person].files.find { it.key == key }?.edit
+                    val prepared = preparer.prepare(picked, settings, draftOutput(key, directory), progressReporter(key, person), edit)
+                    if (request != accountGeneration) return@launch
+                    profileDrafts.ready(person, key, prepared)
+                    updateDraft(key, person) {
+                        it.copy(
+                            name = prepared.name, kind = prepared.kind, storedSize = prepared.file.length(), compressing = false, progress = 0f,
+                            thumbnail = (prepared.preview ?: prepared.file.takeIf { prepared.kind == "image" })?.let { file -> Uri.fromFile(file).toString() } ?: it.thumbnail,
+                            localUrl = Uri.fromFile(prepared.file).toString(),
+                        )
+                    }
                 }
+                val (id, username) = profileRecipients[person] ?: return@launch
+                val token = accountToken ?: return@launch
+                profileDrafts.upload(person, id, username, token,
+                    directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds }, keys = setOf(key))
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
-                updateDraft(key, person) { it.copy(error = AttachmentPolicy.uploadErrorMessage(error), compressing = false) }
+                val message = (error as? ApiException)?.code?.let(::directMessageError)
+                    ?: if (error is IllegalStateException) friendlyError(error) else AttachmentPolicy.uploadErrorMessage(error)
+                updateDraft(key, person) { it.copy(error = message, compressing = false) }
             } finally {
                 // An edit may already have replaced this job with the next one.
                 if (uploadJobs[key] === coroutineContext[Job]) uploadJobs.remove(key)
@@ -2329,7 +2346,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         retryDraft(key)
     }
 
-    /** [editDraft] for a profile card's file, which is prepared again now and uploaded at Send. */
+    /** [editDraft] for a profile card's file, prepared and uploaded again immediately. */
     internal fun editProfileAttachment(person: String, key: String, edit: AttachmentEdit?, preview: Bitmap? = null) {
         val draft = profileDrafts[person].files.find { it.key == key }
         if (!profileDrafts[person].editable || draft == null || draft.editKind == null || AttachmentEdits.same(draft.edit, edit)) { preview?.recycle(); return }
@@ -2350,9 +2367,9 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
 
     /** A profile file that could not be prepared (for instance its edit) tries again. */
     internal fun retryProfileAttachment(person: String, key: String) {
-        val draft = profileDrafts[person].files.find { it.key == key } ?: return
-        if (!profileDrafts[person].editable || draft.localUrl != null || uploadJobs[key]?.isActive == true) return
-        updateDraft(key, person) { it.copy(error = null, compressing = true, progress = 0f) }
+        if (profileDrafts[person].files.none { it.key == key }) return
+        if (!profileDrafts[person].editable || uploadJobs[key]?.isActive == true) return
+        updateDraft(key, person) { it.copy(error = null, compressing = it.localUrl == null, progress = 0f) }
         prepareProfileDraft(person, key)
     }
 
@@ -2408,7 +2425,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     internal fun removeProfileAttachment(person: String, key: String) {
-        if (profileDrafts.remove(person, key)) discardDraftFiles(key)
+        val draft = profileDrafts[person].files.find { it.key == key } ?: return
+        if (profileDrafts.remove(person, key)) abandonDraft(draft)
     }
 
     /** Stops an unfinished upload and deletes its working copies; the API expires reservations never sent. */

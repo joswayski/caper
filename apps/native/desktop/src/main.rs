@@ -4630,6 +4630,9 @@ impl CaperApp {
         if let Some(cancel) = self.profile_send_cancel.take() {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
+        for draft in self.profile_drafts.values() {
+            draft.cancel_uploads();
+        }
         self.profile_drafts.clear();
         self.profile_picker = None;
         self.picture_edit = PictureEdit::default();
@@ -20483,11 +20486,8 @@ impl CaperApp {
                 for (index, file) in draft.files.iter_mut().enumerate() {
                     let name = file.name();
                     let url = url::Url::from_file_path(&file.path).ok().map(String::from);
-                    let status = if file.attachment.is_some() || !draft.sending {
-                        String::new()
-                    } else {
-                        "Sending…".into()
-                    };
+                    let (status, failed) = file.upload_status();
+                    let status = status.to_owned();
                     let (can_edit, spoiler) = (file.editable.is_some(), file.spoiler);
                     let clicks = file_chip(
                         ui,
@@ -20497,7 +20497,7 @@ impl CaperApp {
                             name: &name,
                             status,
                             detail: uploads::size_label(file.size, None),
-                            error: false,
+                            error: failed,
                             thumbnail: file.thumbnail(&context),
                             progress: None,
                             url,
@@ -20798,11 +20798,21 @@ impl CaperApp {
         if let Some(error) = &draft.error {
             ui.label(RichText::new(error).size(12.0).color(ERROR));
         }
+        if draft.needs_upload()
+            && !busy
+            && !self.is_blocked(person)
+            && let (Some(token), Some(settings), Ok(api)) = (
+                self.token.as_deref(),
+                self.uploads.as_ref(),
+                api::Api::new(self.api_base.as_str()),
+            )
+        {
+            draft.upload_files(&api, token, (person, username), settings, ui.ctx());
+        }
         self.profile_drafts.insert(person.to_owned(), draft);
         send || (enter && can_send)
     }
 
-    /// Only explicit Send/Open resolves the canonical DM; Open never writes a message.
     /// Posts a failed update's error as `@feedback` in your personal notes,
     /// where the Caper team can read it and reply.
     fn send_update_report(&mut self, error: String, target_version: &str) {
@@ -40778,9 +40788,13 @@ mod tests {
         assert_eq!(app.profile_drafts["fixture-alex"].text, retained);
         assert_eq!(app.profile_drafts["fixture-alex"].files.len(), 1);
         assert!(
-            seen.lock().unwrap().is_empty(),
-            "picking files does not create a DM or upload"
+            seen.lock()
+                .unwrap()
+                .iter()
+                .all(|line| line == "GET /api/dms"),
+            "this fixture refuses destination lookup; picking never sends a message"
         );
+        assert!(!app.profile_drafts["fixture-alex"].needs_upload());
         app.logout();
         assert!(app.profile_drafts.is_empty());
         assert!(app.profile_picker.is_none());
@@ -46539,7 +46553,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_card_files_keep_their_edit_until_send() {
+    fn profile_card_files_restart_uploads_after_edits_without_sending() {
         let context = egui::Context::default();
         let (base, _) = account_server(Vec::new());
         let mut app = CaperApp::new(
@@ -46588,7 +46602,13 @@ mod tests {
             .flatten()
             .expect("an edited preview");
         assert!(preview.size[1] > preview.size[0]);
-        assert!(file.attachment.is_none(), "uploads wait for Send");
+        render(&mut app, &context, vec![]);
+        assert!(
+            !app.profile_drafts["fixture-alex"].needs_upload(),
+            "the edit starts a fresh upload"
+        );
+        assert!(!app.profile_drafts["fixture-alex"].sending);
+        assert!(app.selected_direct.is_none(), "uploading never navigates");
         // Spoiler leads the card tile's bar; marking the file keeps its edit.
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
@@ -46608,7 +46628,7 @@ mod tests {
         assert_eq!(click_opening(&mut app, &context, spot), None);
         let output = preview_ready(&mut app, &context);
         assert!(app.mention_card.is_some(), "the card stays under it");
-        // Its edit is applied only at Send, so opening it prepares it first.
+        // Opening the local original prepares the edit independently of its upload.
         let open = node_bounds(&output, "Open in default app")
             .unwrap()
             .center();

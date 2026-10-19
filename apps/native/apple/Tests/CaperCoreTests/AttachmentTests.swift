@@ -1965,12 +1965,14 @@ final class AttachmentTests: XCTestCase {
         model.chat.draft = "Active composer text"
         model.chat.addAttachments([try AttachmentStaging.stage(data: Data("hello".utf8), filename: "notes.txt")])
         await waitUntil("active upload") { model.chat.attachmentDrafts.first?.attachment != nil }
-        let draft = model.profileMessageDraft(personID: person.id)
-        let before = AttachmentURLProtocol.requests.count
+        let draft = model.profileMessageDraft(person: person)
         let file = try AttachmentStaging.stage(data: Data("file only".utf8), filename: "profile.txt")
         draft.add([file])
         XCTAssertTrue(draft.canSend, "file-only composition is supported")
-        XCTAssertEqual(AttachmentURLProtocol.requests.count, before, "picking only stages, without creating or uploading")
+        await waitUntil("profile uploaded before Send") { draft.files.first?.attachment != nil }
+        XCTAssertTrue(sends.isEmpty, "picking uploads but never posts a message")
+        XCTAssertEqual(model.selectedChannelID, channelID, "picking never navigates")
+        XCTAssertEqual(model.chat.draft, "Active composer text")
         XCTAssertTrue(draft === model.profileMessageDraft(personID: person.id))
         let first = await model.sendProfileMessage(to: person)
         XCTAssertFalse(first)
@@ -1996,6 +1998,35 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: restored.localURL), Data("hello".utf8))
         await model.logout()
         XCTAssertFalse(FileManager.default.fileExists(atPath: restored.localURL.path))
+    }
+
+    @MainActor
+    func testProfileEagerUploadsCoalesceAndRemovalDoesNotShiftResults() async throws {
+        AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
+        let api = client()
+        let draft = ProfileMessageDraft()
+        draft.prepareUploads = { [weak draft] in
+            guard let draft else { throw CancellationError() }
+            _ = try await draft.upload(channelID: channelID, api: api)
+        }
+        let first = try AttachmentStaging.stage(data: Data("first".utf8), filename: "first.txt")
+        let second = try AttachmentStaging.stage(data: Data("second".utf8), filename: "second.txt")
+        draft.add([first, second])
+        let removedID = try XCTUnwrap(draft.files.first?.id)
+        draft.remove(id: removedID)
+        draft.startUploads()
+        try await draft.awaitUploads()
+        XCTAssertEqual(draft.files.map(\.local.name), ["second.txt"])
+        XCTAssertNotNil(draft.files.first?.attachment)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.url.path))
+        XCTAssertEqual(AttachmentURLProtocol.requests.filter { $0.method == "POST" && $0.url.path == "/api/assets" }.count, 1,
+                       "the cancelled first task and repeated starts cannot reserve duplicate assets")
+        let assetID = try XCTUnwrap(draft.files.first?.attachment?.id)
+        draft.remove(id: try XCTUnwrap(draft.files.first?.id))
+        await waitUntil("profile asset cancelled") {
+            AttachmentURLProtocol.requests.contains { $0.url.path == "/api/assets/\(assetID)/cancel" }
+        }
+        XCTAssertTrue(draft.files.isEmpty)
     }
 
     @MainActor
@@ -2094,6 +2125,23 @@ final class AttachmentTests: XCTestCase {
         draft.setEdit(id: id, edit: .original, preview: nil)
         XCTAssertNil(draft.files.first?.editPreview, "back to the original shows the original")
         XCTAssertFalse(FileManager.default.fileExists(atPath: preview.path))
+        AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
+        let api = client()
+        draft.prepareUploads = { [weak draft] in
+            guard let draft else { throw CancellationError() }
+            _ = try await draft.upload(channelID: channelID, api: api)
+        }
+        draft.startUploads()
+        try await draft.awaitUploads()
+        let originalAsset = try XCTUnwrap(draft.files.first?.attachment?.id)
+        draft.setEdit(id: id, edit: AttachmentEdit(rotation: 90), preview: nil)
+        XCTAssertNil(draft.files.first?.attachment)
+        try await draft.awaitUploads()
+        XCTAssertNotEqual(draft.files.first?.attachment?.id, originalAsset)
+        XCTAssertEqual(draft.files.first?.spoiler, true)
+        await waitUntil("unedited profile asset cancelled") {
+            AttachmentURLProtocol.requests.contains { $0.url.path == "/api/assets/\(originalAsset)/cancel" }
+        }
         draft.clear()
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.url.path))
     }

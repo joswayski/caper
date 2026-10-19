@@ -6,6 +6,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 internal data class ProfileMessageDraft(
     val text: String = "",
@@ -19,7 +21,7 @@ internal data class ProfileMessageDraft(
         files.all { it.localUrl != null }
 }
 
-/** Profile drafts never use the active conversation's composer or resolve a DM before Send. */
+/** Profile drafts never use the active conversation's composer; only Send posts a message. */
 internal class ProfileMessageDrafts(private val api: CaperApi) {
     private val mutable = MutableStateFlow<Map<String, ProfileMessageDraft>>(emptyMap())
     val state = mutable.asStateFlow()
@@ -27,6 +29,7 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
     private val conversations = mutableMapOf<String, DirectConversation>()
     private val pending = mutableMapOf<String, PendingSendTracker>()
     private val uploader = AttachmentUploader(api)
+    private val uploadLocks = mutableMapOf<String, Mutex>()
     @Volatile private var epoch = 0L
 
     operator fun get(person: String): ProfileMessageDraft = mutable.value[person] ?: ProfileMessageDraft()
@@ -77,8 +80,67 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
         ++epoch
         val files = mutable.value.values.flatMap { it.files }
         mutable.value = emptyMap()
-        prepared.clear(); conversations.clear(); pending.clear()
+        prepared.clear(); conversations.clear(); pending.clear(); uploadLocks.clear()
         return files
+    }
+
+    /** Selection and Send share the same resolution/upload lock, including concurrent picks. */
+    suspend fun upload(
+        person: String, id: String?, username: String, token: String,
+        directs: () -> List<DirectConversation>, blocked: () -> Set<String>,
+        keys: Set<String> = get(person).files.map { it.key }.toSet(),
+        request: Long = epoch,
+    ): DirectConversation = uploadLocks.getOrPut(person) { Mutex() }.withLock {
+        fun writable(conversation: DirectConversation? = null) {
+            if (request != epoch) throw CancellationException("Signed out.")
+            val latest = directs().firstOrNull { it.id == conversation?.id } ?: conversation
+            if (id in blocked() || latest?.blocked == true || latest?.peer?.id in blocked())
+                throw ApiException(403, "Blocked", DM_BLOCKED)
+            check(latest?.incoming != true) { "Open conversation and accept this message request before replying." }
+        }
+        writable()
+        if (keys.isNotEmpty() && get(person).files.none { it.key in keys }) throw CancellationException("Draft removed.")
+        val conversation = directs().firstOrNull {
+            if (id != null) it.peer.id == id else it.peer.username.equals(username, ignoreCase = true)
+        } ?: conversations[person] ?: run {
+            val existing = api.directConversations(token).conversations.firstOrNull {
+                if (id != null) it.peer.id == id else it.peer.username.equals(username, ignoreCase = true)
+            }
+            writable(existing)
+            existing ?: api.startDirectConversation(token, username)
+        }
+        writable(conversation)
+        require(if (id != null) conversation.peer.id == id else conversation.peer.username.equals(username, ignoreCase = true)) { "Direct message recipient mismatch." }
+        conversations[person] = conversation
+        keys.forEach { key ->
+            val file = get(person).files.find { it.key == key } ?: return@forEach
+            val stale = file.uploadedAt?.let { System.currentTimeMillis() - it >= 23 * 60 * 60 * 1000L } == true
+            // Never replace the attachments in an uncertain send's exact retry payload.
+            if (file.attachment != null && (!stale || get(person).uncertain)) return@forEach
+            val source = prepared[key] ?: error("Remove files that could not be prepared first.")
+            writable(conversation)
+            updateFile(person, key) { it.copy(attachment = null, error = null, progress = 0f) }
+            file.attachment?.let { api.cancelAsset(token, it.id) }
+            try {
+                val attachment = uploader.upload(token, conversation.id, source) { progress ->
+                    if (request == epoch && prepared[key] === source) updateFile(person, key) { it.copy(progress = progress) }
+                }
+                if (request != epoch || prepared[key] !== source || get(person).files.none { it.key == key }) {
+                    api.cancelAsset(token, attachment.id)
+                    throw CancellationException("Draft replaced.")
+                }
+                try { writable(conversation) } catch (error: Throwable) {
+                    api.cancelAsset(token, attachment.id)
+                    throw error
+                }
+                updateFile(person, key) { it.copy(attachment = attachment, uploadedAt = System.currentTimeMillis(), progress = 1f) }
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                if (request == epoch && prepared[key] === source) updateFile(person, key) { it.copy(error = AttachmentPolicy.uploadErrorMessage(error)) }
+                throw error
+            }
+        }
+        conversation
     }
 
     suspend fun send(
@@ -105,40 +167,9 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
             check(draft.files.all { prepared[it.key] != null }) { "Remove files that could not be prepared first." }
             val (capability, author) = session()
             current()
-            val conversation = directs().firstOrNull {
-                if (id != null) it.peer.id == id else it.peer.username.equals(username, ignoreCase = true)
-            } ?: conversations[person] ?: run {
-                // Creating by username can accept a request, so inspect the server's list first.
-                val existing = api.directConversations(token).conversations.firstOrNull {
-                    if (id != null) it.peer.id == id else it.peer.username.equals(username, ignoreCase = true)
-                }
-                writable(existing)
-                existing ?: api.startDirectConversation(token, username)
-            }
-            current()
-            require(if (id != null) conversation.peer.id == id else conversation.peer.username.equals(username, ignoreCase = true)) { "Direct message recipient mismatch." }
-            conversations[person] = conversation
-            writable(conversation)
-            draft.files.forEach { file ->
-                if (file.attachment == null) {
-                    writable(conversation)
-                    updateFile(person, file.key) { it.copy(error = null, progress = 0f) }
-                    try {
-                        uploading = true
-                        val attachment = uploader.upload(token, conversation.id, prepared.getValue(file.key)) { progress ->
-                            if (request == epoch) updateFile(person, file.key) { it.copy(progress = progress) }
-                        }
-                        current()
-                        uploading = false
-                        updateFile(person, file.key) { it.copy(attachment = attachment, progress = 1f) }
-                    } catch (error: Throwable) {
-                        if (error is CancellationException) throw error
-                        current()
-                        updateFile(person, file.key) { it.copy(error = AttachmentPolicy.uploadErrorMessage(error)) }
-                        throw error
-                    }
-                }
-            }
+            uploading = draft.files.isNotEmpty()
+            val conversation = upload(person, id, username, token, directs, blocked)
+            uploading = false
             writable(conversation)
             if (draft.uncertain) check(tracker.retrying(conversation.id, author) != null) { "The conversation changed. The previous send is still unconfirmed." }
             operation = tracker.begin(conversation.id, author, draft.text, get(person).files.map { requireNotNull(it.attachment).id },
@@ -160,7 +191,7 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
             update(person) { it.copy(
                 uncertain = if (operation == null) draft.uncertain else !definitive,
                 error = (error as? ApiException)?.code?.let(::directMessageError)
-                    ?: if (uploading) AttachmentPolicy.uploadErrorMessage(error) else friendlyError(error),
+                    ?: if (uploading && error !is IllegalStateException) AttachmentPolicy.uploadErrorMessage(error) else friendlyError(error),
             ) }
             return null
         } finally {

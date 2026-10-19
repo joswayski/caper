@@ -214,6 +214,8 @@ try {
   browser("click", '.chat-reaction-picker .chat-emoji-grid button[data-unified="1f600"]');
   assert.equal(value(), "Hello 😀suffix", "Emoji goes at the saved caret, not at the end");
   assert.equal(evaluate("return document.activeElement.id"), "profile-message");
+  assert.equal((await directs()).length, 0, "Typing must not create a DM");
+  await control({ failure: { path: "/api/assets", method: "POST", status: 503, persistent: true } });
   // Browser-supported file upload, then a file-bearing paste event.
   wait(`!document.querySelector('.chat-profile-composer [aria-label="Attach files"]').disabled`);
   uploadFile(".chat-profile-composer");
@@ -221,7 +223,10 @@ try {
     transfer.items.add(new File(['TEST FIXTURE pasted bytes'], 'pasted.txt', {type:'text/plain'}));
     document.querySelector('#profile-message').dispatchEvent(new ClipboardEvent('paste', {clipboardData:transfer, bubbles:true, cancelable:true}));`);
   assert.equal(evaluate('return document.querySelectorAll(".chat-profile-composer .chat-drafts li").length'), 2);
-  assert.equal((await directs()).length, 0, "Typing and staging files must not create a DM");
+  wait('document.querySelectorAll(".chat-profile-composer .chat-drafts li[data-error]").length === 2');
+  const eagerDM = (await directs()).find((conversation) => conversation.peer.username === "maya");
+  assert.ok(eagerDM, "Picking resolves the upload destination before Send");
+  assert.equal((await history(eagerDM.id)).messages.length, 0, "Picking never sends a message");
   capture("profile-desktop-files");
   browser("mouse", "move", "900", "100");
   browser("mouse", "down", "left");
@@ -233,7 +238,6 @@ try {
   open("Maya");
   assert.equal(value(), "Hello 😀suffix");
   assert.equal(evaluate('return document.querySelectorAll(".chat-profile-composer .chat-drafts li").length'), 2);
-  await control({ failure: { path: "/api/assets", method: "POST", status: 503, persistent: true } });
   for (let attempt = 0; attempt < 2; attempt++) {
     browser("click", '.chat-profile-composer button[type="submit"]');
     wait(
@@ -243,14 +247,21 @@ try {
     assert.equal(evaluate('return document.querySelectorAll(".chat-profile-composer .chat-drafts li").length'), 2);
     assert.equal(
       evaluate('return document.querySelectorAll(".chat-profile-composer .chat-drafts li[data-error]").length'),
-      1,
-      "only the attempted file is marked failed, not the queued file",
+      2,
+      "both eager uploads report their failures",
     );
     const blockedDM = (await directs()).find((conversation) => conversation.peer.username === "maya");
     assert.equal((await history(blockedDM.id)).messages.length, 0, "upload failure prevents message delivery");
   }
   capture("profile-upload-failed");
   await control({ clearFailures: true });
+  browser("click", '.chat-profile-composer [aria-label="Retry uploading review-notes.txt"]');
+  browser("click", '.chat-profile-composer [aria-label="Retry uploading pasted.txt"]');
+  wait('!document.querySelector(".chat-profile-composer .chat-draft-notice")');
+  assert.equal((await history(eagerDM.id)).messages.length, 0, "Uploads complete without sending");
+  assert.equal(evaluate('return document.querySelector("#profile-message").disabled'), false);
+  const reservationsBeforeSend = evaluate("return window.assetReservations.length");
+  capture("profile-desktop-ready");
   // Lose the HTTP acknowledgement after the fixture has accepted the message.
   evaluate(`const realFetch = window.fetch.bind(window); window.profileCommands = [];
     window.dropProfileAck = true;
@@ -288,6 +299,11 @@ try {
   const commands = evaluate("return window.profileCommands");
   assert.deepEqual(commands[1], commands[0], "Retry reuses the identical message ID, text and attachment IDs");
   const sent = (await history(dm.id)).messages;
+  assert.equal(
+    evaluate("return window.assetReservations.length"),
+    reservationsBeforeSend,
+    "Send and uncertain retry reuse eager uploads",
+  );
   assert.equal(sent.length, 1, "Retry must not duplicate the DM");
   assert.equal(sent[0].content.text, "Hello 😀suffix");
   assert.deepEqual(
@@ -333,6 +349,7 @@ try {
   wait(`!document.querySelector('.chat-profile-composer [aria-label="Attach files"]').disabled`);
   uploadFile(".chat-profile-composer");
   wait('document.querySelectorAll(".chat-profile-composer .chat-drafts li").length === 1');
+  wait('!document.querySelector(".chat-profile-composer .chat-draft-notice")');
   capture("profile-narrow-files");
   assert.equal(evaluate('return !!document.querySelector(".chat-mention-card-drawer")'), true);
   // The sheet slides in; wait for it to settle inside the viewport.
@@ -384,6 +401,38 @@ try {
     "review-notes.txt",
     "File-only sends work without placeholder text",
   );
+  browser("set", "viewport", "1280", "800", "2");
+  wait('!document.querySelector(".chat-initial-messages")');
+  browser("click", ".channel-select");
+  browser("set", "viewport", "390", "844", "2");
+  open("Maya");
+  wait(`!document.querySelector('.chat-profile-composer [aria-label="Attach files"]').disabled`);
+  // Hold storage finalization, not the UI: a drop uploads while text stays editable,
+  // and Send must join that work rather than start a second reservation.
+  evaluate(`const realFetch = window.fetch.bind(window);
+    window.uploadHeld = false;
+    window.uploadGate = new Promise(resolve => { window.releaseUpload = resolve; });
+    window.fetch = async (input, options) => {
+      if (String(input).endsWith('/complete')) { window.uploadHeld = true; await window.uploadGate; }
+      return realFetch(input, options);
+    };
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(['TEST FIXTURE slow upload'], 'dropped.txt', {type:'text/plain'}));
+    document.querySelector('.chat-profile-composer').dispatchEvent(new DragEvent('drop', {dataTransfer:transfer, bubbles:true, cancelable:true}));`);
+  wait("window.uploadHeld");
+  browser("fill", "#profile-message", "Written while uploading");
+  capture("profile-narrow-uploading");
+  const reservationsWhileUploading = evaluate("return window.assetReservations.length");
+  browser("click", '.chat-profile-composer button[type="submit"]');
+  wait('document.querySelector("#profile-message").disabled');
+  assert.equal((await history(dm.id)).messages.length, 2, "Send waits for the in-flight upload");
+  evaluate("window.releaseUpload()");
+  wait('!document.querySelector(".chat-mention-card")');
+  assert.equal(evaluate("return window.assetReservations.length"), reservationsWhileUploading);
+  const joined = (await history(dm.id)).messages;
+  assert.equal(joined.length, 3);
+  assert.equal(joined[2].content.text, "Written while uploading");
+  assert.equal(joined[2].content.attachments[0].name, "dropped.txt");
   // Incoming requests remain previews until the account explicitly accepts.
   await control({ messageRequest: { text: "TEST FIXTURE — incoming request" } });
   browser("set", "viewport", "1280", "800", "2");

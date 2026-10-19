@@ -10,23 +10,21 @@ import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import EmojiButton from "./EmojiButton.tsx";
 import { insertEmoji } from "./emoji-autocomplete.ts";
 import MentionTextarea from "./MentionTextarea.tsx";
-import { EditFailed, type AttachmentEdit } from "./edit.ts";
-import { editableKind, prepareFile, type CompressionSettings } from "./prepare.ts";
+import type { AttachmentEdit } from "./edit.ts";
+import { editableKind, type CompressionSettings } from "./prepare.ts";
 import { isChatMessage, type ChatAttachment } from "./types.ts";
-import { browserTransport, cancelUpload, MAX_ATTACHMENTS, uploadPrepared, uploadSettings } from "./uploads.ts";
+import { AttachmentUpload, MAX_ATTACHMENTS, uploadSettings, type UploadState } from "./uploads.ts";
 
-interface ProfileFile {
+interface ProfileFile extends Partial<UploadState> {
   key: string;
   file: File;
   /** Object URL for an image or video thumbnail; revoked when the file leaves. */
   localUrl?: string;
-  /** Upload progress once Send starts; unset while the file is only staged. */
-  progress?: number;
-  attachment?: ChatAttachment;
-  error?: string;
+  upload?: AttachmentUpload;
+  preparing?: Promise<ChatAttachment>;
   spoiler?: boolean;
   editable?: "image" | "video";
-  /** Applied to the original when Send prepares it. */
+  /** Applied to the original before uploading. */
   edit?: AttachmentEdit;
   /** A render of an edited video for its tile; revoked when the file leaves. */
   thumbnailUrl?: string;
@@ -53,6 +51,25 @@ const subscribe = (listener: () => void) => {
 const notify = () => {
   for (const listener of listeners) listener();
 };
+const resolving = new Map<string, ReturnType<typeof createDirectConversation>>();
+function resolveConversation(personId: string, username: string) {
+  const current = resolving.get(personId);
+  if (current) return current;
+  const request = (async () => {
+    const existing = (await listDirectConversations()).conversations.find((item) => item.peer.id === personId);
+    // Creating an existing DM also accepts its request; inspect it first.
+    if (existing && directStatus(existing) === "incoming")
+      throw new Error("Open the conversation and accept this message request before replying.");
+    const conversation = existing ?? (await createDirectConversation(username));
+    if (conversation.peer.id !== personId) throw new Error("This username has changed. Reopen the person’s profile.");
+    if (conversation.blocked) throw new Error("Unblock this person before messaging them.");
+    if (directStatus(conversation) === "incoming")
+      throw new Error("Open the conversation and accept this message request before replying.");
+    return conversation;
+  })().finally(() => resolving.delete(personId));
+  resolving.set(personId, request);
+  return request;
+}
 
 export default function ProfileComposer({
   personId,
@@ -124,6 +141,55 @@ export default function ProfileComposer({
   }, [draft.text]);
 
   const restoreFocus = () => requestAnimationFrame(() => input.current?.focus());
+  const updateFile = (key: string, change: Partial<ProfileFile>) => {
+    const latest = drafts.get(personId);
+    if (!latest?.files.some((file) => file.key === key)) return;
+    save({ ...latest, files: latest.files.map((file) => (file.key === key ? { ...file, ...change } : file)) });
+  };
+  const ensureFile = (key: string): Promise<ChatAttachment> => {
+    const item = drafts.get(personId)?.files.find((file) => file.key === key);
+    if (!item || !settings) return Promise.reject(new Error("File uploads are unavailable. Your draft is kept."));
+    if (item.upload) return item.upload.ensure();
+    if (item.preparing) return item.preparing;
+    const preparing = (async () => {
+      try {
+        const conversation = await resolveConversation(personId, username);
+        const latest = drafts.get(personId);
+        const file = latest?.files.find((file) => file.key === key);
+        if (!latest || !file) throw new Error("Upload cancelled.");
+        if (latest.channelId && latest.channelId !== conversation.id)
+          throw new Error("The conversation changed. Remove the files and try again.");
+        save({ ...latest, channelId: conversation.id });
+        const upload = new AttachmentUpload(conversation.id, file.file, settings, (state) => updateFile(key, state));
+        updateFile(key, { upload });
+        // Upload owns its errors; an aborted, superseded edit must not overwrite
+        // the replacement upload's state through this resolution error handler.
+        return file.edit ? upload.setEdit(file.edit) : upload.ensure();
+      } catch (reason) {
+        updateFile(key, { error: reason instanceof Error ? reason.message : "Failed to upload." });
+        throw reason;
+      } finally {
+        updateFile(key, { preparing: undefined });
+      }
+    })();
+    updateFile(key, { preparing, error: undefined });
+    return preparing;
+  };
+  useEffect(() => {
+    const refresh = () => {
+      const latest = drafts.get(personId);
+      if (document.visibilityState !== "visible" || pending.has(personId) || latest?.command || !settings) return;
+      for (const file of latest?.files ?? [])
+        if (file.error || file.upload?.stale) void ensureFile(file.key).catch(() => {});
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [personId, settings]);
   const addFiles = (files: File[]) => {
     if (locked || !settings || !files.length) return;
     const room = MAX_ATTACHMENTS - draft.files.length;
@@ -134,32 +200,33 @@ export default function ProfileComposer({
       localUrl: /^(image|video)\//.test(file.type) ? URL.createObjectURL(file) : undefined,
     }));
     save({ ...draft, files: [...draft.files, ...added] });
-    for (const item of added)
+    for (const item of added) {
+      void ensureFile(item.key).catch(() => {});
       void editableKind(item.file).then((editable) => {
         const latest = drafts.get(personId);
         if (!editable || !latest?.files.some((file) => file.key === item.key)) return;
         save({ ...latest, files: latest.files.map((file) => (file.key === item.key ? { ...file, editable } : file)) });
       });
+    }
     restoreFocus();
   };
   const removeFile = (key: string) => {
     const removed = draft.files.find((item) => item.key === key);
+    removed?.upload?.release(true);
     if (removed?.localUrl) URL.revokeObjectURL(removed.localUrl);
     if (removed?.thumbnailUrl) URL.revokeObjectURL(removed.thumbnailUrl);
     save({ ...draft, files: draft.files.filter((item) => item.key !== key) });
     restoreFocus();
   };
-  // Edits apply when Send prepares the original; the tile shows them now.
+  // Edits replace the upload as well as the local preview.
   const editing: DraftEditing = {
     source: (key) => draft.files.find((item) => item.key === key)?.file,
     save: (key, edit, preview) => {
       const latest = drafts.get(personId);
       const item = latest?.files.find((file) => file.key === key);
-      if (!latest || !item || latest.command) return;
+      if (!latest || !item || latest.command || pending.has(personId)) return;
       if (item.localUrl) URL.revokeObjectURL(item.localUrl);
       if (item.thumbnailUrl) URL.revokeObjectURL(item.thumbnailUrl);
-      // A file uploaded by an earlier, failed send was the unedited original.
-      if (item.attachment) void cancelUpload(item.attachment.id);
       const url = (blob: Blob | undefined) => blob && URL.createObjectURL(blob);
       const localUrl = !edit ? url(item.file) : item.editable === "image" ? url(preview) : undefined;
       const thumbnailUrl = edit && item.editable === "video" ? url(preview) : undefined;
@@ -171,6 +238,8 @@ export default function ProfileComposer({
             : file,
         ),
       });
+      if (item.upload) void item.upload.setEdit(edit).catch(() => {});
+      else void ensureFile(key).catch(() => {});
       restoreFocus();
     },
   };
@@ -203,54 +272,23 @@ export default function ProfileComposer({
     notify();
     setError(undefined);
     setStatus("Sending…");
-    for (const item of draft.files) item.error = undefined;
     try {
       const account = await getAccount();
       if (!account?.username || !account.displayName) throw new Error("Sign in to send a direct message.");
-      const existing = (await listDirectConversations()).conversations.find((item) => item.peer.id === personId);
-      // Creating an existing DM also accepts its request; inspect it first.
-      if (existing && directStatus(existing) === "incoming")
-        throw new Error("Open the conversation and accept this message request before replying.");
-      const conversation = existing ?? (await createDirectConversation(username));
-      if (conversation.peer.id !== personId) throw new Error("This username has changed. Reopen the person’s profile.");
-      if (conversation.blocked) throw new Error("Unblock this person before messaging them.");
-      if (directStatus(conversation) === "incoming")
-        throw new Error("Open the conversation and accept this message request before replying.");
+      const conversation = await resolveConversation(personId, username);
       if (draft.channelId && draft.channelId !== conversation.id)
         throw new Error("The conversation changed. Remove the files and try again.");
-      draft.channelId = conversation.id;
       const session = await sharedAccountSession(account.id, account.displayName);
-      for (const item of draft.files) {
-        if (item.attachment) continue;
-        if (!settings) throw new Error("File uploads are unavailable. Your draft is kept.");
-        item.progress = 0;
-        save({ ...draft });
-        const signal = AbortSignal.timeout(120_000);
-        try {
-          const prepared = await prepareFile(item.file, settings, () => {}, signal, item.edit);
-          item.attachment = await uploadPrepared(
-            conversation.id,
-            prepared,
-            browserTransport,
-            (progress) => {
-              item.progress = progress;
-              save({ ...draft });
-            },
-            signal,
-          );
-        } catch (reason) {
-          item.error = reason instanceof EditFailed ? reason.message : "Failed to upload.";
-          throw reason;
-        }
-      }
+      // An uncertain POST must retry its exact asset IDs, even after expiry.
+      if (!draft.command) await Promise.all(draft.files.map((item) => ensureFile(item.key)));
+      const latest = drafts.get(personId) ?? draft;
       const command = draft.command ?? {
         clientMessageId: crypto.randomUUID(),
         text: draft.text,
-        attachmentIds: draft.files.map((item) => item.attachment!.id),
-        spoilerAttachmentIds: draft.files.filter((item) => item.spoiler).map((item) => item.attachment!.id),
+        attachmentIds: latest.files.map((item) => item.attachment!.id),
+        spoilerAttachmentIds: latest.files.filter((item) => item.spoiler).map((item) => item.attachment!.id),
       };
-      draft.command = command;
-      save({ ...draft });
+      save({ ...latest, channelId: conversation.id, command });
       setStatus("Sending…");
       const response = await fetch(`/api/chat/channels/${encodeURIComponent(conversation.id)}/messages`, {
         method: "POST",
@@ -266,8 +304,7 @@ export default function ProfileComposer({
           [400, 404, 409, 413, 422].includes(response.status) ||
           (response.status === 403 && code && code in directMessageErrors)
         ) {
-          draft.command = undefined;
-          save({ ...draft });
+          save({ ...(drafts.get(personId) ?? latest), command: undefined });
         }
         if (response.status === 401) forgetAccountSession(session.token);
         throw reason;
@@ -280,7 +317,8 @@ export default function ProfileComposer({
         message.author.id !== account.id
       )
         throw new Error("The chat service returned an invalid confirmation.");
-      for (const item of draft.files) {
+      for (const item of latest.files) {
+        item.upload?.release();
         if (item.localUrl) URL.revokeObjectURL(item.localUrl);
         if (item.thumbnailUrl) URL.revokeObjectURL(item.thumbnailUrl);
       }
@@ -289,11 +327,9 @@ export default function ProfileComposer({
       onSent();
     } catch (reason) {
       // Keep completed uploads and the idempotent command, not just the text.
-      for (const item of draft.files) if (!item.attachment) item.progress = undefined;
-      save({ ...draft });
       setStatus(undefined);
       setError(
-        draft.files.some((item) => item.error)
+        drafts.get(personId)?.files.some((item) => item.error)
           ? undefined // The upload tray owns this failure and its retry guidance.
           : reason instanceof TypeError
             ? "Couldn’t confirm delivery. Check your connection."
@@ -309,16 +345,16 @@ export default function ProfileComposer({
 
   const files: DraftAttachment[] = draft.files.map((item) => ({
     key: item.key,
-    name: item.file.name,
+    name: item.name ?? item.file.name,
     localUrl: item.localUrl,
     localKind: item.localUrl ? (item.file.type.startsWith("video/") ? "video" : "image") : undefined,
     editable: item.editable,
     edit: item.edit,
     thumbnailUrl: item.thumbnailUrl,
     sourceSize: item.file.size,
-    storedSize: item.attachment?.size ?? (item.progress === undefined ? undefined : item.file.size),
+    storedSize: item.storedSize,
+    compressing: item.compressing,
     progress: item.progress ?? 0,
-    staged: !item.attachment && item.progress === undefined && !sending,
     attachment: item.attachment,
     error: item.error,
     spoiler: item.spoiler,
@@ -326,7 +362,21 @@ export default function ProfileComposer({
   const canSend = !sending && (!!draft.text.trim() || !!draft.files.length);
 
   return (
-    <div className="chat-profile-composer">
+    <div
+      className="chat-profile-composer"
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes("Files")) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }}
+      onDrop={(event) => {
+        if (!event.dataTransfer.files.length) return;
+        event.preventDefault();
+        event.stopPropagation();
+        addFiles([...event.dataTransfer.files]);
+      }}
+    >
       {draft.command && !sending ? (
         <p className="chat-send-status">
           <span className="chat-send-error" role="alert">
@@ -356,6 +406,7 @@ export default function ProfileComposer({
       <DraftAttachments
         drafts={files}
         onRemove={locked ? undefined : removeFile}
+        onRetry={locked ? undefined : (key) => void ensureFile(key).catch(() => {})}
         onToggleSpoiler={
           locked
             ? undefined

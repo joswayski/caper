@@ -5559,7 +5559,7 @@ private struct MentionCardView: View {
 
     init(model: AppModel, person: MentionCardPerson, requestBlock: @escaping (BlockTarget) -> Void, close: @escaping () -> Void) {
         self.model = model
-        self.draft = model.profileMessageDraft(personID: person.id)
+        self.draft = model.profileMessageDraft(person: person)
         self.person = person
         self.requestBlock = requestBlock
         self.close = close
