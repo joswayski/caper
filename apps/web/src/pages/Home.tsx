@@ -32,7 +32,7 @@ import {
 const repositoryUrl = "https://github.com/joswayski/caper";
 const xUrl = "https://x.com/josevalerio";
 const authorUrl = "https://josevalerio.com";
-const contactEmail = "contact@josevalerio.com";
+const contactEmail = "jose@caper.chat";
 const rotatingWords = ["people", "friends", "teammates", "coworkers", "family"];
 
 type HomeProps = {
@@ -184,9 +184,9 @@ function ContactLinks() {
           <path d="M18.9 2H22l-6.8 7.8L23.2 22h-6.3L12 14.6 5.5 22H2.3l7.9-9L1.8 2h6.5l4.5 6.6L18.9 2Zm-1.1 18h1.7L7.3 3.9H5.5L17.8 20Z" />
         </svg>
       </a>{" "}
-      {/* Kept together so "or" never ends a line with its button on the next. */}
+      {/* Kept together so "or by" never ends a line with its button on the next. */}
       <span className="contact-or">
-        or{" "}
+        or by{" "}
         <button
           type="button"
           className="contact-action"

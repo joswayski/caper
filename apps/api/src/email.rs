@@ -8,12 +8,22 @@ use aws_sdk_sesv2::{
 #[async_trait]
 pub(crate) trait EmailSender: Send + Sync {
     async fn send_login_code(&self, recipient: &str, code: &str) -> Result<(), ()>;
+    /// Sends the one-time note from the founder to a newly created account.
+    async fn send_welcome(&self, recipient: &str) -> Result<(), ()>;
 }
 
 pub(crate) struct SesEmailSender {
     client: Client,
     from: String,
     configuration_set: String,
+    welcome: Option<WelcomeSender>,
+}
+
+/// A personal sender whose replies go to an inbox someone reads. Welcome email
+/// stays off until both are configured.
+struct WelcomeSender {
+    from: String,
+    reply_to: String,
 }
 
 struct LoginEmail {
@@ -48,6 +58,43 @@ fn login_email(code: &str) -> LoginEmail {
     }
 }
 
+fn welcome_email() -> LoginEmail {
+    LoginEmail {
+        subject: "Welcome to Caper".into(),
+        text: "Hey, I'm Jose. I'm building Caper, and I wanted to say thanks for signing up.\n\nCaper is early, so if something breaks, feels off, or you have an idea, I'd love to hear it. You can reply to this email any time, it comes straight to me. You can also find me in Caper chat, on X, or on GitHub:\n\nCaper chat: https://caper.chat/invite/uz3HFpD8jV\nX: https://x.com/josevalerio\nGitHub: https://github.com/joswayski/caper\n\nThanks for trying it out,\nJose".into(),
+        html: r#"<!doctype html>
+<html lang="en">
+  <body style="margin:0;padding:32px 16px;background:#f3f4f5;color:#0c0d0f;font-family:Arial,sans-serif;">
+    <div style="max-width:560px;margin:0 auto;padding:32px;background:#ffffff;border:1px solid #e1e3e5;border-radius:8px;font-size:16px;line-height:1.5;">
+      <p style="margin:0 0 16px;">Hey, I'm Jose. I'm building Caper, and I wanted to say thanks for signing up.</p>
+      <p style="margin:0 0 16px;">Caper is early, so if something breaks, feels off, or you have an idea, I'd love to hear it. You can reply to this email any time, it comes straight to me. You can also find me in <a href="https://caper.chat/invite/uz3HFpD8jV" style="color:#b64d32;">Caper chat</a>, on <a href="https://x.com/josevalerio" style="color:#b64d32;">X</a>, or on <a href="https://github.com/joswayski/caper" style="color:#b64d32;">GitHub</a>.</p>
+      <p style="margin:0;">Thanks for trying it out,<br>Jose</p>
+    </div>
+  </body>
+</html>"#
+            .into(),
+    }
+}
+
+fn simple_content(email: LoginEmail) -> Result<EmailContent, ()> {
+    let content = |data: String| {
+        Content::builder()
+            .data(data)
+            .charset("UTF-8")
+            .build()
+            .map_err(|_| ())
+    };
+    let body = Body::builder()
+        .text(content(email.text)?)
+        .html(content(email.html)?)
+        .build();
+    let message = Message::builder()
+        .subject(content(email.subject)?)
+        .body(body)
+        .build();
+    Ok(EmailContent::builder().simple(message).build())
+}
+
 impl SesEmailSender {
     pub(crate) async fn from_env(environment: &RuntimeEnvironment) -> Result<Self, String> {
         let get = |name| {
@@ -58,6 +105,23 @@ impl SesEmailSender {
         };
         let from = get("SES_FROM_ADDRESS")?;
         let configuration_set = get("SES_CONFIGURATION_SET")?;
+        let optional = |name| {
+            environment
+                .get(name)
+                .filter(|value| !value.trim().is_empty())
+        };
+        let welcome = match (
+            optional("SES_WELCOME_FROM_ADDRESS"),
+            optional("SES_WELCOME_REPLY_TO"),
+        ) {
+            (Some(from), Some(reply_to)) => Some(WelcomeSender { from, reply_to }),
+            (None, None) => None,
+            _ => {
+                return Err(
+                    "SES_WELCOME_FROM_ADDRESS and SES_WELCOME_REPLY_TO must be set together".into(),
+                );
+            }
+        };
         if environment.get("AWS_REGION").is_none()
             && environment.get("AWS_DEFAULT_REGION").is_none()
         {
@@ -68,6 +132,7 @@ impl SesEmailSender {
             client: Client::new(&config),
             from,
             configuration_set,
+            welcome,
         })
     }
 }
@@ -75,46 +140,47 @@ impl SesEmailSender {
 #[async_trait]
 impl EmailSender for SesEmailSender {
     async fn send_login_code(&self, recipient: &str, code: &str) -> Result<(), ()> {
-        let destination = Destination::builder().to_addresses(recipient).build();
-        let email = login_email(code);
-        let subject = Content::builder()
-            .data(email.subject)
-            .charset("UTF-8")
-            .build()
-            .map_err(|_| ())?;
-        let text = Content::builder()
-            .data(email.text)
-            .charset("UTF-8")
-            .build()
-            .map_err(|_| ())?;
-        let html = Content::builder()
-            .data(email.html)
-            .charset("UTF-8")
-            .build()
-            .map_err(|_| ())?;
-        let body = Body::builder().text(text).html(html).build();
-        let message = Message::builder().subject(subject).body(body).build();
-        let content = EmailContent::builder().simple(message).build();
+        let content = simple_content(login_email(code))?;
+        let request = self
+            .client
+            .send_email()
+            .from_email_address(&self.from)
+            .destination(Destination::builder().to_addresses(recipient).build())
+            .content(content)
+            .configuration_set_name(&self.configuration_set);
+        send(request, "login").await
+    }
 
-        tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            self.client
-                .send_email()
-                .from_email_address(&self.from)
-                .destination(destination)
-                .content(content)
-                .configuration_set_name(&self.configuration_set)
-                .send(),
-        )
+    async fn send_welcome(&self, recipient: &str) -> Result<(), ()> {
+        let Some(welcome) = &self.welcome else {
+            return Ok(());
+        };
+        let content = simple_content(welcome_email())?;
+        let request = self
+            .client
+            .send_email()
+            .from_email_address(&welcome.from)
+            .reply_to_addresses(&welcome.reply_to)
+            .destination(Destination::builder().to_addresses(recipient).build())
+            .content(content)
+            .configuration_set_name(&self.configuration_set);
+        send(request, "welcome").await
+    }
+}
+
+async fn send(
+    request: aws_sdk_sesv2::operation::send_email::builders::SendEmailFluentBuilder,
+    purpose: &'static str,
+) -> Result<(), ()> {
+    tokio::time::timeout(std::time::Duration::from_secs(30), request.send())
         .await
         .map_err(|_| {
-            tracing::error!(kind = "timeout", "login email delivery failed");
+            tracing::error!(purpose, kind = "timeout", "email delivery failed");
         })?
-            .map(|_| ())
-            .map_err(|error| {
-                tracing::error!(kind = %error.as_service_error().map_or("transport", |_| "service"), "login email delivery failed");
-            })
-    }
+        .map(|_| ())
+        .map_err(|error| {
+            tracing::error!(purpose, kind = %error.as_service_error().map_or("transport", |_| "service"), "email delivery failed");
+        })
 }
 
 #[cfg(test)]
@@ -137,5 +203,18 @@ mod tests {
                 .html
                 .contains("href=\"https://github.com/joswayski/caper\"")
         );
+    }
+
+    #[test]
+    fn welcome_invites_replies_and_links_every_contact_channel() {
+        let email = welcome_email();
+
+        assert_eq!(email.subject, "Welcome to Caper");
+        for body in [&email.text, &email.html] {
+            assert!(body.contains("reply to this email any time"));
+            assert!(body.contains("https://caper.chat/invite/uz3HFpD8jV"));
+            assert!(body.contains("https://x.com/josevalerio"));
+            assert!(body.contains("https://github.com/joswayski/caper"));
+        }
     }
 }

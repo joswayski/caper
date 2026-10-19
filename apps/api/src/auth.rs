@@ -454,6 +454,18 @@ impl AuthVerifier {
         .await
         .map_err(database_unavailable)?;
         transaction.commit().await.map_err(database_unavailable)?;
+        let is_review = auth
+            .review
+            .as_ref()
+            .is_some_and(|review| review.email == challenge.email);
+        if user.created && !is_review {
+            // Sign-in never waits on, or fails because of, the welcome note.
+            let sender = auth.sender.clone();
+            let recipient = challenge.email.clone();
+            tokio::spawn(async move {
+                let _ = sender.send_welcome(&recipient).await;
+            });
+        }
         Ok(VerifiedSession {
             user: accounts::User {
                 id: user.id,
@@ -667,6 +679,7 @@ mod tests {
 
     struct RecordingSender {
         deliveries: std::sync::Mutex<Vec<(String, String)>>,
+        welcomes: std::sync::Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
@@ -676,6 +689,11 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((recipient.into(), code.into()));
+            Ok(())
+        }
+
+        async fn send_welcome(&self, recipient: &str) -> Result<(), ()> {
+            self.welcomes.lock().unwrap().push(recipient.into());
             Ok(())
         }
     }
@@ -744,6 +762,7 @@ mod tests {
     async fn reserved_domains_never_access_database_or_send_email() {
         let sender = Arc::new(RecordingSender {
             deliveries: std::sync::Mutex::new(vec![]),
+            welcomes: std::sync::Mutex::new(vec![]),
         });
         let verifier = AuthVerifier {
             enabled: Some(EnabledAuth {
@@ -844,6 +863,7 @@ mod tests {
     async fn email_code_creates_revocable_session_and_throttles_resends(pool: PgPool) {
         let sender = Arc::new(RecordingSender {
             deliveries: std::sync::Mutex::new(vec![]),
+            welcomes: std::sync::Mutex::new(vec![]),
         });
         let verifier = AuthVerifier {
             enabled: Some(EnabledAuth {
@@ -917,6 +937,12 @@ mod tests {
             .await
             .unwrap();
         assert!(!repeat_session.user_created);
+        tokio::task::yield_now().await;
+        assert_eq!(
+            *sender.welcomes.lock().unwrap(),
+            ["person@caper.chat"],
+            "only the newly created account is welcomed",
+        );
         assert_eq!(repeat_session.user.id, session.user.id);
         assert_eq!(repeat_session.user.avatar_id, session.user.avatar_id);
         assert!((0..800).contains(&session.user.avatar_id));
@@ -1008,6 +1034,7 @@ mod tests {
     async fn strangers_cannot_lock_out_or_cancel_another_requesters_code(pool: PgPool) {
         let sender = Arc::new(RecordingSender {
             deliveries: std::sync::Mutex::new(vec![]),
+            welcomes: std::sync::Mutex::new(vec![]),
         });
         let verifier = AuthVerifier {
             enabled: Some(EnabledAuth {
@@ -1077,6 +1104,7 @@ mod tests {
     async fn review_account_signs_in_with_its_fixed_code_without_email(pool: PgPool) {
         let sender = Arc::new(RecordingSender {
             deliveries: std::sync::Mutex::new(vec![]),
+            welcomes: std::sync::Mutex::new(vec![]),
         });
         let verifier = AuthVerifier {
             enabled: Some(EnabledAuth {
@@ -1108,6 +1136,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(session.user.email.as_deref(), Some("review@caper.chat"));
+        tokio::task::yield_now().await;
+        assert!(sender.welcomes.lock().unwrap().is_empty());
         // Each challenge is still single use.
         assert!(
             verifier

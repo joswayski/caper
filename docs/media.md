@@ -4353,6 +4353,7 @@ Keep this temporary test separate from any future production app/key.
 | `AWS_REGION` | SES region; production and staging use `us-east-1` |
 | `SES_FROM_ADDRESS` | Verified Caper sender, including the friendly name |
 | `SES_CONFIGURATION_SET` | Required SES transactional configuration set |
+| `SES_WELCOME_FROM_ADDRESS`, `SES_WELCOME_REPLY_TO` | Optional, set together. Each newly created account (not the review account) gets one welcome note from this sender, with replies going to the Reply-To inbox. Production: `Jose Valerio <jose@caper.chat>` and `contact@josevalerio.com`; Cloudflare Email Routing forwards `jose@caper.chat` there too. The sender's IAM policy must allow the address. A failed send is logged and never affects sign-in. Unset sends nothing. |
 
 Use `.env.example`; Rust does not auto-load dotenv files. Export a private env
 file before `cargo run -p caper-api`. Run the independent web process with
