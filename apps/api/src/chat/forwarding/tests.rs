@@ -7,6 +7,11 @@ use axum::{
 use futures_util::StreamExt;
 use tower::ServiceExt;
 
+/// What a forward shows when its original can't be shared.
+fn unavailable_forward() -> Value {
+    json!({"message":null,"seq":"0"})
+}
+
 async fn request(
     app: &Router,
     method: &str,
@@ -711,7 +716,8 @@ async fn live_forwards_are_destination_authorized_flattened_and_replayable(pool:
             .await
             .unwrap();
     let existing: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM public.messages WHERE forward_source_id=$1 AND session_id=$2",
+        // Deleted forwards give their place back.
+        "SELECT count(*) FROM public.messages WHERE forward_source_id=$1 AND session_id=$2 AND deleted_at IS NULL",
     )
     .bind(original_id)
     .bind(alice_session)
@@ -942,4 +948,191 @@ async fn batched_hydration_and_projection_preserve_sources_and_unavailability(po
     let mut ordinary = vec![plain.clone()];
     hydrate(&mut tx, &mut ordinary).await.unwrap();
     assert_eq!(ordinary, vec![plain]);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn deleting_a_forward_revokes_its_original_and_frees_its_slot(pool: PgPool) {
+    let mut users = Vec::new();
+    for name in ["owner", "sharer"] {
+        let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name,avatar_id) VALUES($1,$1,$1,31) RETURNING id")
+            .bind(name).fetch_one(&pool).await.unwrap();
+        let hash = Sha256::digest(name.as_bytes()).to_vec();
+        sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+            .bind(&hash).bind(user).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,account_session_hash,name) VALUES($1,$2,$3,$2,$1)")
+            .bind(name).bind(hash).bind(user).execute(&pool).await.unwrap();
+        users.push(user);
+    }
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('revoke-space','Revoke',$1) RETURNING id")
+        .bind(users[0]).fetch_one(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO public.space_members(space_id,user_id) SELECT $1,unnest($2::bigint[])",
+    )
+    .bind(space)
+    .bind(&users)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut channels = Vec::new();
+    for name in ["origin", "shared"] {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,$1) RETURNING id",
+        )
+        .bind(name)
+        .bind(space)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO public.channel_joins(channel_id,user_id) SELECT $1,unnest($2::bigint[])",
+        )
+        .bind(id)
+        .bind(&users)
+        .execute(&pool)
+        .await
+        .unwrap();
+        channels.push(id);
+    }
+    let original = persist(&pool, "origin", "owner", Uuid::new_v4(), "Shared original")
+        .await
+        .unwrap();
+    let original_id = original["id"].as_str().unwrap();
+    let input = |key: Uuid| ForwardInput {
+        source_channel_id: "origin".into(),
+        source_message_id: original_id.into(),
+        client_message_id: key,
+        text: "Look".into(),
+    };
+    let key = Uuid::new_v4();
+    let forward = persist_forward(&pool, "shared", "sharer", input(key))
+        .await
+        .unwrap();
+    let forward_id = forward["id"].as_str().unwrap();
+    assert_eq!(
+        forward["forward"]["message"]["content"]["text"],
+        "Shared original"
+    );
+
+    let deleted = deletion::persist_delete(&pool, "shared", forward_id, "sharer")
+        .await
+        .unwrap();
+    assert!(deleted["deletedAt"].is_string());
+    assert_eq!(deleted["forward"], unavailable_forward());
+    // Neither stored events nor reads hand out the original any more, even
+    // when a forward deleted earlier still stores its last snapshot.
+    let events: Vec<Value> =
+        sqlx::query_scalar("SELECT payload FROM public.channel_events WHERE channel_id=$1")
+            .bind(channels[1])
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(
+        events
+            .iter()
+            .all(|event| !event.to_string().contains("Shared original"))
+    );
+    sqlx::query(
+        "UPDATE public.messages SET payload=jsonb_set(payload,'{forward}',$2) WHERE external_id=$1",
+    )
+    .bind(forward_id)
+    .bind(&forward["forward"])
+    .execute(&pool)
+    .await
+    .unwrap();
+    let history = history_page(&pool, "shared", None, Some(users[0]))
+        .await
+        .unwrap();
+    assert_eq!(history["messages"][0]["id"], forward_id);
+    assert_eq!(history["messages"][0]["forward"], unavailable_forward());
+    assert!(!history.to_string().contains("Shared original"));
+    // A retry of the deleted forward gets its tombstone, not the original.
+    let retried = persist_forward(&pool, "shared", "sharer", input(key))
+        .await
+        .unwrap();
+    assert_eq!(retried["id"], forward_id);
+    assert_eq!(retried["forward"], unavailable_forward());
+    // The deleted forward grants neither its source thread nor re-forwarding.
+    let mut config = Config::test(false);
+    config.auth_fixture = false;
+    let mut state =
+        AppState::with_database(config, Arc::new(Cloudflare::new()), Some(pool.clone()));
+    // Neither request publishes, so no broker is contacted.
+    state.chat = Some(Chat::new(
+        pool.clone(),
+        redis::Client::open("redis://127.0.0.1:1").unwrap(),
+    ));
+    let app = crate::app(state);
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            &format!("/api/chat/channels/shared/forwards/{forward_id}/thread"),
+            "owner",
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&app, "POST", "/api/chat/channels/origin/forwards", "owner",
+            json!({"sourceChannelId":"shared","sourceMessageId":forward_id,"clientMessageId":Uuid::new_v4()}))
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    // Changes to the original no longer project into the deleted forward.
+    let reaction = persist_reaction(&pool, "origin", original_id, "owner", "👀", true)
+        .await
+        .unwrap();
+    let head = || {
+        sqlx::query_scalar::<_, i64>("SELECT last_seq FROM public.channels WHERE id=$1")
+            .bind(channels[1])
+            .fetch_one(&pool)
+    };
+    let before = head().await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    project_events(
+        &mut tx,
+        &[(
+            channels[0],
+            reaction["seq"].as_str().unwrap().parse().unwrap(),
+            reaction,
+            None,
+            None,
+        )],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(head().await.unwrap(), before);
+    // Deleted forwards don't hold one of the account's forward slots.
+    let sharer: i64 =
+        sqlx::query_scalar("SELECT id FROM public.chat_sessions WHERE external_id='sharer'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let source: i64 = sqlx::query_scalar("SELECT id FROM public.messages WHERE external_id=$1")
+        .bind(original_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    for n in 1..MAX_FORWARDS_PER_ACCOUNT {
+        sqlx::query("INSERT INTO public.messages(external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,forward_source_id) VALUES($1,$2,$3,$4,$5,$6,'{}'::jsonb,$7)")
+            .bind(format!("slot-{n}")).bind(channels[1]).bind(sharer).bind(Uuid::new_v4())
+            .bind(b"hash".as_slice()).bind(10_000 + n).bind(source).execute(&pool).await.unwrap();
+    }
+    let last = persist_forward(&pool, "shared", "sharer", input(Uuid::new_v4()))
+        .await
+        .unwrap();
+    assert_eq!(
+        last["forward"]["message"]["content"]["text"],
+        "Shared original"
+    );
+    let capped = persist_forward(&pool, "shared", "sharer", input(Uuid::new_v4()))
+        .await
+        .unwrap_err();
+    assert_eq!(capped.status, StatusCode::CONFLICT);
 }

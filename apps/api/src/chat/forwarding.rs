@@ -164,7 +164,7 @@ async fn persist_forward(
     }
     // Each reaction, edit or reply on an original rewrites every forward of it,
     // so bound that fan-out per original and per forwarding account.
-    let (forwards, yours): (i64, i64) = sqlx::query_as("SELECT count(*),count(*) FILTER(WHERE m.session_id=$2 OR cs.user_id=$3) FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.forward_source_id=$1")
+    let (forwards, yours): (i64, i64) = sqlx::query_as("SELECT count(*),count(*) FILTER(WHERE m.session_id=$2 OR cs.user_id=$3) FROM public.messages m JOIN public.chat_sessions cs ON cs.id=m.session_id WHERE m.forward_source_id=$1 AND m.deleted_at IS NULL")
         .bind(source).bind(session).bind(user).fetch_one(&mut *tx).await.map_err(database_error)?;
     if forwards >= MAX_FORWARDS || yours >= MAX_FORWARDS_PER_ACCOUNT {
         return Err(ApiError::new(
@@ -441,30 +441,56 @@ pub(super) async fn project_events(
            AND f.deleted_at IS NULL AND c.deleted_at IS NULL AND (c.space_id IS NULL OR s.deleted_at IS NULL)
          ORDER BY f.channel_id,f.id")
         .bind(&targets).bind(&destinations).fetch_all(&mut **tx).await.map_err(database_error)?;
+    // Rewrite only forwards whose snapshot changed, in three statements for
+    // the whole batch rather than three per forward while holding the locks.
+    let mut changed = Vec::new();
     for (id, channel, external, mut payload, source, head, avatar, name) in forwards {
         let snapshot = source
             .map(|source| json!({"message":shared_message(enrich_author(source,avatar,name.as_deref())),"seq":head.to_string()}))
             .unwrap_or_else(|| json!({"message":null,"seq":"0"}));
-        if payload["forward"] == snapshot {
-            continue;
+        if payload["forward"] != snapshot {
+            payload["forward"] = snapshot;
+            changed.push((id, channel, external, payload));
         }
-        let seq: i64 = sqlx::query_scalar(
-            "UPDATE public.channels SET last_seq=last_seq+1 WHERE id=$1 RETURNING last_seq",
-        )
-        .bind(channel)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(database_error)?;
-        payload["forward"] = snapshot;
-        payload["forwardSeq"] = json!(seq.to_string());
-        sqlx::query("UPDATE public.messages SET payload=$2 WHERE id=$1")
-            .bind(id)
-            .bind(&payload)
-            .execute(&mut **tx)
-            .await
-            .map_err(database_error)?;
-        sqlx::query("INSERT INTO public.channel_events(channel_id,seq,payload) VALUES($1,$2,$3)")
-            .bind(channel).bind(seq).bind(json!({"type":"message.forward","schemaVersion":1,"channelId":external,"seq":seq.to_string(),"message":payload})).execute(&mut **tx).await.map_err(database_error)?;
     }
+    if changed.is_empty() {
+        return Ok(());
+    }
+    let mut runs = std::collections::BTreeMap::<i64, i64>::new();
+    for (_, channel, _, _) in &changed {
+        *runs.entry(*channel).or_default() += 1;
+    }
+    let (channels, counts): (Vec<i64>, Vec<i64>) = runs.into_iter().unzip();
+    let heads: Vec<(i64, i64)> = sqlx::query_as(
+        "UPDATE public.channels c SET last_seq=c.last_seq+n.count FROM unnest($1::bigint[],$2::bigint[]) n(id,count)
+         WHERE c.id=n.id RETURNING c.id,c.last_seq",
+    )
+    .bind(&channels)
+    .bind(&counts)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(database_error)?;
+    // Each channel's revisions continue from its previous head, in forward order.
+    let mut next: std::collections::HashMap<i64, i64> = heads.into_iter().collect();
+    for (channel, count) in channels.iter().zip(&counts) {
+        *next.get_mut(channel).ok_or_else(unavailable)? -= count - 1;
+    }
+    let (mut ids, mut payloads) = (Vec::new(), Vec::new());
+    let (mut event_channels, mut seqs, mut events) = (Vec::new(), Vec::new(), Vec::new());
+    for (id, channel, external, mut payload) in changed {
+        let head = next.get_mut(&channel).ok_or_else(unavailable)?;
+        let seq = *head;
+        *head += 1;
+        payload["forwardSeq"] = json!(seq.to_string());
+        events.push(json!({"type":"message.forward","schemaVersion":1,"channelId":external,"seq":seq.to_string(),"message":&payload}));
+        event_channels.push(channel);
+        seqs.push(seq);
+        ids.push(id);
+        payloads.push(payload);
+    }
+    sqlx::query("UPDATE public.messages m SET payload=u.payload FROM unnest($1::bigint[],$2::jsonb[]) u(id,payload) WHERE m.id=u.id")
+        .bind(&ids).bind(&payloads).execute(&mut **tx).await.map_err(database_error)?;
+    sqlx::query("INSERT INTO public.channel_events(channel_id,seq,payload) SELECT * FROM unnest($1::bigint[],$2::bigint[],$3::jsonb[])")
+        .bind(&event_channels).bind(&seqs).bind(&events).execute(&mut **tx).await.map_err(database_error)?;
     Ok(())
 }

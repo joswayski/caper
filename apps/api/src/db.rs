@@ -6,6 +6,10 @@ use sqlx::{
 use std::{str::FromStr, time::Duration};
 
 const IDLE_PING_AFTER: Duration = Duration::from_secs(30);
+/// Runtime pool size per process unless `DATABASE_MAX_CONNECTIONS` overrides
+/// it. Every API and gateway pod holds its own pool, so replicas multiply it.
+const DEFAULT_MAX_CONNECTIONS: u32 = 5;
+const MAX_CONNECTIONS_LIMIT: u32 = 100;
 
 /// Migrates through the direct connection, then connects using the application role.
 ///
@@ -21,6 +25,7 @@ pub async fn connect_database(environment: &RuntimeEnvironment) -> Result<Option
     };
     // Validate runtime configuration before performing any schema changes.
     connect_options(&url)?;
+    max_connections()?;
     migrate_database(environment).await?;
     let pool = connect(&url).await?;
     Ok(Some(pool))
@@ -118,10 +123,29 @@ fn connect_options_with(url: &str, allow_insecure: bool) -> Result<PgConnectOpti
     Ok(options)
 }
 
+fn max_connections() -> Result<u32, String> {
+    max_connections_from(std::env::var("DATABASE_MAX_CONNECTIONS").ok().as_deref())
+}
+
+fn max_connections_from(value: Option<&str>) -> Result<u32, String> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(DEFAULT_MAX_CONNECTIONS);
+    };
+    value
+        .parse()
+        .ok()
+        .filter(|size| (1..=MAX_CONNECTIONS_LIMIT).contains(size))
+        .ok_or_else(|| {
+            format!(
+                "DATABASE_MAX_CONNECTIONS must be a whole number from 1 to {MAX_CONNECTIONS_LIMIT}"
+            )
+        })
+}
+
 async fn connect(url: &str) -> Result<PgPool, String> {
     let options = connect_options(url)?;
     PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(max_connections()?)
         .acquire_timeout(Duration::from_secs(10))
         // SQLx already pings every connection as it returns to the pool, so a
         // second ping on each checkout only adds a round trip per query. Keep
@@ -255,6 +279,17 @@ mod tests {
             .get_ssl_mode(),
             PgSslMode::VerifyFull
         ));
+    }
+
+    #[test]
+    fn pool_size_defaults_to_five_and_rejects_invalid_overrides() {
+        assert_eq!(max_connections_from(None), Ok(5));
+        assert_eq!(max_connections_from(Some(" ")), Ok(5));
+        assert_eq!(max_connections_from(Some("12")), Ok(12));
+        assert_eq!(max_connections_from(Some(" 100 ")), Ok(100));
+        for invalid in ["0", "101", "-1", "1.5", "many"] {
+            assert!(max_connections_from(Some(invalid)).is_err(), "{invalid}");
+        }
     }
 
     #[test]
