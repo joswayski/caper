@@ -8,11 +8,15 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Request heads larger than this are refused.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
+/// Connections served at once, each on its own thread. FFmpeg holds one per
+/// playing video; more are refused rather than each taking a thread.
+const MAX_CONNECTIONS: usize = 8;
 
 #[derive(Clone)]
 pub struct MediaProxy {
@@ -31,14 +35,22 @@ impl MediaProxy {
             .build()
             .map_err(std::io::Error::other)?;
         let shared = routes.clone();
+        let active = Arc::new(AtomicUsize::new(0));
         std::thread::Builder::new()
             .name("media-proxy".into())
             .spawn(move || {
-                for stream in listener.incoming().flatten() {
+                for mut stream in listener.incoming().flatten() {
+                    let Some(slot) = Slot::take(&active) else {
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                        continue;
+                    };
                     let routes = shared.clone();
                     let client = client.clone();
                     std::thread::spawn(move || {
                         let _ = serve(stream, &routes, &client);
+                        drop(slot);
                     });
                 }
             })?;
@@ -66,6 +78,26 @@ impl MediaProxy {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(token);
         }
+    }
+}
+
+/// One of the `MAX_CONNECTIONS` places, given back when dropped.
+struct Slot(Arc<AtomicUsize>);
+
+impl Slot {
+    fn take(active: &Arc<AtomicUsize>) -> Option<Self> {
+        active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_CONNECTIONS).then_some(count + 1)
+            })
+            .ok()
+            .map(|_| Self(active.clone()))
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -275,5 +307,35 @@ mod tests {
         assert_eq!(get(&unknown, None).0, 404);
         proxy.remove(&local);
         assert_eq!(get(&local, None).0, 404);
+    }
+
+    #[test]
+    fn connections_beyond_the_limit_are_refused_until_places_free() {
+        let proxy = MediaProxy::start().unwrap();
+        let local = proxy.route(&origin(b"0123456789"));
+        let address = local
+            .strip_prefix("http://")
+            .and_then(|rest| rest.split_once('/'))
+            .unwrap()
+            .0
+            .to_owned();
+        // Idle connections that never send a request hold every place.
+        let held: Vec<TcpStream> = (0..MAX_CONNECTIONS)
+            .map(|_| TcpStream::connect(&address).unwrap())
+            .collect();
+        // A request still waiting to be sent, so refusing it cannot reset
+        // the connection before the answer arrives.
+        let mut refused = String::new();
+        TcpStream::connect(&address)
+            .unwrap()
+            .read_to_string(&mut refused)
+            .unwrap();
+        assert!(refused.starts_with("HTTP/1.1 503 "), "{refused}");
+        drop(held);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while get(&local, None).0 != 200 {
+            assert!(std::time::Instant::now() < deadline, "places come back");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 }

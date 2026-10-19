@@ -67,12 +67,6 @@ const ART: egui::Vec2 = egui::vec2(176.0, 128.0);
 const CARD: egui::Vec2 = egui::vec2(54.0, 66.0);
 const CHARACTER: f32 = 76.0;
 
-/// Overshoots and settles, like CSS `cubic-bezier(0.34, 1.56, 0.64, 1)`.
-fn back_out(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0) - 1.0;
-    1.0 + 2.70158 * t * t * t + 1.70158 * t * t
-}
-
 fn ease_in_out(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -116,8 +110,67 @@ pub(crate) fn hop(elapsed: f32) -> (f32, f32, f32) {
     (lerp(from.1, to.1), lerp(from.2, to.2), lerp(from.3, to.3))
 }
 
-/// Paints the overlay over `area`, `elapsed` seconds after the drag arrived.
-/// It never takes input: dropping stays with the window.
+/// Where the moving parts are, `elapsed` seconds after the drag arrived. The
+/// card, fan and character arrive like other entrances (`--ease-out`, opacity
+/// and translation only); then the cards sway and the character hops.
+#[derive(Debug, PartialEq)]
+struct Pose {
+    /// The dimmed backdrop's opacity.
+    fade: f32,
+    /// The card's opacity, and how far it has risen into place.
+    card_opacity: f32,
+    card_rise: f32,
+    /// The file cards' opacity, how far they have spread into place, and
+    /// each one's sway.
+    fan_opacity: f32,
+    fan: f32,
+    sway: [f32; 3],
+    /// The character's opacity, how far it has risen, and its hop.
+    character_opacity: f32,
+    character_rise: f32,
+    hop: (f32, f32, f32),
+}
+
+impl Pose {
+    /// With reduced motion everything shows its resting pose at once.
+    fn at(elapsed: f32, reduced: bool) -> Self {
+        if reduced {
+            return Self {
+                fade: 1.0,
+                card_opacity: 1.0,
+                card_rise: 1.0,
+                fan_opacity: 1.0,
+                fan: 1.0,
+                sway: [0.0; 3],
+                character_opacity: 1.0,
+                character_rise: 1.0,
+                hop: (0.0, 1.0, 1.0),
+            };
+        }
+        let ease = crate::motion::ease_out;
+        let fan = progress(elapsed, 0.06, crate::motion::SLOW);
+        let rise = progress(elapsed, 0.12, crate::motion::SLOW);
+        Self {
+            fade: progress(elapsed, 0.0, crate::motion::FAST),
+            card_opacity: progress(elapsed, 0.0, 0.12),
+            card_rise: ease(progress(elapsed, 0.0, crate::motion::SLOW)),
+            fan_opacity: fan,
+            fan: ease(fan),
+            sway: [
+                sway(elapsed, 0.48),
+                sway(elapsed, 0.78),
+                1.0 - sway(elapsed, 0.48),
+            ],
+            character_opacity: rise,
+            character_rise: ease(rise),
+            hop: hop(elapsed),
+        }
+    }
+}
+
+/// Paints the overlay over `area`, `elapsed` seconds after the drag arrived,
+/// and returns whether it is still moving (it never stops unless the system
+/// reduces motion). It never takes input: dropping stays with the window.
 pub fn paint(
     context: &egui::Context,
     area: egui::Rect,
@@ -125,18 +178,19 @@ pub fn paint(
     character: (String, &'static [u8]),
     title: &str,
     detail: &str,
-) {
+) -> bool {
+    let reduced = crate::motion::reduced();
+    let pose = Pose::at(elapsed, reduced);
     egui::Area::new(egui::Id::new("file-drop"))
         .order(egui::Order::Foreground)
         .fixed_pos(area.min)
         .interactable(false)
         .show(context, |ui| {
             ui.set_clip_rect(area);
-            let fade = progress(elapsed, 0.0, 0.14);
             ui.painter().rect_filled(
                 area,
                 0.0,
-                Color32::from_rgba_unmultiplied(12, 13, 15, (209.0 * fade) as u8),
+                Color32::from_rgba_unmultiplied(12, 13, 15, (209.0 * pose.fade) as u8),
             );
 
             let width = (area.width() - 32.0).clamp(120.0, 360.0);
@@ -153,12 +207,11 @@ pub fn paint(
             );
             let detail = centered(detail, egui::FontId::proportional(13.0), crate::MUTED);
             let height = 20.0 + ART.y + 8.0 + 6.0 + title.size().y + 6.0 + detail.size().y + 26.0;
-            let pop = progress(elapsed, 0.0, 0.26);
             let card = egui::Rect::from_center_size(
-                area.center() + egui::vec2(0.0, 10.0 * (1.0 - back_out(pop))),
+                area.center() + egui::vec2(0.0, 10.0 * (1.0 - pose.card_rise)),
                 egui::vec2(width, height),
             );
-            ui.multiply_opacity(progress(elapsed, 0.0, 0.12));
+            ui.multiply_opacity(pose.card_opacity);
             let painter = ui.painter().clone();
             painter.add(
                 egui::epaint::Shadow {
@@ -194,47 +247,36 @@ pub fn paint(
                 egui::pos2(card.center().x - ART.x / 2.0, card.top() + 20.0),
                 ART,
             );
-            // The middle card first, behind the other two.
+            // The middle card first, behind the other two. Each slides out
+            // and up from the middle at its resting turn.
             for index in [1, 0, 2] {
                 let (x, y, turn) = POSES[index];
-                let fan = progress(elapsed, 0.06, 0.42);
-                let eased = back_out(fan);
-                let swayed = match index {
-                    0 => sway(elapsed, 0.48),
-                    1 => sway(elapsed, 0.78),
-                    _ => 1.0 - sway(elapsed, 0.48),
-                };
-                let scale = 0.7 + 0.3 * eased;
+                let swayed = pose.sway[index];
                 let pivot = art.min
                     + egui::vec2(
-                        ART.x / 2.0 + x * eased,
-                        98.0 + 24.0 + (y - 24.0) * eased - 3.0 * swayed,
+                        ART.x / 2.0 + x * pose.fan,
+                        98.0 + 24.0 + (y - 24.0) * pose.fan - 3.0 * swayed,
                     );
                 let rect = egui::Rect::from_min_max(
-                    pivot - egui::vec2(CARD.x * scale / 2.0, CARD.y * scale),
-                    pivot + egui::vec2(CARD.x * scale / 2.0, 0.0),
+                    pivot - egui::vec2(CARD.x / 2.0, CARD.y),
+                    pivot + egui::vec2(CARD.x / 2.0, 0.0),
                 );
                 let (uri, svg) = CARDS[index];
                 egui::Image::from_bytes(uri, svg.as_bytes())
-                    .rotate(
-                        (turn * eased + 4.0 * swayed).to_radians(),
-                        egui::vec2(0.5, 1.0),
-                    )
-                    .tint(Color32::WHITE.gamma_multiply(fan.min(1.0)))
+                    .rotate((turn + 4.0 * swayed).to_radians(), egui::vec2(0.5, 1.0))
+                    .tint(Color32::WHITE.gamma_multiply(pose.fan_opacity))
                     .paint_at(ui, rect);
             }
 
-            let rise = progress(elapsed, 0.12, 0.38);
-            let eased = back_out(rise);
-            let (lift, squash_x, squash_y) = hop(elapsed);
-            let size = CHARACTER * (0.6 + 0.4 * eased);
-            let bottom = art.center_bottom() + egui::vec2(0.0, 4.0 + 28.0 * (1.0 - eased) + lift);
+            let (lift, squash_x, squash_y) = pose.hop;
+            let bottom = art.center_bottom()
+                + egui::vec2(0.0, 4.0 + 28.0 * (1.0 - pose.character_rise) + lift);
             let rect = egui::Rect::from_min_max(
-                bottom - egui::vec2(size * squash_x / 2.0, size * squash_y),
-                bottom + egui::vec2(size * squash_x / 2.0, 0.0),
+                bottom - egui::vec2(CHARACTER * squash_x / 2.0, CHARACTER * squash_y),
+                bottom + egui::vec2(CHARACTER * squash_x / 2.0, 0.0),
             );
             egui::Image::from_bytes(character.0, character.1)
-                .tint(Color32::WHITE.gamma_multiply(rise))
+                .tint(Color32::WHITE.gamma_multiply(pose.character_opacity))
                 .paint_at(ui, rect);
 
             let mut top = art.bottom() + 8.0 + 6.0;
@@ -242,6 +284,7 @@ pub fn paint(
             top += title.size().y + 6.0;
             painter.galley(egui::pos2(card.center().x, top), detail, crate::MUTED);
         });
+    !reduced
 }
 
 #[cfg(test)]
@@ -281,9 +324,30 @@ mod tests {
 
     #[test]
     fn animations_settle_at_the_resting_pose() {
-        assert!((back_out(0.0)).abs() < 1e-6);
-        assert!((back_out(1.0) - 1.0).abs() < 1e-6);
-        assert!(back_out(0.7) > 1.0, "the fan overshoots before settling");
+        let rest = Pose::at(0.0, true);
+        // Reduced motion shows the resting pose from the first frame.
+        assert_eq!(Pose::at(5.0, true), rest);
+        assert_eq!(
+            (rest.fan, rest.character_rise, rest.sway),
+            (1.0, 1.0, [0.0; 3])
+        );
+        let start = Pose::at(0.0, false);
+        assert_eq!(
+            (start.fade, start.fan_opacity, start.character_rise),
+            (0.0, 0.0, 0.0)
+        );
+        // Entrances decelerate into place without overshooting.
+        let mut previous = 0.0;
+        for step in 0..=40 {
+            let rise = Pose::at(0.12 + step as f32 * 0.01, false).character_rise;
+            assert!((previous..=1.0).contains(&rise), "{rise} after {previous}");
+            previous = rise;
+        }
+        let landed = Pose::at(0.4, false);
+        assert_eq!(
+            (landed.fan, landed.card_rise, landed.character_rise),
+            (1.0, 1.0, 1.0)
+        );
         assert_eq!(hop(0.0), (0.0, 1.0, 1.0));
         let (lift, _, _) = hop(0.5 + 1.6 * 0.25);
         assert!((lift + 9.0).abs() < 1e-3, "the top of the hop");

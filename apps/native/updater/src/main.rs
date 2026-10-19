@@ -41,6 +41,8 @@ const MAX_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
 const EXIT_WAIT: Duration = Duration::from_secs(60);
 /// Set on the relocated copy so it does not relocate again.
 const RELOCATED_FLAG: &str = "--relocated";
+/// Name prefix of the relocated updater's temporary folder.
+const RELOCATION_PREFIX: &str = "caper-updater-";
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -334,11 +336,16 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
         let artifact = manifest
             .update_for(platform, current)
             .ok_or("no newer build for this platform")?;
-        let archive = env::temp_dir().join(format!("caper-update-{}", manifest.build));
+        // A fresh private folder, removed on drop: a predictable path in a
+        // shared /tmp could be pre-created or swapped between hashing and
+        // unpacking by another local user.
+        let download_folder = private_temp_folder("caper-update-")?;
+        let archive = download_folder
+            .path()
+            .join(format!("caper-update-{}", manifest.build));
         download(&artifact.url, artifact.size, &archive)?;
         let digest = install::sha256_file(&archive)?;
         if digest != artifact.sha256 {
-            fs::remove_file(&archive).ok();
             return Err(
                 format!("download checksum {digest} does not match the signed manifest").into(),
             );
@@ -354,7 +361,6 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
         log(&format!("installed build {}", manifest.build));
         install::remove_if_present(&stage).ok();
         install::remove_if_present(&old).ok();
-        fs::remove_file(&archive).ok();
         Ok(())
     })();
     if let Err(error) = &result {
@@ -363,8 +369,35 @@ fn apply(options: &Options, args: &[OsString]) -> Result<()> {
     } else if let Ok(path) = install::sibling(&install, "update-error") {
         fs::remove_file(path).ok();
     }
-    relaunch(layout, &install)?;
+    let relaunched = relaunch(layout, &install);
+    remove_relocated_copy();
+    relaunched?;
     result
+}
+
+/// Unix lets a running program delete its own folder; Windows locks it, so
+/// that copy stays for the system's temp cleanup.
+fn remove_relocated_copy() {
+    #[cfg(unix)]
+    if let Ok(exe) = env::current_exe()
+        && let Some(folder) = exe.parent()
+        && is_relocation_folder(folder)
+    {
+        install::remove_if_present(folder).ok();
+    }
+}
+
+/// Only a folder `relocate_command` made: never the install, even when
+/// `--relocated` is passed by hand.
+#[cfg(any(unix, test))]
+fn is_relocation_folder(folder: &Path) -> bool {
+    let in_temp = |temp: &Path| folder.parent() == Some(temp);
+    let temp = env::temp_dir();
+    (in_temp(&temp) || fs::canonicalize(&temp).is_ok_and(|temp| in_temp(&temp)))
+        && folder
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(RELOCATION_PREFIX))
 }
 
 // Operational feedback lives beside the replaceable app, not in it. Bind it to
@@ -396,8 +429,9 @@ fn last_failure(install: &Path, current_build: u64) -> Option<String> {
 fn relocate_command(args: &[OsString]) -> Result<Command> {
     let source = env::current_exe()?;
     let name = source.file_name().ok_or("updater has no file name")?;
-    let folder = env::temp_dir().join(format!("caper-updater-{}", std::process::id()));
-    fs::create_dir_all(&folder)?;
+    // Never a predictable path: another user could pre-create it in a shared
+    // /tmp and replace the copy before it runs.
+    let folder = private_temp_folder(RELOCATION_PREFIX)?.keep();
     let copy = folder.join(name);
     fs::copy(&source, &copy)?;
     let mut command = Command::new(&copy);
@@ -424,6 +458,19 @@ fn relocate_command(args: &[OsString]) -> Result<Command> {
         .stderr(Stdio::null());
     command.args(args).arg(RELOCATED_FLAG);
     Ok(command)
+}
+
+/// A new, randomly named folder in the temp folder that only this user can
+/// open on Unix (tempfile otherwise leaves it 0755).
+fn private_temp_folder(prefix: &str) -> io::Result<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(prefix);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    builder.tempdir()
 }
 
 fn relaunch(layout: Layout, install: &Path) -> Result<()> {
@@ -756,7 +803,7 @@ fn download(url: &str, size: u64, target: &Path) -> Result<()> {
         return Err("update archive is too large".into());
     }
     let response = http()?.get(url).send()?.error_for_status()?;
-    let mut file = fs::File::create(target)?;
+    let mut file = fs::File::create_new(target)?;
     let copied = io::copy(&mut response.take(size + 1), &mut file)?;
     if copied != size {
         return Err(format!("downloaded {copied} bytes, expected {size}").into());
@@ -844,12 +891,50 @@ fn process_running(pid: u32) -> bool {
     }
 }
 
-/// Appends to `caper-updater.log` in the temp folder; failures are ignored.
+/// Appends to `caper-updater.log`; failures are ignored.
 fn log(message: &str) {
-    let path = env::temp_dir().join("caper-updater.log");
-    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+    let Some(path) = log_path() else {
+        return;
+    };
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Ok(mut file) = options.open(path) {
         let _ = writeln!(file, "{message}");
     }
+}
+
+/// macOS ($TMPDIR) and Windows (%TEMP%) temp folders belong to the user. Linux
+/// /tmp is shared, so the log goes to the XDG state folder instead.
+fn log_path() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    let folder = {
+        let folder = linux_log_folder(
+            env::var_os("XDG_STATE_HOME").map(PathBuf::from),
+            env::var_os("HOME").map(PathBuf::from),
+        )?;
+        fs::create_dir_all(&folder).ok()?;
+        folder
+    };
+    #[cfg(not(target_os = "linux"))]
+    let folder = env::temp_dir();
+    Some(folder.join("caper-updater.log"))
+}
+
+/// `$XDG_STATE_HOME/caper`, else `~/.local/state/caper`.
+#[cfg(any(target_os = "linux", test))]
+fn linux_log_folder(xdg_state: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    xdg_state
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            home.filter(|path| path.is_absolute())
+                .map(|home| home.join(".local/state"))
+        })
+        .map(|state| state.join("caper"))
 }
 
 #[cfg(test)]
@@ -1381,7 +1466,6 @@ mod tests {
             .env(INSTALL, &install)
             .spawn()
             .unwrap();
-        let relocated_folder = env::temp_dir().join(format!("caper-updater-{}", child.id()));
         let status = child.wait().unwrap();
         assert!(status.success(), "relocated updater failed: {status}");
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1394,8 +1478,9 @@ mod tests {
         }
         let working_folder: PathBuf = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
         // Check the actual child process, not only Command's configuration.
-        assert_eq!(working_folder, relocated_folder.canonicalize().unwrap());
+        assert!(is_relocation_folder(&working_folder));
         assert!(!working_folder.starts_with(install.canonicalize().unwrap()));
+        let relocated_folder = working_folder;
         assert_eq!(
             fs::read_to_string(install.join(app)).unwrap(),
             "untouched app"
@@ -1413,6 +1498,49 @@ mod tests {
             assert!(Instant::now() < deadline, "relocated updater did not exit");
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn each_relocation_gets_a_new_private_folder() {
+        let folders: Vec<PathBuf> = (0..2)
+            .map(|_| {
+                let command = relocate_command(&[]).unwrap();
+                let folder = command.get_current_dir().unwrap().to_path_buf();
+                assert_eq!(
+                    command.get_program(),
+                    folder.join(env::current_exe().unwrap().file_name().unwrap())
+                );
+                folder
+            })
+            .collect();
+        assert_ne!(folders[0], folders[1], "names must not be predictable");
+        for folder in &folders {
+            assert!(is_relocation_folder(folder));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = fs::metadata(folder).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o700);
+            }
+            install::remove_if_present(folder).unwrap();
+        }
+        // Cleanup never reaches an install or the temp folder itself.
+        assert!(!is_relocation_folder(&env::temp_dir()));
+        assert!(!is_relocation_folder(&env::temp_dir().join("Caper")));
+        assert!(!is_relocation_folder(Path::new("/opt/caper-updater-x")));
+    }
+
+    #[test]
+    fn linux_log_lives_in_the_users_state_folder() {
+        assert_eq!(
+            linux_log_folder(Some("/state".into()), Some("/home/a".into())),
+            Some(PathBuf::from("/state/caper"))
+        );
+        assert_eq!(
+            linux_log_folder(Some("relative".into()), Some("/home/a".into())),
+            Some(PathBuf::from("/home/a/.local/state/caper"))
+        );
+        assert_eq!(linux_log_folder(None, Some("relative".into())), None);
     }
 
     #[cfg(target_os = "linux")]

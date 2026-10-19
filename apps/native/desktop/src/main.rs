@@ -7852,7 +7852,7 @@ impl CaperApp {
 
     /// A dialog or modal layer covers the conversation and its composer.
     fn conversation_covered(&self) -> bool {
-        self.updates.available().is_some()
+        self.updates.has_available()
             || self.dialog.is_some()
             || self.showing_pins
             || self.message_editor.is_some()
@@ -9158,7 +9158,7 @@ impl eframe::App for CaperApp {
         self.periodic(context);
         self.attachment_housekeeping(context);
         // Before the page: the viewer is modal and takes the keys it uses.
-        if self.updates.available().is_none()
+        if !self.updates.has_available()
             && let Some(mut viewer) = self.viewer.take()
             && viewer.show(
                 context,
@@ -9205,7 +9205,7 @@ impl eframe::App for CaperApp {
         self.settings_menu_dialog = from_settings_menu;
         // Only an open forward looks messages up: don't copy the whole
         // timeline every frame otherwise.
-        if self.updates.available().is_none() {
+        if !self.updates.has_available() {
             let messages = if self.forwarding.is_open() {
                 self.timeline
                     .messages()
@@ -9286,7 +9286,7 @@ impl CaperApp {
             && self.mention_card.is_none()
             && !self.forwarding.is_open()
             && !egui::Popup::is_any_open(context)
-            && self.updates.available().is_none()
+            && !self.updates.has_available()
             && self.whats_new.open_unread()
         {
             self.dialog = Some(Dialog::WhatsNew);
@@ -9352,7 +9352,7 @@ impl CaperApp {
             // tools hand over to the editor within this pass.
             self.attachment_editor_shown =
                 self.attachment_editor.is_some() || self.draft_preview.is_some();
-            if self.updates.available().is_none() {
+            if !self.updates.has_available() {
                 self.draft_preview_dialog(context);
                 self.attachment_editor_dialog(context);
             }
@@ -9360,7 +9360,7 @@ impl CaperApp {
             if self.dialog.is_none()
                 && self.attachment_editor.is_none()
                 && self.draft_preview.is_none()
-                && self.updates.available().is_none()
+                && !self.updates.has_available()
                 && context.input_mut(|input| {
                     input.consume_shortcut(&egui::KeyboardShortcut::new(
                         egui::Modifiers::COMMAND,
@@ -9372,7 +9372,7 @@ impl CaperApp {
             }
             let dialog_was_open = self.dialog.is_some();
             self.shell(context);
-            if self.updates.available().is_none() {
+            if !self.updates.has_available() {
                 self.pins_dialog(context);
                 if self.picture_edit.gallery.is_none() {
                     self.dialogs(context, dialog_was_open);
@@ -9382,7 +9382,7 @@ impl CaperApp {
             }
             self.dismiss_emoji_picker_outside(context);
         }
-        if self.account.is_some() && self.updates.available().is_none() {
+        if self.account.is_some() && !self.updates.has_available() {
             self.space_notice(context);
         }
         // egui's buttons and custom click targets do not set a hand cursor.
@@ -9790,7 +9790,7 @@ impl CaperApp {
             title = "Attach to thread".into();
         }
         let index = self.daily_icon.as_ref().map_or(0, |icon| icon.index);
-        file_drop::paint(
+        let moving = file_drop::paint(
             context,
             conversation,
             (now - since) as f32,
@@ -9801,7 +9801,9 @@ impl CaperApp {
             &title,
             &detail,
         );
-        context.request_repaint();
+        if moving {
+            context.request_repaint();
+        }
     }
 
     /// Whether the loading page still covers the first navigation.
@@ -14081,7 +14083,7 @@ impl CaperApp {
                         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                             self.update_check_status(ui);
                         });
-                        if self.updates.available().is_some() {
+                        if self.updates.has_available() {
                             ui.close();
                         }
                         ui.separator();
@@ -16102,7 +16104,7 @@ impl CaperApp {
                     })).map(|message| message.id.clone());
                     // The row above for grouping; dividers and placeholders clear it.
                     let mut previous: Option<grouping::Row> = None;
-                    for row in blocking::rows(&messages, &self.blocked_ids(), me.as_deref()) {
+                    for row in blocking::rows(&messages, &blocked_ids, me.as_deref()) {
                         let (range, blocked) = match row {
                             blocking::Row::Message(index) => (index..index + 1, None),
                             blocking::Row::Blocked { range, key } => (range, Some(key)),
