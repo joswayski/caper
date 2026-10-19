@@ -2095,7 +2095,7 @@ try {
     wait(`getComputedStyle(document.querySelector('[aria-label="Undeafen audio"]')).color === 'rgb(255, 113, 130)'`);
     assert.equal(
       evaluate(`return getComputedStyle(document.querySelector('[aria-label="Output Options"]')).color;`),
-      "rgb(237, 82, 101)",
+      "rgb(255, 113, 130)",
       "Dropdown must share the active red state",
     );
     screenshot("voice-prejoin-deafened-hover");

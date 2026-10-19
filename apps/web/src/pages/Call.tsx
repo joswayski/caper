@@ -206,6 +206,9 @@ function AudioMenu({
     const anchor = panel?.closest(".call-account");
     if (!open || !panel || !anchor) return;
     panel.showPopover();
+    // Keep the side chosen on opening. Scrolling/browser chrome must not flip
+    // the menu around the account bar while a finger is aiming at an action.
+    let down: boolean | undefined;
     const position = () => {
       const viewport = window.visualViewport;
       const x = viewport?.offsetLeft ?? 0;
@@ -218,11 +221,16 @@ function AudioMenu({
       panel.style.width = `${panelWidth}px`;
       const above = Math.max(0, bounds.top - y - edge * 2);
       const below = Math.max(0, y + height - bounds.bottom - edge * 2);
-      const down = panel.scrollHeight + 2 > above && below > above;
-      panel.style.maxHeight = `${Math.min(height - edge * 2, down ? below : above)}px`;
-      const panelHeight = panel.getBoundingClientRect().height;
+      down ??= panel.scrollHeight + 2 > above && below > above;
+      // On phones the account bar is at the bottom; keep the menu above it.
+      // If the viewport shrinks, clamp/scroll the panel, never stretch its rows.
+      const narrow = window.matchMedia("(max-width: 760px)").matches;
+      const available = narrow ? Math.max(0, Math.min(bounds.top, y + height) - y - edge * 2) : down ? below : above;
+      panel.style.maxHeight = `${Math.min(height - edge * 2, Math.max(44, available))}px`;
+      // offsetHeight excludes the entrance animation's translate.
+      const panelHeight = panel.offsetHeight;
       panel.style.left = `${Math.max(x + edge, Math.min(settings ? bounds.left : bounds.right - panelWidth, x + width - panelWidth - edge))}px`;
-      panel.style.top = `${Math.max(y + edge, Math.min(down ? bounds.bottom + edge : bounds.top - panelHeight - edge, y + height - panelHeight - edge))}px`;
+      panel.style.top = `${Math.max(y + edge, Math.min(!narrow && down ? bounds.bottom + edge : bounds.top - panelHeight - edge, y + height - panelHeight - edge))}px`;
     };
     position();
     const observer = new ResizeObserver(position);

@@ -43,7 +43,8 @@ try {
   browser("wait", "--fn", '!!document.querySelector(".chat-message")');
   evaluate("document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))))");
   browser("fill", "#chat-message", "Draft survives smooth navigation");
-  browser("click", ".chat-heading");
+  // The title now opens a menu that intentionally blocks navigation swipes.
+  browser("click", ".chat-history");
 
   socket = new WebSocket(browser("get", "cdp-url").cdpUrl);
   await new Promise((resolve) => socket.addEventListener("open", resolve, { once: true }));
@@ -86,14 +87,22 @@ try {
 
   // Assert the rendered offset, not animation duration or internal easing parameters.
   // A held release must start gently, move monotonically and reach its destination.
-  const checkRelease = async ({ members = false, fraction = 0.68, held = true, commit = true, captureName }) => {
+  const checkRelease = async ({
+    members = false,
+    fraction = 0.68,
+    held = true,
+    commit = true,
+    captureName,
+    region,
+    drift = 0,
+  }) => {
     const open = members
       ? evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded") === "true"')
       : browsing();
     const direction = members ? (open ? 1 : -1) : open ? -1 : 1;
     const geometry = evaluate(`(() => {
       const room = document.querySelector('.spaces-room'), r = room.getBoundingClientRect();
-      const region = document.querySelector(${JSON.stringify(members && open ? ".space-member-presence" : !members && open ? ".channel-navigation" : ".chat-scroller")}).getBoundingClientRect();
+      const region = document.querySelector(${JSON.stringify(region ?? (members && open ? ".space-member-presence" : !members && open ? ".channel-navigation" : ".chat-scroller"))}).getBoundingClientRect();
       return { x: ${direction} > 0 ? region.left + 4 : region.right - 4,
         y: region.bottom - 70,
         travel: ${members} ? Math.min(280, r.width - 64) + 8 + 48 : document.documentElement.clientWidth - r.left + 48 };
@@ -102,7 +111,12 @@ try {
     await touch("touchStart", geometry.x, geometry.y);
     const steps = held ? 40 : 8;
     for (let step = 1; step <= steps; step++) {
-      await touch("touchMove", geometry.x + (dx * step) / steps, geometry.y, held ? 0.03 : 0.012);
+      await touch(
+        "touchMove",
+        geometry.x + (dx * step) / steps,
+        geometry.y + (drift * step) / steps,
+        held ? 0.03 : 0.012,
+      );
       await pause(held ? 20 : 8);
     }
     // Let the last drag frame paint; hold longer than the velocity sampling window.
@@ -149,7 +163,7 @@ try {
         ? evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded") === "true"')
         : browsing(),
       open !== commit,
-      "Keep halfway/flick navigation rules",
+      "Keep deliberate swipes, cancellation and flick navigation rules",
     );
     console.log(
       `${members ? "Members" : "Browse"} ${open ? "close" : "open"}, ${held ? "held" : "fling"}, ${commit ? "commit" : "cancel"}: ${result.frames.length} painted frames; early positions ${frames
@@ -171,7 +185,11 @@ try {
     recording = false;
     browser("record", "stop");
   }
-  await checkRelease({ fraction: 0.3, commit: false });
+  // Slow thumb-length swipes should work without reaching across the screen.
+  await checkRelease({ fraction: 0.35, drift: -24 });
+  // A nested channel/DM scroller must not steal a horizontal drag from Browse.
+  await checkRelease({ fraction: 0.35, drift: -24, region: "#sidebar-directs" });
+  await checkRelease({ fraction: 0.2, commit: false });
   await checkRelease({ fraction: 0.2, held: false });
   await checkRelease({ fraction: 0.2, held: false });
   if (artifacts) {
@@ -190,8 +208,66 @@ try {
   browser("find", "role", "button", "click", "--name", "Back to Browse", "--exact");
   assert.equal(browsing(), true);
   assert.equal(evaluate('document.querySelector(".spaces-room > .stage").getAnimations().length'), 0);
+  browser("set", "media", "no-preference");
+  browser("find", "role", "button", "click", "--name", "User Settings", "--exact");
+  browser(
+    "wait",
+    "--fn",
+    '!document.querySelector(".call-settings-panel").getAnimations().some(a => a.playState === "running")',
+  );
+  const menuRows = () =>
+    evaluate(
+      `Array.from(document.querySelectorAll('.call-settings-panel > button')).map(e => e.getBoundingClientRect().height)`,
+    );
+  const rows = menuRows();
+  assert.ok(
+    rows.every((height) => height >= 44 && height <= 48),
+    "Settings actions are compact touch targets",
+  );
+  for (const [width, height] of [
+    [390, 740],
+    [390, 460],
+    [640, 360],
+    [640, 240],
+    [320, 568],
+    [430, 932],
+  ]) {
+    browser("set", "viewport", String(width), String(height), "2");
+    evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
+    assert.ok(
+      evaluate(`(() => {
+      const menu = document.querySelector('.call-settings-panel').getBoundingClientRect();
+      const account = document.querySelector('.call-account').getBoundingClientRect();
+      return menu.top >= 0 && menu.left >= 0 && menu.right <= innerWidth && menu.bottom <= account.top
+        && account.bottom <= innerHeight && document.documentElement.scrollHeight <= innerHeight;
+    })()`),
+      `Menu/account remain visible without document overflow at ${width}×${height}`,
+    );
+    assert.deepEqual(menuRows(), rows, "Browser chrome/rotation must not stretch menu actions");
+    const before = evaluate("scrollY");
+    const box = evaluate("document.querySelector('.call-settings-panel').getBoundingClientRect().toJSON()");
+    await touch("touchStart", box.x + 20, box.y + box.height - 10);
+    for (let step = 1; step <= 8; step++) await touch("touchMove", box.x + 20, box.y + box.height - 10 - step * 10);
+    await touch("touchEnd", 0, 0);
+    assert.equal(evaluate("scrollY"), before, "Dragging the settings menu must not scroll the page");
+    assert.deepEqual(menuRows(), rows, "Scrolling must not stretch menu actions");
+    if (height === 240) {
+      browser("focus", ".call-settings-panel > button:last-child");
+      assert.ok(
+        evaluate(`(() => {
+        const menu = document.querySelector('.call-settings-panel'), last = menu.lastElementChild;
+        return menu.scrollTop > 0 && last.getBoundingClientRect().bottom <= menu.getBoundingClientRect().bottom;
+      })()`),
+        "A constrained menu scrolls its last action into view without moving the page",
+      );
+      assert.equal(evaluate("scrollY"), before);
+    }
+    capture(`settings-${width}x${height}`);
+  }
+  browser("press", "Escape");
+  assert.equal(evaluate('document.activeElement?.getAttribute("aria-label")'), "User Settings");
   console.log(
-    "PASS: smooth bidirectional held releases, snap-back, flicks, member drawer, retained draft and reduced motion.",
+    "PASS: thumb-length swipes, nested scrollers, cancellation, flicks, member drawer, retained draft, reduced motion and stable settings across six viewport sizes.",
   );
 } finally {
   try {

@@ -38,12 +38,12 @@ export function movesOf(event: PointerEvent) {
 /**
  * Whether a released drag settles at its far end (progress 1) rather than its
  * near end (0). A fling goes the way it is thrown, even back against the drag;
- * otherwise the nearer end wins. `speed` and `travelled` are in pixels toward
- * the far end.
+ * otherwise the completion threshold wins (halfway by default). `speed` and
+ * `travelled` are in pixels toward the far end.
  */
-export function settlesForward(progress: number, speed: number, travelled: number) {
+export function settlesForward(progress: number, speed: number, travelled: number, threshold = 0.5) {
   if (Math.abs(speed) >= FLING && Math.abs(travelled) >= FLING_DISTANCE) return speed > 0;
-  return progress >= 0.5;
+  return progress >= threshold;
 }
 
 export const clampProgress = (progress: number) => Math.min(1, Math.max(0, progress));

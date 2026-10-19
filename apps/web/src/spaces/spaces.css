@@ -2575,10 +2575,12 @@ html:has(.sidebar-sections-resize:active) * {
       .channel-navigation,
       .channel-navigation ul,
       .sidebar-channels,
+      .sidebar-section-scroll,
       .space-rail,
       .space-member-presence
     ) {
     touch-action: pan-y pinch-zoom;
+    overscroll-behavior-y: contain;
   }
   /* A drawer over the conversation (membersDrawer.ts slides it), outlined on
      every side and lifted by the shadow the conversation casts over Browse. */

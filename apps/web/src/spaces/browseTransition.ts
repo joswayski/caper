@@ -348,7 +348,10 @@ export function useBrowseSwipe(enabled: boolean, open: boolean, change: ((open: 
       if (drag)
         drag.release(
           released
-            ? settlesForward(clampProgress(base + (dx - origin) / travel), velocity, dx)
+            ? // A thumb starting near the middle cannot drag half a screen plus
+              // the off-screen shadow. A quarter-screen is a deliberate swipe;
+              // short drags still cancel, and a reverse fling still turns back.
+              settlesForward(clampProgress(base + (dx - origin) / travel), velocity, dx, 0.25)
             : // Interrupted: back where it started, or on to where a caught slide was going.
               (caught?.heading ?? false),
           velocity / travel,

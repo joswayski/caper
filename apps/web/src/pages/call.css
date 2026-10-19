@@ -248,9 +248,14 @@
   position: fixed;
   inset: auto;
   margin: 0;
+  /* Viewport changes must not distribute spare space among the menu's rows. */
+  height: max-content;
   box-sizing: border-box;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: grid;
+  align-content: start;
+  grid-auto-rows: max-content;
   gap: 12px;
   padding: 14px;
   border: 1px solid var(--border);
@@ -1557,6 +1562,18 @@
   }
 }
 @media (max-width: 760px) {
+  /* The workspace, not the document, owns scrolling. In particular, a short
+     landscape viewport must not push the composer/account bar below the fold. */
+  .call-page:not(.call-embedded) {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .call-page:not(.call-embedded) > .call-header {
+    flex: 0 0 auto;
+  }
   .call-room {
     width: calc(100% - 24px);
   }
@@ -1565,7 +1582,12 @@
   }
   .call-room.spaces-room {
     height: calc(100dvh - 88px);
-    min-height: 420px;
+    min-height: 0;
+  }
+  .call-page:not(.call-embedded) > .spaces-room {
+    flex: 1;
+    height: auto;
+    margin-bottom: 8px;
   }
   .spaces-room .stage {
     min-height: 0;
