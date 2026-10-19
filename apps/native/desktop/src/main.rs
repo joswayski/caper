@@ -9991,24 +9991,6 @@ impl CaperApp {
                                 {
                                     self.logout();
                                 }
-                                ui.with_layout(
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        if ui
-                                            .add(
-                                                egui::Button::new(
-                                                    RichText::new("Join with invite link")
-                                                        .size(13.6)
-                                                        .color(MUTED),
-                                                )
-                                                .frame(false),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.open_join_invite();
-                                        }
-                                    },
-                                );
                             });
                         });
                     });
@@ -10083,8 +10065,8 @@ impl CaperApp {
                             ui.add_space(24.0);
                             if compact_login_action(
                                 ui,
-                                if self.loading { "Saving…" } else { "Finish account" },
-                                "Finish account",
+                                if self.loading { "Saving…" } else { "Finish setup" },
+                                "Finish setup",
                                 self.loading
                                     || self.username.len() < 3
                                     || self.display_name.trim().is_empty()
@@ -35769,6 +35751,7 @@ mod tests {
         assert!(texts.contains(&"Name your space"));
         assert!(texts.contains(&"Create space"));
         assert!(!texts.contains(&"Direct messages"));
+        assert!(!texts.contains(&"Join with invite link"));
         // Global DM navigation still belongs to the workspace, not setup.
         app.navigation_open = true;
         assert!(!app.needs_first_space());

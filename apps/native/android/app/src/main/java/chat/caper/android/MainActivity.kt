@@ -400,7 +400,7 @@ internal data class VoiceJoinIntent(
                     // Web's first-space page: an account with no spaces names one.
                     else if (state.account != null && state.limits != null && state.invitations.isEmpty() &&
                         state.spaces.none { !it.demo } && state.selectedDirectId == null && state.visit == null && !state.feedbackShown && !navigationOpen)
-                        FirstSpaceScreen(state, viewModel) { overlay = Overlay.JoinInvite }
+                        FirstSpaceScreen(state, viewModel)
                     else HomeScreen(
                         state, voice, navigationOpen, { navigationOpen = it }, { overlay = it }, viewModel,
                     )
@@ -3617,7 +3617,7 @@ internal fun counterTone(count: Int): Color = when {
         Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
             error?.takeIf { submitted }?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
         }
-        PrimaryButton(if (account.username.isNullOrEmpty()) "Finish account" else "Save profile", "Saving…", busy, profileValid(username, name, account.displayName),
+        PrimaryButton(if (account.username.isNullOrEmpty()) "Finish setup" else "Save profile", "Saving…", busy, profileValid(username, name, account.displayName),
             Modifier.align(Alignment.End), minWidth = if (close == null) 200.dp else 148.dp,
             contentPadding = PaddingValues(horizontal = if (close == null) 20.dp else 16.dp, vertical = if (close == null) 16.dp else 8.dp)) { submitted = true; submit(username, name) }
     }
@@ -3626,7 +3626,7 @@ internal fun counterTone(count: Int): Color = when {
     else CaperDialog("Edit profile", close) { form() }
 }
 
-@Composable private fun FirstSpaceScreen(state: AppUiState, viewModel: CaperViewModel, joinInvite: () -> Unit) {
+@Composable private fun FirstSpaceScreen(state: AppUiState, viewModel: CaperViewModel) {
     var name by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     val limits = state.limits
@@ -3644,10 +3644,6 @@ internal fun counterTone(count: Int): Color = when {
         Button({ spaceNameError(name)?.let { error = it } ?: viewModel.createSpace(name.trim()) },
             enabled = allowed && !state.busy && name.isNotBlank(), modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small, colors = primaryButtonColors(),
         ) { Text(if (state.busy) "Creating…" else "Create space") }
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(joinInvite, Modifier.fillMaxWidth(), enabled = !state.busy, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-            Text("Join with invite link", color = Text)
-        }
         TextButton(viewModel::logout, Modifier.align(Alignment.End), shape = MaterialTheme.shapes.small) { Text("Log out", color = TextMuted) }
     }
 }

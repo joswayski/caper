@@ -93,7 +93,7 @@ try {
     browser("wait", "#username");
     browser("find", "label", "Username", "fill", "invite_fixture");
     browser("find", "label", "Display name", "fill", "TEST FIXTURE member");
-    browser("find", "role", "button", "click", "--name", "Finish account");
+    browser("find", "role", "button", "click", "--name", "Finish setup");
     browser("wait", "--url", "**/invite/TESTfixt01");
     browser("wait", "--fn", 'document.querySelector("main button")?.textContent.includes("Join space")');
     assert.equal(evaluate("inviteFixture.posts"), 0, "Reauthentication must not automatically accept the invite");

@@ -176,13 +176,6 @@ private struct FirstSpaceView: View {
                     Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Divider().overlay(CaperTheme.border)
-                HStack {
-                    Text("Have an invite link?").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
-                    Spacer()
-                    Button("Join with invite link") { opened = nil; joining = true }.buttonStyle(CaperSecondaryButton(minHeight: 42))
-                        .disabled(pending).accessibilityIdentifier("first-space-join-invite")
-                }
                 HStack {
                     Spacer()
                     Button("Log out") { Task { await model.logout() } }.buttonStyle(.plain)
@@ -7578,11 +7571,11 @@ private struct ProfileView: View {
                 }
                 // The sign-in page's action style, as on web.
                 Button { Task { await model.saveProfile(username: username, displayName: displayName) } } label: {
-                    LoginActionLabel(title: "Finish account", busyTitle: "Saving…", busy: model.busy)
+                    LoginActionLabel(title: "Finish setup", busyTitle: "Saving…", busy: model.busy)
                 }
                     .buttonStyle(LoginActionButton(minWidth: 200))
                     .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName, saved: model.account?.displayName) != nil)
-                    .accessibilityLabel(model.busy ? "Saving…" : "Finish account")
+                    .accessibilityLabel(model.busy ? "Saving…" : "Finish setup")
                     .accessibilityIdentifier("profile-continue")
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 HStack {

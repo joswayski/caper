@@ -71,10 +71,10 @@ class ProfileUiTest {
         compose.onNodeWithText("Choose how you show up.").assertExists()
         compose.onNodeWithText("Create your profile").assertDoesNotExist()
         compose.onNodeWithText("Save profile").assertDoesNotExist()
-        compose.onNodeWithText("Finish account").assertIsNotEnabled()
+        compose.onNodeWithText("Finish setup").assertIsNotEnabled()
         compose.onNodeWithText("Username").performTextInput("fixture_new")
         compose.onNodeWithText("Display name").performTextInput("Fixture New")
-        compose.onNodeWithText("Finish account").assertIsEnabled().performClick()
+        compose.onNodeWithText("Finish setup").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals("fixture_new" to "Fixture New", submitted) }
 
         val directory = File(requireNotNull(InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")))
@@ -88,13 +88,13 @@ class ProfileUiTest {
 
         compose.runOnIdle { busy.value = true }
         compose.onNodeWithText("Saving…").assertIsNotEnabled()
-        compose.onNodeWithText("Finish account").assertDoesNotExist()
+        compose.onNodeWithText("Finish setup").assertDoesNotExist()
         compose.runOnIdle {
             busy.value = false
             account.value = Account("existing-account", "fixture_owner", "Fixture Owner")
         }
         compose.onNodeWithText("Edit profile").assertExists()
-        compose.onNodeWithText("Finish account").assertDoesNotExist()
+        compose.onNodeWithText("Finish setup").assertDoesNotExist()
         compose.onNodeWithText("Save profile").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals("fixture_owner" to "Fixture Owner", submitted) }
     }

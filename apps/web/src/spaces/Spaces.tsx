@@ -3091,7 +3091,6 @@ export default function Spaces({
             }}
           />
           {!canCreateSpace && <small>You have reached your space limit.</small>}
-          <JoinInviteLinkForm />
         </section>
       </main>
     );

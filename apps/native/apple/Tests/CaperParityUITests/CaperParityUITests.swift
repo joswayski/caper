@@ -2700,7 +2700,7 @@ final class CaperParityUITests: XCTestCase {
         let submit = app.buttons["profile-continue"]
         XCTAssertTrue(username.waitForExistence(timeout: 5))
         assertStaticText("Choose how you show up.", in: app)
-        XCTAssertEqual(submit.label, "Finish account")
+        XCTAssertEqual(submit.label, "Finish setup")
         XCTAssertFalse(submit.isEnabled)
         type("ab", into: username)
         #if os(iOS)
