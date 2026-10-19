@@ -1349,7 +1349,16 @@
 .call-settings-panel:popover-open,
 .participant-volume:popover-open,
 .audio-dialog[open] {
-  animation: audio-panel-in 140ms ease-out;
+  animation: audio-panel-in var(--motion-fast) var(--ease-out);
+}
+/* The scrim fades in with its panel, as space dialogs' do, instead of cutting in. */
+.audio-dialog[open]::backdrop {
+  animation: audio-backdrop-in var(--motion-fast) ease-out;
+}
+@keyframes audio-backdrop-in {
+  from {
+    opacity: 0;
+  }
 }
 @keyframes audio-panel-in {
   from {
@@ -1450,7 +1459,8 @@
   }
   .call-settings-panel:popover-open,
   .participant-volume:popover-open,
-  .audio-dialog[open] {
+  .audio-dialog[open],
+  .audio-dialog[open]::backdrop {
     animation: none;
   }
   .recording-clock i {

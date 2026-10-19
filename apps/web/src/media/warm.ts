@@ -135,6 +135,8 @@ async function refresh() {
     const warm = await create(apiRoot);
     if (root !== apiRoot) {
       closeWarmVoice(warm);
+      // keepVoiceWarm for the new channel was skipped while this was creating.
+      if (root) schedule(0);
       return;
     }
     discard();
