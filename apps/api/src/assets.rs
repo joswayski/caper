@@ -1313,6 +1313,7 @@ async fn urls(
              SELECT a.channel_id
              UNION
              SELECT f.channel_id FROM public.messages f
+             JOIN public.messages shared ON shared.id=f.forward_source_id AND shared.deleted_at IS NULL
              WHERE f.forward_source_id IN (m.id,m.thread_root_id) AND f.deleted_at IS NULL
                AND a.retired_at IS NULL AND m.deleted_at IS NULL AND sc.deleted_at IS NULL
                AND (sc.space_id IS NULL OR ss.deleted_at IS NULL)

@@ -4243,13 +4243,19 @@ mod tests {
         timeline.merge_edit_ack(deleted).unwrap();
         timeline.merge_edit_ack(original.clone()).unwrap();
         timeline.prepend(vec![original.clone()]).unwrap();
+        timeline
+            .apply_forward(ForwardUpdate {
+                kind: "message.forward".into(),
+                schema_version: 1,
+                channel_id: original.channel_id.clone(),
+                seq: "12".into(),
+                message: original,
+            })
+            .unwrap();
         let loaded = timeline.messages().next().unwrap();
         assert!(loaded.is_deleted());
         assert!(loaded.forward.as_ref().unwrap().message.is_none());
         assert_eq!(loaded.forward.as_ref().unwrap().seq, "0");
         assert_eq!(loaded.forward_seq.as_deref(), Some("12"));
-        let mut overlaid = loaded.clone();
-        overlay_forward(&mut overlaid, &original);
-        assert!(overlaid.forward.as_ref().unwrap().message.is_none());
     }
 }

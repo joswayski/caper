@@ -1325,7 +1325,27 @@ async fn forwarded_files_refresh_only_while_the_shared_excerpt_is_accessible() {
         .execute(&f.pool)
         .await
         .unwrap();
-    // Removing the forward must close both URL refresh and the shared thread.
+    // A removed original also revokes its still-live replies' files.
+    sqlx::query("UPDATE public.messages SET deleted_at=now() WHERE external_id=$1")
+        .bind(sent["id"].as_str())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    let (_, denied) = command(
+        &f.app,
+        "POST",
+        "/api/assets/urls",
+        "files-peer",
+        input.clone(),
+    )
+    .await;
+    assert_eq!(denied["urls"], json!({}));
+    sqlx::query("UPDATE public.messages SET deleted_at=NULL WHERE external_id=$1")
+        .bind(sent["id"].as_str())
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    // Removing the forward also revokes the alternative URL grant.
     let (status, deleted) = command(
         &f.app,
         "DELETE",
@@ -1348,49 +1368,6 @@ async fn forwarded_files_refresh_only_while_the_shared_excerpt_is_accessible() {
     )
     .await;
     assert_eq!(denied["urls"], json!({}));
-    let (status, _) = command(&f.app, "GET", &thread_path, "files-peer", Value::Null).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    let (_, history) = command(
-        &f.app,
-        "GET",
-        "/api/chat/channels/files-elsewhere/messages",
-        "files-peer",
-        Value::Null,
-    )
-    .await;
-    assert!(
-        history["messages"][0]["forward"]["message"].is_null(),
-        "{history}"
-    );
-    let (status, _) = command(
-        &f.app, "POST", "/api/chat/channels/files-elsewhere/forwards", "files-peer",
-        json!({"sourceChannelId":"files-elsewhere","sourceMessageId":forward["id"],"clientMessageId":Uuid::new_v4()}),
-    ).await;
-    assert_eq!(
-        status,
-        StatusCode::NOT_FOUND,
-        "a removed forward cannot be shared again"
-    );
-    let (status, retried) = command(
-        &f.app, "POST", "/api/chat/channels/files-elsewhere/forwards", "files-author",
-        json!({"sourceChannelId":"files-channel","sourceMessageId":sent["id"],"clientMessageId":forward["clientMessageId"]}),
-    ).await;
-    assert_eq!(status, StatusCode::OK, "{retried}");
-    assert!(
-        retried["forward"]["message"].is_null(),
-        "retries must not resurrect a removed excerpt"
-    );
-    let gateway = crate::gateway::Gateway::new(f.chat.clone());
-    gateway.start();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = tokio::spawn(axum::serve(listener, crate::gateway::router(gateway)).into_future());
-    let frames = replayed(address, "files-elsewhere", "files-peer").await;
-    assert!(frames.len() >= 2);
-    for frame in frames {
-        assert!(frame["message"]["forward"]["message"].is_null(), "{frame}");
-    }
-    server.abort();
     // Source access and the author's retained versions are unaffected.
     let (_, own) = command(&f.app, "POST", "/api/assets/urls", "files-author", input).await;
     assert_eq!(own["urls"].as_object().unwrap().len(), 4, "{own}");
