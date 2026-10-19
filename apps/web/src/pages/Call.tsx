@@ -66,6 +66,7 @@ import type { CallViewState, Participant } from "../media/types";
 import { DEFAULT_VOICE_PROCESSING_STRENGTH } from "../media/voice-processing";
 import MicPlayback, { SpeakerTest } from "./MicPlayback";
 import AudioDiagnostics from "./AudioDiagnostics";
+import AudioDevicePicker, { audioDeviceOptions } from "./AudioDevicePicker";
 import VoiceActivity from "./VoiceActivity";
 import ChannelSidebar from "./ChannelSidebar";
 import RoomResize from "./RoomResize";
@@ -121,21 +122,6 @@ function formatBytes(bytes: number) {
 
 function formatBitrate(bitsPerSecond: number) {
   return `${Math.round(bitsPerSecond / 1_000)} kbps`;
-}
-
-function deviceOptions(devices: MediaDeviceInfo[], kind: MediaDeviceKind) {
-  const labels = new Set<string>();
-  return devices
-    .filter((device) => device.kind === kind)
-    .sort((left, right) => Number(right.deviceId === "default") - Number(left.deviceId === "default"))
-    .flatMap((device) => {
-      const label =
-        device.label.replace(/^Default\s*[-–]\s*/i, "") || (kind === "audioinput" ? "Microphone" : "Audio output");
-      const key = label.toLocaleLowerCase();
-      if (labels.has(key)) return [];
-      labels.add(key);
-      return [{ device, label }];
-    });
 }
 
 function ConnectionDiagnostics({ diagnostics }: { diagnostics: NonNullable<CallViewState["diagnostics"]> }) {
@@ -1055,14 +1041,10 @@ export default function Call({
         .enumerateDevices()
         .then((next) => {
           setDevices(next);
-          const inputs = deviceOptions(next, "audioinput");
-          const outputs = deviceOptions(next, "audiooutput");
-          setDeviceId((current) =>
-            inputs.some(({ device }) => device.deviceId === current) ? current : inputs[0]?.device.deviceId || "",
-          );
-          setOutput((current) =>
-            outputs.some(({ device }) => device.deviceId === current) ? current : outputs[0]?.device.deviceId || "",
-          );
+          const inputs = audioDeviceOptions(next, true);
+          const outputs = audioDeviceOptions(next, false);
+          setDeviceId((current) => (inputs.some(({ id }) => id === current) ? current : ""));
+          setOutput((current) => (outputs.some(({ id }) => id === current) ? current : ""));
         })
         .catch(() => setActionError("Device list unavailable. Use system settings."));
     update();
@@ -2018,30 +2000,21 @@ export default function Call({
                   onOpenChange={(open) => setAudioMenu(open ? "input" : undefined)}
                   menuRef={audioMenu === "input" ? audioMenuRef : undefined}
                 >
-                  <label className="device-select">
-                    Microphone
-                    <select
-                      name="input-device"
-                      value={deviceId}
-                      disabled={controlsDisabled}
-                      onChange={(event) => {
-                        const id = event.target.value;
-                        if (connected)
-                          void act(
-                            () => clientRef.current!.changeMicrophone(id),
-                            () => setDeviceId(id),
-                          );
-                        else setDeviceId(id);
-                      }}
-                    >
-                      {deviceOptions(devices, "audioinput").map(({ device, label }) => (
-                        <option key={device.deviceId} value={device.deviceId}>
-                          {label}
-                        </option>
-                      ))}
-                      {!deviceOptions(devices, "audioinput").length && <option value="">System default</option>}
-                    </select>
-                  </label>
+                  <AudioDevicePicker
+                    title="Input device"
+                    input
+                    devices={devices}
+                    value={deviceId}
+                    disabled={controlsDisabled}
+                    onChange={(id) => {
+                      if (connected)
+                        void act(
+                          () => clientRef.current!.changeMicrophone(id),
+                          () => setDeviceId(id),
+                        );
+                      else setDeviceId(id);
+                    }}
+                  />
                   <div className="volume-control output-volume">
                     <span>
                       Input volume <output>{state.inputVolume}%</output>
@@ -2078,17 +2051,7 @@ export default function Call({
                   menuRef={audioMenu === "output" ? audioMenuRef : undefined}
                 >
                   {outputSelectable ? (
-                    <label className="device-select">
-                      Audio output
-                      <select name="output-device" value={output} onChange={(event) => setOutput(event.target.value)}>
-                        {deviceOptions(devices, "audiooutput").map(({ device, label }) => (
-                          <option key={device.deviceId} value={device.deviceId}>
-                            {label}
-                          </option>
-                        ))}
-                        {!deviceOptions(devices, "audiooutput").length && <option value="">System default</option>}
-                      </select>
-                    </label>
+                    <AudioDevicePicker title="Output device" devices={devices} value={output} onChange={setOutput} />
                   ) : (
                     <p className="noise-status">Choose audio output in system settings.</p>
                   )}
@@ -2418,32 +2381,23 @@ export default function Call({
               <p className="noise-status">Only you can hear these tests.</p>
               <div className="audio-test-devices">
                 <div>
-                  <label className="device-select">
-                    Microphone
-                    <select
-                      aria-label="Test microphone device"
-                      value={deviceId}
-                      disabled={actionPending}
-                      onChange={(event) => {
-                        const id = event.target.value;
-                        void act(
-                          () => {
-                            if (connected) return clientRef.current!.changeMicrophone(id);
-                            clientRef.current!.stopLocalMicTest();
-                            return clientRef.current!.startLocalMicTest(id);
-                          },
-                          () => setDeviceId(id),
-                        );
-                      }}
-                    >
-                      {deviceOptions(devices, "audioinput").map(({ device, label }) => (
-                        <option key={device.deviceId} value={device.deviceId}>
-                          {label}
-                        </option>
-                      ))}
-                      {!deviceOptions(devices, "audioinput").length && <option value="">System default</option>}
-                    </select>
-                  </label>
+                  <AudioDevicePicker
+                    title="Test microphone device"
+                    input
+                    devices={devices}
+                    value={deviceId}
+                    disabled={actionPending}
+                    onChange={(id) => {
+                      void act(
+                        () => {
+                          if (connected) return clientRef.current!.changeMicrophone(id);
+                          clientRef.current!.stopLocalMicTest();
+                          return clientRef.current!.startLocalMicTest(id);
+                        },
+                        () => setDeviceId(id),
+                      );
+                    }}
+                  />
                   <div className="volume-control">
                     <span>
                       Microphone volume <output>{state.inputVolume}%</output>
@@ -2458,22 +2412,13 @@ export default function Call({
                   </div>
                 </div>
                 <div>
-                  <label className="device-select">
-                    Speaker
-                    <select
-                      aria-label="Test speaker device"
-                      value={output}
-                      disabled={!outputSelectable}
-                      onChange={(event) => setOutput(event.target.value)}
-                    >
-                      {deviceOptions(devices, "audiooutput").map(({ device, label }) => (
-                        <option key={device.deviceId} value={device.deviceId}>
-                          {label}
-                        </option>
-                      ))}
-                      {!deviceOptions(devices, "audiooutput").length && <option value="">System default</option>}
-                    </select>
-                  </label>
+                  <AudioDevicePicker
+                    title="Test speaker device"
+                    devices={devices}
+                    value={output}
+                    disabled={!outputSelectable}
+                    onChange={setOutput}
+                  />
                   {!outputSelectable && <p className="noise-status">Choose speakers in system settings.</p>}
                   <div className="volume-control">
                     <span>

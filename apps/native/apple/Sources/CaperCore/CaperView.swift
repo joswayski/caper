@@ -3321,17 +3321,9 @@ private struct AccountAudioMenu: View {
             CaperDevicePicker(title: "Device", selection: Binding(get: { (input ? voice.selectedInputID : voice.selectedOutputID) ?? "" }, set: { uid in
                 let changed = input ? voice.selectInput(uid) : voice.selectOutput(uid)
                 error = changed ? nil : "Could not switch devices. Check system audio settings."
-            }), devices: input ? voice.availableInputs : voice.availableOutputs)
+            }), devices: input ? voice.availableInputs : voice.availableOutputs, input: input)
             #else
-            // iPhone follows the system audio route.
-            HStack {
-                Text((input ? voice.availableInputs.first(where: { $0.id == voice.selectedInputID }) : voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID }))?.name ?? "System default")
-                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                Spacer()
-                if !input {
-                    SystemAudioRoutePicker().frame(width: 44, height: 36).accessibilityLabel("Choose system audio route")
-                }
-            }
+            IOSCurrentAudioRoute(voice: voice, input: input)
             #endif
             if let error { Text(error).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error) }
             if input {
@@ -9903,29 +9895,94 @@ struct DefaultSlider: View {
     }
 }
 
+private struct AudioDeviceIcon: View {
+    let name: String
+    var body: some View {
+        if ["bluetooth", "headset", "monitor"].contains(name) {
+            CaperIcon(name: name, size: 18)
+        } else {
+            Image(systemName: name).accessibilityHidden(true)
+        }
+    }
+}
+
 private struct CaperDevicePicker: View {
     let title: String
     @Binding var selection: String
     let devices: [AudioDevice]
+    var input = false
+    @State private var showingDevices = false
+    @FocusState private var focusedDevice: String?
     @Environment(\.isEnabled) private var isEnabled
+    private var current: AudioDevice? { devices.first(where: { $0.id == selection }) }
+    private var summary: String { selection.isEmpty ? "System default" : current?.name ?? "Device unavailable" }
     var body: some View {
-        Menu {
-            Button("System default") { selection = "" }
-            ForEach(devices) { device in Button(device.name) { selection = device.id } }
-        } label: {
+        Button { showingDevices = true } label: {
             HStack(spacing: 8) {
-                Text(devices.first(where: { $0.id == selection })?.name ?? "System default").lineLimit(1)
+                AudioDeviceIcon(name: current?.icon(input: input) ?? (input ? "mic" : "speaker.wave.2"))
+                Text(summary).lineLimit(1)
                 Spacer(minLength: 0)
-                CaperIcon(name: "chevron-down", size: 12)
+                CaperIcon(name: "chevron-right", size: 12)
             }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.text)
                 .padding(10).background(CaperTheme.composer)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
                 // Dimmed like the other controls while it can't be changed (during a microphone test).
                 .opacity(isEnabled ? 1 : 0.45)
-        }.menuStyle(.borderlessButton).menuIndicator(.hidden)
-            .accessibilityLabel(title).accessibilityValue(devices.first(where: { $0.id == selection })?.name ?? "System default")
+        }.buttonStyle(.plain)
+            .accessibilityLabel(title).accessibilityValue(summary)
+            .accessibilityHint("Opens device choices")
             .modifier(ControlHover())
+            .popover(isPresented: $showingDevices) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text(title).font(CaperTheme.font(13, weight: .bold))
+                        Spacer()
+                        Button { showingDevices = false } label: { Image(systemName: "xmark") }
+                            .accessibilityLabel("Close device picker")
+                            .keyboardShortcut(.cancelAction)
+                    }
+                    ScrollView {
+                        VStack(spacing: 4) {
+                            choice(id: "", name: "System default", icon: input ? "mic" : "speaker.wave.2")
+                            ForEach(devices) { device in
+                                choice(id: device.id, name: device.name, icon: device.icon(input: input))
+                            }
+                        }
+                    }.frame(maxHeight: 280)
+                        .onAppear { focusedDevice = selection }
+                        #if os(macOS)
+                        .onMoveCommand { direction in
+                            let ids = [""] + devices.map(\.id)
+                            let index = ids.firstIndex(of: focusedDevice ?? selection) ?? 0
+                            if direction == .down { focusedDevice = ids[min(index + 1, ids.count - 1)] }
+                            if direction == .up { focusedDevice = ids[max(index - 1, 0)] }
+                        }
+                        #endif
+                }.padding(16).frame(width: 280).background(CaperTheme.surface)
+            }
+    }
+
+    private func choice(id: String, name: String, icon: String) -> some View {
+        Button {
+            selection = id
+            showingDevices = false
+        } label: {
+            HStack(spacing: 10) {
+                AudioDeviceIcon(name: icon).frame(width: 20)
+                Text(name).multilineTextAlignment(.leading)
+                Spacer(minLength: 4)
+                Image(systemName: selection == id ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(selection == id ? CaperTheme.terracottaBright : CaperTheme.muted)
+                    .accessibilityHidden(true)
+            }.font(CaperTheme.font(12)).foregroundStyle(CaperTheme.text)
+                .padding(10).frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }.buttonStyle(.plain)
+            .focused($focusedDevice, equals: id)
+            .accessibilityLabel(name)
+            .accessibilityValue(selection == id ? "Selected" : "Not selected")
+            .accessibilityAddTraits(selection == id ? [.isSelected] : [])
     }
 }
 
@@ -10007,11 +10064,11 @@ private struct AudioPreferencesView: View {
     private var microphoneColumn: some View {
         VStack(alignment: .leading, spacing: 10) {
             #if os(macOS)
-            CaperDevicePicker(title: "Microphone", selection: inputRoute, devices: voice.availableInputs)
+            CaperDevicePicker(title: "Microphone", selection: inputRoute, devices: voice.availableInputs, input: true)
                 .accessibilityIdentifier("audio-input-device").disabled(micTest.recording)
             if let routeError { Text(routeError).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error) }
             #else
-            AudioRouteRow(title: "Microphone", value: voice.availableInputs.first(where: { $0.id == voice.selectedInputID })?.name ?? "System default")
+            IOSCurrentAudioRoute(voice: voice, input: true)
             #endif
             HStack { Text("Microphone volume"); Spacer(); Text("\(voice.inputGain)%") }.font(CaperTheme.font(12)).monospacedDigit()
             CaperSlider(value: inputGain, in: 0...200, step: 1, defaultValue: 100)
@@ -10026,12 +10083,7 @@ private struct AudioPreferencesView: View {
             CaperDevicePicker(title: "Speaker", selection: outputRoute, devices: voice.availableOutputs)
                 .accessibilityIdentifier("audio-output-device")
             #else
-            HStack {
-                AudioRouteRow(title: "Speaker", value: voice.availableOutputs.first(where: { $0.id == voice.selectedOutputID })?.name ?? "System default")
-                SystemAudioRoutePicker().frame(width: 44, height: 36)
-                    .accessibilityLabel("Choose system audio route")
-                    .accessibilityIdentifier("system-audio-route-picker")
-            }
+            IOSCurrentAudioRoute(voice: voice, input: false)
             #endif
             HStack { Text("Speaker volume"); Spacer(); Text("\(voice.outputGain)%") }.font(CaperTheme.font(12)).monospacedDigit()
             CaperSlider(value: outputGain, in: 0...200, step: 1, defaultValue: 100)
@@ -10300,6 +10352,38 @@ private struct AudioRouteRow: View {
 }
 
 #if os(iOS)
+/// Routing remains owned by iOS. Inputs describe the active route, not a
+/// fabricated list of selectable microphones; output opens the real OS picker.
+private struct IOSCurrentAudioRoute: View {
+    let voice: VoiceClient
+    let input: Bool
+    private var device: AudioDevice? {
+        (input ? voice.availableInputs : voice.availableOutputs).first(where: {
+            $0.id == (input ? voice.selectedInputID : voice.selectedOutputID)
+        })
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                AudioDeviceIcon(name: device?.icon(input: input) ?? (input ? "mic" : "speaker.wave.2"))
+                Text(device?.name ?? "System default").font(CaperTheme.font(12)).lineLimit(1)
+                Spacer(minLength: 0)
+                if !input {
+                    SystemAudioRoutePicker().frame(width: 44, height: 44)
+                        .accessibilityLabel("Choose system audio route")
+                        .accessibilityIdentifier("system-audio-route-picker")
+                }
+            }
+            if input {
+                Text("Microphone follows the system audio route.")
+                    .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+            }
+        }.padding(10).background(CaperTheme.composer)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+    }
+}
+
 private struct SystemAudioRoutePicker: UIViewRepresentable {
     func makeUIView(context: Context) -> MPVolumeView {
         let picker = MPVolumeView()

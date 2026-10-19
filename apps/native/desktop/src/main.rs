@@ -433,6 +433,9 @@ enum NavIcon {
     Mic,
     MicOff,
     Headphones,
+    Headset,
+    Bluetooth,
+    Monitor,
     VolumeX,
     Menu,
     PhoneOff,
@@ -14142,7 +14145,7 @@ impl CaperApp {
             ui.label("End the microphone test to change devices.");
             return;
         }
-        ui.label(
+        let heading = ui.label(
             bold(if input { "Microphone" } else { "Audio output" })
                 .size(12.0)
                 .color(MUTED),
@@ -14157,19 +14160,20 @@ impl CaperApp {
         } else {
             &self.voice.preferences.output
         };
-        if ui
-            .selectable_label(selected.is_none(), self.default_device_label(input))
-            .on_hover_text("Uses the default device in your system sound settings.")
-            .clicked()
-        {
-            self.voice.command(if input {
-                VoiceOperation::DefaultInput
-            } else {
-                VoiceOperation::DefaultOutput
-            });
-            // Like choosing a device below.
-            ui.close();
-        }
+        let selected_name = selected.as_ref().map_or_else(
+            || self.default_device_label(input),
+            |id| {
+                devices
+                    .iter()
+                    .find(|(guid, _)| guid == id)
+                    .map_or("Saved device (unavailable)", |(_, name)| name.as_str())
+                    .to_owned()
+            },
+        );
+        let button = audio_device_picker(ui, &selected_name, input).labelled_by(heading.id);
+        egui::containers::menu::SubMenu::new().show(ui, &button, |ui| {
+            self.device_choices(ui, input);
+        });
         if self.voice.refreshing_devices {
             ui.label("Finding devices…");
         } else if devices.is_empty() {
@@ -14187,36 +14191,53 @@ impl CaperApp {
         {
             self.voice.refresh_devices();
         }
-        // Linux can list many devices; scroll them rather than cut the menu off.
-        egui::ScrollArea::vertical()
-            .id_salt(("device-list", input))
-            .max_height(240.0)
-            .show(ui, |ui| {
-                for (guid, name) in devices {
-                    let selected = if input {
-                        &self.voice.preferences.input
-                    } else {
-                        &self.voice.preferences.output
-                    };
-                    if ui
-                        .selectable_label(selected.as_deref() == Some(&guid), name)
-                        .clicked()
-                    {
-                        self.voice.command(if input {
-                            VoiceOperation::Input(guid)
-                        } else {
-                            VoiceOperation::Output(guid)
-                        });
-                        ui.close();
-                    }
-                }
-            });
         ui.separator();
         if input {
             self.input_processing(ui);
         } else {
             self.output_gain(ui);
         }
+    }
+
+    fn device_choices(&mut self, ui: &mut egui::Ui, input: bool) {
+        ui.set_width(280.0);
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        let devices = if input {
+            self.voice.inputs.clone()
+        } else {
+            self.voice.outputs.clone()
+        };
+        let selected = if input {
+            self.voice.preferences.input.clone()
+        } else {
+            self.voice.preferences.output.clone()
+        };
+        let choices = std::iter::once((None, self.default_device_label(input)))
+            .chain(devices.into_iter().map(|(id, name)| (Some(id), name)));
+        egui::ScrollArea::vertical()
+            .id_salt(("device-list", input))
+            .max_height(240.0)
+            .show(ui, |ui| {
+                for (id, name) in choices {
+                    let response = ui
+                        .horizontal(|ui| {
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                            paint_icon(ui.painter(), rect, audio_device_icon(&name), MUTED);
+                            ui.radio(selected == id, &name).on_hover_text(&name)
+                        })
+                        .inner;
+                    if response.clicked() {
+                        self.voice.command(match (input, id) {
+                            (true, None) => VoiceOperation::DefaultInput,
+                            (false, None) => VoiceOperation::DefaultOutput,
+                            (true, Some(id)) => VoiceOperation::Input(id),
+                            (false, Some(id)) => VoiceOperation::Output(id),
+                        });
+                        ui.close();
+                    }
+                }
+            });
     }
 
     fn input_processing(&mut self, ui: &mut egui::Ui) {
@@ -14331,14 +14352,15 @@ impl CaperApp {
         // Devices can't change during a microphone test: the picker says so
         // and looks unavailable instead of opening a disabled list.
         let idle = matches!(self.voice.microphone, MicrophoneState::Idle);
-        let button = device_picker(ui, &selected, idle)
-            .labelled_by(label.id)
-            .on_disabled_hover_text("End the microphone test to change devices.");
+        let button =
+            device_picker_with_icon(ui, &selected, idle, Some(audio_device_icon(&selected)))
+                .labelled_by(label.id)
+                .on_disabled_hover_text("End the microphone test to change devices.");
         let width = button.rect.width().max(232.0);
         egui::Popup::menu(&button)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .width(width)
-            .show(|ui| self.device_options(ui, input));
+            .show(|ui| self.device_choices(ui, input));
         ui.add_space(16.0);
         if input {
             let mut gain = self.voice.preferences.input_percent;
@@ -24789,6 +24811,53 @@ fn clicked_outside(context: &egui::Context, panel: &egui::Response) -> bool {
 /// Web's device `<select>`: the choice at the start, a chevron at the end, a
 /// lighter border on hover and dimmed while unavailable.
 fn device_picker(ui: &mut egui::Ui, selected: &str, enabled: bool) -> egui::Response {
+    device_picker_with_icon(ui, selected, enabled, None)
+}
+
+// Names are evidence, not model databases: never infer Bluetooth from a brand
+// or infer speakers from HDMI/USB. Unknown hardware keeps the neutral icon.
+fn audio_device_icon(name: &str) -> NavIcon {
+    let name = name.to_lowercase();
+    if name.contains("bluetooth") {
+        NavIcon::Bluetooth
+    } else if name.contains("headset") {
+        NavIcon::Headset
+    } else if name.contains("headphone") {
+        NavIcon::Headphones
+    } else if name.contains("monitor") {
+        NavIcon::Monitor
+    } else if name.contains("speaker") {
+        NavIcon::Volume
+    } else if name.contains("microphone")
+        || name
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|word| word == "mic")
+    {
+        NavIcon::Mic
+    } else {
+        NavIcon::AudioLines
+    }
+}
+
+fn audio_device_picker(ui: &mut egui::Ui, selected: &str, input: bool) -> egui::Response {
+    device_picker_with_icon(ui, selected, true, Some(audio_device_icon(selected))).on_hover_text(
+        format!(
+            "Choose {}: {selected}",
+            if input {
+                "input device"
+            } else {
+                "output device"
+            }
+        ),
+    )
+}
+
+fn device_picker_with_icon(
+    ui: &mut egui::Ui,
+    selected: &str,
+    enabled: bool,
+    icon: Option<NavIcon>,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), 36.0),
         if enabled {
@@ -24825,8 +24894,22 @@ fn device_picker(ui: &mut egui::Ui, selected: &str, enabled: bool) -> egui::Resp
         NavIcon::Chevron,
         MUTED.gamma_multiply(fade),
     );
+    if let Some(icon) = icon {
+        paint_icon(
+            ui.painter(),
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 20.0, rect.center().y),
+                egui::vec2(16.0, 16.0),
+            ),
+            icon,
+            MUTED.gamma_multiply(fade),
+        );
+    }
     let text = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + 12.0, rect.top()),
+        egui::pos2(
+            rect.left() + if icon.is_some() { 36.0 } else { 12.0 },
+            rect.top(),
+        ),
         egui::pos2(chevron.left() - 8.0, rect.bottom()),
     );
     let galley = egui::WidgetText::from(RichText::new(selected).size(12.8)).into_galley(
@@ -25271,6 +25354,9 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::ExternalLink => egui::include_image!("../resources/icons/external-link.svg"),
         NavIcon::Link => egui::include_image!("../resources/icons/link.svg"),
         NavIcon::Volume => egui::include_image!("../resources/icons/volume-2.svg"),
+        NavIcon::Headset => egui::include_image!("../resources/icons/headset.svg"),
+        NavIcon::Bluetooth => egui::include_image!("../resources/icons/bluetooth.svg"),
+        NavIcon::Monitor => egui::include_image!("../resources/icons/monitor.svg"),
         NavIcon::Smile => egui::include_image!("../resources/icons/smile.svg"),
         NavIcon::SmilePlus => egui::include_image!("../resources/icons/smile-plus.svg"),
         NavIcon::Send => egui::include_image!("../resources/icons/send.svg"),
@@ -29436,6 +29522,57 @@ mod tests {
                 "System default — Fixture headphones"
             };
             assert!(node_bounds(&output, label).is_some());
+            let choice = if input {
+                "Fixture microphone"
+            } else {
+                "Fixture headphones"
+            };
+            assert!(
+                node_bounds(&output, choice).is_none(),
+                "choices stay behind the compact summary"
+            );
+            let volume = if input {
+                "Input volume"
+            } else {
+                "Output volume"
+            };
+            assert!(
+                output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text == volume)),
+                "volume stays on the first panel"
+            );
+            click_label(&mut app, &context, label);
+            let output = render(&mut app, &context, vec![]);
+            assert!(
+                node_bounds(&output, choice).is_some(),
+                "summary opens radio choices"
+            );
+            click_label(&mut app, &context, choice);
+            let selected = if input {
+                &app.voice.preferences.input
+            } else {
+                &app.voice.preferences.output
+            };
+            assert_eq!(
+                selected.as_deref(),
+                Some(if input {
+                    "fixture-microphone"
+                } else {
+                    "fixture-headphones"
+                })
+            );
+            click_label(&mut app, &context, control);
+            click_label(&mut app, &context, choice);
+            click_label(&mut app, &context, label);
+            assert!(
+                if input {
+                    app.voice.preferences.input.is_none()
+                } else {
+                    app.voice.preferences.output.is_none()
+                },
+                "System default must restore system routing, not pin the current device"
+            );
+            click_label(&mut app, &context, control);
             click_label(&mut app, &context, "Refresh devices");
             let output = render(&mut app, &context, vec![]);
             assert!(
