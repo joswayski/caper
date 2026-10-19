@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { ExternalLink, X } from "lucide-react";
 import {
   loadReleaseHighlights,
   releaseHighlightDays,
@@ -191,6 +191,7 @@ export default function WhatsNew({
               title="View this version on GitHub"
             >
               Installed build {revision.slice(0, 7)}
+              <ExternalLink size={12} aria-hidden="true" />
             </a>
           )}
         </div>
@@ -235,6 +236,7 @@ export default function WhatsNew({
                       title="View this version on GitHub"
                     >
                       {release.revision.slice(0, 7)}
+                      <ExternalLink size={12} aria-hidden="true" />
                     </a>
                     <p>{highlight.body}</p>
                   </article>

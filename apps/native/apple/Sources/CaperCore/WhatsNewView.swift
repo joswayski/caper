@@ -130,7 +130,10 @@ struct ReleaseLink: View {
 
     var body: some View {
         Link(destination: url) {
-            Text(label).font(CaperTheme.font(size))
+            HStack(spacing: 4) {
+                Text(label).font(CaperTheme.font(size))
+                CaperIcon(name: "external-link", size: 12)
+            }
         }
         .buttonStyle(ReleaseLinkStyle())
         .help("View this version on GitHub")
@@ -141,7 +144,7 @@ struct ReleaseLink: View {
 /// Keep commit links quiet at rest without inheriting the sheet's filled button style.
 private struct ReleaseLinkStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.underline()
+        configuration.label
             .modifier(ReleaseLinkFeedback(pressed: configuration.isPressed))
     }
 }
@@ -153,6 +156,7 @@ private struct ReleaseLinkFeedback: ViewModifier {
 
     func body(content: Content) -> some View {
         content.foregroundStyle(pressed ? CaperTheme.terracottaBright : hovered ? CaperTheme.actionHover : focused ? CaperTheme.text : CaperTheme.muted.opacity(0.72))
+            .underline(hovered || focused || pressed)
             .background(CaperTheme.terracotta.opacity(pressed ? 0.24 : hovered ? 0.12 : 0))
             .overlay {
                 RoundedRectangle(cornerRadius: 2)
