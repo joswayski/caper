@@ -17519,8 +17519,11 @@ impl CaperApp {
                     });
                     let response = row
                         .response
-                        .interact(egui::Sense::click())
-                        .union(row.inner.inner);
+                        // Extend the pointer target without adding a second,
+                        // unnamed keyboard stop beside the labelled button.
+                        .interact(egui::Sense::CLICK)
+                        .union(row.inner.inner)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
                     if response.hovered() || response.is_pointer_button_down_on() {
                         ui.painter().set(
                             background,
