@@ -478,6 +478,12 @@ above the account bar and in the Audio test dialog without starting capture or a
 transport.
 `parity-direct` and `parity-direct-new` preview a two-person DM and its
 exact-username dialog without a live account or notification provider.
+`parity-direct-emoji` checks bundled Twemoji in display names (pepper, skin-tone
+joiner sequence, flag, and a truncated name), including the self row, account
+bar, conversation heading, message authors and composer placeholder. These
+labels do not rely on installed system emoji fonts. Linux fixture rendering
+and headless tests cover the shared desktop path; Windows device validation
+remains separate.
 `parity-mentions` previews mention pills, an unresolved `@name`, and rows that
 mention you; click `@alex` or `@fixture_owner` for the cards, or type `@` in its
 composer for space suggestions.

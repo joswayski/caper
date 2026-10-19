@@ -2167,7 +2167,10 @@ impl CaperApp {
                     }
                 } else if matches!(
                     name,
-                    "parity-direct" | "parity-direct-new" | "parity-direct-no-spaces"
+                    "parity-direct"
+                        | "parity-direct-new"
+                        | "parity-direct-no-spaces"
+                        | "parity-direct-emoji"
                 ) {
                     let id = "dm0000000001".to_owned();
                     app.directs = vec![model::DirectConversation {
@@ -2219,6 +2222,29 @@ impl CaperApp {
                         app.selected_space = None;
                         app.selected_direct = None;
                         app.clear_channel_state();
+                    } else if name == "parity-direct-emoji" {
+                        app.account.as_mut().unwrap().display_name = Some("Spicy Mike🌶️".into());
+                        app.directs[0].peer.display_name = "Spicy Mike🌶️".into();
+                        for (id, name) in [
+                            ("dm0000000002", "Alex 👩🏽‍💻🇵🇷"),
+                            (
+                                "dm0000000003",
+                                "🌶️ A very long display name with a trailing pepper 🌶️",
+                            ),
+                        ] {
+                            let mut direct = app.directs[0].clone();
+                            direct.id = id.into();
+                            direct.peer.id = id.into();
+                            direct.peer.display_name = name.into();
+                            app.directs.push(direct);
+                        }
+                        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                        for message in &mut messages {
+                            message.author.name = "Spicy Mike🌶️".into();
+                        }
+                        app.timeline
+                            .reset(messages, "2")
+                            .expect("valid emoji name fixture");
                     }
                 } else if matches!(name, "parity-muted" | "parity-unread") {
                     // Labelled mutes: a muted space in the rail, a muted
@@ -11241,7 +11267,8 @@ impl CaperApp {
                             title_rect.width() - if muted.is_some() { 46.0 } else { 24.0 },
                         );
                         let truncated = galley.elided;
-                        ui.painter().galley(
+                        emoji::paint_galley(
+                            ui.painter(),
                             egui::pos2(title_rect.left(), title_rect.center().y - galley.size().y / 2.0),
                             galley,
                             TEXT,
@@ -12655,7 +12682,7 @@ impl CaperApp {
             let line = |text: String, font: egui::FontId, color: Color32, width: f32| {
                 let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
                 job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(1.0));
-                ui.painter().layout_job(job)
+                emoji::layout_job(ui, job)
             };
             let name = line(
                 name,
@@ -12674,8 +12701,7 @@ impl CaperApp {
             let height = name.size().y + subtitle.as_ref().map_or(0.0, |line| line.size().y);
             let top = text.center().y - height / 2.0;
             let name_size = name.size();
-            ui.painter()
-                .galley(egui::pos2(text.left(), top), name, TEXT);
+            emoji::paint_galley(ui.painter(), egui::pos2(text.left(), top), name, TEXT);
             paint_icon(
                 ui.painter(),
                 egui::Rect::from_center_size(
@@ -12686,8 +12712,12 @@ impl CaperApp {
                 MUTED,
             );
             if let Some(subtitle) = subtitle {
-                ui.painter()
-                    .galley(egui::pos2(text.left(), top + name_size.y), subtitle, MUTED);
+                emoji::paint_galley(
+                    ui.painter(),
+                    egui::pos2(text.left(), top + name_size.y),
+                    subtitle,
+                    MUTED,
+                );
             }
             // Full width under the header, 8px in from each side.
             let anchor = egui::Rect::from_min_max(
@@ -13068,13 +13098,15 @@ impl CaperApp {
             ui.painter().rect_filled(link, 6.0, SURFACE_HOVER);
         }
         let name_size = name.size();
-        ui.painter().galley(
+        emoji::paint_galley(
+            ui.painter(),
             egui::pos2(left, row.center().y - name_size.y / 2.0),
             name,
             TEXT,
         );
         if let Some(space) = space {
-            ui.painter().galley(
+            emoji::paint_galley(
+                ui.painter(),
                 egui::pos2(
                     left + name_size.x + 6.0,
                     row.center().y - space.size().y / 2.0,
@@ -13369,7 +13401,8 @@ impl CaperApp {
             MUTED,
         );
         let name_height = name.size().y;
-        ui.painter().galley(
+        emoji::paint_galley(
+            ui.painter(),
             egui::pos2(row.left() + 22.0, row.center().y - name_height / 2.0),
             name,
             TEXT,
@@ -13463,7 +13496,7 @@ impl CaperApp {
                     );
                     let (rect, response) =
                         ui.allocate_exact_size(galley.size(), egui::Sense::hover());
-                    ui.painter().galley(rect.min, galley, MUTED);
+                    emoji::paint_galley(ui.painter(), rect.min, galley, MUTED);
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &names)
                     });
@@ -13764,18 +13797,16 @@ impl CaperApp {
                                             }
                                     });
                                     ui.add_space(((36.0 - lines) / 2.0).max(0.0));
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(if own {
-                                                format!("{} (you)", person.name)
-                                            } else {
-                                                person.name.clone()
-                                            })
-                                            .font(name_font)
-                                            .color(if speaking { TEXT } else { MUTED }),
-                                        )
-                                        .truncate()
-                                        .selectable(false),
+                                    emoji::name_label(
+                                        ui,
+                                        RichText::new(if own {
+                                            format!("{} (you)", person.name)
+                                        } else {
+                                            person.name.clone()
+                                        })
+                                        .font(name_font)
+                                        .color(if speaking { TEXT } else { MUTED }),
+                                        egui::Sense::hover(),
                                     );
                                     if let Some((status, tone)) = &status {
                                         ui.add(
@@ -13948,7 +13979,8 @@ impl CaperApp {
             && right - left >= 24.0
         {
             let galley = truncated_galley(ui, &status, font, tone, right - left);
-            ui.painter().galley(
+            emoji::paint_galley(
+                ui.painter(),
                 egui::pos2(left, inner.center().y - galley.size().y / 2.0),
                 galley,
                 tone,
@@ -14134,10 +14166,10 @@ impl CaperApp {
                 // At the narrowest sidebar the name would collapse to "F…":
                 // show the avatar alone; the button keeps the full name.
                 if ui.available_width() >= 40.0 {
-                    ui.add(
-                        egui::Label::new(bold(self.identity_name()).size(12.8))
-                            .truncate()
-                            .selectable(false),
+                    emoji::name_label(
+                        ui,
+                        bold(self.identity_name()).size(12.8),
+                        egui::Sense::hover(),
                     );
                 }
             },
@@ -15008,9 +15040,9 @@ impl CaperApp {
                         .map_or("unknown", String::as_str);
                     presence_avatar_on(ui, &member.display_name, member.avatar_id, member.picture(), 30.0, status, ring);
                     if quiet {
-                        ui.add(egui::Label::new(RichText::new(&member.display_name).size(12.0).color(MUTED)).truncate());
+                        emoji::name_label(ui, RichText::new(&member.display_name).size(12.0).color(MUTED), egui::Sense::hover());
                     } else {
-                        ui.add(egui::Label::new(bold(&member.display_name).size(12.0)).truncate());
+                        emoji::name_label(ui, bold(&member.display_name).size(12.0), egui::Sense::hover());
                     }
                 });
                 let response = ui.interact(row.response.rect, ui.id().with(("member-profile", &member.id)), egui::Sense::click())
@@ -15870,12 +15902,12 @@ impl CaperApp {
                                     if visit.is_none() && let Some(item) = direct {
                                         avatar(ui, &item.peer.display_name, item.peer.avatar_id, item.peer.picture(), 28.0, false);
                                     }
-                                    ui.add(egui::Label::new(RichText::new(match (direct, visit) {
+                                    emoji::name_label(ui, RichText::new(match (direct, visit) {
                                         // "#plans · Studio", or "Alice & Bob".
                                         (_, Some(title)) => title,
                                         (Some(item), None) => item.peer.display_name.clone(),
                                         (None, None) => format!("# {}", self.channel_name()),
-                                    }).size(13.76)).truncate());
+                                    }).size(13.76), egui::Sense::hover());
                                 },
                             );
                             // Web: a failed refresh keeps the conversation and offers Retry in the header.
@@ -16085,13 +16117,20 @@ impl CaperApp {
                     let suggestions = self.suggestion_keys(ui, composer_id, &draft);
                     let (people, specials) = self.mention_people();
                     let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| draft_layout(ui, text.as_str(), width, &people, specials, egui::FontId::proportional(13.6));
-                    let editor_area = |ui: &mut egui::Ui, draft: &mut String| egui::ScrollArea::vertical()
+                    let mut editor_area = |ui: &mut egui::Ui, draft: &mut String| egui::ScrollArea::vertical()
                         .id_salt("composer-scroll")
                         .max_height(max_editor_height)
                         .min_scrolled_height(42.0)
                         .auto_shrink([false, true])
-                        .show(ui, |ui|
-                        egui::TextEdit::multiline(draft)
+                        .show(ui, |ui| {
+                        let mut hint = egui::text::LayoutJob::simple_singleline(
+                            placeholder.clone(),
+                            egui::FontId::proportional(13.6),
+                            Color32::from_rgb(142, 149, 152),
+                        );
+                        hint.wrap = egui::text::TextWrapping::truncate_at_width((ui.available_width() - 22.0).max(1.0));
+                        let hint = emoji::layout_job(ui, hint);
+                        let output = egui::TextEdit::multiline(draft)
                             .id(composer_id)
                             .layouter(&mut layouter)
                             .desired_width(f32::INFINITY)
@@ -16101,13 +16140,15 @@ impl CaperApp {
                             .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter)))
                             .font(egui::FontId::proportional(13.6))
                             .margin(egui::vec2(11.0, 10.0))
-                            .hint_text(
-                                RichText::new(placeholder)
-                                    .color(Color32::from_rgb(142, 149, 152)),
-                            )
+                            .hint_text(hint.clone())
                             .frame(false)
-                            .char_limit(4_000).show(ui)
-                    );
+                            .char_limit(4_000).show(ui);
+                        if draft.is_empty() {
+                            let position = egui::pos2(output.galley_pos.x, output.response.rect.center().y - hint.size().y / 2.0);
+                            emoji::paint_inline(&ui.painter().with_clip_rect(output.text_clip_rect), position, &hint);
+                        }
+                        output
+                    });
                     let editor = egui::Frame::new()
                         .fill(COMPOSER)
                         .corner_radius(8)
@@ -19656,7 +19697,11 @@ impl CaperApp {
                                         );
                                         ui.vertical(|ui| {
                                             ui.spacing_mut().item_spacing.y = 0.0;
-                                            ui.label(bold(name.as_str()).size(13.0));
+                                            emoji::name_label(
+                                                ui,
+                                                bold(name.as_str()).size(13.0),
+                                                egui::Sense::hover(),
+                                            );
                                             if let Some(username) = &author.username {
                                                 ui.label(
                                                     RichText::new(format!("@{username}"))
@@ -20697,11 +20742,10 @@ impl CaperApp {
                                 |ui| {
                                     ui.spacing_mut().item_spacing.y = 2.0;
                                     ui.add_space(6.0);
-                                    ui.add(
-                                        egui::Label::new(
-                                            bold(profile.title()).size(15.0).color(TEXT),
-                                        )
-                                        .truncate(),
+                                    emoji::name_label(
+                                        ui,
+                                        bold(profile.title()).size(15.0).color(TEXT),
+                                        egui::Sense::hover(),
                                     );
                                     if profile.display_name.is_some()
                                         && let Some(username) = &profile.username
@@ -22357,7 +22401,7 @@ impl CaperApp {
                             24.0,
                             false,
                         );
-                        ui.label(&account.display_name);
+                        emoji::name_label(ui, &account.display_name, egui::Sense::hover());
                         if !account.username.is_empty() {
                             ui.label(
                                 RichText::new(format!("@{}", account.username))
@@ -24214,7 +24258,11 @@ impl CaperApp {
                     false,
                 );
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(&member.display_name).strong());
+                    emoji::name_label(
+                        ui,
+                        RichText::new(&member.display_name).strong(),
+                        egui::Sense::hover(),
+                    );
                     ui.label(
                         RichText::new(format!(
                             "@{}{}",
@@ -26058,7 +26106,8 @@ fn strip_lead(ui: &egui::Ui, inner: egui::Rect, text: &str, width: f32) -> f32 {
         (width - (left - inner.left())).max(1.0),
     );
     let end = left + galley.size().x;
-    ui.painter().galley(
+    emoji::paint_galley(
+        ui.painter(),
         egui::pos2(left, inner.center().y - galley.size().y / 2.0),
         galley,
         TEXT,
@@ -26476,7 +26525,8 @@ fn channel_button(
     } else {
         // Long names end in "…" rather than a letter cut in half.
         let label = truncated_galley(ui, name, name_font, color, name_right - rect.left() - 32.0);
-        ui.painter().galley(
+        emoji::paint_galley(
+            ui.painter(),
             egui::pos2(
                 rect.left() + 32.0,
                 rect.center().y - 1.0 - label.size().y / 2.0,
@@ -26561,7 +26611,7 @@ fn truncated_galley(
         egui::TextFormat::simple(font, color),
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(1.0));
-    ui.fonts_mut(|fonts| fonts.layout_job(job))
+    emoji::layout_job(ui, job)
 }
 
 /// A sidebar row's name and its quieter suffix ("you", "@username"), cut
@@ -26587,9 +26637,10 @@ fn paint_row_name(
         0.0,
         egui::TextFormat::simple(suffix_font.clone(), suffix_color),
     );
-    let whole = ui.fonts_mut(|fonts| fonts.layout_job(whole));
+    let whole = emoji::layout_job(ui, whole);
     if whole.size().x <= width {
-        ui.painter().galley(
+        emoji::paint_galley(
+            ui.painter(),
             egui::pos2(left_center.x, left_center.y - whole.size().y / 2.0),
             whole,
             name_color,
@@ -26614,11 +26665,16 @@ fn paint_row_name(
         (rest >= 24.0).then(|| truncated_galley(ui, suffix, suffix_font, suffix_color, rest))
     };
     let suffix_left = left_center.x + name.size().x + GAP;
-    ui.painter()
-        .galley(egui::pos2(left_center.x, top), name, name_color);
+    emoji::paint_galley(
+        ui.painter(),
+        egui::pos2(left_center.x, top),
+        name,
+        name_color,
+    );
     if let Some(suffix) = suffix {
         // Share the name's baseline.
-        ui.painter().galley(
+        emoji::paint_galley(
+            ui.painter(),
             egui::pos2(suffix_left, bottom - suffix.size().y),
             suffix,
             suffix_color,
@@ -26832,7 +26888,11 @@ fn feedback_row(
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
-                        ui.label(bold(&report.reporter.display_name).size(13.0));
+                        emoji::name_label(
+                            ui,
+                            bold(&report.reporter.display_name).size(13.0),
+                            egui::Sense::hover(),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new(feedback::relative_time(&report.created_at, now))
@@ -27069,14 +27129,15 @@ fn message_row<R>(
                                 if author.admin {
                                     ui.spacing_mut().item_spacing.x = 4.0;
                                 }
-                                let name =
-                                    ui.add(egui::Label::new(bold(&author.name).size(13.0)).sense(
-                                        if profile {
-                                            egui::Sense::click()
-                                        } else {
-                                            egui::Sense::hover()
-                                        },
-                                    ));
+                                let name = emoji::name_label(
+                                    ui,
+                                    bold(&author.name).size(13.0),
+                                    if profile {
+                                        egui::Sense::click()
+                                    } else {
+                                        egui::Sense::hover()
+                                    },
+                                );
                                 ui.spacing_mut().item_spacing.x = header_spacing;
                                 if profile {
                                     if name.hovered() {
@@ -27852,7 +27913,8 @@ fn message_menu_item_in(
             color,
             rect.width() - 40.0,
         );
-        ui.painter().galley(
+        emoji::paint_galley(
+            ui.painter(),
             egui::pos2(rect.left() + 32.0, rect.center().y - galley.size().y / 2.0),
             galley,
             color,
@@ -28148,14 +28210,14 @@ fn suggestion_row(
         let mut job = egui::text::LayoutJob::simple_singleline(text.into(), font, color);
         job.wrap =
             egui::text::TextWrapping::truncate_at_width((rect.right() - padding - left).max(0.0));
-        painter.layout_job(job)
+        emoji::layout_job(ui, job)
     };
     let title = line(title, egui::TextStyle::Button.resolve(ui.style()), TEXT);
     let detail = line(detail, egui::FontId::proportional(11.0), MUTED);
     let top = rect.center().y - (title.size().y + detail.size().y) / 2.0;
     let below = top + title.size().y;
-    painter.galley(egui::pos2(left, top), title, TEXT);
-    painter.galley(egui::pos2(left, below), detail, MUTED);
+    emoji::paint_galley(painter, egui::pos2(left, top), title, TEXT);
+    emoji::paint_galley(painter, egui::pos2(left, below), detail, MUTED);
     response
 }
 
@@ -28450,6 +28512,16 @@ fn paint_avatar(
     } else {
         ui.painter()
             .circle_filled(rect.center(), rect.width() / 2.0, RAISED);
+        if let Some((range, entry)) = emoji::inline(name).first()
+            && range.start == 0
+        {
+            emoji::Textures::shared(ui.ctx()).paint(
+                ui.painter(),
+                entry,
+                egui::Rect::from_center_size(rect.center(), rect.size() * 0.5),
+            );
+            return false;
+        }
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -40440,6 +40512,75 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_names_draw_bundled_emoji_without_losing_accessibility_or_ellipsis() {
+        use crate::{RowExtras, channel_button, configure};
+
+        for (name, width, suffix, expected) in [
+            ("Spicy Mike🌶️", 300.0, None, 1),
+            ("Alex 👩🏽‍💻🇵🇷", 300.0, Some("you"), 2),
+            ("Spicy Mike🌶️", 65.0, None, 0),
+            ("🌶️🌶️🌶️🌶️", 65.0, None, 1),
+            ("🌶️ A very long name 🌶️", 120.0, Some("you"), 1),
+            ("Plain name", 300.0, None, 0),
+        ] {
+            let context = egui::Context::default();
+            configure(&context);
+            context.enable_accesskit();
+            let output = context.run(egui::RawInput::default(), |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    channel_button(
+                        ui,
+                        egui::vec2(width, 36.0),
+                        name,
+                        None,
+                        false,
+                        RowExtras {
+                            suffix,
+                            ..Default::default()
+                        },
+                    );
+                });
+            });
+            let images: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                        Some(mesh)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(images.len(), expected, "{name}, width {width}");
+            for image in images {
+                let rect = image.calc_bounds();
+                assert!(
+                    (rect.width() - 13.0).abs() < 1.0,
+                    "one em per emoji: {rect:?}"
+                );
+                assert!((rect.width() - rect.height()).abs() < 0.01);
+                assert!(rect.right() <= width + 8.0, "emoji stays inside the row");
+            }
+            assert!(
+                output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some(name))
+            );
+            if width < 150.0 {
+                assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.rows.iter().any(|row| row.glyphs.iter().any(|glyph|
+                        glyph.chr == '…' && glyph.advance_width > 4.0
+                            && row.visuals.mesh.vertices[glyph.first_vertex as usize].color.a() > 0)))));
+            }
+        }
+    }
+
+    #[test]
     fn feedback_sidebar_selection_replaces_the_underlying_conversation() {
         let feedback_label = "Feedback, 12 feedback conversations waiting for a reply";
         for kind in ["self", "direct", "request", "channel"] {
@@ -44247,6 +44388,7 @@ mod tests {
         for name in [
             "parity-desktop",
             "parity-direct",
+            "parity-direct-emoji",
             "parity-thread",
             "parity-mentions",
         ] {
