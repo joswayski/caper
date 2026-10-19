@@ -21659,6 +21659,7 @@ impl CaperApp {
             Dialog::Settings
             | Dialog::Profile
             | Dialog::WhatsNew
+            | Dialog::CreateSpace
             | Dialog::CreateChannel
             | Dialog::StartDirect
             | Dialog::JoinInvite => true,
@@ -34013,13 +34014,18 @@ mod tests {
     }
 
     #[test]
-    fn create_channel_backdrop_dismisses_unless_creation_is_pending() {
-        for name in ["", "project-updates"] {
+    fn create_dialog_backdrops_dismiss_unless_creation_is_pending() {
+        for (fixture, name) in [
+            ("parity-create-space", ""),
+            ("parity-create-space", "Gaming nights"),
+            ("parity-create-channel", ""),
+            ("parity-create-channel", "project-updates"),
+        ] {
             let context = egui::Context::default();
             let mut app = CaperApp::new(
                 &context,
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
-                Some("parity-create-channel"),
+                Some(fixture),
             );
             app.form_name = name.into();
             for _ in 0..3 {
@@ -34033,22 +34039,28 @@ mod tests {
                 bounds.left_top() + egui::vec2(10.0, 10.0),
             );
             assert!(
-                matches!(app.dialog, Some(Dialog::CreateChannel)),
-                "inside click dismissed create-channel dialog"
+                matches!(
+                    app.dialog,
+                    Some(Dialog::CreateSpace | Dialog::CreateChannel)
+                ),
+                "inside click dismissed {fixture}"
             );
             app.loading = true;
             click(&mut app, &context, egui::pos2(5.0, 5.0));
             assert!(
-                matches!(app.dialog, Some(Dialog::CreateChannel)),
-                "outside click dismissed pending creation"
+                matches!(
+                    app.dialog,
+                    Some(Dialog::CreateSpace | Dialog::CreateChannel)
+                ),
+                "outside click dismissed pending {fixture}"
             );
             app.loading = false;
             click(&mut app, &context, egui::pos2(5.0, 5.0));
             assert!(
                 app.dialog.is_none(),
-                "outside click did not dismiss create-channel dialog"
+                "outside click did not dismiss {fixture}"
             );
-            assert!(!app.loading, "dismissal must not create a channel");
+            assert!(!app.loading, "dismissal must not start creation");
         }
     }
 
