@@ -1099,7 +1099,7 @@ async function checkExistingPictures(browser) {
   await quiet.goto(new URL("/spaces?space=space1234567&channel=channel12345", origin).href);
   await quiet.waitForFunction(loaded('.chat-avatar [data-avatar-asset="gifpicture01"]'));
   await quiet.waitForFunction(
-    '[...document.querySelectorAll(".caper-picture")].filter((picture) => picture.dataset.state !== "loading").every((picture) => picture.hasAttribute("data-still") && picture.querySelector("canvas")?.width <= 256 && getComputedStyle(picture.querySelector("img")).visibility === "hidden")',
+    '[...document.querySelectorAll(".caper-picture")].filter((picture) => picture.dataset.state !== "loading").every((picture) => picture.hasAttribute("data-still") && picture.querySelector("canvas")?.width <= 256 && getComputedStyle(picture.querySelector("img")).opacity === "0")',
   );
   const calmMaya = quiet.locator('.chat-avatar [data-avatar-asset="gifpicture01"]').first();
   const calmFirst = await calmMaya.screenshot();
@@ -1116,11 +1116,111 @@ async function checkExistingPictures(browser) {
   );
 }
 
+async function checkProfileViewer(browser, narrow, reduced = false) {
+  const label = reduced ? "reduced-motion" : narrow ? "touch" : "desktop";
+  const created = await context(browser, {
+    viewport: narrow ? { width: 390, height: 844 } : { width: 1280, height: 900 },
+    hasTouch: narrow,
+    isMobile: narrow,
+    reducedMotion: reduced ? "reduce" : "no-preference",
+    permissions: ["clipboard-read", "clipboard-write"],
+  });
+  // An asymmetric original proves the viewer shows the original, not the square thumbnail.
+  await created.route("https://cdn.test/assets/stillpictur1*", (route) =>
+    route.fulfill({ body: landscape, contentType: "image/png", headers: { "access-control-allow-origin": "*" } }),
+  );
+  const page = await created.newPage();
+  const problems = [];
+  page.on("pageerror", (error) => problems.push(error.message));
+  try {
+    await page.goto(new URL("/spaces?space=space1234567&channel=channel12345", origin).href);
+    if (narrow) assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), true);
+    const who = reduced ? "Maya (animated GIF)" : "June (still)";
+    const avatar = page.locator(`.chat-avatar[aria-label="Open profile for ${who}"]`);
+    await avatar.click();
+    const card = page.locator(".chat-mention-card");
+    const picture = card.getByRole("button", { name: `Open ${who}’s profile picture`, exact: true });
+    await picture.locator("img").waitFor();
+    await card.locator("textarea").fill("TEST FIXTURE — keep this draft");
+    // Browser-native image actions must hit the real image and remain uncancelled.
+    const nativeMenu = await picture.locator("img").evaluate((image) => {
+      const box = image.getBoundingClientRect();
+      const target = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      return { image: target === image, allowed: target.dispatchEvent(event) };
+    });
+    assert.deepEqual(nativeMenu, { image: true, allowed: true });
+    await picture.click();
+    const viewer = page.getByRole("dialog", { name: "Image viewer", exact: true });
+    await viewer.waitFor();
+    await page.waitForFunction(() => document.querySelector(".chat-viewer-image img")?.naturalWidth > 0);
+    const image = viewer.locator(".chat-viewer-image");
+    if (reduced) {
+      const first = await image.screenshot();
+      await page.waitForTimeout(330);
+      assert.deepEqual(await image.screenshot(), first, "full-size GIF stays still with reduced motion");
+    } else {
+      const bounds = await image.boundingBox();
+      assert.ok(bounds.width > 250 && Math.abs(bounds.width / bounds.height - 4 / 3) < 0.01);
+    }
+    await shot(page, `profile-picture-${label}.png`);
+    await viewer.getByLabel("More media actions", { exact: true }).click();
+    if (!narrow) {
+      await viewer.getByRole("button", { name: "Copy image", exact: true }).click();
+      await viewer.getByText("Image copied", { exact: true }).waitFor();
+      assert.deepEqual(
+        await page.evaluate(async () => {
+          const item = (await navigator.clipboard.read())[0];
+          const bitmap = await createImageBitmap(await item.getType("image/png"));
+          const dimensions = [bitmap.width, bitmap.height];
+          bitmap.close();
+          return dimensions;
+        }),
+        reduced ? [64, 64] : [800, 600],
+        "clipboard contains the original pixels, not an avatar-sized thumbnail",
+      );
+    }
+    const browserLink = viewer.getByRole("link", { name: "Open in browser", exact: true });
+    const [opened] = await Promise.all([created.waitForEvent("page"), browserLink.click()]);
+    await opened.waitForLoadState();
+    assert.ok(opened.url().includes(reduced ? "gifpicture01" : "stillpictur1"));
+    await opened.close();
+    if (narrow) await page.goBack();
+    else await page.keyboard.press("Escape");
+    await viewer.waitFor({ state: "detached" });
+    assert.ok(await card.isVisible(), "closing only the viewer preserves the profile");
+    assert.equal(await card.locator("textarea").inputValue(), "TEST FIXTURE — keep this draft");
+    await picture.focus();
+    await page.keyboard.press("Enter");
+    await viewer.waitFor();
+    await viewer.getByRole("button", { name: "Close viewer" }).click();
+    await viewer.waitFor({ state: "detached" });
+    await card.getByRole("button", { name: "Close profile" }).click();
+    await page.locator('.chat-avatar[aria-label="Open profile for Avery (mascot)"]').click();
+    assert.equal(
+      await card.locator("button.chat-mention-card-avatar").count(),
+      0,
+      "mascots don't open a missing picture",
+    );
+    assert.deepEqual(problems, []);
+    console.log(
+      `PASS profile picture ${label}: original, native context target, copy/open, close/Back, keyboard, draft, mascot.`,
+    );
+  } finally {
+    await created.close();
+  }
+}
+
 const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
 try {
-  await checkGallery(browser, false);
-  await checkGallery(browser, true);
-  if (process.env.PICTURE_GALLERY_ONLY !== "1") await checkExistingPictures(browser);
+  await checkProfileViewer(browser, false);
+  await checkProfileViewer(browser, true);
+  await checkProfileViewer(browser, false, true);
+  if (process.env.PICTURE_VIEWER_ONLY !== "1") {
+    await checkGallery(browser, false);
+    await checkGallery(browser, true);
+    if (process.env.PICTURE_GALLERY_ONLY !== "1") await checkExistingPictures(browser);
+  }
 } finally {
   await browser.close();
 }

@@ -118,7 +118,6 @@ final class AttachmentImageLoader: @unchecked Sendable {
         }
     }
 
-    #if os(macOS)
     /// Copy original pixels, with orientation applied; animations contribute their first frame.
     func clipboardImage(_ url: URL) async throws -> CGImage {
         let data = try await fetch(url)
@@ -131,7 +130,6 @@ final class AttachmentImageLoader: @unchecked Sendable {
         }
         return image
     }
-    #endif
 
     func load(key: String, url: URL, maxPixelSize: Int) async throws -> CGImage {
         if let hit = cached(key) { return hit }
@@ -1263,6 +1261,18 @@ private struct AttachmentAnimationView: View {
 
 // MARK: Media viewer
 
+/// Decode the original, not an avatar-sized thumbnail, for the native clipboard.
+@MainActor func copyMediaImage(_ url: URL) async throws -> Bool {
+    let image = try await AttachmentImageLoader.shared.clipboardImage(url)
+    #if os(iOS)
+    UIPasteboard.general.image = UIImage(cgImage: image)
+    return true
+    #else
+    NSPasteboard.general.clearContents()
+    return NSPasteboard.general.writeObjects([NSImage(cgImage: image, size: .zero)])
+    #endif
+}
+
 /// One message's images and videos (`MediaViewerPolicy.items`), opened at
 /// the one chosen.
 struct MediaViewerRequest: Identifiable {
@@ -1327,7 +1337,7 @@ struct MediaViewerHost: ViewModifier {
 /// iPhone and iPad; Previous, Next and the arrow keys step on the Mac, on
 /// iPad and with VoiceOver. Close, Escape, a click outside the media on the
 /// Mac, or a swipe down on phones closes it.
-private struct MediaViewer: View {
+struct MediaViewer: View {
     let request: MediaViewerRequest
     let close: () -> Void
     @Environment(\.openURL) private var openURL
@@ -1337,9 +1347,9 @@ private struct MediaViewer: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
     #else
     @FocusState private var focused: Bool
+    #endif
     @State private var copyingImage = false
     @State private var copyStatus: String?
-    #endif
     @State private var index: Int
     @State private var hidingSpoiler = false
 
@@ -1443,6 +1453,11 @@ private struct MediaViewer: View {
                 if MediaViewerPolicy.isViewable(item), let raw = item.url, let url = URL(string: raw) {
                     #if os(iOS)
                     Menu {
+                        if item.kind == .image {
+                            Button { copyImage(url) } label: {
+                                Label("Copy image", systemImage: "doc.on.doc")
+                            }.disabled(copyingImage)
+                        }
                         ShareLink(item: SharedAttachmentFile(item, url: url), preview: SharePreview(item.name)) {
                             Label("Save or share", systemImage: "square.and.arrow.up")
                         }
@@ -1520,7 +1535,6 @@ private struct MediaViewer: View {
                 .padding(.horizontal, 12)
             }
             Spacer(minLength: 0)
-            #if os(macOS)
             if let copyStatus {
                 Text(copyStatus)
                     .font(CaperTheme.font(13))
@@ -1535,7 +1549,6 @@ private struct MediaViewer: View {
                         if !Task.isCancelled { self.copyStatus = nil }
                     }
             }
-            #endif
         }
         .overlay {
             if showsArrows && count > 1 {
@@ -1573,15 +1586,12 @@ private struct MediaViewer: View {
         .accessibilityIdentifier("media-viewer-download")
     }
 
-    #if os(macOS)
     private func copyImage(_ url: URL) {
         copyingImage = true
         copyStatus = "Copying image…"
         Task {
             do {
-                let image = try await AttachmentImageLoader.shared.clipboardImage(url)
-                NSPasteboard.general.clearContents()
-                let copied = NSPasteboard.general.writeObjects([NSImage(cgImage: image, size: .zero)])
+                let copied = try await copyMediaImage(url)
                 copyingImage = false
                 copyStatus = copied ? "Image copied" : "Couldn’t copy image."
             } catch {
@@ -1590,7 +1600,6 @@ private struct MediaViewer: View {
             }
         }
     }
-    #endif
 
     private func move(_ delta: Int, count: Int) {
         let next = MediaViewerPolicy.step(index, by: delta, count: count)

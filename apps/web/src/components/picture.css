@@ -23,13 +23,18 @@
 .caper-picture[data-state="loading"] {
   opacity: 0;
 }
+/* The actual image receives right-clicks for the browser's Copy/Open image menu.
+   Clicks still bubble to the surrounding profile button. */
+.caper-picture:not([data-state="loading"]) > img {
+  pointer-events: auto;
+}
 /* Pictures arrive rather than pop in; one already shown on this page appears at once. */
 .caper-picture[data-state="arrived"] {
   animation: caper-fade-in var(--motion-base) var(--ease-out) both;
 }
 /* Reduced motion: a still frame replaces an animated GIF. */
 .caper-picture[data-still] > img {
-  visibility: hidden;
+  opacity: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   .caper-picture[data-state="arrived"] {

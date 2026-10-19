@@ -9173,6 +9173,13 @@ impl eframe::App for CaperApp {
         self.periodic(context);
         self.attachment_housekeeping(context);
         // Before the page: the viewer is modal and takes the keys it uses.
+        if self.viewer.is_some()
+            && let Some(card) = &mut self.mention_card
+        {
+            // Its closing click belongs to the viewer, not the preserved card.
+            card.fresh = true;
+            card.focus_on_open = false;
+        }
         if !self.updates.has_available()
             && let Some(mut viewer) = self.viewer.take()
             && viewer.show(
@@ -20386,6 +20393,10 @@ impl CaperApp {
     /// The card for a clicked person pill: below the pill, or above it when
     /// there is no room. Escape, a click outside, or opening the DM closes it.
     fn mention_card(&mut self, context: &egui::Context) {
+        // Keep the card and its independent draft underneath the modal viewer.
+        if self.viewer.is_some() {
+            return;
+        }
         let Some(card) = self.mention_card.clone() else {
             return;
         };
@@ -20526,7 +20537,7 @@ impl CaperApp {
                                 .as_deref()
                                 .or(profile.username.as_deref())
                                 .unwrap_or("Profile");
-                            avatar(
+                            let rect = avatar(
                                 ui,
                                 initial,
                                 profile.avatar_id,
@@ -20534,6 +20545,35 @@ impl CaperApp {
                                 48.0,
                                 false,
                             );
+                            if let Some(picture) = profile
+                                .picture()
+                                .and_then(|source| viewer::Viewer::profile_picture(source, initial))
+                            {
+                                let response = ui
+                                    .interact(
+                                        rect,
+                                        ui.id().with("profile-picture"),
+                                        egui::Sense::click(),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        true,
+                                        "Open profile picture",
+                                    )
+                                });
+                                if response.clicked() {
+                                    self.viewer =
+                                        Some(viewer::Viewer::open(vec![picture.clone()], 0));
+                                }
+                                menu_open |= response
+                                    .context_menu(|ui| {
+                                        viewer::Viewer::open(vec![picture.clone()], 0)
+                                            .picture_menu(ui, &picture, &mut self.media);
+                                    })
+                                    .is_some();
+                            }
                             ui.add_space(4.0);
                             let can_block = !profile.me
                                 && card.pill.entry.id.is_some()
@@ -20756,6 +20796,7 @@ impl CaperApp {
             && !message
             && !open_conversation
             && !self.attachment_editor_shown
+            && self.viewer.is_none()
             && (close
                 || escape
                 || (!suggestions_open && !card.fresh && shown.response.clicked_elsewhere()))

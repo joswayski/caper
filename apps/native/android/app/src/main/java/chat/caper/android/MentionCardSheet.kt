@@ -2,6 +2,7 @@ package chat.caper.android
 
 import android.graphics.Bitmap
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -11,6 +12,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -29,6 +32,8 @@ import chat.caper.android.ui.*
 import chat.caper.android.data.AttachmentEdit
 import chat.caper.android.model.AppUiState
 import chat.caper.android.model.BlockedAccount
+import chat.caper.android.model.ChatAttachment
+import chat.caper.android.model.pictureOf
 import kotlinx.coroutines.launch
 
 /**
@@ -76,15 +81,25 @@ import kotlinx.coroutines.launch
     val canMessage = !card.self && !blocked && card.username != null
     // Name, username and picture follow live profile changes while the card is open.
     val shown = state?.let { refreshedCard(card, it) } ?: card
+    val picture = pictureOf(shown.avatarAsset, shown.avatarUrl)
+    var viewingPicture by remember(person) { mutableStateOf(false) }
+    var pictureActions by remember(person) { mutableStateOf(false) }
+    val uriHandler = LocalUriHandler.current
     fun openConversation() {
         pending = "message"
         error = null
         message({ pending = null; onDismiss() }, { pending = null; error = it })
     }
     // Block closes the card first, as on web: only the confirmation stays.
-    if (!confirmBlock && !editingProfile) ProfileBottomSheet(shown.title, profileDraft, picking || pending != null, onDismiss, header = {
+    if (!confirmBlock && !editingProfile) ProfileBottomSheet(shown.title, profileDraft, viewingPicture || picking || pending != null, onDismiss, header = {
         // Identity, then Open conversation (and the sheet's Close) at the end, as on web.
-        Avatar(shown.displayName ?: shown.username ?: shown.title, 48.dp, avatarId = shown.avatarId, avatarAsset = shown.avatarAsset, avatarUrl = shown.avatarUrl)
+        Avatar(shown.displayName ?: shown.username ?: shown.title, 48.dp,
+            modifier = if (picture == null) Modifier else Modifier.combinedClickable(
+                role = Role.Button, onClickLabel = "View profile picture", onLongClickLabel = "View profile picture actions",
+                onClick = { pictureActions = false; viewingPicture = true },
+                onLongClick = { pictureActions = true; viewingPicture = true },
+            ).semantics { contentDescription = "${shown.title}'s profile picture" },
+            avatarId = shown.avatarId, avatarAsset = shown.avatarAsset, avatarUrl = shown.avatarUrl)
         Column(Modifier.weight(1f)) {
             Text(
                 shown.title, Modifier.semantics { heading() }, color = Text, fontSize = 16.sp,
@@ -166,6 +181,14 @@ import kotlinx.coroutines.launch
             }
         }
     }
+    // Keep the sheet and composer composed underneath, so Back only closes the viewer.
+    if (viewingPicture && picture != null) key(picture.asset) {
+        val attachment = ChatAttachment(picture.asset, "image", "image/*", "Profile picture", 0, url = picture.url)
+        MediaViewer(ViewerPages(listOf(picture.asset), 0), listOf(attachment), shown.title,
+            close = { viewingPicture = false }, open = { runCatching { uriHandler.openUri(it) } },
+            onLoadFailed = { _, _ -> }, hideSpoiler = {}, profilePicture = true, showActionsInitially = pictureActions)
+    }
+    LaunchedEffect(picture) { if (picture == null) viewingPicture = false }
     if (confirmBlock && id != null && viewModel != null) BlockConfirmDialog(
         BlockedAccount(id, shown.username.orEmpty(), shown.displayName ?: shown.title, shown.avatarId, shown.avatarAsset, shown.avatarUrl, shown.admin, shown.team),
         viewModel, onDismiss,
