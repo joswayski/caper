@@ -715,6 +715,27 @@ try {
   wait(
     `document.querySelector('${channel(root.clientMessageId)} .chat-thread-summary strong')?.textContent === '1 reply'`,
   );
+  assert.ok(
+    evaluate(`(() => {
+      const summary = document.querySelector('${channel(root.clientMessageId)} .chat-thread-summary');
+      const text = summary.parentElement.querySelector('p');
+      return summary.getBoundingClientRect().top - text.getBoundingClientRect().bottom <= 4;
+    })()`),
+    "Thread summary stays close to the message instead of reserving a blank line",
+  );
+  if (process.env.MESSAGE_TEST_CHROME) {
+    browser("hover", `${channel(root.clientMessageId)} .chat-thread-summary`);
+    evaluate(
+      `Promise.all(document.querySelector('${channel(root.clientMessageId)} .chat-thread-summary').getAnimations().map(animation => animation.finished))`,
+    );
+    assert.notEqual(
+      evaluate(
+        `getComputedStyle(document.querySelector('${channel(root.clientMessageId)} .chat-thread-summary')).backgroundColor`,
+      ),
+      "rgba(0, 0, 0, 0)",
+      "The whole thread reply control highlights on hover, not just its count",
+    );
+  }
   assert.equal(
     evaluate('document.querySelectorAll(".chat-panel .chat-message").length'),
     initial.messages.length,
@@ -965,6 +986,21 @@ try {
     "Touch layout hides inline replies and keeps thread links separate from 44px message actions",
   );
   screenshot("threads-mobile-channel");
+  const summarySelector = `${channel(root.clientMessageId)} .chat-thread-summary`;
+  const summaryPoint = evaluate(`(() => {
+    const r = document.querySelector('${summarySelector}').getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`);
+  await cdp("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [summaryPoint] }, sessionId);
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  assert.notEqual(
+    evaluate(`getComputedStyle(document.querySelector('${summarySelector}')).backgroundColor`),
+    "rgba(0, 0, 0, 0)",
+    "Thread feedback remains visible throughout a long press",
+  );
+  assert.equal(evaluate('!!document.querySelector(".chat-message-actions")'), false);
+  await cdp("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] }, sessionId);
+  assert.equal(evaluate(`document.querySelector('${summarySelector}').hasAttribute('data-pressing')`), false);
   evaluate(`(() => {
     const original = window.fetch.bind(window);
     window.threadFetch = original;

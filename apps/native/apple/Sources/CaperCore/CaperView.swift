@@ -5028,11 +5028,11 @@ private struct MessageRow: View {
                                 CaperIcon(name: "thread", size: 14); Text("Replied to a thread · View thread")
                             }
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
-                    }.buttonStyle(.plain).frame(minHeight: 32)
+                            .padding(.horizontal, 6)
+                            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                    }.buttonStyle(ProfileButtonStyle())
                         #if os(macOS)
-                        .focused($threadLinkFocused).modifier(ControlHover(isFocused: threadLinkFocused))
-                        #else
-                        .modifier(ControlHover())
+                        .focused($threadLinkFocused).modifier(ControlHover(isFocused: threadLinkFocused, wash: false))
                         #endif
                         .accessibilityLabel(chat.threadUnread(message.threadRootId ?? message.id) ? "View thread, unread" : "View thread")
                 }
