@@ -356,10 +356,10 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                                                 down.consume()
                                                 val minWidth = min(1.0, max(AttachmentEdits.MIN_CROP, 32.dp.toPx() / start.width.toDouble()))
                                                 val minHeight = min(1.0, max(AttachmentEdits.MIN_CROP, 32.dp.toPx() / start.height.toDouble()))
+                                                val resize = if (pictureMode) AttachmentEdits::dragSquareCrop else AttachmentEdits::dragCrop
                                                 drag(down.id) { change ->
-                                                    liveCrop = AttachmentEdits.dragCrop(crop, handle, ((change.position.x - down.position.x) / start.width).toDouble(),
+                                                    liveCrop = resize(crop, handle, ((change.position.x - down.position.x) / start.width).toDouble(),
                                                         ((change.position.y - down.position.y) / start.height).toDouble(), minWidth, minHeight)
-                                                    if (pictureMode) liveCrop = square(history.current.copy(crop = liveCrop!!)).crop
                                                     change.consume()
                                                 }
                                                 liveCrop?.let { commit(history.current.copy(crop = AttachmentEdits.clampCrop(it))) }

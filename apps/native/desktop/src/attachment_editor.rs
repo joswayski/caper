@@ -658,12 +658,7 @@ impl Editor {
     fn shown(&self) -> Edit {
         let mut shown = self.current().clone();
         if let Some(crop) = self.live_crop {
-            shown.crop = self
-                .square_edit(Edit {
-                    crop,
-                    ..shown.clone()
-                })
-                .crop;
+            shown.crop = crop;
         }
         if let Some((index, x, y)) = self.live_text
             && let Some(Mark::Text {
@@ -1095,7 +1090,12 @@ impl Editor {
                 f64::from(MIN_CROP_POINTS / full.x).clamp(0.02, 1.0),
                 f64::from(MIN_CROP_POINTS / full.y).clamp(0.02, 1.0),
             );
-            self.live_crop = Some(markup::drag_crop(
+            let drag = if matches!(self.target, Target::Picture { .. }) {
+                markup::drag_square_crop
+            } else {
+                markup::drag_crop
+            };
+            self.live_crop = Some(drag(
                 *start,
                 *handle,
                 f64::from((pos.x - from.x) / full.x),
@@ -1142,7 +1142,12 @@ impl Editor {
             })
         });
         if let Some((handle, (dx, dy))) = delta {
-            let crop = markup::drag_crop(self.current().crop, handle, dx, dy, (0.02, 0.02));
+            let drag = if matches!(self.target, Target::Picture { .. }) {
+                markup::drag_square_crop
+            } else {
+                markup::drag_crop
+            };
+            let crop = drag(self.current().crop, handle, dx, dy, (0.02, 0.02));
             let next = Edit {
                 crop,
                 ..self.current().clone()

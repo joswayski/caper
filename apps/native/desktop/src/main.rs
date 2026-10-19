@@ -39636,12 +39636,54 @@ mod tests {
     #[test]
     fn picture_editor_covers_settings_and_cancel_returns_without_uploading() {
         let (context, mut app) = fixture("parity-pictures-editor");
-        render(&mut app, &context, vec![]);
-        let output = render(&mut app, &context, vec![]);
+        let output = editor_ready(&mut app, &context);
         assert!(shows(&output, "Done"));
         assert!(
             !shows(&output, "Save profile"),
             "settings must not cover the editor"
+        );
+        let frame = node_bounds(&output, "Crop frame").unwrap();
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        render(
+            &mut app,
+            &context,
+            vec![
+                egui::Event::PointerMoved(frame.max),
+                button(frame.max, true),
+            ],
+        );
+        // Unequal axis movements used to recenter the square, moving its
+        // opposite corner. Shrink then expand during the same held drag.
+        for by in [egui::vec2(-80.0, -35.0), egui::vec2(-40.0, -10.0)] {
+            render(
+                &mut app,
+                &context,
+                vec![egui::Event::PointerMoved(frame.max + by)],
+            );
+            let output = render(&mut app, &context, vec![]);
+            let resized = node_bounds(&output, "Crop frame").unwrap();
+            assert!(
+                (resized.min - frame.min).length() < 0.1,
+                "opposite corner moved: {resized:?}"
+            );
+            assert!((resized.width() - (frame.width() + by.x)).abs() < 0.1);
+            assert!((resized.width() - resized.height()).abs() < 0.1);
+        }
+        render(
+            &mut app,
+            &context,
+            vec![button(frame.max + egui::vec2(-40.0, -10.0), false)],
+        );
+        let output = click_label(&mut app, &context, "Undo");
+        let restored = node_bounds(&output, "Crop frame").unwrap();
+        assert!(
+            (restored.size() - frame.size()).length() < 0.1,
+            "one undo restores the whole drag"
         );
         render(&mut app, &context, press(egui::Key::Escape));
         // The settings area measures its first frame before painting.
