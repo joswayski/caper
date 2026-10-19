@@ -248,11 +248,24 @@
 .chat-channel-title {
   min-width: 0;
   flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   overflow: hidden;
   font-size: 0.86rem;
   letter-spacing: -0.01em;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.chat-peer-avatar {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.chat-title-name > .chat-peer-avatar {
+  margin-right: 4px;
 }
 .chat-offline {
   position: absolute;

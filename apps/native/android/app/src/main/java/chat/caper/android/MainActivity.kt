@@ -1597,6 +1597,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     } else if (narrow) IconButton(openNavigation, Modifier.size(48.dp)) {
                         Icon(painterResource(R.drawable.lucide_arrow_right), "Back to Browse", Modifier.size(20.dp).graphicsLayer { rotationZ = 180f }, tint = TextMuted)
                     }
+                    if (visit == null && channel.direct) state.selectedDirect?.peer?.let { peer ->
+                        Avatar(peer.displayName, 28.dp, avatarId = peer.avatarId, avatarAsset = peer.avatarAsset, avatarUrl = peer.avatarUrl)
+                    }
                     // Phones: the name opens the conversation's menu, as in Slack; Pins, Members and Block move there.
                     if (narrow) Column(Modifier.weight(1f).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
                         .background(if (channelMenuOpen) Surface else Color.Transparent)

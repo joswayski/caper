@@ -44,7 +44,7 @@ import { carriesFiles } from "./drop.ts";
 import { MAX_ATTACHMENTS, AttachmentUpload, refreshAttachmentUrls, uploadSettings } from "./uploads.ts";
 import { editableKind, type CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
-import Avatar from "../components/Avatar";
+import Avatar, { type AvatarPerson } from "../components/Avatar";
 import DailyCaper from "../components/DailyCaper";
 import Composer, { type ComposerHandle } from "./Composer.tsx";
 import { useTimelineKeyboardDismiss } from "./useTimelineKeyboardDismiss.ts";
@@ -193,6 +193,7 @@ export default function Chat({
   channelName: expectedChannelName,
   direct = false,
   directPeerId,
+  directPeer,
   team = false,
   onReadCursor,
   readActive = true,
@@ -232,6 +233,7 @@ export default function Chat({
   channelName?: string;
   direct?: boolean;
   directPeerId?: string;
+  directPeer?: AvatarPerson;
   /** A DM with the Caper account, which the feedback team answers. */
   team?: boolean;
   onReadCursor?: (seq: string) => void;
@@ -1945,9 +1947,16 @@ export default function Chat({
         <header className="chat-heading">
           {headerLeading}
           <h2 id="chat-heading" className={showTitle ? "chat-channel-title" : "sr-only"}>
-            {direct ? "" : "# "}
-            {channelName}
-            {visitor && !direct && <span className="chat-channel-space"> · {state.spaceName}</span>}
+            {direct && directPeer && (
+              <span className="chat-peer-avatar">
+                <Avatar person={directPeer} name={channelName} />
+              </span>
+            )}
+            <span className="chat-title-text">
+              {direct ? "" : "# "}
+              {channelName}
+              {visitor && !direct && <span className="chat-channel-space"> · {state.spaceName}</span>}
+            </span>
           </h2>
           {/* Phones: the name opens the channel's menu, as in Slack; Pins and Members move there. */}
           {showTitle && state.phase === "ready" && (
@@ -1979,6 +1988,11 @@ export default function Chat({
             >
               <summary aria-label={`${direct ? "" : "#"}${channelName} options`}>
                 <span className="chat-title-name">
+                  {direct && directPeer && (
+                    <span className="chat-peer-avatar">
+                      <Avatar person={directPeer} name={channelName} />
+                    </span>
+                  )}
                   <span className="chat-title-text">
                     {direct ? "" : "# "}
                     {channelName}

@@ -51,7 +51,7 @@ import type { MentionCandidate } from "../chat/mentions";
 import type { Space } from "../spaces/client";
 import Slider from "../components/Slider";
 import PresenceDot from "../components/PresenceDot";
-import Avatar from "../components/Avatar";
+import Avatar, { type AvatarPerson } from "../components/Avatar";
 import Tooltip from "../components/Tooltip";
 import Wordmark from "../components/Wordmark";
 import { useBackdropDismiss } from "../components/dialogBackdrop";
@@ -440,6 +440,7 @@ interface CallProps {
     demo?: boolean;
     direct?: boolean;
     directPeerId?: string;
+    directPeer?: AvatarPerson;
     /** A DM with the Caper account: messages go to the feedback team. */
     team?: boolean;
     joined?: boolean;
@@ -2206,6 +2207,7 @@ export default function Call({
               identityReady={identityReady && engaged}
               direct={channel?.direct}
               directPeerId={channel?.directPeerId}
+              directPeer={channel?.directPeer}
               team={!!channel?.team}
               onReadCursor={onReadCursor}
               readActive={engaged && !browsing}
