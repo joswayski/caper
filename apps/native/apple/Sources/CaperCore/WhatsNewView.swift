@@ -230,8 +230,10 @@ func releaseDayLabel(_ day: String) -> String {
                                             url: url, size: 12)
                                     }
                                     ForEach(Array(release.highlights.enumerated()), id: \.offset) { _, highlight in
-                                        Text(highlight.title).font(CaperTheme.font(16, weight: .bold))
-                                        Text(highlight.body).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(highlight.title).font(CaperTheme.font(16, weight: .bold))
+                                            Text(highlight.body).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                                        }
                                     }
                                 }
                             }

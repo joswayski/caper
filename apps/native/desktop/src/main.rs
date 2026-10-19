@@ -21473,8 +21473,11 @@ impl CaperApp {
                     );
                     for highlight in release.highlights {
                         ui.add_space(10.0);
-                        ui.label(bold(highlight.title).size(16.0));
-                        ui.label(highlight.body);
+                        ui.scope(|ui| {
+                            ui.spacing_mut().item_spacing.y = 4.0;
+                            ui.label(bold(highlight.title).size(16.0));
+                            ui.label(highlight.body);
+                        });
                     }
                 }
             }
@@ -24211,8 +24214,8 @@ fn update_highlight(ui: &mut egui::Ui, title: &str, body: &str) {
             MUTED,
         );
         ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
             ui.add(egui::Label::new(bold(title).size(15.0).color(TEXT)).wrap());
-            ui.add_space(2.0);
             ui.add(egui::Label::new(RichText::new(body).color(MUTED).size(14.0)).wrap());
         });
     });

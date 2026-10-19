@@ -85,8 +85,10 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
         dayReleases.forEach { release ->
             ReleaseCommitLink(release.version?.let { "Version $it" } ?: "Commit ${release.revision.take(7)}", release.revision)
             release.highlights.forEach { highlight ->
-                Text(highlight.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                Text(highlight.body, fontSize = 14.sp, color = TextMuted)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(highlight.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    Text(highlight.body, fontSize = 14.sp, color = TextMuted)
+                }
             }
         }
         HorizontalDivider(color = Border)
