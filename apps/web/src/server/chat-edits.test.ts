@@ -228,7 +228,14 @@ test("a deletion arrives as an edit that empties the message, drops its files an
     pin: { author: root.author, createdAt: root.createdAt },
     thread: { replyCount: 1, participants: [root.author], seq: "4" },
   };
-  timeline.reset([pinned], "4", [pinned]);
+  const quote: ChatMessage = {
+    ...root,
+    id: "quote",
+    seq: "4",
+    clientMessageId: "quote-send",
+    replyTo: { id: root.id, author: root.author, text: root.content.text, hasAttachments: true, attachments: [file] },
+  };
+  timeline.reset([pinned, quote], "4", [pinned]);
   const deletion: ChatEditEvent = {
     ...edit(root, 2, "5", ""),
     message: {
@@ -245,9 +252,12 @@ test("a deletion arrives as an edit that empties the message, drops its files an
   assert.equal(message.content.attachments, undefined);
   assert.equal(message.thread?.replyCount, 1, "the thread stays reachable");
   assert.deepEqual(timeline.pinnedMessages, []);
+  assert.equal(timeline.messages[1].replyTo?.deleted, true);
+  assert.equal(timeline.messages[1].replyTo?.attachments, undefined);
   // A late history page from before the deletion never brings it back.
-  timeline.prepend([pinned]);
+  timeline.prepend([pinned, quote]);
   assert.equal(timeline.messages[0].deletedAt, "2026-10-06T13:00:00Z");
+  assert.equal(timeline.messages[1].replyTo?.attachments, undefined);
 });
 
 test("replies quoting a deleted message validate without its text", () => {

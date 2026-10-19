@@ -8168,9 +8168,13 @@ context hides the decorative connection as well as the quoted identity/text.
 Rust desktop reads the Windows, macOS or GNOME animation preference once when
 first rendering a connection; restart after changing that preference. Other
 Linux desktops without the GNOME setting retain motion. Web, Android and Apple
-observe their motion preference changes while mounted. Replies
-retain a faint neutral background; mentions,
-selected threads and source-jump highlights keep their stronger colors. Desktop
+observe their motion preference changes while mounted. Incoming replies to your
+messages use a 12% terracotta wash and accent edge; ordinary and self replies
+retain a faint neutral background. Pins, selected threads and source-jump
+highlights retain precedence. Quote cards show up to three 44px square attachment
+previews and an overflow count. Spoilers and unavailable/unfinished files remain
+generic tiles; video originals never load just to draw a thumbnail. Clicking a
+preview opens the original message, not the media viewer. Desktop
 message toolbars expose **Reply** beside **Reply in thread**, including Reply
 inside existing threads. Mobile long-press message actions offer both where
 applicable, and source/expansion controls keep a 44px touch target. Long URLs and
@@ -8186,8 +8190,12 @@ refusal permits reuploading with a new command ID while retaining the original
 reply target and snapshot; unknown-outcome retries never replace them.
 
 The optional `replyTo` message field contains `{id, author, text, fullText?,
-hasAttachments, threadRootId?}`. It is a send-time snapshot with no recursive
-quotes, resolved mentions or media URLs. The legacy `text` preview remains
+hasAttachments, threadRootId?, deleted?, attachments?}`. Its text is a send-time
+snapshot with no recursive quotes or resolved mentions. Optional `attachments`
+are projected from the current, same-channel source at HTTP/outbox/replay delivery
+and signed like message attachments; files and expiring URLs are not persisted
+in the quote. This also gives legacy references previews, while deleted sources
+expose none. The legacy `text` preview remains
 bounded to 200 Unicode scalars, so older reply-capable clients still accept the
 whole message. New snapshots add `fullText` only when needed, up to the normal
 4,000-scalar message limit; updated clients display `fullText ?? text`. Existing
@@ -8206,6 +8214,22 @@ push rules are unchanged.
 | Android | Implemented, including delivery-model regression assertions. Gradle tests/compilation stop at configuration because the Android SDK location is missing; no Kotlin compilation or native/device render acceptance. |
 | iOS/macOS | Implemented, including delivery-model regression assertions. No Swift compiler/Xcode in this orb; no Swift typecheck, XCTest or native/device render acceptance. |
 | Containers/services | Docker daemon unavailable. Web build stages validated directly. No shared database write, deployment, native release or live-media acceptance performed. |
+
+**Direct-reply highlighting and attachment previews (October 19, 2026).**
+Web checks and 695 tests pass; inspected desktop and 390px Chromium fixtures
+show incoming-only emphasis, square previews, spoiler concealment and overflow.
+A recorded thumbnail click navigates to the original; narrow Chromium is not
+physical-device acceptance. API workspace tests/Clippy and the disposable
+Postgres reply test pass, including current-source media projection, signed
+preview URLs, replay and deletion. Other ignored integration tests were not
+rerun for this change. Android has 497 passing unit tests and clean lint; APK
+assembly still needs prepared native audio/AVIF inputs, with no device render
+check. Rust desktop's linked Linux build, six reply-focused tests and application
+Clippy pass; its local preview fixture was rendered and inspected. Apple changes
+and regression assertions are implemented but remain uncompiled/unrendered
+without Swift/Xcode. No Docker daemon, production deploy or native release was
+used for this validation. API and gateway delivery must precede updated clients
+to supply previews for previously sent replies; no migration is required.
 
 The pill-overlay refinement reruns the web checks (579 tests), browser
 thread suite, and Linux desktop tests (417), Clippy and linked build. Browser

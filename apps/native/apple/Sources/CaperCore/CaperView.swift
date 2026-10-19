@@ -5207,8 +5207,12 @@ private struct MessageRow: View {
     /// are selections: terracotta, like web. Other people's pins are faded gold.
     private var jumpTarget: Bool { !inPins && chat.focusedMessageID == message.id }
     private var threadOpen: Bool { !inPins && !inThread && chat.threadRootID == message.id }
+    private var repliesToMe: Bool {
+        !message.isDeleted && message.author.id != currentUserID
+            && message.replyTo?.author.id == currentUserID
+    }
     /// Web's inset 3px terracotta bar on selected rows and mentions of you.
-    private func showsAccentBar(mentionsMe: Bool) -> Bool { jumpTarget || threadOpen || (message.pin == nil && mentionsMe) }
+    private func showsAccentBar(mentionsMe: Bool) -> Bool { jumpTarget || threadOpen || (message.pin == nil && (mentionsMe || repliesToMe)) }
     private func rowBackground(mentionsMe: Bool) -> Color {
         // Pins paints the whole card, including its navigation footer.
         if inPins { return .clear }
@@ -5216,6 +5220,7 @@ private struct MessageRow: View {
         if let pin = message.pin {
             return pin.author.id == currentUserID ? CaperTheme.terracotta.opacity(0.12) : CaperTheme.pinGold.opacity(0.06)
         }
+        if repliesToMe { return CaperTheme.terracotta.opacity(0.12) }
         if mentionsMe { return CaperTheme.terracotta.opacity(0.08) }
         if message.replyTo != nil && !message.isDeleted { return CaperTheme.text.opacity(0.03) }
         return .clear
@@ -7148,6 +7153,8 @@ private struct NativeReplyContext: View {
         let limit = 5 + CGFloat(seed >> 24) / 255 * 2
         let speedLimit = limit * 16
         let canExpand = !hidden && (expanded || preview != excerpt || fullHeight > collapsedHeight + 1)
+        // Keep the collapsed pill over text, above the 44pt previews and 3pt gap.
+        let attachmentOffset: CGFloat = !hidden && reference.deleted != true && !(reference.attachments ?? []).isEmpty ? 47 : 0
         #if os(iOS)
         let previewMinHeight: CGFloat = 54
         #else
@@ -7185,6 +7192,17 @@ private struct NativeReplyContext: View {
                                     .frame(maxWidth: .infinity, alignment: .leading).hidden().accessibilityHidden(true)
                                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
                             }
+                        if reference.deleted != true, let attachments = reference.attachments, !attachments.isEmpty {
+                            HStack(spacing: 4) {
+                                ForEach(Array(attachments.prefix(3))) { attachment in
+                                    ReplyAttachmentThumbnail(attachment: attachment, chat: chat)
+                                }
+                                if attachments.count > 3 {
+                                    Text("+\(attachments.count - 3)").font(CaperTheme.font(12))
+                                        .frame(width: 44, height: 44)
+                                }
+                            }
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
@@ -7202,7 +7220,7 @@ private struct NativeReplyContext: View {
                     .buttonStyle(ReplyExpandButton())
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { buttonHeight = $0 }
                     .frame(maxWidth: .infinity, alignment: .center)
-                    .offset(y: expanded ? 0 : buttonHeight / 2 - max(collapsedHeight, previewMinHeight) * 0.3)
+                    .offset(y: expanded ? 0 : buttonHeight / 2 - max(collapsedHeight, previewMinHeight) * 0.3 - attachmentOffset)
                     .accessibilityValue(expanded ? "Expanded" : "Collapsed")
             }
         }.padding(.horizontal, 12).padding(.vertical, 10)

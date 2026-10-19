@@ -352,6 +352,9 @@ async fn deliver(
     cdn: Option<&CdnSigner>,
     messages: &mut [Value],
 ) -> Result<(), ApiError> {
+    assets::reply_attachments(pool, messages)
+        .await
+        .map_err(database_error)?;
     assets::mark_deleted(pool, messages).await?;
     crate::pictures::enrich_people(pool, messages)
         .await
@@ -812,6 +815,7 @@ async fn send(
 /// mascot until the next refresh.
 pub(crate) async fn with_pictures(pool: &PgPool, payload: Value) -> Value {
     let mut payload = [payload];
+    let _ = assets::reply_attachments(pool, &mut payload).await;
     let _ = crate::pictures::enrich_people(pool, &mut payload).await;
     let [payload] = payload;
     payload
@@ -1685,6 +1689,9 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
         seqs.push(seq);
     }
     crate::pictures::enrich_people(&mut *tx, &mut events)
+        .await
+        .map_err(|_| ())?;
+    assets::reply_attachments(&mut *tx, &mut events)
         .await
         .map_err(|_| ())?;
     // An event committed before a later edit replaced its files never hands

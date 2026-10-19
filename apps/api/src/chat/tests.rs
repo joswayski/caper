@@ -698,6 +698,37 @@ async fn threads_isolate_replies_and_broadcast_once_with_transactional_summaries
     let event: Value = sqlx::query_scalar("SELECT payload FROM public.channel_events WHERE channel_id=(SELECT id FROM public.channels WHERE external_id=$1) AND seq=$2")
         .bind(channel).bind(quoted["seq"].as_str().unwrap().parse::<i64>().unwrap()).fetch_one(&pool).await.unwrap();
     assert_eq!(event["message"]["replyTo"], quoted["replyTo"]);
+
+    // Media comes from the current source at delivery, including for legacy
+    // references that only stored hasAttachments. Never persist expiring URLs.
+    let files = json!([{"id":"quote-photo","kind":"image","contentType":"image/png","name":"photo.png","size":42,"preview":{},"spoiler":true}]);
+    sqlx::query("UPDATE public.messages SET payload=jsonb_set(payload,'{content,attachments}',$2) WHERE external_id=$1")
+        .bind(long_source["id"].as_str().unwrap()).bind(&files).execute(&pool).await.unwrap();
+    let signer = assets::CdnSigner::new("https://cdn.test".into(), vec![1; 32]);
+    let mut delivered = [quoted.clone()];
+    deliver(&pool, Some(&signer), &mut delivered).await.unwrap();
+    assert_eq!(delivered[0]["replyTo"]["attachments"][0]["spoiler"], true);
+    assert!(
+        delivered[0]["replyTo"]["attachments"][0]["previewUrl"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://cdn.test/preview/quote-photo?")
+    );
+    let mut replay = [event];
+    assets::reply_attachments(&pool, &mut replay).await.unwrap();
+    assert_eq!(replay[0]["message"]["replyTo"]["attachments"], files);
+    // Replaced files disappear on the next delivery; deleted sources expose none.
+    sqlx::query("UPDATE public.messages SET payload=jsonb_set(payload,'{content,attachments}','[]') WHERE external_id=$1")
+        .bind(long_source["id"].as_str().unwrap()).execute(&pool).await.unwrap();
+    deliver(&pool, Some(&signer), &mut delivered).await.unwrap();
+    assert_eq!(delivered[0]["replyTo"]["attachments"], json!([]));
+    sqlx::query("UPDATE public.messages SET deleted_at=now() WHERE external_id=$1")
+        .bind(long_source["id"].as_str().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assets::reply_attachments(&pool, &mut replay).await.unwrap();
+    assert!(replay[0]["message"]["replyTo"].get("attachments").is_none());
 }
 
 #[tokio::test]

@@ -1,9 +1,15 @@
-import { Paperclip, X } from "lucide-react";
+import { EyeOff, File, Paperclip, X } from "lucide-react";
 import { Reply } from "../../../../shared/message-icons.ts";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import socketArtwork from "../../../../shared/reply-socket.svg";
 import Avatar from "../components/Avatar";
-import { attachmentsOf, type ChatMessage, type ChatReplyReference } from "./types.ts";
+import {
+  attachmentsOf,
+  isChatAttachment,
+  type ChatAttachment,
+  type ChatMessage,
+  type ChatReplyReference,
+} from "./types.ts";
 
 export function replyReference(message: ChatMessage): ChatReplyReference {
   const text = message.content.text || (message.forward ? "Forwarded message" : "");
@@ -14,8 +20,31 @@ export function replyReference(message: ChatMessage): ChatReplyReference {
     text: characters.slice(0, 200).join(""),
     ...(characters.length > 200 ? { fullText: text } : {}),
     hasAttachments: !!attachmentsOf(message).length,
+    attachments: attachmentsOf(message),
     ...(message.threadRootId ? { threadRootId: message.threadRootId } : {}),
   };
+}
+
+function ReplyThumbnail({ file }: { file: ChatAttachment }) {
+  const [failed, setFailed] = useState(false);
+  const concealed = file.spoiler || file.unavailable || (file.status && file.status !== "ready");
+  const source =
+    !concealed && (file.kind === "image" || file.kind === "video")
+      ? file.previewUrl ||
+        (file.kind === "image" && !file.animated && file.contentType !== "image/gif" ? file.url : undefined)
+      : undefined;
+  const label = file.spoiler ? "Spoiler attachment" : file.unavailable ? "Unavailable attachment" : file.name;
+  return (
+    <span className="chat-reply-thumbnail" title={label}>
+      {source && !failed ? (
+        <img src={source} alt={label} loading="lazy" onError={() => setFailed(true)} />
+      ) : file.spoiler ? (
+        <EyeOff size={18} aria-label={label} />
+      ) : (
+        <File size={18} aria-label={label} />
+      )}
+    </span>
+  );
 }
 
 export function ReplyContext({
@@ -39,6 +68,7 @@ export function ReplyContext({
   const [clipped, setClipped] = useState(false);
   const [connection, setConnection] = useState({ sourceX: 57, sourceY: 21, targetX: 0, height: 117 });
   const text = reference.fullText ?? reference.text;
+  const files = hidden || reference.deleted ? [] : (reference.attachments ?? []).filter(isChatAttachment);
   const preview = [...text].slice(0, 100).join("");
   const canExpand = preview !== text || clipped;
   useLayoutEffect(() => {
@@ -223,6 +253,14 @@ export function ReplyContext({
                 ? "Original message was deleted."
                 : (expanded ? text : preview) || (reference.hasAttachments ? "Attachment" : "Message")}
               {!expanded && preview !== text && "…"}
+            </span>
+          )}
+          {!!files.length && (
+            <span className="chat-reply-attachments" aria-label="Original message attachments">
+              {files.slice(0, 3).map((file) => (
+                <ReplyThumbnail key={file.id} file={file} />
+              ))}
+              {files.length > 3 && <span className="chat-reply-thumbnail">+{files.length - 3}</span>}
             </span>
           )}
         </button>

@@ -33,7 +33,7 @@ internal fun mergeEdit(current: ChatMessage, incoming: ChatMessage): ChatMessage
 /** A loaded reply stops quoting [deletedId] once it is deleted, as a reload would show it. */
 internal fun quoteDeleted(message: ChatMessage, deletedId: String): ChatMessage =
     message.replyTo?.takeIf { it.id == deletedId && !it.deleted }?.let {
-        message.copy(replyTo = it.copy(text = "", fullText = null, hasAttachments = false, deleted = true))
+        message.copy(replyTo = it.copy(text = "", fullText = null, hasAttachments = false, deleted = true, attachments = emptyList()))
     } ?: message
 
 /** Keep loaded overlays; bound only edits awaiting an unloaded page. */

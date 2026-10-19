@@ -402,6 +402,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     for (const reply of state.messages.get(channel.id) ?? [])
       if (reply.replyTo?.id === message.id) {
         delete reply.replyTo.fullText;
+        delete reply.replyTo.attachments;
         Object.assign(reply.replyTo, { text: "", hasAttachments: false, deleted: true });
       }
     const event = {
@@ -1354,6 +1355,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               text: characters.slice(0, 200).join(""),
               ...(characters.length > 200 ? { fullText: text } : {}),
               hasAttachments: !!target.content.attachments?.length,
+              ...(target.content.attachments ? { attachments: clone(target.content.attachments) } : {}),
               ...(target.threadRootId ? { threadRootId: target.threadRootId } : {}),
             };
           }

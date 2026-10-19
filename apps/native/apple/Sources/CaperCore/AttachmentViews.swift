@@ -331,6 +331,38 @@ private func loadAttachmentOriginal(_ attachment: ChatAttachment, chat: ChatMode
 
 // MARK: Message attachments
 
+/// A quote is navigation, not a media player or a spoiler reveal surface.
+struct ReplyAttachmentThumbnail: View {
+    let attachment: ChatAttachment
+    let chat: ChatModel
+    @State private var image: CGImage?
+    private var source: String? {
+        guard !attachment.spoiler, !attachment.unavailable, attachment.status == .ready else { return nil }
+        guard attachment.kind == .image || attachment.kind == .video else { return nil }
+        return attachment.previewUrl ?? (attachment.kind == .image && !attachment.animated && attachment.contentType != "image/gif" ? attachment.url : nil)
+    }
+    var body: some View {
+        ZStack {
+            CaperTheme.text.opacity(0.06)
+            if source != nil, let image {
+                Image(decorative: image, scale: 1).resizable().scaledToFill()
+            } else {
+                Image(systemName: attachment.spoiler ? "eye.slash" : "paperclip")
+                    .font(.system(size: 14)).foregroundStyle(CaperTheme.muted)
+            }
+        }
+        .frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 6))
+        .accessibilityHidden(true)
+        .task(id: source) {
+            image = nil
+            guard source != nil else { return }
+            let result = await loadAttachmentImage(attachment, preview: true, chat: chat, maxPixelSize: 132)
+            guard !Task.isCancelled else { return }
+            image = result.image
+        }
+    }
+}
+
 /// Files under a message's text. `chat` is nil for the optimistic pending
 /// row, whose attachments point at local copies, and for another
 /// conversation's files. Below a `MediaViewerHost`, images and videos open
