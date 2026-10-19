@@ -2,6 +2,7 @@ import Foundation
 
 /// Source content revisions and destination delivery sequences are independent.
 func mergeForward(_ current: ChatMessage, _ incoming: ChatMessage) -> ChatMessage {
+    guard !current.isDeleted else { return current }
     guard current.id == incoming.id, current.channelId == incoming.channelId, let next = incoming.forward else { return current }
     var result = current
     if let old = current.forward, next.message != nil,

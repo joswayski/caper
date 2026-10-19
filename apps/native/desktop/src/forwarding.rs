@@ -345,6 +345,21 @@ impl Forwarding {
         if self.resolving {
             return;
         }
+        if let Some(View::Conversation { wrapper, .. }) = &self.view
+            && messages
+                .iter()
+                .find(|message| message.id == wrapper.id)
+                .is_none_or(|message| {
+                    message.deleted_at.is_some()
+                        || message
+                            .forward
+                            .as_ref()
+                            .is_none_or(|forward| forward.message.is_none())
+                })
+        {
+            self.close();
+            return;
+        }
         if let Some(View::Conversation {
             wrapper,
             revision,

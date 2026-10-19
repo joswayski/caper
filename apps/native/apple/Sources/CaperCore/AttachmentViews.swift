@@ -370,6 +370,7 @@ struct ReplyAttachmentThumbnail: View {
 struct MessageAttachmentsView: View {
     let attachments: [ChatAttachment]
     let chat: ChatModel?
+    var isAvailable: (() -> Bool)? = nil
     @Environment(\.mediaViewer) private var mediaViewer
     @State private var revealed: Set<String> = []
 
@@ -469,7 +470,7 @@ struct MessageAttachmentsView: View {
         let items = MediaViewerPolicy.items(attachments, revealedSpoilerIDs: revealed)
         guard let start = items.firstIndex(where: { $0.id == attachment.id }) else { return nil }
         return { mediaViewer(MediaViewerRequest(items: items, start: start, chat: chat,
-                                                hideSpoiler: { revealed.remove($0) })) }
+                                                hideSpoiler: { revealed.remove($0) }, isAvailable: isAvailable)) }
     }
 }
 
@@ -1272,6 +1273,7 @@ struct MediaViewerRequest: Identifiable {
     /// files, shown as delivered.
     let chat: ChatModel?
     let hideSpoiler: (String) -> Void
+    var isAvailable: (() -> Bool)? = nil
 }
 
 /// Opens the media viewer from attachments below a `MediaViewerHost`.
@@ -1364,6 +1366,7 @@ private struct MediaViewer: View {
 
     var body: some View {
         let items = self.items
+        let available = request.isAvailable?() ?? true
         let position = min(max(0, index), max(0, items.count - 1))
         ZStack {
             Color.black.opacity(0.92).ignoresSafeArea()
@@ -1371,7 +1374,7 @@ private struct MediaViewer: View {
                 .onTapGesture(perform: close)
                 #endif
                 .accessibilityHidden(true)
-            if !hidingSpoiler {
+            if available && !hidingSpoiler {
                 pages(items)
                 if items.indices.contains(position) { chrome(items[position], position: position, count: items.count) }
             }
@@ -1380,6 +1383,7 @@ private struct MediaViewer: View {
         .accessibilityLabel(items.indices.contains(position) && items[position].kind == .video ? "Video viewer" : "Image viewer")
         .accessibilityAddTraits(.isModal)
         .accessibilityIdentifier("media-viewer")
+        .onChange(of: available, initial: true) { _, value in if !value { close() } }
         .onChange(of: index) { _, value in
             guard items.indices.contains(value) else { return }
             announceMediaPosition("\(items[value].name), \(value + 1) of \(items.count)")

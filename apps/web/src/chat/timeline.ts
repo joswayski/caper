@@ -179,6 +179,7 @@ export class ChatTimeline {
   }
 
   private mergeForwardMessage(message: ChatMessage) {
+    message = this.withEdit(message);
     if (!message.forward) return;
     const previous = this.forwardUpdates.get(message.id);
     // Source snapshots may be fresher than the asynchronous projection. Its
@@ -230,6 +231,7 @@ export class ChatTimeline {
         if (collection === this.byId) this.sortedMessages = undefined;
       }
     }
+    if (message.deletedAt) this.mergeForwardMessage(message);
   }
 
   private withEdit(message: ChatMessage) {

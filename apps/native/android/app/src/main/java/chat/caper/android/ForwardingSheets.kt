@@ -40,6 +40,7 @@ import java.util.UUID
 @OptIn(ExperimentalLayoutApi::class)
 @Composable private fun SharedOriginal(
     message: ChatMessage, state: AppUiState? = null, onAttachmentFailed: (ChatAttachment, Int?) -> Unit = { _, _ -> },
+    forwardOwnerId: String? = null,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -56,6 +57,7 @@ import java.util.UUID
             MessageAttachments(
                 message.content.attachments.map { it.withFreshUrls(state?.freshAttachmentUrls?.get(it.id)) }, false, onAttachmentFailed,
                 state?.attachmentProgress.orEmpty(), caption = message.author.name,
+                forwardOwnerId = forwardOwnerId,
             )
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 message.reactions.forEach { reaction -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -88,7 +90,7 @@ import java.util.UUID
             val original = forward.message
             if (original == null) Text("Original conversation unavailable.", color = TextMuted)
             else {
-                SharedOriginal(original, state, onAttachmentFailed)
+                SharedOriginal(original, state, onAttachmentFailed, forwardOwnerId = message.id)
                 TextButton(open, shape = MaterialTheme.shapes.small) { Text("${original.thread?.replyCount?.takeIf { it > 0 }?.let { "$it ${if (it == 1) "reply" else "replies"} · " }.orEmpty()}View conversation") }
             }
         }

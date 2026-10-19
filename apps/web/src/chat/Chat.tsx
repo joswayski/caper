@@ -477,7 +477,9 @@ export default function Chat({
   const reactorsMessage = findMessage(reactorsTarget?.messageId);
   const forwardMessage = findMessage(forwardTarget?.messageId);
   const conversationMessage = conversationTarget
-    ? [...state.messages, ...state.pinnedMessages].find((message) => message.id === conversationTarget.messageId)
+    ? [...state.messages, ...state.pinnedMessages].find(
+        (message) => message.id === conversationTarget.messageId && !message.deletedAt && message.forward?.message,
+      )
     : undefined;
   const closeForward = useCallback(() => setForwardTarget(undefined), []);
   const closeConversation = useCallback(() => setConversationTarget(undefined), []);
@@ -500,7 +502,11 @@ export default function Chat({
   const deleteMessage = findMessage(deleteTarget);
   // Forwarded originals live on the forwarding message; the viewer closes if either goes.
   const viewerMessage = findMessage(viewerTarget?.messageId);
-  const viewerSource = viewerTarget?.forwarded ? (viewerMessage?.forward?.message ?? undefined) : viewerMessage;
+  const viewerSource = viewerMessage?.deletedAt
+    ? undefined
+    : viewerTarget?.forwarded
+      ? (viewerMessage?.forward?.message ?? undefined)
+      : viewerMessage;
   const closeViewer = useCallback(() => setViewerTarget(undefined), []);
   const viewFile =
     (messageId: string, forwarded = false) =>

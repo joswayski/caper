@@ -4997,7 +4997,7 @@ private struct MessageRow: View {
                         Text(FeedbackInbox.notified).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                             .accessibilityIdentifier("feedback-notified-\(message.id)")
                     }
-                    ForwardCardView(message: message) {
+                    ForwardCardView(message: message, chat: chat) {
                         guard !SwipeTapGuard.swiping else { return }
                         Task { if await chat.onOpenForward?(message) == true { forwardOpened?() } }
                     }

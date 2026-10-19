@@ -147,6 +147,7 @@ internal fun durationLabel(durationMs: Long?): String? {
     progress: Map<String, Int> = emptyMap(),
     localPreviews: Map<String, String> = emptyMap(),
     caption: String? = null,
+    forwardOwnerId: String? = null,
 ) {
     if (attachments.isEmpty()) return
     var viewer by remember { mutableStateOf<ViewerPages?>(null) }
@@ -166,7 +167,7 @@ internal fun durationLabel(durationMs: Long?): String? {
     val view: (ChatAttachment) -> (() -> Unit)? = { attachment ->
         if (pending) null else ({
             val pages = viewerPages(attachments, attachment.id, revealed)
-            if (host != null) host.open = pages?.let { OpenViewer(it, caption, hide) } else viewer = pages
+            if (host != null) host.open = pages?.let { OpenViewer(it, caption, hide, forwardOwnerId) } else viewer = pages
         })
     }
     @Composable fun AttachmentContent(attachment: ChatAttachment, modifier: Modifier, shape: Shape) {

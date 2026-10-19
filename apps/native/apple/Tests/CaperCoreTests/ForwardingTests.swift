@@ -2,6 +2,23 @@ import XCTest
 @testable import CaperCore
 
 final class ForwardingTests: XCTestCase {
+    func testDeletedWrapperRejectsStaleProjectionReplayAndHistory() throws {
+        let old = try wrapper("99", "1")
+        var deletion = old
+        deletion.revision = 2; deletion.editSeq = "4"
+        deletion.editedAt = "2026-10-06T12:02:00Z"
+        deletion.deletedAt = "2026-10-06T12:02:00Z"
+        deletion.forward = MessageForward(message: nil, seq: "0"); deletion.forwardSeq = "4"
+        var edits = EditSnapshots()
+        edits.apply(deletion)
+        var forwards = ForwardSnapshots()
+        forwards.seed([old])
+        let deleted = forwards.overlay(edits.overlay(old))
+        XCTAssertNil(deleted.forward?.message)
+        XCTAssertEqual(deleted.forwardSeq, "4")
+        XCTAssertNil(mergeForward(deleted, old).forward?.message)
+    }
+
     private func wrapper(_ sourceSeq: String, _ destinationSeq: String) throws -> ChatMessage {
         let json = """
         {"id":"wrapper00000001","channelId":"channel00001","seq":"1","clientMessageId":"wrapper-key",

@@ -12,6 +12,7 @@ internal fun ForwardUpdate.validated(channel: String): ForwardUpdate = apply {
 
 /** A source snapshot and the destination event revision advance independently. */
 internal fun mergeForward(message: ChatMessage, incoming: ChatMessage): ChatMessage {
+    if (message.deletedAt != null) return message
     if (message.id != incoming.id || message.channelId != incoming.channelId || incoming.forward == null) return message
     val current = message.forward
     val next = incoming.forward

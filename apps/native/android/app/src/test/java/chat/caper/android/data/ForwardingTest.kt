@@ -5,6 +5,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ForwardingTest {
+    @Test fun `deleted wrapper clears projection and rejects stale replay and history`() {
+        val old = wrapper("99", "1")
+        val deletion = old.copy(revision = 2, editSeq = "4", deletedAt = "2026-10-06T12:02:00Z",
+            forward = MessageForward(null, "0"), forwardSeq = "4")
+        val deleted = mergeEdit(old, deletion)
+        assertNull(deleted.forward?.message)
+        assertEquals("4", deleted.forwardSeq)
+        assertEquals(deleted, mergeForward(deleted, old))
+        assertNull(mergeForward(mergeEdit(old, deletion), old).forward?.message)
+    }
+
     private fun wrapper(sourceSeq: String, destinationSeq: String): ChatMessage {
         val source = ChatMessage("source000000001", "private00001", "89", ChatAuthor("alice", "Alice", false),
             ChatContent(1, "text", "source $sourceSeq"), "2026-10-06T12:00:00Z", "00000000-0000-4000-8000-000000000001")

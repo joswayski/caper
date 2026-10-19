@@ -1433,6 +1433,10 @@ impl Message {
             self.edited_at.clone_from(&incoming.edited_at);
             self.edit_seq.clone_from(&incoming.edit_seq);
             self.deleted_at.clone_from(&incoming.deleted_at);
+            if incoming.deleted_at.is_some() {
+                self.forward.clone_from(&incoming.forward);
+                self.forward_seq.clone_from(&incoming.forward_seq);
+            }
         }
     }
 }
@@ -1803,6 +1807,9 @@ impl Timeline {
             return Ok(false);
         }
         let message = self.remember_edit(message);
+        if let Some(snapshot) = self.forward_updates.get_mut(&message.id) {
+            snapshot.merge_edit(&message);
+        }
         for loaded in self
             .messages
             .values_mut()
@@ -2238,6 +2245,9 @@ fn overlay_reactions(current: &mut Message, incoming: &Message) {
 }
 
 fn overlay_forward(current: &mut Message, incoming: &Message) {
+    if current.deleted_at.is_some() {
+        return;
+    }
     let Some(next) = &incoming.forward else {
         return;
     };
@@ -2933,6 +2943,25 @@ mod tests {
             seq: "9007199254740995".into(),
         }));
         wrapper.forward_seq = Some("1".into());
+        // Deleting a wrapper is an edit, not a source-forward revision.
+        let mut deleted = wrapper.clone();
+        deleted.revision = 2;
+        deleted.edit_seq = Some("4".into());
+        deleted.edited_at = Some("2026-10-06T12:02:00Z".into());
+        deleted.deleted_at = Some("2026-10-06T12:02:00Z".into());
+        deleted.forward = Some(Box::new(MessageForward {
+            message: None,
+            seq: "0".into(),
+        }));
+        deleted.forward_seq = Some("4".into());
+        let mut deletion_timeline = Timeline::default();
+        deletion_timeline.reset(vec![wrapper.clone()], "1").unwrap();
+        deletion_timeline.merge_edit_snapshot(deleted).unwrap();
+        deletion_timeline.merge_forward(&wrapper);
+        deletion_timeline.prepend(vec![wrapper.clone()]).unwrap();
+        let tombstone = deletion_timeline.messages().next().unwrap();
+        assert!(tombstone.forward.as_ref().unwrap().message.is_none());
+        assert_eq!(tombstone.forward_seq.as_deref(), Some("4"));
         let mut timeline = Timeline::default();
         timeline.reset(vec![wrapper.clone()], "1").unwrap();
         let mut stale = wrapper.clone();

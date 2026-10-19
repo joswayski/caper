@@ -137,7 +137,7 @@ internal fun downloadName(name: String): String =
     name.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_").trim().trimStart('.').ifEmpty { "file" }
 
 /** A timeline's open viewer: the files it pages through and the caption under their names. */
-internal data class OpenViewer(val pages: ViewerPages, val caption: String?, val hideSpoiler: (String) -> Unit)
+internal data class OpenViewer(val pages: ViewerPages, val caption: String?, val hideSpoiler: (String) -> Unit, val forwardOwnerId: String? = null)
 
 /**
  * Holds a timeline's media viewer above its LazyColumn. A viewer composed in its message row
@@ -167,6 +167,9 @@ internal fun liveAttachments(state: AppUiState, ids: List<String>): List<ChatAtt
 /** [host]'s viewer over its files as [state] has them now; it closes once none is loaded (another conversation opened). */
 @Composable internal fun HostedMediaViewer(host: MediaViewerHost, state: AppUiState, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
     val open = host.open ?: return
+    if (open.forwardOwnerId != null && (state.messages + state.pinnedMessages).none {
+        it.id == open.forwardOwnerId && it.deletedAt == null && it.forward?.message != null
+    }) return SideEffect { host.open = null }
     val attachments = remember(state.messages, state.pinnedMessages, state.freshAttachmentUrls, open) { liveAttachments(state, open.pages.ids) }
     if (attachments.isEmpty()) return SideEffect { host.open = null }
     val uriHandler = LocalUriHandler.current
