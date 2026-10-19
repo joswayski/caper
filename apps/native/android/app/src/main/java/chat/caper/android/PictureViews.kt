@@ -59,6 +59,9 @@ import chat.caper.android.data.isAnimatedImage
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.lazy.grid.*
+import androidx.compose.foundation.shape.CircleShape
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
@@ -139,6 +142,8 @@ private val FrameSide = 112.dp
     val name = account.displayName ?: account.username ?: "You"
     // Set even when this server sends no URL to show it with, so it can still be removed.
     val hasPicture = !account.avatarAsset.isNullOrEmpty()
+    var gallery by remember(epoch) { mutableStateOf(false) }
+    if (gallery) AvatarGallery(account.avatarAsset, epoch, viewModel) { gallery = false }
     PictureFrame(
         save = save,
         unavailable = state.uploadsChecked && !state.uploadsEnabled,
@@ -148,7 +153,7 @@ private val FrameSide = 112.dp
         edit = account.avatarUrl?.let { url -> { editPicture(Uri.parse(url)) } },
         change = { pickerEpoch = epoch; runCatching { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) } },
         remove = { viewModel.removePicture() },
-        restore = if (account.canRestoreAvatar) ({ viewModel.removePicture(restore = true) }) else null,
+        history = { gallery = true },
     ) {
         if (hasPicture) {
             Avatar(name, FrameSide, avatarId = account.avatarId, avatarAsset = account.avatarAsset, avatarUrl = account.avatarUrl)
@@ -201,12 +206,12 @@ private val FrameSide = 112.dp
 @Composable private fun PictureFrame(
     save: PictureSaveUi?, unavailable: Boolean, hasPicture: Boolean, label: String, noun: String,
     change: () -> Unit, remove: () -> Unit, drop: (Uri) -> Unit,
-    edit: (() -> Unit)? = null, restore: (() -> Unit)? = null,
+    edit: (() -> Unit)? = null, history: (() -> Unit)? = null,
     picture: @Composable () -> Unit,
 ) {
     val busy = save?.busy == true
     // With uploads unavailable, a custom picture can still be removed.
-    val enabled = !busy && (hasPicture || restore != null || !unavailable)
+    val enabled = !busy && (hasPicture || history != null || !unavailable)
     var menu by remember { mutableStateOf(false) }
     var dropping by remember { mutableStateOf(false) }
     val canDrop by rememberUpdatedState(!busy && !unavailable)
@@ -236,7 +241,7 @@ private val FrameSide = 112.dp
                 Modifier
                     .dragAndDropTarget({ canDrop && FileDrop.carriesFiles(it.mimeTypes()) }, dropTarget)
                     .semantics { contentDescription = label }
-                    .clickable(enabled = enabled, role = Role.Button) { if (hasPicture || restore != null) menu = true else change() }
+                    .clickable(enabled = enabled, role = Role.Button) { if (hasPicture || history != null) menu = true else change() }
                     // Room for the badge, which sits over the frame's corner.
                     .padding(end = 6.dp, bottom = 6.dp),
             ) {
@@ -260,7 +265,7 @@ private val FrameSide = 112.dp
                     { Text("Choose a new $noun") }, { menu = false; change() }, enabled = !busy && !unavailable,
                     leadingIcon = { Icon(painterResource(R.drawable.lucide_image), null, Modifier.size(16.dp)) },
                 )
-                if (restore != null) DropdownMenuItem({ Text("Restore previous picture") }, { menu = false; restore() }, enabled = !busy)
+                if (history != null) DropdownMenuItem({ Text("Previous pictures") }, { menu = false; history() }, enabled = !busy)
                 if (hasPicture) DropdownMenuItem(
                     { Text("Remove $noun") }, { menu = false; remove() },
                     enabled = !busy,
@@ -271,13 +276,72 @@ private val FrameSide = 112.dp
         val status = when {
             save?.uploading == true -> "Uploading…"
             save?.removing == true -> "Removing…"
-            save?.restoring == true -> "Restoring…"
             unavailable -> "Picture uploads aren’t available right now."
             else -> null
         }
         save?.error?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp) }
             ?: status?.let { Text(it, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp) }
     }
+}
+
+@Composable private fun AvatarGallery(current: String?, epoch: Long, model: CaperViewModel, close: () -> Unit) {
+    val expected = remember { current }
+    var pictures by remember { mutableStateOf(emptyList<chat.caper.android.model.AvatarHistoryPicture>()) }
+    var selected by remember { mutableStateOf<chat.caper.android.model.AvatarHistoryPicture?>(null) }
+    var cursor by remember { mutableStateOf<String?>(null) }
+    var loaded by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var stale by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    suspend fun load() {
+        busy = true; error = null
+        try {
+            val page = model.avatarHistory(epoch, cursor)
+            pictures = (pictures + page.pictures).distinctBy { it.avatarAsset }
+            cursor = page.nextCursor; loaded = true
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (_: Exception) { error = "Couldn’t load pictures. Please retry." }
+        finally { busy = false }
+    }
+    LaunchedEffect(Unit) { load() }
+    AlertDialog(onDismissRequest = { if (!saving) close() }, title = { Text("Previous pictures") }, text = {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(Modifier.size(144.dp).clip(CircleShape).background(SurfaceRaised), contentAlignment = Alignment.Center) {
+                selected?.let { PictureImage(Picture(it.avatarAsset, it.avatarUrl), 144.dp, Modifier.fillMaxSize()) }
+                    ?: Text("Select a picture", color = TextMuted)
+            }
+            LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxWidth().heightIn(max = 240.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(pictures, key = { it.avatarAsset }) { item ->
+                    Column(Modifier.clickable(enabled = !saving) { selected = item }, horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(Modifier.aspectRatio(1f).clip(PictureShape).border(2.dp, if (selected == item) Terracotta else Border, PictureShape)) {
+                            PictureImage(Picture(item.avatarAsset, item.avatarUrl), 80.dp, Modifier.fillMaxSize(), "Previous picture")
+                            if (selected == item) Text("✓", Modifier.align(Alignment.TopEnd).background(Terracotta), color = chat.caper.android.ui.Text)
+                        }
+                        if (item.avatarAsset == expected) Text("Current", fontSize = 11.sp)
+                    }
+                }
+            }
+            if (loaded && pictures.isEmpty()) Text("No previous pictures yet.")
+            if (busy) CircularProgressIndicator(Modifier.size(24.dp))
+            error?.let { Text(it, color = ErrorText) }
+            if (!busy && !saving && !stale && (error != null || cursor != null)) TextButton({ scope.launch { load() } }) { Text(if (error != null) "Retry" else "Load more") }
+            if (stale) TextButton({ close() }) { Text("Close and reopen to refresh") }
+        }
+    }, confirmButton = {
+        Button(onClick = { scope.launch {
+            saving = true; error = null
+            try { model.selectAvatar(epoch, selected!!.avatarAsset, expected); close() }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) {
+                stale = e is chat.caper.android.data.ApiException && e.status == 409
+                error = if (stale) "Your picture changed elsewhere. Reopen to refresh." else "Couldn’t save picture. Please retry."
+            } finally { saving = false }
+        } }, enabled = !saving && !busy && !stale && selected != null && selected?.avatarAsset != expected,
+            colors = ButtonDefaults.buttonColors(containerColor = Action, contentColor = OnAction)) { Text(if (saving) "Saving…" else "Save picture") }
+    }, dismissButton = { TextButton(close, enabled = !saving) { Text("Cancel") } })
 }
 
 /** A private, cancellable local draft. Ownership transfers to the upload only on Done. */

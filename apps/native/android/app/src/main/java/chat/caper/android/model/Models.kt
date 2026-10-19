@@ -25,7 +25,6 @@ import kotlinx.serialization.json.JsonTransformingSerializer
 @Serializable data class Account(
     val id: String, val username: String? = null, val displayName: String? = null, val debugEnabled: Boolean = false, val avatarId: Int? = null,
     val feedbackTeam: Boolean = false,
-    val canRestoreAvatar: Boolean = false,
     val avatarAsset: String? = null, val avatarUrl: String? = null,
 )
 @Serializable data class Challenge(val challengeId: String)
@@ -504,6 +503,8 @@ fun caperAvatarIndex(avatarId: Int?): Int? = avatarId?.takeIf { it in 0..799 }
  * A custom profile picture or space icon. [asset] is stable until the picture changes and keys
  * every cache; the signed [url] re-signs daily, so it never does.
  */
+@Serializable data class AvatarHistoryPicture(val avatarAsset: String, val avatarUrl: String)
+@Serializable data class AvatarHistory(val pictures: List<AvatarHistoryPicture>, val nextCursor: String? = null)
 data class Picture(val asset: String, val url: String)
 
 /**
@@ -801,8 +802,8 @@ data class DraftAttachmentUi(
 const val PROFILE_PICTURE_KEY = "avatar"
 
 /** A picture change in flight, [uploading] a new one or [removing] it, or the inline [error] it ended with. */
-data class PictureSaveUi(val uploading: Boolean = false, val removing: Boolean = false, val error: String? = null, val restoring: Boolean = false) {
-    val busy: Boolean get() = uploading || removing || restoring
+data class PictureSaveUi(val uploading: Boolean = false, val removing: Boolean = false, val error: String? = null) {
+    val busy: Boolean get() = uploading || removing
 }
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)

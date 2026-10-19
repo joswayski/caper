@@ -582,17 +582,25 @@ public actor APIClient {
         try await request("api/account/avatar", method: "DELETE")
     }
 
-    public func restoreAvatar(avatarAsset: String?) async throws -> Account {
+    public func avatarHistory(cursor: String? = nil) async throws -> AvatarHistory {
+        if let cursor, !Self.validAssetID(cursor) { throw APIError(status: 400, message: "Invalid file ID.") }
+        return try await request("api/account/avatar/history" + (cursor.map { "?cursor=\($0)" } ?? ""))
+    }
+
+    public func selectAvatar(avatarAsset: String, expectedAvatarAsset: String?) async throws -> Account {
+        guard Self.validAssetID(avatarAsset) else { throw APIError(status: 400, message: "Invalid file ID.") }
         struct Input: Encodable {
-            let avatarAsset: String?
-            enum CodingKeys: String, CodingKey { case avatarAsset }
+            let avatarAsset: String
+            let expectedAvatarAsset: String?
+            enum CodingKeys: String, CodingKey { case avatarAsset, expectedAvatarAsset }
             func encode(to encoder: Encoder) throws {
                 var values = encoder.container(keyedBy: CodingKeys.self)
-                if let avatarAsset { try values.encode(avatarAsset, forKey: .avatarAsset) }
-                else { try values.encodeNil(forKey: .avatarAsset) }
+                try values.encode(avatarAsset, forKey: .avatarAsset)
+                if let expectedAvatarAsset { try values.encode(expectedAvatarAsset, forKey: .expectedAvatarAsset) }
+                else { try values.encodeNil(forKey: .expectedAvatarAsset) }
             }
         }
-        return try await request("api/account/avatar/restore", method: "POST", body: Input(avatarAsset: avatarAsset))
+        return try await request("api/account/avatar/select", method: "POST", body: Input(avatarAsset: avatarAsset, expectedAvatarAsset: expectedAvatarAsset))
     }
 
     /// Back to the space's initial. Owner only (404 otherwise).

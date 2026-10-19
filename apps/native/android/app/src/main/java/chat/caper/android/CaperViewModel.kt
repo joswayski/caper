@@ -2963,19 +2963,17 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Back to your saved mascot ([spaceId] null) or the space's initial. */
-    fun removePicture(spaceId: String? = null, restore: Boolean = false) {
-        if (restore && (spaceId != null || mutable.value.account?.canRestoreAvatar != true)) return
+    fun removePicture(spaceId: String? = null) {
         val key = spaceId ?: PROFILE_PICTURE_KEY
         if (mutable.value.pictureSaves[key]?.busy == true) return
         val token = accountToken ?: return
         val request = accountGeneration
         val target = if (spaceId == null) PictureTarget.Avatar else PictureTarget.SpaceIcon(spaceId)
-        val avatarAsset = mutable.value.account?.avatarAsset
-        setPictureSave(key, PictureSaveUi(removing = !restore, restoring = restore))
+        setPictureSave(key, PictureSaveUi(removing = true))
         pictureJobs[key] = viewModelScope.launch {
             try {
                 if (spaceId == null) {
-                    val account = if (restore) api.restoreAvatar(token, avatarAsset) else api.removeAvatar(token)
+                    val account = api.removeAvatar(token)
                     if (request != accountGeneration) return@launch
                     applyOwnAccount(account)
                 } else {
@@ -2988,11 +2986,34 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 throw error
             } catch (error: Throwable) {
                 if (request == accountGeneration) setPictureSave(key, PictureSaveUi(error =
-                    if (restore && error is chat.caper.android.data.ApiException && error.status == 409)
-                        "Your picture changed elsewhere. Reopen your profile and try again."
-                    else pictureError(error, target)))
+                    pictureError(error, target)))
             }
         }
+    }
+
+    suspend fun avatarHistory(epoch: Long, cursor: String?) : chat.caper.android.model.AvatarHistory {
+        check(epoch == accountGeneration)
+        val result = api.avatarHistory(accountToken ?: error("Signed out"), cursor)
+        check(epoch == accountGeneration)
+        return result
+    }
+
+    suspend fun selectAvatar(epoch: Long, asset: String, expected: String?) {
+        check(epoch == accountGeneration)
+        val token = accountToken ?: error("Signed out")
+        val result = try { api.selectAvatar(token, asset, expected) }
+        catch (failure: chat.caper.android.data.ApiException) {
+            if (failure.status == 409) {
+                try {
+                    val refreshed = api.me(token)
+                    if (epoch == accountGeneration) applyOwnAccount(refreshed)
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { /* Reopening can retry after a transient refresh failure. */ }
+            }
+            throw failure
+        }
+        check(epoch == accountGeneration)
+        applyOwnAccount(result)
     }
 
     /** Clears a finished picture change's error ([key]: [PROFILE_PICTURE_KEY] or a space ID); one in flight stays. */

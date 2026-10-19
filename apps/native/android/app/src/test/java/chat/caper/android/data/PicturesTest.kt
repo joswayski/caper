@@ -178,7 +178,6 @@ class PicturesTest {
         server.enqueue(MockResponse().setBody("""{"id":"space0000001","name":"Studio","ownerId":"account00001"}"""))
         val removed = api.removeAvatar("account-secret")
         assertNull(removed.avatarAsset)
-        assertFalse(removed.canRestoreAvatar)
         assertEquals(16, removed.avatarId)
         assertNull(api.removeSpaceIcon("account-secret", "space0000001").iconAsset)
         val avatar = server.takeRequest()
@@ -189,19 +188,28 @@ class PicturesTest {
         assertEquals("/api/spaces/space0000001/icon", icon.path)
     }
 
-    @Test fun `restore sends current asset including mascot null and returns capability`() = runBlocking {
+    @Test fun `history pages and selection sends target and explicit expected including null`() = runBlocking {
         val api = CaperApi(baseUrl = server.url("/").toString())
+        server.enqueue(MockResponse().setBody("""{"pictures":[{"avatarAsset":"$id","avatarUrl":"https://cdn.caper.chat/picture"}],"nextCursor":"$id"}"""))
+        val page = api.avatarHistory("account-secret")
+        assertEquals(id, page.pictures.single().avatarAsset)
+        assertEquals(id, page.nextCursor)
+        assertEquals("/api/account/avatar/history", server.takeRequest().path)
+        server.enqueue(MockResponse().setBody("""{"pictures":[],"nextCursor":null}"""))
+        assertTrue(api.avatarHistory("account-secret", page.nextCursor).pictures.isEmpty())
+        assertEquals("/api/account/avatar/history?cursor=$id", server.takeRequest().path)
         for (asset in listOf(id, null)) {
-            server.enqueue(MockResponse().setBody("""{"id":"account00001","avatarAsset":"$id","canRestoreAvatar":true}"""))
-            assertTrue(api.restoreAvatar("account-secret", asset).canRestoreAvatar)
+            server.enqueue(MockResponse().setBody("""{"id":"account00001","avatarAsset":"$id"}"""))
+            assertEquals(id, api.selectAvatar("account-secret", id, asset).avatarAsset)
             val request = server.takeRequest()
             assertEquals("POST", request.method)
-            assertEquals("/api/account/avatar/restore", request.path)
+            assertEquals("/api/account/avatar/select", request.path)
             val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
-            assertEquals(if (asset == null) "null" else "\"$asset\"", body["avatarAsset"].toString())
+            assertEquals("\"$id\"", body["avatarAsset"].toString())
+            assertEquals(if (asset == null) "null" else "\"$asset\"", body["expectedAvatarAsset"].toString())
         }
         server.enqueue(MockResponse().setResponseCode(409).setBody("""{"error":"stale avatar"}"""))
-        val error = runCatching { api.restoreAvatar("account-secret", id) }.exceptionOrNull()
+        val error = runCatching { api.selectAvatar("account-secret", id, null) }.exceptionOrNull()
         assertTrue(error is ApiException && error.status == 409)
     }
 

@@ -138,7 +138,11 @@ struct PictureEditor<Preview: View>: View {
     let currentURL: URL?
     let upload: (PreparedPicture) async throws -> Void
     let remove: () async throws -> Void
-    let restore: (() async throws -> Void)?
+    let history: ((String?) async throws -> AvatarHistory)?
+    let select: ((String, String?) async throws -> Void)?
+    let currentAsset: String?
+    @State private var showHistory = false
+    @State private var historyExpected: String?
     private let preview: Preview
     @State private var phase: Phase?
     @State private var error: String?
@@ -154,19 +158,23 @@ struct PictureEditor<Preview: View>: View {
     @State private var showAnimationChoice = false
     @State private var loadTask: Task<Void, Never>?
 
-    private enum Phase { case loading, uploading, removing, restoring }
+    private enum Phase { case loading, uploading, removing }
 
     /// The frame's side, in points.
     static var side: CGFloat { 112 }
 
     init(purpose: PicturePurpose, hasPicture: Bool, currentURL: URL? = nil, upload: @escaping (PreparedPicture) async throws -> Void,
-         remove: @escaping () async throws -> Void, restore: (() async throws -> Void)? = nil, @ViewBuilder preview: () -> Preview) {
+         remove: @escaping () async throws -> Void, currentAsset: String? = nil,
+         history: ((String?) async throws -> AvatarHistory)? = nil,
+         select: ((String, String?) async throws -> Void)? = nil, @ViewBuilder preview: () -> Preview) {
         self.purpose = purpose
         self.hasPicture = hasPicture
         self.currentURL = currentURL
         self.upload = upload
         self.remove = remove
-        self.restore = restore
+        self.history = history
+        self.select = select
+        self.currentAsset = currentAsset
         self.preview = preview()
     }
 
@@ -177,7 +185,6 @@ struct PictureEditor<Preview: View>: View {
         case .loading: "Opening picture…"
         case .uploading: "Uploading…"
         case .removing: "Removing…"
-        case .restoring: "Restoring…"
         case nil: unavailable ? ProfilePicturePolicy.unavailableMessage : nil
         }
     }
@@ -202,8 +209,8 @@ struct PictureEditor<Preview: View>: View {
                     .disabled(unavailable)
                 Button { showFiles = true } label: { Label("Files", systemImage: "doc") }
                     .disabled(unavailable)
-                if restore != nil {
-                    Button("Restore previous picture") { removePicture(restoring: true) }
+                if history != nil {
+                    Button("Previous pictures") { historyExpected = currentAsset; showHistory = true }
                 }
                 if hasPicture {
                     Divider()
@@ -216,7 +223,7 @@ struct PictureEditor<Preview: View>: View {
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
-            .disabled(phase != nil || (unavailable && !hasPicture && restore == nil))
+            .disabled(phase != nil || (unavailable && !hasPicture && history == nil))
             .accessibilityLabel(avatar ? "Change profile picture" : "Change space icon")
             .accessibilityIdentifier(avatar ? "change-profile-picture" : "change-space-icon")
             .dropDestination(for: DroppedAttachment.self) { items, _ in
@@ -238,6 +245,12 @@ struct PictureEditor<Preview: View>: View {
             } else if let status {
                 Text(status).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .sheet(isPresented: $showHistory) {
+            if let history, let select {
+                AvatarHistoryChooser(expected: historyExpected, history: history, select: select)
+                    .preferredColorScheme(.dark)
             }
         }
         // `.current` keeps the library's original bytes, so GIFs stay animated.
@@ -366,21 +379,97 @@ struct PictureEditor<Preview: View>: View {
         }
     }
 
-    private func removePicture(restoring: Bool = false) {
+    private func removePicture() {
         guard phase == nil else { return }
-        phase = restoring ? .restoring : .removing
+        phase = .removing
         error = nil
         Task { @MainActor in
             do {
-                if restoring { try await restore?() } else { try await remove() }
+                try await remove()
             }
             catch is CancellationError {}
-            catch let failure as APIError where restoring && failure.status == 409 {
-                self.error = "Your picture changed elsewhere. Reopen your profile and try again."
-            }
             catch { self.error = ProfilePicturePolicy.message(for: error, purpose: purpose) }
             phase = nil
         }
+    }
+}
+
+private struct AvatarHistoryChooser: View {
+    @Environment(\.dismiss) private var dismiss
+    let expected: String?
+    let history: (String?) async throws -> AvatarHistory
+    let select: (String, String?) async throws -> Void
+    @State private var pictures: [AvatarHistoryPicture] = []
+    @State private var selected: AvatarHistoryPicture?
+    @State private var cursor: String?
+    @State private var loaded = false
+    @State private var loading = false
+    @State private var saving = false
+    @State private var stale = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Previous pictures").font(CaperTheme.font(20))
+            PictureImage(picture: selected?.avatarPicture, size: 144) {
+                Text("Select a picture").foregroundStyle(CaperTheme.muted)
+            }.frame(width: 144, height: 144).background(CaperTheme.raised).clipShape(Circle())
+            ScrollView {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 12) {
+                    ForEach(pictures.indices, id: \.self) { index in
+                        let item = pictures[index]
+                        Button { selected = item } label: {
+                            VStack(spacing: 4) {
+                                PictureImage(picture: item.avatarPicture, size: 76) { Color.clear }
+                                    .frame(width: 76, height: 76).clipShape(RoundedRectangle(cornerRadius: 20))
+                                    .overlay(RoundedRectangle(cornerRadius: 20).stroke(selected == item ? CaperTheme.terracotta : CaperTheme.border, lineWidth: 2))
+                                    .overlay(alignment: .topTrailing) {
+                                        if selected == item { Image(systemName: "checkmark.circle.fill").foregroundStyle(CaperTheme.terracotta) }
+                                    }
+                                if item.avatarAsset == expected { Text("Current").font(CaperTheme.font(11)) }
+                            }
+                        }.buttonStyle(.plain).disabled(saving).accessibilityLabel(item.avatarAsset == expected ? "Current picture" : "Previous picture")
+                    }
+                }
+                if loaded && pictures.isEmpty { Text("No previous pictures yet.") }
+                if loading { ProgressView() }
+                if let error { Text(error).foregroundStyle(CaperTheme.error) }
+                if !loading && !saving && !stale && (cursor != nil || error != nil) {
+                    Button(error == nil ? "Load more" : "Retry") { Task { await load() } }
+                }
+            }
+            HStack {
+                Button("Cancel") { dismiss() }.disabled(saving)
+                Spacer()
+                Button(saving ? "Saving…" : "Save picture") { Task { await save() } }
+                    .buttonStyle(.borderedProminent).tint(CaperTheme.action)
+                    .foregroundStyle(CaperTheme.blackout)
+                    .disabled(saving || loading || stale || selected == nil || selected?.avatarAsset == expected)
+            }
+        }.padding(20).frame(idealWidth: 360, idealHeight: 560)
+            .background(CaperTheme.surface).interactiveDismissDisabled(saving)
+            .task { await load() }
+    }
+
+    @MainActor private func load() async {
+        loading = true; error = nil
+        defer { loading = false }
+        do {
+            let page = try await history(cursor)
+            for item in page.pictures where !pictures.contains(where: { $0.avatarAsset == item.avatarAsset }) { pictures.append(item) }
+            cursor = page.nextCursor; loaded = true
+        } catch is CancellationError {} catch { self.error = "Couldn’t load pictures. Please retry." }
+    }
+
+    @MainActor private func save() async {
+        guard let asset = selected?.avatarAsset, asset != expected, !saving else { return }
+        saving = true; error = nil
+        defer { saving = false }
+        do { try await select(asset, expected); dismiss() }
+        catch is CancellationError {}
+        catch let failure as APIError where failure.status == 409 {
+            stale = true; error = "Your picture changed elsewhere. Close and reopen to refresh."
+        } catch { self.error = "Couldn’t save picture. Please retry." }
     }
 }
 

@@ -8486,6 +8486,7 @@ private struct ProfileSheet: View {
         if let account = model.account {
             let name = account.displayName ?? account.username ?? "You"
             let side = PictureEditor<EmptyView>.side
+            let epoch = model.accountEpoch
             PictureEditor(purpose: .avatar, hasPicture: account.avatarAsset != nil, currentURL: account.avatarPicture?.url,
                           upload: {
                               guard model.account?.id == account.id else { throw CancellationError() }
@@ -8493,17 +8494,20 @@ private struct ProfileSheet: View {
                           }, remove: {
                               guard model.account?.id == account.id else { throw CancellationError() }
                               try await model.removeAvatar()
-                          }, restore: account.canRestoreAvatar == true ? {
-                              guard model.account?.id == account.id else { throw CancellationError() }
-                              try await model.removeAvatar(restore: true)
-                          } : nil) {
+                          }, currentAsset: account.avatarAsset, history: { cursor in
+                              guard model.account?.id == account.id, model.accountEpoch == epoch else { throw CancellationError() }
+                              return try await model.avatarHistory(cursor: cursor)
+                          }, select: { asset, expected in
+                              guard model.account?.id == account.id, model.accountEpoch == epoch else { throw CancellationError() }
+                              try await model.selectAvatar(asset, expected: expected)
+                          }) {
                 if account.avatarAsset == nil {
                     ChangeMeMascot(name: name, avatarID: account.avatarId, size: side)
                 } else {
                     Avatar(name: name, size: side, avatarID: account.avatarId, picture: account.avatarPicture)
                 }
             }
-            .id(account.id)
+            .id("\(account.id):\(epoch)")
             Divider().overlay(CaperTheme.border)
         }
     }
