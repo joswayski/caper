@@ -2,7 +2,10 @@ package chat.caper.android
 
 import chat.caper.android.data.*
 import chat.caper.android.model.*
+import java.io.IOException
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -193,6 +196,55 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
                 error = (error as? ApiException)?.code?.let(::directMessageError)
                     ?: if (uploading && error !is IllegalStateException) AttachmentPolicy.uploadErrorMessage(error) else friendlyError(error),
             ) }
+            return null
+        } finally {
+            if (request == epoch && person in mutable.value) update(person) { it.copy(sending = false) }
+        }
+    }
+
+    /**
+     * Sends a recorded voice message ([voice], prepared with `voice = true`) to this person's DM on
+     * its own, through the same voice upload as the conversation composers. The typed text and
+     * staged files stay in the draft (and an unconfirmed text send keeps its retry ID); the DM is
+     * resolved and checked exactly as for Send. Returns null, with the draft's error, on failure.
+     */
+    suspend fun sendVoice(
+        person: String, id: String?, username: String, token: String, voice: PreparedAttachment,
+        session: suspend () -> Pair<String, ChatAuthor>,
+        directs: () -> List<DirectConversation>, blocked: () -> Set<String>,
+    ): Pair<DirectConversation, ChatMessage>? {
+        if (!voice.voice || !get(person).editable) return null
+        val request = epoch
+        fun current() { if (request != epoch) throw CancellationException("Signed out.") }
+        var uploaded: ChatAttachment? = null
+        var attempted = false
+        update(person) { it.copy(sending = true, error = null) }
+        try {
+            val (capability, author) = session()
+            current()
+            val conversation = upload(person, id, username, token, directs, blocked, keys = emptySet(), request = request)
+            val attachment = uploader.upload(token, conversation.id, voice).also { uploaded = it }
+            current()
+            // Its own idempotency key, retried once like the composers' sends after a lost response.
+            val clientMessageId = UUID.randomUUID()
+            attempted = true
+            val send = suspend { api.sendMessage(token, capability, conversation.id, author, clientMessageId, "", listOf(attachment.id)) }
+            val message = try { send() } catch (error: IOException) {
+                if (error is ApiException) throw error
+                delay(250)
+                send()
+            }
+            current()
+            if (get(person).let { it.text.isEmpty() && it.files.isEmpty() && !it.uncertain && it.error == null }) mutable.update { it - person }
+            return conversation to message
+        } catch (error: Throwable) {
+            // Only a reservation that was never in a sent (or possibly sent) message is given back.
+            val refused = error is ApiException && classifySendFailure(error.status) != SendFailure.UNKNOWN
+            uploaded?.takeIf { !attempted || refused }?.let { api.cancelAsset(token, it.id) }
+            if (error is CancellationException) throw error
+            current()
+            update(person) { it.copy(error = (error as? ApiException)?.code?.let(::directMessageError)
+                ?: if (uploaded == null && error !is IllegalStateException) AttachmentPolicy.uploadErrorMessage(error) else friendlyError(error)) }
             return null
         } finally {
             if (request == epoch && person in mutable.value) update(person) { it.copy(sending = false) }

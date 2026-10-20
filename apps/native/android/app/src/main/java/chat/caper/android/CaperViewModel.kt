@@ -753,24 +753,60 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val directNavigation = conversationOpeningRevision
         val files = profileDrafts[person].files
         viewModelScope.launch {
-            val result = profileDrafts.send(person, id, username, token, session = {
-                val capability = createChatSession(request) ?: error("Chat session is unavailable.")
-                capability to requireNotNull(chatAuthor)
-            }, directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
+            val result = profileDrafts.send(person, id, username, token, session = profileChatSession(request),
+                directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
             if (request != accountGeneration) return@launch
             if (result == null) {
                 if (profileDrafts[person].error == directMessageError(DM_BLOCKED)) { refreshBlocks(); refreshDirectConversations() }
                 return@launch
             }
             files.forEach { discardDraftFiles(it.key) }
-            val (conversation, sent) = result
-            mutable.value = mutable.value.copy(directConversations = mergeDirects(mutable.value.directConversations, listOf(conversation)))
-            if (mutable.value.selectedChannel?.id == conversation.id) addMessage(sent)
-            conversationHistories.remove(conversation.id)
-            if (navigation == generation && directNavigation == conversationOpeningRevision) {
-                done()
-                selectDirect(conversation)
-            }
+            profileMessageSent(result.first, result.second, navigation, directNavigation, done)
+        }
+    }
+
+    /**
+     * The profile card's voice message: a [recording] sent to that person's DM on its own (the
+     * draft's text and files stay), then the same as after Send: the DM opens and [done] closes the card.
+     */
+    internal fun sendProfileVoice(person: String, id: String?, username: String, recording: File, durationMs: Long, waveform: String?, done: () -> Unit) {
+        val token = accountToken
+        if (token == null || !mutable.value.uploadsEnabled || !profileDrafts[person].editable || durationMs !in 1..VoiceMessages.MAX_DURATION_MS) {
+            recording.delete(); return
+        }
+        val key = UUID.randomUUID().toString()
+        val prepared = adoptRecording(key, recording, durationMs, waveform)
+            ?: return profileDrafts.error(person, "Couldn’t save the voice message.")
+        val request = accountGeneration
+        val navigation = generation
+        val directNavigation = conversationOpeningRevision
+        viewModelScope.launch {
+            try {
+                val result = profileDrafts.sendVoice(person, id, username, token, prepared, session = profileChatSession(request),
+                    directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
+                if (request != accountGeneration) return@launch
+                if (result == null) {
+                    if (profileDrafts[person].error == directMessageError(DM_BLOCKED)) { refreshBlocks(); refreshDirectConversations() }
+                    return@launch
+                }
+                profileMessageSent(result.first, result.second, navigation, directNavigation, done)
+            } finally { discardDraftFiles(key) }
+        }
+    }
+
+    private fun profileChatSession(request: Long): suspend () -> Pair<String, ChatAuthor> = {
+        val capability = createChatSession(request) ?: error("Chat session is unavailable.")
+        capability to requireNotNull(chatAuthor)
+    }
+
+    /** After a confirmed profile message: list the DM, show the message if it is open, and open it unless you navigated meanwhile. */
+    private fun profileMessageSent(conversation: DirectConversation, sent: ChatMessage, navigation: Long, directNavigation: Long, done: () -> Unit) {
+        mutable.value = mutable.value.copy(directConversations = mergeDirects(mutable.value.directConversations, listOf(conversation)))
+        if (mutable.value.selectedChannel?.id == conversation.id) addMessage(sent)
+        conversationHistories.remove(conversation.id)
+        if (navigation == generation && directNavigation == conversationOpeningRevision) {
+            done()
+            selectDirect(conversation)
         }
     }
 
@@ -2157,20 +2193,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val key = UUID.randomUUID().toString()
-        val directory = File(uploadSession, key)
-        val file = File(directory, VoiceMessages.UPLOAD_NAME)
-        val moved = runCatching {
-            directory.mkdirs()
-            recording.renameTo(file) || run { recording.copyTo(file, overwrite = true); recording.delete(); true }
-        }.getOrDefault(false)
-        if (!moved || file.length() < 1) {
-            recording.delete(); directory.deleteRecursively()
-            voiceError(target, "Couldn’t save the voice message.")
-            return
-        }
-        draftDirectories[key] = directory
-        preparedDrafts[key] = PreparedAttachment(file, VoiceMessages.UPLOAD_NAME, VoiceMessages.UPLOAD_TYPE, "audio", file.length(),
-            durationMs = durationMs, voice = true, waveform = waveform)
+        val prepared = adoptRecording(key, recording, durationMs, waveform)
+            ?: return voiceError(target, "Couldn’t save the voice message.")
+        preparedDrafts[key] = prepared
+        val file = prepared.file
         val local = Uri.fromFile(file).toString()
         val voice = VoiceSend(
             DraftAttachmentUi(key, VoiceMessages.LABEL, "audio", sourceSize = file.length(), storedSize = file.length(), localUrl = local, compressing = false),
@@ -2191,6 +2217,27 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (!stale) voiceError(target, "Wait for your last message to send, then record again.")
             }
         }
+    }
+
+    /**
+     * Moves a finished recording into this session's upload folder as [key]'s working copy, which
+     * [discardDraftFiles] deletes, ready to upload as recorded: no compression, `voice` with its
+     * duration and waveform. Null (the recording deleted) when it cannot be kept.
+     */
+    private fun adoptRecording(key: String, recording: File, durationMs: Long, waveform: String?): PreparedAttachment? {
+        val directory = File(uploadSession, key)
+        val file = File(directory, VoiceMessages.UPLOAD_NAME)
+        val moved = runCatching {
+            directory.mkdirs()
+            recording.renameTo(file) || run { recording.copyTo(file, overwrite = true); recording.delete(); true }
+        }.getOrDefault(false)
+        if (!moved || file.length() < 1) {
+            recording.delete(); directory.deleteRecursively()
+            return null
+        }
+        draftDirectories[key] = directory
+        return PreparedAttachment(file, VoiceMessages.UPLOAD_NAME, VoiceMessages.UPLOAD_TYPE, "audio", file.length(),
+            durationMs = durationMs, voice = true, waveform = waveform)
     }
 
     private fun voiceError(target: AttachmentDraftTarget, message: String) {

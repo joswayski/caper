@@ -1567,8 +1567,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     viewModel.sendVoice(recording.file, recording.durationMs, recording.waveform, threadRootId = thread.rootId, broadcast = broadcast)
                     broadcast = false
                 }
-                val call by VoiceCallService.state.collectAsStateWithLifecycle()
-                val voiceBlocked = voiceRecordBlockedReason(state.pendingMessage != null, call.phase != VoiceState.Phase.IDLE && call.phase != VoiceState.Phase.FAILED)
+                val voiceBlocked = voiceRecordBlocked(state.pendingMessage != null)
                 val broadcastChecked = pending?.broadcast ?: broadcast
                 // The label toggles too, as one checkbox control.
                 Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
@@ -1858,8 +1857,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 val recorder = rememberVoiceRecorder(target) { recording ->
                     viewModel.sendVoice(recording.file, recording.durationMs, recording.waveform)
                 }
-                val call by VoiceCallService.state.collectAsStateWithLifecycle()
-                val voiceBlocked = voiceRecordBlockedReason(state.pendingMessage != null, call.phase != VoiceState.Phase.IDLE && call.phase != VoiceState.Phase.FAILED)
+                val voiceBlocked = voiceRecordBlocked(state.pendingMessage != null)
                 VoiceRecordingNotice(recorder)
                 val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
                 fun sendDraft() {
