@@ -16594,7 +16594,7 @@ impl CaperApp {
             let draft_height = ui.fonts_mut(|fonts| fonts.layout(
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
                 // Emoji and the microphone sit at the end of the field.
-                (ui.available_width() - 36.0 - 22.0 - attach_width - 36.0).max(1.0),
+                (ui.available_width() - 36.0 - 8.0 - attach_width - 36.0).max(1.0),
             ).size().y);
             let voice_rows = self.voice_status_rows(None) * 30.0;
             let chip_rows = if attach && self.draft_file_count(None) > 0 {
@@ -16774,7 +16774,7 @@ impl CaperApp {
                             egui::FontId::proportional(13.6),
                             Color32::from_rgb(142, 149, 152),
                         );
-                        hint.wrap = egui::text::TextWrapping::truncate_at_width((ui.available_width() - 22.0).max(1.0));
+                        hint.wrap = egui::text::TextWrapping::truncate_at_width((ui.available_width() - 8.0).max(1.0));
                         let hint = emoji::layout_job(ui, hint);
                         let output = egui::TextEdit::multiline(draft)
                             .id(composer_id)
@@ -16785,7 +16785,7 @@ impl CaperApp {
                             .desired_rows(1)
                             .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter)))
                             .font(egui::FontId::proportional(13.6))
-                            .margin(egui::vec2(11.0, 10.0))
+                            .margin(egui::vec2(4.0, 10.0))
                             .hint_text(hint.clone())
                             .frame(false)
                             .char_limit(4_000).show(ui);
@@ -22111,7 +22111,7 @@ impl CaperApp {
                                                     egui::Key::Enter,
                                                 )))
                                                 .font(egui::FontId::proportional(13.6))
-                                                .margin(egui::vec2(8.0, 10.0))
+                                                .margin(egui::vec2(4.0, 10.0))
                                                 .frame(false)
                                                 .char_limit(4_000)
                                                 .show(ui)

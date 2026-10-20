@@ -3868,7 +3868,7 @@ private struct ChatView: View {
                 ZStack(alignment: .topLeading) {
                     if chat.draft.isEmpty {
                         Text(composerPlaceholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                            .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                            .padding(.leading, 5).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
                     }
                     messageComposer
                 }
@@ -4797,7 +4797,7 @@ private struct NativeThreadView: View {
                             ZStack(alignment: .topLeading) {
                                 if chat.threadDraft.isEmpty {
                                     Text("Reply to thread…").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                                        .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                                        .padding(.leading, 5).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
                                 }
                                 threadComposer
                             }
@@ -6215,7 +6215,7 @@ private struct MentionCardView: View {
                 ZStack(alignment: .topLeading) {
                     if draft.text.isEmpty {
                         Text("Message @\(person.username ?? person.title)").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                            .lineLimit(1).padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                            .lineLimit(1).padding(.leading, 5).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
                     }
                     NativeMessageComposer(text: Binding(get: { draft.text }, set: { if draft.editable { draft.text = $0 } }),
                                           placeholder: "Message @\(person.username ?? person.title)", controller: autocomplete, mentions: .empty,

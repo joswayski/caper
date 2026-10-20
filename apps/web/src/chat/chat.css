@@ -4630,6 +4630,9 @@ a.chat-draft-preview {
   .chat-attach:focus-visible {
     outline-offset: -2px;
   }
+  :is(.chat-composer, .chat-profile-composer) form[data-attach] textarea {
+    padding-left: 42px;
+  }
   .chat-thread-send-row > .chat-thread-tools {
     margin: 5px 5px 5px 0;
   }
