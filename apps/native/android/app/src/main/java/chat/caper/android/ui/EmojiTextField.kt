@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import chat.caper.android.entrance
+import chat.caper.android.KeyboardAttachmentInput
 import chat.caper.android.MOTION_FAST
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -46,7 +47,8 @@ import kotlin.math.roundToInt
     leadingIcon: (@Composable () -> Unit)? = null, trailingIcon: (@Composable () -> Unit)? = null,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default, keyboardActions: KeyboardActions = KeyboardActions.Default,
     colors: TextFieldColors = OutlinedTextFieldDefaults.colors(),
-) {
+    keyboardAttachment: ((android.net.Uri) -> Job?)? = null,
+) = KeyboardAttachmentInput(keyboardAttachment.takeIf { enabled }) {
     val context = LocalContext.current
     val density = LocalDensity.current
     val interaction = remember { MutableInteractionSource() }
