@@ -2737,21 +2737,39 @@ Spending limits live on the OpenRouter key itself.
 All three are read from `production/apps/caper` like other API settings;
 changing them needs only an API restart.
 
+### Recording and sending
+
+Tapping or clicking the microphone records hands-free: a bar with discard,
+a pulsing dot and timer, live levels and a Stop button (Enter stops, Escape
+discards). On touch layouts holding the microphone also records until
+release; sliding left cancels. Recordings under a second are dropped and
+10:00 stops automatically.
+
+By default stopping does not send. The recording becomes a voice chip in the
+composer beside any staged files (play, waveform, duration, remove), so text,
+photos and the voice note go out together on the next Send. It uploads at
+once, so the transcript is usually ready before sending; removing the chip
+cancels the upload. One voice note per message. The per-device setting "Send
+voice messages as soon as I stop recording" (off by default) sends on stop
+instead, on its own. The profile card's quick message works the same way.
+
+Waveforms are per-slice RMS loudness on a -50..0 dB scale, lightly smoothed
+and normalised (Android approximates RMS from MediaRecorder's amplitude
+readings). Players draw evenly spaced rounded bars by linear interpolation,
+with per-frame progress; live levels use fast-attack, slow-release smoothing
+and scroll at a steady rate (stepped under reduced motion).
+
 ### Platform status
 
 | Platform | Record | Play + transcript | Verified |
 | --- | --- | --- | --- |
-| Web desktop | Click mic: bar with discard, timer, live levels, send; Escape/Enter | Player, seek, one at a time, 3-line transcript | `npm run check`, Vitest, Playwright with a fake microphone against the fixture (no real API audio) |
-| Web mobile layout | Hold to record, slide to cancel, "Hold to record" on tap | Same | Playwright touch emulation; no real phone or iOS Safari |
-| Android | Hold to record (MediaRecorder AAC/M4A) | Media3 player, transcript | Kotlin compile, 522 JVM tests, lint; no device run |
-| iOS / macOS | Hold (iOS) or click (macOS), AVAudioRecorder AAC/M4A | AVPlayer, transcript | Pure logic typechecked and tested on Linux Swift; SwiftUI/AVFoundation code not compiled here (Apple CI) |
-| Desktop (Windows, Linux) | Click mic; bundled FFmpeg AAC/M4A (WAV fallback) | Bundled FFmpeg audio-only player | `cargo test`, clippy, Xvfb screenshots, virtual-microphone recording beside a live call capture (Linux only) |
+| Web desktop and mobile layout | MediaRecorder; click/tap, plus hold on touch | Player, seek, one at a time, 3-line transcript | `npm run check`, Vitest, Playwright with a fake microphone against the fixture (no real API audio, iOS Safari or real phone) |
+| Android | MediaRecorder AAC/M4A; tap or hold | Media3 player, transcript | 547 JVM tests, compile, lint; no device run |
+| iOS / macOS | AVAudioRecorder AAC/M4A; tap/hold (iOS), click (macOS) | AVPlayer, transcript | Apple CI build and XCTests; logic also tested on Linux Swift; no device run of the v2 changes yet |
+| Desktop (Windows, Linux) | Bundled FFmpeg AAC/M4A (WAV fallback); click | Bundled FFmpeg audio-only player | `cargo test`, clippy, Xvfb screenshots, virtual-microphone recording beside a live call capture (Linux only) |
 
-The profile card's quick message records voice messages too, sending them on
-their own to that person's DM (typed text stays; a failed or unconfirmed send
-keeps the recording with Retry and Discard). Physical microphones, recording
-during a real call on phones and Windows, and a live transcript round trip
-still need checking by hand.
+Physical microphones, recording during a real call on phones and Windows,
+and a live transcript round trip still need checking by hand.
 
 ### Validation boundary
 
