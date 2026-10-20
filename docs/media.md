@@ -2664,6 +2664,20 @@ Spending limits live on the OpenRouter key itself.
 All three are read from `production/apps/caper` like other API settings;
 changing them needs only an API restart.
 
+### Platform status
+
+| Platform | Record | Play + transcript | Verified |
+| --- | --- | --- | --- |
+| Web desktop | Click mic: bar with discard, timer, live levels, send; Escape/Enter | Player, seek, one at a time, 3-line transcript | `npm run check`, Vitest, Playwright with a fake microphone against the fixture (no real API audio) |
+| Web mobile layout | Hold to record, slide to cancel, "Hold to record" on tap | Same | Playwright touch emulation; no real phone or iOS Safari |
+| Android | Hold to record (MediaRecorder AAC/M4A) | Media3 player, transcript | Kotlin compile, 522 JVM tests, lint; no device run |
+| iOS / macOS | Hold (iOS) or click (macOS), AVAudioRecorder AAC/M4A | AVPlayer, transcript | Pure logic typechecked and tested on Linux Swift; SwiftUI/AVFoundation code not compiled here (Apple CI) |
+| Desktop (Windows, Linux) | Click mic; bundled FFmpeg AAC/M4A (WAV fallback) | Bundled FFmpeg audio-only player | `cargo test`, clippy, Xvfb screenshots, virtual-microphone recording beside a live call capture (Linux only) |
+
+Not yet: the profile card's quick-message composer has no microphone on any
+client. Physical microphones, recording during a real call on phones and
+Windows, and a live transcript round trip still need checking by hand.
+
 ### Validation boundary
 
 - `cargo test` covers upload validation, transcript states, the FLAC
