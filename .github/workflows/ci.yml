@@ -51,6 +51,8 @@ jobs:
       # Clippy type-checks every workspace target (a superset of
       # `cargo check --workspace --all-targets`), so no separate check step.
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Install audio test tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: cargo test --workspace
 
   account-database:
