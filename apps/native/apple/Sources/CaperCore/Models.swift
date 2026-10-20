@@ -463,10 +463,17 @@ public struct ChatContent: Codable, Equatable, Sendable {
     /// `content.mentions`, in first-appearance order. Optional on the wire:
     /// older messages and servers omit it, so it decodes as empty.
     public let mentions: [MessageMention]
+    /// Link preview cards (`LinkEmbeds`), filled in after sending. Malformed
+    /// cards are skipped like attachments; nil when absent or unusable.
+    public var embeds: [ChatEmbed]?
+    /// Sent with the composer's preview removed: the server makes no cards.
+    public var suppressEmbeds: Bool?
 
-    private enum CodingKeys: String, CodingKey { case version, type, text, attachments, mentions }
-    public init(version: Int, type: String, text: String, attachments: [ChatAttachment]? = nil, mentions: [MessageMention] = []) {
+    private enum CodingKeys: String, CodingKey { case version, type, text, attachments, mentions, embeds, suppressEmbeds }
+    public init(version: Int, type: String, text: String, attachments: [ChatAttachment]? = nil, mentions: [MessageMention] = [],
+                embeds: [ChatEmbed]? = nil, suppressEmbeds: Bool? = nil) {
         self.version = version; self.type = type; self.text = text; self.attachments = attachments; self.mentions = mentions
+        self.embeds = embeds; self.suppressEmbeds = suppressEmbeds
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -478,6 +485,9 @@ public struct ChatContent: Codable, Equatable, Sendable {
         // Mentions are decoration: a malformed list must not drop the message.
         let entries = try? values.decodeIfPresent([LenientMessageMention].self, forKey: .mentions)
         mentions = entries?.compactMap { $0.value } ?? []
+        // Cards are decoration too: a bad card never drops the message.
+        embeds = values.decodeLossyEmbeds(forKey: .embeds)
+        suppressEmbeds = (try? values.decodeIfPresent(Bool.self, forKey: .suppressEmbeds)) ?? nil
     }
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
@@ -486,6 +496,8 @@ public struct ChatContent: Codable, Equatable, Sendable {
         try values.encode(text, forKey: .text)
         try values.encodeIfPresent(attachments, forKey: .attachments)
         if !mentions.isEmpty { try values.encode(mentions, forKey: .mentions) }
+        try values.encodeIfPresent(embeds, forKey: .embeds)
+        try values.encodeIfPresent(suppressEmbeds, forKey: .suppressEmbeds)
     }
 }
 
@@ -553,7 +565,8 @@ struct MessageMutations {
         if let intent = pins[message.id] { result.pin = intent.pin }
         if let edit = edits[message.id], (message.revision ?? 1) <= edit.revision {
             // Edits change text only; the message keeps its files. Mentions are resolved by the server.
-            result.content = ChatContent(version: 1, type: "text", text: edit.text, attachments: message.content.attachments)
+            result.content = ChatContent(version: 1, type: "text", text: edit.text, attachments: message.content.attachments,
+                                         embeds: message.content.embeds, suppressEmbeds: message.content.suppressEmbeds)
         }
         return result
     }
@@ -1065,11 +1078,13 @@ public struct PendingMessage: Equatable, Sendable {
     public let threadRootId: String?
     public let broadcast: Bool
     public let replyTo: MessageReply?
+    /// The composer's link preview was removed: retries keep sending `suppressEmbeds`.
+    public let suppressEmbeds: Bool
     /// Ids join the server's idempotency hash, so retries resend the same ids.
     public var attachmentIDs: [String] { attachments.map(\.id) }
 
     public init(id: String, text: String, attachments: [ChatAttachment] = [], createdAt: String = ISO8601DateFormatter().string(from: Date()),
-                threadRootId: String? = nil, broadcast: Bool = false, replyTo: MessageReply? = nil) {
+                threadRootId: String? = nil, broadcast: Bool = false, replyTo: MessageReply? = nil, suppressEmbeds: Bool = false) {
         self.id = id
         self.text = text
         self.attachments = attachments
@@ -1077,6 +1092,7 @@ public struct PendingMessage: Equatable, Sendable {
         self.threadRootId = threadRootId
         self.broadcast = broadcast
         self.replyTo = replyTo
+        self.suppressEmbeds = suppressEmbeds
     }
 }
 
@@ -1091,10 +1107,11 @@ public struct ChatDeliveryState: Sendable {
     public init(cursor: String = "0") { self.cursor = cursor }
 
     public mutating func begin(text: String, attachments: [ChatAttachment] = [], threadRootId: String? = nil, broadcast: Bool = false, replyTo: MessageReply? = nil,
-                               makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
+                               suppressEmbeds: Bool = false, makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
         if let pending { return pending }
         // Rust's UUID serialization returns lowercase in both HTTP and replay.
-        let command = PendingMessage(id: makeID().lowercased(), text: text, attachments: attachments, threadRootId: threadRootId, broadcast: broadcast, replyTo: replyTo)
+        let command = PendingMessage(id: makeID().lowercased(), text: text, attachments: attachments, threadRootId: threadRootId, broadcast: broadcast, replyTo: replyTo,
+                                     suppressEmbeds: suppressEmbeds)
         pending = command
         return command
     }
@@ -1103,7 +1120,8 @@ public struct ChatDeliveryState: Sendable {
     public mutating func replaceAttachments(id: String, attachments: [ChatAttachment]) -> PendingMessage? {
         guard let old = pending, old.id == id else { return nil }
         let command = PendingMessage(id: UUID().uuidString.lowercased(), text: old.text, attachments: attachments,
-                                     createdAt: old.createdAt, threadRootId: old.threadRootId, broadcast: old.broadcast, replyTo: old.replyTo)
+                                     createdAt: old.createdAt, threadRootId: old.threadRootId, broadcast: old.broadcast, replyTo: old.replyTo,
+                                     suppressEmbeds: old.suppressEmbeds)
         pending = command
         return command
     }

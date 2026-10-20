@@ -133,7 +133,8 @@ public actor Gateway {
 
     @discardableResult
     public func subscribeChat(channelID: String, after: String, handler: @escaping Handler) async -> String {
-        await subscribe(frame: ["kind": "chat", "channelId": channelID, "after": after], handler: handler)
+        // `embeds`: this client draws link previews, so the gateway may send `message.embeds`.
+        await subscribe(frame: ["kind": "chat", "channelId": channelID, "after": after, "embeds": true], handler: handler)
     }
 
     @discardableResult

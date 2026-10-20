@@ -39,6 +39,18 @@ private struct SendInput: Encodable {
     let threadRootId: String?
     let broadcast: Bool?
     let replyToId: String?
+    /// Only `true` (the composer's preview was removed); otherwise omitted.
+    let suppressEmbeds: Bool?
+}
+private struct EmbedPreviewInput: Encodable { let url: String }
+/// `{embed}`; a card this client cannot draw reads as none.
+private struct EmbedPreviewBody: Decodable {
+    let embed: ChatEmbed?
+    private enum CodingKeys: String, CodingKey { case embed }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        embed = try? values.decode(ChatEmbed.self, forKey: .embed)
+    }
 }
 private struct AttachmentURLsInput: Encodable { let ids: [String] }
 /// A completed profile picture: the account it now belongs to, already applied.
@@ -475,12 +487,21 @@ public actor APIClient {
     }
 
     public func send(channelID: String, sessionToken: String, clientMessageID: String, text: String, attachmentIDs: [String] = [],
-                     spoilerAttachmentIDs: [String] = [], threadRootId: String? = nil, broadcast: Bool = false, replyToId: String? = nil) async throws -> ChatMessage {
+                     spoilerAttachmentIDs: [String] = [], threadRootId: String? = nil, broadcast: Bool = false, replyToId: String? = nil,
+                     suppressEmbeds: Bool = false) async throws -> ChatMessage {
         let spoilers = attachmentIDs.filter { spoilerAttachmentIDs.contains($0) }
         let body = SendInput(clientMessageId: clientMessageID, text: text, attachmentIds: attachmentIDs.isEmpty ? nil : attachmentIDs,
                              spoilerAttachmentIds: spoilers.isEmpty ? nil : spoilers,
-                             threadRootId: threadRootId, broadcast: threadRootId == nil ? nil : broadcast, replyToId: replyToId)
+                             threadRootId: threadRootId, broadcast: threadRootId == nil ? nil : broadcast, replyToId: replyToId,
+                             suppressEmbeds: suppressEmbeds ? true : nil)
         return try await request("api/chat/channels/\(try pathID(channelID))/messages", method: "POST", body: body, extraHeaders: ["x-caper-chat-token": sessionToken])
+    }
+
+    /// The card one link will get, for the composer (`POST /api/embeds/preview`,
+    /// signed-in accounts). Nil when it has none; errors mean no preview.
+    public func embedPreview(url: String) async throws -> ChatEmbed? {
+        let body: EmbedPreviewBody = try await request("api/embeds/preview", method: "POST", body: EmbedPreviewInput(url: url))
+        return body.embed
     }
 
     public func editMessage(channelID: String, messageID: String, sessionToken: String, text: String, expectedRevision: Int) async throws -> ChatMessage {

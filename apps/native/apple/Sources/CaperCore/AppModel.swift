@@ -2699,7 +2699,13 @@ public final class ChatModel {
     public var displayedPins: [ChatMessage] { profiled(mutations.pinned(messages: messages, confirmed: pinnedMessages)) }
     public var channelName = "general"
     public var spaceName = "Caper"
-    public var draft = "" { didSet { if oldValue != draft { composerRevision += 1 } } }
+    public var draft = "" {
+        didSet {
+            if oldValue != draft { composerRevision += 1 }
+            // A sent or cleared draft starts over: the next link gets its card again.
+            if draft.isEmpty { removedPreviewLink = nil }
+        }
+    }
     private var composerRevision = 0
     private var uploadSubmission: UUID?
     public var loading = false
@@ -2928,6 +2934,11 @@ public final class ChatModel {
     private var delivery = ChatDeliveryState()
     private var reactionSnapshots = ReactionSnapshots()
     private var attachmentSnapshots = AttachmentSnapshots()
+    private var embedSnapshots = EmbedSnapshots()
+    /// The channel composer's last fetched card and the link it is for (web `useLinkPreview`).
+    private var shownPreview: (url: String, embed: ChatEmbed?)?
+    /// The link whose card was removed; it lasts while that link stays first in the draft.
+    private var removedPreviewLink: String?
     /// Staged originals this device sent, shown while the server processes
     /// them; removed once the attachment is ready or failed.
     private var localAttachmentCopies: [String: URL] = [:]
@@ -3517,7 +3528,10 @@ public final class ChatModel {
             attachment.spoiler = item.spoiler
             return attachment
         } : []
-        var command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast, replyTo: replyTargets[rootID ?? "channel"])
+        // Removing the channel composer's card sends without previews (a retry keeps the command's choice).
+        let suppressEmbeds = !inThread && removedPreviewLink != nil && LinkEmbeds.previewLink(in: text) == removedPreviewLink
+        var command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast, replyTo: replyTargets[rootID ?? "channel"],
+                                     suppressEmbeds: suppressEmbeds)
         if newSubmission {
             replyTargets[rootID ?? "channel"] = nil
             pendingDrafts = files
@@ -3567,7 +3581,8 @@ public final class ChatModel {
                 }
                 do {
                     message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text,
-                                                 attachmentIDs: command.attachmentIDs, spoilerAttachmentIDs: command.attachments.filter(\.spoiler).map(\.id), threadRootId: command.threadRootId, broadcast: command.broadcast, replyToId: command.replyTo?.id)
+                                                 attachmentIDs: command.attachmentIDs, spoilerAttachmentIDs: command.attachments.filter(\.spoiler).map(\.id), threadRootId: command.threadRootId, broadcast: command.broadcast, replyToId: command.replyTo?.id,
+                                                 suppressEmbeds: command.suppressEmbeds)
                     break
                 } catch let refusal as APIError where refusal.status == 409 && refusal.code == "attachment_unavailable" {
                     guard self.channelID == channelID, delivery.pending?.id == command.id else { return }
@@ -3805,6 +3820,35 @@ public final class ChatModel {
         return true
     }
 
+    /// The channel draft's first link that will get a card, while signed in
+    /// (guests and previews get none). The composer reloads its card when this changes.
+    public var composerPreviewLink: String? {
+        guard canInteract, currentAuthor?.isGuest == false else { return nil }
+        return LinkEmbeds.previewLink(in: draft)
+    }
+
+    /// The card shown above the channel composer, if the current first link has one.
+    public var composerLinkPreview: ChatEmbed? {
+        guard let link = composerPreviewLink, link != removedPreviewLink, let shown = shownPreview, shown.url == link else { return nil }
+        return shown.embed
+    }
+
+    /// The composer's ×: the message is sent with `suppressEmbeds` while this link stays first.
+    public func removeComposerLinkPreview() { removedPreviewLink = composerPreviewLink }
+
+    /// Fetches the first link's card after 400 ms of quiet typing. The
+    /// composer runs it as a task keyed by `composerPreviewLink`, so a newer
+    /// draft cancels it. Errors only mean no card.
+    public func loadComposerLinkPreview() async {
+        guard let link = composerPreviewLink, link != removedPreviewLink else { return }
+        if shownPreview?.url == link { return }
+        try? await Task.sleep(for: .milliseconds(400))
+        guard !Task.isCancelled, composerPreviewLink == link else { return }
+        let embed = (try? await api.embedPreview(url: link)) ?? nil
+        guard !Task.isCancelled, composerPreviewLink == link else { return }
+        shownPreview = (url: link, embed: embed)
+    }
+
     /// Typing follows edits, not a draft restored on opening its conversation.
     public func draftChanged(_ value: String) {
         if let restored = restoredDraft {
@@ -3952,6 +3996,11 @@ public final class ChatModel {
             if event["channelId"] as? String == eventChannelID { receiveAttachmentProgress(event) }
             return
         }
+        if type == "message.embeds" {
+            // Unsequenced like progress: a malformed frame is dropped, never a resync.
+            if let update = MessageEmbedsEvent(event), update.channelId == eventChannelID { applyEmbeds(update) }
+            return
+        }
         if type == "message.created", let raw = event["message"], let data = try? JSONSerialization.data(withJSONObject: raw), let message = try? JSONDecoder().decode(ChatMessage.self, from: data) {
             guard message.channelId == eventChannelID,
                   event["seq"] as? String == message.seq,
@@ -4052,6 +4101,8 @@ public final class ChatModel {
         typers = [:]; typingNames = []; typingActive = false; typingSent = false
         delivery.reset(preservingPending: preservingPending)
         reactionSnapshots.reset(); attachmentSnapshots.reset(); pendingReactions = [:]; reactionWorkers = []; reactionErrors = [:]; failedReactions = [:]
+        embedSnapshots.reset()
+        if !preservingPending { shownPreview = nil; removedPreviewLink = nil }
         if !preservingPending {
             pendingDrafts.forEach { AttachmentStaging.remove($0.localURL) }
             releasePendingUploads()
@@ -4090,7 +4141,15 @@ public final class ChatModel {
             let root = message.threadRootId ?? message.id
             if summaries[root] == nil || (try? Sequence.compare(summary.seq, summaries[root]!.seq)) == .orderedDescending { summaries[root] = summary }
         }
-        incoming.forEach { byID[$0.id] = overlaySnapshots($0) }
+        for message in incoming {
+            var next = overlaySnapshots(message)
+            // A copy of the same revision without cards (a late send response) keeps the ones shown.
+            if next.content.embeds == nil, !next.isDeleted, let existing = byID[message.id],
+               (existing.revision ?? 1) == (next.revision ?? 1), let embeds = existing.content.embeds {
+                next.content.embeds = embeds
+            }
+            byID[message.id] = next
+        }
         byID = byID.mapValues { message in
             var updated = overlaySnapshots(message)
             updated.thread = summaries[message.threadRootId ?? message.id] ?? message.thread
@@ -4122,7 +4181,9 @@ public final class ChatModel {
     /// Every per-message snapshot over a timeline row. Attachments go last so
     /// an edit or forward overlay never restores an older attachment state.
     private func overlaySnapshots(_ message: ChatMessage) -> ChatMessage {
-        attachmentSnapshots.overlay(forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay(message)))))
+        // Link previews go after edits: they belong to the revision the edit overlay settles on.
+        let overlaid = attachmentSnapshots.overlay(forwardSnapshots.overlay(editSnapshots.overlay(pinSnapshots.overlay(reactionSnapshots.overlay(message)))))
+        return embedSnapshots.overlay(overlaid)
     }
 
     /// Pinned-list rows: the same snapshots as timeline rows, so pinned
@@ -4141,6 +4202,18 @@ public final class ChatModel {
         for attachment in event.attachments where attachment.status != .processing || attachment.unavailable {
             attachmentProgress[attachment.id] = nil
             if let local = localAttachmentCopies.removeValue(forKey: attachment.id) { AttachmentStaging.remove(local) }
+        }
+    }
+
+    /// Link previews for one revision; any other revision is ignored. A message
+    /// not loaded yet takes them when it merges (`embedSnapshots`).
+    private func applyEmbeds(_ event: MessageEmbedsEvent) {
+        guard embedSnapshots.apply(event) else { return }
+        if let index = messageSnapshots.firstIndex(where: { $0.id == event.messageId }) {
+            messageSnapshots[index] = embedSnapshots.overlay(messageSnapshots[index])
+        }
+        if let index = pinnedMessageSnapshots.firstIndex(where: { $0.id == event.messageId }) {
+            pinnedMessageSnapshots[index] = embedSnapshots.overlay(pinnedMessageSnapshots[index])
         }
     }
 

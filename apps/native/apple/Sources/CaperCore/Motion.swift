@@ -52,6 +52,11 @@ extension Entrance {
     static var panel: Entrance { Entrance(offset: CGSize(width: 12, height: 0), animation: CaperMotion.easeOut(CaperMotion.base)) }
     /// Attached files pop into the composer.
     static var chip: Entrance { Entrance(scale: 0.94, animation: CaperMotion.easeOut(CaperMotion.base)) }
+    /// A link preview card that arrives under a row already on screen rises 4
+    /// points (web chat-embed-arrive); cards present when the row is built show in place.
+    static func embed(_ arriving: Bool) -> Entrance {
+        Entrance(arriving, offset: CGSize(width: 0, height: 4), animation: CaperMotion.easeOut(CaperMotion.base))
+    }
     /// A message sent or received at the live end settles into place
     /// (`MessageArrivals` decides which rows count).
     static func message(_ arriving: Bool) -> Entrance {

@@ -563,7 +563,7 @@ private struct BrowseLayer: ViewModifier {
 
 /// A message's links skip a swipe's lift (the text moves with the finger, so
 /// it lifts on the link it started on) and otherwise open as they would have.
-private struct SwipeGuardedLinks: ViewModifier {
+struct SwipeGuardedLinks: ViewModifier {
     @Environment(\.openURL) private var openURL
     func body(content: Content) -> some View {
         let openURL = self.openURL
@@ -4152,6 +4152,7 @@ private struct ChatView: View {
                 Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
             }
             AttachmentDraftsView(chat: chat)
+            ComposerEmbedPreview(chat: chat)
             HStack(alignment: .bottom, spacing: 8) {
                 VStack(spacing: 6) {
                     if let conversation = peerConversation, conversation.status == .outgoing {
@@ -4184,6 +4185,8 @@ private struct ChatView: View {
                         // Measure the text view instead of filling the 174-point maximum.
                         .fixedSize(horizontal: false, vertical: true)
                         .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
+                        // The first link's card, after a pause in typing (a newer link cancels it).
+                        .task(id: chat.composerPreviewLink) { await chat.loadComposerLinkPreview() }
                         #if os(iOS)
                         .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
                         #endif
@@ -5051,6 +5054,8 @@ private struct MessageRow: View {
                             .padding(.top, grouped && message.content.text.isEmpty && !edited ? 32 : 0)
                             #endif
                     }
+                    // Always built, so cards that arrive while the row is shown animate in.
+                    MessageEmbedsView(embeds: message.content.embeds ?? [])
                     if MentionAutocomplete.asksFeedback(message) {
                         Text(FeedbackInbox.notified).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
                             .accessibilityIdentifier("feedback-notified-\(message.id)")

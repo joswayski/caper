@@ -1062,8 +1062,9 @@ private struct AttachmentFailedCard: View {
 // MARK: Animations (GIFs stored as silent looping MP4)
 
 /// Keeps an `AVPlayerLooper` alive for as long as its player is shown.
+/// Also plays link preview GIF videos (EmbedViews).
 @MainActor
-private final class LoopingPlayback {
+final class LoopingPlayback {
     let player: AVQueuePlayer
     private let looper: AVPlayerLooper
 
@@ -1096,13 +1097,13 @@ private final class LoopingPlayback {
 }
 
 #if os(iOS)
-private final class PlayerLayerUIView: UIView {
+final class PlayerLayerUIView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
 }
 
 /// A bare video surface: no controls, no audio, no hit testing.
-private struct PlayerSurface: UIViewRepresentable {
+struct PlayerSurface: UIViewRepresentable {
     let player: AVPlayer
     /// Fills the frame inline; the media viewer fits the whole video.
     var gravity: AVLayerVideoGravity = .resizeAspectFill
@@ -1120,7 +1121,7 @@ private struct PlayerSurface: UIViewRepresentable {
     }
 }
 #else
-private final class PlayerLayerNSView: NSView {
+final class PlayerLayerNSView: NSView {
     let playerLayer = AVPlayerLayer()
 
     override init(frame frameRect: NSRect) {
@@ -1141,7 +1142,7 @@ private final class PlayerLayerNSView: NSView {
 }
 
 /// A bare video surface: no controls, no audio, no hit testing.
-private struct PlayerSurface: NSViewRepresentable {
+struct PlayerSurface: NSViewRepresentable {
     let player: AVPlayer
     /// Fills the frame inline; the media viewer fits the whole video.
     var gravity: AVLayerVideoGravity = .resizeAspectFill
