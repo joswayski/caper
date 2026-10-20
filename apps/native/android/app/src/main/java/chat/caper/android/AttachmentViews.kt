@@ -595,8 +595,16 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
             Toast.makeText(context, "No app is available to preview this file.", Toast.LENGTH_SHORT).show()
         }
     }
+    // A staged recording is a voice chip above the file tiles.
+    val (voices, files) = drafts.partition { it.voice }
     Column(Modifier.fillMaxWidth()) {
-        val failed = drafts.count { it.error != null }
+        voices.forEach { draft -> key(draft.key) {
+            StagedVoiceChip(draft, remove, retry?.takeIf { !uploadOnSend }, enabled,
+                busy = draft.attachment == null && draft.error == null)
+            Spacer(Modifier.height(8.dp))
+        } }
+        if (files.isEmpty()) return@Column
+        val failed = files.count { it.error != null }
         if (failed > 0) Text(
             if (failed == 1) "1 file failed to upload. Send will retry it, or you can remove it."
             else "$failed files failed to upload. Send will retry them, or you can remove them.",
@@ -607,7 +615,7 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
             val tileSize = minOf(104.dp, (maxWidth - 8.dp * (columns - 1)) / columns)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), maxItemsInEachRow = columns) {
                 // Keyed, so each tile arrives once and keeps its own progress animation.
-                drafts.forEach { draft -> key(draft.key) {
+                files.forEach { draft -> key(draft.key) {
                     var menuOpen by remember { mutableStateOf(false) }
                     LaunchedEffect(enabled) { if (!enabled) menuOpen = false }
                     Surface(Modifier.entrance(MOTION_BASE, scale = 0.94f).size(tileSize), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {

@@ -14,27 +14,85 @@ import org.junit.Test
 class VoiceMessagesTest {
     private val id = "VoIcEmSg12345678"
 
-    @Test fun `waveform is 64 peaks scaled so the loudest slice is 255`() {
-        // 128 samples: each slice covers two, and the peak of the pair wins.
-        val samples = IntArray(128) { if (it % 2 == 0) it * 10 else 0 }
-        val waveform = VoiceMessages.waveform(samples)
+    @Test fun `the stored waveform is per-slice RMS on a decibel scale, smoothed and scaled to 255`() {
+        // 128 samples: each slice covers two. Rising loudness gives rising levels.
+        val samples = IntArray(128) { 200 + it * 250 }
+        val waveform = VoiceMessages.waveform(samples).map { it.toInt() and 0xFF }
         assertEquals(64, waveform.size)
-        assertEquals(255, waveform.last().toInt() and 0xFF)
-        assertEquals(0, waveform.first().toInt() and 0xFF)
-        // Linear: slice 32's peak (sample 64 → 640) against the loudest (sample 126 → 1260).
-        assertEquals(640 * 255 / 1260, waveform[32].toInt() and 0xFF)
-        val heights = waveform.map { it.toInt() and 0xFF }
-        assertTrue("rising samples give rising peaks", heights.zipWithNext().all { (a, b) -> b >= a })
+        assertEquals(255, waveform.max())
+        assertTrue("rising input stays rising after smoothing", waveform.zipWithNext().all { (a, b) -> b >= a })
+        // RMS, not peak: one loud click in a quiet slice moves it much less than a loud slice.
+        val click = IntArray(640) { if (it == 5) 30_000 else 300 }.also { for (at in 600 until 640) it[at] = 30_000 }
+        val levels = VoiceMessages.waveform(click).map { it.toInt() and 0xFF }
+        assertTrue(levels[0] < levels[63])
+        // dB, not linear: a tenth of the amplitude is well above a tenth of the height.
+        val steps = VoiceMessages.waveform(IntArray(64) { if (it < 32) 3_000 else 30_000 }).map { it.toInt() and 0xFF }
+        assertTrue(steps[10] > 255 / 2)
     }
 
-    @Test fun `short and silent recordings still give 64 bytes`() {
-        val short = VoiceMessages.waveform(intArrayOf(0, 1000, 500))
-        assertEquals(64, short.size)
-        assertEquals("fewer samples than slices repeat the nearest", 255, short[30].toInt() and 0xFF)
-        assertEquals(0, short[0].toInt())
+    @Test fun `smoothing is a three-tap moving average and silence stays zero`() {
+        assertArrayEquals(floatArrayOf(0.5f, 1f / 3, 0f), VoiceMessages.smooth(floatArrayOf(1f, 0f, 0f)), 0.0001f)
+        assertArrayEquals(floatArrayOf(0f, 1f / 3, 1f / 3, 0.5f), VoiceMessages.smooth(floatArrayOf(0f, 0f, 1f, 0f)), 0.0001f)
         assertTrue(VoiceMessages.waveform(IntArray(500)).all { it.toInt() == 0 })
         assertTrue(VoiceMessages.waveform(IntArray(0)).all { it.toInt() == 0 })
-        assertEquals("negative readings count as silence", 0, VoiceMessages.waveform(intArrayOf(-5, 0)).maxOf { it.toInt() })
+        val short = VoiceMessages.waveform(intArrayOf(0, 20_000, 500))
+        assertEquals("fewer samples than slices repeat the nearest", 64, short.size)
+        assertEquals(255, short.maxOf { it.toInt() and 0xFF })
+    }
+
+    @Test fun `bars interpolate linearly across the width`() {
+        assertArrayEquals(floatArrayOf(0f, 0.5f, 1f), VoiceMessages.interpolate(floatArrayOf(0f, 1f), 3), 0.0001f)
+        assertArrayEquals(floatArrayOf(0f, 0.25f, 0.5f, 0.75f, 1f), VoiceMessages.interpolate(floatArrayOf(0f, 1f), 5), 0.0001f)
+        assertArrayEquals(floatArrayOf(1f, 0f), VoiceMessages.interpolate(floatArrayOf(1f, 0.5f, 0f), 2), 0.0001f)
+        val many = VoiceMessages.interpolate(FloatArray(64) { it / 63f }, 37)
+        assertEquals(37, many.size)
+        assertEquals(0f, many.first(), 0.0001f)
+        assertEquals(1f, many.last(), 0.0001f)
+        assertTrue("evenly spaced: neighbouring bars change gradually", many.toList().zipWithNext().all { (a, b) -> b - a in 0f..0.03f })
+        assertArrayEquals(FloatArray(5) { 0.5f }, VoiceMessages.interpolate(floatArrayOf(0.5f), 5), 0f)
+        assertArrayEquals("no waveform draws a flat line", FloatArray(20), VoiceMessages.interpolate(null, 20), 0f)
+        assertEquals(0, VoiceMessages.interpolate(floatArrayOf(1f), 0).size)
+    }
+
+    @Test fun `the boundary bar is partly played`() {
+        assertEquals(0f, VoiceMessages.playedFraction(0.5f, 0.6f, 0.4f), 0f)
+        assertEquals(1f, VoiceMessages.playedFraction(0.5f, 0.6f, 0.7f), 0f)
+        assertEquals(0.5f, VoiceMessages.playedFraction(0.5f, 0.6f, 0.55f), 0.0001f)
+        assertEquals(1f, VoiceMessages.playedFraction(0.5f, 0.5f, 0.5f), 0f)
+    }
+
+    @Test fun `live levels attack fast, release slowly and add bars at a steady pace`() {
+        val live = LiveLevels(capacity = 4)
+        assertTrue("the first sample adds a bar", live.sample(1f, 0))
+        assertEquals(0.6f, live.level, 0.0001f)
+        assertFalse("samples between bars only move the level", live.sample(1f, 25))
+        assertEquals(0.84f, live.level, 0.0001f)
+        live.sample(0f, 50)
+        assertEquals("release is slower than attack", 0.84f * 0.85f, live.level, 0.0001f)
+        assertTrue(live.sample(0f, 70))
+        assertEquals(70L, live.lastBarAt)
+        // A late sample keeps the 70 ms cadence.
+        assertTrue(live.sample(0f, 150))
+        assertEquals(140L, live.lastBarAt)
+        repeat(5) { live.sample(0.5f, 210L + it * 70) }
+        assertEquals("only the newest bars are kept", 4, live.values.size)
+        live.clear()
+        assertTrue(live.values.isEmpty())
+        assertNull(live.lastBarAt)
+    }
+
+    @Test fun `stopping stages by default and sends only with the setting on`() {
+        assertFalse(VoiceMessages.SEND_ON_STOP_DEFAULT)
+        assertEquals(VoiceMessages.StopAction.STAGE, VoiceMessages.stopAction(VoiceMessages.SEND_ON_STOP_DEFAULT))
+        assertEquals(VoiceMessages.StopAction.SEND, VoiceMessages.stopAction(true))
+        assertEquals("Send voice messages as soon as I stop recording", VoiceMessages.SEND_ON_STOP_LABEL)
+    }
+
+    @Test fun `one staged voice message per message blocks the mic first`() {
+        assertEquals("Remove the voice message to record another", voiceMicBlockedReason(true, true, true, 26))
+        assertEquals("Wait for your last message to send, then record.", voiceMicBlockedReason(false, true, false, 36))
+        assertNull(voiceMicBlockedReason(false, false, true, 29))
+        assertNotNull(voiceMicBlockedReason(false, false, true, 28))
     }
 
     @Test fun `waveform encodes as padded standard base64 and decodes back`() {
@@ -57,21 +115,6 @@ class VoiceMessagesTest {
         assertNull(VoiceMessages.decodeWaveform(Base64.getEncoder().encodeToString(ByteArray(257))))
         assertEquals(256, VoiceMessages.decodeWaveform(Base64.getEncoder().encodeToString(ByteArray(256)))!!.size)
         assertEquals(1, VoiceMessages.decodeWaveform(Base64.getEncoder().encodeToString(byteArrayOf(-1)))!!.size)
-        val flat = VoiceMessages.resample(null, 20)
-        assertEquals(20, flat.size)
-        assertTrue(flat.all { it == flat.first() && it > 0f })
-    }
-
-    @Test fun `resampling keeps peaks when shrinking and repeats when stretching`() {
-        val levels = floatArrayOf(0f, 1f, 0.2f, 0.4f)
-        assertArrayEquals(floatArrayOf(1f, 0.4f), VoiceMessages.resample(levels, 2), 0f)
-        assertArrayEquals(floatArrayOf(0f, 0f, 1f, 1f, 0.2f, 0.2f, 0.4f, 0.4f), VoiceMessages.resample(levels, 8), 0f)
-        assertArrayEquals(levels, VoiceMessages.resample(levels, 4), 0f)
-        assertEquals(37, VoiceMessages.resample(FloatArray(256) { it / 255f }, 37).size)
-        assertEquals(1f, VoiceMessages.resample(FloatArray(256) { it / 255f }, 37).last(), 0f)
-        assertEquals(0, VoiceMessages.resample(levels, 0).size)
-        // Any server length (1..=256) fills any bar count.
-        assertArrayEquals(FloatArray(5) { 0.5f }, VoiceMessages.resample(floatArrayOf(0.5f), 5), 0f)
     }
 
     @Test fun `transcript states follow the contract and unknown shapes show nothing`() {
@@ -107,7 +150,7 @@ class VoiceMessagesTest {
         assertEquals(0L, seekPosition(-1f, 4_200))
     }
 
-    @Test fun `holds under a second are taps and ten minutes is the most`() {
+    @Test fun `recordings under a second are discarded and ten minutes is the most`() {
         assertNull(VoiceMessages.recordedDuration(0))
         assertNull(VoiceMessages.recordedDuration(999))
         assertEquals(1_000L, VoiceMessages.recordedDuration(1_000))

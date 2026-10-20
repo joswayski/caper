@@ -817,6 +817,11 @@ data class DraftAttachmentUi(
     val attachment: ChatAttachment? = null,
     val uploadedAt: Long? = null,
     val spoiler: Boolean = false,
+    /** A recording staged in the composer (one per message): shown as a voice chip, uploaded with `voice`. */
+    val voice: Boolean = false,
+    val durationMs: Long? = null,
+    /** Its base64 waveform, for the chip. */
+    val waveform: String? = null,
 )
 
 /** The [AppUiState.pictureSaves] key for your own profile picture (space icons use the space ID). */
