@@ -19,6 +19,9 @@ const DEADLINE: Duration = Duration::from_secs(120);
 /// upload, so large files get time to finish instead of always timing out.
 const BYTES_PER_SECOND: u64 = 20_000_000;
 const MAX_DEADLINE: Duration = Duration::from_secs(15 * 60);
+/// Speech stays clear at this rate in mono; a minute is about half a megabyte.
+const VOICE_BITRATE: &str = "64k";
+pub(super) const VOICE_CONTENT_TYPE: &str = "audio/mp4";
 
 /// Time allowed to publish `bytes`: a base plus time to move them, about six
 /// and a half minutes at the 5 GiB upload limit.
@@ -46,6 +49,9 @@ enum Format {
     /// Camera raws, TIFF, JPEG XL containers, JPEG 2000 and Photoshop files.
     /// Their own tags are needed to decode them, so only identifying ones go.
     Tagged(&'static str),
+    /// A recorded voice message, re-encoded from any audio container to mono
+    /// AAC in MP4 so every client can play it.
+    Voice,
 }
 
 /// Identifying tags removed from `Format::Tagged` files, and checked for
@@ -192,6 +198,46 @@ async fn clean(input: &Path, output: &Path, format: Format, max_size: u64) -> Re
             command.args(IDENTIFYING.map(|tag| format!("{tag}=")));
             command.arg(output);
         }
+        Format::Voice => {
+            command
+                .args([
+                    "ffmpeg",
+                    "-nostdin",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-protocol_whitelist",
+                    "file,pipe",
+                    "-i",
+                ])
+                .arg(input)
+                .args([
+                    "-map",
+                    "0:a:0",
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    VOICE_BITRATE,
+                    "-map_metadata",
+                    "-1",
+                    "-map_metadata:s",
+                    "-1",
+                    "-map_chapters",
+                    "-1",
+                    "-fflags",
+                    "+bitexact",
+                    "-flags:a",
+                    "+bitexact",
+                    "-movflags",
+                    "+faststart",
+                    "-f",
+                    "mp4",
+                ])
+                .arg(output);
+        }
         Format::Streams(extension) => {
             // Only real audio/video: no GPS/data/timecode/subtitle tracks,
             // cover art or attachments. Explicitly disable stream tags too;
@@ -294,6 +340,7 @@ pub(super) async fn publish(
     content_type: &str,
     name: Option<&str>,
     assembled: bool,
+    voice: bool,
 ) -> Result<i64, ApiError> {
     tokio::time::timeout(deadline(expected), async {
         if assembled
@@ -301,7 +348,7 @@ pub(super) async fn publish(
         {
             return Ok(size);
         }
-        publish_inner(r2, key, expected, content_type, name).await
+        publish_inner(r2, key, expected, content_type, name, voice).await
     })
     .await
     .map_err(|_| unavailable())?
@@ -355,6 +402,7 @@ async fn publish_inner(
     expected: i64,
     content_type: &str,
     name: Option<&str>,
+    voice: bool,
 ) -> Result<i64, ApiError> {
     let directory = tempfile::tempdir().map_err(|_| unavailable())?;
     let input = directory.path().join("input");
@@ -384,11 +432,24 @@ async fn publish_inner(
     if length != expected || !sniff(content_type, &head) {
         return Err(rejected());
     }
-    let format = format(&head, content_type)?;
+    let format = match format(&head, content_type)? {
+        // Only an audio or video container can become a voice message.
+        Some(Format::Streams(extension)) if voice => Some((Format::Voice, extension)),
+        _ if voice => return Err(rejected()),
+        Some(format) => Some((format, "")),
+        None => None,
+    };
+    // The published type: a voice message is always re-encoded to AAC in MP4.
+    let content_type = if voice {
+        VOICE_CONTENT_TYPE
+    } else {
+        content_type
+    };
     let output = match format {
-        Some(format) => {
-            let extension = match format {
-                Format::Image(ext) | Format::Streams(ext) | Format::Tagged(ext) => ext,
+        Some((format, source)) => {
+            let (extension, clean_extension) = match format {
+                Format::Image(ext) | Format::Streams(ext) | Format::Tagged(ext) => (ext, ext),
+                Format::Voice => (source, "m4a"),
             };
             // Supply our detected type, never the client's filename or declared
             // extension. ExifTool needs the extension for some container writers.
@@ -396,7 +457,7 @@ async fn publish_inner(
             fs::rename(&input, &typed_input)
                 .await
                 .map_err(|_| unavailable())?;
-            let path = directory.path().join(format!("clean.{extension}"));
+            let path = directory.path().join(format!("clean.{clean_extension}"));
             clean(
                 &typed_input,
                 &path,

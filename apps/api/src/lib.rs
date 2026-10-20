@@ -57,6 +57,7 @@ const BODY_LIMIT: usize = 256 * 1024;
 const RESERVATION: Duration = Duration::from_secs(30);
 
 pub mod accounts;
+mod ai;
 mod assets;
 mod auth;
 mod channel_media;
@@ -829,7 +830,14 @@ impl AppState {
     /// Uploads need R2 credentials; without them the routes answer 503.
     pub fn enable_assets(&mut self, environment: &RuntimeEnvironment) -> Result<(), String> {
         self.assets = assets::Assets::from_env(self.database.as_ref(), environment)?;
+        let ai = ai::Ai::from_env(environment)?;
+        if let Some(assets) = self.assets.as_mut() {
+            assets.enable_transcripts(ai.is_some());
+        }
         if let Some(assets) = self.assets.clone() {
+            if let Some(ai) = ai {
+                assets::spawn_transcriber(assets.clone(), ai);
+            }
             assets::spawn_purger(assets);
         }
         Ok(())

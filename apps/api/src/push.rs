@@ -305,6 +305,7 @@ impl Alert {
                 match files[0]["kind"].as_str() {
                     Some("image") => "Sent a photo".into(),
                     Some("video") => "Sent a video".into(),
+                    Some("audio") if files[0]["voice"] == true => "Sent a voice message".into(),
                     Some("audio") => "Sent an audio file".into(),
                     _ => preview(&format!(
                         "Sent a file: {}",

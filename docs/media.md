@@ -2603,6 +2603,80 @@ and physical devices are not yet validated.
   storage). Not yet validated on Android: the Compose attachment UI and pickers
   on an emulator or device, Bitmap/WebP encoding and EXIF handling, Media3
   Transformer transcoding and playback, and uploads to live R2/CDN.
+## Voice messages and AI
+
+Voice messages are recorded from the composer's microphone button and play
+inline with the sender's waveform. Transcripts appear under them Slack-style
+(three lines, then "View transcript").
+
+### Flow
+
+1. The client records in whatever its platform does best (Opus/WebM in
+   browsers, AAC/M4A on Apple and Android) and reserves an ordinary attachment
+   with `voice: true`, `durationMs` (1 ms to 10 minutes) and an optional
+   `waveform`. The waveform is base64 of 64 bytes (1 to 256 accepted): the peak
+   level of each equal slice, normalised so the loudest slice is 255.
+2. `complete` re-encodes the recording to mono AAC in MP4 at 64 kbps
+   (`audio/mp4`, named `Voice message.m4a`) through the same metadata-stripping
+   step as other media, so every client can play every voice message. A
+   minute is about half a megabyte and counts toward quota as usual.
+3. When an AI provider is configured, `complete` also marks the transcript
+   `pending` and queues an `ai_jobs` row. Transcription therefore starts before
+   the message is sent; an upload that is never sent is cleaned up like any
+   other, and its job finds the asset deleted and stops.
+4. The transcriber (one per API pod, leased jobs, three attempts with
+   backoff) converts the stored AAC to 16 kHz mono FLAC, sends it to
+   `POST {AI_BASE_URL}/audio/transcriptions` and tries each model in
+   `AI_TRANSCRIBE_MODELS` in order until one succeeds.
+5. A transcript that finishes before sending is copied into the message when
+   it is sent. One that finishes later updates the message and emits the
+   existing `message.attachments` event (seq-gated by `attachmentsSeq`), which
+   every client already applies.
+
+Voice attachments carry `voice`, `waveform` and `transcript`
+(`{"status":"pending"}`, `{"status":"ready","text":…}` or
+`{"status":"failed"}`; absent when no provider is configured). Push
+notifications say "Sent a voice message".
+
+### AI layer
+
+`apps/api/src/ai.rs` calls one OpenAI-compatible gateway (OpenRouter by
+default). Features ask for a task; the models serving it are configuration,
+so trying a newer model is an environment change. Every provider attempt is
+stored in `ai_calls` with its model, outcome, HTTP status, latency, cost (as
+reported by the gateway), full request (inline audio replaced by its size and
+asset) and full response, for comparing models on real traffic:
+
+```sql
+SELECT model, count(*), avg(latency_ms)::int AS ms, sum(cost_usd) AS usd,
+       count(*) FILTER (WHERE NOT succeeded) AS failures
+FROM ai_calls WHERE task='transcribe' GROUP BY model;
+```
+
+Spending limits live on the OpenRouter key itself.
+
+| Variable | Where | Meaning |
+| --- | --- | --- |
+| `OPENROUTER_API_KEY` | API | Enables transcripts. Without it voice messages still work, with no transcript. |
+| `AI_BASE_URL` | API | OpenAI-compatible gateway, default `https://openrouter.ai/api/v1`. HTTPS only (loopback HTTP for tests). |
+| `AI_TRANSCRIBE_MODELS` | API | Comma-separated models in fallback order, default `microsoft/mai-transcribe-2,elevenlabs/scribe-v2`. |
+
+All three are read from `production/apps/caper` like other API settings;
+changing them needs only an API restart.
+
+### Validation boundary
+
+- `cargo test` covers upload validation, transcript states, the FLAC
+  conversion and the gateway client's fallback and call log against a local
+  fake. The ignored Postgres test
+  `voice_messages_store_aac_and_deliver_transcripts` covers a WebM recording
+  re-encoded to AAC, a transcript stored before sending and copied into the
+  message, and one stored after sending through the real worker with a
+  failing first model, the `message.attachments` event, URL signing and the
+  `ai_calls` rows.
+- Not covered by automated tests: a live OpenRouter request. Watch the first
+  production voice messages in `ai_calls`.
+
 ## Message reactions
 
 Desktop web exposes **Add reaction** on message hover or keyboard focus; clicking

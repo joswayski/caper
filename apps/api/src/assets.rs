@@ -50,6 +50,9 @@ const HOUR: i64 = 60 * 60;
 
 mod multipart;
 mod privacy;
+mod voice;
+
+pub(crate) use voice::spawn_transcriber;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -573,7 +576,9 @@ pub(crate) fn sign_attachments(mut payload: Value, signer: Option<&CdnSigner>) -
 /// including a forward's embedded snapshot of its source message (whose
 /// access the forward already authorizes).
 fn attachment_pointers(payload: &Value) -> &'static [&'static str] {
-    if payload.get("message").is_some() {
+    if payload["type"] == "message.attachments" {
+        &["/attachments"]
+    } else if payload.get("message").is_some() {
         &[
             "/message/content/attachments",
             "/message/forward/message/content/attachments",
@@ -751,6 +756,8 @@ pub(crate) struct Assets {
     r2: R2,
     quota_bytes: i64,
     compression: Compression,
+    /// Voice messages get a transcript (an AI provider is configured).
+    transcribe: bool,
 }
 
 impl Assets {
@@ -776,12 +783,18 @@ impl Assets {
         Ok(Some(assets))
     }
 
+    /// Voice messages are transcribed once an AI provider is configured.
+    pub(crate) fn enable_transcripts(&mut self, enabled: bool) {
+        self.transcribe = enabled;
+    }
+
     pub(crate) fn new(pool: PgPool, r2: R2, quota_bytes: i64) -> Self {
         Self {
             pool,
             r2,
             quota_bytes,
             compression: Compression::default(),
+            transcribe: false,
         }
     }
 }
@@ -825,6 +838,11 @@ struct CreateInput {
     /// The client can upload in parts (`POST /api/assets/{id}/parts`).
     #[serde(default)]
     multipart: bool,
+    /// A voice message recorded in the composer: stored as AAC and transcribed.
+    #[serde(default)]
+    voice: bool,
+    /// Base64 peak levels (0-255) across a voice message, drawn by clients.
+    waveform: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -919,8 +937,12 @@ struct Row {
     uploaded_at: Option<DateTime<Utc>>,
     multipart_upload_id: Option<String>,
     part_bytes: Option<i64>,
+    voice: bool,
+    waveform: Option<Vec<u8>>,
+    transcript_status: Option<String>,
+    transcript: Option<String>,
 }
-const COLUMNS: &str = "external_id,purpose,space_id,kind,content_type,filename,byte_size,width,height,duration_ms,preview_content_type,preview_byte_size,uploaded_at,multipart_upload_id,part_bytes";
+const COLUMNS: &str = "external_id,purpose,space_id,kind,content_type,filename,byte_size,width,height,duration_ms,preview_content_type,preview_byte_size,uploaded_at,multipart_upload_id,part_bytes,voice,waveform,transcript_status,transcript";
 
 /// The attachment shape embedded in message content (without URLs).
 fn describe(row: &Row) -> Value {
@@ -942,6 +964,17 @@ fn describe(row: &Row) -> Value {
     }
     if row.preview_content_type.is_some() {
         value["preview"] = json!({});
+    }
+    if row.voice {
+        value["voice"] = json!(true);
+        if let Some(waveform) = &row.waveform {
+            value["waveform"] = json!(base64::engine::general_purpose::STANDARD.encode(waveform));
+        }
+        if let Some(transcript) =
+            voice::transcript(row.transcript_status.as_deref(), row.transcript.as_deref())
+        {
+            value["transcript"] = transcript;
+        }
     }
     value
 }
@@ -999,6 +1032,14 @@ async fn create(
     let width = optional_range(input.width, MAX_DIMENSION, 1)?;
     let height = optional_range(input.height, MAX_DIMENSION, 1)?;
     let duration = optional_range(input.duration_ms, MAX_DURATION_MS, 0)?;
+    let waveform = voice::check_upload(
+        input.voice,
+        input.waveform.as_deref(),
+        purpose,
+        kind,
+        duration,
+        input.preview.is_some(),
+    )?;
     let preview = match &input.preview {
         None => None,
         Some(preview) => {
@@ -1094,8 +1135,8 @@ async fn create(
         );
     }
     sqlx::query(
-        "INSERT INTO public.assets (external_id,owner_id,purpose,channel_id,space_id,kind,content_type,filename,byte_size,source_byte_size,width,height,duration_ms,preview_content_type,preview_byte_size)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+        "INSERT INTO public.assets (external_id,owner_id,purpose,channel_id,space_id,kind,content_type,filename,byte_size,source_byte_size,width,height,duration_ms,preview_content_type,preview_byte_size,voice,waveform)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
     )
     .bind(&id)
     .bind(principal.user.id)
@@ -1112,6 +1153,8 @@ async fn create(
     .bind(duration)
     .bind(preview.as_ref().map(|(t, _)| t.as_str()))
     .bind(preview.as_ref().map(|(_, size)| *size))
+    .bind(input.voice)
+    .bind(waveform)
     .execute(&mut *tx)
     .await
     .map_err(database_error)?;
@@ -1368,9 +1411,14 @@ async fn complete_inner(
             key,
             *expected,
             content_type,
-            (index == 0).then_some(row.filename.as_str()),
+            (index == 0).then_some(if row.voice {
+                voice::NAME
+            } else {
+                row.filename.as_str()
+            }),
             // Only the assembled original is beyond the client's reach.
             index == 0 && row.multipart_upload_id.is_some(),
+            row.voice,
         )
         .await
         {
@@ -1435,6 +1483,9 @@ async fn complete_inner(
         .execute(&mut *tx)
         .await
         .map_err(database_error)?;
+    if row.voice {
+        voice::published(&mut tx, &asset, assets.transcribe, &mut row).await?;
+    }
     let first = sqlx::query("UPDATE public.assets SET uploaded_at=now() WHERE external_id=$1 AND deleted_at IS NULL AND uploaded_at IS NULL")
         .bind(&asset)
         .execute(&mut *tx)
