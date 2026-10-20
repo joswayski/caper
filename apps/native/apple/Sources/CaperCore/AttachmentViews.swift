@@ -345,7 +345,7 @@ struct ReplyAttachmentThumbnail: View {
             if source != nil, let image {
                 Image(decorative: image, scale: 1).resizable().scaledToFill()
             } else {
-                Image(systemName: attachment.spoiler ? "eye.slash" : "paperclip")
+                Image(systemName: attachment.spoiler ? "eye.slash" : attachment.voice ? "mic" : "paperclip")
                     .font(.system(size: 14)).foregroundStyle(CaperTheme.muted)
             }
         }
@@ -373,7 +373,9 @@ struct MessageAttachmentsView: View {
     @State private var revealed: Set<String> = []
 
     private var visuals: [ChatAttachment] { attachments.filter { $0.kind == .image || $0.kind == .video } }
-    private var files: [ChatAttachment] { attachments.filter { $0.kind != .image && $0.kind != .video } }
+    private var files: [ChatAttachment] { attachments.filter { $0.kind != .image && $0.kind != .video && !$0.voice } }
+    /// Voice players take their own width rather than a file-grid column.
+    private var voiceNotes: [ChatAttachment] { attachments.filter { $0.kind != .image && $0.kind != .video && $0.voice } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -402,6 +404,7 @@ struct MessageAttachmentsView: View {
             } else if let attachment = visuals.first {
                 attachmentView(attachment)
             }
+            ForEach(voiceNotes) { attachment in attachmentView(attachment) }
             SentFileLayout {
                 ForEach(files) { attachment in attachmentView(attachment) }
             }
@@ -455,7 +458,13 @@ struct MessageAttachmentsView: View {
                 } else {
                     AttachmentVideoView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
                 }
-            case .audio: AttachmentAudioView(attachment: attachment, chat: chat)
+            case .audio:
+                // Recorded voice messages get the voice player and transcript; uploaded audio files keep the card.
+                if attachment.voice {
+                    VoiceMessageView(attachment: attachment, chat: chat)
+                } else {
+                    AttachmentAudioView(attachment: attachment, chat: chat)
+                }
             case .file: AttachmentOpenCard(attachment: attachment, chat: chat)
             }
         }

@@ -139,7 +139,8 @@ public enum AttachmentUploader {
             sourceByteSize: file.sourceSize > 0 ? file.sourceSize : nil,
             width: dimension(file.width), height: dimension(file.height),
             durationMs: file.durationMs.flatMap { (0...86_400_000).contains($0) ? $0 : nil },
-            preview: file.preview.map { AssetCreateInput.Preview(contentType: $0.contentType, byteSize: $0.data.count) }
+            preview: file.preview.map { AssetCreateInput.Preview(contentType: $0.contentType, byteSize: $0.data.count) },
+            voice: file.voice ? true : nil, waveform: file.voice ? file.waveform : nil
         )
         let reservation = try await api.createAsset(input)
         do {

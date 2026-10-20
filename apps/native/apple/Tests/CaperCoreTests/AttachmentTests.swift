@@ -1636,6 +1636,47 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(AttachmentPolicy.uploadErrorMessage(APIError(status: 422, message: "Cannot clean this media safely.", code: "media_metadata")), "Cannot clean this media safely.")
     }
 
+    @MainActor
+    func testVoiceMessageUploadsAsVoiceAndSendsAloneKeepingTheComposer() async throws {
+        AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        XCTAssertFalse(chat.canRecordVoice(), "the microphone waits for uploads to be available")
+        await chat.checkUploadAvailability()
+        chat.draft = "still typing"
+        chat.addAttachments([try AttachmentStaging.stage(data: Data("notes".utf8), filename: "notes.txt")])
+        await waitUntil("draft upload") { chat.attachmentDrafts.first?.attachment != nil }
+        XCTAssertTrue(chat.canRecordVoice())
+
+        // Too short: discarded without reserving anything.
+        let short = try AttachmentStaging.stage(data: Data(repeating: 7, count: 512), filename: VoiceMessage.uploadFilename)
+        await chat.sendVoice(VoiceRecording(fileURL: short.url, durationMs: 600, waveform: []))
+        XCTAssertEqual(AttachmentURLProtocol.requests.filter { $0.method == "POST" && $0.url.path == "/api/assets" }.count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: short.url.path))
+
+        let recording = try AttachmentStaging.stage(data: Data(repeating: 7, count: 2048), filename: VoiceMessage.uploadFilename)
+        let waveform = VoiceWaveform.build((0..<200).map { Float($0 % 10) / 10 })
+        await chat.sendVoice(VoiceRecording(fileURL: recording.url, durationMs: 4200, waveform: waveform))
+        XCTAssertNil(chat.error)
+        XCTAssertNil(chat.pendingMessage)
+        let reserve = try XCTUnwrap(AttachmentURLProtocol.requests.last { $0.method == "POST" && $0.url.path == "/api/assets" })
+        let input = try XCTUnwrap(json(reserve.body))
+        XCTAssertEqual(input["voice"] as? Bool, true)
+        XCTAssertEqual(input["durationMs"] as? Int, 4200)
+        XCTAssertEqual(input["waveform"] as? String, VoiceWaveform.encode(waveform))
+        XCTAssertEqual(input["contentType"] as? String, "audio/mp4")
+        XCTAssertEqual(input["byteSize"] as? Int, 2048, "uploaded as recorded")
+        XCTAssertEqual(input["channelId"] as? String, channelID)
+        let send = try XCTUnwrap(AttachmentURLProtocol.requests.last { $0.method == "POST" && $0.url.path == "/api/chat/channels/\(channelID)/messages" })
+        let body = try XCTUnwrap(json(send.body))
+        XCTAssertEqual(body["attachmentIds"] as? [String], ["Asset0000002"], "only the voice message is sent")
+        XCTAssertEqual(body["text"] as? String, "")
+        XCTAssertEqual(chat.draft, "still typing", "the composer's text stays")
+        XCTAssertEqual(chat.attachmentDrafts.map(\.name), ["notes.txt"], "and so do its files")
+        XCTAssertEqual(chat.messages.last?.content.attachments?.map(\.id), ["Asset0000002"])
+        await chat.stop()
+    }
+
     private func composerHandler(uniqueAssets: Bool = false) -> (URLRequest, Data?) throws -> (Int, Data) {
         let lock = NSLock()
         var assets: [String: [String: Any]] = [:]

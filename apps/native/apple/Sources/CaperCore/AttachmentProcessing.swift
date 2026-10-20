@@ -28,6 +28,10 @@ public struct PreparedAttachment: Equatable, Sendable {
     public var height: Int?
     public var durationMs: Int?
     public var preview: AttachmentPreviewImage?
+    /// A recorded voice message, uploaded as recorded (never compressed).
+    public var voice = false
+    /// Base64 waveform declared with a voice message.
+    public var waveform: String?
 
     public init(original file: LocalAttachmentFile) {
         fileURL = file.url; name = file.name; contentType = file.contentType

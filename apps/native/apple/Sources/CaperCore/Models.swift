@@ -662,6 +662,9 @@ public struct MessageReply: Codable, Equatable, Sendable {
         attachments = message.isDeleted ? nil : message.content.attachments
         deleted = message.isDeleted ? true : nil
     }
+
+    /// The quoted message carries a voice note: excerpts read "Voice message".
+    public var hasVoice: Bool { deleted != true && (attachments ?? []).contains(where: \.voice) }
 }
 
 /// The wording every client uses for deleted messages.
