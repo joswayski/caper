@@ -5127,6 +5127,7 @@ private struct MessageRow: View {
     @FocusState private var actionsFocused: Bool
     @FocusState private var threadLinkFocused: Bool
     @FocusState private var editedFocused: Bool
+    @FocusState private var authorFocused: String?
     #endif
     var body: some View {
         let mentionsMe = MentionAutocomplete.mentionsCurrentUser(message, currentUserID: currentUserID)
@@ -5160,12 +5161,12 @@ private struct MessageRow: View {
             // A grouped row lines its text up with the avatar column's time.
             HStack(alignment: grouped ? .firstTextBaseline : .top, spacing: 10) {
                 if grouped { groupedGutter } else {
-                    authorProfile { Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId, picture: message.author.avatarPicture) }
+                    authorProfile("avatar") { Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId, picture: message.author.avatarPicture) }
                 }
                 VStack(alignment: .leading, spacing: 4) {
                 if !grouped {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        authorProfile { Text(message.author.name).font(CaperTheme.font(13, weight: .bold)) }
+                        authorProfile("name") { Text(message.author.name).font(CaperTheme.font(13, weight: .bold)) }
                         if message.author.isAdmin { AdminBadge() }
                         if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                         Text(inPins ? ChatDateDivider.date(message.createdAt)?.formatted(date: .abbreviated, time: .shortened) ?? timeLabel(message.createdAt) : timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
@@ -5250,9 +5251,13 @@ private struct MessageRow: View {
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                             .padding(.horizontal, 6)
                             .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                    }.buttonStyle(ProfileButtonStyle())
+                    }
                         #if os(macOS)
+                        // The outer modifier owns this control's focus ring.
+                        .buttonStyle(ProfileButtonStyle(isFocused: false))
                         .focused($threadLinkFocused).modifier(ControlHover(isFocused: threadLinkFocused, wash: false))
+                        #else
+                        .buttonStyle(ProfileButtonStyle())
                         #endif
                         .accessibilityLabel(chat.threadUnread(message.threadRootId ?? message.id) ? "View thread, unread" : "View thread")
                 }
@@ -5352,10 +5357,15 @@ private struct MessageRow: View {
             .contextMenu { messageMenuItems }
         #endif
     }
-    @ViewBuilder private func authorProfile<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+    @ViewBuilder private func authorProfile<Content: View>(_ control: String, @ViewBuilder _ content: () -> Content) -> some View {
         if !message.author.isGuest, let openAuthor = mentionCards.openAuthor {
             Button { openAuthor(message.author) } label: { content() }
+                #if os(macOS)
+                .buttonStyle(ProfileButtonStyle(isFocused: authorFocused == control))
+                .focused($authorFocused, equals: control)
+                #else
                 .buttonStyle(ProfileButtonStyle())
+                #endif
                 .accessibilityLabel("Open profile for \(message.author.name)")
                 #if os(macOS)
                 .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
@@ -6552,6 +6562,9 @@ private struct ReactionRow: View {
     @Bindable var chat: ChatModel
     let reactors: ReactorContext
     let showReactionPicker: () -> Void
+    #if os(macOS)
+    @FocusState private var addFocused: Bool
+    #endif
 
     var body: some View {
         ReactionFlowLayout(spacing: 6) {
@@ -6571,7 +6584,12 @@ private struct ReactionRow: View {
                         #endif
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).modifier(ControlHover())
+                .buttonStyle(.plain)
+                #if os(macOS)
+                .focused($addFocused).modifier(ControlHover(isFocused: addFocused))
+                #else
+                .modifier(ControlHover())
+                #endif
                 .help("Add reaction").accessibilityLabel("Add reaction")
                 .accessibilityIdentifier("reaction-row-add-\(message.id)")
             }
@@ -10200,12 +10218,13 @@ struct PrimaryActionFill: ViewModifier {
 
 /// Profile entry points keep their content's size and use the common control feedback.
 private struct ProfileButtonStyle: ButtonStyle {
+    var isFocused: Bool? = nil
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.foregroundStyle(CaperTheme.text)
             .contentShape(Rectangle())
             .background(configuration.isPressed ? CaperTheme.border.opacity(0.55) : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 4))
-            .modifier(ControlHover())
+            .modifier(ControlHover(isFocused: isFocused))
     }
 }
 
