@@ -791,9 +791,17 @@ pub enum TranscriptView<'a> {
     Text(&'a str),
 }
 
-/// How a quote or forward excerpt names a message's files when it has no
-/// text: "Voice message" for a voice note, otherwise "Attachment".
-pub fn attachments_label(attachments: &[Attachment]) -> &'static str {
+/// Prefer a visible voice transcript when a quote has no typed text.
+pub fn attachments_label(attachments: &[Attachment]) -> &str {
+    for attachment in attachments {
+        if attachment.kind == AttachmentKind::Audio
+            && !attachment.spoiler
+            && !attachment.unavailable
+            && let TranscriptView::Text(text) = attachment.transcript_view()
+        {
+            return text;
+        }
+    }
     if attachments.iter().any(|attachment| attachment.voice) {
         "Voice message"
     } else {
@@ -3379,10 +3387,10 @@ mod tests {
             attachments_label(&ordinary.content.attachments),
             "Attachment"
         );
-        assert_eq!(
-            attachments_label(&message.content.attachments),
-            "Voice message"
-        );
+        assert_eq!(attachments_label(&message.content.attachments), "Hello");
+        let mut concealed = message.content.attachments.clone();
+        concealed[0].spoiler = true;
+        assert_eq!(attachments_label(&concealed), "Voice message");
     }
 
     #[test]

@@ -78,7 +78,9 @@ export function ReplyContext({
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
   const [connection, setConnection] = useState({ sourceX: 57, sourceY: 21, targetX: 0, height: 117 });
-  const text = reference.fullText ?? reference.text;
+  const text =
+    (reference.fullText ?? reference.text) ||
+    (reference.hasAttachments ? attachmentsExcerpt(reference.attachments) : "Message");
   const files = hidden || reference.deleted ? [] : (reference.attachments ?? []).filter(isChatAttachment);
   const preview = [...text].slice(0, 100).join("");
   const canExpand = preview !== text || clipped;
@@ -260,10 +262,7 @@ export function ReplyContext({
               id={excerptId}
               className={`chat-reply-excerpt${reference.deleted ? " chat-reply-excerpt-deleted" : ""}`}
             >
-              {reference.deleted
-                ? "Original message was deleted."
-                : (expanded ? text : preview) ||
-                  (reference.hasAttachments ? attachmentsExcerpt(reference.attachments) : "Message")}
+              {reference.deleted ? "Original message was deleted." : expanded ? text : preview}
               {!expanded && preview !== text && "…"}
             </span>
           )}

@@ -1317,7 +1317,6 @@ struct CaperApp {
     /// `:`/`@` suggestions by composer editor ID (channel and thread).
     composer_suggestions: egui::IdMap<SuggestionState>,
     ime_composing: bool,
-    paste_shortcut: profile_dm::PasteShortcut,
     pending: Option<PendingSend>,
     mention_card: Option<MentionCard>,
     profile_drafts: BTreeMap<String, profile_dm::Draft>,
@@ -1687,7 +1686,6 @@ impl CaperApp {
             staged_files: BTreeMap::new(),
             composer_suggestions: egui::IdMap::default(),
             ime_composing: false,
-            paste_shortcut: profile_dm::PasteShortcut::default(),
             pending: None,
             mention_card: None,
             profile_drafts: BTreeMap::new(),
@@ -9738,7 +9736,6 @@ impl eframe::App for CaperApp {
 
     fn raw_input_hook(&mut self, _: &egui::Context, raw_input: &mut egui::RawInput) {
         pointer_follows_touch_release(&mut raw_input.events);
-        self.paste_shortcut.update(&mut raw_input.events);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -49947,7 +49944,7 @@ mod tests {
     }
 
     #[test]
-    fn voice_quotes_and_excerpts_say_voice_message() {
+    fn voice_reply_drafts_prefer_transcripts_and_fall_back_while_pending() {
         let (context, mut app) = fixture("parity-voice-messages");
         let mut voice = app
             .timeline
@@ -49956,9 +49953,17 @@ mod tests {
             .unwrap()
             .clone();
         voice.content.text.clear();
+        voice.content.attachments[0].transcript = Some(model::Transcript::Ready {
+            text: "Meet me at the north entrance.".into(),
+        });
         let reply = model::MessageReply::from_message(&voice);
         app.reply_targets.insert("channel".into(), reply);
         render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Meet me at the north entrance."));
+        voice.content.attachments[0].transcript = Some(model::Transcript::Pending);
+        app.reply_targets
+            .insert("channel".into(), model::MessageReply::from_message(&voice));
         let output = render(&mut app, &context, vec![]);
         assert!(texts(&output).contains(&"Voice message"));
     }
