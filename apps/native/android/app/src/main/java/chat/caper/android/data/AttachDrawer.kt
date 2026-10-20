@@ -39,19 +39,3 @@ object LibraryPermissions {
         else -> LibraryAccess.NONE
     }
 }
-
-/** Which visible gallery GIFs animate, as on iOS (`AttachGalleryAnimation`). */
-object GalleryAnimation {
-    /** Even a very tall tablet drawer never owns more than this many animated decoders. */
-    const val MAX = 6
-
-    /**
-     * [visible] lists on-screen GIFs in grid order. While [scrolling], playing GIFs that stay on
-     * screen keep playing but none start, so a fling opens no decoders. Once it settles, playing
-     * ones continue and the first other visible ones fill the remaining slots.
-     */
-    fun <T> next(playing: Set<T>, visible: List<T>, scrolling: Boolean): Set<T> {
-        val kept = visible.filter { it in playing }
-        return if (scrolling) kept.toSet() else (kept + visible).distinct().take(MAX).toSet()
-    }
-}

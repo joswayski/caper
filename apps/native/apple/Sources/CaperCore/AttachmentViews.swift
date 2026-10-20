@@ -2955,6 +2955,8 @@ struct AttachmentPickerButton: View {
         .sheet(isPresented: $showDrawer) {
             if let target = drawerTarget { AttachDrawer(draft: drawerDraft(target)) }
         }
+        // Prepare the gallery while the composer is up, so the drawer opens filled.
+        .task { AttachGalleryCache.warm() }
     }
 
     private func drawerDraft(_ target: ChatModel.AttachmentTarget) -> AttachDrawerDraft {

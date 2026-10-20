@@ -6301,6 +6301,8 @@ private struct MentionCardView: View {
                 .fixedSize()
                 .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog)
                 .sheet(isPresented: $showingDrawer, onDismiss: updateDialogState) { AttachDrawer(draft: drawerDraft) }
+                // Prepare the gallery while the composer is up, so the drawer opens filled.
+                .task { AttachGalleryCache.warm() }
                 #else
                 // One unfiltered "Upload a file", as on the desktop clients; at the limit it says so.
                 Menu {

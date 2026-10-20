@@ -39,18 +39,4 @@ final class AttachDrawerTests: XCTestCase {
         // A copy finishing after its tap was undone is not added.
         XCTAssertEqual(queue.finish("a", file("a")), [])
     }
-
-    func testAtMostSixGalleryGIFsPlayAndPlayingOnesKeepTheirSlot() {
-        var gallery = AttachGalleryAnimation()
-        for id in ["a", "b", "c", "d", "e", "f", "g"] { gallery.show(id) }
-        XCTAssertEqual(gallery.playing, ["a", "b", "c", "d", "e", "f"])
-        // A GIF scrolling away frees its slot for the next visible one.
-        gallery.hide("b")
-        XCTAssertEqual(gallery.playing, ["a", "c", "d", "e", "f", "g"])
-        // A newcomer waits rather than displacing one already playing.
-        gallery.show("h")
-        XCTAssertFalse(gallery.playing.contains("h"))
-        gallery.hide("a"); gallery.hide("a")
-        XCTAssertEqual(gallery.playing, ["c", "d", "e", "f", "g", "h"])
-    }
 }

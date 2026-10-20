@@ -3430,6 +3430,8 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
         }.onFailure { picking = false; interaction(open) }
     }
     if (drawer != null) {
+        // Prepare the gallery while the composer is up, so the drawer opens filled.
+        LaunchedEffect(Unit) { AttachDrawerCache.warm(context) }
         IconButton({ open = true; interaction(true) }, Modifier.size(48.dp).semantics {
             contentDescription = "Attach files"
             (disabledReason?.takeIf { it != limitReason } ?: AttachCapacity.label(drawer.files.size))?.let { stateDescription = it }

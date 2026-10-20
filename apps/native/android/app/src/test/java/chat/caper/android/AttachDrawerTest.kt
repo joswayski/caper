@@ -1,7 +1,6 @@
 package chat.caper.android
 
 import chat.caper.android.data.AttachCapacity
-import chat.caper.android.data.GalleryAnimation
 import chat.caper.android.data.LibraryAccess
 import chat.caper.android.data.LibraryPermissions
 import chat.caper.android.data.LibraryPermissions.READ_EXTERNAL_STORAGE
@@ -40,14 +39,5 @@ class AttachDrawerTest {
         assertEquals(LibraryAccess.FULL, access(30, READ_EXTERNAL_STORAGE))
         // Storage access no longer covers media on Android 13+.
         assertEquals(LibraryAccess.NONE, access(33, READ_EXTERNAL_STORAGE))
-    }
-
-    @Test fun galleryGifsStartOnlyOnceScrollingSettles() {
-        // A fling starts nothing and stops what scrolled away.
-        assertEquals(emptySet<Int>(), GalleryAnimation.next(emptySet(), listOf(1, 2), scrolling = true))
-        assertEquals(setOf(2), GalleryAnimation.next(setOf(1, 2), listOf(2, 3), scrolling = true))
-        // Settled: playing GIFs continue, then the first visible ones fill up to six.
-        assertEquals(setOf(2, 3, 4, 5, 6, 7), GalleryAnimation.next(setOf(2), listOf(3, 4, 5, 6, 7, 8, 2), scrolling = false))
-        assertEquals(setOf(8, 1, 2, 3, 4, 5), GalleryAnimation.next(setOf(8), (1..8).toList(), scrolling = false))
     }
 }

@@ -2510,27 +2510,29 @@ does.
   (the system dialog, no filter). Profile messages add Paste from clipboard.
 
 **Gallery previews (October 20, 2026):** iOS and Android animate local GIF
-originals in visible Photos tiles, with a GIF badge even when playback falls
-back to a still. At most six GIFs animate at once; leaving the viewport,
-backgrounding the app, or reduced motion stops them. Android decodes at 120dp;
-iOS caps each animation at 240px, 200 frames and 2 MiB decoded, downsampling
-to fit. iOS rejects encoded data above 16 MiB after PhotoKit supplies it and
-does not download cloud-only originals just for autoplay. Videos use a play
-icon plus duration rather than concurrent gallery video players. Selected
-uploads still use the original staging path, not these previews. The system
-photo picker opened by mobile web owns its previews; Caper cannot change them.
+originals in Photos tiles, with a GIF badge even when playback falls back to a
+still. Every GIF on screen plays; leaving the viewport, backgrounding the app,
+or reduced motion stops it. Android decodes at 120dp; iOS caps each animation
+at 240px, 200 frames and 2 MiB decoded, downsampling to fit, and plays the
+frames with a Core Animation keyframe animation rather than a SwiftUI timeline,
+so playback costs no view updates per frame. iOS rejects encoded data above
+16 MiB after PhotoKit supplies it and does not download cloud-only originals
+just for autoplay. Videos use a play icon plus duration rather than concurrent
+gallery video players. Selected uploads still use the original staging path,
+not these previews. The system photo picker opened by mobile web owns its
+previews; Caper cannot change them.
 
-Gallery scrolling: GIFs start only once scrolling settles (Android waits for
-the grid to stop; iOS waits until a tile has been on screen for 200 ms), and a
-playing GIF keeps its slot while visible instead of restarting as others pass.
-iOS reads the GIF flag from `PHAsset.playbackStyle` rather than querying
-PhotoKit resources per render, and requests 160pt thumbnails. Both platforms
-keep thumbnails in a process-wide memory cache (Android LRU up to 48 MiB,
-iOS `NSCache` 32 MiB) keyed by item and modification time; iOS also caches
-decoded GIF frames (24 MiB) and remembers GIFs that stay stills. Android
-reuses the last library listing when the drawer reopens, refreshes it behind
-the grid, coalesces MediaStore change bursts, and decodes four thumbnails at a
-time with cancellation for tiles a fling skips.
+Gallery performance: while a composer is on screen (with library access
+already granted; it never prompts), both apps read the library and prepare the
+60 newest thumbnails, and iOS also decodes their GIFs, so the drawer opens
+filled and already playing. Thumbnails live in a process-wide memory cache
+(Android LRU up to 64 MiB, iOS `NSCache` 64 MiB, plus 96 MiB of decoded GIF
+frames) keyed by item and modification time. iOS reads the GIF flag from
+`PHAsset.playbackStyle` instead of querying PhotoKit resources per render,
+applies PhotoKit change details so iCloud sync activity that does not touch
+the fetch leaves the grid alone, and no longer redraws the whole drawer as
+tiles scroll. Android coalesces MediaStore change bursts and cancels thumbnail
+decodes for tiles that scroll away.
 Native gallery playback/lifecycle and rendered drawers still need device
 validation; browser checks do not establish it.
 

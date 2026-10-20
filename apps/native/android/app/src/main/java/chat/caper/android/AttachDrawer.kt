@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.LruCache
@@ -64,7 +65,6 @@ import coil3.gif.GifDecoder
 import coil3.request.ImageRequest
 import chat.caper.android.data.AttachCapacity
 import chat.caper.android.data.AttachmentPolicy
-import chat.caper.android.data.GalleryAnimation
 import chat.caper.android.data.LibraryAccess
 import chat.caper.android.data.LibraryPermissions
 import chat.caper.android.model.DraftAttachmentUi
@@ -73,13 +73,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /** What the attach drawer reads from and sends: a channel/thread draft or a profile DM draft. */
 internal class AttachDrawerHost(
@@ -96,17 +97,37 @@ internal data class LibraryItem(val id: Long, val uri: Uri, val video: Boolean, 
 }
 
 /**
- * What the drawer keeps between openings, so reopening it shows the grid and its thumbnails at
- * once and only refreshes the list behind them.
+ * What the drawer keeps between openings. The composer warms it before the drawer opens, so the
+ * grid and its newest thumbnails are there at once and the list only refreshes behind them.
  */
-private object DrawerCache {
+internal object AttachDrawerCache {
+    /** The tile size thumbnails are decoded for. */
+    const val TILE_DP = 120
+    /** The newest items the composer prepares: more than a tall drawer shows. */
+    private const val WARM_COUNT = 60
+
     /** The last list read, with the access it was read under. */
     @Volatile var library: Pair<LibraryAccess, List<LibraryItem>>? = null
-    val thumbnails = object : LruCache<String, ImageBitmap>(minOf(Runtime.getRuntime().maxMemory() / 8, 48L * 1024 * 1024).toInt()) {
+    val thumbnails = object : LruCache<String, ImageBitmap>(minOf(Runtime.getRuntime().maxMemory() / 6, 64L * 1024 * 1024).toInt()) {
         override fun sizeOf(key: String, value: ImageBitmap) = value.width * value.height * 4
     }
-    /** Thumbnails decode a few at a time, so tiles a fling skips past are cancelled before they start. */
-    val decoding = Dispatchers.IO.limitedParallelism(4)
+    @Volatile private var warmed = Long.MIN_VALUE / 2
+
+    /** Called while a composer is on screen. Never asks for access. */
+    suspend fun warm(context: Context) {
+        val access = LibraryPermissions.access(Build.VERSION.SDK_INT) { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
+        val now = SystemClock.elapsedRealtime()
+        if (access == LibraryAccess.NONE || now - warmed < 30_000) return
+        warmed = now
+        val items = withContext(Dispatchers.IO) { runCatching { queryLibrary(context) }.getOrNull() } ?: return
+        library = access to items
+        val px = (TILE_DP * context.resources.displayMetrics.density).roundToInt()
+        coroutineScope {
+            items.take(WARM_COUNT).filter { thumbnails.get(it.thumbnailKey) == null }.forEach { item ->
+                launch(Dispatchers.IO) { loadThumbnail(context, item, px)?.asImageBitmap()?.let { thumbnails.put(item.thumbnailKey, it) } }
+            }
+        }
+    }
 }
 
 /** Every photo and video the app may read, newest first. Rows are small, so even large libraries list quickly. */
@@ -205,15 +226,7 @@ private fun formatDuration(ms: Long): String {
     var access by remember { mutableStateOf(currentAccess()) }
     var asked by rememberSaveable { mutableStateOf(false) }
     var blocked by remember { mutableStateOf(false) }
-    var library by remember { mutableStateOf(DrawerCache.library?.takeIf { it.first == access }?.second) }
-    val gifIds = remember(library) { library.orEmpty().filter { it.gif }.map { it.id }.toSet() }
-    var animatedIds by remember { mutableStateOf(emptySet<Long>()) }
-    // GIFs start once a scroll settles, so a fling never opens decoders for tiles it passes.
-    LaunchedEffect(gifIds) {
-        snapshotFlow {
-            libraryGrid.isScrollInProgress to libraryGrid.layoutInfo.visibleItemsInfo.mapNotNull { (it.key as? Long)?.takeIf { id -> id in gifIds } }
-        }.distinctUntilChanged().collect { (scrolling, visible) -> animatedIds = GalleryAnimation.next(animatedIds, visible, scrolling) }
-    }
+    var library by remember { mutableStateOf(AttachDrawerCache.library?.takeIf { it.first == access }?.second) }
     var revision by remember { mutableIntStateOf(0) }
     val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         asked = true
@@ -234,11 +247,11 @@ private fun formatDuration(ms: Long): String {
         onPauseOrDispose { resumed = false }
     }
     LaunchedEffect(access, revision) {
-        if (access == LibraryAccess.NONE) { library = emptyList(); DrawerCache.library = null; return@LaunchedEffect }
+        if (access == LibraryAccess.NONE) { library = emptyList(); AttachDrawerCache.library = null; return@LaunchedEffect }
         // A saved burst or a camera write reports many changes; read the library once they settle.
         if (library != null) delay(250)
         val items = withContext(Dispatchers.IO) { runCatching { queryLibrary(context) }.getOrNull() }
-        if (items != null) DrawerCache.library = access to items
+        if (items != null) AttachDrawerCache.library = access to items
         library = items ?: library ?: emptyList()
     }
     DisposableEffect(access) {
@@ -341,7 +354,8 @@ private fun formatDuration(ms: Long): String {
                                 items(library.orEmpty(), key = { it.id }) { item ->
                                     val selection = selected[item.uri.toString()]
                                     LibraryTile(item, selection?.first, dimmed = full && selection == null,
-                                        animate = resumed && item.id in animatedIds && !still) {
+                                        // Every GIF on screen plays, unless motion is reduced or the app is paused.
+                                        animate = resumed && !still) {
                                         when {
                                             selection != null -> host.remove(selection.second)
                                             full -> refuse()
@@ -410,11 +424,11 @@ private fun formatDuration(ms: Long): String {
 
 @Composable private fun LibraryTile(item: LibraryItem, order: Int?, dimmed: Boolean, animate: Boolean, onClick: () -> Unit) {
     val context = LocalContext.current
-    val px = with(LocalDensity.current) { 120.dp.roundToPx() }
+    val px = with(LocalDensity.current) { AttachDrawerCache.TILE_DP.dp.roundToPx() }
     var failed by remember(item.uri) { mutableStateOf(false) }
     val key = item.thumbnailKey
-    val bitmap by produceState(DrawerCache.thumbnails.get(key), key) {
-        if (value == null) value = withContext(DrawerCache.decoding) { loadThumbnail(context, item, px)?.asImageBitmap() }?.also { DrawerCache.thumbnails.put(key, it) }
+    val bitmap by produceState(AttachDrawerCache.thumbnails.get(key), key) {
+        if (value == null) value = withContext(Dispatchers.IO) { loadThumbnail(context, item, px)?.asImageBitmap() }?.also { AttachDrawerCache.thumbnails.put(key, it) }
     }
     Box(
         Modifier.aspectRatio(1f).background(SurfaceRaised).alpha(if (dimmed) 0.4f else 1f)
