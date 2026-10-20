@@ -657,6 +657,23 @@ pub struct Content {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub mentions: Vec<Mention>,
+    /// Link preview cards, stored by the server a moment after the message
+    /// (docs/media.md "Link embeds"). Malformed cards are skipped, like files.
+    #[serde(
+        default,
+        deserialize_with = "tolerant_embeds",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub embeds: Vec<Embed>,
+    /// The author removed the composer's preview: no cards are made, and
+    /// edits keep it.
+    #[serde(
+        default,
+        rename = "suppressEmbeds",
+        deserialize_with = "only_true",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    pub suppress_embeds: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -871,6 +888,347 @@ fn mention_entries<'de, D: serde::Deserializer<'de>>(
             .collect(),
         _ => Vec::new(),
     })
+}
+
+/// `true` only for a JSON `true`; anything else (absent, `null`, another
+/// type) is `false` rather than a rejected message.
+fn only_true<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+    Ok(serde_json::Value::deserialize(deserializer)? == serde_json::Value::Bool(true))
+}
+
+/// A link preview card, version 1 (docs/media.md "Link embeds"; web
+/// `apps/web/src/chat/embeds.ts`). Every string is plain text, and every link,
+/// avatar and poster is http(s).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Embed {
+    pub version: u8,
+    /// The link as posted: what the card opens.
+    pub url: String,
+    pub site: EmbedSite,
+    /// Drawn in order. Unknown and malformed blocks were skipped.
+    pub blocks: Vec<EmbedBlock>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct EmbedSite {
+    pub name: String,
+    /// From the posted URL, never the page, so it is always shown.
+    pub domain: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "lowercase",
+    rename_all_fields = "camelCase"
+)]
+pub enum EmbedBlock {
+    Author {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        handle: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
+    },
+    Title {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+    Text {
+        text: String,
+    },
+    /// One to four images; `thumbnail` is one small image beside the text.
+    Images {
+        items: Vec<EmbedImage>,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        thumbnail: bool,
+    },
+    /// A direct MP4/WebM; `gif` loops muted without controls.
+    Video {
+        url: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        poster: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        gif: bool,
+    },
+    /// A YouTube, Vimeo or Twitch player. Native apps load `play`, Caper's
+    /// own page holding only that player, never the provider directly.
+    Player {
+        provider: String,
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        play: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        poster: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start: Option<u64>,
+    },
+    Footer {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timestamp: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct EmbedImage {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alt: Option<String>,
+}
+
+/// Web's field rules: a required string is non-empty; an optional one is
+/// absent or any string; a link is http(s); a size is a finite number above 0.
+struct Fields<'a>(&'a serde_json::Map<String, serde_json::Value>);
+
+impl Fields<'_> {
+    fn text(&self, name: &str) -> Option<String> {
+        self.0
+            .get(name)?
+            .as_str()
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    }
+
+    /// `Err` for a present field of the wrong type, which rejects the block.
+    fn optional_text(&self, name: &str) -> Result<Option<String>, ()> {
+        match self.0.get(name) {
+            None => Ok(None),
+            Some(serde_json::Value::String(text)) => Ok(Some(text.clone())),
+            Some(_) => Err(()),
+        }
+    }
+
+    fn link(&self, name: &str) -> Option<String> {
+        self.0
+            .get(name)?
+            .as_str()
+            .filter(|url| http_link(url))
+            .map(str::to_owned)
+    }
+
+    fn optional_link(&self, name: &str) -> Result<Option<String>, ()> {
+        match self.0.get(name) {
+            None => Ok(None),
+            Some(_) => self.link(name).map(Some).ok_or(()),
+        }
+    }
+
+    fn optional_size(&self, name: &str) -> Result<Option<f64>, ()> {
+        match self.0.get(name) {
+            None => Ok(None),
+            Some(value) => value
+                .as_f64()
+                .filter(|size| size.is_finite() && *size > 0.0)
+                .map(Some)
+                .ok_or(()),
+        }
+    }
+
+    fn optional_pixels(&self, name: &str) -> Result<Option<u32>, ()> {
+        Ok(self
+            .optional_size(name)?
+            .map(|size| size.round().clamp(1.0, f64::from(u32::MAX)) as u32))
+    }
+}
+
+/// Web's `/^https?:\/\//i`.
+fn http_link(url: &str) -> bool {
+    let scheme = |prefix: &str| {
+        url.get(..prefix.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+    };
+    scheme("https://") || scheme("http://")
+}
+
+impl EmbedBlock {
+    /// A block safe to draw, or `None` for unknown or malformed blocks.
+    pub fn parse(value: &serde_json::Value) -> Option<Self> {
+        let fields = Fields(value.as_object()?);
+        Some(match fields.0.get("type")?.as_str()? {
+            "author" => Self::Author {
+                name: fields.text("name")?,
+                handle: fields.optional_text("handle").ok()?,
+                url: fields.optional_link("url").ok()?,
+                icon: fields.optional_link("icon").ok()?,
+            },
+            "title" => Self::Title {
+                text: fields.text("text")?,
+                url: fields.optional_link("url").ok()?,
+            },
+            "text" => Self::Text {
+                text: fields.text("text")?,
+            },
+            "images" => {
+                let items: Vec<_> = fields
+                    .0
+                    .get("items")?
+                    .as_array()?
+                    .iter()
+                    .filter_map(|image| {
+                        let image = Fields(image.as_object()?);
+                        Some(EmbedImage {
+                            url: image.link("url")?,
+                            width: image.optional_pixels("width").ok()?,
+                            height: image.optional_pixels("height").ok()?,
+                            alt: image.optional_text("alt").ok()?,
+                        })
+                    })
+                    .take(4)
+                    .collect();
+                if items.is_empty() {
+                    return None;
+                }
+                Self::Images {
+                    items,
+                    thumbnail: fields.0.get("thumbnail") == Some(&serde_json::Value::Bool(true)),
+                }
+            }
+            "video" => Self::Video {
+                url: fields.link("url")?,
+                poster: fields.optional_link("poster").ok()?,
+                width: fields.optional_pixels("width").ok()?,
+                height: fields.optional_pixels("height").ok()?,
+                duration_ms: fields
+                    .optional_size("durationMs")
+                    .ok()?
+                    .map(|ms| ms.round() as u64),
+                gif: fields.0.get("gif") == Some(&serde_json::Value::Bool(true)),
+            },
+            "player" => {
+                let provider = fields.0.get("provider")?.as_str()?;
+                if !matches!(provider, "youtube" | "vimeo" | "twitch") {
+                    return None;
+                }
+                Self::Player {
+                    provider: provider.to_owned(),
+                    id: fields.text("id")?,
+                    // Checked again (host and scheme) before anything loads it.
+                    play: fields.optional_link("play").ok().flatten(),
+                    poster: fields.optional_link("poster").ok()?,
+                    width: fields.optional_pixels("width").ok()?,
+                    height: fields.optional_pixels("height").ok()?,
+                    start: fields
+                        .optional_size("start")
+                        .ok()?
+                        .map(|seconds| seconds.floor() as u64),
+                }
+            }
+            "footer" => {
+                let text = fields.optional_text("text").ok()?;
+                let timestamp = fields.optional_text("timestamp").ok()?;
+                if text.as_deref().is_none_or(str::is_empty)
+                    && timestamp.as_deref().is_none_or(str::is_empty)
+                {
+                    return None;
+                }
+                Self::Footer { text, timestamp }
+            }
+            _ => return None,
+        })
+    }
+}
+
+impl Embed {
+    /// Web `embedOf`: a card with a bad version, link or site, or with no
+    /// usable blocks left, is dropped.
+    pub fn parse(value: &serde_json::Value) -> Option<Self> {
+        let fields = Fields(value.as_object()?);
+        if fields.0.get("version")?.as_f64()? != 1.0 {
+            return None;
+        }
+        let url = fields.link("url")?;
+        let site = Fields(fields.0.get("site")?.as_object()?);
+        let site = EmbedSite {
+            name: site.text("name")?,
+            domain: site.text("domain")?,
+        };
+        let blocks: Vec<_> = fields
+            .0
+            .get("blocks")?
+            .as_array()?
+            .iter()
+            .filter_map(EmbedBlock::parse)
+            .collect();
+        (!blocks.is_empty()).then_some(Self {
+            version: 1,
+            url,
+            site,
+            blocks,
+        })
+    }
+
+    /// Every card in a list that parses; never fails.
+    pub fn parse_list(value: &serde_json::Value) -> Vec<Self> {
+        value
+            .as_array()
+            .map(|items| items.iter().filter_map(Self::parse).collect())
+            .unwrap_or_default()
+    }
+}
+
+fn tolerant_embeds<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<Embed>, D::Error> {
+    Ok(Embed::parse_list(&serde_json::Value::deserialize(
+        deserializer,
+    )?))
+}
+
+/// `message.embeds`: the cards for one revision of a message. Unsequenced and
+/// sent once, so it is never a reason to resync; history, replays and pins
+/// carry the stored copy for clients that missed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbedsUpdate {
+    pub channel_id: String,
+    pub message_id: String,
+    pub revision: u64,
+    pub embeds: Vec<Embed>,
+}
+
+impl EmbedsUpdate {
+    /// Web `isChatEmbedsEvent`; malformed cards inside are skipped.
+    pub fn parse(event: &serde_json::Value) -> Option<Self> {
+        let text = |name: &str| {
+            event[name]
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned)
+        };
+        if event["type"] != "message.embeds" || event["schemaVersion"] != 1 {
+            return None;
+        }
+        // A JavaScript safe integer, at least 1.
+        let revision = event["revision"]
+            .as_u64()
+            .filter(|revision| (1..=(1 << 53) - 1).contains(revision))?;
+        Some(Self {
+            channel_id: text("channelId")?,
+            message_id: text("messageId")?,
+            revision,
+            embeds: event["embeds"]
+                .is_array()
+                .then(|| Embed::parse_list(&event["embeds"]))?,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -1320,6 +1678,20 @@ impl Message {
         self.deleted_at.is_some()
     }
 
+    /// Take `embeds` when they belong to this revision (web `withEmbeds`):
+    /// cards for another revision, or for a deleted message, are ignored.
+    /// Returns whether anything changed.
+    pub fn adopt_embeds(&mut self, revision: u64, embeds: &[Embed]) -> bool {
+        if u64::from(self.revision) != revision
+            || self.is_deleted()
+            || self.content.embeds == embeds
+        {
+            return false;
+        }
+        self.content.embeds = embeds.to_vec();
+        true
+    }
+
     pub fn is_channel_message(&self) -> bool {
         self.thread_root_id.is_none() || self.broadcast
     }
@@ -1505,6 +1877,8 @@ pub struct Timeline {
     unseen_reactions: BTreeMap<String, ReactionUpdate>,
     unseen_attachments: BTreeMap<String, AttachmentUpdate>,
     unseen_pins: BTreeMap<String, Message>,
+    /// Cards for messages not loaded yet, oldest first, taken when they load.
+    unseen_embeds: std::collections::VecDeque<EmbedsUpdate>,
     forward_updates: BTreeMap<String, Message>,
     pinned: BTreeMap<u64, Message>,
     thread_summaries: BTreeMap<String, ThreadSummary>,
@@ -1613,6 +1987,7 @@ impl Timeline {
         self.unseen_reactions.clear();
         self.unseen_attachments.clear();
         self.unseen_pins.clear();
+        self.unseen_embeds.clear();
         self.forward_updates.clear();
         self.pinned.clear();
         self.thread_summaries.clear();
@@ -1743,6 +2118,44 @@ impl Timeline {
         {
             pinned.adopt_newer_attachments(update.attachments.clone(), Some(update.seq.clone()));
         }
+    }
+
+    /// Link previews for one revision of a message, on its timeline row,
+    /// pinned copies and remembered edit; any other revision ignores them. A
+    /// message not loaded yet takes them when it arrives (at most
+    /// [`MAX_UNSEEN_EMBEDS`] wait, the oldest giving way). Returns whether a
+    /// loaded or pinned row changed.
+    pub fn apply_embeds(&mut self, update: EmbedsUpdate) -> bool {
+        let mut changed = false;
+        let mut loaded = false;
+        for message in self
+            .messages
+            .values_mut()
+            .chain(self.pinned.values_mut())
+            .chain(self.unseen_pins.values_mut())
+            .chain(self.edits.values_mut())
+            .filter(|message| {
+                message.id == update.message_id && message.channel_id == update.channel_id
+            })
+        {
+            changed |= message.adopt_embeds(update.revision, &update.embeds);
+        }
+        if let Some(message) = self
+            .messages
+            .values()
+            .find(|message| message.id == update.message_id)
+        {
+            loaded = message.channel_id == update.channel_id;
+        }
+        if !loaded {
+            self.unseen_embeds
+                .retain(|unseen| unseen.message_id != update.message_id);
+            if self.unseen_embeds.len() >= MAX_UNSEEN_EMBEDS {
+                self.unseen_embeds.pop_front();
+            }
+            self.unseen_embeds.push_back(update);
+        }
+        changed
     }
 
     /// Merge an HTTP acknowledgement without moving the gateway replay cursor.
@@ -2094,6 +2507,15 @@ impl Timeline {
             overlay_forward(&mut message, snapshot);
         }
         message = self.remember_edit(message);
+        if let Some(index) = self
+            .unseen_embeds
+            .iter()
+            .position(|unseen| unseen.message_id == message.id)
+            && let Some(update) = self.unseen_embeds.remove(index)
+            && update.channel_id == message.channel_id
+        {
+            message.adopt_embeds(update.revision, &update.embeds);
+        }
         if self.pin_snapshot_cursor > 0
             && message
                 .pin_seq
@@ -2218,6 +2640,15 @@ impl Timeline {
                 message.pin_seq = existing.pin_seq.take();
             }
             overlay_forward(&mut message, existing);
+            // A page or replay read before the cards were stored keeps the
+            // ones this revision already has; one that carries them fills
+            // them in.
+            if message.content.embeds.is_empty()
+                && message.revision == existing.revision
+                && !message.is_deleted()
+            {
+                message.content.embeds = std::mem::take(&mut existing.content.embeds);
+            }
             *existing = message;
         } else if !self.messages.contains_key(&seq) && !self.ids.contains_key(&message.id) {
             self.ids.insert(message.id.clone(), seq);
@@ -2235,6 +2666,9 @@ impl Timeline {
         Ok(())
     }
 }
+
+/// Cards waiting for messages that are not loaded, like web's pending events.
+const MAX_UNSEEN_EMBEDS: usize = 256;
 
 /// An optional revision; absent is "0".
 fn revision(value: Option<&str>) -> Result<u64, String> {
@@ -2697,6 +3131,8 @@ mod tests {
                 text: id.into(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
+                embeds: Vec::new(),
+                suppress_embeds: false,
             },
             reactions: Vec::new(),
             reaction_seq: None,
@@ -4363,5 +4799,166 @@ mod tests {
         assert!(reply.attachments.is_empty());
         assert!(!reply.has_attachments);
         assert!(reply.text.is_empty());
+    }
+
+    fn card(url: &str) -> Embed {
+        Embed::parse(&serde_json::json!({"version":1,"url":url,
+            "site":{"name":"X","domain":"x.com"},"blocks":[{"type":"text","text":"card"}]}))
+        .unwrap()
+    }
+
+    fn embeds_update(id: &str, revision: u64, urls: &[&str]) -> EmbedsUpdate {
+        EmbedsUpdate::parse(&serde_json::json!({
+            "type":"message.embeds","schemaVersion":1,"channelId":"channel","messageId":id,
+            "revision":revision,"embeds":urls.iter().map(|url| serde_json::to_value(card(url)).unwrap()).collect::<Vec<_>>()
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn embeds_events_parse_like_web_and_reject_bad_envelopes() {
+        let update = embeds_update("one", 3, &["https://x.com/a"]);
+        assert_eq!((update.revision, update.embeds.len()), (3, 1));
+        let valid = serde_json::json!({"type":"message.embeds","schemaVersion":1,
+            "channelId":"channel","messageId":"one","revision":1,"embeds":[]});
+        assert!(EmbedsUpdate::parse(&valid).is_some());
+        for (field, value) in [
+            ("type", serde_json::json!("message.edited")),
+            ("schemaVersion", serde_json::json!(2)),
+            ("revision", serde_json::json!(0)),
+            ("revision", serde_json::json!(1.5)),
+            ("revision", serde_json::json!("1")),
+            ("messageId", serde_json::json!(4)),
+            ("embeds", serde_json::json!({})),
+        ] {
+            let mut event = valid.clone();
+            event[field] = value;
+            assert!(EmbedsUpdate::parse(&event).is_none(), "{field}");
+        }
+    }
+
+    #[test]
+    fn embeds_apply_only_to_their_revision_and_never_to_deleted_messages() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("one", 1)], "1").unwrap();
+        assert!(!timeline.apply_embeds(embeds_update("one", 2, &["https://x.com/a"])));
+        assert!(
+            timeline
+                .messages()
+                .next()
+                .unwrap()
+                .content
+                .embeds
+                .is_empty()
+        );
+        assert!(timeline.apply_embeds(embeds_update("one", 1, &["https://x.com/a"])));
+        assert_eq!(
+            timeline.messages().next().unwrap().content.embeds,
+            [card("https://x.com/a")]
+        );
+        assert!(
+            !timeline.apply_embeds(embeds_update("one", 1, &["https://x.com/a"])),
+            "unchanged"
+        );
+        // An empty list for the same revision removes them.
+        assert!(timeline.apply_embeds(embeds_update("one", 1, &[])));
+        assert!(
+            timeline
+                .messages()
+                .next()
+                .unwrap()
+                .content
+                .embeds
+                .is_empty()
+        );
+        // Another channel's event never touches the row.
+        let mut foreign = embeds_update("one", 1, &["https://x.com/a"]);
+        foreign.channel_id = "elsewhere".into();
+        assert!(!timeline.apply_embeds(foreign));
+        assert_eq!(
+            timeline.apply_edit(tombstone(message("one", 1), 2, 2)),
+            Ok(Apply::Applied)
+        );
+        assert!(!timeline.apply_embeds(embeds_update("one", 2, &["https://x.com/a"])));
+        assert!(
+            timeline
+                .messages()
+                .next()
+                .unwrap()
+                .content
+                .embeds
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn embeds_reach_edits_and_pinned_copies() {
+        let mut timeline = Timeline::default();
+        let original = message("one", 1);
+        timeline.reset(vec![original.clone()], "1").unwrap();
+        timeline.reset_pins(Vec::new()).unwrap();
+        assert_eq!(
+            timeline.apply_pin(pin_update(original.clone(), 2, true)),
+            Ok(Apply::Applied)
+        );
+        assert_eq!(
+            timeline.apply_edit(edit_update(original, 3, 2)),
+            Ok(Apply::Applied)
+        );
+        assert!(timeline.apply_embeds(embeds_update("one", 2, &["https://x.com/b"])));
+        for message in [
+            timeline.messages().next().unwrap(),
+            timeline.pinned_messages().next().unwrap(),
+        ] {
+            assert_eq!(message.revision, 2);
+            assert_eq!(message.content.embeds, [card("https://x.com/b")]);
+        }
+    }
+
+    #[test]
+    fn embeds_for_unloaded_messages_wait_boundedly_and_refetches_fill_in_cards() {
+        let mut timeline = Timeline::default();
+        timeline.reset(vec![message("one", 1)], "1").unwrap();
+        assert!(!timeline.apply_embeds(embeds_update("two", 1, &["https://x.com/two"])));
+        assert_eq!(timeline.apply(message("two", 2)), Ok(Apply::Applied));
+        let two = timeline.messages().last().unwrap();
+        assert_eq!(
+            two.content.embeds,
+            [card("https://x.com/two")],
+            "taken on arrival"
+        );
+        // A replay of the same revision read before the cards keeps them.
+        assert_eq!(timeline.apply(message("two", 2)), Ok(Apply::Duplicate));
+        assert_eq!(timeline.messages().last().unwrap().content.embeds.len(), 1);
+        // A refetch that carries cards the row lacked fills them in.
+        let mut stored = message("one", 1);
+        stored.content.embeds = vec![card("https://x.com/one")];
+        timeline.prepend(vec![stored]).unwrap();
+        assert_eq!(timeline.messages().next().unwrap().content.embeds.len(), 1);
+        // Waiting updates are bounded; the oldest give way.
+        for index in 0..MAX_UNSEEN_EMBEDS + 1 {
+            timeline.apply_embeds(embeds_update(
+                &format!("later{index}"),
+                1,
+                &["https://x.com/l"],
+            ));
+        }
+        assert_eq!(timeline.unseen_embeds.len(), MAX_UNSEEN_EMBEDS);
+        assert_eq!(timeline.unseen_embeds[0].message_id, "later1");
+        let mut late = message("later0", 3);
+        late.seq = "3".into();
+        timeline.prepend(vec![late]).unwrap();
+        assert!(
+            timeline
+                .messages()
+                .find(|message| message.id == "later0")
+                .unwrap()
+                .content
+                .embeds
+                .is_empty(),
+            "the evicted update is gone"
+        );
+        timeline.reset(Vec::new(), "1").unwrap();
+        assert!(timeline.unseen_embeds.is_empty());
     }
 }

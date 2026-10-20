@@ -21,6 +21,7 @@ Desktop apps update themselves; phone apps update through TestFlight and Google 
 - Direct messages and notifications ([notifications](docs/notifications.md))
 - Threads, pins, forwarding, editing and deleting messages
 - File and media attachments, with an editor to crop, draw and add text ([uploads](docs/media.md#uploads-and-attachments))
+- Link previews for X, TikTok, YouTube, Instagram and most other sites, with video playing in Caper ([link embeds](docs/media.md#link-embeds); live once the embed Worker is deployed)
 - Profile pictures and space icons ([pictures](docs/media.md#custom-profile-pictures-and-space-icons-october-14-2026))
 - `@feedback` in any conversation to reach the Caper team ([feedback](docs/media.md#feedback-in-place))
 

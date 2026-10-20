@@ -972,8 +972,13 @@ impl Api {
         spoiler_attachment_ids: &[String],
         thread: (Option<&str>, bool),
         reply_to_id: Option<&str>,
+        suppress_embeds: bool,
     ) -> Result<Message, ApiError> {
         let mut body = json!({"clientMessageId":client_id,"text":text});
+        // The author removed the composer's link preview.
+        if suppress_embeds {
+            body["suppressEmbeds"] = json!(true);
+        }
         // Ids join the idempotency hash; the key is present only with files.
         if !attachment_ids.is_empty() {
             body["attachmentIds"] = json!(attachment_ids);
@@ -995,6 +1000,26 @@ impl Api {
             Some(chat_token),
             Some(body),
         )
+    }
+
+    /// The card a link will get, for the composer (`POST /api/embeds/preview`,
+    /// signed-in accounts). `None` when it has none or previews are
+    /// unavailable (an unconfigured server answers 503, a busy one 429).
+    pub fn embed_preview(&self, token: &str, url: &str) -> Option<crate::model::Embed> {
+        let response = self
+            .raw(
+                Method::POST,
+                "api/embeds/preview",
+                Some(token),
+                None,
+                Some(json!({"url":url})),
+            )
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let body: Value = response.json().ok()?;
+        crate::model::Embed::parse(&body["embed"])
     }
 
     /// Uploads are optional server configuration (503 without storage). Any
@@ -1812,7 +1837,8 @@ mod tests {
                     &["a".into(), "b".into()],
                     &spoilers,
                     (None, false),
-                    None
+                    None,
+                    false
                 )
                 .is_err()
             );

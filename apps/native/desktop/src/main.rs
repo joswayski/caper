@@ -16,6 +16,7 @@ mod daily_icon;
 mod default_slider;
 mod edits;
 mod effects;
+mod embeds;
 mod emoji;
 mod feedback;
 mod ffmpeg;
@@ -485,6 +486,8 @@ struct PendingSend {
     thread_root_id: Option<String>,
     broadcast: bool,
     reply_to: Option<model::MessageReply>,
+    /// The composer's link preview was removed; retries keep it.
+    suppress_embeds: bool,
 }
 
 impl PendingSend {
@@ -501,6 +504,7 @@ impl PendingSend {
                 thread_root_id: None,
                 broadcast: false,
                 reply_to: None,
+                suppress_embeds: false,
             },
             |pending| Self {
                 id: pending.id.clone(),
@@ -513,6 +517,7 @@ impl PendingSend {
                 thread_root_id: pending.thread_root_id.clone(),
                 broadcast: pending.broadcast,
                 reply_to: pending.reply_to.clone(),
+                suppress_embeds: pending.suppress_embeds,
             },
         )
     }
@@ -1366,6 +1371,11 @@ struct CaperApp {
     attachment_editor_shown: bool,
     /// Loopback streaming for the viewer's player, started on first use.
     media_proxy: Option<media_proxy::MediaProxy>,
+    /// Messages whose link previews just arrived live, so their cards settle
+    /// in once drawn (soon) rather than appear.
+    embed_arrivals: std::collections::HashMap<String, Instant>,
+    /// The main composer's preview of its first link.
+    link_preview: embeds::ComposerPreview,
     file_picker: Option<FilePicker>,
     /// Decoded local images of finished uploads, shown without a download.
     local_media: Vec<(String, egui::ColorImage)>,
@@ -1662,6 +1672,8 @@ impl CaperApp {
             opened_files: Vec::new(),
             attachment_editor_shown: false,
             media_proxy: None,
+            embed_arrivals: std::collections::HashMap::new(),
+            link_preview: embeds::ComposerPreview::default(),
             file_picker: None,
             local_media: Vec::new(),
             pictures,
@@ -1861,6 +1873,8 @@ impl CaperApp {
                             .expect("valid spoiler fixture");
                         app.draft_files[0].spoiler = true;
                     }
+                } else if name == "parity-embeds" {
+                    app.install_embeds_fixture();
                 } else if name.starts_with("parity-file-drop") {
                     // Holds the drop overlay open for rendering checks; no file is dragged.
                     app.install_attachments_fixture();
@@ -3123,6 +3137,8 @@ impl CaperApp {
                     text: text.into(),
                     attachments: Vec::new(),
                     mentions: Vec::new(),
+                    embeds: Vec::new(),
+                    suppress_embeds: false,
                 },
                 reactions: Vec::new(),
                 reaction_seq: None,
@@ -3200,6 +3216,118 @@ impl CaperApp {
     /// `.invalid` URLs. Covers ready, processing (with and without a poster
     /// and progress), failed, animated and removed files. Uploads read as
     /// available without contacting a server.
+    /// Link preview cards on recent messages and in the composer, with
+    /// local images standing in for `embed.caper.chat` media.
+    fn install_embeds_fixture(&mut self) {
+        self.token = Some("fixture-account".into());
+        let media = |id: &str| format!("https://embed.caper.chat/m/fixture/{id}");
+        let card = |value: serde_json::Value| model::Embed::parse(&value).expect("fixture card");
+        let post = card(serde_json::json!({
+            "version": 1, "url": "https://x.com/caper/status/1",
+            "site": {"name": "X", "domain": "x.com"},
+            "blocks": [
+                {"type": "author", "name": "TEST FIXTURE Caper", "handle": "@caper",
+                 "url": "https://x.com/caper", "icon": media("avatar")},
+                {"type": "text", "text": "TEST FIXTURE — A post with a link https://caper.chat\nand a second line."},
+                {"type": "video", "url": "https://video.twimg.com/fixture.mp4",
+                 "poster": media("poster"), "width": 1280, "height": 720},
+                {"type": "footer", "text": "309K likes", "timestamp": "2026-10-20T12:00:00Z"}
+            ]
+        }));
+        let player = card(serde_json::json!({
+            "version": 1, "url": "https://youtu.be/fixture",
+            "site": {"name": "YouTube", "domain": "youtu.be"},
+            "blocks": [
+                {"type": "author", "name": "TEST FIXTURE Channel"},
+                {"type": "title", "text": "TEST FIXTURE video title", "url": "https://www.youtube.com/watch?v=fixture"},
+                {"type": "player", "provider": "youtube", "id": "fixture",
+                 "play": "https://embed.caper.chat/play/youtube/fixture",
+                 "poster": media("player"), "width": 1280, "height": 720}
+            ]
+        }));
+        let article = card(serde_json::json!({
+            "version": 1, "url": "https://news.example/story",
+            "site": {"name": "Example News", "domain": "news.example"},
+            "blocks": [
+                {"type": "title", "text": "TEST FIXTURE headline that runs long enough to wrap onto a second line"},
+                {"type": "text", "text": "TEST FIXTURE — What happened, in a sentence or two of description."},
+                {"type": "images", "items": [{"url": media("thumbnail"), "alt": "lead"}], "thumbnail": true}
+            ]
+        }));
+        let gallery = card(serde_json::json!({
+            "version": 1, "url": "https://www.instagram.com/p/fixture",
+            "site": {"name": "Instagram", "domain": "instagram.com"},
+            "blocks": [
+                {"type": "text", "text": "TEST FIXTURE — Three photos."},
+                {"type": "images", "items": [
+                    {"url": media("one")}, {"url": media("two")}, {"url": media("three")}
+                ]},
+                {"type": "footer", "text": "1.2K likes"}
+            ]
+        }));
+        let mut messages: Vec<_> = self.timeline.messages().cloned().collect();
+        let count = messages.len();
+        for (message, embed) in messages[count.saturating_sub(3)..].iter_mut().zip([
+            vec![post],
+            vec![player],
+            vec![article, gallery],
+        ]) {
+            message.content.text = format!("TEST FIXTURE — {}", embed[0].url);
+            message.content.embeds = embed;
+        }
+        let cursor = self.timeline.cursor();
+        self.timeline
+            .reset(messages, &cursor)
+            .expect("valid embeds fixture");
+        let [width, height] = [320_usize, 180];
+        let pixels: Vec<u8> = (0..width * height)
+            .flat_map(|index| {
+                let (x, y) = (index % width, index / width);
+                if (40..140).contains(&x) && (40..140).contains(&y) {
+                    [182, 77, 50, 255]
+                } else {
+                    [40 + (x / 6) as u8, 48 + (y / 4) as u8, 52, 255]
+                }
+            })
+            .collect();
+        let image = egui::ColorImage::from_rgba_unmultiplied([width, height], &pixels);
+        for id in ["avatar", "player", "thumbnail", "one", "two", "three"] {
+            self.local_media.push((
+                format!("{}{}", attachments::EMBED_KEY, media(id)),
+                image.clone(),
+            ));
+        }
+        // The video's poster shares the video's id.
+        self.local_media.push((
+            format!(
+                "{}https://video.twimg.com/fixture.mp4",
+                attachments::EMBED_KEY
+            ),
+            image,
+        ));
+        self.draft = "TEST FIXTURE — https://youtu.be/fixture".into();
+        let start = Instant::now();
+        let draft = self.draft.clone();
+        self.link_preview.due(&draft, true, start);
+        if let (Some(link), _) =
+            self.link_preview
+                .due(&draft, true, start + embeds::PREVIEW_DEBOUNCE)
+        {
+            let preview = self
+                .timeline
+                .messages()
+                .find_map(|message| {
+                    message
+                        .content
+                        .embeds
+                        .first()
+                        .filter(|embed| embed.url == link)
+                })
+                .cloned();
+            self.link_preview.answer(link, preview);
+        }
+    }
+
     fn install_attachments_fixture(&mut self) {
         self.token = Some("fixture-account".into());
         self.session = Some(ChatSession {
@@ -7110,6 +7238,27 @@ impl CaperApp {
                     _ => {}
                 }
             }
+            GatewayEvent::Embeds {
+                generation,
+                channel,
+                update,
+            } if current(
+                generation,
+                self.generation,
+                Some(&channel),
+                self.selected_channel.as_deref(),
+            ) =>
+            {
+                let message = update.message_id.clone();
+                let cards = !update.embeds.is_empty();
+                // Cards arriving now settle in; ones loaded with history appear in place.
+                if self.timeline.apply_embeds(*update) && cards {
+                    if self.embed_arrivals.len() >= 64 {
+                        self.embed_arrivals.clear();
+                    }
+                    self.embed_arrivals.insert(message, Instant::now());
+                }
+            }
             GatewayEvent::AttachmentProgress {
                 generation,
                 channel,
@@ -7540,6 +7689,8 @@ impl CaperApp {
         self.draft_preview = None;
         self.opened_files.clear();
         self.attachment_progress.clear();
+        self.embed_arrivals.clear();
+        self.link_preview = embeds::ComposerPreview::default();
         self.local_media.clear();
         self.open_after_refresh = None;
         self.invalidate_navigation_cache();
@@ -7824,6 +7975,7 @@ impl CaperApp {
             pending.reply_to = self
                 .reply_targets
                 .remove(root.as_deref().unwrap_or("channel"));
+            pending.suppress_embeds = root.is_none() && self.link_preview.removed(&text);
         }
         let id = pending.id.clone();
         let attachment_ids: Vec<String> = pending
@@ -7856,6 +8008,7 @@ impl CaperApp {
         let thread_root_id = pending.thread_root_id.clone();
         let broadcast = pending.broadcast;
         let reply_to_id = pending.reply_to.as_ref().map(|reply| reply.id.clone());
+        let suppress_embeds = pending.suppress_embeds;
         let spoiler_attachment_ids = pending
             .attachments
             .iter()
@@ -7882,6 +8035,7 @@ impl CaperApp {
             thread_root_id,
             broadcast,
             reply_to_id,
+            suppress_embeds,
         });
     }
 
@@ -8336,6 +8490,7 @@ impl CaperApp {
             thread_root_id: pending.thread_root_id.clone(),
             broadcast: pending.broadcast,
             reply_to_id: pending.reply_to.as_ref().map(|reply| reply.id.clone()),
+            suppress_embeds: pending.suppress_embeds,
         });
     }
 
@@ -16057,6 +16212,17 @@ impl CaperApp {
                         });
                         ui.add_space(4.0);
                     }
+                    // The first link's card, before sending (signed-in accounts).
+                    let preview = self.link_preview.update(ui.ctx(), &self.draft, self.token.as_deref(), self.media.api());
+                    if let Some(embed) = preview.cloned() {
+                        let arrival = motion::entrance(ui.ctx(), egui::Id::new("composer-embed"), motion::BASE);
+                        let shown = embeds::cards(ui, &mut self.media, "composer", std::slice::from_ref(&embed), arrival, true);
+                        if shown.removed {
+                            self.link_preview.remove();
+                        }
+                        self.embed_action(ui.ctx(), shown.action);
+                        ui.add_space(8.0);
+                    }
                     if attach && self.draft_file_count(None) > 0 {
                         self.draft_chips(ui, None);
                         ui.add_space(8.0);
@@ -17255,8 +17421,13 @@ impl CaperApp {
                 ui.id().with((&message.id, "forward-context")),
                 egui::Sense::hover(),
             );
+            // A link preview's links own their own menu (hover from the last pass).
+            let card_hovered = ui
+                .data(|data| data.get_temp::<bool>(egui::Id::new(("embed-hovered", &message.id))))
+                .unwrap_or(false);
             let opened = row.contains_pointer()
                 && !body.link_hovered
+                && !card_hovered
                 && ui.input(|i| i.pointer.secondary_clicked());
             egui::Popup::menu(&row)
                 .open_memory(opened.then_some(egui::SetOpenCommand::Bool(true)))
@@ -17326,6 +17497,38 @@ impl CaperApp {
                 ui.set_min_width(ui.available_width());
                 self.attachment_list(ui, &message.content.attachments, false);
             });
+        }
+        // Link previews follow the files, on the same fill.
+        if !deleted && !message.content.embeds.is_empty() {
+            let arrival = self.embed_arrival(ui.ctx(), &message.id);
+            let shown = egui::Frame::new()
+                .fill(fill)
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin {
+                            left: 62,
+                            right: 18,
+                            top: 2,
+                            bottom: 6,
+                        })
+                        .show(ui, |ui| {
+                            embeds::cards(
+                                ui,
+                                &mut self.media,
+                                &message.id,
+                                &message.content.embeds,
+                                arrival,
+                                false,
+                            )
+                        })
+                        .inner
+                })
+                .inner;
+            ui.data_mut(|data| {
+                data.insert_temp(egui::Id::new(("embed-hovered", &message.id)), shown.hovered)
+            });
+            self.embed_action(ui.ctx(), shown.action);
         }
         if let Some(forward) = message.forward.as_ref().filter(|_| !deleted) {
             egui::Frame::new()
@@ -18265,6 +18468,38 @@ impl CaperApp {
     /// posters (opening the system browser or player), processing
     /// placeholders with the worker's progress, failures, and cards for audio
     /// and other files.
+    /// Entrance progress of a message's link previews: cards that arrived
+    /// live settle in when first drawn soon after; others are in place.
+    fn embed_arrival(&mut self, context: &egui::Context, message: &str) -> f32 {
+        let id = egui::Id::new(("embed-arrival", message));
+        if let Some(at) = self.embed_arrivals.remove(message)
+            && at.elapsed().as_secs_f64() <= motion::ARRIVAL
+        {
+            let now = context.input(|input| input.time);
+            context.data_mut(|data| data.insert_temp(id, now));
+        }
+        let Some(start) = context.data(|data| data.get_temp::<f64>(id)) else {
+            return 1.0;
+        };
+        let progress = motion::progress(context, start, motion::BASE);
+        if progress >= 1.0 {
+            context.data_mut(|data| data.remove::<f64>(id));
+        }
+        progress
+    }
+
+    /// A card's link opens in the system browser; its media in the viewer.
+    fn embed_action(&mut self, context: &egui::Context, action: Option<embeds::Action>) {
+        match action {
+            Some(embeds::Action::Open(url)) => context.open_url(egui::OpenUrl::new_tab(url)),
+            Some(embeds::Action::View(items, index)) if !items.is_empty() => {
+                self.viewer = Some(viewer::Viewer::open(items, index));
+                context.request_repaint();
+            }
+            _ => {}
+        }
+    }
+
     fn attachment_list(
         &mut self,
         ui: &mut egui::Ui,
@@ -25603,6 +25838,7 @@ fn carries_identities(event: &Event) -> bool {
                 GatewayEvent::Status { .. }
                     | GatewayEvent::Attachments { .. }
                     | GatewayEvent::AttachmentProgress { .. }
+                    | GatewayEvent::Embeds { .. }
                     | GatewayEvent::Presence { .. }
                     | GatewayEvent::VoiceUnavailable { .. }
                     | GatewayEvent::VoiceReset { .. }
@@ -27376,12 +27612,37 @@ fn rich_text(
     describe: impl Fn(&model::Mention) -> String,
     edited: bool,
 ) -> Body {
+    rich_text_rows(
+        ui,
+        message,
+        text,
+        plain,
+        mentions,
+        describe,
+        edited,
+        usize::MAX,
+    )
+}
+
+/// [`rich_text`] cut to `max_rows` wrapped rows, ending in an ellipsis
+/// (link preview text, clamped like web's 8 lines).
+#[allow(clippy::too_many_arguments)]
+fn rich_text_rows(
+    ui: &mut egui::Ui,
+    message: &str,
+    text: &str,
+    plain: egui::TextFormat,
+    mentions: &[model::Mention],
+    describe: impl Fn(&model::Mention) -> String,
+    edited: bool,
+    max_rows: usize,
+) -> Body {
     let pills = mentions::highlights(text, mentions);
     let ranges: Vec<_> = pills.iter().map(|(range, _)| range.clone()).collect();
     let runs = message_runs(text, &ranges);
     let linked = runs.iter().any(|run| matches!(run, Run::Link(..)));
     let emojis = emoji::inline(text);
-    if pills.is_empty() && !linked && !edited && emojis.is_empty() {
+    if pills.is_empty() && !linked && !edited && emojis.is_empty() && max_rows == usize::MAX {
         let (position, galley, response) =
             egui::Label::new(RichText::new(text).font(plain.font_id).color(plain.color))
                 .layout_in_ui(ui);
@@ -27414,6 +27675,10 @@ fn rich_text(
         ..plain.clone()
     };
     let mut job = egui::text::LayoutJob::default();
+    if max_rows != usize::MAX {
+        job.wrap.max_rows = max_rows;
+        job.wrap.overflow_character = Some('…');
+    }
     let mut after_pill = false;
     let mut after_link = false;
     for run in &runs {
@@ -47136,6 +47401,154 @@ mod tests {
         assert!(!app.attachment_progress.contains_key("fixture-video"));
     }
 
+    fn youtube_card() -> serde_json::Value {
+        serde_json::json!({
+            "version": 1, "url": "https://youtu.be/dQw4w9WgXcQ",
+            "site": {"name": "YouTube", "domain": "youtu.be"},
+            "blocks": [
+                {"type": "title", "text": "Never Gonna Give You Up"},
+                {"type": "player", "provider": "youtube", "id": "dQw4w9WgXcQ",
+                 "play": "https://embed.caper.chat/play/youtube/dQw4w9WgXcQ",
+                 "width": 1280, "height": 720},
+                {"type": "footer", "text": "Rick Astley"}
+            ]
+        })
+    }
+
+    #[test]
+    fn link_preview_events_apply_to_their_revision_and_draw_cards_in_the_row() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        let channel = app.selected_channel.clone().unwrap();
+        let message = app.timeline.messages().last().unwrap().clone();
+        let event = |channel: &str, revision: u32| {
+            Box::new(
+                model::EmbedsUpdate::parse(&serde_json::json!({
+                    "type": "message.embeds", "schemaVersion": 1, "channelId": channel,
+                    "messageId": message.id, "revision": revision,
+                    "embeds": [youtube_card(), {"version": 2}]
+                }))
+                .unwrap(),
+            )
+        };
+        let cards = |app: &CaperApp| {
+            app.timeline
+                .messages()
+                .find(|item| item.id == message.id)
+                .unwrap()
+                .content
+                .embeds
+                .len()
+        };
+        app.gateway(GatewayEvent::Embeds {
+            generation: app.generation,
+            channel: channel.clone(),
+            update: event(&channel, message.revision + 1),
+        });
+        assert_eq!(cards(&app), 0, "another revision's cards are ignored");
+        app.gateway(GatewayEvent::Embeds {
+            generation: app.generation,
+            channel: "elsewhere".into(),
+            update: event("elsewhere", message.revision),
+        });
+        assert_eq!(cards(&app), 0, "another channel's cards are ignored");
+        assert!(app.embed_arrivals.is_empty());
+        app.gateway(GatewayEvent::Embeds {
+            generation: app.generation,
+            channel: channel.clone(),
+            update: event(&channel, message.revision),
+        });
+        assert_eq!(cards(&app), 1, "the malformed card is skipped");
+        assert!(
+            app.embed_arrivals.contains_key(&message.id),
+            "it settles in"
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        assert!(
+            nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Play Never Gonna Give You Up")),
+            "the player's Play button is drawn"
+        );
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect();
+        for expected in [
+            "Never Gonna Give You Up",
+            "YouTube  youtu.be",
+            "Rick Astley",
+        ] {
+            assert!(
+                texts.iter().any(|text| text == expected),
+                "{expected}: {texts:?}"
+            );
+        }
+        assert!(
+            app.embed_arrivals.is_empty(),
+            "the arrival was taken when drawn"
+        );
+    }
+
+    #[test]
+    fn removing_the_composer_preview_sends_without_previews_and_retries_keep_it() {
+        let (context, mut app) = fixture("parity-desktop");
+        app.session = Some(session());
+        app.token = Some("fixture-token".into());
+        app.draft = "look https://youtu.be/dQw4w9WgXcQ".into();
+        let start = Instant::now();
+        let draft = app.draft.clone();
+        app.link_preview.due(&draft, true, start);
+        let (asked, _) =
+            app.link_preview
+                .due(&draft, true, start + crate::embeds::PREVIEW_DEBOUNCE);
+        assert_eq!(asked.as_deref(), Some("https://youtu.be/dQw4w9WgXcQ"));
+        app.link_preview
+            .answer(asked.unwrap(), model::Embed::parse(&youtube_card()));
+        let output = render(&mut app, &context, vec![]);
+        let nodes = &output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes;
+        assert!(
+            nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Remove link preview")),
+            "the composer shows the card with its remove button"
+        );
+        app.link_preview.remove();
+        assert!(app.link_preview.card().is_none());
+        app.send_message();
+        let pending = app.pending.as_ref().expect("sending");
+        assert!(pending.suppress_embeds);
+        let retry = PendingSend::prepare(Some(pending), "edited", Vec::new());
+        assert!(retry.suppress_embeds, "a retry resends the same body");
+        // The cleared draft starts over: the next message gets previews.
+        render(&mut app, &context, vec![]);
+        assert!(
+            !app.link_preview
+                .removed("look https://youtu.be/dQw4w9WgXcQ")
+        );
+        assert!(!PendingSend::prepare(None, "next", Vec::new()).suppress_embeds);
+    }
+
     #[test]
     fn attachment_readiness_never_moves_the_composer() {
         let context = egui::Context::default();
@@ -49998,6 +50411,8 @@ mod tests {
                 text: pending.text.clone(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
+                embeds: Vec::new(),
+                suppress_embeds: false,
             },
             reactions: Vec::new(),
             reaction_seq: None,
@@ -50119,6 +50534,8 @@ mod tests {
                     text: "sent".into(),
                     attachments: Vec::new(),
                     mentions: Vec::new(),
+                    embeds: Vec::new(),
+                    suppress_embeds: false,
                 },
                 reactions: Vec::new(),
                 reaction_seq: None,

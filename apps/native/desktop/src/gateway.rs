@@ -1,7 +1,7 @@
 use crate::media_gateway::{CATCHUP_DEADLINE, Connection, ConnectionAttempt, Failure};
 use crate::model::{
-    AttachmentUpdate, Author, EditUpdate, ForwardUpdate, Message, PinUpdate, Presence,
-    ReactionUpdate, VoiceOccupant, sequence,
+    AttachmentUpdate, Author, EditUpdate, EmbedsUpdate, ForwardUpdate, Message, PinUpdate,
+    Presence, ReactionUpdate, VoiceOccupant, sequence,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -56,6 +56,12 @@ pub enum GatewayEvent {
         channel: String,
         attachment: String,
         percent: u8,
+    },
+    /// Unsequenced link previews for one message revision.
+    Embeds {
+        generation: u64,
+        channel: String,
+        update: Box<EmbedsUpdate>,
     },
     Pin {
         generation: u64,
@@ -450,7 +456,9 @@ fn receive_frame(
         Some("hello") if !stream.connection.hello => {
             stream.connection.hello = true;
             stream.cursor = cursor.clone();
-            stream.connection.send(json!({"type":"subscribe", "id":subscription, "kind":"chat", "channelId":channel, "after":cursor}))?;
+            // `embeds` asks for `message.embeds`, which older desktop builds
+            // would treat as a broken stream (docs/media.md "Link embeds").
+            stream.connection.send(json!({"type":"subscribe", "id":subscription, "kind":"chat", "channelId":channel, "after":cursor, "embeds":true}))?;
             if let (Some((space, users)), Some(id)) = (presence, presence_subscription) {
                 stream.connection.send(json!({"type":"subscribe", "id":id, "kind":"presence", "spaceId":space, "userIds":users}))?;
             }
@@ -613,6 +621,22 @@ fn receive_frame(
                             channel: channel.into(),
                             attachment: attachment.into(),
                             percent: percent.clamp(0.0, 100.0).round() as u8,
+                        });
+                    }
+                }
+                // Unsequenced and sent once: a malformed frame is dropped,
+                // never a reason to reconnect (pages carry the stored cards).
+                Some("message.embeds") => {
+                    if replacement {
+                        return Ok(false);
+                    }
+                    if let Some(update) =
+                        EmbedsUpdate::parse(event).filter(|update| update.channel_id == channel)
+                    {
+                        let _ = events.send(GatewayEvent::Embeds {
+                            generation,
+                            channel: channel.into(),
+                            update: Box::new(update),
                         });
                     }
                 }
@@ -1051,6 +1075,19 @@ mod tests {
                 }}),
             );
         }
+        fn embeds(socket: &mut Socket, id: &str, event: Value) {
+            let mut event = event;
+            for (key, value) in [
+                ("type", json!("message.embeds")),
+                ("channelId", json!("text")),
+                ("messageId", json!("message-41")),
+            ] {
+                if event.get(key).is_none() {
+                    event[key] = value;
+                }
+            }
+            send(socket, json!({"type":"event", "id":id, "event":event}));
+        }
         fn roster(socket: &mut Socket, id: &str, revision: u64) {
             send(
                 socket,
@@ -1110,6 +1147,42 @@ mod tests {
             message(&mut last, &ids["chat"], "41");
             progress(&mut last, &ids["chat"], json!("not a number"));
             progress(&mut last, &ids["chat"], json!(140.4));
+            // Malformed or foreign cards are dropped without reconnecting.
+            embeds(
+                &mut last,
+                &ids["chat"],
+                json!({"schemaVersion":1, "revision":1, "embeds":"x"}),
+            );
+            embeds(
+                &mut last,
+                &ids["chat"],
+                json!({"schemaVersion":2, "revision":1, "embeds":[]}),
+            );
+            embeds(
+                &mut last,
+                &ids["chat"],
+                json!({"schemaVersion":1, "revision":0, "embeds":[]}),
+            );
+            embeds(
+                &mut last,
+                &ids["chat"],
+                json!({"schemaVersion":1, "revision":1, "embeds":[], "channelId":"other"}),
+            );
+            embeds(
+                &mut last,
+                &ids["chat"],
+                json!({"schemaVersion":1, "revision":1, "embeds":[], "messageId":7}),
+            );
+            embeds(
+                &mut last,
+                &ids["chat"],
+                json!({"schemaVersion":1, "revision":2, "embeds":[
+                    {"version":1, "url":"https://x.com/a", "site":{"name":"X", "domain":"x.com"},
+                     "blocks":[{"type":"text", "text":"hello"}]},
+                    {"version":2, "url":"https://x.com/b", "site":{"name":"X", "domain":"x.com"},
+                     "blocks":[{"type":"text", "text":"future"}]}
+                ]}),
+            );
             attachments(&mut last, &ids["chat"], "42");
             assert!(
                 matches!(last.read(), Ok(WsMessage::Close(_))),
@@ -1143,6 +1216,7 @@ mod tests {
         let mut reactions = vec![];
         let mut rosters = vec![];
         let mut percents = vec![];
+        let mut cards = vec![];
         loop {
             match incoming.recv_timeout(Duration::from_secs(5)).unwrap() {
                 GatewayEvent::Message { message, .. } => {
@@ -1165,6 +1239,7 @@ mod tests {
                     percent,
                     ..
                 } => percents.push((attachment, percent)),
+                GatewayEvent::Embeds { update, .. } => cards.push(*update),
                 GatewayEvent::Attachments { update, .. } => {
                     assert_eq!(update.seq, "42");
                     assert_eq!(update.attachments.len(), 1, "malformed entries are skipped");
@@ -1183,6 +1258,12 @@ mod tests {
             [("asset".to_owned(), 100)],
             "malformed progress is dropped without reconnecting"
         );
+        assert_eq!(cards.len(), 1, "malformed card events are dropped");
+        assert_eq!(
+            (cards[0].message_id.as_str(), cards[0].revision),
+            ("message-41", 2)
+        );
+        assert_eq!(cards[0].embeds.len(), 1, "malformed cards are skipped");
         control.stop();
         server.join().unwrap();
     }
@@ -1217,6 +1298,7 @@ mod tests {
             };
             let subscribe: Value = serde_json::from_str(&subscribe).unwrap();
             assert_eq!(subscribe["after"], "37");
+            assert_eq!(subscribe["embeds"], true, "asks for link previews");
             socket
                 .send(WsMessage::Text(
                     json!({"type":"heartbeat"}).to_string().into(),

@@ -4064,6 +4064,25 @@ EMBED_ORIGIN=https://embed.caper.chat EMBED_API_SECRET=... node live-check.mjs
 
 Staging uses `--env staging` and `embed.staging.caper.chat`.
 
+**Clients.** Web (desktop and mobile layouts), Android, Apple and desktop draw
+cards, take `message.embeds` live, preview the composer's first link and can
+send without previews. Players: web, Android and Apple play inline; desktop
+opens the `play` page in the system browser, because egui cannot draw web
+content and the app embeds no web view (an inline player would need `wry`:
+WebKitGTK on Linux, WebView2 on Windows, and an overlay that hides under
+menus). Desktop GIF-style videos play on click rather than looping inline.
+
+Validation:
+
+| Part | Checked | Not checked |
+| --- | --- | --- |
+| Worker | unit tests with recorded responses; every reader against the live sites (from a development machine, not Cloudflare) | deployed Worker, Cloudflare egress IPs |
+| API | unit tests; Postgres-backed store/replay/revision test | live end to end with the Worker |
+| Web | unit and render tests; cards in headless Chromium at desktop and 390px widths with live reader data (labelled harness, unproxied media) | live server; provider players after Play |
+| Android | 518 JVM unit tests (13 for embeds, shared cases), lint | device, WebView playback, R8 release build |
+| Apple | not compiled (no Swift toolchain); tests written for the shared cases, revision rule and composer | everything on macOS/iOS |
+| Desktop | 691 unit tests, clippy; `--fixture parity-embeds` under Xvfb at 1440px and 420px | video playback (no FFmpeg there), live media, Windows/macOS builds |
+
 ## Shared call state and rolling deployments
 
 The original shared-state rollout below covers the public General room. Account

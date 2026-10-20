@@ -1522,6 +1522,7 @@ mod tests {
                 &[],
                 (None, false),
                 None,
+                false,
             )
             .unwrap();
         assert_eq!(sent.content.attachments.len(), 1);
@@ -1535,6 +1536,7 @@ mod tests {
             &[],
             (None, false),
             None,
+            false,
         )
         .unwrap();
         let requests = server.join().unwrap();

@@ -492,6 +492,8 @@ uploads.
 `parity-thread-attachments-rejected` previews a rejected reply with Edit/Dismiss.
 Append `-narrow` to these thread fixtures for a 390px-wide window. These are
 labelled local previews, not live storage or upload validation.
+`parity-embeds` previews link preview cards (X, YouTube, an article with a
+thumbnail, a gallery) and the composer's preview from labelled local data.
 `parity-attachment-editor` opens the attachment editor on a synthetic picture
 with a labelled line and text (`-crop` and `-text` open those tools, `-narrow`
 a 390px-wide window); `-chip` shows the composer file's Edit button.

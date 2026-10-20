@@ -284,6 +284,9 @@ pub fn blur_thumbnail(image: &egui::ColorImage) -> egui::ColorImage {
 }
 
 const BLUR_KEY: &str = "spoiler-cover:";
+/// Link preview media (`crate::embeds`) share this cache under ids with
+/// this prefix. Their URLs are not signed, so they are never refreshed.
+pub const EMBED_KEY: &str = "embed:";
 
 /// Display size that reserves layout space before an image loads.
 pub fn frame_size(attachment: &Attachment) -> egui::Vec2 {
@@ -327,10 +330,11 @@ pub struct Refresher {
 impl Refresher {
     /// Queue an id unless it was requested recently.
     pub fn want(&mut self, id: &str, now: Instant) {
-        if self
-            .requested
-            .get(id)
-            .is_none_or(|at| now.duration_since(*at) >= REFRESH_BACKOFF)
+        if !id.starts_with(EMBED_KEY)
+            && self
+                .requested
+                .get(id)
+                .is_none_or(|at| now.duration_since(*at) >= REFRESH_BACKOFF)
         {
             self.queue.insert(id.to_owned());
         }
@@ -338,7 +342,9 @@ impl Refresher {
 
     /// Queue regardless of backoff (a failed load or an explicit open).
     pub fn force(&mut self, id: &str) {
-        self.queue.insert(id.to_owned());
+        if !id.starts_with(EMBED_KEY) {
+            self.queue.insert(id.to_owned());
+        }
     }
 
     /// At most [`MAX_REFRESH_IDS`] queued ids, marked as requested now.
@@ -1402,6 +1408,10 @@ mod tests {
         assert_eq!(refresher.take(start + REFRESH_BACKOFF), ["id000"]);
         refresher.force("id001");
         assert_eq!(refresher.take(start), ["id001"]);
+        // Link preview media are unsigned: nothing to refresh.
+        refresher.force(&format!("{EMBED_KEY}https://embed.caper.chat/m/a"));
+        refresher.want(&format!("{EMBED_KEY}https://embed.caper.chat/m/b"), start);
+        assert!(refresher.take(start).is_empty());
     }
 
     fn deliver(media: &Media, result: Result<egui::ColorImage, Option<u16>>) {

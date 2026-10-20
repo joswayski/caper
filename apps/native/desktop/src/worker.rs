@@ -252,6 +252,8 @@ pub enum Command {
         /// Resent unchanged on retry: ids join the idempotency hash.
         attachment_ids: Vec<String>,
         spoiler_attachment_ids: Vec<String>,
+        /// The composer's link preview was removed.
+        suppress_embeds: bool,
     },
     /// Whether uploads are configured, and the compression settings.
     AssetUsage {
@@ -2030,6 +2032,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             thread_root_id,
             broadcast,
             reply_to_id,
+            suppress_embeds,
         } => Event::Sent {
             generation,
             channel: channel.clone(),
@@ -2045,6 +2048,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                     &spoiler_attachment_ids,
                     (thread_root_id.as_deref(), broadcast),
                     reply_to_id.as_deref(),
+                    suppress_embeds,
                 )
                 .map_err(|error| SendFailure {
                     status: error.status.map(|status| status.as_u16()),
