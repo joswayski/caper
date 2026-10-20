@@ -44,6 +44,33 @@ struct AttachDrawerQueue {
     }
 }
 
+/// Which visible gallery GIFs animate, as on Android (`GalleryAnimation`). Even a
+/// tall iPad drawer never owns more than six animations, and one that is playing
+/// keeps playing while it stays on screen rather than restarting as others pass.
+struct AttachGalleryAnimation {
+    static let maxPlaying = 6
+    /// On-screen GIFs, in the order they appeared.
+    private(set) var visible: [String] = []
+    private(set) var playing: Set<String> = []
+
+    mutating func show(_ id: String) {
+        guard !visible.contains(id) else { return }
+        visible.append(id)
+        fill()
+    }
+
+    mutating func hide(_ id: String) {
+        guard visible.contains(id) else { return }
+        visible.removeAll { $0 == id }
+        playing.remove(id)
+        fill()
+    }
+
+    private mutating func fill() {
+        for id in visible where playing.count < Self.maxPlaying { playing.insert(id) }
+    }
+}
+
 #if os(iOS)
 import Photos
 import PhotosUI
@@ -173,7 +200,7 @@ struct AttachDrawer: View {
     @State private var showingPhotos = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var libraryViewport = CGRect.zero
-    @State private var visibleGIFs: Set<String> = []
+    @State private var gallery = AttachGalleryAnimation()
 
     static func source(_ identifier: String) -> String { "photos:\(identifier)" }
 
@@ -304,8 +331,7 @@ struct AttachDrawer: View {
             if let source = file.source, order[source] == nil { order[source] = (index + 1, file.id) }
         }
         let count = min(library.assets?.count ?? 0, shown)
-        // Bound original-data requests and decoded frames even in a tall iPad drawer.
-        let animated = Set(visibleGIFs.sorted().prefix(6))
+        let animated = gallery.playing
         return ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 2)], spacing: 2) {
                 if cameraAvailable {
@@ -329,8 +355,9 @@ struct AttachDrawer: View {
                             AttachLibraryTile(asset: asset, order: selected?.position, copying: copying,
                                               dimmed: full && selected == nil && !copying, viewport: libraryViewport,
                                               animate: animated.contains(asset.localIdentifier)) { visible in
-                                if visible { visibleGIFs.insert(asset.localIdentifier) }
-                                else { visibleGIFs.remove(asset.localIdentifier) }
+                                // Only a real change redraws the drawer.
+                                guard gallery.visible.contains(asset.localIdentifier) != visible else { return }
+                                if visible { gallery.show(asset.localIdentifier) } else { gallery.hide(asset.localIdentifier) }
                             }
                             .id(asset.localIdentifier)
                         }
@@ -475,6 +502,52 @@ private struct LimitNudge: GeometryEffect {
     }
 }
 
+/// What gallery tiles keep between scrolls and drawer openings, so returning to
+/// a tile shows its thumbnail, and its GIF animation, without decoding again.
+/// NSCache gives the memory back under pressure.
+@MainActor
+private enum AttachGalleryCache {
+    private final class Frames {
+        let original: AttachmentOriginal
+        init(_ original: AttachmentOriginal) { self.original = original }
+    }
+
+    private static let thumbnails: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 32 * 1024 * 1024
+        return cache
+    }()
+    private static let animations: NSCache<NSString, Frames> = {
+        let cache = NSCache<NSString, Frames>()
+        cache.totalCostLimit = 24 * 1024 * 1024
+        return cache
+    }()
+    /// GIFs whose originals could not be decoded within the limits; they stay stills.
+    private static var stills: Set<String> = []
+
+    /// An edited item keeps its identifier, so it is cached by version too.
+    static func key(_ asset: PHAsset) -> String {
+        "\(asset.localIdentifier)|\(asset.modificationDate?.timeIntervalSince1970 ?? 0)"
+    }
+
+    static func thumbnail(_ key: String) -> UIImage? { thumbnails.object(forKey: key as NSString) }
+
+    static func store(_ image: UIImage, _ key: String) {
+        let pixels = image.size.width * image.scale * image.size.height * image.scale
+        thumbnails.setObject(image, forKey: key as NSString, cost: Int(pixels) * 4)
+    }
+
+    static func animation(_ key: String) -> AttachmentOriginal? { animations.object(forKey: key as NSString)?.original }
+
+    static func isStill(_ key: String) -> Bool { stills.contains(key) }
+
+    static func store(_ animation: AttachmentOriginal?, _ key: String) {
+        guard let animation else { stills.insert(key); return }
+        let bytes = animation.images.reduce(0) { $0 + $1.bytesPerRow * $1.height }
+        animations.setObject(Frames(animation), forKey: key as NSString, cost: bytes)
+    }
+}
+
 private struct AttachLibraryTile: View {
     let asset: PHAsset
     let order: Int?
@@ -550,16 +623,16 @@ private struct AttachLibraryTile: View {
                 proxy.frame(in: .global).intersects(viewport)
             } action: { value in
                 visible = value
-                gifVisibility(value && Self.isGIF(asset))
+                if Self.isGIF(asset) { gifVisibility(value) }
                 updateAnimation()
             }
             .onChange(of: animate) { _, _ in updateAnimation() }
             .onChange(of: reduceMotion) { _, _ in updateAnimation() }
             .onChange(of: scenePhase) { _, _ in updateAnimation() }
-            .onChange(of: asset.localIdentifier) { _, _ in load(); updateAnimation() }
+            .onChange(of: asset.localIdentifier) { _, _ in stopAnimation(); load(); updateAnimation() }
             .onDisappear {
                 visible = false; stopAnimation()
-                gifVisibility(false)
+                if Self.isGIF(asset) { gifVisibility(false) }
                 if let request { PHImageManager.default().cancelImageRequest(request) }
                 request = nil; image = nil; loaded = nil
             }
@@ -572,10 +645,11 @@ private struct AttachLibraryTile: View {
         return "\(isGIF(asset) ? "GIF" : "Photo"), \(date)"
     }
 
+    /// Read from the fetched asset itself: asking PhotoKit for its resources on
+    /// every render and visibility change made scrolling stutter. The original's
+    /// type is still checked before it is decoded.
     private static func isGIF(_ asset: PHAsset) -> Bool {
-        asset.mediaType == .image && PHAssetResource.assetResources(for: asset).contains {
-            ($0.type == .photo || $0.type == .fullSizePhoto) && UTType($0.uniformTypeIdentifier)?.conforms(to: .gif) == true
-        }
+        asset.mediaType == .image && asset.playbackStyle == .imageAnimated
     }
 
     private func stopAnimation() {
@@ -586,19 +660,37 @@ private struct AttachLibraryTile: View {
     }
 
     private func updateAnimation() {
-        stopAnimation()
-        guard animate, visible, !reduceMotion, scenePhase == .active, Self.isGIF(asset) else { return }
+        guard animate, visible, !reduceMotion, scenePhase == .active, Self.isGIF(asset) else { stopAnimation(); return }
+        // Already playing or on its way: keep going rather than decode again.
+        guard frames == nil, animationRequest == nil, decoding == nil else { return }
+        let key = AttachGalleryCache.key(asset)
+        if let cached = AttachGalleryCache.animation(key) { frames = cached; started = Date(); return }
+        guard !AttachGalleryCache.isStill(key) else { return }
         let token = generation
+        decoding = Task { @MainActor in
+            // A fling passes tiles sooner than this; only GIFs it settles on read their originals.
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled, generation == token else { return }
+            decoding = nil
+            requestAnimation(key, token: token)
+        }
+    }
+
+    private func requestAnimation(_ key: String, token: UUID) {
         let options = PHImageRequestOptions()
         options.version = .original
         options.deliveryMode = .highQualityFormat
         // Do not fetch large cloud originals just to animate a gallery tile.
         options.isNetworkAccessAllowed = false
         animationRequest = PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, uti, _, _ in
-            guard let data, data.count <= 16 * 1024 * 1024,
-                  let uti, UTType(uti)?.conforms(to: .gif) == true else { return }
             Task { @MainActor in
                 guard generation == token else { return }
+                animationRequest = nil
+                guard let data else { return }
+                guard data.count <= 16 * 1024 * 1024, let uti, UTType(uti)?.conforms(to: .gif) == true else {
+                    AttachGalleryCache.store(nil, key)
+                    return
+                }
                 decoding = Task {
                     let worker = Task.detached(priority: .utility) { () -> AttachmentOriginal? in
                         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
@@ -606,6 +698,8 @@ private struct AttachLibraryTile: View {
                     }
                     let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
                     guard !Task.isCancelled, generation == token else { return }
+                    AttachGalleryCache.store(result, key)
+                    decoding = nil
                     frames = result; started = Date()
                 }
             }
@@ -616,16 +710,25 @@ private struct AttachLibraryTile: View {
         let identifier = asset.localIdentifier
         guard loaded != identifier else { return }
         if let request { PHImageManager.default().cancelImageRequest(request) }
+        request = nil
         loaded = identifier
+        let key = AttachGalleryCache.key(asset)
+        if let cached = AttachGalleryCache.thumbnail(key) { image = cached; return }
         image = nil
         let options = PHImageRequestOptions()
         options.deliveryMode = .opportunistic
         options.resizeMode = .fast
         options.isNetworkAccessAllowed = true
-        let side = 200 * displayScale
+        // Tiles are 88-176pt wide; larger thumbnails only cost decode time and memory.
+        let side = 160 * displayScale
         request = PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: side, height: side),
-                                                        contentMode: .aspectFill, options: options) { result, _ in
-            Task { @MainActor in if loaded == identifier, let result { image = result } }
+                                                        contentMode: .aspectFill, options: options) { result, info in
+            let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            Task { @MainActor in
+                guard loaded == identifier, let result else { return }
+                image = result
+                if !degraded { AttachGalleryCache.store(result, key) }
+            }
         }
     }
 }
