@@ -424,7 +424,136 @@ export function tidyInstagram(found) {
   ]);
 }
 
+// Instagram's own web app asks this logged-out query for a post (the approach
+// OGInstagram takes); it carries the media files, caption and counts. Media
+// addresses are signed and expire, so the embed points at /instagram/{code}/…
+// on this Worker. Without it, the page's tags still give an image card.
+
+const INSTAGRAM_POST = /^\/(?:[A-Za-z0-9._]{1,30}\/)?(?:p|reels?|tv)\/([A-Za-z0-9_-]{5,40})(?:\/|$)/;
+const INSTAGRAM_DOC_ID = "27128499623469141";
+const INSTAGRAM_CDN = /(^|\.)(cdninstagram\.com|fbcdn\.net)$/;
+
+export function instagramShortcode(url) {
+  return INSTAGRAM_POST.exec(url.pathname)?.[1] ?? null;
+}
+
+export async function instagramItem(code) {
+  const lsd = [...crypto.getRandomValues(new Uint8Array(12))]
+    .map((byte) => byte.toString(36).padStart(2, "0"))
+    .join("");
+  const response = await fetch("https://i.instagram.com/api/graphql/", {
+    method: "POST",
+    headers: {
+      "user-agent": "Mozilla/5.0",
+      accept: "*/*",
+      "content-type": "application/x-www-form-urlencoded",
+      "x-fb-friendly-name": "PolarisPostRootQuery",
+      "x-fb-lsd": lsd,
+    },
+    body: new URLSearchParams({
+      variables: JSON.stringify({
+        shortcode: code,
+        __relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider: false,
+      }),
+      doc_id: INSTAGRAM_DOC_ID,
+      lsd,
+    }),
+    redirect: "manual",
+    signal: AbortSignal.timeout(6000),
+  });
+  // Instagram labels this JSON text/javascript.
+  if (!response.ok || !["application/json", "text/javascript"].includes(contentType(response))) {
+    discard(response);
+    return null;
+  }
+  try {
+    const body = JSON.parse(await readText(response, PAGE_DATA_LIMIT));
+    return body?.data?.xdt_api__v1__media__shortcode__web_info?.items?.[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function largest(candidates) {
+  return (Array.isArray(candidates) ? candidates : [])
+    .filter((candidate) => httpsUrl(candidate?.url))
+    .sort((a, b) => (b.width ?? 0) * (b.height ?? 0) - (a.width ?? 0) * (a.height ?? 0))[0];
+}
+
+/** Each picture or video in a post, carousel children in order. */
+export function instagramMedia(item) {
+  const children = item.carousel_media?.length ? item.carousel_media : [item];
+  return children.map((child) => {
+    const image = largest(child.image_versions2?.candidates);
+    const video = child.media_type === 2 ? largest(child.video_versions) : undefined;
+    return {
+      image: image?.url ?? null,
+      video: video?.url ?? null,
+      width: dimension(child.original_width ?? image?.width),
+      height: dimension(child.original_height ?? image?.height),
+    };
+  });
+}
+
+export function instagramBlocks(item, code) {
+  const person = item.user ?? {};
+  const media = instagramMedia(item);
+  const blocks = [
+    author(person.full_name || person.username, {
+      handle: person.username ? `@${person.username}` : undefined,
+      url: person.username ? `https://www.instagram.com/${encodeURIComponent(person.username)}/` : undefined,
+      icon: httpsUrl(person.profile_pic_url) ? `/instagram/${code}/avatar` : undefined,
+    }),
+    text(item.caption?.text, LIMITS.description),
+  ];
+  const [first] = media;
+  if (first?.video) {
+    blocks.push({
+      type: "video",
+      url: `/instagram/${code}/video/0`,
+      poster: first.image ? `/instagram/${code}/image/0` : undefined,
+      width: first.width,
+      height: first.height,
+    });
+  } else {
+    blocks.push(
+      images(
+        media
+          .map(
+            (entry, index) =>
+              entry.image && { url: `/instagram/${code}/image/${index}`, width: entry.width, height: entry.height },
+          )
+          .filter(Boolean),
+      ),
+    );
+  }
+  // Hidden counts (and stories) come back as zero.
+  const counts = [
+    item.like_count > 0 && `${compactNumber(item.like_count)} likes`,
+    item.comment_count > 0 && `${compactNumber(item.comment_count)} comments`,
+  ].filter(Boolean);
+  const taken = Number(item.taken_at);
+  blocks.push(footer(counts.join(" · "), taken > 0 ? new Date(taken * 1000).toISOString() : undefined));
+  return blocks;
+}
+
+/** What /instagram/{code}/… on the Worker serves: fresh media addresses. */
+export async function instagramFiles(code) {
+  const item = await instagramItem(code);
+  if (!item) return null;
+  return {
+    avatar: httpsUrl(item.user?.profile_pic_url) ?? null,
+    media: instagramMedia(item).map(({ image, video }) => ({
+      image,
+      video: video && INSTAGRAM_CDN.test(new URL(video).hostname) ? video : null,
+    })),
+  };
+}
+
 async function readInstagram(url) {
+  const code = instagramShortcode(url);
+  const item = code && (await instagramItem(code).catch(() => null));
+  if (item?.user && item.code === code) return embed(url.href, site(url, "Instagram"), instagramBlocks(item, code));
   const found = await generic(url);
   return found ? tidyInstagram(found) : null;
 }

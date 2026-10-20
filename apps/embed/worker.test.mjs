@@ -156,7 +156,60 @@ test("links straight to an image become an image card", async () => {
 test("Instagram and Facebook are fetched as Meta's own crawler", async () => {
   const seen = serve({ "https://www.instagram.com/p/": html('<head><meta property="og:title" content="Egg"></head>') });
   await unfurl(new URL("https://www.instagram.com/p/BsOGulcndj-/"));
-  assert.equal(seen[0].init.headers["user-agent"], "facebookexternalhit/1.1");
+  // The page fetch is the fallback after Instagram's own query.
+  const page = seen.find((request) => request.url.startsWith("https://www.instagram.com/p/"));
+  assert.equal(page.init.headers["user-agent"], "facebookexternalhit/1.1");
+});
+
+test("Instagram posts use the web app's logged-out query, with media through this Worker", async () => {
+  const seen = serve({
+    "https://i.instagram.com/api/graphql/": new Response(fixture("instagram-carousel.json"), {
+      headers: { "content-type": "text/javascript; charset=utf-8" },
+    }),
+  });
+  const embed = await unfurl(new URL("https://www.instagram.com/p/DaQanvRgP-q/?igsh=x"));
+  assert.equal(seen[0].init.method, "POST");
+  const form = new URLSearchParams(String(seen[0].init.body));
+  assert.equal(form.get("doc_id"), "27128499623469141");
+  assert.equal(JSON.parse(form.get("variables")).shortcode, "DaQanvRgP-q");
+  assert.deepEqual(embed.site, { name: "Instagram", domain: "instagram.com" });
+  const [person, , video, foot] = embed.blocks;
+  assert.deepEqual(
+    [person.handle, person.icon, video.type, video.url, video.poster],
+    [
+      "@instagram",
+      "/instagram/DaQanvRgP-q/avatar",
+      "video",
+      "/instagram/DaQanvRgP-q/video/0",
+      "/instagram/DaQanvRgP-q/image/0",
+    ],
+  );
+  assert.match(foot.text, /^\d.* likes · .* comments$/);
+
+  // The video route answers with a redirect to the fresh CDN file only.
+  const path = "/instagram/DaQanvRgP-q/video/0";
+  const signed = `https://embed.test/m/${await signPath(env.EMBED_MEDIA_SECRET, path)}${path}`;
+  serve({
+    "https://i.instagram.com/api/graphql/": new Response(fixture("instagram-carousel.json"), {
+      headers: { "content-type": "text/javascript" },
+    }),
+  });
+  const response = await worker.fetch(new Request(signed), env);
+  assert.equal(response.status, 302);
+  assert.match(response.headers.get("location"), /^https:\/\/[a-z0-9-]+\.cdninstagram\.com\//);
+});
+
+test("Instagram falls back to the page's tags when the query is refused", async () => {
+  serve({
+    "https://i.instagram.com/api/graphql/": jsonResponse('{"data":null,"errors":[{"code":1675030}]}'),
+    "https://www.instagram.com/p/": html(
+      '<head><meta property="og:title" content="Egg on Instagram: &quot;Hi&quot;"></head>',
+    ),
+  });
+  const embed = await unfurl(new URL("https://www.instagram.com/p/BsOGulcndj-/"));
+  assert.deepEqual(embed.blocks, [
+    { type: "title", text: 'Egg on Instagram: "Hi"', url: "https://www.instagram.com/p/BsOGulcndj-/" },
+  ]);
 });
 
 test("Instagram previews split the poster, caption and counts", async () => {

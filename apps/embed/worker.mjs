@@ -5,8 +5,9 @@
 //                                 embed for one link, or {embed: null}
 //   GET  /m/{sig}/i?u={url}       a preview image, fetched and cached here so
 //                                 the site never sees who is reading
-//   GET  /m/{sig}/tiktok/{id}/…   TikTok video, cover and photos, re-resolved on
-//                                 each view because their addresses expire
+//   GET  /m/{sig}/tiktok/{id}/…   TikTok and Instagram video, covers and photos,
+//   GET  /m/{sig}/instagram/{code}/…  re-resolved on each view because their
+//                                 addresses expire
 //   GET  /play/{provider}/{id}    a page holding only that provider's player,
 //                                 for native apps' web views (see player.mjs)
 //
@@ -15,7 +16,7 @@
 
 import { contentType, discard, fetchableUrl, safeFetch } from "./safe-fetch.mjs";
 import { playerPage, playPath } from "./player.mjs";
-import { tiktokItem, tiktokPlayUrl, unfurl } from "./sites.mjs";
+import { instagramFiles, tiktokItem, tiktokPlayUrl, unfurl } from "./sites.mjs";
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -199,6 +200,32 @@ async function tiktok(id, origin, ctx) {
   });
 }
 
+const INSTAGRAM_CDN = /(^|\.)(cdninstagram\.com|fbcdn\.net)$/;
+
+// Instagram media: images and posters through the image proxy; video as a
+// redirect to the fresh CDN file, which players fetch directly.
+async function handleInstagram(code, part, request, ctx, origin) {
+  const files = await cached(origin, "instagram-v1", code, TIKTOK_TTL, ctx, () => instagramFiles(code)).catch(
+    () => null,
+  );
+  if (!files) return new Response(null, { status: 404, headers: { "cache-control": "no-store" } });
+  if (part === "avatar")
+    return files.avatar ? proxyImage(files.avatar, request, ctx) : new Response(null, { status: 404 });
+  const [kind, index] = part.split("/");
+  const entry = files.media[Number(index)];
+  const target = kind === "image" ? entry?.image : entry?.video;
+  if (!target) return new Response(null, { status: 404 });
+  if (kind === "image") return proxyImage(target, request, ctx);
+  const location = fetchableUrl(target);
+  if (!location || location.protocol !== "https:" || !INSTAGRAM_CDN.test(location.hostname)) {
+    return new Response(null, { status: 502, headers: { "cache-control": "no-store" } });
+  }
+  return new Response(null, {
+    status: 302,
+    headers: { location: location.href, "cache-control": "private, max-age=300", "access-control-allow-origin": "*" },
+  });
+}
+
 const TIKTOK_CDN = /(^|\.)(tiktokcdn(-us|-eu)?\.com|tiktokv\.com|tiktok\.com|byteoversea\.com|ibyteimg\.com)$/;
 
 async function handleTikTok(id, part, request, ctx, origin) {
@@ -251,6 +278,8 @@ export default {
     }
     const tiktokPath = /^\/tiktok\/(\d{8,25})\/(video|cover|image\/\d{1,2})$/.exec(media[2]);
     if (tiktokPath) return handleTikTok(tiktokPath[1], tiktokPath[2], request, ctx, origin);
+    const instagramPath = /^\/instagram\/([A-Za-z0-9_-]{5,40})\/(avatar|image\/\d{1,2}|video\/\d{1,2})$/.exec(media[2]);
+    if (instagramPath) return handleInstagram(instagramPath[1], instagramPath[2], request, ctx, origin);
     return respond(404, { error: "not found" });
   },
 };

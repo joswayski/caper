@@ -4029,6 +4029,9 @@ and treat every string as plain text.
 - Never renders anything from a page: tags become plain strings with length
   limits. Iframe players from arbitrary pages are ignored; only the three
   providers above get a `player` block.
+- TikTok and Instagram media addresses expire, so cards point at
+  `/m/{sig}/tiktok/{id}/…` and `/m/{sig}/instagram/{code}/…`, which look up a
+  fresh address on each view (cached ten minutes) and redirect video to it.
 - Media URLs are signed with `EMBED_MEDIA_SECRET` (Worker only), so it is not
   an open proxy.
 
@@ -4040,13 +4043,16 @@ Site readers (`apps/embed/sites.mjs`):
 | TikTok (including `vm.`/`vt.` share links) | the post page's own web-app data, unofficial | author, caption, video (re-resolved on each play) or photos, likes and comments |
 | YouTube, Vimeo | official oEmbed | channel, title, `player` |
 | Twitch | page tags | title, `player` (clip, VOD or channel) |
-| Instagram, Facebook, Threads | page tags as Meta's crawler | author, caption, image, counts. Video is not available |
+| Instagram (posts, reels, carousels) | the logged-out query Instagram's own web app makes for a post (OGInstagram's approach), unofficial; page tags as Meta's crawler if it is refused | author, caption, video or photos (re-resolved on each view), likes and comments |
+| Facebook, Threads | page tags as Meta's crawler | title, description, image |
 | everything else | OpenGraph / Twitter Card / `<title>` | site, title, description, image or direct video |
 
-X and TikTok use endpoints those sites do not document. They change without
-notice, so `node apps/embed/live-check.mjs` runs every reader against real
-posts (the `Embed live check` workflow runs it nightly). Instagram is reported
-but never fails the check; it blocks logged-out fetches often.
+X, TikTok and Instagram use endpoints those sites do not document. They change
+without notice (Instagram's query id, `doc_id`, is retired from time to time), so
+`node apps/embed/live-check.mjs` runs every reader against real posts (the
+`Embed live check` workflow runs it nightly). Instagram limits logged-out
+requests per address more than the others; if Cloudflare's addresses are
+limited, cards fall back to the page's image and caption.
 
 **Configuration.** API only: `EMBED_ORIGIN` (`https://embed.caper.chat`) and
 `EMBED_API_SECRET` (at least 32 characters), together or not at all. Without

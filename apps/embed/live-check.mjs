@@ -5,8 +5,6 @@
 //   EMBED_ORIGIN=https://embed.caper.chat EMBED_API_SECRET=… node apps/embed/live-check.mjs
 //                                                   the deployed Worker, from Cloudflare
 //
-// Instagram is reported but never fails the run: it blocks logged-out
-// fetches often enough that a miss is expected.
 
 import { unfurl } from "./sites.mjs";
 
@@ -21,7 +19,8 @@ const CASES = [
   { url: "https://www.twitch.tv/twitch", expect: ["player"] },
   { url: "https://www.theverge.com/", expect: ["title"] },
   { url: "https://en.wikipedia.org/wiki/Capers", expect: ["title"] },
-  { url: "https://www.instagram.com/p/BsOGulcndj-/", expect: ["title"], optional: true },
+  { url: "https://www.instagram.com/p/BsOGulcndj-/", expect: ["author", "images"] },
+  { url: "https://www.instagram.com/p/DaQanvRgP-q/", expect: ["author", "video"] },
 ];
 
 async function viaWorker(url) {
