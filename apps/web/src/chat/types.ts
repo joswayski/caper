@@ -1,4 +1,5 @@
 import type { PersonPicture } from "../account/pictures.ts";
+import type { ChatEmbedsEvent } from "./embeds.ts";
 
 export interface ChatAuthor extends PersonPicture {
   id: string;
@@ -134,7 +135,17 @@ export interface ChatMessage {
   channelId: string;
   seq: string;
   author: ChatAuthor;
-  content: { version: 1; type: "text"; text: string; attachments?: ChatAttachment[]; mentions?: ChatMention[] };
+  content: {
+    version: 1;
+    type: "text";
+    text: string;
+    attachments?: ChatAttachment[];
+    mentions?: ChatMention[];
+    /** Link preview cards; read through `embedsOf`, which skips malformed ones. */
+    embeds?: unknown[];
+    /** The author removed the previews before sending. */
+    suppressEmbeds?: boolean;
+  };
   createdAt: string;
   clientMessageId: string;
   reactions?: ChatReaction[];
@@ -196,6 +207,7 @@ export type ChatEvent =
   | ChatPinEvent
   | ChatForwardEvent
   | ChatEditEvent
+  | ChatEmbedsEvent
   | { type: "message.created"; channelId: string; seq: string; message: ChatMessage }
   | { type: "ready"; cursor: string }
   | { type: "migrating" }

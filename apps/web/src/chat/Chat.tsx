@@ -1274,7 +1274,7 @@ export default function Chat({
     if (scroller && allowFollow.current && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80)
       scroller.scrollTop = scroller.scrollHeight;
   }, [typingLabel]);
-  const sendDraft = async (text: string, threadRootId?: string, broadcast = false) => {
+  const sendDraft = async (text: string, threadRootId?: string, broadcast = false, suppressEmbeds = false) => {
     const client = clientRef.current;
     const files = drafts.filter((draft) => draft.threadRootId === threadRootId);
     const sources = !state.pendingSend ? files.map((draft) => uploads.current.get(draft.key)!) : [];
@@ -1305,6 +1305,7 @@ export default function Chat({
       threadRootId,
       broadcast,
       replyTo: replyTargets[threadRootId ?? "channel"],
+      suppressEmbeds,
     });
     if (sent && !threadRootId && state.hasNewer) {
       setJumpMessage(undefined);
@@ -2140,7 +2141,8 @@ export default function Chat({
               pendingSend={state.pendingSend}
               authorId={state.author?.id}
               mentionMembers={mentionMembers}
-              onSend={sendDraft}
+              onSend={(text, options) => sendDraft(text, undefined, false, options?.suppressEmbeds)}
+              linkPreviews={signedIn}
               onTyping={setTyping}
               onResize={keepLatestInView}
               onDraftPresence={setHasDraft}

@@ -15,6 +15,8 @@ import {
 } from "./types.ts";
 import type { PendingChatMessage } from "./client.ts";
 import { MessageAttachments, type LocalPreview } from "./Attachments.tsx";
+import { MessageEmbeds } from "./Embeds.tsx";
+import { embedsOf } from "./embeds.ts";
 import type { ViewAttachment } from "./MediaViewer.tsx";
 import Avatar from "../components/Avatar";
 import AdminBadge from "./AdminBadge.tsx";
@@ -492,6 +494,7 @@ function MessageRowView({
               onExpired={pending ? undefined : actions.refreshUrls}
               onView={"content" in message ? actions.viewFile(message.id) : undefined}
             />
+            {"content" in message && <MessageEmbeds embeds={embedsOf(message)} />}
             {"content" in message && reportsFeedback(message) && (
               <p className="chat-feedback-note">Caper team has been notified 🫡</p>
             )}

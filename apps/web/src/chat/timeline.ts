@@ -9,6 +9,7 @@ import {
   type ChatThreadSummary,
 } from "./types.ts";
 import { mergeEditedContent, withNewerAttachments } from "./edits.ts";
+import { withEmbeds, type ChatEmbedsEvent } from "./embeds.ts";
 
 const MAX_PENDING_EVENTS = 256;
 type DurableEvent =
@@ -27,6 +28,7 @@ export class ChatTimeline {
   private readonly eventBuffer = new Map<bigint, DurableEvent>();
   private readonly unseenReactions = new Map<string, ChatReactionEvent>();
   private readonly unseenAttachments = new Map<string, ChatAttachmentsEvent>();
+  private readonly unseenEmbeds = new Map<string, ChatEmbedsEvent>();
   private readonly forwardUpdates = new Map<string, ChatMessage>();
   private readonly pinUpdates = new Map<string, ChatMessage>();
   private readonly editUpdates = new Map<string, ChatMessage>();
@@ -67,6 +69,7 @@ export class ChatTimeline {
     this.eventBuffer.clear();
     this.unseenReactions.clear();
     this.unseenAttachments.clear();
+    this.unseenEmbeds.clear();
     this.threadSummaries.clear();
     if (this.cursorValue === 0n) this.forwardUpdates.clear();
     this.sortedMessages = undefined;
@@ -137,6 +140,28 @@ export class ChatTimeline {
       const previous = this.unseenReactions.get(event.messageId);
       if (!previous || sequence(event.seq) > sequence(previous.seq)) this.unseenReactions.set(event.messageId, event);
     }
+  }
+
+  /** Link previews for one revision; ignored for any other revision. A message
+   * not loaded yet takes them when it arrives. Returns whether anything changed. */
+  applyEmbeds(event: ChatEmbedsEvent): boolean {
+    let changed = false;
+    for (const collection of [this.byId, this.pinnedById, this.pinUpdates, this.editUpdates]) {
+      const existing = collection.get(event.messageId);
+      if (!existing) continue;
+      const next = withEmbeds(existing, event.revision, event.embeds);
+      if (next !== existing) {
+        collection.set(existing.id, next);
+        changed = true;
+        if (collection === this.byId) this.sortedMessages = undefined;
+      }
+    }
+    if (!this.byId.has(event.messageId)) {
+      if (this.unseenEmbeds.size >= MAX_PENDING_EVENTS)
+        this.unseenEmbeds.delete(this.unseenEmbeds.keys().next().value!);
+      this.unseenEmbeds.set(event.messageId, event);
+    }
+    return changed;
   }
 
   /** Same revision rule as reactions: a replayed older event (for example a
@@ -337,6 +362,13 @@ export class ChatTimeline {
         next = { ...next, reactions: message.reactions, reactionSeq: message.reactionSeq };
       }
       if (summary && summary !== existing.thread) next = { ...next, thread: summary };
+      // A replay or refetch of the same revision may carry cards it lacked.
+      if (
+        (message.revision ?? 1) === (next.revision ?? 1) &&
+        message.content.embeds !== undefined &&
+        message.content.embeds !== next.content.embeds
+      )
+        next = withEmbeds(next, message.revision ?? 1, message.content.embeds);
       if (next !== existing) {
         this.byId.set(message.id, next);
         this.sortedMessages = undefined;
@@ -351,6 +383,11 @@ export class ChatTimeline {
     if (unseenAttachments) {
       this.mergeAttachments(unseenAttachments);
       this.unseenAttachments.delete(message.id);
+    }
+    const unseenEmbeds = this.unseenEmbeds.get(message.id);
+    if (unseenEmbeds) {
+      this.unseenEmbeds.delete(message.id);
+      this.applyEmbeds(unseenEmbeds);
     }
     this.mergePinMessage(message);
     this.mergeForwardMessage(message);

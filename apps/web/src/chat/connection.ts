@@ -19,6 +19,7 @@ import {
   type ChatReactionEvent,
   type ChatTypingEvent,
 } from "./types.ts";
+import { isChatEmbedsEvent, type ChatEmbedsEvent } from "./embeds.ts";
 
 type ApplyResult = "applied" | "buffered" | "duplicate" | "overflow";
 
@@ -34,6 +35,7 @@ export interface ChatConnectionCallbacks {
   pin?: (event: ChatPinEvent) => ApplyResult;
   forward?: (event: ChatForwardEvent) => ApplyResult;
   edit?: (event: ChatEditEvent) => ApplyResult;
+  embeds?: (event: ChatEmbedsEvent) => void;
 }
 
 function parseEvent(value: unknown): ChatEvent {
@@ -48,6 +50,7 @@ function parseEvent(value: unknown): ChatEvent {
   if (isChatPinEvent(event)) return event;
   if (isChatForwardEvent(event)) return event;
   if (isChatEditEvent(event)) return event;
+  if (isChatEmbedsEvent(event)) return event;
   if (
     event.type === "typing.updated" &&
     typeof event.channelId === "string" &&
@@ -93,6 +96,7 @@ export class ChatConnection {
         kind: "chat",
         channelId: this.channelId,
         after: this.callbacks.cursor(),
+        embeds: true,
       },
       {
         cursor: this.callbacks.cursor,
@@ -101,11 +105,10 @@ export class ChatConnection {
         event: (value) => {
           // Progress is ephemeral and unsequenced: drop a malformed frame rather
           // than reloading history over a missing percentage.
-          if (
-            (value as { type?: unknown } | null)?.type === "attachment.progress" &&
-            !isChatAttachmentProgressEvent(value)
-          )
-            return;
+          // Link previews are too: a malformed one is dropped, never a reload.
+          const kind = (value as { type?: unknown } | null)?.type;
+          if (kind === "attachment.progress" && !isChatAttachmentProgressEvent(value)) return;
+          if (kind === "message.embeds" && !isChatEmbedsEvent(value)) return;
           let event: ChatEvent;
           try {
             event = parseEvent(value);
@@ -124,6 +127,10 @@ export class ChatConnection {
           }
           if (event.type === "attachment.progress") {
             if (event.channelId === this.channelId) this.callbacks.progress?.(event);
+            return;
+          }
+          if (event.type === "message.embeds") {
+            if (event.channelId === this.channelId) this.callbacks.embeds?.(event);
             return;
           }
           if (event.type === "message.reactions" && event.channelId === this.channelId && this.callbacks.reactions) {

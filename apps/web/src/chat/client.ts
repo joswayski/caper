@@ -39,6 +39,8 @@ export interface PendingChatMessage {
   threadRootId?: string;
   broadcast?: boolean;
   replyTo?: ChatReplyReference;
+  /** The author removed the link previews before sending. */
+  suppressEmbeds?: boolean;
 }
 
 export interface ThreadViewState {
@@ -1017,11 +1019,12 @@ export class ChatClient {
       attachments?: ChatAttachment[];
       replyTo?: ChatReplyReference;
       uploads?: AttachmentUpload[];
+      suppressEmbeds?: boolean;
     } = {},
   ): Promise<boolean> {
     if (this.controller.signal.aborted || this.sending || this.state.sendRejected) return false;
     if (this.state.pendingSend && this.state.pendingSend.threadRootId !== options.threadRootId) return false;
-    const { attachments = [], uploads = [], ...thread } = options;
+    const { attachments = [], uploads = [], suppressEmbeds, ...thread } = options;
     if (!this.state.pendingSend) this.pendingUploads = uploads;
     // A timeout is an unknown outcome. Enter/Send must retry the same command,
     // just like the explicit retry button, before allowing a new command.
@@ -1031,6 +1034,7 @@ export class ChatClient {
         text,
         attachments: attachments.length ? attachments : undefined,
         createdAt: new Date().toISOString(),
+        ...(suppressEmbeds ? { suppressEmbeds } : {}),
         ...thread,
       }),
       author: this.session?.author,
@@ -1098,6 +1102,7 @@ export class ChatClient {
               ...(attachmentIds.length ? { attachmentIds } : {}),
               ...(spoilerAttachmentIds.length ? { spoilerAttachmentIds } : {}),
               ...(pending.replyTo ? { replyToId: pending.replyTo.id } : {}),
+              ...(pending.suppressEmbeds ? { suppressEmbeds: true } : {}),
               ...(pending.threadRootId
                 ? {
                     threadRootId: pending.threadRootId,
@@ -1577,6 +1582,10 @@ export class ChatClient {
         pin: (event) => this.receiveEvent(event),
         forward: (event) => this.receiveEvent(event),
         edit: (event) => this.receiveEvent(event),
+        embeds: (event) => {
+          if (this.timeline.applyEmbeds(event))
+            this.update({ messages: this.timeline.messages, pinnedMessages: this.timeline.pinnedMessages });
+        },
         status: (online) => {
           if (!online) {
             this.typers.clear();

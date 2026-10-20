@@ -5,6 +5,8 @@ import { DraftAttachments, type DraftAttachment, type DraftEditing } from "./Att
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { readDraft, saveDraft } from "./drafts.ts";
+import { MessageEmbeds } from "./Embeds.tsx";
+import { fetchPreview, previewLink, type ChatEmbed } from "./embeds.ts";
 import EmojiButton from "./EmojiButton.tsx";
 import { insertEmoji } from "./emoji-autocomplete.ts";
 import MentionTextarea from "./MentionTextarea.tsx";
@@ -54,7 +56,9 @@ interface ComposerProps {
   };
   authorId?: string;
   mentionMembers?: MentionCandidate[];
-  onSend: (text: string) => Promise<unknown> | undefined;
+  onSend: (text: string, options?: { suppressEmbeds?: boolean }) => Promise<unknown> | undefined;
+  /** Shows the first link's preview card above the draft (signed-in accounts). */
+  linkPreviews?: boolean;
   onTyping: (active: boolean) => void;
   /** Wraps each resize, which reports whether the height changed, so the
    * conversation can measure its position first and stay on the newest message. */
@@ -68,6 +72,34 @@ interface ComposerProps {
  * The channel composer owns its draft, caret and suggestion state, so typing
  * re-renders only this form rather than the whole conversation.
  */
+/** The first link's card while composing. Removing it means the message is
+ * sent without previews; the choice lasts while that link stays in the draft. */
+function useLinkPreview(draft: string) {
+  const link = previewLink(draft);
+  const [shown, setShown] = useState<{ url: string; embed: ChatEmbed | null }>();
+  const [removed, setRemoved] = useState<string>();
+  // A sent or cleared draft starts over: the next link gets its card again.
+  if (!draft && removed) setRemoved(undefined);
+  useEffect(() => {
+    if (!link || link === removed) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      fetchPreview(link, controller.signal)
+        .then((embed) => setShown({ url: link, embed }))
+        .catch(() => undefined);
+    }, 400);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [link, removed]);
+  return {
+    embed: link && link !== removed && shown?.url === link ? shown.embed : null,
+    remove: () => setRemoved(link),
+    removed: (text: string) => !!removed && previewLink(text) === removed,
+  };
+}
+
 export default function Composer({
   ref,
   channelName,
@@ -85,6 +117,7 @@ export default function Composer({
   onResize,
   onDraftPresence,
   attachments,
+  linkPreviews = false,
 }: ComposerProps) {
   const [draft, setDraft] = useState(() => (draftKey ? readDraft(draftKey) : ""));
   const [validationError, setValidationError] = useState<string>();
@@ -155,12 +188,13 @@ export default function Composer({
     return () => observer.disconnect();
   }, []);
 
+  const preview = useLinkPreview(linkPreviews ? draft : "");
   const submit = async () => {
     if (!identityReady || sending || sendRejected || pendingSend?.threadRootId) return;
     setValidationError(undefined);
     const submitted = pendingSend?.text ?? draft;
     try {
-      await onSend(submitted);
+      await onSend(submitted, { suppressEmbeds: preview.removed(submitted) });
     } catch (error) {
       setValidationError(error instanceof Error ? error.message : "Message could not be sent.");
     }
@@ -213,6 +247,11 @@ export default function Composer({
           onToggleSpoiler={sending ? undefined : attachments.onToggleSpoiler}
           editing={attachments.editing}
         />
+      )}
+      {preview.embed && (
+        <div className="chat-composer-embed">
+          <MessageEmbeds embeds={[preview.embed]} onRemove={preview.remove} />
+        </div>
       )}
       <form
         data-attach={!!attachments || undefined}

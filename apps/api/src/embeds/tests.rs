@@ -63,6 +63,13 @@ fn edits_keep_cards_only_for_links_still_in_the_text() {
     let mut bare = json!({"version": 1, "type": "text", "text": "no links"});
     carry_over(&previous, &mut bare);
     assert!(bare.get("embeds").is_none());
+    let mut kept_off = json!({"version": 1, "type": "text", "text": "https://b.example/"});
+    carry_over(
+        &json!({"text": "https://b.example/", "suppressEmbeds": true}),
+        &mut kept_off,
+    );
+    assert_eq!(kept_off["suppressEmbeds"], true);
+    assert!(kept_off.get("embeds").is_none());
 }
 
 #[test]
@@ -102,6 +109,10 @@ fn jobs_come_from_live_messages_with_links_or_edits_that_dropped_them() {
         Job::from_event(&json!({"type": "message.reactions", "channelId": "c1", "seq": "8"}))
             .is_none()
     );
+    // The author removed the previews before sending.
+    let quiet =
+        json!({"id": "m1", "content": {"text": "https://a.example/", "suppressEmbeds": true}});
+    assert!(Job::from_event(&event("message.created", quiet)).is_none());
 }
 
 #[test]

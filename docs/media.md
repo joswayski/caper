@@ -3969,7 +3969,9 @@ removes its content, cards included.
 **Composer preview.** `POST /api/embeds/preview {url}` (signed-in accounts, 30
 a minute) returns `{embed}` for one link so the composer can show the card
 before sending. The Worker caches answers for 30 minutes, so the card after
-sending is instant.
+sending is instant. Removing the card (×) sends the message with
+`suppressEmbeds: true`: it is stored as `content.suppressEmbeds`, no job runs,
+and edits keep it.
 
 **Compatibility.** Released clients ignore `content.embeds`. Released desktop
 builds treat any unknown chat event as a broken stream and reconnect, so the
@@ -3977,6 +3979,11 @@ gateway sends `message.embeds` only to subscriptions that ask for it with
 `embeds: true` in their `subscribe` frame; every client that draws cards sends
 it. Older gateways drop the event (it has no sequence) and older clients see
 cards after a reload.
+
+**Players.** Web loads the provider's own embed page in a sandboxed
+cross-origin iframe only after Play (YouTube through `youtube-nocookie.com`;
+Twitch with `parent` set to the page's host). The browser keeps it in its own
+origin and process, with no access to Caper.
 
 **Embed format (version 1).** `{version: 1, url, site: {name, domain}, blocks}`.
 `url` is the link as posted and is what the card opens. `site.domain` comes

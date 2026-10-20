@@ -23,6 +23,8 @@ export interface SubscriptionRequest {
   token?: string;
   spaceId?: string;
   userIds?: string[];
+  /** Chat only: this client draws link previews and wants `message.embeds`. */
+  embeds?: boolean;
 }
 
 export interface SubscriptionCallbacks {

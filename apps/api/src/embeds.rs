@@ -189,6 +189,11 @@ fn valid(embed: &Value, url: &str) -> bool {
 /// An edit keeps the cards for links it still has, so they do not flicker
 /// while the new text's links are unfurled.
 pub(crate) fn carry_over(previous: &Value, content: &mut Value) {
+    // Previews the author removed stay removed.
+    if previous["suppressEmbeds"] == true {
+        content["suppressEmbeds"] = json!(true);
+        return;
+    }
     let Some(embeds) = previous["embeds"].as_array() else {
         return;
     };
@@ -229,7 +234,10 @@ impl Job {
             _ => return None,
         };
         let message = &event["message"];
-        if message.get("deletedAt").is_some() || message.get("forward").is_some() {
+        if message.get("deletedAt").is_some()
+            || message.get("forward").is_some()
+            || message["content"]["suppressEmbeds"] == true
+        {
             return None;
         }
         let links = links(message["content"]["text"].as_str().unwrap_or_default());

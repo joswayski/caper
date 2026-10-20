@@ -615,6 +615,9 @@ struct SendInput {
     #[serde(default)]
     broadcast: bool,
     reply_to_id: Option<String>,
+    /// The author removed the link previews before sending.
+    #[serde(default)]
+    suppress_embeds: bool,
 }
 
 #[derive(Deserialize)]
@@ -794,7 +797,7 @@ async fn send(
     Json(input): Json<SendInput>,
 ) -> Result<Json<Value>, ApiError> {
     let chat = enabled(&state)?;
-    let payload = send_message_with_spoilers(
+    let payload = send_message_with_options(
         &chat.pool,
         &channel,
         sender_token(&headers)?,
@@ -805,6 +808,7 @@ async fn send(
         input.thread_root_id.as_deref(),
         input.broadcast,
         input.reply_to_id.as_deref(),
+        input.suppress_embeds,
     )
     .await?;
     chat.wake.notify_one();
@@ -1015,6 +1019,7 @@ pub(crate) async fn send_message(
     .await
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_message_with_spoilers(
     pool: &PgPool,
@@ -1027,6 +1032,36 @@ pub(crate) async fn send_message_with_spoilers(
     root: Option<&str>,
     broadcast: bool,
     reply_to: Option<&str>,
+) -> Result<Value, ApiError> {
+    send_message_with_options(
+        pool,
+        channel,
+        token,
+        client_id,
+        text,
+        attachment_ids,
+        spoiler_attachment_ids,
+        root,
+        broadcast,
+        reply_to,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_message_with_options(
+    pool: &PgPool,
+    channel: &str,
+    token: &str,
+    client_id: Uuid,
+    text: &str,
+    attachment_ids: &[String],
+    spoiler_attachment_ids: &[String],
+    root: Option<&str>,
+    broadcast: bool,
+    reply_to: Option<&str>,
+    suppress_embeds: bool,
 ) -> Result<Value, ApiError> {
     if spoiler_attachment_ids
         .iter()
@@ -1050,6 +1085,9 @@ pub(crate) async fn send_message_with_spoilers(
         ));
     }
     let mut content = prepare_content(text, !attachment_ids.is_empty())?;
+    if suppress_embeds {
+        content["suppressEmbeds"] = json!(true);
+    }
     if broadcast && root.is_none() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
