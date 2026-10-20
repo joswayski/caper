@@ -522,7 +522,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != generation) return@launch
                 val landing = spaceLandingChannel(detail.channels, preferredChannelId, lastChannelBySpace[id])
                 // While restoring, the loading screen waits for the landing conversation too.
-                mutable.value = mutable.value.copy(selectedSpace = detail, busy = false, presencePage = 0,
+                mutable.value = mutable.value.copy(selectedSpace = detail, busy = false,
                     restoring = mutable.value.restoring && landing != null)
                 // Before a cached conversation of this space opens.
                 repairProfiles(detail.members.map { it.profile() }, since)
@@ -1434,7 +1434,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 mutable.value = mutable.value.copy(
                     selectedSpace = destination.detail, selectedChannel = destination.channel,
                     messages = mergeTimelinePins(destination.history.messages), hasMoreMessages = destination.history.hasMore,
-                    presencePage = if (previousSpace == spaceId) mutable.value.presencePage else 0,
                     deniedVoiceChannels = if (previousSpace == spaceId) mutable.value.deniedVoiceChannels else emptySet(),
                     busy = false, error = null,
                 )
@@ -1518,7 +1517,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                         selectedSpace = detail ?: mutable.value.selectedSpace, selectedChannel = channel, selectedDirectId = direct?.id,
                         directConversations = if (direct == null) mutable.value.directConversations else mutable.value.directConversations.filter { it.id != direct.id } + direct,
                         messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore,
-                        presencePage = if (detail == null || previousSpace == detail.space.id) mutable.value.presencePage else 0,
                         deniedVoiceChannels = if (detail == null || previousSpace == detail.space.id) mutable.value.deniedVoiceChannels else emptySet(),
                         busy = false, error = null, messagesLoading = false,
                     )
@@ -1604,14 +1602,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request == generation && anchor == historyAnchorRequest) mutable.value = mutable.value.copy(loadingNewer = false, refreshError = message(error))
             }
         }
-    }
-
-    fun setPresencePage(page: Int) {
-        val members = mutable.value.selectedSpace?.members ?: return
-        val max = ((members.size - 1).coerceAtLeast(0)) / PRESENCE_PAGE_SIZE
-        val next = page.coerceIn(0, max)
-        mutable.value = mutable.value.copy(presencePage = next, presence = emptyMap())
-        watchVisiblePresence()
     }
 
     private val availabilityRequests = mutableMapOf<String, Job>()
@@ -2582,7 +2572,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         )
         gateway = connection
         gatewayStatus = viewModelScope.launch {
-            connection.status.collect { status -> if (generation == request) mutable.value = mutable.value.copy(gateway = status) }
+            connection.status.collect { status -> if (generation == request) mutable.value = mutable.value.copy(gateway = status,
+                presence = if (status == GatewayStatus.LIVE) mutable.value.presence else emptyMap()) }
         }
         connection.start()
         if (participating) watchVisiblePresence()
@@ -2593,10 +2584,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun watchVisiblePresence() {
         val detail = mutable.value.selectedSpace ?: return
         if (detail.space.demo || accountToken == null || detail.members.isEmpty()) return
-        val start = mutable.value.presencePage * PRESENCE_PAGE_SIZE
-        // A private channel's readers lead the member list's pages.
-        val ids = detail.memberOrder(mutable.value.selectedChannel?.id).drop(start).take(PRESENCE_PAGE_SIZE).map { it.id }
-        if (ids.isNotEmpty()) gateway?.watchPresence(detail.space.id, ids)
+        gateway?.watchPresence(detail.space.id, allMembers = true)
     }
 
     private fun receiveTyping(author: ChatAuthor, active: Boolean, revision: String) {
@@ -3611,7 +3599,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private companion object {
-        const val PRESENCE_PAGE_SIZE = 25
         const val TYPING_INTERVAL_MS = 500L
     }
 }

@@ -1752,10 +1752,16 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             client.send({ type: "event", id: frame.id, event });
           client.send({ type: "event", id: frame.id, event: { type: "ready", cursor: channelHead(channelId) } });
         } else if (frame.kind === "presence") {
-          if (!frame.spaceId || !Array.isArray(frame.userIds) || !frame.userIds.length || frame.userIds.length > 100)
+          if (
+            !frame.spaceId ||
+            (frame.allMembers
+              ? frame.userIds?.length
+              : !Array.isArray(frame.userIds) || !frame.userIds.length || frame.userIds.length > 100)
+          )
             return client.send({ type: "error", id: frame.id, status: 400, error: "invalid subscription" });
           const detail = state.spaces.find((entry) => entry.space.id === frame.spaceId);
-          if (!detail || frame.userIds.some((userId) => !detail.members.some((member) => member.id === userId)))
+          const userIds = frame.allMembers ? detail?.members.map((member) => member.id) : frame.userIds;
+          if (!detail || userIds.some((userId) => !detail.members.some((member) => member.id === userId)))
             return client.send({ type: "error", id: frame.id, status: 403, error: "presence subscription denied" });
           client.subscriptions.set(frame.id, frame);
           client.send({
@@ -1763,7 +1769,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             id: frame.id,
             event: {
               type: "snapshot",
-              members: frame.userIds.map((userId) => ({ userId, status: userId === ids.other ? "idle" : "online" })),
+              members: userIds.map((userId) => ({ userId, status: userId === ids.other ? "idle" : "online" })),
             },
           });
         } else if (frame.kind === "media") {

@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Search, X } from "lucide-react";
 import PresenceDot from "../components/PresenceDot";
 import Avatar from "../components/Avatar";
 import { watchPresence } from "../gateway/client";
@@ -8,7 +8,6 @@ import type { ChatAuthor } from "../chat/types";
 import MentionCard, { type MentionCardTarget } from "../chat/MentionCard";
 import { mentionCardPerson } from "../chat/mentions";
 
-const PAGE_SIZE = 25;
 type Status = "online" | "idle" | "offline";
 
 /** A private channel's readers lead its member list; the rest of the space follows. */
@@ -21,7 +20,7 @@ export function memberGroups(members: Member[], channelMemberIds?: readonly stri
   };
 }
 
-/** Only the current member page has live presence subscriptions. */
+/** One space-scoped subscription; filtering never changes who has live presence. */
 export default function MemberPresence({
   spaceId,
   members,
@@ -44,41 +43,58 @@ export default function MemberPresence({
   profileSpaces: (personId: string) => Space[];
   onClose: () => void;
 }) {
-  const [page, setPage] = useState(0);
+  const [searching, setSearching] = useState(false);
+  const [query, setQuery] = useState("");
+  const searchButton = useRef<HTMLButtonElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
   const [statuses, setStatuses] = useState<Record<string, Status>>({});
   const [live, setLive] = useState(false);
   const [profile, setProfile] = useState<MentionCardTarget>();
-  const { inChannel, others } = memberGroups(members, channel?.memberIds);
-  const ordered = inChannel ? [...inChannel, ...others] : members;
-  const lastPage = Math.max(0, Math.ceil(ordered.length / PAGE_SIZE) - 1);
-  const currentPage = Math.min(page, lastPage);
-  const start = currentPage * PAGE_SIZE;
-  const visible = ordered.slice(start, start + PAGE_SIZE);
-  // Where this page splits between the channel's group and the rest of the space.
-  const split = inChannel ? Math.max(0, Math.min(visible.length, inChannel.length - start)) : 0;
-  const ids = visible.map((member) => member.id).join(",");
+  const filter = query.trim().toLocaleLowerCase();
+  const visible = members.filter(
+    (member) =>
+      member.displayName.toLocaleLowerCase().includes(filter) || member.username.toLocaleLowerCase().includes(filter),
+  );
+  const { inChannel, others } = memberGroups(visible, channel?.memberIds);
+
+  const closeSearch = () => {
+    setQuery("");
+    setSearching(false);
+    requestAnimationFrame(() => searchButton.current?.focus());
+  };
 
   useEffect(() => {
-    setPage(0);
+    if (searching) searchInput.current?.focus();
+  }, [searching]);
+
+  useEffect(() => {
+    setSearching(false);
+    setQuery("");
     setProfile(undefined);
   }, [spaceId]);
 
   useEffect(() => {
     setLive(false);
     setStatuses({});
-    if (!ids) return;
-    return watchPresence(
+    if (demo) return;
+    let active = true;
+    const stop = watchPresence(
       spaceId,
-      ids.split(","),
+      "all",
       (values) => {
-        setStatuses((previous) => ({
-          ...previous,
-          ...Object.fromEntries(values.map((value) => [value.userId, value.status])),
-        }));
+        if (active) setStatuses(Object.fromEntries(values.map((value) => [value.userId, value.status])));
       },
-      setLive,
+      (connected) => {
+        if (!active) return;
+        setLive(connected);
+        if (!connected) setStatuses({});
+      },
     );
-  }, [spaceId, ids]);
+    return () => {
+      active = false;
+      stop();
+    };
+  }, [spaceId, demo]);
 
   const row = (member: Member) => {
     const status = statuses[member.id];
@@ -139,51 +155,82 @@ export default function MemberPresence({
           <X aria-hidden="true" />
         </button>
       </h2>
-      <div>
+      <div className={`member-roster${searching ? " member-roster-searching" : ""}`}>
+        {!demo &&
+          (searching ? (
+            <div
+              className="member-search"
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeSearch();
+                }
+              }}
+            >
+              <Search aria-hidden="true" />
+              <input
+                ref={searchInput}
+                type="text"
+                aria-label="Filter members"
+                placeholder="Find a member…"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              <button
+                type="button"
+                className="member-search-button"
+                aria-label="Clear and close member search"
+                onClick={closeSearch}
+              >
+                <X aria-hidden="true" />
+              </button>
+            </div>
+          ) : (
+            <button
+              ref={searchButton}
+              type="button"
+              className="member-search-button member-search-open"
+              aria-label="Search members"
+              onClick={() => setSearching(true)}
+            >
+              <Search aria-hidden="true" />
+            </button>
+          ))}
         {demo ? (
           <p className="member-presence-connecting">
             General is open to everyone. People in voice appear in the channel sidebar.
           </p>
         ) : (
-          !members.length && <p className="member-presence-connecting">No members to show.</p>
+          !visible.length && (
+            <p className="member-presence-connecting" role="status">
+              {filter ? "No members found." : "No members to show."}
+            </p>
+          )
         )}
         {inChannel ? (
           <>
-            {split > 0 && (
+            {inChannel.length > 0 && (
               <section className="member-group member-group-channel" aria-label={`In #${channel!.name}`}>
                 <h3 className="member-group-label">
                   <span>In #{channel!.name}</span>
                   <span className="section-count">{inChannel.length}</span>
                 </h3>
-                {presenceGroups(visible.slice(0, split))}
+                {presenceGroups(inChannel)}
               </section>
             )}
-            {split < visible.length && (
+            {others.length > 0 && (
               <section className="member-group member-group-others" aria-label="Others in this space">
                 <h3 className="member-group-label">
                   <span>Others in this space</span>
                   <span className="section-count">{others.length}</span>
                 </h3>
-                {presenceGroups(visible.slice(split))}
+                {presenceGroups(others)}
               </section>
             )}
           </>
         ) : (
           presenceGroups(visible)
-        )}
-        {lastPage > 0 && <p className="member-presence-connecting">Presence counts are for this page.</p>}
-        {lastPage > 0 && (
-          <div className="member-presence-pages">
-            <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>
-              Previous
-            </button>
-            <span>
-              {currentPage + 1} / {lastPage + 1}
-            </span>
-            <button type="button" disabled={currentPage === lastPage} onClick={() => setPage(currentPage + 1)}>
-              Next
-            </button>
-          </div>
         )}
       </div>
       {profile && (

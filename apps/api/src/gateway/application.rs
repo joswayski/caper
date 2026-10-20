@@ -417,6 +417,8 @@ struct Subscribe {
     token: Option<String>,
     space_id: Option<String>,
     #[serde(default)]
+    all_members: bool,
+    #[serde(default)]
     user_ids: Vec<String>,
 }
 
@@ -903,7 +905,9 @@ async fn presence_subscription(
     sub: &Subscribe,
     out: &mpsc::Sender<Value>,
 ) -> Result<(), ApiError> {
-    if sub.user_ids.is_empty() || sub.user_ids.len() > 100 {
+    if (sub.all_members && !sub.user_ids.is_empty())
+        || (!sub.all_members && (sub.user_ids.is_empty() || sub.user_ids.len() > 100))
+    {
         return Err(invalid());
     }
     let presence = state
@@ -913,42 +917,59 @@ async fn presence_subscription(
         .ok_or_else(chat::unavailable)?;
     let space = sub.space_id.as_deref().ok_or_else(invalid)?;
     let user = identity.user.ok_or_else(unauthorized)?;
-    let feeds: Vec<_> = sub
-        .user_ids
-        .iter()
-        .map(|id| state.application.person(id))
-        .collect();
-    let streams: Vec<_> = feeds
-        .iter()
-        .map(|feed| {
-            futures_util::stream::unfold(feed.value.subscribe(), |mut receiver| async move {
-                receiver.changed().await.ok()?;
-                receiver.borrow_and_update();
-                Some(((), receiver))
-            })
-            .boxed()
-        })
-        .collect();
-    let mut changes = futures_util::stream::select_all(streams);
+    let mut ids = Vec::new();
+    let mut feeds = Vec::new();
+    let mut changes = futures_util::stream::select_all(Vec::new());
     let mut last = Value::Null;
     let mut timer = tokio::time::interval(Duration::from_secs(10));
     loop {
         identity.check(state).await?;
-        let permitted: Vec<String> = sqlx::query_scalar("SELECT u.external_id FROM public.space_members m JOIN public.spaces s ON s.id=m.space_id JOIN public.users u ON u.id=m.user_id WHERE s.external_id=$1 AND s.deleted_at IS NULL AND m.deleted_at IS NULL AND u.deleted_at IS NULL AND u.external_id=ANY($2) AND EXISTS(SELECT 1 FROM public.space_members own WHERE own.space_id=s.id AND own.user_id=$3 AND own.deleted_at IS NULL)")
-            .bind(space).bind(&sub.user_ids).bind(user).fetch_all(&state.chat.pool).await.map_err(|_| chat::unavailable())?;
+        // Anchor authorization on the space, not the returned members: an empty
+        // roster must never let a removed requester keep a subscription alive.
+        let permitted: Option<Vec<String>> = sqlx::query_scalar("SELECT ARRAY(SELECT u.external_id FROM public.space_members m JOIN public.users u ON u.id=m.user_id WHERE m.space_id=s.id AND m.deleted_at IS NULL AND u.deleted_at IS NULL AND ($4 OR u.external_id=ANY($2)) ORDER BY u.external_id) FROM public.spaces s WHERE s.external_id=$1 AND s.deleted_at IS NULL AND EXISTS(SELECT 1 FROM public.space_members own WHERE own.space_id=s.id AND own.user_id=$3 AND own.deleted_at IS NULL)")
+            .bind(space).bind(&sub.user_ids).bind(user).bind(sub.all_members).fetch_optional(&state.chat.pool).await.map_err(|_| chat::unavailable())?;
+        let permitted = permitted
+            .ok_or_else(|| ApiError::new(StatusCode::FORBIDDEN, "presence subscription denied"))?;
         // Fail closed on removed memberships, including subscriptions established
         // before a privacy change. Never return global population snapshots.
         let unique: std::collections::HashSet<_> = sub.user_ids.iter().collect();
-        if permitted.len() != unique.len() {
+        if !sub.all_members && permitted.len() != unique.len() {
             return Err(ApiError::new(
                 StatusCode::FORBIDDEN,
                 "presence subscription denied",
             ));
         }
-        if last.is_null() {
-            state
-                .application
-                .update_people(presence.statuses(&sub.user_ids).await?);
+        let next_ids = if sub.all_members {
+            permitted
+        } else {
+            sub.user_ids.clone()
+        };
+        if last.is_null() || ids != next_ids {
+            ids = next_ids;
+            feeds = ids.iter().map(|id| state.application.person(id)).collect();
+            // Rebuild watches with the roster so newly added members are tracked
+            // and removed feeds can be reclaimed by the existing repair loop.
+            changes = futures_util::stream::select_all(
+                feeds
+                    .iter()
+                    .map(|feed| {
+                        futures_util::stream::unfold(
+                            feed.value.subscribe(),
+                            |mut receiver| async move {
+                                receiver.changed().await.ok()?;
+                                receiver.borrow_and_update();
+                                Some(((), receiver))
+                            },
+                        )
+                        .boxed()
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            for chunk in ids.chunks(100) {
+                state
+                    .application
+                    .update_people(presence.statuses(chunk).await?);
+            }
         }
         let values: Vec<Value> = feeds
             .iter()
@@ -965,7 +986,7 @@ async fn presence_subscription(
             }
             last = members;
         }
-        tokio::select! { _ = changes.next() => {}, _ = timer.tick() => {} }
+        tokio::select! { _ = changes.next(), if !changes.is_empty() => {}, _ = timer.tick() => {} }
     }
 }
 

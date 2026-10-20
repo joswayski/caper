@@ -164,7 +164,11 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     }
 
     /** The members in the order the member list shows them for [channelId]. */
-    fun memberOrder(channelId: String?): List<Member> = memberGroups(channelId)?.let { it.first + it.second } ?: members
+    fun memberOrder(channelId: String?, query: String = ""): List<Member> {
+        val filter = query.trim()
+        val ordered = memberGroups(channelId)?.let { it.first + it.second } ?: members
+        return ordered.filter { filter.isEmpty() || it.displayName.contains(filter, ignoreCase = true) || it.username.contains(filter, ignoreCase = true) }
+    }
 }
 /** [admin]: sent by a Caper feedback team member (ADMIN badge), stamped by the server at send time. */
 @Serializable data class ChatAuthor(
@@ -610,7 +614,6 @@ data class AppUiState(
     val deniedVoiceChannels: Set<String> = emptySet(),
     /** Voice availability by media root ("" is General's demo root); absent while checking. */
     val voiceAvailability: Map<String, Boolean> = emptyMap(),
-    val presencePage: Int = 0,
     /** The private channel [channelGrants] and [pendingChannelInvitations] belong to; read them with [channelGrantsFor]. */
     val channelGrantsChannelId: String? = null,
     val channelGrants: List<Member> = emptyList(),
