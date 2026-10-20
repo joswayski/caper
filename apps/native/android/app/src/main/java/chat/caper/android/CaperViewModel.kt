@@ -77,6 +77,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private val pendingSends = PendingSendTracker()
     private val unloadedReactions = mutableMapOf<String, ReactionUpdate>()
     private val unloadedAttachments = mutableMapOf<String, AttachmentsUpdate>()
+    /** Link cards for messages not loaded yet, applied when they arrive (`data/Embeds.kt`). */
+    private val unloadedEmbeds = linkedMapOf<String, EmbedsUpdate>()
     private data class ReactionIntent(val emoji: String, val active: Boolean, val version: Long)
     private val reactionIntents = mutableMapOf<String, LinkedHashMap<String, ReactionIntent>>()
     private val reactionWorkers = mutableMapOf<String, Job>()
@@ -1474,7 +1476,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != generation || anchorRequest != historyAnchorRequest) return@launch
                 val newer = authoritativeMessages()
                 mutable.value = mutable.value.copy(
-                    messages = projectMessages(mergeTimelinePins(mergeMessages(newer, history.messages, unloadedReactions, unloadedAttachments))), hasMoreMessages = history.hasMore,
+                    messages = projectMessages(mergeTimelinePins(mergeMessages(newer, history.messages, unloadedReactions, unloadedAttachments, unseenEmbeds = unloadedEmbeds))), hasMoreMessages = history.hasMore,
                     threadOnlyRows = mutable.value.threadOnlyRows - history.messages.map { it.id }.toSet(),
                     contextStart = if (mutable.value.contextStart != null) history.messages.firstOrNull()?.seq ?: mutable.value.contextStart else null,
                     loadingOlder = false,
@@ -1561,7 +1563,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val incoming = threadPage?.let { listOf(it.root) + context } ?: context
                 ++threadRequest
                 mutable.value = mutable.value.copy(
-                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), incoming, unloadedReactions))),
+                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), incoming, unloadedReactions, unseenEmbeds = unloadedEmbeds))),
                     thread = threadPage?.let { ThreadUi(requireNotNull(root), loading = false, hasMore = it.hasMore, before = context.firstOrNull()?.seq,
                         hasNewer = it.hasNewer, after = context.lastOrNull()?.seq, windowStart = context.firstOrNull()?.seq, windowEnd = if (it.hasNewer) context.lastOrNull()?.seq else null) },
                     threadOnlyRows = if (root == null) mutable.value.threadOnlyRows - context.map { it.id }.toSet() else mutable.value.threadOnlyRows + incoming.filter { it.id !in loaded && (it.threadRootId == null || it.broadcast) }.map { it.id },
@@ -1595,7 +1597,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 val page = api.history(accountToken, channel, after = after)
                 if (request != generation || anchor != historyAnchorRequest) return@launch
                 mutable.value = mutable.value.copy(
-                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), page.messages, unloadedReactions))),
+                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), page.messages, unloadedReactions, unseenEmbeds = unloadedEmbeds))),
                     threadOnlyRows = mutable.value.threadOnlyRows - page.messages.map { it.id }.toSet(),
                     contextEnd = if (page.hasNewer) page.messages.lastOrNull()?.seq ?: after else null,
                     hasNewerMessages = page.hasNewer, loadingNewer = false,
@@ -1944,7 +1946,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     windowEnd = if (older) thread.windowEnd else if (page.hasNewer) page.messages.lastOrNull()?.seq else null)
                 threadPages[thread.rootId] = pageState
                 mutable.value = mutable.value.copy(
-                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), rows, unloadedReactions, unloadedAttachments))),
+                    messages = projectMessages(mergeTimelinePins(mergeMessages(authoritativeMessages(), rows, unloadedReactions, unloadedAttachments, unseenEmbeds = unloadedEmbeds))),
                     threadOnlyRows = mutable.value.threadOnlyRows + rows.filter { it.id !in loaded && (it.threadRootId == null || it.broadcast) }.map { it.id },
                     thread = pageState,
                 )
@@ -1976,6 +1978,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** Preflight leaves the whole selection in the composer until every upload is ready. */
     fun send(text: String, confirmed: () -> Unit = {}, threadRootId: String? = null, broadcast: Boolean = false,
         unchanged: () -> Boolean = { true }, accepted: () -> Unit = {},
+        /** The composer's link card was removed: sent with `suppressEmbeds`. */
+        suppressEmbeds: Boolean = false,
     ): Boolean {
         if (uploadSend?.isActive == true) return false
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return false
@@ -1999,15 +2003,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     current.pendingMessage != null || !current.canParticipate) return@launch
                 val ready = current.attachmentDrafts[target].orEmpty()
                 if (ready.map { it.key } != keys || ready.any { it.attachment == null || it.error != null }) return@launch
-                if (sendReady(text, confirmed, threadRootId, broadcast)) accepted()
+                if (sendReady(text, confirmed, threadRootId, broadcast, suppressEmbeds)) accepted()
             }
             return false
         }
-        return sendReady(text, confirmed, threadRootId, broadcast)
+        return sendReady(text, confirmed, threadRootId, broadcast, suppressEmbeds)
     }
 
     /** Returns false when nothing was sent, so the composer keeps its text and files. */
-    private fun sendReady(text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean): Boolean {
+    private fun sendReady(text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean, suppressEmbeds: Boolean = false): Boolean {
         if (mutable.value.pendingMessage?.let { it.error == null || it.rejected } == true) return false
         if (mutable.value.pendingMessage?.let { it.threadRootId != threadRootId } == true) return false
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return false
@@ -2022,7 +2026,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             viewModelScope.launch {
                 val session = createChatSession(accountRequest)
                 if (request != generation || accountRequest != accountGeneration || mutable.value.selectedChannel?.id != channel.id) return@launch
-                if (session != null && chatAuthor != null) send(text, confirmed, threadRootId, broadcast)
+                if (session != null && chatAuthor != null) send(text, confirmed, threadRootId, broadcast, suppressEmbeds = suppressEmbeds)
                 else fail(IllegalStateException("Chat session is unavailable."))
             }
             return true
@@ -2038,7 +2042,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (retry == null && text.isBlank() && files.isEmpty()) return false
         val request = generation
-        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, mutable.value.replyTargets[threadRootId ?: "channel"], files.filter { it.spoiler }.map { it.id }, confirmed)
+        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, mutable.value.replyTargets[threadRootId ?: "channel"], files.filter { it.spoiler }.map { it.id }, suppressEmbeds, confirmed)
         if (retry == null) {
             pendingDrafts = drafts
             pendingNeedsUpload = drafts.any { uploadStale(it) }
@@ -2078,7 +2082,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     try {
                         sent = retryUnknownSend {
                             api.sendMessage(accountToken, capability, channel.id, author, operation.id, operation.text,
-                                operation.attachmentIds, operation.threadRootId, operation.broadcast, operation.replyTo?.id, operation.spoilerAttachmentIds)
+                                operation.attachmentIds, operation.threadRootId, operation.broadcast, operation.replyTo?.id, operation.spoilerAttachmentIds,
+                                operation.suppressEmbeds)
                         }
                         break
                     } catch (error: ApiException) {
@@ -2531,6 +2536,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /** Web's Retry session. */
     fun retrySession() { viewModelScope.launch { createChatSession(accountGeneration) } }
 
+    /**
+     * The card [url] will get once sent, for the composer (web's `fetchPreview`). Null when signed
+     * out, when it has none, and on any error (401, 503, offline): the composer then shows nothing.
+     */
+    suspend fun linkPreview(url: String): ChatEmbed? {
+        val token = accountToken ?: return null
+        return try { api.embedPreview(token, url) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Throwable) { null }
+    }
+
     private fun openGateway(channel: String, cursor: String, request: Long, participating: Boolean = true) {
         durableReplayCursor = cursor
         markConversationRead(channel, cursor)
@@ -2546,6 +2560,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             onReaction = { value -> viewModelScope.launch { if (generation == request) receiveReaction(value) } },
             onAttachments = { value -> viewModelScope.launch { if (generation == request) receiveAttachments(value) } },
             onAttachmentProgress = { value -> viewModelScope.launch { if (generation == request) receiveAttachmentProgress(value) } },
+            onEmbeds = { value -> viewModelScope.launch { if (generation == request) receiveEmbeds(value) } },
             onPin = { value -> viewModelScope.launch { if (generation == request) receivePin(value) } },
             onForward = { value -> viewModelScope.launch { if (generation == request) receiveForward(value) } },
             onEdit = { value -> viewModelScope.launch { if (generation == request) receiveEdit(value) } },
@@ -2625,7 +2640,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (message.threadRootId != null) refreshThreadUnread()
         val messages = authoritativeMessages()
         val isNew = messages.none { it.id == message.id }
-        mutable.value = mutable.value.copy(messages = projectMessages(mergeTimelinePins(mergeMessages(messages, listOf(message), unloadedReactions, unloadedAttachments))))
+        mutable.value = mutable.value.copy(messages = projectMessages(mergeTimelinePins(mergeMessages(messages, listOf(message), unloadedReactions, unloadedAttachments, unseenEmbeds = unloadedEmbeds))))
         if (isNew) {
             // Web chimes for someone else's new message in the open conversation.
             // Never for a blocked author or an incoming request.
@@ -2681,6 +2696,24 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             pinnedMessages = pinned,
             attachmentProgress = mutable.value.attachmentProgress - settled,
         )
+    }
+
+    /**
+     * `message.embeds`: link cards for one revision, unsequenced. Applied only to that revision of a
+     * live message (and its pinned copies); a message not loaded yet takes them when it arrives.
+     */
+    private fun receiveEmbeds(update: EmbedsUpdate) {
+        if (update.channelId != mutable.value.selectedChannel?.id) return
+        pinSnapshots[update.messageId]?.let { pinSnapshots[update.messageId] = withEmbeds(it, update) }
+        editSnapshots[update.messageId]?.let { editSnapshots[update.messageId] = withEmbeds(it, update) }
+        authoritativeReactionMessages[update.messageId]?.let { authoritativeReactionMessages[update.messageId] = withEmbeds(it, update) }
+        val pinned = mutable.value.pinnedMessages.map { withEmbeds(it, update) }
+        if (mutable.value.messages.none { it.id == update.messageId }) {
+            cacheUnseenEmbeds(unloadedEmbeds, update)
+            mutable.value = mutable.value.copy(pinnedMessages = pinned)
+            return
+        }
+        mutable.value = mutable.value.copy(messages = mutable.value.messages.map { withEmbeds(it, update) }, pinnedMessages = pinned)
     }
 
     /** Ephemeral processing percent, like typing: latest value wins and nothing is replayed. */
@@ -2880,6 +2913,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = ++generation
         unloadedReactions.clear()
         unloadedAttachments.clear()
+        unloadedEmbeds.clear()
         val previous = mutable.value.copy(messages = authoritativeMessages())
         closeChannel(clearPending = false)
         // closeChannel normally discards channel replay state; a failed refresh must remain retryable.
@@ -3525,6 +3559,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         typingIdle?.cancel(); typingIdle = null; typingActive = false; typingSent = false
         unloadedReactions.clear()
         unloadedAttachments.clear()
+        unloadedEmbeds.clear()
         if (clearPending) {
             pendingSends.clear()
             // Regular and thread files retain their original destination while uploads carry on.

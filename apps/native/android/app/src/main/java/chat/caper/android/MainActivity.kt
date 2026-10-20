@@ -1805,6 +1805,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 }
                 state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
+                // Signed in, the draft's first link shows the card it will get, with × to send it without one.
+                val preview = rememberLinkPreview(if (state.account != null) draft.text else "", channel.id, viewModel::linkPreview)
+                preview.embed?.let { embed -> Box(Modifier.padding(bottom = 8.dp)) { MessageEmbeds(listOf(embed), onRemove = preview.remove, arriving = true) } }
                 DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
                 val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
                 fun sendDraft() {
@@ -1812,7 +1815,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         val sent = draft.text
                         viewModel.setTyping(false)
                         val clear = { updateDraft(TextFieldValue("")) }
-                        if (viewModel.send(sent, unchanged = { draft.text == sent }, accepted = clear)) clear()
+                        if (viewModel.send(sent, unchanged = { draft.text == sent }, accepted = clear, suppressEmbeds = preview.removed(sent))) clear()
                     }
                 }
                 fun submit() {
@@ -3083,6 +3086,7 @@ internal const val DELETED_REPLY = "Original message was deleted."
     admin = message.author.admin,
     avatarAsset = message.author.avatarAsset, avatarUrl = message.author.avatarUrl,
     deleted = message.deletedAt != null,
+    embeds = message.content.embeds,
 )
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
@@ -3099,6 +3103,8 @@ internal const val DELETED_REPLY = "Original message was deleted."
     avatarAsset: String? = null, avatarUrl: String? = null,
     /** The author deleted it: a muted note in place of its text and files. */
     deleted: Boolean = false,
+    /** Link preview cards, under the files (`EmbedViews.kt`). */
+    embeds: List<ChatEmbed> = emptyList(),
 ) {
     val hover = remember { MutableInteractionSource() }
     val hovered by hover.collectIsHoveredAsState()
@@ -3168,6 +3174,7 @@ internal const val DELETED_REPLY = "Original message was deleted."
                 attachments, pending, onAttachmentFailed, attachmentProgress, localAttachmentPreviews,
                 caption = listOf(author, timeLabel(createdAt, hour24)).filter { it.isNotEmpty() }.joinToString(" · "),
             )
+            if (!deleted) MessageEmbeds(embeds)
         }
     }
 }

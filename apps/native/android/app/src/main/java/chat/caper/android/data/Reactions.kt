@@ -61,6 +61,7 @@ internal fun mergeReaction(message: ChatMessage, snapshot: ChatMessage): ChatMes
 internal fun mergeMessages(
     loaded: List<ChatMessage>, incoming: List<ChatMessage>, unseen: MutableMap<String, ReactionUpdate>,
     unseenAttachments: MutableMap<String, AttachmentsUpdate> = mutableMapOf(),
+    unseenEmbeds: MutableMap<String, EmbedsUpdate> = mutableMapOf(),
 ): List<ChatMessage> {
     val merged = linkedMapOf<String, ChatMessage>()
     (loaded + incoming).forEach { candidate ->
@@ -72,14 +73,17 @@ internal fun mergeMessages(
             val reaction = (if (candidateReaction > currentReaction) candidate else current).copy(thread = summary)
             val forward = mergeForward(reaction, mergeForward(current, candidate))
             // Reactions, edits, forwards and files advance independently: each keeps its newer snapshot.
-            newerAttachments(newerAttachments(mergeEdit(mergeEdit(forward, current), candidate), current), candidate)
+            val merged = newerAttachments(newerAttachments(mergeEdit(mergeEdit(forward, current), candidate), current), candidate)
+            // Link cards follow the revision: keep the ones a same-revision copy lacks, and take a refetch's.
+            sameRevisionEmbeds(sameRevisionEmbeds(merged, current), candidate)
         }
     }
     val summaries = (loaded + incoming).filter { it.thread != null }.groupBy { it.threadRootId ?: it.id }
         .mapValues { (_, rows) -> rows.mapNotNull { it.thread }.maxBy { BigInteger(it.seq) } }
     return merged.values.map { message ->
         val reacted = unseen.remove(message.id)?.let { mergeReaction(message, it) } ?: message
-        val updated = unseenAttachments.remove(message.id)?.let { mergeAttachments(reacted, it) } ?: reacted
+        val attached = unseenAttachments.remove(message.id)?.let { mergeAttachments(reacted, it) } ?: reacted
+        val updated = unseenEmbeds.remove(message.id)?.let { withEmbeds(attached, it) } ?: attached
         updated.copy(thread = summaries[message.threadRootId ?: message.id] ?: updated.thread)
     }.sortedWith(compareBy { BigInteger(it.seq) })
 }

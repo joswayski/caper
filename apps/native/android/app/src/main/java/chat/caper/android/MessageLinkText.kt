@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import chat.caper.android.ui.LinkBlue
@@ -22,6 +23,7 @@ import chat.caper.android.ui.LinkBlue
     color: Color = Color.Unspecified,
     fontSize: TextUnit = TextUnit.Unspecified,
     lineHeight: TextUnit = TextUnit.Unspecified,
+    maxLines: Int = Int.MAX_VALUE,
 ) {
     var layout by remember(text) { mutableStateOf<TextLayoutResult?>(null) }
     Text(
@@ -61,6 +63,7 @@ import chat.caper.android.ui.LinkBlue
             }
         },
         color = color, fontSize = fontSize, lineHeight = lineHeight,
+        overflow = if (maxLines == Int.MAX_VALUE) TextOverflow.Clip else TextOverflow.Ellipsis, maxLines = maxLines,
         inlineContent = messageInlineContent(), onTextLayout = { layout = it },
     )
 }

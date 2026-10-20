@@ -185,6 +185,10 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     @Serializable(with = TolerantAttachmentsSerializer::class) val attachments: List<ChatAttachment> = emptyList(),
     /** Absent on older messages and servers. */
     @Serializable(with = MentionListSerializer::class) val mentions: List<MessageMention> = emptyList(),
+    /** Link preview cards for this revision (`model/Embeds.kt`); malformed cards are dropped, never the message. */
+    @Serializable(with = TolerantEmbedsSerializer::class) val embeds: List<ChatEmbed> = emptyList(),
+    /** The author removed the composer's card: the message gets none, and edits keep that. */
+    @Serializable(with = TolerantFlagSerializer::class) val suppressEmbeds: Boolean = false,
 )
 
 /** A file on a message. URLs are signed per response and expire in 1–2 hours. */

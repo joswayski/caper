@@ -41,6 +41,7 @@ class GatewayClient(
     private val onReaction: (ReactionUpdate) -> Unit = {},
     private val onAttachments: (AttachmentsUpdate) -> Unit = {},
     private val onAttachmentProgress: (AttachmentProgress) -> Unit = {},
+    private val onEmbeds: (EmbedsUpdate) -> Unit = {},
     private val onPin: (PinUpdate) -> Unit = {},
     private val onForward: (ForwardUpdate) -> Unit = {},
     private val onEdit: (EditUpdate) -> Unit = {},
@@ -160,7 +161,8 @@ class GatewayClient(
                 serverOffsetMs = frame["serverTime"]?.jsonPrimitive?.content?.toLongOrNull()?.minus(System.currentTimeMillis()) ?: 0
                 frame["idleTimeoutSeconds"]?.jsonPrimitive?.content?.toLongOrNull()?.let { idleTimeoutMs = it * 1_000 }
                 s.chatPosition = cursor
-                s.socket.send("""{"type":"subscribe","id":"$subscriptionId","kind":"chat","channelId":"$channelId","after":"$cursor"}""")
+                // `embeds`: this client draws link cards, so the gateway may send `message.embeds`.
+                s.socket.send("""{"type":"subscribe","id":"$subscriptionId","kind":"chat","channelId":"$channelId","after":"$cursor","embeds":true}""")
                 presenceSubscriptionId?.let { sendPresenceSubscription(s.socket) }
                 mediaSubscriptions.forEach { (id, channel) -> s.mediaPosition[id] = -1; sendMediaSubscription(s.socket, id, channel) }
                 if (profilesWanted) s.socket.send(PROFILES_SUBSCRIBE)
@@ -222,6 +224,8 @@ class GatewayClient(
             }
             // Ephemeral and unsequenced like typing; a malformed one is dropped, never fatal.
             "attachment.progress" -> if (s === active) attachmentProgress(event, channelId)?.let(onAttachmentProgress)
+            // Unsequenced too, and idempotent (applied only to its revision), so either stream of a handoff may deliver it.
+            "message.embeds" -> embedsUpdate(event, channelId)?.let(onEmbeds)
             "message.pin" -> {
                 val next = pinSequence(event, channelId)
                 val n = next.toBigIntegerOrNull() ?: error("Invalid sequence")

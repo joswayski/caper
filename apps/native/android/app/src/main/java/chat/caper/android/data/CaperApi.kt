@@ -188,6 +188,8 @@ class CaperApi(
         broadcast: Boolean = false,
         replyToId: String? = null,
         spoilerAttachmentIds: List<String> = emptyList(),
+        /** The composer's link card was removed: the message gets no cards. */
+        suppressEmbeds: Boolean = false,
     ): ChatMessage {
         require(attachmentIds.size <= AttachmentPolicy.MAX_ATTACHMENTS) { "Attach up to 10 files." }
         require(attachmentIds.containsAll(spoilerAttachmentIds)) { "Spoilers must be attached files." }
@@ -200,12 +202,23 @@ class CaperApi(
                 if (spoilerAttachmentIds.isNotEmpty()) putJsonArray("spoilerAttachmentIds") { spoilerAttachmentIds.forEach { add(it.assetPathId()) } }
                 if (threadRootId != null) { put("threadRootId", threadRootId); put("broadcast", broadcast) }
                 if (replyToId != null) put("replyToId", replyToId)
+                // Only when set, like the files: other requests keep their idempotency hash.
+                if (suppressEmbeds) put("suppressEmbeds", true)
             },
             token, mapOf("x-caper-chat-token" to chatToken),
         )
         require(message.threadRootId == threadRootId && message.broadcast == broadcast) { "Reply destination mismatch." }
         require(message.replyTo?.id == replyToId) { "Reply reference mismatch." }
         return message.validated(channel, author, clientMessageId, text)
+    }
+
+    /**
+     * The card [url] will get once sent, for the composer (`POST /api/embeds/preview`, signed-in
+     * accounts); null when it has none. Guests (401) and servers without previews (503) throw.
+     */
+    suspend fun embedPreview(token: String, url: String): ChatEmbed? {
+        val body: kotlinx.serialization.json.JsonObject = post("/api/embeds/preview", buildJsonObject { put("url", url) }, token)
+        return embedOf(body["embed"])
     }
 
     /** Succeeds only when uploads are configured; anything else hides the attach control. */
