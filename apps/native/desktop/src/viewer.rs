@@ -227,6 +227,9 @@ impl Viewer {
             unavailable: false,
             status: AttachmentStatus::Ready,
             animated: false,
+            voice: false,
+            waveform: None,
+            transcript: None,
             spoiler: false,
         })
     }
@@ -1734,6 +1737,9 @@ mod tests {
             unavailable: false,
             status: AttachmentStatus::Ready,
             animated: false,
+            voice: false,
+            waveform: None,
+            transcript: None,
         }
     }
 

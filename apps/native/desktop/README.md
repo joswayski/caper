@@ -99,6 +99,23 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   reactions. Signed URLs are
   refreshed (`POST /api/assets/urls`) before they expire and once after a
   403/404 image load, so a window left open for days keeps working.
+- Voice messages (`voice_note.rs`) in channel, DM and thread composers wherever
+  files can be attached. The microphone beside Emoji turns the input row into a
+  recording bar (Discard, red dot and timer, live input meter, eggshell Send);
+  Escape discards, Enter sends, and 10:00 stops and sends. Capture opens its
+  own private libwebrtc device module like the Audio test (the selected input
+  and input volume apply) and does not change an active call's microphone or
+  publication; sharing a physical microphone with a live call is not yet
+  device-verified. Recordings under a second are dropped. The bundled FFmpeg encodes
+  AAC in MP4 (a 16 kHz WAV without it); the file uploads as is with `voice`,
+  its duration and 64 normalised peaks, then sends on its own (composer text
+  and files stay; a reply target goes with it). `voice: true` attachments
+  show a player (play/pause, waveform with played progress, click or drag to
+  seek, length or time left; one plays at a time) and a Slack-style
+  transcript: three lines with View/Hide transcript, "Transcribing…" while
+  pending, nothing when failed or unavailable; `message.attachments` updates
+  fill it in place. Quotes and forward previews read "Voice message". The
+  profile card's quick-message composer has no microphone yet.
 - Sending up to 10 files per message in channel, DM and thread composers,
   including attachment-only thread replies. Staged files and text belong to
   their conversation/thread and survive closing a thread or switching conversations;
@@ -495,6 +512,10 @@ even when the account has an existing conversation.
 without a preview), failed, animated ("GIF") and removed files, file/audio
 cards and upload chips from synthetic local images; it never fetches media or
 uploads.
+`parity-voice-messages` previews labelled voice messages with a clamped ready
+transcript, a pending one, one without transcript or waveform, and an ordinary
+audio card; `parity-voice-recording` adds the recording bar at a frozen 0:07.
+Neither plays, uploads nor opens a microphone.
 `parity-thread-attachments` previews the same chips inside a thread;
 `parity-thread-attachments-ready` previews an attachment-only reply, and
 `parity-thread-attachments-rejected` previews a rejected reply with Edit/Dismiss.

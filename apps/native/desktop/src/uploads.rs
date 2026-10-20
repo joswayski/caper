@@ -122,6 +122,15 @@ pub struct Prepared {
     /// Always JPEG, at most 512 KiB.
     pub preview: Option<Vec<u8>>,
     pub thumbnail: Option<image::RgbaImage>,
+    /// A recorded voice message: reserved with `voice: true` and its
+    /// waveform, and uploaded exactly as recorded (never compressed here).
+    pub voice: Option<VoiceUpload>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VoiceUpload {
+    /// Standard base64 of the 64 normalised peaks, when there are any.
+    pub waveform: Option<String>,
 }
 
 impl Prepared {
@@ -233,6 +242,7 @@ pub fn prepare_path_with(
         duration_ms: None,
         preview: None,
         thumbnail: None,
+        voice: None,
     };
     if matches!(
         prepared.content_type.as_str(),
@@ -292,6 +302,7 @@ pub fn prepare_edited_path(
             duration_ms: None,
             preview: image.preview,
             thumbnail: image.thumbnail,
+            voice: None,
         }
     } else if content_type.starts_with("video/")
         && let Some(binary) = crate::ffmpeg::binary()
@@ -397,6 +408,7 @@ fn prepare_edited_video(
         body: Body::Scratch(Arc::new(output)),
         preview: poster.as_ref().and_then(compress::encode_preview_jpeg),
         thumbnail: poster.map(|poster| image::DynamicImage::ImageRgb8(poster).to_rgba8()),
+        voice: None,
     })
 }
 
@@ -456,6 +468,7 @@ fn prepare_video(
                 body: Body::Scratch(Arc::new(scratch)),
                 preview: None,
                 thumbnail: None,
+                voice: None,
             }
         }
         // Kept as is: only formats the API serves inline go up as video.
@@ -478,6 +491,7 @@ fn prepare_video(
                 },
                 preview: None,
                 thumbnail: None,
+                voice: None,
             }
         }
         None => return None,
@@ -518,6 +532,7 @@ pub fn prepare_bytes(name: &str, bytes: Vec<u8>, settings: &Compression) -> Prep
             duration_ms: None,
             preview: image.preview,
             thumbnail: image.thumbnail,
+            voice: None,
         };
     }
     Prepared {
@@ -532,6 +547,7 @@ pub fn prepare_bytes(name: &str, bytes: Vec<u8>, settings: &Compression) -> Prep
         duration_ms: None,
         preview: None,
         thumbnail: None,
+        voice: None,
     }
 }
 
@@ -561,8 +577,26 @@ pub fn reservation(channel: &str, prepared: &Prepared) -> Value {
     if let Some(preview) = &prepared.preview {
         body["preview"] = json!({"contentType": "image/jpeg", "byteSize": preview.len()});
     }
+    if let Some(voice) = &prepared.voice {
+        // Voice needs a duration of 1 ms to 10 minutes; the recorder stops
+        // at 10:00, so this only clamps rounding.
+        body["purpose"] = json!("attachment");
+        body["voice"] = json!(true);
+        body["durationMs"] = json!(
+            prepared
+                .duration_ms
+                .unwrap_or(1)
+                .clamp(1, MAX_VOICE_DURATION_MS)
+        );
+        if let Some(waveform) = &voice.waveform {
+            body["waveform"] = json!(waveform);
+        }
+    }
     body
 }
+
+/// The longest voice message the API accepts (10:00).
+pub const MAX_VOICE_DURATION_MS: u64 = 10 * 60 * 1000;
 
 struct PresignedPut {
     url: String,
@@ -693,6 +727,7 @@ fn upload_picture_with_delays(
         duration_ms: None,
         preview: None,
         thumbnail: None,
+        voice: None,
     };
     transfer(
         api,
@@ -1045,6 +1080,7 @@ mod tests {
             duration_ms: None,
             preview: None,
             thumbnail: None,
+            voice: None,
         };
         // Bytes kept in memory are written out, named for other apps.
         let copy = prepared(Body::Memory(Arc::from(&b"bytes"[..])))
