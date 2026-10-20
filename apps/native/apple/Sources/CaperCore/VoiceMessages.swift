@@ -57,10 +57,11 @@ public enum VoiceMessage {
     /// AVAudioRecorder settings: AAC in MP4, mono, 48 kHz, about 64 kbps.
     public static let sampleRate = 48_000.0
     public static let bitRate = 64_000
-    /// The recorder's meters are read at 40 Hz for the live bars and the waveform.
-    public static let meterInterval: TimeInterval = 0.025
+    /// The recorder's meters are read at 50 Hz for the live bars and the waveform,
+    /// so at least one reading lands in every live bar despite the sleep's slack.
+    public static let meterInterval: TimeInterval = 0.02
     /// A new live bar enters at the right this often, scrolling at a constant rate.
-    public static let liveBarInterval: TimeInterval = 0.07
+    public static let liveBarInterval: TimeInterval = 0.025
 
     /// A recording long enough to send (and within the server's limit once clamped).
     public static func keeps(durationMs: Int) -> Bool { durationMs >= minimumDurationMs }
@@ -154,8 +155,8 @@ public enum VoiceDuration {
     }
 }
 
-/// The 64-byte loudness waveform sent with a voice note, how any length is
-/// drawn, and the live recording bars.
+/// The 64-byte loudness waveform sent with a voice note and how any length is
+/// drawn (the live recording meter is `VoiceLiveMeter`).
 public enum VoiceWaveform {
     /// Clients send exactly this many slices.
     public static let sliceCount = 64
@@ -277,25 +278,6 @@ public enum VoiceWaveform {
         return min(1, max(0, (decibels - floor) / -floor))
     }
 
-    /// Attack/release envelope for the live bars: rises quickly toward a
-    /// louder reading and falls back slowly, so bars don't jitter. `dt` is
-    /// the time since the previous reading.
-    public static func follow(_ previous: Float, toward target: Float, dt: Double,
-                              attack: Double = 0.03, release: Double = 0.2) -> Float {
-        guard target.isFinite, previous.isFinite, dt > 0 else { return target.isFinite ? target : 0 }
-        let constant = target > previous ? attack : release
-        let blend = Float(1 - exp(-dt / max(0.001, constant)))
-        return previous + (target - previous) * blend
-    }
-
-    /// The live bars shown while recording: the latest `count` levels,
-    /// padded with silence on the left so new levels enter at the right.
-    public static func liveBars(_ levels: [Float], count: Int) -> [Double] {
-        guard count > 0 else { return [] }
-        let recent = levels.suffix(count).map { Double($0.isFinite ? min(1, max(0, $0)) : 0) }
-        return Array(repeating: 0, count: count - recent.count) + recent
-    }
-
     /// How far (0...1 of one bar step) the live bars have scrolled left since
     /// the newest bar entered, for a constant right-to-left motion.
     public static func scrollFraction(sinceLastBar elapsed: TimeInterval, interval: TimeInterval = VoiceMessage.liveBarInterval) -> Double {
@@ -307,6 +289,135 @@ public enum VoiceWaveform {
     public static func barCount(available: Double, width: Double, gap: Double) -> Int {
         guard available.isFinite, width > 0, gap >= 0 else { return 1 }
         return max(1, Int(((available + gap) / (width + gap)).rounded(.down)))
+    }
+}
+
+/// The live recording meter ("pinch bars"): each bar is the loudest reading
+/// in its 25 ms window, falling fast between words, drawn as pills that sit
+/// as dots in silence, brighten toward eggshell when loud, shrink and fade
+/// near the left and arrive flat at the right before swelling to size. The
+/// player, the staged chip and the uploaded waveform don't use it.
+public struct VoiceLiveMeter: Equatable, Sendable {
+    /// A bar may drop to 35% of the previous bar, so gaps between words show.
+    public static let fall: Float = 0.65
+    /// Bars kept; far more than the widest meter shows.
+    public static let historyLimit = 200
+    /// A 3-point pill every 6 points, at least 3 points tall.
+    public static let barWidth = 3.0
+    public static let step = 6.0
+    public static let minimumHeight = 3.0
+    /// Bars shrink to 30% over the leftmost 40 points (at most 80% of the meter)…
+    public static let pinchDepth = 0.7
+    public static let pinchDistance = 40.0
+    /// …fade out over the leftmost 10% of the meter…
+    public static let fadeShare = 0.1
+    /// …and enter flat at the right edge, fading in over 10 points and
+    /// reaching full size 36 points in.
+    public static let entryDistance = 36.0
+    public static let arrivalDistance = 10.0
+
+    /// Bar levels (0...1, perceptual), newest last.
+    public private(set) var bars: [Float] = []
+    /// When the newest bar was due; nil before the first reading.
+    public private(set) var lastBarAt: Date?
+    private var peak: Float = 0
+    private var previous: Float = 0
+
+    public init() {}
+
+    /// Takes one perceptual 0...1 reading and returns whether it added a bar.
+    /// The first reading starts the clock (the first bar is due one `interval`
+    /// later). Bars keep a constant cadence; at most one is added per
+    /// reading, and after a stall of over three bars they restart from `now`
+    /// instead of catching up.
+    @discardableResult
+    public mutating func add(_ level: Float, at now: Date, interval: TimeInterval = VoiceMessage.liveBarInterval) -> Bool {
+        peak = max(peak, level.isFinite ? min(1, max(0, level)) : 0)
+        guard let last = lastBarAt else { lastBarAt = now; return false }
+        let since = now.timeIntervalSince(last)
+        guard since >= interval else { return false }
+        let value = max(peak, previous * (1 - Self.fall))
+        bars.append(value)
+        if bars.count > Self.historyLimit { bars.removeFirst(bars.count - Self.historyLimit) }
+        previous = value
+        peak = 0
+        lastBarAt = since > 3 * interval ? now : last.addingTimeInterval(interval)
+        return true
+    }
+
+    /// Display height (0...1) for a bar level: speech sits around -35...-12
+    /// dBFS, so that band is stretched to the meter's full height.
+    public static func shape(_ level: Double) -> Double {
+        guard level.isFinite else { return 0 }
+        return pow(min(1, max(0, (level - 0.28) / 0.47)), 1.2)
+    }
+
+    public static func smoothstep(_ lower: Double, _ upper: Double, _ value: Double) -> Double {
+        guard upper > lower else { return value >= upper ? 1 : 0 }
+        let t = min(1, max(0, (value - lower) / (upper - lower)))
+        return t * t * (3 - 2 * t)
+    }
+
+    public static func easeOutCubic(_ value: Double) -> Double {
+        let t = min(1, max(0, value))
+        return 1 - (1 - t) * (1 - t) * (1 - t)
+    }
+
+    /// Size and opacity for a bar centred `center` points from the left of a
+    /// meter `width` points wide.
+    public struct Envelope: Equatable, Sendable {
+        public var scale: Double
+        public var alpha: Double
+    }
+
+    public static func envelope(center: Double, width: Double) -> Envelope {
+        let pinch = 1 - pinchDepth * (1 - smoothstep(0, min(pinchDistance, 0.8 * width), center))
+        let fade = smoothstep(0, fadeShare * width, center)
+        let swell = easeOutCubic((width - center) / entryDistance)
+        let arrive = smoothstep(0, arrivalDistance, width - center)
+        return Envelope(scale: pinch * swell, alpha: fade * arrive)
+    }
+
+    /// One pill to draw, in points from the meter's top left. `brightness`
+    /// mixes the quiet grey (0) toward eggshell (1).
+    public struct Bar: Equatable, Sendable {
+        public var x: Double
+        public var y: Double
+        public var width: Double
+        public var height: Double
+        public var brightness: Double
+        public var alpha: Double
+    }
+
+    /// The visible pills for `bars` (newest last) in a `width` × `height`
+    /// meter, newest at the right, scrolled left by `scroll` (0...1) of a
+    /// step since the newest bar was due. Nearly transparent bars are left out.
+    public static func layout(_ bars: [Float], width: Double, height: Double, scroll: Double) -> [Bar] {
+        guard width > 0, height > 0 else { return [] }
+        let fraction = scroll.isFinite ? min(1, max(0, scroll)) : 1
+        var pills: [Bar] = []
+        for (index, value) in bars.reversed().enumerated() {
+            let x = width - fraction * step - Double(index) * step
+            if x < -step { break }
+            let edge = envelope(center: x + barWidth / 2, width: width)
+            guard edge.alpha >= 0.02 else { continue }
+            let level = shape(Double(value))
+            let scale = edge.scale
+            let barHeight = max(minimumHeight * max(0.6, scale), level * scale * height * 0.94)
+            let pillWidth = barWidth * min(1, max(0.6, scale + 0.4))
+            pills.append(Bar(x: x + (barWidth - pillWidth) / 2, y: (height - barHeight) / 2,
+                             width: pillWidth, height: barHeight,
+                             brightness: min(1, 0.25 + 0.9 * level), alpha: edge.alpha))
+        }
+        return pills
+    }
+
+    /// A bar's colour channels (0...1): rgb(150, 156, 158) mixed toward
+    /// eggshell rgb(241, 237, 228) by `brightness`.
+    public static func color(brightness: Double) -> (red: Double, green: Double, blue: Double) {
+        let t = brightness.isFinite ? min(1, max(0, brightness)) : 0
+        func mix(_ quiet: Double, _ loud: Double) -> Double { (quiet + (loud - quiet) * t) / 255 }
+        return (mix(150, 241), mix(156, 237), mix(158, 228))
     }
 }
 

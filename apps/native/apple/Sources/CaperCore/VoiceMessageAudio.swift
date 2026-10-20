@@ -69,7 +69,7 @@ final class VoiceMessageRecorder {
     private(set) var elapsedMs = 0
     /// Live bars (0...1), one per `VoiceMessage.liveBarInterval`, newest last.
     private(set) var levels: [Float] = []
-    /// When the newest live bar entered, for the bars' constant scroll.
+    /// When the newest live bar was due, for the bars' constant scroll.
     @ObservationIgnored private(set) var lastBarAt = Date()
     /// A short inline message for one composer: a denied permission or a failure.
     private(set) var notice: (owner: VoiceComposerID, text: String)?
@@ -84,9 +84,7 @@ final class VoiceMessageRecorder {
     /// Linear RMS readings over the whole recording, the waveform's fallback
     /// when the finished file can't be decoded.
     @ObservationIgnored private var readings: [Float] = []
-    @ObservationIgnored private var envelope: Float = 0
-    @ObservationIgnored private var barPeak: Float = 0
-    @ObservationIgnored private var lastReadingAt = Date()
+    @ObservationIgnored private var meter = VoiceLiveMeter()
     @ObservationIgnored private var meterTask: Task<Void, Never>?
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
@@ -170,8 +168,8 @@ final class VoiceMessageRecorder {
             return false
         }
         self.onLimit = onLimit
-        readings = []; levels = []; elapsedMs = 0; envelope = 0; barPeak = 0
-        lastBarAt = Date(); lastReadingAt = Date()
+        readings = []; levels = []; elapsedMs = 0; meter = VoiceLiveMeter()
+        lastBarAt = Date()
         phase = .recording
         observeInterruptions(owner: owner)
         let started = Date()
@@ -193,16 +191,10 @@ final class VoiceMessageRecorder {
             recorder.updateMeters()
             let power = recorder.averagePower(forChannel: 0)
             readings.append(VoiceWaveform.amplitude(decibels: power))
-            // Fast attack, slow release: the bars follow speech without jitter.
-            envelope = VoiceWaveform.follow(envelope, toward: VoiceWaveform.meterLevel(decibels: power),
-                                            dt: now.timeIntervalSince(lastReadingAt))
-            lastReadingAt = now
-            barPeak = max(barPeak, envelope)
-            if now.timeIntervalSince(lastBarAt) >= VoiceMessage.liveBarInterval {
-                levels.append(barPeak)
-                if levels.count > 160 { levels.removeFirst(levels.count - 160) }
-                barPeak = envelope
-                lastBarAt = now
+            // Each bar takes the loudest reading in its window and falls fast between words.
+            if meter.add(VoiceWaveform.meterLevel(decibels: power), at: now) {
+                levels = meter.bars
+                lastBarAt = meter.lastBarAt ?? now
             }
         }
         if elapsedMs >= VoiceMessage.maximumDurationMs || !recorder.isRecording {

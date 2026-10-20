@@ -111,19 +111,15 @@ struct VoiceProgressWaveform: View {
 
 /// Evenly spaced 3-point bars with fully rounded caps and a 2-point gap,
 /// vertically centred, at least 3 points tall so silence is a neat flat line.
-/// Played bars (the boundary one partly) draw in the text colour. Live bars
-/// scroll right to left by `scroll` of one step between new readings.
+/// Played bars (the boundary one partly) draw in the text colour. The live
+/// recording meter is `VoiceLiveBars`.
 struct VoiceWaveformBars: View {
     enum Source: Equatable {
         /// A sent note's waveform bytes (nil: flat line), linearly resampled to fit.
         case waveform([UInt8]?)
-        /// Live recording levels, newest at the right.
-        case live([Float])
     }
     let source: Source
     var playedFraction: Double = 0
-    /// Live bars only: 0...1 of a step travelled since the newest bar entered.
-    var scroll: Double = 1
     var barWidth: CGFloat = 3
     var gap: CGFloat = 2
     var minimumHeight: CGFloat = 3
@@ -140,12 +136,6 @@ struct VoiceWaveformBars: View {
                     let rect = bar(x: CGFloat(index) * step, value: value, size: size)
                     let fill = VoicePlaybackPosition.playedFill(progress: playedFraction, bar: index, count: count)
                     draw(&context, rect, fill: CGFloat(fill))
-                }
-            case .live(let levels):
-                // One extra bar enters from beyond the right edge as the bars slide left.
-                for (index, value) in VoiceWaveform.liveBars(levels, count: count + 1).enumerated() {
-                    let x = (CGFloat(index) - CGFloat(scroll)) * step
-                    draw(&context, bar(x: x, value: value, size: size), fill: 1)
                 }
             }
         }
@@ -611,8 +601,9 @@ struct VoiceRecordingTimer: View {
     }
 }
 
-/// The live input bars, scrolling right to left at a constant rate (new bars
-/// step in without the slide under Reduce Motion).
+/// The live input meter (`VoiceLiveMeter`'s pinch bars), redrawn every
+/// frame so it scrolls right to left at a constant rate (new bars step in
+/// without the slide under Reduce Motion).
 struct VoiceLiveBars: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var recorder: VoiceMessageRecorder { .shared }
@@ -620,11 +611,20 @@ struct VoiceLiveBars: View {
     var body: some View {
         let levels = recorder.levels
         TimelineView(.animation(paused: reduceMotion)) { context in
-            VoiceWaveformBars(source: .live(levels),
-                              scroll: reduceMotion ? 1 : VoiceWaveform.scrollFraction(sinceLastBar: context.date.timeIntervalSince(recorder.lastBarAt)))
+            let scroll = reduceMotion ? 1 : VoiceWaveform.scrollFraction(sinceLastBar: context.date.timeIntervalSince(recorder.lastBarAt))
+            Canvas { graphics, size in
+                for bar in VoiceLiveMeter.layout(levels, width: Double(size.width), height: Double(size.height), scroll: scroll) {
+                    let rect = CGRect(x: bar.x, y: bar.y, width: bar.width, height: bar.height)
+                    let color = VoiceLiveMeter.color(brightness: bar.brightness)
+                    graphics.fill(Path(roundedRect: rect, cornerRadius: min(rect.width, rect.height) / 2),
+                                  with: .color(Color(red: color.red, green: color.green, blue: color.blue, opacity: bar.alpha)))
+                }
+            }
         }
         .frame(height: 22)
         .frame(maxWidth: .infinity)
+        .clipped()
+        .accessibilityHidden(true)
     }
 }
 

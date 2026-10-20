@@ -85,19 +85,98 @@ final class VoiceMessageTests: XCTestCase {
         XCTAssertEqual(VoiceWaveform.meterLevel(decibels: 0), 1)
         XCTAssertEqual(VoiceWaveform.meterLevel(decibels: -25), 0.5)
         XCTAssertEqual(VoiceWaveform.meterLevel(decibels: -80), 0)
-        XCTAssertEqual(VoiceWaveform.liveBars([0.5, 1], count: 4), [0, 0, 0.5, 1], "new levels enter at the right")
-        let rise = VoiceWaveform.follow(0, toward: 1, dt: 0.03)
-        let fall = VoiceWaveform.follow(1, toward: 0, dt: 0.03)
-        XCTAssertEqual(rise, 0.632, accuracy: 0.001, "fast attack")
-        XCTAssertEqual(fall, 0.861, accuracy: 0.001, "slow release")
-        XCTAssertEqual(VoiceWaveform.follow(0.4, toward: 0.4, dt: 0.025), 0.4, "a steady level doesn't jitter")
-        XCTAssertEqual(VoiceWaveform.follow(0.4, toward: 0.9, dt: 0), 0.9)
-        XCTAssertEqual(VoiceWaveform.scrollFraction(sinceLastBar: 0.035), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(VoiceWaveform.scrollFraction(sinceLastBar: 0.0125), 0.5, accuracy: 0.0001)
         XCTAssertEqual(VoiceWaveform.scrollFraction(sinceLastBar: 1), 1)
         XCTAssertEqual(VoiceWaveform.scrollFraction(sinceLastBar: -1), 0)
-        XCTAssertEqual(VoiceWaveform.liveBars([0.25, 0.5, 0.75], count: 2), [0.5, 0.75], "only the latest levels fit")
+        XCTAssertLessThan(VoiceMessage.meterInterval, VoiceMessage.liveBarInterval, "every live bar gets a reading")
         XCTAssertEqual(VoiceWaveform.barCount(available: 100, width: 3, gap: 2), 20)
         XCTAssertEqual(VoiceWaveform.barCount(available: 0, width: 3, gap: 2), 1)
+    }
+
+    func testLiveMeterBarsTakeEachWindowsPeakAndFallFast() {
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        func at(_ ms: Double) -> Date { start.addingTimeInterval(ms / 1000) }
+        var meter = VoiceLiveMeter()
+        XCTAssertFalse(meter.add(0.9, at: at(0)), "the first reading starts the clock")
+        XCTAssertEqual(meter.lastBarAt, at(0))
+        XCTAssertFalse(meter.add(0.3, at: at(20)), "a bar is due 25 ms in")
+        XCTAssertTrue(meter.add(0.5, at: at(40)))
+        XCTAssertEqual(meter.bars, [0.9], "the loudest reading in the window")
+        XCTAssertEqual(meter.lastBarAt, at(25), "a constant cadence, not the reading's time")
+        XCTAssertTrue(meter.add(0, at: at(60)))
+        XCTAssertEqual(meter.bars[1], 0.9 * 0.35, accuracy: 0.0001, "silence falls to 35% of the previous bar")
+        XCTAssertTrue(meter.add(.nan, at: at(80)))
+        XCTAssertEqual(meter.bars[2], 0.9 * 0.35 * 0.35, accuracy: 0.0001, "an unreadable level is silence")
+        XCTAssertFalse(meter.add(0.6, at: at(90)))
+        XCTAssertTrue(meter.add(0.2, at: at(105)))
+        XCTAssertEqual(meter.bars[3], 0.6, accuracy: 0.0001, "a louder reading wins over the fall")
+        XCTAssertEqual(meter.lastBarAt?.timeIntervalSince(start) ?? 0, 0.1, accuracy: 1e-9)
+
+        // A stall adds one bar, then restarts the cadence from now instead of catching up.
+        XCTAssertTrue(meter.add(0.1, at: at(300)))
+        XCTAssertEqual(meter.bars.count, 5)
+        XCTAssertEqual(meter.bars[4], 0.21, accuracy: 0.0001)
+        XCTAssertEqual(meter.lastBarAt, at(300))
+        XCTAssertFalse(meter.add(1, at: at(310)))
+
+        var long = VoiceLiveMeter()
+        for index in 0..<300 { long.add(0.5, at: at(Double(index) * 30)) }
+        XCTAssertEqual(long.bars.count, VoiceLiveMeter.historyLimit)
+    }
+
+    func testLiveMeterShapeAndEnvelope() {
+        XCTAssertEqual(VoiceLiveMeter.shape(0), 0)
+        XCTAssertEqual(VoiceLiveMeter.shape(0.28), 0, "about -36 dBFS and quieter sits at the minimum")
+        XCTAssertEqual(VoiceLiveMeter.shape(0.75), 1, accuracy: 0.0001, "about -12 dBFS fills the meter")
+        XCTAssertEqual(VoiceLiveMeter.shape(1), 1)
+        XCTAssertEqual(VoiceLiveMeter.shape(0.515), 0.43528, accuracy: 0.0001)
+        XCTAssertEqual(VoiceLiveMeter.shape(.nan), 0)
+        XCTAssertEqual(VoiceLiveMeter.smoothstep(0, 10, 5), 0.5)
+        XCTAssertEqual(VoiceLiveMeter.smoothstep(0, 0, 1), 1)
+        XCTAssertEqual(VoiceLiveMeter.easeOutCubic(2), 1)
+
+        XCTAssertEqual(VoiceLiveMeter.envelope(center: 100, width: 200), .init(scale: 1, alpha: 1))
+        let right = VoiceLiveMeter.envelope(center: 200, width: 200)
+        XCTAssertEqual(right.scale, 0, "bars enter flat…")
+        XCTAssertEqual(right.alpha, 0, "…and transparent at the right edge")
+        let entering = VoiceLiveMeter.envelope(center: 196, width: 200)
+        XCTAssertEqual(entering.scale, 0.29767, accuracy: 0.0001)
+        XCTAssertEqual(entering.alpha, 0.352, accuracy: 0.0001)
+        let pinched = VoiceLiveMeter.envelope(center: 20, width: 200)
+        XCTAssertEqual(pinched.scale, 0.65, accuracy: 0.0001, "halfway into the 40-point pinch")
+        XCTAssertEqual(pinched.alpha, 1)
+        let left = VoiceLiveMeter.envelope(center: 0, width: 200)
+        XCTAssertEqual(left.scale, 0.3, accuracy: 0.0001)
+        XCTAssertEqual(left.alpha, 0)
+        XCTAssertEqual(VoiceLiveMeter.envelope(center: 16, width: 40).scale, 0.62593, accuracy: 0.0001,
+                       "a narrow meter pinches over 80% of its width")
+    }
+
+    func testLiveMeterLayout() {
+        XCTAssertEqual(VoiceLiveMeter.layout([1], width: 0, height: 22, scroll: 1), [])
+        let pills = VoiceLiveMeter.layout([0, 1], width: 60, height: 22, scroll: 1)
+        XCTAssertEqual(pills.count, 2)
+        XCTAssertEqual(pills[0].x, 54.40488, accuracy: 0.0001, "the newest bar, narrowed, at the right")
+        XCTAssertEqual(pills[0].width, 2.19023, accuracy: 0.0001)
+        XCTAssertEqual(pills[0].height, 6.82602, accuracy: 0.0001)
+        XCTAssertEqual(pills[0].y, (22 - pills[0].height) / 2, accuracy: 0.0001)
+        XCTAssertEqual(pills[0].brightness, 1, "loud bars are eggshell")
+        XCTAssertEqual(pills[0].alpha, 0.42525, accuracy: 0.0001)
+        XCTAssertEqual(pills[1].x, 48)
+        XCTAssertEqual(pills[1].brightness, 0.25)
+        XCTAssertEqual(pills[1].height, 1.93381, accuracy: 0.0001)
+        let unscrolled = VoiceLiveMeter.layout([0, 1], width: 60, height: 22, scroll: 0)
+        XCTAssertEqual(unscrolled.map(\.brightness), [0.25], "unscrolled, the newest bar is still beyond the right edge")
+        XCTAssertEqual(VoiceLiveMeter.layout(Array(repeating: 0.5, count: 200), width: 60, height: 22, scroll: 1).count, 10,
+                       "only bars on screen are drawn")
+        let dot = VoiceLiveMeter.layout(Array(repeating: 0, count: 20), width: 200, height: 22, scroll: 1)[10]
+        XCTAssertEqual(dot, .init(x: 134, y: 9.5, width: 3, height: 3, brightness: 0.25, alpha: 1), "silence is a small dot")
+        let quiet = VoiceLiveMeter.color(brightness: 0)
+        XCTAssertEqual(quiet.red * 255, 150, accuracy: 0.001)
+        XCTAssertEqual(quiet.blue * 255, 158, accuracy: 0.001)
+        let loud = VoiceLiveMeter.color(brightness: 1)
+        XCTAssertEqual(loud.red * 255, 241, accuracy: 0.001)
+        XCTAssertEqual(loud.green * 255, 237, accuracy: 0.001)
     }
 
     // MARK: Durations and recording rules
