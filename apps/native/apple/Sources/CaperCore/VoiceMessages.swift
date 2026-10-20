@@ -2,10 +2,13 @@ import Foundation
 
 // Voice messages with transcripts (the shared voice-message contract): recorded
 // from the composer, uploaded as an audio attachment with `voice: true`, a
-// duration and a 64-byte peak waveform, then played inline with the server's
-// transcript beneath. Everything here is free of Apple SDK types so the rules
-// are unit-tested on every platform; the recorder, player and views live in
-// `VoiceRecording.swift` and `VoiceMessageViews.swift`.
+// duration and a 64-byte loudness waveform, then played inline with the server's
+// transcript beneath. By default a finished recording is staged in the
+// composer beside any files and goes with the next Send; the "Send voice
+// messages as soon as I stop recording" setting sends it on its own instead.
+// Everything here is free of Apple SDK types so the rules are unit-tested on
+// every platform; the recorder, player and views live in
+// `VoiceMessageAudio.swift` and `VoiceMessageViews.swift`.
 
 /// The constants and decisions every client shares.
 public enum VoiceMessage {
@@ -22,23 +25,42 @@ public enum VoiceMessage {
     public static let minimumDurationMs = 1_000
     /// Recording stops (and sends) at 10:00; the server accepts 1...600000.
     public static let maximumDurationMs = 600_000
-    /// A touch released sooner records nothing and shows `holdHint`.
+    /// A touch released sooner was a tap: recording carries on hands-free
+    /// until Stop. Held longer, releasing stops.
     public static let tapThreshold: TimeInterval = 0.3
-    /// Sliding this far left (points) from the microphone cancels a touch recording.
+    /// Sliding this far left (points) from the microphone cancels a held recording.
     public static let cancelDistance: Double = 90
 
-    public static let holdHint = "Hold to record"
-    public static let releaseHint = "Release to send"
     public static let slideHint = "Slide to cancel"
+    public static let stopLabel = "Stop recording"
+    public static let discardLabel = "Discard voice message"
+    public static let recordLabel = "Record voice message"
+    /// The microphone's tooltip/label while a voice message is already staged.
+    public static let oneVoicePerMessage = "Remove the voice message to record another"
     public static let permissionDenied = "Microphone access is needed to record voice messages"
     public static let recordingFailed = "Couldn’t record a voice message. Try again."
     public static let interrupted = "Recording was interrupted."
 
+    /// The per-device setting (off by default) and where it is stored.
+    public static let sendOnStopTitle = "Send voice messages as soon as I stop recording"
+    public static let sendOnStopDetail = "Otherwise a recording waits in the composer, with your text and files, until you press Send."
+    public static let sendOnStopKey = "caper.voiceMessages.sendOnStop"
+
+    /// The stored preference; anything but a stored `true` means off.
+    public static func sendsOnStop(stored value: Any?) -> Bool { (value as? Bool) ?? false }
+
+    /// Shown above a held recording.
+    public static func releaseHint(sendsOnStop: Bool) -> String {
+        sendsOnStop ? "Release to send" : "Release to add to your message"
+    }
+
     /// AVAudioRecorder settings: AAC in MP4, mono, 48 kHz, about 64 kbps.
     public static let sampleRate = 48_000.0
     public static let bitRate = 64_000
-    /// How often the recorder's meters are read for the live bars and the waveform.
-    public static let meterInterval: TimeInterval = 0.05
+    /// The recorder's meters are read at 40 Hz for the live bars and the waveform.
+    public static let meterInterval: TimeInterval = 0.025
+    /// A new live bar enters at the right this often, scrolling at a constant rate.
+    public static let liveBarInterval: TimeInterval = 0.07
 
     /// A recording long enough to send (and within the server's limit once clamped).
     public static func keeps(durationMs: Int) -> Bool { durationMs >= minimumDurationMs }
@@ -70,14 +92,28 @@ public enum VoiceMessage {
         return min(maximumDurationMs, max(1, value))
     }
 
-    /// What a touch release does: `cancelled` wins (the slide already cancelled),
-    /// then a quick tap or a recording under a second shows the hint.
-    public enum Release: Equatable, Sendable { case cancel, hint, send }
+    /// What lifting a finger off the microphone does: `cancelled` wins (the
+    /// slide already cancelled); a quick tap keeps recording hands-free until
+    /// Stop; a hold stops, and a recording under a second is discarded.
+    public enum Release: Equatable, Sendable { case cancel, handsFree, discard, stop }
 
     public static func release(pressDuration: TimeInterval, recordedMs: Int, cancelled: Bool) -> Release {
         if cancelled { return .cancel }
-        if pressDuration < tapThreshold || !keeps(durationMs: recordedMs) { return .hint }
-        return .send
+        if pressDuration < tapThreshold { return .handsFree }
+        return keeps(durationMs: recordedMs) ? .stop : .discard
+    }
+
+    /// What a stopped recording (Stop, a released hold or the 10:00 limit)
+    /// becomes: staged in the composer by default, sent alone with the setting on.
+    public enum Finish: Equatable, Sendable { case stage, send }
+
+    public static func finish(sendsOnStop: Bool) -> Finish { sendsOnStop ? .send : .stage }
+
+    /// Whether the microphone can record into a composer that already holds
+    /// `staged` files, `voiceStaged` of them a voice note: one voice note
+    /// per message, within the attachment limit.
+    public static func canStage(staged: Int, voiceStaged: Bool, limit: Int = 10) -> Bool {
+        !voiceStaged && staged < limit
     }
 
     /// Sliding left (negative translation) far enough cancels.
@@ -114,28 +150,87 @@ public enum VoiceDuration {
     }
 }
 
-/// The 64 normalised peaks sent with a voice note, and how any length is drawn.
+/// The 64-byte loudness waveform sent with a voice note, how any length is
+/// drawn, and the live recording bars.
 public enum VoiceWaveform {
     /// Clients send exactly this many slices.
     public static let sliceCount = 64
     /// The server accepts 1...256 bytes; anything else is treated as absent.
     public static let maximumBytes = 256
+    /// The perceptual scale: this many dB below full scale and quieter is 0.
+    public static let floorDecibels: Float = -50
 
-    /// `samples` are linear peak amplitudes (0...1) read at regular intervals
-    /// over the whole recording. Each of `slices` equal time slices keeps its
-    /// loudest sample, scaled linearly so the loudest slice is 255. Silence
-    /// (or no samples) is all zeros.
-    public static func build(_ samples: [Float], slices: Int = sliceCount) -> [UInt8] {
+    /// The stored waveform from loudness readings spread evenly over the whole
+    /// recording (`rms` are linear RMS amplitudes, 0...1, any count): each
+    /// of `slices` equal time slices takes the RMS of its readings, mapped to
+    /// dB in [-50, 0] → [0, 1], smoothed with a 3-tap moving average, then
+    /// normalised so the loudest slice is 255. Silence is all zeros (drawn
+    /// as a flat line at the minimum bar height).
+    public static func build(rms: [Float], slices: Int = sliceCount) -> [UInt8] {
         guard slices > 0 else { return [] }
-        let clean = samples.map { $0.isFinite ? max(0, $0) : 0 }
+        let clean = rms.map { $0.isFinite ? max(0, $0) : 0 }
         guard !clean.isEmpty else { return Array(repeating: 0, count: slices) }
-        let peaks: [Float] = (0..<slices).map { slice in
+        let sliceRMS: [Float] = (0..<slices).map { slice in
             let start = slice * clean.count / slices
             let end = max(start + 1, (slice + 1) * clean.count / slices)
-            return clean[start..<min(end, clean.count)].max() ?? 0
+            let values = clean[start..<min(end, clean.count)]
+            return (values.reduce(0) { $0 + $1 * $1 } / Float(values.count)).squareRoot()
         }
-        guard let loudest = peaks.max(), loudest > 0 else { return Array(repeating: 0, count: slices) }
-        return peaks.map { UInt8((min(1, $0 / loudest) * 255).rounded()) }
+        return normalised(sliceRMS.map(level(rms:)))
+    }
+
+    /// 0...1 on the perceptual scale for a linear RMS amplitude.
+    public static func level(rms: Float) -> Float {
+        guard rms.isFinite, rms > 0 else { return 0 }
+        return meterLevel(decibels: 20 * log10(rms))
+    }
+
+    /// 3-tap moving average (the ends average what they have), then scaled
+    /// so the loudest value is 255.
+    public static func normalised(_ levels: [Float]) -> [UInt8] {
+        guard !levels.isEmpty else { return [] }
+        let smoothed: [Float] = levels.indices.map { index in
+            let window = levels[max(0, index - 1)...min(levels.count - 1, index + 1)]
+            return window.reduce(0, +) / Float(window.count)
+        }
+        guard let loudest = smoothed.max(), loudest > 0 else { return Array(repeating: 0, count: levels.count) }
+        return smoothed.map { UInt8((min(1, max(0, $0 / loudest)) * 255).rounded()) }
+    }
+
+    /// Accumulates squared samples into `slices` equal time slices of a
+    /// recording `totalFrames` long, for the per-slice RMS of a decoded file.
+    public struct RMSAccumulator: Sendable {
+        public let totalFrames: Int
+        public let slices: Int
+        private var sums: [Double]
+        private var counts: [Int]
+
+        public init(totalFrames: Int, slices: Int = VoiceWaveform.sliceCount) {
+            self.totalFrames = max(1, totalFrames)
+            self.slices = max(1, slices)
+            sums = Array(repeating: 0, count: self.slices)
+            counts = Array(repeating: 0, count: self.slices)
+        }
+
+        /// Adds consecutive samples starting at frame `start`.
+        public mutating func add(_ samples: UnsafeBufferPointer<Float>, start: Int) {
+            for (offset, sample) in samples.enumerated() {
+                let frame = start + offset
+                let slice = min(slices - 1, max(0, frame * slices / totalFrames))
+                let value = sample.isFinite ? Double(sample) : 0
+                sums[slice] += value * value
+                counts[slice] += 1
+            }
+        }
+
+        public mutating func add(_ samples: [Float], start: Int) {
+            samples.withUnsafeBufferPointer { add($0, start: start) }
+        }
+
+        /// Linear RMS of each slice (0 where nothing was read).
+        public var rms: [Float] {
+            zip(sums, counts).map { sum, count in count > 0 ? Float((sum / Double(count)).squareRoot()) : 0 }
+        }
     }
 
     /// Standard base64 with padding.
@@ -147,30 +242,46 @@ public enum VoiceWaveform {
         return [UInt8](data)
     }
 
-    /// Bar heights (0...1) for `count` bars from a waveform of any length:
-    /// each bar keeps the loudest byte it covers (stretched when there are
-    /// fewer bytes than bars). No waveform draws a flat placeholder (all 0).
-    public static func bars(_ bytes: [UInt8]?, count: Int) -> [Double] {
+    /// Bar heights (0...1) for `count` bars from a waveform of any length,
+    /// linearly interpolated across its values (first and last bars land on
+    /// the first and last values). No waveform draws a flat line (all 0).
+    public static func resample(_ bytes: [UInt8]?, count: Int) -> [Double] {
         guard count > 0 else { return [] }
         guard let bytes, !bytes.isEmpty else { return Array(repeating: 0, count: count) }
+        let values = bytes.map { Double($0) / 255 }
+        guard values.count > 1 else { return Array(repeating: values[0], count: count) }
+        guard count > 1 else { return [values.max() ?? 0] }
         return (0..<count).map { bar in
-            let start = bar * bytes.count / count
-            let end = max(start + 1, (bar + 1) * bytes.count / count)
-            return Double(bytes[start..<min(end, bytes.count)].max() ?? 0) / 255
+            let position = Double(bar) * Double(values.count - 1) / Double(count - 1)
+            let lower = Int(position.rounded(.down))
+            let upper = min(values.count - 1, lower + 1)
+            let fraction = position - Double(lower)
+            return values[lower] + (values[upper] - values[lower]) * fraction
         }
     }
 
-    /// Linear amplitude from a recorder's dBFS reading (`peakPower`).
+    /// Linear amplitude from a recorder's dBFS reading (`averagePower`).
     public static func amplitude(decibels: Float) -> Float {
         guard decibels.isFinite else { return 0 }
         return min(1, max(0, Float(pow(10, Double(decibels) / 20))))
     }
 
-    /// Live bar height (0...1) from `averagePower`: `floor` dB and below is
-    /// silent, 0 dB is full, so ordinary speech is clearly visible.
-    public static func meterLevel(decibels: Float, floor: Float = -50) -> Float {
+    /// 0...1 from a dBFS reading: `floor` dB and below is silent, 0 dB is
+    /// full, so ordinary speech is clearly visible.
+    public static func meterLevel(decibels: Float, floor: Float = floorDecibels) -> Float {
         guard decibels.isFinite, floor < 0 else { return 0 }
         return min(1, max(0, (decibels - floor) / -floor))
+    }
+
+    /// Attack/release envelope for the live bars: rises quickly toward a
+    /// louder reading and falls back slowly, so bars don't jitter. `dt` is
+    /// the time since the previous reading.
+    public static func follow(_ previous: Float, toward target: Float, dt: Double,
+                              attack: Double = 0.03, release: Double = 0.2) -> Float {
+        guard target.isFinite, previous.isFinite, dt > 0 else { return target.isFinite ? target : 0 }
+        let constant = target > previous ? attack : release
+        let blend = Float(1 - exp(-dt / max(0.001, constant)))
+        return previous + (target - previous) * blend
     }
 
     /// The live bars shown while recording: the latest `count` levels,
@@ -179,6 +290,13 @@ public enum VoiceWaveform {
         guard count > 0 else { return [] }
         let recent = levels.suffix(count).map { Double($0.isFinite ? min(1, max(0, $0)) : 0) }
         return Array(repeating: 0, count: count - recent.count) + recent
+    }
+
+    /// How far (0...1 of one bar step) the live bars have scrolled left since
+    /// the newest bar entered, for a constant right-to-left motion.
+    public static func scrollFraction(sinceLastBar elapsed: TimeInterval, interval: TimeInterval = VoiceMessage.liveBarInterval) -> Double {
+        guard interval > 0, elapsed.isFinite else { return 0 }
+        return min(1, max(0, elapsed / interval))
     }
 
     /// How many bars of `width` and `gap` fit in `available` points (at least one).
@@ -280,9 +398,10 @@ public enum VoicePlaybackPosition {
         return min(1, max(0, Double(elapsedMs) / Double(durationMs)))
     }
 
-    /// Bars at or before the playhead draw in the played colour.
-    public static func playedBars(progress: Double, count: Int) -> Int {
+    /// How much of a bar is played (0...1): bars before the playhead are
+    /// full, the boundary bar is partly filled, later bars are empty.
+    public static func playedFill(progress: Double, bar: Int, count: Int) -> Double {
         guard count > 0, progress.isFinite else { return 0 }
-        return min(count, max(0, Int((progress * Double(count)).rounded(.up))))
+        return min(1, max(0, progress * Double(count) - Double(bar)))
     }
 }

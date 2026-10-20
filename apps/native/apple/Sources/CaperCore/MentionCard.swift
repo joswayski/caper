@@ -108,6 +108,9 @@ final class ProfileMessageDraft {
         var edit = AttachmentEdit.original
         /// A small render of `edit` for the chip.
         var editPreview: URL?
+        /// A staged voice note's length and waveform (its `prepared` is set at once).
+        var voiceDurationMs: Int?
+        var voiceWaveform: [UInt8]?
     }
 
     var text = ""
@@ -177,6 +180,32 @@ final class ProfileMessageDraft {
     }
     /// The microphone starts only while nothing else is in flight or awaiting Retry.
     var canRecordVoice: Bool { !discarded && !sending && pending == nil && voice == nil }
+
+    /// Staging (the default): one voice note per message, within the file limit.
+    var canStageVoice: Bool {
+        editable && VoiceMessage.canStage(staged: files.count, voiceStaged: files.contains { $0.voiceDurationMs != nil },
+                                          limit: AttachmentPolicy.maxAttachments)
+    }
+
+    /// Stages a stopped recording among the card's files, to go with the next
+    /// Send; it uploads now, eagerly like the other files. False (and the
+    /// recording removed) when it can't be staged.
+    @discardableResult
+    func stageVoice(_ recording: VoiceRecording) -> Bool {
+        guard canStageVoice, let prepared = PreparedAttachment.voice(recording) else {
+            AttachmentStaging.remove(recording.fileURL)
+            return false
+        }
+        var file = File(local: LocalAttachmentFile(url: recording.fileURL, name: VoiceMessage.label,
+                                                   contentType: VoiceMessage.uploadContentType, size: prepared.byteSize))
+        file.prepared = prepared
+        file.voiceDurationMs = recording.durationMs
+        file.voiceWaveform = recording.waveform
+        files.append(file)
+        error = nil
+        startUploads()
+        return true
+    }
 
     /// Holds a finished recording for `AppModel.sendProfileVoice`; false
     /// (and the recording removed) when another voice message is still here.

@@ -3780,6 +3780,46 @@ public final class ChatModel {
             && (!inThread || (threadRootID != nil && !threadLoading))
     }
 
+    /// The microphone can stage a recording in this composer (the default,
+    /// with "Send voice messages as soon as I stop recording" off): files can
+    /// be attached here, no voice note is staged yet and there is room.
+    public func canStageVoice(inThread: Bool = false) -> Bool {
+        guard canAttach, canInteract, !inThread || (threadRootID != nil && !threadLoading) else { return false }
+        let files = attachmentFiles(inThread: inThread)
+        return VoiceMessage.canStage(staged: files.count, voiceStaged: files.contains(where: \.isVoice), limit: AttachmentPolicy.maxAttachments)
+    }
+
+    /// Stages a stopped recording among the composer's files, where it stays
+    /// with the conversation's draft like any staged file and goes with the
+    /// next Send (text, files and voice note in one message). Its `voice`
+    /// upload starts now, so transcription starts before sending; Remove
+    /// cancels the upload and deletes the recording.
+    public func stageVoice(_ recording: VoiceRecording, inThread: Bool = false) {
+        guard canStageVoice(inThread: inThread), let target = attachmentTarget(inThread: inThread),
+              let prepared = PreparedAttachment.voice(recording) else {
+            AttachmentStaging.remove(recording.fileURL)
+            return
+        }
+        composerRevision += 1
+        let id = UUID().uuidString
+        draftChannels[id] = target.channelID
+        var draft = AttachmentDraft(id: id, name: VoiceMessage.label, kind: .audio, localURL: recording.fileURL, sourceSize: prepared.byteSize)
+        draft.preparing = false
+        draft.storedSize = prepared.byteSize
+        draft.voiceDurationMs = recording.durationMs
+        draft.voiceWaveform = recording.waveform
+        preparedUploads[id] = prepared
+        stagedFiles[target, default: []].append(draft)
+        if error == "Write a message first." || error == "Wait for files to finish uploading." { error = nil }
+        let expected = uploadGeneration
+        uploadTasks[id] = Task { [weak self] in
+            guard let self else { return }
+            do { _ = try await self.uploadAttachmentDraft(id: id) }
+            catch { if !Task.isCancelled, self.uploadGeneration == expected { self.updateDraft(id) { $0.error = "Failed to upload." } } }
+            if !Task.isCancelled { self.uploadTasks[id] = nil }
+        }
+    }
+
     /// Sends a recorded voice message on its own (the voice-message contract): the
     /// composer's text and files stay untouched, a reply target is honoured.
     /// The pending row appears at once with the local recording; the upload

@@ -2321,18 +2321,27 @@ struct AttachmentDraftsView: View {
                     .background(CaperTheme.terracotta.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
             }
             StagedFileLayout() {
-                ForEach(files) { draft in
-                    AttachmentDraftChip(draft: draft, preview: { preview(draft) }, retry: { chat.retryAttachmentDraft(id: draft.id) },
-                                        toggleSpoiler: { chat.toggleAttachmentSpoiler(id: draft.id) },
-                                        edit: editAction(draft), remove: { chat.removeAttachmentDraft(id: draft.id) })
-                    .modifier(Entrance.chip)
-                }
+                ForEach(files) { draft in chip(draft).modifier(Entrance.chip) }
             }
             .accessibilityLabel("Files to send")
             .quickLookPreview(Binding(
                 get: { files.first(where: { $0.id == previewID }).map { Self.shownURL($0) } },
                 set: { if $0 == nil { previewID = nil } }
             ))
+        }
+    }
+
+    /// A staged voice note gets its own chip (play, waveform, duration, Remove).
+    @ViewBuilder private func chip(_ draft: AttachmentDraft) -> some View {
+        if let duration = draft.voiceDurationMs {
+            VoiceDraftChip(id: draft.id, url: draft.localURL, durationMs: duration, waveform: draft.voiceWaveform,
+                           status: draft.error ?? (draft.attachment == nil ? "Uploading…" : nil), failed: draft.error != nil,
+                           retry: draft.error == nil ? nil : { chat.retryAttachmentDraft(id: draft.id) },
+                           remove: { chat.removeAttachmentDraft(id: draft.id) })
+        } else {
+            AttachmentDraftChip(draft: draft, preview: { preview(draft) }, retry: { chat.retryAttachmentDraft(id: draft.id) },
+                                toggleSpoiler: { chat.toggleAttachmentSpoiler(id: draft.id) },
+                                edit: editAction(draft), remove: { chat.removeAttachmentDraft(id: draft.id) })
         }
     }
 

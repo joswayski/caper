@@ -6,27 +6,45 @@ import XCTest
 final class VoiceMessageTests: XCTestCase {
     // MARK: Waveform
 
-    func testWaveformKeepsEachSlicePeakNormalisedToTheLoudest() {
-        // 128 samples: each of 64 slices covers two; the loudest slice is 0.5.
-        var samples = [Float](repeating: 0.05, count: 128)
-        samples[0] = 0.25
-        samples[127] = 0.5
-        samples[64] = 0.125
-        let waveform = VoiceWaveform.build(samples)
+    func testWaveformUsesSliceRMSOnAPerceptualScaleSmoothedAndNormalised() {
+        // 0.1 RMS is -20 dB: 0.6 on the [-50, 0] dB scale; full scale is 1.
+        var rms = [Float](repeating: 0.1, count: 64)
+        rms[63] = 1
+        let waveform = VoiceWaveform.build(rms: rms)
         XCTAssertEqual(waveform.count, 64)
-        XCTAssertEqual(waveform[63], 255, "the loudest slice is 255")
-        XCTAssertEqual(waveform[0], 128, "0.25 / 0.5 scales linearly")
-        XCTAssertEqual(waveform[32], 64)
-        XCTAssertEqual(waveform[1], 26, "0.05 / 0.5 × 255")
+        XCTAssertEqual(waveform[63], 255, "the loudest (smoothed) slice is 255")
+        XCTAssertEqual(waveform[62], 234, "3-tap average of 0.6, 0.6 and 1 against the loudest 0.8")
+        XCTAssertEqual(waveform[0], 191, "0.6 / 0.8 × 255")
+        XCTAssertEqual(Set(waveform[0..<61]), [191], "steady speech is one level, not jagged")
+        // Each slice is the RMS of its readings, not their peak.
+        let pairs = (0..<64).flatMap { _ in [Float(0.3), Float(0.4)] }
+        XCTAssertEqual(Set(VoiceWaveform.build(rms: pairs)), [255])
+        XCTAssertEqual(VoiceWaveform.level(rms: (0.125 as Float).squareRoot()), VoiceWaveform.level(rms: 0.35355339), accuracy: 0.0001)
     }
 
-    func testWaveformStretchesShortRecordingsAndIsZeroForSilence() {
-        XCTAssertEqual(VoiceWaveform.build([0.2, 0.4]), Array(repeating: 128, count: 32) + Array(repeating: 255, count: 32))
-        XCTAssertEqual(VoiceWaveform.build([]), Array(repeating: 0, count: 64))
-        XCTAssertEqual(VoiceWaveform.build([0, 0, 0]), Array(repeating: 0, count: 64))
-        XCTAssertEqual(VoiceWaveform.build([.nan, -1, .infinity, 0.5]).max(), 255, "invalid readings count as silence")
-        XCTAssertEqual(VoiceWaveform.build([.nan, -1, .infinity, 0.5]).filter { $0 > 0 }.count, 16)
-        XCTAssertEqual(VoiceWaveform.build([1, 2], slices: 0), [])
+    func testWaveformScaleSmoothingAndSilence() {
+        XCTAssertEqual(VoiceWaveform.level(rms: 1), 1)
+        XCTAssertEqual(VoiceWaveform.level(rms: 0.1), 0.6, accuracy: 0.0001)
+        XCTAssertEqual(VoiceWaveform.level(rms: 0.001), 0, "-60 dB is below the floor")
+        XCTAssertEqual(VoiceWaveform.level(rms: 0), 0)
+        XCTAssertEqual(VoiceWaveform.level(rms: .nan), 0)
+        XCTAssertEqual(VoiceWaveform.normalised([0, 0, 1, 0, 0]), [0, 255, 255, 255, 0], "a spike spreads over its neighbours")
+        XCTAssertEqual(VoiceWaveform.normalised([0.5, 1]), [255, 255], "the ends average what they have")
+        XCTAssertEqual(VoiceWaveform.normalised([]), [])
+        XCTAssertEqual(VoiceWaveform.build(rms: []), Array(repeating: 0, count: 64))
+        XCTAssertEqual(VoiceWaveform.build(rms: [0, 0, 0]), Array(repeating: 0, count: 64), "silence stays flat")
+        XCTAssertEqual(VoiceWaveform.build(rms: [.nan, -1, .infinity, 0.5]).max(), 255, "invalid readings count as silence")
+        XCTAssertEqual(VoiceWaveform.build(rms: [1, 2], slices: 0), [])
+        XCTAssertEqual(VoiceWaveform.build(rms: [0.2, 0.2]).count, 64, "short recordings stretch over every slice")
+    }
+
+    func testRMSAccumulatorSplitsTheRecordingIntoEqualSlices() {
+        var accumulator = VoiceWaveform.RMSAccumulator(totalFrames: 8, slices: 2)
+        accumulator.add([1, -1, 1], start: 0)
+        accumulator.add([-1, 0, 0, 0.5, -0.5], start: 3)
+        XCTAssertEqual(accumulator.rms[0], 1)
+        XCTAssertEqual(accumulator.rms[1], 0.3535534, accuracy: 0.0001)
+        XCTAssertEqual(VoiceWaveform.RMSAccumulator(totalFrames: 10).rms, Array(repeating: 0, count: 64))
     }
 
     func testWaveformEncodesAsPaddedStandardBase64AndDecodesOnlyValidLengths() {
@@ -43,17 +61,19 @@ final class VoiceMessageTests: XCTestCase {
         XCTAssertEqual(VoiceWaveform.decode(Data(count: 256).base64EncodedString())?.count, 256)
     }
 
-    func testBarsResampleAnyLengthKeepingPeaksAndDrawAFlatPlaceholder() {
-        let bytes: [UInt8] = [0, 255, 51, 102]
-        XCTAssertEqual(VoiceWaveform.bars(bytes, count: 2), [1, 0.4], "downsampling keeps each range's peak")
-        XCTAssertEqual(VoiceWaveform.bars(bytes, count: 8), [0, 0, 1, 1, 0.2, 0.2, 0.4, 0.4], "upsampling repeats")
-        XCTAssertEqual(VoiceWaveform.bars(bytes, count: 4), [0, 1, 0.2, 0.4])
-        XCTAssertEqual(VoiceWaveform.bars(nil, count: 3), [0, 0, 0], "no waveform draws flat bars")
-        XCTAssertEqual(VoiceWaveform.bars([], count: 2), [0, 0])
-        XCTAssertEqual(VoiceWaveform.bars(bytes, count: 0), [])
-        let long = (0..<256).map { UInt8($0) }
-        XCTAssertEqual(VoiceWaveform.bars(long, count: 64).last, 1)
-        XCTAssertEqual(VoiceWaveform.bars(long, count: 64).count, 64)
+    func testBarsResampleWithLinearInterpolationAndDrawAFlatLine() {
+        XCTAssertEqual(VoiceWaveform.resample([0, 255], count: 3), [0, 0.5, 1])
+        XCTAssertEqual(VoiceWaveform.resample([0, 255, 0], count: 5), [0, 0.5, 1, 0.5, 0])
+        let down = VoiceWaveform.resample((0..<64).map { UInt8($0 * 4) }, count: 22)
+        XCTAssertEqual(down.count, 22)
+        XCTAssertEqual(down.first, 0, "the first bar is the first value")
+        XCTAssertEqual(down.last ?? 0, 252.0 / 255, accuracy: 0.0001, "the last bar is the last value")
+        XCTAssertEqual(zip(down, down.dropFirst()).allSatisfy { $0 < $1 }, true, "a ramp stays a smooth ramp")
+        XCTAssertEqual(VoiceWaveform.resample(nil, count: 3), [0, 0, 0], "no waveform draws a flat line")
+        XCTAssertEqual(VoiceWaveform.resample([], count: 2), [0, 0])
+        XCTAssertEqual(VoiceWaveform.resample([255], count: 4), [1, 1, 1, 1])
+        XCTAssertEqual(VoiceWaveform.resample([51, 255], count: 1), [1])
+        XCTAssertEqual(VoiceWaveform.resample([1, 2], count: 0), [])
     }
 
     func testMetersAndLiveBars() {
@@ -66,6 +86,15 @@ final class VoiceMessageTests: XCTestCase {
         XCTAssertEqual(VoiceWaveform.meterLevel(decibels: -25), 0.5)
         XCTAssertEqual(VoiceWaveform.meterLevel(decibels: -80), 0)
         XCTAssertEqual(VoiceWaveform.liveBars([0.5, 1], count: 4), [0, 0, 0.5, 1], "new levels enter at the right")
+        let rise = VoiceWaveform.follow(0, toward: 1, dt: 0.03)
+        let fall = VoiceWaveform.follow(1, toward: 0, dt: 0.03)
+        XCTAssertEqual(rise, 0.632, accuracy: 0.001, "fast attack")
+        XCTAssertEqual(fall, 0.861, accuracy: 0.001, "slow release")
+        XCTAssertEqual(VoiceWaveform.follow(0.4, toward: 0.4, dt: 0.025), 0.4, "a steady level doesn't jitter")
+        XCTAssertEqual(VoiceWaveform.follow(0.4, toward: 0.9, dt: 0), 0.9)
+        XCTAssertEqual(VoiceWaveform.scrollFraction(sinceLastBar: 0.035), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(VoiceWaveform.scrollFraction(sinceLastBar: 1), 1)
+        XCTAssertEqual(VoiceWaveform.scrollFraction(sinceLastBar: -1), 0)
         XCTAssertEqual(VoiceWaveform.liveBars([0.25, 0.5, 0.75], count: 2), [0.5, 0.75], "only the latest levels fit")
         XCTAssertEqual(VoiceWaveform.barCount(available: 100, width: 3, gap: 2), 20)
         XCTAssertEqual(VoiceWaveform.barCount(available: 0, width: 3, gap: 2), 1)
@@ -108,6 +137,23 @@ final class VoiceMessageTests: XCTestCase {
         XCTAssertEqual(VoiceMessage.retryNotice(unconfirmed: true), "Voice message delivery isn’t confirmed. Retry resends the same message.")
     }
 
+    func testSendOnStopSettingDefaultsOffAndStagesByDefault() {
+        XCTAssertFalse(VoiceMessage.sendsOnStop(stored: nil), "off until chosen")
+        XCTAssertFalse(VoiceMessage.sendsOnStop(stored: false))
+        XCTAssertTrue(VoiceMessage.sendsOnStop(stored: true))
+        XCTAssertFalse(VoiceMessage.sendsOnStop(stored: "yes"), "anything else is off")
+        XCTAssertEqual(VoiceMessage.finish(sendsOnStop: false), .stage)
+        XCTAssertEqual(VoiceMessage.finish(sendsOnStop: true), .send)
+        XCTAssertEqual(VoiceMessage.releaseHint(sendsOnStop: true), "Release to send")
+        XCTAssertEqual(VoiceMessage.releaseHint(sendsOnStop: false), "Release to add to your message")
+        XCTAssertTrue(VoiceMessage.canStage(staged: 0, voiceStaged: false))
+        XCTAssertTrue(VoiceMessage.canStage(staged: 9, voiceStaged: false), "beside staged photos and files")
+        XCTAssertFalse(VoiceMessage.canStage(staged: 1, voiceStaged: true), "one voice note per message")
+        XCTAssertFalse(VoiceMessage.canStage(staged: 10, voiceStaged: false), "within the attachment limit")
+        XCTAssertEqual(VoiceMessage.oneVoicePerMessage, "Remove the voice message to record another")
+        XCTAssertEqual(VoiceMessage.sendOnStopTitle, "Send voice messages as soon as I stop recording")
+    }
+
     func testRecordingRules() {
         XCTAssertFalse(VoiceMessage.keeps(durationMs: 999), "under a second is discarded")
         XCTAssertTrue(VoiceMessage.keeps(durationMs: 1_000))
@@ -115,10 +161,12 @@ final class VoiceMessageTests: XCTestCase {
         XCTAssertEqual(VoiceMessage.uploadDuration(measuredMs: nil, elapsedMs: 4_400), 4_400)
         XCTAssertEqual(VoiceMessage.uploadDuration(measuredMs: 0, elapsedMs: 4_400), 4_400)
         XCTAssertEqual(VoiceMessage.uploadDuration(measuredMs: 600_040, elapsedMs: 600_000), 600_000, "never above the server's limit")
-        XCTAssertEqual(VoiceMessage.release(pressDuration: 0.1, recordedMs: 0, cancelled: false), .hint, "a quick tap shows Hold to record")
-        XCTAssertEqual(VoiceMessage.release(pressDuration: 0.8, recordedMs: 700, cancelled: false), .hint, "under a second is treated as a tap")
-        XCTAssertEqual(VoiceMessage.release(pressDuration: 2, recordedMs: 1_900, cancelled: false), .send)
+        XCTAssertEqual(VoiceMessage.release(pressDuration: 0.1, recordedMs: 0, cancelled: false), .handsFree, "a quick tap records until Stop")
+        XCTAssertEqual(VoiceMessage.release(pressDuration: 0.1, recordedMs: 80, cancelled: false), .handsFree)
+        XCTAssertEqual(VoiceMessage.release(pressDuration: 0.8, recordedMs: 700, cancelled: false), .discard, "a hold under a second is discarded")
+        XCTAssertEqual(VoiceMessage.release(pressDuration: 2, recordedMs: 1_900, cancelled: false), .stop)
         XCTAssertEqual(VoiceMessage.release(pressDuration: 2, recordedMs: 1_900, cancelled: true), .cancel)
+        XCTAssertEqual(VoiceMessage.release(pressDuration: 0.1, recordedMs: 0, cancelled: true), .cancel)
         XCTAssertFalse(VoiceMessage.cancelsBySliding(translation: -40))
         XCTAssertTrue(VoiceMessage.cancelsBySliding(translation: -VoiceMessage.cancelDistance))
         XCTAssertFalse(VoiceMessage.cancelsBySliding(translation: 200), "sliding right never cancels")
@@ -134,10 +182,13 @@ final class VoiceMessageTests: XCTestCase {
         XCTAssertEqual(VoicePlaybackPosition.progress(elapsedMs: 1_000, durationMs: 4_000), 0.25)
         XCTAssertEqual(VoicePlaybackPosition.progress(elapsedMs: 9_000, durationMs: 4_000), 1)
         XCTAssertEqual(VoicePlaybackPosition.progress(elapsedMs: 1_000, durationMs: nil), 0)
-        XCTAssertEqual(VoicePlaybackPosition.playedBars(progress: 0, count: 40), 0)
-        XCTAssertEqual(VoicePlaybackPosition.playedBars(progress: 0.5, count: 40), 20)
-        XCTAssertEqual(VoicePlaybackPosition.playedBars(progress: 0.01, count: 40), 1, "the bar under the playhead counts as played")
-        XCTAssertEqual(VoicePlaybackPosition.playedBars(progress: 1, count: 40), 40)
+        XCTAssertEqual(VoicePlaybackPosition.playedFill(progress: 0, bar: 0, count: 40), 0)
+        XCTAssertEqual(VoicePlaybackPosition.playedFill(progress: 0.5, bar: 19, count: 40), 1)
+        XCTAssertEqual(VoicePlaybackPosition.playedFill(progress: 0.5, bar: 20, count: 40), 0)
+        XCTAssertEqual(VoicePlaybackPosition.playedFill(progress: 0.5125, bar: 20, count: 40), 0.5, accuracy: 0.0001,
+                       "the boundary bar fills partly")
+        XCTAssertEqual(VoicePlaybackPosition.playedFill(progress: 1, bar: 39, count: 40), 1)
+        XCTAssertEqual(VoicePlaybackPosition.playedFill(progress: .nan, bar: 0, count: 40), 0)
     }
 
     // MARK: Transcripts
