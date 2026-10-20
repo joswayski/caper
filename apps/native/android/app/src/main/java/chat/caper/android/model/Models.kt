@@ -164,7 +164,11 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     }
 
     /** The members in the order the member list shows them for [channelId]. */
-    fun memberOrder(channelId: String?): List<Member> = memberGroups(channelId)?.let { it.first + it.second } ?: members
+    fun memberOrder(channelId: String?, query: String = ""): List<Member> {
+        val filter = query.trim()
+        val ordered = memberGroups(channelId)?.let { it.first + it.second } ?: members
+        return ordered.filter { filter.isEmpty() || it.displayName.contains(filter, ignoreCase = true) || it.username.contains(filter, ignoreCase = true) }
+    }
 }
 /** [admin]: sent by a Caper feedback team member (ADMIN badge), stamped by the server at send time. */
 @Serializable data class ChatAuthor(
@@ -185,6 +189,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     @Serializable(with = TolerantAttachmentsSerializer::class) val attachments: List<ChatAttachment> = emptyList(),
     /** Absent on older messages and servers. */
     @Serializable(with = MentionListSerializer::class) val mentions: List<MessageMention> = emptyList(),
+    /** A KLIPY GIF or sticker shown under the text; null when absent or invalid (the text shows alone). */
+    @Serializable(with = TolerantGifSerializer::class) val gif: KlipyGif? = null,
 )
 
 /** A file on a message. URLs are signed per response and expire in 1–2 hours. */
@@ -619,7 +625,6 @@ data class AppUiState(
     val deniedVoiceChannels: Set<String> = emptySet(),
     /** Voice availability by media root ("" is General's demo root); absent while checking. */
     val voiceAvailability: Map<String, Boolean> = emptyMap(),
-    val presencePage: Int = 0,
     /** The private channel [channelGrants] and [pendingChannelInvitations] belong to; read them with [channelGrantsFor]. */
     val channelGrantsChannelId: String? = null,
     val channelGrants: List<Member> = emptyList(),
@@ -640,6 +645,8 @@ data class AppUiState(
     val uploadsEnabled: Boolean = false,
     /** A usage check has answered, so a disabled attach control is unavailable rather than still checking. */
     val uploadsChecked: Boolean = false,
+    /** `GET /api/klipy`: the GIF button shows only while this is known. */
+    val klipy: KlipyConfig? = null,
     /** Files stay with their channel/DM and, for replies, their thread, even while closed. */
     val attachmentDrafts: Map<AttachmentDraftTarget, List<DraftAttachmentUi>> = emptyMap(),
     val attachmentErrors: Map<AttachmentDraftTarget, String> = emptyMap(),
@@ -775,6 +782,8 @@ data class PendingMessageUi(
     /** Uploaded files with local `file://` copies until the server confirms. */
     val attachments: List<ChatAttachment> = emptyList(),
     val replyTo: MessageReply? = null,
+    /** A GIF sent on its own (never with files), shown straight from KLIPY until confirmed. */
+    val gif: KlipyGif? = null,
 )
 
 /** A regular composer and each of its threads own independent files and upload errors. */

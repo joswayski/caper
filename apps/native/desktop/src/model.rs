@@ -657,6 +657,15 @@ pub struct Content {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub mentions: Vec<Mention>,
+    /// A KLIPY GIF or sticker shown below the text (`type` stays `text`).
+    /// Only values passing the shared rules are kept; anything else, or a
+    /// newer shape, leaves the text alone and never rejects the message.
+    #[serde(
+        default,
+        deserialize_with = "crate::klipy::tolerant",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub gif: Option<crate::klipy::Gif>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1246,6 +1255,13 @@ impl MessageReply {
                 String::new()
             } else if message.content.text.is_empty() && message.forward.is_some() {
                 "Forwarded message".into()
+            } else if let Some(gif) = message
+                .content
+                .gif
+                .as_ref()
+                .filter(|_| message.content.text.is_empty())
+            {
+                gif.label().into()
             } else {
                 message.content.text.chars().take(200).collect()
             },
@@ -2777,6 +2793,7 @@ mod tests {
                 text: id.into(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
+                gif: None,
             },
             reactions: Vec::new(),
             reaction_seq: None,

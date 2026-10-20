@@ -145,7 +145,15 @@ export interface ChatMessage {
   channelId: string;
   seq: string;
   author: ChatAuthor;
-  content: { version: 1; type: "text"; text: string; attachments?: ChatAttachment[]; mentions?: ChatMention[] };
+  content: {
+    version: 1;
+    type: "text";
+    text: string;
+    attachments?: ChatAttachment[];
+    mentions?: ChatMention[];
+    /** A KLIPY GIF or sticker; render it only through `gifOf`. */
+    gif?: unknown;
+  };
   createdAt: string;
   clientMessageId: string;
   reactions?: ChatReaction[];

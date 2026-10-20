@@ -259,9 +259,15 @@ pub enum Command {
         /// Resent unchanged on retry: ids join the idempotency hash.
         attachment_ids: Vec<String>,
         spoiler_attachment_ids: Vec<String>,
+        /// A KLIPY GIF sent on its own; resent unchanged on retry.
+        gif: Option<crate::klipy::Gif>,
     },
     /// Whether uploads are configured, and the compression settings.
     AssetUsage {
+        token: String,
+    },
+    /// `GET /api/klipy`: whether GIFs are on, with KLIPY's key.
+    Klipy {
         token: String,
     },
     RefreshAttachmentUrls {
@@ -837,6 +843,11 @@ pub enum Event {
     AssetUsage {
         token: String,
         settings: Option<crate::compress::Compression>,
+    },
+    /// Any failure, like a 404 (off), hides the GIF button.
+    Klipy {
+        token: String,
+        config: Option<crate::klipy::Config>,
     },
     AttachmentUrls {
         token: String,
@@ -1625,6 +1636,14 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             settings: api.asset_usage(&token).ok(),
             token,
         },
+        Command::Klipy { token } => Event::Klipy {
+            config: api
+                .klipy(&token)
+                .ok()
+                .flatten()
+                .filter(crate::klipy::Config::valid),
+            token,
+        },
         Command::RefreshAttachmentUrls { token, ids } => Event::AttachmentUrls {
             result: api
                 .attachment_urls(&token, &ids)
@@ -2059,6 +2078,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             thread_root_id,
             broadcast,
             reply_to_id,
+            gif,
         } => Event::Sent {
             generation,
             channel: channel.clone(),
@@ -2074,6 +2094,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                     &spoiler_attachment_ids,
                     (thread_root_id.as_deref(), broadcast),
                     reply_to_id.as_deref(),
+                    gif.as_ref(),
                 )
                 .map_err(|error| SendFailure {
                     status: error.status.map(|status| status.as_u16()),

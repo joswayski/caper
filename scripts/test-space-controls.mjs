@@ -2,6 +2,7 @@
 // Run with the dev server: SPACES_TEST_WEB_URL=http://localhost:3000/spaces node scripts/test-space-controls.mjs
 // Focus on notification/DM privacy alignment with SETTINGS_ONLY=1.
 // Focus on modal Escape/focus behavior with KEYBOARD_ONLY=1.
+// Focus on the full member roster and local filtering with MEMBERS_ONLY=1.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -70,7 +71,13 @@ function fixture() {
             this.frame({
               type: "event",
               id: request.id,
-              event: { type: "snapshot", members: request.userIds.map((userId) => ({ userId, status })) },
+              event: {
+                type: "snapshot",
+                members: (request.allMembers ? members.map((m) => m.id) : request.userIds).map((userId) => ({
+                  userId,
+                  status,
+                })),
+              },
             });
         }
       };
@@ -93,7 +100,7 @@ function fixture() {
             : request.kind === "presence"
               ? {
                   type: "snapshot",
-                  members: request.userIds.map((userId, index) => ({
+                  members: (request.allMembers ? members.map((m) => m.id) : request.userIds).map((userId, index) => ({
                     userId,
                     status: ["online", "idle", "offline"][index % 3],
                   })),
@@ -172,7 +179,12 @@ function fixture() {
       });
     if (path.endsWith("/members")) return Response.json({ members: [{ ...account, owner: true }] });
     if (path === `/api/spaces/${space.id}`)
-      return Response.json({ space, channels: deletedChannel ? [] : [channel], members });
+      return Response.json({
+        space,
+        channels: deletedChannel ? [] : [channel],
+        members,
+        channelMembers: channel.private ? { [channel.id]: [account.id] } : {},
+      });
     if (path.endsWith("/messages")) return Response.json({ space, channel, messages: [], cursor: "0", hasMore: false });
     return Response.json({ error: "Disabled in UI fixture" }, { status: 503 });
   };
@@ -208,7 +220,10 @@ function browser(...command) {
 const evaluate = (source) => browser("eval", source).result;
 const wait = (expression) => browser("wait", "--fn", expression);
 const screenshot = (name) => {
-  if (artifacts) browser("screenshot", ...(name.startsWith("homepage-") ? [] : ["--full"]), `${artifacts}/${name}.png`);
+  // Viewport captures preserve the roster's live DOM/subscription. Full-page
+  // captures can rebuild this app's responsive room while resizing the surface.
+  if (artifacts)
+    browser("screenshot", ...(/^(homepage|roster)-/.test(name) ? [] : ["--full"]), `${artifacts}/${name}.png`);
 };
 // On phones the member list slides in and out; these wait until it rests or is gone.
 const membersSettled = () => wait('!document.querySelector(".space-member-presence")?.getAnimations().length');
@@ -590,12 +605,90 @@ function testModalGeometry() {
       : "PASS: desktop/narrow/short modal geometry, centered settings, editable exact-username add/Enter/pending guard, mobile inset navigation/account alignment, and member Close/outside dismissal (mock API/gateway).",
   );
 }
+function testMembers() {
+  for (const width of [1280, 390]) {
+    for (const privateChannel of [false, true]) {
+      browser("set", "viewport", String(width), "844", "2");
+      browser("open", `${url}?space=space1234567&channel=channel12345${privateChannel ? "" : "&publicChannel"}`);
+      wait('!!document.querySelector(".chat-heading")');
+      if (!evaluate('!!document.querySelector(".space-member-presence")')) {
+        browser("click", 'summary[aria-label="#fixture-channel options"]');
+        browser("find", "role", "button", "click", "--name", "Members 30", "--exact");
+      }
+      membersSettled();
+      wait(
+        'document.querySelectorAll(".member-roster li").length === 30 && !document.querySelector(".member-roster [data-status=unknown]")',
+      );
+      assert.equal(evaluate('document.querySelector(".member-presence-pages")'), null);
+      const groups = evaluate(
+        '[...document.querySelectorAll(".member-presence-group")].map(s => [s.getAttribute("aria-label"), s.querySelectorAll("li").length])',
+      );
+      assert.deepEqual(
+        groups,
+        privateChannel
+          ? [
+              ["Online", 1],
+              ["Online", 19],
+              ["Offline", 10],
+            ]
+          : [
+              ["Online", 20],
+              ["Offline", 10],
+            ],
+      );
+      const subscription = evaluate(
+        'Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence" && s.allMembers).id',
+      );
+      screenshot(`roster-${width}-${privateChannel ? "private" : "public"}`);
+      browser("click", '[aria-label="Search members"]');
+      assert.equal(evaluate('document.activeElement.getAttribute("aria-label")'), "Filter members");
+      browser("fill", '[aria-label="Filter members"]', " MEMBER_28 ");
+      wait('document.querySelectorAll(".member-roster li").length === 1');
+      assert.equal(evaluate('document.querySelector(".member-roster strong").textContent'), "Fixture member 29");
+      screenshot(`roster-${width}-filtered`);
+      browser("fill", '[aria-label="Filter members"]', "Fixture member 29");
+      assert.equal(evaluate('document.querySelectorAll(".member-roster li").length'), 1);
+      browser("fill", '[aria-label="Filter members"]', "Nobody matches");
+      wait('document.querySelector(".member-roster [role=status]")?.textContent === "No members found."');
+      screenshot(`roster-${width}-empty`);
+      browser("click", '[aria-label="Clear and close member search"]');
+      wait('document.querySelectorAll(".member-roster li").length === 30');
+      browser("click", '[aria-label="Search members"]');
+      browser("fill", '[aria-label="Filter members"]', "member_28");
+      browser("press", "Escape");
+      wait(
+        '!document.querySelector(".member-search input") && document.querySelectorAll(".member-roster li").length === 30',
+      );
+      assert.equal(
+        evaluate("Object.values(spaceControlFixture.subscriptions).find(s => s.allMembers).id"),
+        subscription,
+        "Filtering must not resubscribe",
+      );
+      assert.equal(evaluate('document.querySelector(".member-presence-heading .section-count").textContent'), "30");
+      evaluate('spaceControlFixture.setPresence("offline")');
+      wait('[...document.querySelectorAll(".member-roster .presence-dot")].every(n => n.dataset.status === "offline")');
+      evaluate("spaceControlFixture.disconnect()");
+      wait('document.querySelectorAll(".member-roster [data-status=unknown]").length === 30');
+      screenshot(`roster-${width}-unavailable`);
+      assert.ok(evaluate("document.documentElement.scrollWidth <= innerWidth"));
+    }
+  }
+  console.log(
+    "PASS: full public/private rosters, presence grouping/disconnect, name/username filter beyond row 25, empty results, clear/Escape and stable subscription at 1280px and 390px (mock API/gateway).",
+  );
+}
 try {
   browser("open", "about:blank");
   browser("set", "viewport", "1280", "900", "2");
-  if (process.env.KEYBOARD_ONLY) testModalKeyboard();
+  if (process.env.MEMBERS_ONLY) testMembers();
+  else if (process.env.KEYBOARD_ONLY) testModalKeyboard();
   else testModalGeometry();
-  if (!process.env.KEYBOARD_ONLY && !process.env.MODALS_ONLY && !process.env.SETTINGS_ONLY) {
+  if (
+    !process.env.MEMBERS_ONLY &&
+    !process.env.KEYBOARD_ONLY &&
+    !process.env.MODALS_ONLY &&
+    !process.env.SETTINGS_ONLY
+  ) {
     for (const [viewport, saved, expected] of [
       [1280, "240", 240],
       [1280, "440", 440],
@@ -622,7 +715,18 @@ try {
     assert.equal(evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded")'), "true");
     assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), true);
     wait(
-      'document.querySelectorAll(".space-member-presence li").length === 25 && !document.querySelector(".member-presence-connecting")',
+      'document.querySelectorAll(".space-member-presence li").length === 30 && !document.querySelector(".space-member-presence [data-status=unknown]")',
+    );
+    assert.deepEqual(
+      evaluate(
+        '[...document.querySelectorAll(".member-presence-group")].map(section => [section.getAttribute("aria-label"), section.querySelectorAll("li").length])',
+      ),
+      [
+        ["Online", 1],
+        ["Online", 19],
+        ["Offline", 10],
+      ],
+      "Private readers stay separate, with idle included online and full-roster counts",
     );
     assert.ok(
       evaluate(
@@ -638,9 +742,9 @@ try {
     );
     assert.equal(
       evaluate(
-        'Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence" && s.userIds.length > 1).userIds.length',
+        'Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence" && s.allMembers).length',
       ),
-      25,
+      1,
     );
     assert.equal(
       evaluate('document.querySelector(".account-avatar .presence-dot").getAttribute("aria-label")'),
@@ -659,7 +763,7 @@ try {
     assert.equal(
       evaluate('document.querySelector(".member-presence-heading .section-count").textContent'),
       "30",
-      "Member count must include every page",
+      "Member count must include the whole roster",
     );
     screenshot("gateway-merged-members-desktop");
     for (const status of ["idle", "offline", "online"]) {
@@ -668,23 +772,19 @@ try {
       assert.equal(evaluate('document.querySelector(".space-member-presence .presence-dot").dataset.status'), status);
       screenshot(`presence-${status}`);
     }
-    browser("click", ".member-presence-pages button:last-child");
-    wait(
-      'document.querySelectorAll(".space-member-presence li").length === 5 && !document.querySelector(".member-presence-connecting")',
-    );
+    browser("click", '[aria-label="Search members"]');
+    browser("fill", '[aria-label="Filter members"]', "MEMBER_28");
+    wait('document.querySelectorAll(".space-member-presence li").length === 1');
+    assert.equal(evaluate('document.querySelector(".space-member-presence strong").textContent'), "Fixture member 29");
     assert.equal(
       evaluate('Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence").length'),
       2,
     );
-    assert.equal(
-      evaluate(
-        'Object.values(spaceControlFixture.subscriptions).find(s => s.kind === "presence" && s.userIds.length > 1).userIds.length',
-      ),
-      5,
-    );
+    browser("click", '[aria-label="Clear and close member search"]');
+    wait('document.querySelectorAll(".space-member-presence li").length === 30');
     const expandedChatWidth = evaluate('document.querySelector(".stage").getBoundingClientRect().width');
     browser("click", ".member-list-toggle");
-    wait('!Object.values(spaceControlFixture.subscriptions).some(s => s.kind === "presence" && s.userIds.length > 1)');
+    wait('!Object.values(spaceControlFixture.subscriptions).some(s => s.kind === "presence" && s.allMembers)');
     assert.equal(
       evaluate('Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence").length'),
       1,
@@ -712,7 +812,7 @@ try {
     screenshot("members-collapsed");
     browser("click", ".channel-section-toggle");
     browser("click", ".member-list-toggle");
-    wait('document.querySelectorAll(".space-member-presence li").length === 25');
+    wait('document.querySelectorAll(".space-member-presence li").length === 30');
     assert.equal(evaluate('document.querySelector(".member-presence-heading .section-count").textContent'), "30");
     assert.ok(
       evaluate(
@@ -896,7 +996,7 @@ try {
     browser("set", "viewport", "1280", "900", "2");
     console.log("PASS: account footer dot and persisted system sounds setting (desktop and narrow).");
     console.log(
-      "PASS: stable loading geometry, scoped member pagination/unsubscribe and narrow layout, safe confirmation focus/Enter/dismissal/double-click, trimmed name updates, pending/failure/retry, channel and space deletion (mock API/gateway).",
+      "PASS: stable loading geometry, full member roster/filter/unsubscribe and narrow layout, safe confirmation focus/Enter/dismissal/double-click, trimmed name updates, pending/failure/retry, channel and space deletion (mock API/gateway).",
     );
   }
 } finally {

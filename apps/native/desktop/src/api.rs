@@ -982,11 +982,16 @@ impl Api {
         spoiler_attachment_ids: &[String],
         thread: (Option<&str>, bool),
         reply_to_id: Option<&str>,
+        gif: Option<&crate::klipy::Gif>,
     ) -> Result<Message, ApiError> {
         let mut body = json!({"clientMessageId":client_id,"text":text});
         // Ids join the idempotency hash; the key is present only with files.
         if !attachment_ids.is_empty() {
             body["attachmentIds"] = json!(attachment_ids);
+        }
+        // A GIF travels alone (never with files) and joins the hash too.
+        if let Some(gif) = gif {
+            body["gif"] = gif.to_value();
         }
         if !spoiler_attachment_ids.is_empty() {
             body["spoilerAttachmentIds"] = json!(spoiler_attachment_ids);
@@ -1005,6 +1010,15 @@ impl Api {
             Some(chat_token),
             Some(body),
         )
+    }
+
+    /// `GET /api/klipy`: `None` (404) while GIFs are off on this server.
+    pub fn klipy(&self, token: &str) -> Result<Option<crate::klipy::Config>, ApiError> {
+        match self.request(Method::GET, "api/klipy", Some(token), None, None) {
+            Ok(config) => Ok(Some(config)),
+            Err(error) if error.status == Some(StatusCode::NOT_FOUND) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Uploads are optional server configuration (503 without storage). Any
@@ -1822,6 +1836,7 @@ mod tests {
                     &["a".into(), "b".into()],
                     &spoilers,
                     (None, false),
+                    None,
                     None
                 )
                 .is_err()

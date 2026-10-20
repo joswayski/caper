@@ -782,20 +782,13 @@ export function DraftAttachments({
   });
   if (!drafts.length) return null;
   const failed = drafts.filter((draft) => draft.error).length;
-  const uploading = drafts.filter((draft) => !draft.attachment && !draft.error && !draft.staged).length;
   return (
     <>
-      {(failed > 0 || uploading > 0) && (
-        <p className="chat-draft-notice" data-error={failed > 0 || undefined} role="status">
-          {failed > 0 ? (
-            <FileWarning size={16} aria-hidden="true" />
-          ) : (
-            <span className="chat-spinner" aria-hidden="true" />
-          )}
+      {failed > 0 && (
+        <p className="chat-draft-notice" data-error={true} role="status">
+          <FileWarning size={16} aria-hidden="true" />
           <span>
-            {failed > 0
-              ? `${failed} ${failed === 1 ? "file" : "files"} failed to upload. Send will retry ${failed === 1 ? "it" : "them"}, or you can remove ${failed === 1 ? "it" : "them"}.`
-              : `Uploading ${uploading} ${uploading === 1 ? "file" : "files"}… Your message won’t send until every file is ready.`}
+            {`${failed} ${failed === 1 ? "file" : "files"} failed to upload. Send will retry ${failed === 1 ? "it" : "them"}, or you can remove ${failed === 1 ? "it" : "them"}.`}
           </span>
         </p>
       )}

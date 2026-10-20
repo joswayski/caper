@@ -3,6 +3,7 @@ import { Reply } from "../../../../shared/message-icons.ts";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import socketArtwork from "../../../../shared/reply-socket.svg";
 import Avatar from "../components/Avatar";
+import { gifOf } from "./klipy.ts";
 import {
   attachmentsOf,
   isChatAttachment,
@@ -13,7 +14,10 @@ import {
 import { attachmentLabel, attachmentsExcerpt, isVoiceAttachment } from "./voice.ts";
 
 export function replyReference(message: ChatMessage): ChatReplyReference {
-  const text = message.content.text || (message.forward ? "Forwarded message" : "");
+  const gif = gifOf(message.content);
+  const text =
+    message.content.text ||
+    (message.forward ? "Forwarded message" : gif ? (gif.kind === "sticker" ? "Sticker" : "GIF") : "");
   const characters = Array.from(text);
   return {
     id: message.id,

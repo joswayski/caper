@@ -65,6 +65,7 @@ import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import { blockedAuthor, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
 import { listUnreadSpaces, type Space, type UnreadSpace } from "../spaces/client.ts";
+import { klipyConfig, shareKlipy, type ChatGif } from "./klipy.ts";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
@@ -1391,6 +1392,27 @@ export default function Chat({
     };
   };
 
+  /** A KLIPY GIF goes on its own, replying where the composer would; drafts stay. */
+  const sendGif = async (gif: ChatGif, query: string, threadRootId?: string, broadcast = false) => {
+    const client = clientRef.current;
+    if (!client || state.pendingSend) throw new Error("Wait for the last message to send.");
+    const sent = await client.send("", {
+      gif,
+      threadRootId,
+      broadcast,
+      replyTo: replyTargets[threadRootId ?? "channel"],
+    });
+    if (sent) {
+      const key = await klipyConfig();
+      if (key) shareKlipy(key, gif, query);
+      if (!threadRootId && state.hasNewer) {
+        setJumpMessage(undefined);
+        setScrollTarget("latest");
+      }
+    }
+    return sent;
+  };
+
   // Share the formatters across visible rows (memoized rows compare them), but
   // follow a locale or timezone change.
   const { locale, timeZone } = new Intl.DateTimeFormat().resolvedOptions();
@@ -2219,6 +2241,7 @@ export default function Chat({
               authorId={state.author?.id}
               mentionMembers={mentionMembers}
               onSend={sendDraft}
+              onSendGif={signedIn && !readOnly ? (gif, query) => sendGif(gif, query) : undefined}
               onTyping={setTyping}
               onResize={keepLatestInView}
               onDraftPresence={setHasDraft}
@@ -2258,6 +2281,11 @@ export default function Chat({
         specialMentions={!direct}
         replyTo={state.thread ? replyTargets[state.thread.rootId] : undefined}
         onSend={(text, broadcast) => sendDraft(text, state.thread?.rootId, broadcast)}
+        onSendGif={
+          signedIn && !readOnly
+            ? (gif, query, broadcast) => sendGif(gif, query, state.thread?.rootId, broadcast)
+            : undefined
+        }
         attachments={
           signedIn || threadDrafts.length
             ? {

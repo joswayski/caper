@@ -465,10 +465,13 @@ public struct ChatContent: Codable, Equatable, Sendable {
     /// `content.mentions`, in first-appearance order. Optional on the wire:
     /// older messages and servers omit it, so it decodes as empty.
     public let mentions: [MessageMention]
+    /// `content.gif`: a KLIPY GIF or sticker shown below the text. nil when
+    /// absent or when it breaks the shared rules; the text then shows alone.
+    public var gif: ChatGif?
 
-    private enum CodingKeys: String, CodingKey { case version, type, text, attachments, mentions }
-    public init(version: Int, type: String, text: String, attachments: [ChatAttachment]? = nil, mentions: [MessageMention] = []) {
-        self.version = version; self.type = type; self.text = text; self.attachments = attachments; self.mentions = mentions
+    private enum CodingKeys: String, CodingKey { case version, type, text, attachments, mentions, gif }
+    public init(version: Int, type: String, text: String, attachments: [ChatAttachment]? = nil, mentions: [MessageMention] = [], gif: ChatGif? = nil) {
+        self.version = version; self.type = type; self.text = text; self.attachments = attachments; self.mentions = mentions; self.gif = gif
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -480,6 +483,8 @@ public struct ChatContent: Codable, Equatable, Sendable {
         // Mentions are decoration: a malformed list must not drop the message.
         let entries = try? values.decodeIfPresent([LenientMessageMention].self, forKey: .mentions)
         mentions = entries?.compactMap { $0.value } ?? []
+        // Malformed or unsafe GIFs are ignored, never failing the message or its page.
+        gif = try? values.decodeIfPresent(ChatGif.self, forKey: .gif)
     }
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
@@ -488,6 +493,7 @@ public struct ChatContent: Codable, Equatable, Sendable {
         try values.encode(text, forKey: .text)
         try values.encodeIfPresent(attachments, forKey: .attachments)
         if !mentions.isEmpty { try values.encode(mentions, forKey: .mentions) }
+        try values.encodeIfPresent(gif, forKey: .gif)
     }
 }
 
@@ -510,7 +516,7 @@ public struct MessageVersions: Codable, Sendable {
             version.revision > 0 && (before == nil || version.revision < before!)
                 && (index == 0 || version.revision < versions[index - 1].revision)
                 && version.content.version == 1 && version.content.type == "text"
-                && MessageValidation.error(for: version.content.text, attachmentCount: version.content.attachments?.count ?? 0) == nil
+                && MessageValidation.error(for: version.content.text, attachmentCount: version.content.attachments?.count ?? 0, hasGif: version.content.gif != nil) == nil
                 && (fractional.date(from: version.createdAt) != nil || ISO8601DateFormatter().date(from: version.createdAt) != nil)
         }
     }
@@ -554,8 +560,8 @@ struct MessageMutations {
         var result = message
         if let intent = pins[message.id] { result.pin = intent.pin }
         if let edit = edits[message.id], (message.revision ?? 1) <= edit.revision {
-            // Edits change text only; the message keeps its files. Mentions are resolved by the server.
-            result.content = ChatContent(version: 1, type: "text", text: edit.text, attachments: message.content.attachments)
+            // Edits change text only; the message keeps its files and GIF. Mentions are resolved by the server.
+            result.content = ChatContent(version: 1, type: "text", text: edit.text, attachments: message.content.attachments, gif: message.content.gif)
         }
         return result
     }
@@ -655,7 +661,9 @@ public struct MessageReply: Codable, Equatable, Sendable {
     }
     public init(message: ChatMessage) {
         id = message.id; author = message.author; threadRootId = message.threadRootId
-        let source = message.content.text.isEmpty && message.forward != nil ? "Forwarded message" : message.content.text
+        // As the API quotes them: a captionless GIF reads `GIF` / `Sticker`.
+        let source = message.content.text.isEmpty && message.forward != nil ? "Forwarded message"
+            : message.content.text.isEmpty ? message.content.gif?.kind.label ?? "" : message.content.text
         text = message.isDeleted ? "" : String(String.UnicodeScalarView(source.unicodeScalars.prefix(200)))
         fullText = !message.isDeleted && source.unicodeScalars.count > 200 ? source : nil
         hasAttachments = !message.isDeleted && !(message.content.attachments ?? []).isEmpty
@@ -1036,8 +1044,9 @@ public enum ProfileValidation {
 }
 
 public enum MessageValidation {
-    public static func error(for text: String, attachmentCount: Int = 0) -> String? {
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachmentCount == 0 { return "Write a message first." }
+    /// A GIF, like files, may be sent without text.
+    public static func error(for text: String, attachmentCount: Int = 0, hasGif: Bool = false) -> String? {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachmentCount == 0 && !hasGif { return "Write a message first." }
         if attachmentCount > AttachmentPolicy.maxAttachments { return "You can attach up to \(AttachmentPolicy.maxAttachments) files." }
         if text.unicodeScalars.count > 4_000 { return "Messages can be at most 4,000 characters." }
         if text.unicodeScalars.contains(where: { $0.properties.generalCategory == .control && $0 != "\n" && $0 != "\t" }) {
@@ -1053,6 +1062,7 @@ public enum MessageValidation {
             && message.content.version == 1
             && message.content.type == "text"
             && message.content.text == command.text
+            && message.content.gif?.kind == command.gif?.kind && message.content.gif?.slug == command.gif?.slug
             && message.threadRootId == command.threadRootId
             && message.replyTo?.id == command.replyTo?.id
             && (message.broadcast ?? false) == command.broadcast
@@ -1070,12 +1080,16 @@ public struct PendingMessage: Equatable, Sendable {
     public let threadRootId: String?
     public let broadcast: Bool
     public let replyTo: MessageReply?
+    /// A KLIPY GIF sent as its own message (never with files). It joins the
+    /// server's idempotency hash, so retries resend it unchanged.
+    public let gif: ChatGif?
     /// Ids join the server's idempotency hash, so retries resend the same ids.
     public var attachmentIDs: [String] { attachments.map(\.id) }
 
     public init(id: String, text: String, attachments: [ChatAttachment] = [], createdAt: String = ISO8601DateFormatter().string(from: Date()),
-                threadRootId: String? = nil, broadcast: Bool = false, replyTo: MessageReply? = nil) {
+                threadRootId: String? = nil, broadcast: Bool = false, replyTo: MessageReply? = nil, gif: ChatGif? = nil) {
         self.id = id
+        self.gif = gif
         self.text = text
         self.attachments = attachments
         self.createdAt = createdAt
@@ -1096,10 +1110,11 @@ public struct ChatDeliveryState: Sendable {
     public init(cursor: String = "0") { self.cursor = cursor }
 
     public mutating func begin(text: String, attachments: [ChatAttachment] = [], threadRootId: String? = nil, broadcast: Bool = false, replyTo: MessageReply? = nil,
-                               makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
+                               gif: ChatGif? = nil, makeID: () -> String = { UUID().uuidString }) -> PendingMessage {
         if let pending { return pending }
         // Rust's UUID serialization returns lowercase in both HTTP and replay.
-        let command = PendingMessage(id: makeID().lowercased(), text: text, attachments: attachments, threadRootId: threadRootId, broadcast: broadcast, replyTo: replyTo)
+        let command = PendingMessage(id: makeID().lowercased(), text: text, attachments: attachments, threadRootId: threadRootId, broadcast: broadcast,
+                                     replyTo: replyTo, gif: gif)
         pending = command
         return command
     }
@@ -1108,7 +1123,7 @@ public struct ChatDeliveryState: Sendable {
     public mutating func replaceAttachments(id: String, attachments: [ChatAttachment]) -> PendingMessage? {
         guard let old = pending, old.id == id else { return nil }
         let command = PendingMessage(id: UUID().uuidString.lowercased(), text: old.text, attachments: attachments,
-                                     createdAt: old.createdAt, threadRootId: old.threadRootId, broadcast: old.broadcast, replyTo: old.replyTo)
+                                     createdAt: old.createdAt, threadRootId: old.threadRootId, broadcast: old.broadcast, replyTo: old.replyTo, gif: old.gif)
         pending = command
         return command
     }

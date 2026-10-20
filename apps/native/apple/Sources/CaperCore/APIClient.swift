@@ -39,6 +39,8 @@ private struct SendInput: Encodable {
     let threadRootId: String?
     let broadcast: Bool?
     let replyToId: String?
+    /// Omitted (nil) unless a KLIPY GIF is sent; never with `attachmentIds`.
+    let gif: ChatGif?
 }
 private struct AttachmentURLsInput: Encodable { let ids: [String] }
 /// A completed profile picture: the account it now belongs to, already applied.
@@ -251,6 +253,8 @@ public actor APIClient {
                                          body: Input(channelId: channelID, threadRootId: threadRootID, archived: archived))
     }
     public func pushConfiguration() async throws -> PushConfiguration { try await request("api/push/config") }
+    /// KLIPY's client key and this account's customer id; 404 while GIFs are off.
+    public func klipyConfiguration() async throws -> KlipyConfiguration { try await request("api/klipy") }
     public func registerPushDevice(platform: String, token: String, appID: String? = nil) async throws {
         let _: Empty = try await request("api/push/devices", method: "POST", body: PushDeviceInput(platform: platform, token: token, appId: appID))
     }
@@ -478,11 +482,14 @@ public actor APIClient {
     }
 
     public func send(channelID: String, sessionToken: String, clientMessageID: String, text: String, attachmentIDs: [String] = [],
-                     spoilerAttachmentIDs: [String] = [], threadRootId: String? = nil, broadcast: Bool = false, replyToId: String? = nil) async throws -> ChatMessage {
+                     spoilerAttachmentIDs: [String] = [], threadRootId: String? = nil, broadcast: Bool = false, replyToId: String? = nil,
+                     gif: ChatGif? = nil) async throws -> ChatMessage {
+        // A GIF travels on its own; the API refuses it alongside files.
+        guard gif == nil || (attachmentIDs.isEmpty && gif!.isValid) else { throw APIError(status: 400, message: "invalid gif") }
         let spoilers = attachmentIDs.filter { spoilerAttachmentIDs.contains($0) }
         let body = SendInput(clientMessageId: clientMessageID, text: text, attachmentIds: attachmentIDs.isEmpty ? nil : attachmentIDs,
                              spoilerAttachmentIds: spoilers.isEmpty ? nil : spoilers,
-                             threadRootId: threadRootId, broadcast: threadRootId == nil ? nil : broadcast, replyToId: replyToId)
+                             threadRootId: threadRootId, broadcast: threadRootId == nil ? nil : broadcast, replyToId: replyToId, gif: gif)
         return try await request("api/chat/channels/\(try pathID(channelID))/messages", method: "POST", body: body, extraHeaders: ["x-caper-chat-token": sessionToken])
     }
 
@@ -517,7 +524,8 @@ public actor APIClient {
         guard message.id == messageID, message.channelId == channelID, (message.revision ?? 1) >= 1,
               message.content.version == 1, message.content.type == "text",
               // A deleted message's tombstone has empty content.
-              message.deletedAt != nil || MessageValidation.error(for: message.content.text, attachmentCount: message.content.attachments?.count ?? 0) == nil,
+              message.deletedAt != nil || MessageValidation.error(for: message.content.text, attachmentCount: message.content.attachments?.count ?? 0,
+                                                                  hasGif: message.content.gif != nil) == nil,
               (try? Sequence.compare(message.seq, "0")) != nil else { throw APIError(status: 502, message: "Invalid message snapshot.") }
         if (message.revision ?? 1) > 1 {
             let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(message))

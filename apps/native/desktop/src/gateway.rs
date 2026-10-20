@@ -452,7 +452,16 @@ fn receive_frame(
             stream.cursor = cursor.clone();
             stream.connection.send(json!({"type":"subscribe", "id":subscription, "kind":"chat", "channelId":channel, "after":cursor}))?;
             if let (Some((space, users)), Some(id)) = (presence, presence_subscription) {
-                stream.connection.send(json!({"type":"subscribe", "id":id, "kind":"presence", "spaceId":space, "userIds":users}))?;
+                let mut frame =
+                    json!({"type":"subscribe", "id":id, "kind":"presence", "spaceId":space});
+                // An empty explicit selection watches the authorized whole-space
+                // roster in one slot; retain legacy nonempty explicit requests.
+                if users.is_empty() {
+                    frame["allMembers"] = json!(true);
+                } else {
+                    frame["userIds"] = json!(users);
+                }
+                stream.connection.send(frame)?;
             }
             for (id, (channel, _)) in media_subscriptions.iter() {
                 let mut frame = json!({"type":"subscribe", "id":id, "kind":"media"});
@@ -995,6 +1004,11 @@ mod tests {
                 if frame["kind"] == "chat" {
                     assert_eq!(frame["after"], after);
                 }
+                if frame["kind"] == "presence" {
+                    assert_eq!(frame["spaceId"], "space");
+                    assert_eq!(frame["allMembers"], true);
+                    assert!(frame.get("userIds").is_none());
+                }
                 let kind = frame["kind"].as_str().unwrap().to_owned();
                 let id = frame["id"].as_str().unwrap().to_owned();
                 send(&mut socket, json!({"type":"subscribed", "id":id}));
@@ -1123,7 +1137,7 @@ mod tests {
             4,
             "text".into(),
             "37".into(),
-            Some(("space".into(), vec!["author".into()])),
+            Some(("space".into(), Vec::new())),
             MediaWatch {
                 epoch: 91,
                 channels: vec![MediaChannel {

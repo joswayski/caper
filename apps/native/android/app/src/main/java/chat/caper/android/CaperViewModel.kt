@@ -75,6 +75,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     internal val spaceAccessEpoch: Long get() = spaceAccessGeneration
     private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
+    /** KLIPY is called from the device itself, without Caper credentials (docs/media.md "GIFs and stickers (KLIPY)"). */
+    private val klipy = KlipyClient(api.client)
+    /** The system WebView's user agent: KLIPY serves ads only to mobile user agents. */
+    private val klipyUserAgent: String? by lazy { runCatching { android.webkit.WebSettings.getDefaultUserAgent(getApplication()) }.getOrNull() }
     private val unloadedReactions = mutableMapOf<String, ReactionUpdate>()
     private val unloadedAttachments = mutableMapOf<String, AttachmentsUpdate>()
     private data class ReactionIntent(val emoji: String, val active: Boolean, val version: Long)
@@ -222,6 +226,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 createChatSession(requestAccountGeneration)
                 if (requestAccountGeneration != accountGeneration) return@launch
                 checkUploads(requestAccountGeneration)
+                checkKlipy(requestAccountGeneration)
                 startDirectRefresh()
                 if (PushRegistration.enabled(getApplication())) viewModelScope.launch {
                     runCatching { PushRegistration.enable(getApplication()) }
@@ -522,7 +527,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != generation) return@launch
                 val landing = spaceLandingChannel(detail.channels, preferredChannelId, lastChannelBySpace[id])
                 // While restoring, the loading screen waits for the landing conversation too.
-                mutable.value = mutable.value.copy(selectedSpace = detail, busy = false, presencePage = 0,
+                mutable.value = mutable.value.copy(selectedSpace = detail, busy = false,
                     restoring = mutable.value.restoring && landing != null)
                 // Before a cached conversation of this space opens.
                 repairProfiles(detail.members.map { it.profile() }, since)
@@ -1442,7 +1447,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 mutable.value = mutable.value.copy(
                     selectedSpace = destination.detail, selectedChannel = destination.channel,
                     messages = mergeTimelinePins(destination.history.messages), hasMoreMessages = destination.history.hasMore,
-                    presencePage = if (previousSpace == spaceId) mutable.value.presencePage else 0,
                     deniedVoiceChannels = if (previousSpace == spaceId) mutable.value.deniedVoiceChannels else emptySet(),
                     busy = false, error = null,
                 )
@@ -1526,7 +1530,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                         selectedSpace = detail ?: mutable.value.selectedSpace, selectedChannel = channel, selectedDirectId = direct?.id,
                         directConversations = if (direct == null) mutable.value.directConversations else mutable.value.directConversations.filter { it.id != direct.id } + direct,
                         messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore,
-                        presencePage = if (detail == null || previousSpace == detail.space.id) mutable.value.presencePage else 0,
                         deniedVoiceChannels = if (detail == null || previousSpace == detail.space.id) mutable.value.deniedVoiceChannels else emptySet(),
                         busy = false, error = null, messagesLoading = false,
                     )
@@ -1612,14 +1615,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request == generation && anchor == historyAnchorRequest) mutable.value = mutable.value.copy(loadingNewer = false, refreshError = message(error))
             }
         }
-    }
-
-    fun setPresencePage(page: Int) {
-        val members = mutable.value.selectedSpace?.members ?: return
-        val max = ((members.size - 1).coerceAtLeast(0)) / PRESENCE_PAGE_SIZE
-        val next = page.coerceIn(0, max)
-        mutable.value = mutable.value.copy(presencePage = next, presence = emptyMap())
-        watchVisiblePresence()
     }
 
     private val availabilityRequests = mutableMapOf<String, Job>()
@@ -1969,7 +1964,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (!state.canParticipate || state.pendingMessage != null || message.channelId != state.selectedChannel?.id || message.deletedAt != null) return
         val root = if (inThread) state.thread?.rootId ?: return else if (message.threadRootId != null && !message.broadcast) message.threadRootId else null
         val key = root ?: "channel"
-        val text = message.content.text.ifEmpty { if (message.forward != null) "Forwarded message" else "" }
+        val text = message.content.text.ifEmpty { if (message.forward != null) "Forwarded message" else message.content.gif?.let { if (it.sticker) "Sticker" else "GIF" } ?: "" }
         val excerpt = text.substring(0, text.offsetByCodePoints(0, minOf(200, text.codePointCount(0, text.length))))
         val reference = MessageReply(message.id, message.author, excerpt, message.content.attachments.isNotEmpty(), message.threadRootId,
             fullText = text.takeIf { it.codePointCount(0, it.length) > 200 }, attachments = message.content.attachments)
@@ -2017,13 +2012,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Returns false when nothing was sent, so the composer keeps its text and files. A [voice]
      * recording is sent on its own instead of the composer's files, which stay where they are.
+     * A [gif] goes alone too.
      */
-    private fun sendReady(text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean, voice: VoiceSend? = null): Boolean {
+    private fun sendReady(text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean, voice: VoiceSend? = null, gif: KlipyGif? = null): Boolean {
         if (mutable.value.pendingMessage?.let { it.error == null || it.rejected } == true) return false
         if (mutable.value.pendingMessage?.let { it.threadRootId != threadRootId } == true) return false
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return false
         val target = AttachmentDraftTarget(channel.id, threadRootId)
-        val drafts = voice?.let { listOf(it.draft) } ?: mutable.value.attachmentDrafts[target].orEmpty()
+        val drafts = if (gif != null) emptyList() else voice?.let { listOf(it.draft) } ?: mutable.value.attachmentDrafts[target].orEmpty()
         val author = chatAuthor ?: run {
             if (voice != null || text.isBlank() && drafts.isEmpty()) return false
             // The session is still being created (or failed earlier): create
@@ -2048,15 +2044,15 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             // Pending messages show the local compressed copies until the server's message arrives.
             drafts.mapNotNull { draft -> draft.attachment?.copy(status = "ready", url = draft.localUrl, previewUrl = draft.thumbnail, spoiler = draft.spoiler) }
         }
-        if (retry == null && text.isBlank() && files.isEmpty()) return false
+        if (retry == null && text.isBlank() && files.isEmpty() && gif == null) return false
         val request = generation
-        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, mutable.value.replyTargets[threadRootId ?: "channel"], files.filter { it.spoiler }.map { it.id }, confirmed)
+        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, mutable.value.replyTargets[threadRootId ?: "channel"], files.filter { it.spoiler }.map { it.id }, gif = gif, confirmed = confirmed)
         if (retry == null) {
             pendingDrafts = drafts
             // A recording uploads only once it is sending, before the message itself.
             pendingNeedsUpload = voice != null || drafts.any { uploadStale(it) }
         }
-        if (retry == null && voice == null) {
+        if (retry == null && voice == null && gif == null) {
             // If a server ever reports these as processing, this device shows its own picked images
             // (the working copies are deleted once the send is confirmed; the picked URI is not).
             val local = drafts.mapNotNull { draft -> draft.attachment?.id?.let { id -> draft.pickedImage?.takeIf { draft.edit == null }?.let { id to it } } }
@@ -2067,7 +2063,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         mutable.value = mutable.value.copy(replyTargets = mutable.value.replyTargets - (threadRootId ?: "channel"), pendingMessage = PendingMessageUi(
             operation.id.toString(), operation.text, author, Instant.now().toString(), attachments = files,
-            threadRootId = operation.threadRootId, broadcast = operation.broadcast, replyTo = operation.replyTo,
+            threadRootId = operation.threadRootId, broadcast = operation.broadcast, replyTo = operation.replyTo, gif = operation.gif,
         ))
         viewModelScope.launch {
             try {
@@ -2091,7 +2087,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     try {
                         sent = retryUnknownSend {
                             api.sendMessage(accountToken, capability, channel.id, author, operation.id, operation.text,
-                                operation.attachmentIds, operation.threadRootId, operation.broadcast, operation.replyTo?.id, operation.spoilerAttachmentIds)
+                                operation.attachmentIds, operation.threadRootId, operation.broadcast, operation.replyTo?.id, operation.spoilerAttachmentIds, operation.gif)
                         }
                         break
                     } catch (error: ApiException) {
@@ -2230,6 +2226,38 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             usage?.let { compression = it.compression }
             mutable.value = mutable.value.copy(uploadsEnabled = usage != null, uploadsChecked = true)
         }
+    }
+
+    /** `GET /api/klipy`: any failure (404 while GIFs are off) keeps the GIF button hidden. */
+    private fun checkKlipy(request: Long) {
+        val token = accountToken ?: return
+        viewModelScope.launch {
+            val config = try { api.klipyConfig(token) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Throwable) { null }
+            if (request == accountGeneration) mutable.value = mutable.value.copy(klipy = config)
+        }
+    }
+
+    /** One picker page straight from KLIPY: trending for a blank [query], otherwise search. */
+    internal suspend fun klipyPage(kind: KlipyKind, query: String, page: Int, ads: KlipyAdRequest?): KlipyPage {
+        val config = mutable.value.klipy ?: throw IOException("GIFs are unavailable.")
+        return klipy.page(config, kind, query, page, java.util.Locale.getDefault().country, ads, klipyUserAgent)
+    }
+
+    /**
+     * Sends a picked GIF at once as its own message to the open conversation, or to [threadRootId]
+     * with [broadcast] as the thread composer would, quoting that composer's reply target. The
+     * composer's text and files stay. KLIPY's share trigger follows the confirmed send.
+     */
+    fun sendGif(gif: KlipyGif, kind: KlipyKind, query: String, threadRootId: String? = null, broadcast: Boolean = false): Boolean {
+        val state = mutable.value
+        val config = state.klipy ?: return false
+        if (uploadSend?.isActive == true || state.pendingMessage != null || !state.canParticipate) return false
+        val channel = state.selectedChannel?.takeIf { it.joined } ?: return false
+        val author = chatAuthor ?: return false
+        if (pendingSends.retrying(channel.id, author) != null) return false
+        if (threadRootId != null && state.thread?.rootId != threadRootId) return false
+        val shared = { viewModelScope.launch { klipy.share(config, kind, gif.slug, query, klipyUserAgent) }; Unit }
+        return sendReady("", shared, threadRootId, broadcast, gif = gif)
     }
 
     /** Picked photos, videos or documents: compress on the device, upload, and hold as composer drafts. */
@@ -2660,7 +2688,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         )
         gateway = connection
         gatewayStatus = viewModelScope.launch {
-            connection.status.collect { status -> if (generation == request) mutable.value = mutable.value.copy(gateway = status) }
+            connection.status.collect { status -> if (generation == request) mutable.value = mutable.value.copy(gateway = status,
+                presence = if (status == GatewayStatus.LIVE) mutable.value.presence else emptyMap()) }
         }
         connection.start()
         if (participating) watchVisiblePresence()
@@ -2671,10 +2700,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun watchVisiblePresence() {
         val detail = mutable.value.selectedSpace ?: return
         if (detail.space.demo || accountToken == null || detail.members.isEmpty()) return
-        val start = mutable.value.presencePage * PRESENCE_PAGE_SIZE
-        // A private channel's readers lead the member list's pages.
-        val ids = detail.memberOrder(mutable.value.selectedChannel?.id).drop(start).take(PRESENCE_PAGE_SIZE).map { it.id }
-        if (ids.isNotEmpty()) gateway?.watchPresence(detail.space.id, ids)
+        gateway?.watchPresence(detail.space.id, allMembers = true)
     }
 
     private fun receiveTyping(author: ChatAuthor, active: Boolean, revision: String) {
@@ -3689,7 +3715,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private companion object {
-        const val PRESENCE_PAGE_SIZE = 25
         const val TYPING_INTERVAL_MS = 500L
     }
 }
