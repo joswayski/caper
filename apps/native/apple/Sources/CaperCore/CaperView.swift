@@ -7442,7 +7442,6 @@ private struct NativeReplyContext: View {
     @State private var expanded = false
     @State private var fullHeight: CGFloat = 0
     @State private var collapsedHeight: CGFloat = 0
-    @State private var buttonHeight: CGFloat = 0
     @State private var previousY: CGFloat?
     @State private var displacement: CGFloat = 0
     @State private var velocity: CGFloat = 0
@@ -7453,24 +7452,16 @@ private struct NativeReplyContext: View {
         let text = reference.fullText ?? reference.text
         return text.isEmpty ? VoiceMessage.excerptFallback(hasAttachments: reference.hasAttachments, hasVoice: reference.hasVoice) : text
     }
-    private var preview: String { String(String.UnicodeScalarView(excerpt.unicodeScalars.prefix(100))) }
     var body: some View {
         // Match the other clients; seed the reply, not the original it quotes.
         let seed = motionKey.utf8.reduce(UInt32(2166136261)) { ($0 ^ UInt32($1)) &* 16777619 }
-        let stiffness = 140 + CGFloat(seed & 255) / 255 * 100
-        let damping = 11 + CGFloat((seed >> 8) & 255) / 255 * 7
+        let stiffness = 560 + CGFloat(seed & 255) / 255 * 400
+        let damping = 28 + CGFloat((seed >> 8) & 255) / 255 * 14
         let impulse = 1 + CGFloat((seed >> 16) & 255) / 255 * 0.4
         let limit = 5 + CGFloat(seed >> 24) / 255 * 2
         let speedLimit = limit * 16
-        let canExpand = !hidden && (expanded || preview != excerpt || fullHeight > collapsedHeight + 1)
-        // Keep the collapsed pill over text, above the 44pt previews and 3pt gap.
-        let attachmentOffset: CGFloat = !hidden && reference.deleted != true && !(reference.attachments ?? []).isEmpty ? 47 : 0
-        #if os(iOS)
-        let previewMinHeight: CGFloat = 54
-        #else
-        let previewMinHeight: CGFloat = 36
-        #endif
-        ZStack(alignment: .bottom) {
+        let canExpand = !hidden && (expanded || fullHeight > collapsedHeight + 1)
+        VStack(alignment: .leading, spacing: 0) {
             Button { Task { _ = await chat.goToReply(reference) } } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
@@ -7484,19 +7475,9 @@ private struct NativeReplyContext: View {
                         Text("View original").font(CaperTheme.font(11)).fixedSize()
                     }.frame(minHeight: 20)
                     if !hidden {
-                        Text(expanded ? excerpt : preview + (preview != excerpt ? "…" : "")).lineLimit(expanded ? nil : 3).fixedSize(horizontal: false, vertical: true)
+                        Text(excerpt).lineLimit(expanded ? nil : 3).fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if !expanded { collapsedHeight = $0 } }
-                            .frame(minHeight: !expanded && canExpand ? previewMinHeight : 0, alignment: .topLeading)
-                            .overlay {
-                                if !expanded && (preview != excerpt || fullHeight > collapsedHeight + 1) {
-                                    LinearGradient(stops: [
-                                        .init(color: CaperTheme.surface.opacity(0), location: 0),
-                                        .init(color: CaperTheme.surface.opacity(0), location: 0.4),
-                                        .init(color: CaperTheme.surface, location: 1),
-                                    ], startPoint: .top, endPoint: .bottom).allowsHitTesting(false).accessibilityHidden(true)
-                                }
-                            }
                             .background {
                                 Text(excerpt).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading).hidden().accessibilityHidden(true)
@@ -7524,13 +7505,10 @@ private struct NativeReplyContext: View {
             }.buttonStyle(.plain)
                 .accessibilityLabel(hidden ? "View original blocked message" : "View original message from \(reference.author.name)")
                 .accessibilityHint(hidden ? "" : excerpt)
-                .padding(.bottom, expanded && canExpand ? buttonHeight + 6 : 0)
             if canExpand {
                 Button(expanded ? "Show less" : "Show more") { expanded.toggle() }
                     .buttonStyle(ReplyExpandButton())
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { buttonHeight = $0 }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .offset(y: expanded ? 0 : buttonHeight / 2 - max(collapsedHeight, previewMinHeight) * 0.3 - attachmentOffset)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityValue(expanded ? "Expanded" : "Collapsed")
             }
         }.padding(.horizontal, 12).padding(.vertical, 10)
@@ -7623,20 +7601,17 @@ private struct NativeReplyContext: View {
 }
 
 private struct ReplyExpandButton: ButtonStyle {
-    @State private var hovered = false
     @Environment(\.isFocused) private var focused
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.blackout)
-            .padding(.horizontal, 14).padding(.vertical, 6)
+        configuration.label.font(CaperTheme.font(11)).underline().foregroundStyle(CaperTheme.muted)
             #if os(iOS)
             .frame(minHeight: 44)
             #else
             .frame(minHeight: 32)
             #endif
-            .background(configuration.isPressed ? CaperTheme.text.opacity(0.85) : hovered ? Color.white : CaperTheme.text)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(focused ? CaperTheme.terracotta : .clear, lineWidth: 2))
-            .onHover { hovered = $0 }.modifier(ControlPointer())
+            .contentShape(Rectangle())
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(focused ? CaperTheme.terracotta : .clear, lineWidth: 2))
+            .modifier(ControlPointer())
     }
 }
 

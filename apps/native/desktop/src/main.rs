@@ -17482,21 +17482,14 @@ impl CaperApp {
                             } else {
                                 text
                             };
-                            let preview: String = text.chars().take(100).collect();
                             let mut job = egui::text::LayoutJob::simple(
-                                if expanded {
-                                    text.to_owned()
-                                } else if preview != text {
-                                    format!("{preview}…")
-                                } else {
-                                    preview.clone()
-                                },
+                                text.to_owned(),
                                 egui::FontId::proportional(12.0),
                                 MUTED,
                                 ui.available_width(),
                             );
                             let full = ui.fonts_mut(|fonts| fonts.layout_job(job.clone()));
-                            let clipped = preview != text || full.rows.len() > 3;
+                            let clipped = full.rows.len() > 3;
                             let galley = if expanded || !clipped {
                                 full
                             } else {
@@ -17513,69 +17506,14 @@ impl CaperApp {
                                 )
                                 .on_hover_cursor(egui::CursorIcon::PointingHand);
                             open |= excerpt.clicked();
-                            let mut preview_rect = excerpt.rect;
-                            if clipped && !expanded {
-                                let height = preview_rect.height().max(36.0);
-                                ui.add_space(height - preview_rect.height());
-                                preview_rect.set_height(height);
-                                let rect = preview_rect;
-                                let top = rect.top() + rect.height() * 0.4;
-                                let mut fade = egui::Mesh::default();
-                                fade.colored_vertex(
-                                    egui::pos2(rect.left(), top),
-                                    Color32::TRANSPARENT,
-                                );
-                                fade.colored_vertex(
-                                    egui::pos2(rect.right(), top),
-                                    Color32::TRANSPARENT,
-                                );
-                                fade.colored_vertex(rect.right_bottom(), SURFACE);
-                                fade.colored_vertex(rect.left_bottom(), SURFACE);
-                                fade.add_triangle(0, 1, 2);
-                                fade.add_triangle(0, 2, 3);
-                                ui.painter().add(egui::Shape::mesh(fade));
-                            }
                             if clipped {
                                 let label = if expanded { "Show less" } else { "Show more" };
-                                let font = history_button_font();
-                                let width = ui.fonts_mut(|fonts| {
-                                    fonts
-                                        .layout_no_wrap(label.into(), font.clone(), BLACKOUT)
-                                        .size()
-                                        .x
-                                }) + 28.0;
-                                let height = ui.spacing().interact_size.y.max(32.0);
-                                let top = if expanded {
-                                    ui.add_space(6.0);
-                                    ui.next_widget_position().y
-                                } else {
-                                    preview_rect.top() + preview_rect.height() * 0.7 - height / 2.0
-                                };
-                                let rect = egui::Rect::from_min_size(
-                                    egui::pos2(ui.max_rect().center().x - width / 2.0, top),
-                                    egui::vec2(width, height),
+                                let button = ui.add(
+                                    egui::Button::new(
+                                        RichText::new(label).size(11.0).color(MUTED).underline(),
+                                    )
+                                    .frame(false),
                                 );
-                                let mut controls = ui.new_child(
-                                    egui::UiBuilder::new()
-                                        .id_salt("reply-expand")
-                                        .max_rect(rect),
-                                );
-                                controls.spacing_mut().button_padding = egui::vec2(14.0, 6.0);
-                                let button = toned_rounded(
-                                    &mut controls,
-                                    Tone {
-                                        rest: (TEXT, TEXT, BLACKOUT),
-                                        hover: (Color32::WHITE, Color32::WHITE, BLACKOUT),
-                                        press: (TEXT.gamma_multiply(0.85), TERRACOTTA, BLACKOUT),
-                                    },
-                                    255,
-                                    true,
-                                    egui::Button::new(RichText::new(label).font(font))
-                                        .min_size(egui::vec2(width, height)),
-                                );
-                                if expanded {
-                                    ui.advance_cursor_after_rect(button.rect);
-                                }
                                 if button.clicked() {
                                     expanded = !expanded;
                                     ui.data_mut(|data| data.insert_temp(expanded_id, expanded));
@@ -27725,8 +27663,8 @@ fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32, key: &str
     let seed = key.bytes().fold(2166136261_u32, |hash, byte| {
         (hash ^ u32::from(byte)).wrapping_mul(16777619)
     });
-    let stiffness = 140.0 + (seed & 255) as f32 / 255.0 * 100.0;
-    let damping = 11.0 + ((seed >> 8) & 255) as f32 / 255.0 * 7.0;
+    let stiffness = 560.0 + (seed & 255) as f32 / 255.0 * 400.0;
+    let damping = 28.0 + ((seed >> 8) & 255) as f32 / 255.0 * 14.0;
     let impulse = 1.0 + ((seed >> 16) & 255) as f32 / 255.0 * 0.4;
     let limit = 5.0 + (seed >> 24) as f32 / 255.0 * 2.0;
     let speed_limit = limit * 16.0;
