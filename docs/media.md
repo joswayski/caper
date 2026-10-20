@@ -2725,9 +2725,11 @@ changing them needs only an API restart.
 | iOS / macOS | Hold (iOS) or click (macOS), AVAudioRecorder AAC/M4A | AVPlayer, transcript | Pure logic typechecked and tested on Linux Swift; SwiftUI/AVFoundation code not compiled here (Apple CI) |
 | Desktop (Windows, Linux) | Click mic; bundled FFmpeg AAC/M4A (WAV fallback) | Bundled FFmpeg audio-only player | `cargo test`, clippy, Xvfb screenshots, virtual-microphone recording beside a live call capture (Linux only) |
 
-Not yet: the profile card's quick-message composer has no microphone on any
-client. Physical microphones, recording during a real call on phones and
-Windows, and a live transcript round trip still need checking by hand.
+The profile card's quick message records voice messages too, sending them on
+their own to that person's DM (typed text stays; a failed or unconfirmed send
+keeps the recording with Retry and Discard). Physical microphones, recording
+during a real call on phones and Windows, and a live transcript round trip
+still need checking by hand.
 
 ### Validation boundary
 
