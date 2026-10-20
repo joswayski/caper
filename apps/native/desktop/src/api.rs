@@ -176,6 +176,16 @@ impl Api {
         Ok(account)
     }
 
+    pub fn regenerate_avatar(&self, token: &str) -> Result<Account, ApiError> {
+        self.request(
+            Method::POST,
+            "api/account/avatar/regenerate",
+            Some(token),
+            None,
+            None,
+        )
+    }
+
     pub fn avatar_history(
         &self,
         token: &str,
@@ -1706,6 +1716,52 @@ fn invalid(message: &str) -> ApiError {
 mod tests {
     use super::{Api, friendly_error};
     use std::io::{BufRead, BufReader, Write};
+
+    #[test]
+    fn avatar_regeneration_posts_no_body_and_preserves_conflicts() {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for (status, body) in [
+                ("200 OK", r#"{"id":"self","avatarId":412}"#),
+                ("409 Conflict", r#"{"error":"custom avatar present"}"#),
+            ] {
+                let (stream, _) = server.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert_eq!(line, "POST /api/account/avatar/regenerate HTTP/1.1\r\n");
+                let mut authorized = false;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let header = line.to_ascii_lowercase();
+                    authorized |= header == "authorization: bearer test-token\r\n";
+                    if let Some(length) = header.strip_prefix("content-length:") {
+                        assert_eq!(length.trim(), "0");
+                    }
+                    assert!(!header.starts_with("transfer-encoding:"));
+                }
+                assert!(authorized);
+                write!(reader.get_mut(), "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let account = api.regenerate_avatar("test-token").unwrap();
+        assert_eq!(account.avatar_id, Some(412));
+        assert!(account.avatar_asset.is_none());
+        assert_eq!(
+            api.regenerate_avatar("test-token")
+                .unwrap_err()
+                .status
+                .unwrap()
+                .as_u16(),
+            409,
+        );
+        worker.join().unwrap();
+    }
 
     /// Serves one GET: the head, then each chunk after its delay, then holds
     /// the connection open until the returned sender is dropped.

@@ -9541,6 +9541,7 @@ uploads reserved before a selection or removal cannot overwrite it on completion
 | `POST /api/assets/{id}/complete` | Checks size and magic bytes as for attachments, then the real pixel size read from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), ≤ 1024 px (`422 picture_invalid`). The first successful completion **applies** the picture and returns `account` (avatar) or `space` (icon); a retry returns the current state without re-applying, so a late retry never undoes a newer picture. Pictures are ordered by reservation: one that completes after a later-reserved picture already completed is kept but not applied, and the response shows the newer one. |
 | `POST /api/assets/{id}/cancel` | Cancels a picture before completion; `409` afterwards. |
 | `DELETE /api/account/avatar` | Back to the saved mascot; returns the account. |
+| `POST /api/account/avatar/regenerate` | No body. Saves a randomly chosen different mascot ID and returns the account; broadcasts the profile change, including active voice participants. `409` if a custom picture is present. No upload/storage configuration required. |
 | `GET /api/account/avatar/history?cursor=<asset ID>` | Returns `{pictures:[{avatarAsset,avatarUrl}],nextCursor}` for your own retained, completed avatar uploads only. Stable newest-first pages of 40; `nextCursor: null` at the end. Includes the current picture. |
 | `POST /api/account/avatar/select` `{"avatarAsset":"chosen asset ID","expectedAvatarAsset":"current asset ID" \| null}` | Locks the account, compares the expected current image, and applies the chosen owned/completed/retained avatar. Returns the account and broadcasts its profile change. `409` if the current image changed; `404` for an invalid target (including another user's picture). |
 | `DELETE /api/spaces/{space}/icon` | Owner only; back to the initial; returns the space. |
@@ -9598,6 +9599,27 @@ Without a custom profile picture, the saved mascot holds
 up a "change me!" sign (`assets/avatars/change-me.svg`, one vector drawn over
 any mascot); a successful change updates the signed-in client everywhere through the
 existing own-profile refresh path.
+All clients also offer a circular-arrow **Regenerate avatar** action only when no
+custom picture is set. Each press immediately saves a different mascot; it does
+not require Save profile. Pending requests disable the picture controls, and
+failures remain inline. A custom picture set elsewhere wins over regeneration.
+
+### Mascot regeneration validation (October 20, 2026)
+
+- Web: `npm run check` and the Vitest suite pass. Chromium at desktop and 390px
+  widths exercised regeneration against the local API/Postgres and confirmed
+  persistence after reload. Injected delay/failure/custom-picture responses
+  covered disabled controls, inline errors, retry, and hiding the action.
+- API: workspace tests, formatting, Clippy and build pass. The disposable
+  PostgreSQL endpoint test checks authentication, changed/in-range persisted IDs,
+  preserved names, and refusal to replace a custom picture. Voice snapshot tests
+  cover the changed mascot ID; no live SFU call was used.
+- Rust desktop: the full test suite passes (existing ignored tests excluded), scoped formatting, Clippy
+  and build pass. The profile fixture was visually inspected under Linux Xvfb.
+- Android: `testDebugUnitTest compileDebugKotlin` passes after preparing the
+  pinned fonts; no device rendering. Apple implementation/tests are present but
+  were not compiled because this Linux orb has no Swift/Xcode toolchain. Physical
+  iOS, Android, macOS and Windows checks remain outstanding.
 
 ### Previous-picture gallery validation (October 19, 2026)
 

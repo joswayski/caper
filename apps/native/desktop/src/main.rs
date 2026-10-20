@@ -23806,17 +23806,55 @@ impl CaperApp {
             change = response.clicked();
         }
         ui.add_space(4.0);
+        if target == pictures::Target::Avatar
+            && self
+                .account
+                .as_ref()
+                .is_some_and(|account| account.avatar_asset.is_none())
+        {
+            let regenerate = ui.add_enabled(
+                idle && !self.loading,
+                egui::Button::image(
+                    egui::Image::new(egui::include_image!("../resources/icons/rotate-ccw.svg"))
+                        .tint(TEXT)
+                        .fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                )
+                .min_size(egui::vec2(32.0, 32.0))
+                .corner_radius(16.0),
+            );
+            regenerate.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    idle && !self.loading,
+                    "Regenerate avatar",
+                )
+            });
+            if regenerate.on_hover_text("Regenerate avatar").clicked()
+                && let Some(token) = self.token.clone()
+            {
+                self.picture_edit.error = None;
+                self.picture_edit.busy = Some((pictures::Target::Avatar, false));
+                self.worker.send(Command::RegenerateAvatar {
+                    epoch: self.account_epoch,
+                    token,
+                });
+            }
+        }
         if let Some(removing) = busy {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().size(12.0).color(MUTED));
                 ui.label(
-                    RichText::new(if self.picture_edit.gallery.is_some() {
-                        "Saving…"
-                    } else if removing {
-                        "Removing…"
-                    } else {
-                        "Uploading…"
-                    })
+                    RichText::new(
+                        if self.picture_edit.gallery.is_some()
+                            || (target == pictures::Target::Avatar && !custom && !removing)
+                        {
+                            "Saving…"
+                        } else if removing {
+                            "Removing…"
+                        } else {
+                            "Uploading…"
+                        },
+                    )
                     .size(12.0)
                     .color(MUTED),
                 );

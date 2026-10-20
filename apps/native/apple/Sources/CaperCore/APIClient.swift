@@ -593,6 +593,10 @@ public actor APIClient {
         try await request("api/account/avatar", method: "DELETE")
     }
 
+    public func regenerateAvatar() async throws -> Account {
+        try await request("api/account/avatar/regenerate", method: "POST")
+    }
+
     public func avatarHistory(cursor: String? = nil) async throws -> AvatarHistory {
         if let cursor, !Self.validAssetID(cursor) { throw APIError(status: 400, message: "Invalid file ID.") }
         return try await request("api/account/avatar/history" + (cursor.map { "?cursor=\($0)" } ?? ""))
