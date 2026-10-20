@@ -7,11 +7,13 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -125,6 +127,22 @@ class AttachmentEditsTest {
             val edit = AttachmentEdit(int("rotation"), rect(fields.getValue("crop")))
             assertEquals(fields.getValue("note").jsonPrimitive.content, expected,
                 AttachmentEdits.cropPixels(edit, int("width"), int("height"), fields.getValue("even").jsonPrimitive.boolean))
+        }
+    }
+
+    @Test fun `shared erase cases match`() {
+        val list = cases.getValue("erase").jsonObject.getValue("cases").jsonArray
+        assertTrue("expected the full shared case list", list.size >= 6)
+        list.forEach { case ->
+            val fields = case.jsonObject
+            fun number(key: String) = fields.getValue(key).jsonPrimitive.double
+            val marks = edit(buildJsonObject {
+                put("rotation", 0)
+                put("crop", buildJsonObject { put("x", 0); put("y", 0); put("width", 1); put("height", 1) })
+                put("marks", fields.getValue("marks"))
+            }).marks
+            assertEquals(fields.getValue("note").jsonPrimitive.content, fields.getValue("touched").jsonArray.map { it.jsonPrimitive.int },
+                AttachmentEdits.strokesTouched(marks, number("x"), number("y"), number("radius"), number("width"), number("height")))
         }
     }
 

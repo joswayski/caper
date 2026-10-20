@@ -227,6 +227,57 @@ impl Edit {
     }
 }
 
+/// The strokes a round eraser of `radius` at `x`, `y` (fractions) touches,
+/// by index: those whose line, half its width either side, comes within
+/// reach. `width` × `height` is the rotated picture in the same unit as
+/// `radius`. Text is never erased; the Text tool removes it by clearing it.
+/// Matches web's `strokesTouched`.
+pub fn strokes_touched(
+    marks: &[Mark],
+    (x, y): (f64, f64),
+    radius: f64,
+    (width, height): (f64, f64),
+) -> Vec<usize> {
+    let edge = width.max(height);
+    let (px, py) = (x * width, y * height);
+    marks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, mark)| {
+            let Mark::Stroke {
+                width: line,
+                points,
+                ..
+            } = mark
+            else {
+                return None;
+            };
+            if points.len() < 2 {
+                return None;
+            }
+            let reach = radius + line * edge / 2.0;
+            let (mut ax, mut ay) = (points[0] * width, points[1] * height);
+            let mut nearest = (px - ax).hypot(py - ay);
+            for pair in points[2..].chunks_exact(2) {
+                if nearest <= reach {
+                    break;
+                }
+                let (bx, by) = (pair[0] * width, pair[1] * height);
+                let (dx, dy) = (bx - ax, by - ay);
+                let length = dx * dx + dy * dy;
+                let t = if length > 0.0 {
+                    (((px - ax) * dx + (py - ay) * dy) / length).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                nearest = nearest.min((px - (ax + t * dx)).hypot(py - (ay + t * dy)));
+                (ax, ay) = (bx, by);
+            }
+            (nearest <= reach).then_some(index)
+        })
+        .collect()
+}
+
 pub fn rotated_size(width: u32, height: u32, rotation: u16) -> (u32, u32) {
     if rotation % 180 == 90 {
         (height, width)
@@ -758,6 +809,24 @@ mod tests {
         rotate_left: Vec<RotateCase>,
         crop_pixels: Vec<CropCase>,
         edited: Vec<EditedCase>,
+        erase: EraseCases,
+    }
+
+    #[derive(Deserialize)]
+    struct EraseCases {
+        cases: Vec<EraseCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct EraseCase {
+        note: String,
+        width: f64,
+        height: f64,
+        x: f64,
+        y: f64,
+        radius: f64,
+        marks: Vec<Mark>,
+        touched: Vec<usize>,
     }
 
     #[derive(Deserialize)]
@@ -870,6 +939,20 @@ mod tests {
         assert!(cases.edited.len() >= 4);
         for case in cases.edited {
             assert_eq!(case.edit.is_edited(), case.edited, "{}", case.note);
+        }
+        assert!(cases.erase.cases.len() >= 6);
+        for case in cases.erase.cases {
+            assert_eq!(
+                strokes_touched(
+                    &case.marks,
+                    (case.x, case.y),
+                    case.radius,
+                    (case.width, case.height)
+                ),
+                case.touched,
+                "{}",
+                case.note
+            );
         }
     }
 

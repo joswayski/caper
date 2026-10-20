@@ -143,6 +143,36 @@ public struct AttachmentEdit: Equatable, Sendable, Codable {
         return String(format: "#%02X%02X%02X", byte(red), byte(green), byte(blue))
     }
 
+    // MARK: Erasing
+
+    /// The strokes a round eraser of `radius` at `x`, `y` (fractions)
+    /// touches, by index: those whose line, half its width either side, comes
+    /// within reach. `width` × `height` is the rotated picture in the same
+    /// unit as `radius`. Text is never erased; the Text tool removes it by
+    /// clearing it. Matches web's `strokesTouched`.
+    public static func strokesTouched(_ marks: [EditMark], x: Double, y: Double, radius: Double,
+                                      width: Double, height: Double) -> [Int] {
+        let edge = Swift.max(width, height)
+        let px = x * width, py = y * height
+        return marks.indices.filter { index in
+            guard case .stroke(let mark) = marks[index], mark.points.count >= 2 else { return false }
+            let reach = radius + mark.width * edge / 2
+            var ax = mark.points[0] * width, ay = mark.points[1] * height
+            var nearest = hypot(px - ax, py - ay)
+            var point = 2
+            while point + 1 < mark.points.count, nearest > reach {
+                let bx = mark.points[point] * width, by = mark.points[point + 1] * height
+                let dx = bx - ax, dy = by - ay
+                let length = dx * dx + dy * dy
+                let t = length > 0 ? Swift.min(1, Swift.max(0, ((px - ax) * dx + (py - ay) * dy) / length)) : 0
+                nearest = Swift.min(nearest, hypot(px - (ax + t * dx), py - (ay + t * dy)))
+                ax = bx; ay = by
+                point += 2
+            }
+            return nearest <= reach
+        }
+    }
+
     // MARK: Files
 
     /// Still types the editor opens where this device decodes them; callers

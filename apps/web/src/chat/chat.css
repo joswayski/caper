@@ -3448,6 +3448,10 @@ a.chat-draft-preview {
 .chat-editor-brush[data-visible] {
   display: block;
 }
+/* The eraser's ring is hollow: it shows what it will take, not a colour. */
+.chat-editor-brush[data-erasing] {
+  background: rgb(255 255 255 / 12%);
+}
 .chat-editor-picture canvas[data-tool="text"] {
   cursor: text;
 }
@@ -3599,10 +3603,38 @@ a.chat-draft-preview {
   background: transparent;
   font-size: 0.85rem;
 }
+.chat-editor-palette {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .chat-editor-colors {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+/* Draw's eraser follows the colours: pressed, it erases instead of drawing. */
+.chat-editor-eraser {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin-left: 4px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.chat-editor-eraser[aria-pressed="true"] {
+  border-color: var(--terracotta);
+  color: var(--text);
+  background: rgb(182 77 50 / 14%);
+}
+.chat-editor-eraser:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
 }
 .chat-editor-swatch {
   position: relative;
@@ -3660,6 +3692,19 @@ a.chat-draft-preview {
   border-radius: 50%;
   box-shadow: 0 0 0 1px rgb(255 255 255 / 25%);
 }
+.chat-editor-dot[data-erasing] {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-muted);
+}
+/* The size in points, so a size can be found again. */
+.chat-editor-size-value {
+  flex: none;
+  min-width: 2ch;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
 .chat-editor-modes {
   display: flex;
   justify-content: center;
@@ -3701,6 +3746,10 @@ a.chat-draft-preview {
   .chat-editor-swatch {
     width: 36px;
     height: 36px;
+  }
+  .chat-editor-eraser {
+    width: 40px;
+    height: 40px;
   }
   .chat-editor-modes button {
     flex: 1;

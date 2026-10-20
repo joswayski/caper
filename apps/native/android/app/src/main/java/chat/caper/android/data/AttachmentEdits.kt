@@ -4,6 +4,7 @@ import chat.caper.android.data.AttachmentPolicy.StillClass
 import chat.caper.android.model.CompressionSettings
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
@@ -193,6 +194,40 @@ object AttachmentEdits {
      * Still formats the editor opens where this device decodes them. Callers also rule out
      * animation (GIFs and animated WebP/PNG would keep one frame) and undecodable files.
      */
+    /**
+     * The strokes a round eraser of [radius] at [x], [y] (fractions) touches, by index: those whose
+     * line, half its width either side, comes within reach. [width] × [height] is the rotated picture
+     * in the same unit as [radius]. Text is never erased; the Text tool removes it by clearing it.
+     * Matches web's `strokesTouched`.
+     */
+    fun strokesTouched(marks: List<EditMark>, x: Double, y: Double, radius: Double, width: Double, height: Double): List<Int> {
+        val edge = max(width, height)
+        val px = x * width
+        val py = y * height
+        return marks.indices.filter { index ->
+            val mark = marks[index] as? EditMark.Stroke ?: return@filter false
+            if (mark.points.size < 2) return@filter false
+            val reach = radius + mark.width * edge / 2
+            var ax = mark.points[0] * width
+            var ay = mark.points[1] * height
+            var nearest = hypot(px - ax, py - ay)
+            var point = 2
+            while (point + 1 < mark.points.size && nearest > reach) {
+                val bx = mark.points[point] * width
+                val by = mark.points[point + 1] * height
+                val dx = bx - ax
+                val dy = by - ay
+                val length = dx * dx + dy * dy
+                val t = if (length > 0) (((px - ax) * dx + (py - ay) * dy) / length).coerceIn(0.0, 1.0) else 0.0
+                nearest = min(nearest, hypot(px - (ax + t * dx), py - (ay + t * dy)))
+                ax = bx
+                ay = by
+                point += 2
+            }
+            nearest <= reach
+        }
+    }
+
     fun editableImageType(contentType: String): Boolean = AttachmentPolicy.normalizedType(contentType) in setOf(
         "image/jpeg", "image/png", "image/webp", "image/avif", "image/heic", "image/heif", "image/bmp", "image/x-ms-bmp", "image/tiff",
     )

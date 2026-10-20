@@ -33,6 +33,7 @@ const names = {
   crop: "Crop",
   download: "Download",
   ellipsis: "Ellipsis",
+  eraser: "Eraser",
   "external-link": "ExternalLink",
   "file-text": "FileText",
   "file-warning": "FileWarning",

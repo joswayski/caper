@@ -1768,7 +1768,13 @@ takes over the preview's history entry, so Back closes the editor. The editor of
   the size and colour of the brush in place of the cursor (at least 6 px).
   Both take one of six colours (red, yellow, green, blue, white, black) or any
   colour from the platform's colour picker, and a size slider (2–40 pt lines,
-  14–96 pt text, as seen on screen).
+  14–96 pt text, as seen on screen) with its value in points beside it.
+  Draw's **Eraser** button (after the colours; beside the size on phones)
+  turns presses into an eraser the size of the brush: every line its ring
+  passes over is removed, as one undo step. It removes whole lines, never the
+  picture or text (clear a text to remove it); picking a colour or another
+  tool turns it off. Sliding the size repaints only the controls, not the
+  picture.
 - **Undo**, **Redo** (Ctrl/⌘+Z, Ctrl/⌘+Shift+Z, Ctrl+Y) and **Reset** to the
   original; Escape closes a text field, then cancels. Done with no change just
   closes.
@@ -1797,7 +1803,7 @@ turned picture, then marks painted in order: strokes (points as fractions,
 width as a fraction of the longer edge) and text centred on a point (size as a
 fraction of the longer edge, always upright). Every client's tests run
 `shared/messages/edit-cases.json` (turns, crop rounding including even video
-crops, and when a file counts as edited).
+crops, when a file counts as edited, and which lines an eraser touches).
 
 **What gets uploaded.**
 

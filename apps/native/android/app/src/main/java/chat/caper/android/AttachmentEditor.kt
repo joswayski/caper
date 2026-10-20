@@ -14,6 +14,7 @@ import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -60,6 +61,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
@@ -90,6 +92,7 @@ import chat.caper.android.data.EditPainter
 import chat.caper.android.data.EditRect
 import chat.caper.android.ui.*
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -177,6 +180,10 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
     var strokePoints by remember { mutableFloatStateOf(AttachmentEdits.STROKE_INITIAL) }
     var textPoints by remember { mutableFloatStateOf(AttachmentEdits.TEXT_INITIAL) }
     var liveStroke by remember { mutableStateOf<EditMark.Stroke?>(null) }
+    // Draw's eraser: presses remove the lines they touch instead of drawing; [erased] are the
+    // committed marks the press under way has touched.
+    var erasing by remember { mutableStateOf(false) }
+    var erased by remember { mutableStateOf(emptySet<Int>()) }
     var liveCrop by remember { mutableStateOf<EditRect?>(null) }
     var liveText by remember { mutableStateOf<MovedText?>(null) }
     var field by remember { mutableStateOf<OpenText?>(null) }
@@ -212,9 +219,10 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
     }
     fun undo() { field = null; history = history.undo() }
     fun redo() { field = null; history = history.redo() }
-    fun chooseTool(next: EditTool) { commitField(); tool = next }
+    fun chooseTool(next: EditTool) { commitField(); tool = next; erasing = false }
     fun chooseColor(next: String) {
         color = next
+        erasing = false
         field = field?.copy(color = next)
     }
     fun done() {
@@ -318,6 +326,7 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                             crop = liveCrop ?: current.crop,
                             marks = current.marks.mapIndexedNotNull { index, mark ->
                                 when {
+                                    index in erased -> null
                                     open?.index == index -> null
                                     moved?.index == index && mark is EditMark.Text -> mark.copy(x = moved.x, y = moved.y)
                                     else -> mark
@@ -370,6 +379,33 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                                                 down.consume()
                                                 // A press outside the open field commits it, then draws.
                                                 commitField()
+                                                if (erasing) {
+                                                    val edit = history.current
+                                                    val radius = brushRingDiameter(strokePoints, density.density) / 2.0
+                                                    val fullWidth = start.width / start.region.width
+                                                    val fullHeight = start.height / start.region.height
+                                                    // Sampled closely enough along the way that a fast swipe skips no line.
+                                                    fun eraseAlong(from: Offset, to: Offset) {
+                                                        val steps = max(1, ceil((to - from).getDistance() / max(1.0, radius / 2)).toInt())
+                                                        var touched = erased
+                                                        for (step in 1..steps) {
+                                                            val (px, py) = start.point(from + (to - from) * (step.toFloat() / steps))
+                                                            touched = touched + AttachmentEdits.strokesTouched(edit.marks, px, py, radius, fullWidth, fullHeight)
+                                                        }
+                                                        if (touched != erased) erased = touched
+                                                    }
+                                                    var last = down.position
+                                                    eraseAlong(last, last)
+                                                    drag(down.id) { change ->
+                                                        eraseAlong(last, change.position)
+                                                        last = change.position
+                                                        change.consume()
+                                                    }
+                                                    val gone = erased
+                                                    if (gone.isNotEmpty()) commit(edit.copy(marks = edit.marks.filterIndexed { index, _ -> index !in gone }))
+                                                    erased = emptySet()
+                                                    return@awaitEachGesture
+                                                }
                                                 val (x, y) = start.point(down.position)
                                                 var last = down.position
                                                 liveStroke = EditMark.Stroke(color, strokePoints * density.density / start.edge.toDouble(), listOf(x, y))
@@ -438,7 +474,9 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                                 native.restore()
                             }
                             if (tool == EditTool.CROP) drawCropFrame(shown.crop, layout)
-                            if (ringShown) hover?.let { drawBrushRing(it, brushRingDiameter(strokePoints, density.density) / 2f, Color(AttachmentEdits.argb(color))) }
+                            if (ringShown) hover?.let {
+                                drawBrushRing(it, brushRingDiameter(strokePoints, density.density) / 2f, if (erasing) Color.White.copy(alpha = 0.4f) else Color(AttachmentEdits.argb(color)))
+                            }
                         }
                         if (open != null) {
                             val anchor = layout.offset(open.x, open.y)
@@ -492,32 +530,22 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
                     val custom = color !in AttachmentEdits.COLORS
                     Row(Modifier.fillMaxWidth().selectableGroup().semantics { contentDescription = "Colour" }, horizontalArrangement = Arrangement.SpaceBetween) {
                         AttachmentEdits.COLORS.forEach { preset ->
-                            Swatch(color == preset, AttachmentEdits.COLOR_NAMES[preset] ?: preset, SolidColor(Color(AttachmentEdits.argb(preset)))) {
+                            Swatch(!erasing && color == preset, AttachmentEdits.COLOR_NAMES[preset] ?: preset, SolidColor(Color(AttachmentEdits.argb(preset)))) {
                                 chooseColor(preset)
                             }
                         }
                         val spectrum = Brush.sweepGradient(listOf(0f, 60f, 120f, 180f, 240f, 300f, 360f).map { Color.hsv(it, 0.85f, 0.95f) })
-                        Swatch(custom, "Custom colour", if (custom) SolidColor(Color(AttachmentEdits.argb(color))) else spectrum) {
+                        Swatch(custom && !erasing, "Custom colour", if (custom) SolidColor(Color(AttachmentEdits.argb(color))) else spectrum) {
                             picking = true
                         }
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        val draw = tool == EditTool.DRAW
-                        val points = if (draw) strokePoints else textPoints
-                        Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
-                            if (draw) Box(Modifier.size(points.dp).background(Color(AttachmentEdits.argb(color)), CircleShape).border(1.dp, Border, CircleShape))
-                            else Text("Aa", color = Color(AttachmentEdits.argb(color)), fontFamily = EditFont, fontWeight = FontWeight.Bold,
-                                fontSize = with(density) { min(points, 36f).dp.toSp() }, maxLines = 1)
-                        }
-                        DefaultSlider(
-                            points,
-                            { value -> if (draw) strokePoints = value else { textPoints = value; field = field?.copy(points = value) } },
-                            Modifier.weight(1f).semantics { contentDescription = if (draw) "Line size" else "Text size" },
-                            enabled = ready,
-                            valueRange = if (draw) AttachmentEdits.STROKE_MIN..AttachmentEdits.STROKE_MAX else AttachmentEdits.TEXT_MIN..AttachmentEdits.TEXT_MAX,
-                            defaultValue = if (draw) 6f else 32f,
-                        )
-                    }
+                    val draw = tool == EditTool.DRAW
+                    // The size is read inside the row, so dragging its slider recomposes the row, not the picture.
+                    SizeRow(
+                        draw, erasing, color, ready,
+                        points = { if (draw) strokePoints else textPoints },
+                        change = { value -> if (draw) strokePoints = value else { textPoints = value; field = field?.copy(points = value) } },
+                    ) { if (draw) EraserButton(erasing, ready) { erasing = !erasing } }
                 }
                 Row(Modifier.fillMaxWidth().selectableGroup().semantics { contentDescription = "Editing tools" }, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     EditTool.entries.forEach { option ->
@@ -539,6 +567,54 @@ internal fun brushRingDiameter(strokePoints: Float, density: Float): Float = max
             }
         }
         if (picking) ColorPickerDialog(color, dismiss = { picking = false }) { chosen -> picking = false; chooseColor(chosen) }
+    }
+}
+
+/** The size slider between a live preview of the dot or text and its value in points. */
+@Composable private fun SizeRow(
+    draw: Boolean, erasing: Boolean, color: String, enabled: Boolean,
+    points: () -> Float, change: (Float) -> Unit, leading: @Composable () -> Unit,
+) {
+    val density = LocalDensity.current
+    val value = points()
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        leading()
+        Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+            when {
+                draw && erasing -> Box(Modifier.size(value.dp).border(1.5.dp, TextMuted, CircleShape))
+                draw -> Box(Modifier.size(value.dp).background(Color(AttachmentEdits.argb(color)), CircleShape).border(1.dp, Border, CircleShape))
+                else -> Text("Aa", color = Color(AttachmentEdits.argb(color)), fontFamily = EditFont, fontWeight = FontWeight.Bold,
+                    fontSize = with(density) { min(value, 36f).dp.toSp() }, maxLines = 1)
+            }
+        }
+        DefaultSlider(
+            value,
+            change,
+            Modifier.weight(1f).semantics { contentDescription = if (!draw) "Text size" else if (erasing) "Eraser size" else "Line size" },
+            enabled = enabled,
+            valueRange = if (draw) AttachmentEdits.STROKE_MIN..AttachmentEdits.STROKE_MAX else AttachmentEdits.TEXT_MIN..AttachmentEdits.TEXT_MAX,
+            defaultValue = if (draw) 6f else 32f,
+        )
+        Text(value.roundToInt().toString(), Modifier.widthIn(min = 20.dp).clearAndSetSemantics {}, color = TextMuted, fontSize = 12.sp,
+            style = TabularNumbers, textAlign = TextAlign.End)
+    }
+}
+
+/** Draw's eraser: on, presses erase lines; a colour or another tool turns it off. */
+@Composable private fun EraserButton(selected: Boolean, enabled: Boolean, toggle: () -> Unit) {
+    Box(
+        Modifier.size(44.dp).clip(MaterialTheme.shapes.small)
+            .toggleable(selected, enabled = enabled, role = Role.Switch) { toggle() }
+            .semantics { contentDescription = "Eraser" },
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            Modifier.size(36.dp).background(if (selected) TerracottaWash else Color.Transparent, MaterialTheme.shapes.small)
+                .border(1.dp, if (selected) Terracotta else Border, MaterialTheme.shapes.small),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(painterResource(R.drawable.lucide_eraser), null, Modifier.size(18.dp), tint = if (selected) Text else TextMuted)
+        }
     }
 }
 
