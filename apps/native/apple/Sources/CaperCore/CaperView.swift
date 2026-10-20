@@ -5223,7 +5223,10 @@ private struct MessageRow: View {
                             .tint(CaperTheme.link)
                             .modifier(MessageLinkPills(enabled: rendered.hasLinks))
                             .modifier(SwipeGuardedLinks())
-                            .modifier(MentionPillInteraction(pills: pills, hasLinks: rendered.hasLinks, cards: mentionCards))
+                            .modifier(MentionPillInteraction(pills: pills, cards: mentionCards))
+                            #if os(macOS)
+                            .textSelection(.enabled)
+                            #endif
                         if grouped && edited { editedMarker }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -5888,21 +5891,16 @@ private struct ProfileSheetOutsideTap: UIViewControllerRepresentable {
 /// Routes pill links (`caper-mention:`) to the mention card instead of the
 /// system; web links (`http(s)`) open in the system browser. A tap on a link
 /// is handled by the Text itself; the row's message actions still need a
-/// long press. macOS keeps text selection only for messages without person
-/// pills or web links, so a click on a link is never taken as a selection.
+/// long press. The message host enables macOS selection independently of
+/// its links, so linked text and the surrounding words remain selectable.
 /// VoiceOver gets one "Open profile for …" action per person.
 private struct MentionPillInteraction: ViewModifier {
     let pills: [MentionPill]
-    var hasLinks = false
     let cards: MentionCardContext
 
     @ViewBuilder func body(content: Content) -> some View {
         if pills.isEmpty {
-            #if os(macOS)
-            if hasLinks { content } else { content.textSelection(.enabled) }
-            #else
             content
-            #endif
         } else {
             content
                 .environment(\.openURL, OpenURLAction { url in

@@ -15,10 +15,12 @@ struct SharedOriginalView: View {
             if message.isDeleted {
                 Text(MessageDeletion.placeholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
             } else if !message.content.text.isEmpty {
-                // Links open in the system browser; selection would take their clicks on macOS.
                 if let linked = MessageLinks.renderedText(message.content.text) {
                     linked.font(CaperTheme.font(14)).tint(CaperTheme.link)
                         .modifier(MessageLinkPills())
+                        #if os(macOS)
+                        .textSelection(.enabled)
+                        #endif
                 } else {
                     Text(message.content.text).font(CaperTheme.font(14)).textSelection(.enabled)
                 }
