@@ -4072,11 +4072,25 @@ Staging uses `--env staging` and `embed.staging.caper.chat`.
 
 **Clients.** Web (desktop and mobile layouts), Android, Apple and desktop draw
 cards, take `message.embeds` live, preview the composer's first link and can
-send without previews. Players: web, Android and Apple play inline; desktop
-opens the `play` page in the system browser, because egui cannot draw web
-content and the app embeds no web view (an inline player would need `wry`:
-WebKitGTK on Linux, WebView2 on Windows, and an overlay that hides under
-menus). Desktop GIF-style videos play on click rather than looping inline.
+send without previews. Players: every client plays inline. Desktop loads
+`play` after Play in the operating system's own web engine, only for the
+player box (`wry`): WebView2 in process on Windows; on Linux WebKitGTK in the
+separate `caper-web-player` helper, so the app itself never links GTK and
+still starts without it. The native view sits exactly over the card, as a
+child of Caper's window on Windows and X11; Wayland cannot embed another
+process's surface, so there it plays in its own small window and the card
+offers Show window/Close. It hides, still playing, while the box is partly
+out of the timeline's view or anything egui paints (menus, popups, tooltips,
+dialogs, the viewer) meets it, with the poster marked "Playing" in its place;
+one plays at a time, and it closes on another Play, a conversation change, the
+card staying out of view, or quit. The same rules as the mobile web views apply:
+ephemeral storage, no bridge to app code, no devtools or downloads, autoplay,
+only `play` in the main frame (WebView2 decides in its main-frame navigation
+handler; WebKitGTK asks about frames too, so the helper stops any later
+main-frame load before it commits), and new windows and links followed out
+open in the system browser. Without WebKitGTK or the WebView2 runtime the card
+says what to install and offers the browser. Desktop GIF-style videos play on
+click rather than looping inline.
 
 Validation:
 
@@ -4087,7 +4101,7 @@ Validation:
 | Web | unit and render tests; cards in headless Chromium at desktop and 390px widths with live reader data (labelled harness, unproxied media) | live server; provider players after Play |
 | Android | 518 JVM unit tests (13 for embeds, shared cases), lint | device, WebView playback, R8 release build |
 | Apple | not compiled (no Swift toolchain); tests written for the shared cases, revision rule and composer | everything on macOS/iOS |
-| Desktop | 691 unit tests, clippy; `--fixture parity-embeds` under Xvfb at 1440px and 420px | video playback (no FFmpeg there), live media, Windows/macOS builds |
+| Desktop | 698 unit tests (allowlist, visibility, overlays, lifecycle) and 7 in `caper-web-player` (allowlist, line protocol, arguments), clippy; `--fixture parity-embeds` under Xvfb at 1440px and 420px; Linux X11 player under Xvfb with a loopback stand-in `play` page: view pixel-exact over the card, hidden under a context menu, Settings and the viewer and when scrolled partly out, a `_top` link and a new window reported and opened in the browser, helper replaced on the next Play and gone after a channel switch or quit; real YouTube autoplaying inline through that stand-in (needs `gstreamer1.0-libav`/`-plugins-bad`); missing-WebKitGTK message and Open in browser; `caper-desktop` links no GTK/WebKitGTK (`readelf`/`ldd`); Windows engine type-checked (`cargo clippy --target x86_64-pc-windows-msvc`) | direct video playback (no FFmpeg there), live media, Windows build/runtime (WebView2 placement, focus, missing runtime), Wayland window mode, the deployed `embed.caper.chat` page, Vimeo/Twitch, keyboard focus under real X11 window managers, HiDPI scale factors, macOS (no Rust desktop build; the Apple app plays inline) |
 
 ## Shared call state and rolling deployments
 

@@ -11,7 +11,13 @@ license. Full source notices are maintained in `shared/emoji/NOTICE.txt`,
 Caper Desktop is distributed with Rust dependencies listed exactly in `Cargo.lock`.
 Their package metadata and license identifiers are available from crates.io and
 the corresponding source repositories. The application does not bundle a browser,
-WebView, or JavaScript runtime. It statically links the verified Google WebRTC
+WebView, or JavaScript runtime. Link preview video players use the operating
+system's own web engine through wry (Apache-2.0 OR MIT): the installed
+Microsoft Edge WebView2 Runtime on Windows, reached through Microsoft's
+WebView2 SDK loader linked statically by webview2-com-sys (MIT; the loader
+under Microsoft's WebView2 SDK license), and the system WebKitGTK on Linux,
+used only by the separate `caper-web-player` helper through the gtk-rs and
+webkit2gtk-rs bindings (MIT). It statically links the verified Google WebRTC
 archive distributed by LiveKit, without using LiveKit rooms or servers. The
 unchanged `libwebrtc-LICENSE.md` and `webrtc-sys-NOTICE.md` accompany both
 desktop packages.

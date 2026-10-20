@@ -7,7 +7,7 @@ license = "Apache-2.0"
 description = "Native Caper desktop client"
 
 [workspace]
-members = ["voice-spike/vendor/libwebrtc", "voice-spike/vendor/webrtc-sys", "voice-spike/vendor/webrtc-sys/build"]
+members = ["voice-spike/vendor/libwebrtc", "voice-spike/vendor/webrtc-sys", "voice-spike/vendor/webrtc-sys/build", "web-player"]
 
 [workspace.package]
 edition = "2021"
@@ -38,6 +38,9 @@ arboard = { version = "=3.6.1", features = ["wayland-data-control"] }
 # AVIF photos: rav1e (pure-Rust AV1, BSD-2-Clause) in an avif-serialize
 # (BSD-3-Clause) container; see src/avif.rs.
 avif-serialize = "=0.8.9"
+# Link preview players: the play-page allowlist and the Linux helper's line
+# protocol, without a web engine (see web-player/ and src/web_player.rs).
+caper-web-player = { path = "web-player" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 eframe = { version = "0.33.3", default-features = false, features = ["wgpu", "x11", "wayland", "accesskit", "default_fonts", "persistence"] }
 egui_extras = { version = "0.33.3", default-features = false, features = ["svg", "image"] }
@@ -77,12 +80,17 @@ webpx = { version = "=0.4.0", default-features = false, features = ["encode", "i
 avif-asm = ["rav1e/asm"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Caper's X11 window id for the web player helper.
+raw-window-handle = "0.6"
 keyring = { version = "3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
 notify-rust = { version = "4.18.2", default-features = false, features = ["z"] }
 zbus = "=5.19.0"
 wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", "vulkan", "gles"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# WebView2 in process for link preview players; its loader finds the
+# system runtime at run time.
+caper-web-player = { path = "web-player", features = ["engine"] }
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
 wgpu = { version = "27.0", default-features = false, features = ["std", "wgsl", "dx12"] }
 windows = { version = "0.61.3", features = ["UI_ViewManagement", "UI_Notifications", "Data_Xml_Dom"] }

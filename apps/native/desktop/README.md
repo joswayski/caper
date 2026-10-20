@@ -1,7 +1,11 @@
 # Caper Desktop for Windows and Linux
 
 Browser-free native Caper client built with Rust, eframe/egui, wgpu and winit.
-It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
+It does not embed Electron, Tauri or a browser engine, and its own UI never
+uses a WebView or JavaScript runtime. The one exception is third-party video
+players in link previews (YouTube, Vimeo, Twitch): after Play, the operating
+system's own web engine (WebView2 on Windows, WebKitGTK on Linux) shows
+just that player in the card.
 
 ## Available now
 
@@ -97,6 +101,28 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   reactions. Signed URLs are
   refreshed (`POST /api/assets/urls`) before they expire and once after a
   403/404 image load, so a window left open for days keeps working.
+- Link preview cards under messages and for the composer's first link
+  (`embeds.rs`). Images and direct videos open in the viewer and player. A
+  YouTube/Vimeo/Twitch card's Play loads Caper's `play` page (only HTTPS from
+  `embed.caper.chat` or `embed.staging.caper.chat`) in a native web view kept
+  exactly over the card (`web_player.rs`): Windows uses the installed WebView2
+  runtime in process; Linux runs WebKitGTK in the separate `caper-web-player`
+  helper (`web-player/`), so `caper-desktop` itself never links GTK. On X11 the
+  view is a child of Caper's window; on Wayland, which cannot embed another
+  program's surface, it plays in a small "Caper — YouTube" window and the card
+  offers **Show window**/**Close**. As on Android and Apple: ephemeral storage,
+  no bridge to app code, no developer tools or downloads, autoplay, and only the
+  play page in the main frame; links followed out of the player and new windows
+  open in the system browser. One player plays at a time. It hides, still
+  playing, while its box is partly scrolled out of view or under a menu, popup,
+  tooltip, dialog or the viewer (the card shows its poster marked "Playing"),
+  and closes when another starts, the conversation changes, the card stays out
+  of view, or Caper quits. Without the engine the card says what to install
+  (WebKitGTK `libwebkit2gtk-4.1-0`, or the WebView2 runtime) and offers
+  **Open in browser**. YouTube on Linux also needs GStreamer's
+  `gstreamer1.0-libav` and `gstreamer1.0-plugins-bad` (the `.deb` recommends
+  them). Clicks in the video go to the web view; on X11 keyboard focus follows
+  the window manager.
 - Sending up to 10 files per message in channel, DM and thread composers,
   including attachment-only thread replies. Staged files and text belong to
   their conversation/thread and survive closing a thread or switching conversations;
@@ -307,7 +333,8 @@ Ubuntu 24.04 CI/build host:
 sudo apt-get update
 sudo apt-get install -y build-essential pkg-config libwayland-dev \
   libxkbcommon-dev libx11-dev libxi-dev libxcursor-dev libxrandr-dev \
-  libdbus-1-dev dbus-x11 libglib2.0-dev libasound2-dev clang-21 lld-21
+  libdbus-1-dev dbus-x11 libglib2.0-dev libasound2-dev clang-21 lld-21 \
+  libgtk-3-dev libwebkit2gtk-4.1-dev
 rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
 ./apps/native/desktop/build.sh
 ```
@@ -341,9 +368,14 @@ In CI it first clears an install left by a run cancelled mid-test; run locally,
 it refuses to touch an existing install.
 
 The `.deb` is built against Ubuntu 24.04 (glibc 2.39) and declares native
-X11/Wayland, D-Bus, PulseAudio/ALSA and Vulkan-or-GL runtime dependencies. It is not a static or
+X11/Wayland, D-Bus, PulseAudio/ALSA, Vulkan-or-GL and WebKitGTK
+(`libwebkit2gtk-4.1-0`) runtime dependencies. It is not a static or
 distribution-independent Linux binary. Linux session persistence also requires
-an unlocked Secret Service provider such as GNOME Keyring.
+an unlocked Secret Service provider such as GNOME Keyring. Only the
+`caper-web-player` helper (beside the app in the archive,
+`/usr/lib/caper-desktop/` in the `.deb`) links GTK and WebKitGTK; `build.sh`
+fails if `caper-desktop` does, and the unpacked app starts without them (video
+cards then offer the browser).
 
 Run the unpacked binary directly, or install the Debian package with
 `sudo apt install ./Caper-linux-x64.deb`. The production endpoint is
@@ -456,6 +488,9 @@ authorization and the same isolation controls.
 cargo fmt --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop -- --check
 CC=clang-21 CXX=clang++-21 LK_CUSTOM_WEBRTC="$(python3 apps/native/desktop/voice-spike/fetch_libwebrtc.py --platform linux)" CARGO_BUILD_JOBS=2 cargo test --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop --locked
 CC=clang-21 CXX=clang++-21 LK_CUSTOM_WEBRTC="$PWD/apps/native/desktop/target/libwebrtc/linux-x64-release" CARGO_BUILD_JOBS=2 cargo clippy --manifest-path apps/native/desktop/Cargo.toml -p caper-desktop --locked --all-targets --no-deps -- -D warnings
+cargo fmt --manifest-path apps/native/desktop/Cargo.toml -p caper-web-player -- --check
+cargo test --manifest-path apps/native/desktop/Cargo.toml -p caper-web-player --features engine --locked
+cargo clippy --manifest-path apps/native/desktop/Cargo.toml -p caper-web-player --features engine --locked --all-targets --no-deps -- -D warnings
 ```
 
 For deterministic visual inspection without live accounts, launch
@@ -494,6 +529,10 @@ Append `-narrow` to these thread fixtures for a 390px-wide window. These are
 labelled local previews, not live storage or upload validation.
 `parity-embeds` previews link preview cards (X, YouTube, an article with a
 thumbnail, a gallery) and the composer's preview from labelled local data.
+Its player's Play points at `embed.caper.chat`; debug builds started with
+`CAPER_DEV_PLAY_ORIGIN=http://127.0.0.1:PORT` (loopback HTTP only) load `play`
+pages from a stand-in server on that port instead. Release builds ignore it.
+`CAPER_WEB_PLAYER` names a helper outside the usual places.
 `parity-attachment-editor` opens the attachment editor on a synthetic picture
 with a labelled line and text (`-crop` and `-text` open those tools, `-narrow`
 a 390px-wide window); `-chip` shows the composer file's Edit button.

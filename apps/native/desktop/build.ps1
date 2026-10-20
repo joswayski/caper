@@ -52,7 +52,10 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 python (Join-Path $Root "scripts\native_fonts.py")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-cargo fmt --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop -- --check
+cargo fmt --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --package caper-web-player -- --check
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+# Link preview players' allowlist and WebView2 configuration (linked into Caper.exe).
+cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-web-player --features engine --target $Target --locked --lib
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -62,6 +65,8 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo test --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked native_inference_is_finite_and_owns_fresh_state -- --ignored
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --package caper-desktop --target $Target --locked --all-targets --no-deps -- -D warnings
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+cargo clippy --manifest-path (Join-Path $Native "Cargo.toml") --package caper-web-player --features engine --target $Target --locked --lib --tests --no-deps -- -D warnings
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # rav1e's assembly halves AVIF photo encode time when NASM is available.
 $ReleaseFeatures = @()

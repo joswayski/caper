@@ -52,6 +52,7 @@ mod uploads;
 mod viewer;
 mod virtual_list;
 mod voice;
+mod web_player;
 mod whats_new;
 mod window_state;
 mod worker;
@@ -1376,6 +1377,8 @@ struct CaperApp {
     embed_arrivals: std::collections::HashMap<String, Instant>,
     /// The main composer's preview of its first link.
     link_preview: embeds::ComposerPreview,
+    /// A link preview's video playing in the system web engine.
+    web_player: web_player::WebPlayer,
     file_picker: Option<FilePicker>,
     /// Decoded local images of finished uploads, shown without a download.
     local_media: Vec<(String, egui::ColorImage)>,
@@ -1674,6 +1677,7 @@ impl CaperApp {
             media_proxy: None,
             embed_arrivals: std::collections::HashMap::new(),
             link_preview: embeds::ComposerPreview::default(),
+            web_player: web_player::WebPlayer::default(),
             file_picker: None,
             local_media: Vec::new(),
             pictures,
@@ -9300,10 +9304,21 @@ impl eframe::App for CaperApp {
         }
     }
 
+    fn on_exit(&mut self) {
+        self.web_player.stop();
+    }
+
     fn update(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {
         if let Some(window) = &mut self.window_state {
             window.update(context);
         }
+        // A player belongs to the conversation it started in.
+        self.web_player.begin_frame(self.account.is_some().then(|| {
+            format!(
+                "{:?}/{:?}/{:?}",
+                self.selected_space, self.selected_channel, self.selected_direct
+            )
+        }));
         if motion::reduced() && context.style().animation_time > 0.0 {
             // egui's own fades, scrolls and disclosures rest at once too.
             context.all_styles_mut(|style| {
@@ -9440,6 +9455,16 @@ impl eframe::App for CaperApp {
             } else {
                 None
             },
+        );
+        // After everything is drawn, so it knows what covers the player.
+        // Dialogs paint their backdrop on a layer of its own.
+        self.web_player.end_frame(
+            context,
+            frame,
+            &[egui::LayerId::new(
+                egui::Order::Background,
+                egui::Id::new("dialog-backdrop"),
+            )],
         );
     }
 }
@@ -16216,7 +16241,7 @@ impl CaperApp {
                     let preview = self.link_preview.update(ui.ctx(), &self.draft, self.token.as_deref(), self.media.api());
                     if let Some(embed) = preview.cloned() {
                         let arrival = motion::entrance(ui.ctx(), egui::Id::new("composer-embed"), motion::BASE);
-                        let shown = embeds::cards(ui, &mut self.media, "composer", std::slice::from_ref(&embed), arrival, true);
+                        let shown = embeds::cards(ui, &mut self.media, &mut self.web_player, "composer", std::slice::from_ref(&embed), arrival, true);
                         if shown.removed {
                             self.link_preview.remove();
                         }
@@ -17516,6 +17541,7 @@ impl CaperApp {
                             embeds::cards(
                                 ui,
                                 &mut self.media,
+                                &mut self.web_player,
                                 &message.id,
                                 &message.content.embeds,
                                 arrival,

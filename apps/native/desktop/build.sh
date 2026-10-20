@@ -45,17 +45,26 @@ chmod 0755 "$ffmpeg_dir/ffmpeg"
 "$ffmpeg_dir/ffmpeg" -hide_banner -version | sed -n 1p
 
 python3 "$root/scripts/native_fonts.py"
-cargo fmt --manifest-path "$native/Cargo.toml" --package caper-desktop -- --check
+cargo fmt --manifest-path "$native/Cargo.toml" --package caper-desktop --package caper-web-player -- --check
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop
+cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-web-player --features engine
 CAPER_FFMPEG="$ffmpeg_dir/ffmpeg" cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop avif_originals_decode_for_inline_and_spoiler_display -- --ignored
 cargo test --manifest-path "$native/Cargo.toml" --locked --package caper-desktop native_inference_is_finite_and_owns_fresh_state -- --ignored
 cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-desktop --all-targets --no-deps -- -D warnings
+cargo clippy --manifest-path "$native/Cargo.toml" --locked --package caper-web-player --features engine --all-targets --no-deps -- -D warnings
 # rav1e's assembly halves AVIF photo encode time when NASM is available.
 release_features=()
 if command -v nasm >/dev/null 2>&1; then
   release_features=(--features avif-asm)
 fi
 cargo build --manifest-path "$native/Cargo.toml" --locked --release --package caper-desktop "${release_features[@]}"
+# Link preview players run WebKitGTK in this separate helper, so caper-desktop
+# itself never links GTK/WebKitGTK and starts without them.
+cargo build --manifest-path "$native/Cargo.toml" --locked --release --package caper-web-player --features engine
+if ldd "$CARGO_TARGET_DIR/release/caper-desktop" | grep -E 'lib(gtk-3|webkit2gtk|javascriptcoregtk|soup-3)'; then
+  echo "caper-desktop must not link GTK or WebKitGTK; only caper-web-player does." >&2
+  exit 1
+fi
 # The self-updater ships beside the app. Release builds set CAPER_BUILD_NUMBER
 # and CAPER_UPDATE_PUBLIC_KEY; without the key it never offers updates.
 cargo build --manifest-path "$root/apps/native/updater/Cargo.toml" --locked --release
@@ -66,6 +75,7 @@ rm -rf "$native/dist" "$package_dir"
 mkdir -p "$native/dist" "$package_dir/Caper-linux-x64"
 install -m 0755 "$CARGO_TARGET_DIR/release/caper-desktop" "$package_dir/Caper-linux-x64/caper-desktop"
 install -m 0755 "$CARGO_TARGET_DIR/release/caper-updater" "$package_dir/Caper-linux-x64/caper-updater"
+install -m 0755 "$CARGO_TARGET_DIR/release/caper-web-player" "$package_dir/Caper-linux-x64/caper-web-player"
 install -m 0644 "$root/LICENSE" "$native/README.md" "$native/THIRD-PARTY-NOTICES.md" "$package_dir/Caper-linux-x64/"
 install -m 0644 "$root/shared/fonts/cache/Satoshi-FFL.txt" "$package_dir/Caper-linux-x64/"
 install -m 0644 "$native/voice-spike/licenses/"* "$package_dir/Caper-linux-x64/"
@@ -87,6 +97,7 @@ install -m 0755 "$CARGO_TARGET_DIR/release/caper-desktop" "$deb/usr/bin/caper-de
 install -m 0755 "$CAPER_ONNXRUNTIME_LIBRARY" "$deb/usr/lib/caper-desktop/"
 # Only checks for updates here: /usr needs root, so the app links to the download.
 install -m 0755 "$CARGO_TARGET_DIR/release/caper-updater" "$deb/usr/lib/caper-desktop/caper-updater"
+install -m 0755 "$CARGO_TARGET_DIR/release/caper-web-player" "$deb/usr/lib/caper-desktop/caper-web-player"
 install -m 0755 "$ffmpeg_dir/ffmpeg" "$deb/usr/lib/caper-desktop/ffmpeg"
 install -d "$deb/usr/share/doc/caper-desktop/ffmpeg-licenses"
 install -m 0644 "$ffmpeg_dir/licenses/"* "$ffmpeg_dir/SOURCES.txt" "$deb/usr/share/doc/caper-desktop/ffmpeg-licenses/"
@@ -110,8 +121,8 @@ Priority: optional
 Architecture: amd64
 Installed-Size: $size
 Maintainer: Caper <noreply@caper.chat>
-Depends: libc6 (>= 2.39), libgcc-s1, libstdc++6, libdbus-1-3, libwayland-client0, libx11-6, libxkbcommon0, libxkbcommon-x11-0, libpulse0, libasound2, libvulkan1 | libgl1
-Recommends: gnome-keyring, xdg-desktop-portal
+Depends: libc6 (>= 2.39), libgcc-s1, libstdc++6, libdbus-1-3, libwayland-client0, libx11-6, libxkbcommon0, libxkbcommon-x11-0, libpulse0, libasound2, libvulkan1 | libgl1, libwebkit2gtk-4.1-0
+Recommends: gnome-keyring, xdg-desktop-portal, gstreamer1.0-libav, gstreamer1.0-plugins-bad
 Description: Native Caper conversation client
  A browser-free client for Caper spaces, text, and experimental voice.
 EOF

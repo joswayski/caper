@@ -10,10 +10,12 @@
 //! muted there.
 //!
 //! Players (YouTube, Vimeo, Twitch) show their poster and a Play button.
-//! egui cannot draw web content and this client embeds no web view, so Play
-//! opens Caper's own `play` page (only from `embed.caper.chat` or
-//! `embed.staging.caper.chat`) in the system browser; without one it opens
-//! the card's link.
+//! Play loads Caper's own `play` page (only from `embed.caper.chat` or
+//! `embed.staging.caper.chat`) in the operating system's web engine over the
+//! box ([`crate::web_player`]); without a usable page, or on a platform
+//! without an engine, it opens the card's link or the page in the system
+//! browser. Without the engine the box says what to install and offers the
+//! browser.
 
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -22,6 +24,7 @@ use eframe::egui::{self, Color32, CornerRadius, Stroke};
 
 use crate::attachments::{EMBED_KEY, ImageState, Media};
 use crate::model::{Attachment, AttachmentKind, AttachmentStatus, Embed, EmbedBlock, EmbedImage};
+use crate::web_player::{self, WebPlayer};
 use crate::{
     ACTION, ACTION_HOVER, BORDER, MUTED, NavIcon, ON_ACTION, RAISED, SURFACE, TEXT, links, motion,
     paint_icon,
@@ -37,8 +40,6 @@ const THUMBNAIL: f32 = 80.0;
 const TEXT_ROWS: usize = 8;
 /// The composer waits this long after the link last changed before asking.
 pub const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(400);
-/// The only hosts whose `play` page the app opens.
-const PLAY_HOSTS: [&str; 2] = ["embed.caper.chat", "embed.staging.caper.chat"];
 
 /// Display size that reserves layout space before media loads; media of
 /// unknown size gets the full width at 16:9.
@@ -84,17 +85,9 @@ pub fn preview_link(draft: &str) -> Option<String> {
 
 /// A player block's `play` page, only when it is HTTPS on Caper's embed
 /// host with no credentials or port, under `/play/`.
+/// Shared with the web view's own navigation rules.
 pub fn play_page(url: &str) -> Option<url::Url> {
-    let parsed = url::Url::parse(url).ok()?;
-    (parsed.scheme() == "https"
-        && parsed.username().is_empty()
-        && parsed.password().is_none()
-        && parsed.port().is_none()
-        && parsed
-            .host_str()
-            .is_some_and(|host| PLAY_HOSTS.contains(&host))
-        && parsed.path().starts_with("/play/"))
-    .then_some(parsed)
+    caper_web_player::play_page(url)
 }
 
 /// What Play opens: the `play` page when it is Caper's, else the card's link.
@@ -105,7 +98,7 @@ pub fn play_target(embed: &Embed, play: Option<&str>) -> String {
 
 /// A link that may open externally: http(s) only, as message links.
 fn openable(url: &str) -> bool {
-    url::Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+    caper_web_player::openable(url)
 }
 
 fn key(url: &str) -> String {
@@ -243,6 +236,7 @@ pub struct Shown {
 pub fn cards(
     ui: &mut egui::Ui,
     media: &mut Media,
+    player: &mut WebPlayer,
     scope: &str,
     embeds: &[Embed],
     arrival: f32,
@@ -259,7 +253,16 @@ pub fn cards(
         let width = ui.available_width().min(CARD_WIDTH);
         for (index, embed) in embeds.iter().enumerate() {
             let remove = removable && index == 0;
-            card(ui, media, (scope, index), embed, width, remove, &mut shown);
+            card(
+                ui,
+                media,
+                player,
+                (scope, index),
+                embed,
+                width,
+                remove,
+                &mut shown,
+            );
         }
     });
     if media.busy() {
@@ -268,9 +271,11 @@ pub fn cards(
     shown
 }
 
+#[allow(clippy::too_many_arguments)]
 fn card(
     ui: &mut egui::Ui,
     media: &mut Media,
+    player: &mut WebPlayer,
     id: (&str, usize),
     embed: &Embed,
     width: f32,
@@ -315,7 +320,7 @@ fn card(
                     site_line(ui, id, embed, shown);
                     for (block_index, block) in embed.blocks.iter().enumerate() {
                         let block_id = (id.0, id.1, block_index);
-                        draw_block(ui, media, block_id, embed, block, body, shown);
+                        draw_block(ui, media, player, block_id, embed, block, body, shown);
                     }
                 },
             );
@@ -460,6 +465,7 @@ fn bold(size: f32) -> egui::FontId {
 fn draw_block(
     ui: &mut egui::Ui,
     media: &mut Media,
+    player: &mut WebPlayer,
     id: (&str, usize, usize),
     embed: &Embed,
     block: &EmbedBlock,
@@ -600,6 +606,7 @@ fn draw_block(
             }
         }
         EmbedBlock::Player {
+            provider,
             play,
             poster,
             width: natural_width,
@@ -607,20 +614,79 @@ fn draw_block(
             ..
         } => {
             let size = fit_within(fit(*natural_width, *height), width);
-            let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
             let state = poster.as_deref().map_or(ImageState::Failed, |poster| {
                 media.image(&key(poster), Some(poster))
             });
-            tile(
-                ui,
-                rect,
-                CornerRadius::same(6),
-                state,
-                &response,
-                Some(Badge::Player),
-            );
-            if clicked(&response, &format!("Play {}", heading(embed)), shown) {
-                shown.action = Some(Action::Open(play_target(embed, play.as_deref())));
+            let player_key = web_player::Key {
+                scope: id.0.to_owned(),
+                card: id.1,
+                block: id.2,
+            };
+            let Some(status) = player.status(&player_key) else {
+                let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+                tile(
+                    ui,
+                    rect,
+                    CornerRadius::same(6),
+                    state,
+                    &response,
+                    Some(Badge::Player),
+                );
+                if clicked(&response, &format!("Play {}", heading(embed)), shown) {
+                    match play
+                        .as_deref()
+                        .and_then(play_page)
+                        .filter(|_| web_player::SUPPORTED)
+                    {
+                        Some(page) => player.start(ui.ctx(), player_key, page, provider),
+                        None => {
+                            shown.action = Some(Action::Open(play_target(embed, play.as_deref())));
+                        }
+                    }
+                }
+                return;
+            };
+            // The web view covers this box while it can; underneath (and
+            // whenever it hides) the poster stays, so nothing moves.
+            let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+            tile(ui, rect, CornerRadius::same(6), state, &response, None);
+            ui.painter()
+                .rect_filled(rect, 6, Color32::from_black_alpha(150));
+            let name = caper_web_player::provider_name(provider);
+            // Laid out this frame (the view's place, and the player stays).
+            player.place(&player_key, rect, ui.clip_rect(), ui.layer_id());
+            match status {
+                web_player::Status::Starting | web_player::Status::Inline => {
+                    playing_badge(ui, rect, status == web_player::Status::Starting);
+                }
+                web_player::Status::Window => {
+                    match player_notice(
+                        ui,
+                        rect,
+                        (id.0, id.1, id.2),
+                        &format!("Playing in a Caper window ({name})"),
+                        &["Show window", "Close"],
+                        shown,
+                    ) {
+                        Some(0) => player.raise(),
+                        Some(_) => player.stop(),
+                        None => {}
+                    }
+                }
+                web_player::Status::Unavailable(why) => {
+                    if player_notice(
+                        ui,
+                        rect,
+                        (id.0, id.1, id.2),
+                        why.message(),
+                        &["Open in browser"],
+                        shown,
+                    )
+                    .is_some()
+                    {
+                        shown.action = Some(Action::Open(play_target(embed, play.as_deref())));
+                    }
+                }
             }
         }
         EmbedBlock::Footer { text, timestamp } => {
@@ -634,6 +700,112 @@ fn draw_block(
             }
         }
     }
+}
+
+/// The small mark over a poster whose video plays in the web view (seen
+/// while the view hides under a menu or at the timeline's edge).
+fn playing_badge(ui: &egui::Ui, rect: egui::Rect, starting: bool) {
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    let font = bold(12.0);
+    let label = painter.layout_no_wrap("Playing".into(), font, TEXT);
+    let spinner = if starting { 18.0 } else { 0.0 };
+    let size = egui::vec2(label.size().x + 24.0 + spinner, 28.0);
+    let badge = egui::Rect::from_center_size(rect.center(), size);
+    painter.rect_filled(badge, 8, Color32::from_black_alpha(200));
+    if starting {
+        egui::Spinner::new().size(12.0).color(MUTED).paint_at(
+            ui,
+            egui::Rect::from_center_size(
+                egui::pos2(badge.left() + 18.0, badge.center().y),
+                egui::vec2(12.0, 12.0),
+            ),
+        );
+    }
+    painter.galley(
+        egui::pos2(
+            badge.left() + 12.0 + spinner,
+            badge.center().y - label.size().y / 2.0,
+        ),
+        label,
+        TEXT,
+    );
+}
+
+/// A short message centred over the poster with buttons under it (the first
+/// is the primary action); returns the one clicked.
+fn player_notice(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: (&str, usize, usize),
+    text: &str,
+    buttons: &[&str],
+    shown: &mut Shown,
+) -> Option<usize> {
+    let area = rect.shrink2(egui::vec2(16.0, 12.0));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt(("embed-player-notice", id))
+            .max_rect(area)
+            .layout(egui::Layout::top_down(egui::Align::Center)),
+    );
+    child.set_clip_rect(rect.intersect(ui.clip_rect()));
+    let text_height = child
+        .painter()
+        .layout(
+            text.to_owned(),
+            egui::FontId::proportional(13.0),
+            TEXT,
+            area.width(),
+        )
+        .size()
+        .y;
+    let height = text_height + 10.0 + 36.0;
+    child.add_space(((area.height() - height) / 2.0).max(0.0));
+    child.add(
+        egui::Label::new(egui::RichText::new(text).size(13.0).color(TEXT))
+            .selectable(false)
+            .wrap(),
+    );
+    child.add_space(10.0);
+    let mut pressed = None;
+    // Centred: the dialog buttons' 12px padding either side of bold 12px text.
+    let row = buttons
+        .iter()
+        .map(|label| {
+            child
+                .painter()
+                .layout_no_wrap((*label).to_owned(), bold(12.0), TEXT)
+                .size()
+                .x
+                + 24.0
+        })
+        .sum::<f32>()
+        + 8.0 * buttons.len().saturating_sub(1) as f32;
+    child.allocate_ui_with_layout(
+        egui::vec2(row.min(area.width()), 36.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for (index, label) in buttons.iter().enumerate() {
+                let response = if index == 0 {
+                    crate::primary_button(ui, label, true)
+                } else {
+                    crate::secondary_button(ui, label, true)
+                };
+                shown.hovered |= response.hovered();
+                if response
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    pressed = Some(index);
+                }
+            }
+        },
+    );
+    pressed
 }
 
 /// Gallery slots relative to the gallery's top-left corner, as web's grid:
