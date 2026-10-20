@@ -51,6 +51,7 @@ mod uploads;
 mod viewer;
 mod virtual_list;
 mod voice;
+mod voice_note;
 mod whats_new;
 mod window_state;
 mod worker;
@@ -913,6 +914,72 @@ impl DraftUpload {
     }
 }
 
+/// A voice message being recorded: the composer's input row becomes the
+/// recording bar until it is sent or discarded.
+struct VoiceRecording {
+    channel: String,
+    /// A thread's root for its reply composer; `None` for the conversation.
+    root: Option<String>,
+    /// `None` only in the labelled fixture preview, which opens no microphone.
+    recorder: Option<voice_note::Recorder>,
+    /// When the microphone opened; the timer counts from here.
+    started: Option<Instant>,
+    /// Send was pressed (or 10:00 reached): waiting for the encoded file.
+    sending: bool,
+    /// The live meter, oldest first.
+    levels: std::collections::VecDeque<f32>,
+    sampled: Option<Instant>,
+    /// The fixture's frozen timer.
+    fixed_elapsed: Option<Duration>,
+}
+
+impl VoiceRecording {
+    fn new(channel: String, root: Option<String>, recorder: Option<voice_note::Recorder>) -> Self {
+        Self {
+            channel,
+            root,
+            recorder,
+            started: None,
+            sending: false,
+            levels: std::collections::VecDeque::new(),
+            sampled: None,
+            fixed_elapsed: None,
+        }
+    }
+
+    fn elapsed(&self) -> Duration {
+        self.fixed_elapsed
+            .or_else(|| self.started.map(|started| started.elapsed()))
+            .unwrap_or_default()
+            .min(voice_note::MAX_DURATION)
+    }
+}
+
+/// A recorded voice message on its way: uploading, failed, or uploaded and
+/// waiting for the conversation's one pending send.
+struct VoiceSend {
+    /// Matches upload events (shared with draft keys).
+    key: u64,
+    channel: String,
+    root: Option<String>,
+    reply: Option<model::MessageReply>,
+    prepared: std::sync::Arc<uploads::Prepared>,
+    progress: f32,
+    uploading: bool,
+    error: Option<String>,
+    attachment: Option<model::Attachment>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The voice message playing or paused, by attachment id.
+struct VoicePlayback {
+    id: String,
+    player: Option<player::Player>,
+    /// The media proxy route the player streams from.
+    local: Option<String>,
+    error: Option<String>,
+}
+
 type PictureDownload = std::sync::mpsc::Receiver<Result<std::sync::Arc<uploads::Scratch>, String>>;
 
 /// Changing a profile picture or space icon from settings.
@@ -1360,6 +1427,12 @@ struct CaperApp {
     viewer: Option<viewer::Viewer>,
     /// Message players, last visible frame, and whether playback was automatic.
     inline_videos: BTreeMap<String, (viewer::Viewer, u64, bool)>,
+    /// A voice message being recorded in a composer.
+    voice_recording: Option<VoiceRecording>,
+    /// Recorded voice messages uploading, failed, or waiting to send.
+    voice_sends: Vec<VoiceSend>,
+    /// The one voice message playing (or paused) anywhere in the app.
+    voice_playback: Option<VoicePlayback>,
     /// Editing a draft's file before it is sent, while open.
     attachment_editor: Option<attachment_editor::Editor>,
     /// A draft's file the editor can open, previewed with its tools, while open.
@@ -1670,6 +1743,9 @@ impl CaperApp {
             media,
             viewer: None,
             inline_videos: BTreeMap::new(),
+            voice_recording: None,
+            voice_sends: Vec::new(),
+            voice_playback: None,
             attachment_editor: None,
             draft_preview: None,
             opened_files: Vec::new(),
@@ -1895,6 +1971,8 @@ impl CaperApp {
                             .expect("valid spoiler fixture");
                         app.draft_files[0].spoiler = true;
                     }
+                } else if name == "parity-voice-messages" || name == "parity-voice-recording" {
+                    app.install_voice_messages_fixture(name == "parity-voice-recording");
                 } else if name.starts_with("parity-file-drop") {
                     // Holds the drop overlay open for rendering checks; no file is dragged.
                     app.install_attachments_fixture();
@@ -3256,6 +3334,84 @@ impl CaperApp {
         ]
     }
 
+    /// Labelled voice messages in each transcript state (ready and clamped,
+    /// pending, none, no waveform) beside an ordinary audio file; with
+    /// `recording`, the composer's recording bar at a frozen 0:07. Nothing
+    /// plays, uploads or opens a microphone.
+    fn install_voice_messages_fixture(&mut self, recording: bool) {
+        self.install_attachments_fixture();
+        self.draft_files.clear();
+        let shape: Vec<u8> = (0..voice_note::WAVEFORM_BARS)
+            .map(|index| {
+                let x = index as f32 / 63.0;
+                let envelope = (x * std::f32::consts::PI).sin().max(0.15);
+                let ripple = 0.55 + 0.45 * (index as f32 * 1.7).sin().abs();
+                (envelope * ripple * 255.0) as u8
+            })
+            .collect();
+        let voice =
+            |id: &str, duration_ms: u64, transcript: Option<model::Transcript>| model::Attachment {
+                spoiler: false,
+                id: id.into(),
+                kind: model::AttachmentKind::Audio,
+                content_type: "audio/mp4".into(),
+                name: "Voice message.m4a".into(),
+                size: duration_ms * 6,
+                width: None,
+                height: None,
+                duration_ms: Some(duration_ms),
+                preview: false,
+                url: Some(format!("https://fixture.invalid/original/{id}")),
+                preview_url: None,
+                unavailable: false,
+                status: model::AttachmentStatus::Ready,
+                animated: false,
+                voice: true,
+                waveform: Some(voice_note::encode_base64(&shape)),
+                transcript,
+            };
+        let mut messages: Vec<_> = self.timeline.messages().cloned().collect();
+        messages[1].content.text.clear();
+        messages[1].content.attachments = vec![voice(
+            "fixture-voice-ready",
+            42_000,
+            Some(model::Transcript::Ready {
+                text: "TEST FIXTURE transcript — Yo, what's going on? I just listened to the \
+                       new build on my phone and the voice notes sound great. The waveform \
+                       lines up with what I said, and the transcript shows up a few seconds \
+                       after sending. Let's check the narrow layout and the thread panel next."
+                    .into(),
+            }),
+        )];
+        messages[2].content.text.clear();
+        messages[2].content.attachments = vec![voice(
+            "fixture-voice-pending",
+            7_000,
+            Some(model::Transcript::Pending),
+        )];
+        let mut flat = voice("fixture-voice-flat", 125_000, None);
+        flat.waveform = None;
+        messages[3].content.attachments.truncate(1);
+        messages[3].content.attachments.insert(0, flat);
+        self.timeline
+            .reset(messages, "4")
+            .expect("valid voice message fixture");
+        if recording {
+            let channel = self.selected_channel.clone().unwrap_or_default();
+            let mut bar = VoiceRecording::new(channel, None, None);
+            bar.started = Some(Instant::now());
+            bar.fixed_elapsed = Some(Duration::from_secs(7));
+            bar.levels = (0..120)
+                .map(|index| {
+                    let x = index as f32 / 9.0;
+                    (0.15 + 0.8 * (x.sin() * (x * 0.37).cos()).abs()).min(1.0)
+                })
+                .collect();
+            self.voice_recording = Some(bar);
+            self.draft = "TEST FIXTURE draft text waits while recording".into();
+        }
+    }
+
     /// Static attachment preview: synthetic local images, never fetched, and
     /// `.invalid` URLs. Covers ready, processing (with and without a poster
     /// and progress), failed, animated and removed files. Uploads read as
@@ -3292,6 +3448,9 @@ impl CaperApp {
             unavailable: false,
             status: model::AttachmentStatus::Ready,
             animated: false,
+            voice: false,
+            waveform: None,
+            transcript: None,
         };
         let processing = |mut attachment: model::Attachment| {
             attachment.url = None;
@@ -4360,6 +4519,10 @@ impl CaperApp {
                     }
                 }
                 Event::Upload { key, token, update } => {
+                    let update = match self.voice_upload_update(key, update) {
+                        Some(update) => update,
+                        None => continue,
+                    };
                     if !self
                         .draft_files
                         .iter()
@@ -9254,6 +9417,7 @@ impl eframe::App for CaperApp {
         let was_foreground = self.foreground;
         self.foreground = context.input(|input| input.viewport().focused.unwrap_or(false));
         self.receive();
+        self.poll_voice(context);
         self.refresh_thread_unread();
         if self
             .thread_unread_retry
@@ -15590,7 +15754,11 @@ impl CaperApp {
             let width = (ui.available_width() - 36.0).max(1.0);
             // Send sits beside the field; attachment and emoji stay inside it.
             let editor_width = (width - 44.0).max(1.0);
-            let text_width = (editor_width - 22.0 - 72.0).max(1.0);
+            // Narrow panels move the microphone up beside "Also send to", so the
+            // field keeps room for its placeholder.
+            let mic_in_field = editor_width - 22.0 - 108.0 >= 120.0;
+            let text_width =
+                (editor_width - 22.0 - if mic_in_field { 108.0 } else { 72.0 }).max(1.0);
             let draft_height = draft_layout(
                 ui,
                 &text,
@@ -15604,14 +15772,15 @@ impl CaperApp {
             let max_editor_height = (ui.ctx().viewport_rect().height() * 0.4).clamp(48.0, 320.0);
             let editor_height = (draft_height + 30.0).clamp(48.0, max_editor_height);
             // The checkbox has its own full-width row above the input.
-            broadcast_label.wrap.max_width = (width - 23.0).max(1.0);
+            broadcast_label.wrap.max_width =
+                (width - 23.0 - if mic_in_field { 0.0 } else { 36.0 }).max(1.0);
             let label_height = ui.painter().layout_job(broadcast_label.clone()).size().y;
             let broadcast_height = label_height.max(44.0);
             let files = self.draft_file_count(Some(&root));
             let per_row = (((width + 8.0) / 244.0).floor() as usize).max(1);
             let chips_height = (files.div_ceil(per_row) as f32 * 56.0).min(120.0);
             egui::TopBottomPanel::bottom("thread-composer")
-                .min_height(editor_height + 8.0 + broadcast_height + 28.0 + chips_height)
+                .min_height(editor_height + 8.0 + broadcast_height + 28.0 + chips_height + self.voice_status_rows(Some(&root)) * 30.0)
                 .show_separator_line(false)
                 .frame(composer_frame)
                 .show_inside(ui, |ui| {
@@ -15663,6 +15832,8 @@ impl CaperApp {
                         _ => {}
                     }
                 }
+                let (mic, mic_unavailable) = self.mic_state();
+                let mut record = false;
                 ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), broadcast_height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.spacing_mut().icon_width = 16.0;
                     ui.spacing_mut().icon_spacing = 7.0;
@@ -15672,8 +15843,17 @@ impl CaperApp {
                     ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(2);
                     let draft = self.thread_drafts.entry(root.clone()).or_default();
                     ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, broadcast_label.clone()));
+                    if !mic_in_field {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| record = mic_button(ui, mic && !loading, mic_unavailable, 28.0));
+                    }
                 });
                 ui.add_space(8.0);
+                self.voice_send_status(ui, Some(&root));
+                // Recording replaces the input row; the reply text waits untouched.
+                if self.recording_in(Some(&root)) {
+                    self.voice_recording_bar(ui, editor_height.min(48.0));
+                    return;
+                }
                 let text = self.thread_drafts.entry(root.clone()).or_default().0.clone();
                 let suggestions = self.suggestion_keys(ui, composer_id, &text);
                 let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| draft_layout(ui, text.as_str(), width, &people, specials, egui::FontId::proportional(13.6));
@@ -15714,6 +15894,7 @@ impl CaperApp {
                                 }).inner
                             }).inner;
                             choose_emoji = ui.add_enabled_ui(!loading, |ui| drawn_icon_button_sized(ui, NavIcon::Smile, "Insert emoji", 28.0)).inner.clicked();
+                            if mic_in_field { record = mic_button(ui, mic && !loading, mic_unavailable, 28.0); }
                             output
                         }).inner
                     });
@@ -15728,6 +15909,7 @@ impl CaperApp {
                 ui.painter().rect_stroke(editor.response.rect, 8.0, Stroke::new(1.0, if output.response.has_focus() { TERRACOTTA } else { BORDER }), egui::StrokeKind::Inside);
                 let text = draft.0.clone();
                 if pick.is_some() { self.pick_files(ui.ctx(), Some(root.clone())); }
+                if record { self.start_voice_recording(ui.ctx(), Some(root.clone())); }
                 if let Some(value) = self.suggestion_popup(ui, &suggestions, &text, editor.response.rect, &mut output) {
                     self.thread_drafts.entry(root.clone()).or_default().0 = value;
                 }
@@ -16006,8 +16188,10 @@ impl CaperApp {
             let attach_unavailable = self.attach_unavailable_reason();
             let draft_height = ui.fonts_mut(|fonts| fonts.layout(
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
-                (ui.available_width() - 36.0 - 22.0 - attach_width).max(1.0),
+                // Emoji and the microphone sit at the end of the field.
+                (ui.available_width() - 36.0 - 22.0 - attach_width - 36.0).max(1.0),
             ).size().y);
+            let voice_rows = self.voice_status_rows(None) * 30.0;
             let chip_rows = if attach && self.draft_file_count(None) > 0 {
                 let per_row = (((ui.available_width() - 36.0 + 8.0) / 244.0).floor() as usize).max(1);
                 self.draft_file_count(None).div_ceil(per_row) as f32
@@ -16031,7 +16215,7 @@ impl CaperApp {
                 (((28.0 - first_line) / 2.0).max(0.0) + galley.size().y).max(28.0) + 6.0
             });
             let composer = egui::TopBottomPanel::bottom("composer")
-                .min_height(voice_error_row + if joined { editor_height + 28.0 + session_row + chip_rows * 56.0 } else { 44.0 })
+                .min_height(voice_error_row + if joined { editor_height + 28.0 + session_row + chip_rows * 56.0 + voice_rows } else { 44.0 })
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
@@ -16146,6 +16330,12 @@ impl CaperApp {
                         ui.add_space(8.0);
                     }
                     self.reply_draft(ui, "channel");
+                    self.voice_send_status(ui, None);
+                    // Recording replaces the input row; the draft text waits untouched.
+                    if self.recording_in(None) {
+                        self.voice_recording_bar(ui, 42.0);
+                        return;
+                    }
                     let before = self.draft.clone();
                     let placeholder = if self.conversation_is_direct() {
                         format!("Message {}", self.channel_name())
@@ -16206,6 +16396,8 @@ impl CaperApp {
                         .inner_margin(egui::Margin::symmetric(6, 0))
                         .show(ui, |ui| {
                             let attached = self.draft_file_count(None);
+                            let (mic, mic_unavailable) = self.mic_state();
+                            let mut record = false;
                             let mut pick = None;
                             let mut choose_emoji = false;
                             let editor = ui.horizontal_top(|ui| {
@@ -16222,8 +16414,8 @@ impl CaperApp {
                                         });
                                     pick = attach_drawer::popup(&button, attached, false);
                                 });
-                                // Leave room for Emoji at the end of the field.
-                                let width = (ui.available_width() - 36.0).max(0.0);
+                                // Leave room for Emoji and the microphone at the end of the field.
+                                let width = (ui.available_width() - 72.0).max(0.0);
                                 let editor = ui
                                     .allocate_ui_with_layout(egui::vec2(width, max_editor_height), egui::Layout::top_down(egui::Align::Min), |ui| {
                                         ui.set_width(width);
@@ -16234,10 +16426,17 @@ impl CaperApp {
                                     ui.add_space(7.0);
                                     choose_emoji = drawn_icon_button(ui, NavIcon::Smile, "Insert emoji").clicked();
                                 });
+                                ui.vertical(|ui| {
+                                    ui.add_space(7.0);
+                                    record = mic_button(ui, mic, mic_unavailable, 28.0);
+                                });
                                 editor
                             }).inner;
                             if pick.is_some() {
                                 self.pick_files(ui.ctx(), None);
+                            }
+                            if record {
+                                self.start_voice_recording(ui.ctx(), None);
                             }
                             (editor, choose_emoji)
                         });
@@ -16821,6 +17020,16 @@ impl CaperApp {
                                                 ))
                                                 .corner_radius(6)
                                                 .paint_at(ui, rect);
+                                        } else if attachment.voice {
+                                            paint_icon(
+                                                ui.painter(),
+                                                egui::Rect::from_center_size(
+                                                    rect.center(),
+                                                    egui::vec2(18.0, 18.0),
+                                                ),
+                                                NavIcon::Mic,
+                                                MUTED,
+                                            );
                                         } else {
                                             ui.painter().text(
                                                 rect.center(),
@@ -16842,7 +17051,7 @@ impl CaperApp {
                             let text = reference.full_text.as_deref().unwrap_or(&reference.text);
                             let text = if text.is_empty() {
                                 if reference.has_attachments {
-                                    "Attachment"
+                                    model::attachments_label(&reference.attachments)
                                 } else {
                                     "Message"
                                 }
@@ -16997,7 +17206,7 @@ impl CaperApp {
                                     reference.full_text.as_deref().unwrap_or(&reference.text);
                                 let text = if text.is_empty() {
                                     if reference.has_attachments {
-                                        "Attachment"
+                                        model::attachments_label(&reference.attachments)
                                     } else {
                                         "Message"
                                     }
@@ -18550,6 +18759,10 @@ impl CaperApp {
                             let mut card_rect = None;
                             let clicked = if tiles {
                                 self.media_tile(ui, attachment, pending, progress, placed)
+                            } else if attachment.voice && !attachment.spoiler {
+                                // Plays in place; it never opens elsewhere.
+                                self.voice_message_card(ui, attachment, pending);
+                                false
                             } else if !attachment.spoiler {
                                 file_card(ui, attachment, pending, progress)
                             } else {
@@ -27330,6 +27543,847 @@ fn message_row<R>(
     }
 }
 
+/// Voice messages: recording from a composer, uploading and sending them on
+/// their own, and the one player shared by every voice message.
+impl CaperApp {
+    /// Whether the composer for `root` (a thread's, or the conversation's
+    /// `None`) shows the recording bar instead of its input row.
+    fn recording_in(&self, root: Option<&str>) -> bool {
+        self.voice_recording.as_ref().is_some_and(|recording| {
+            recording.root.as_deref() == root
+                && self.selected_channel.as_deref() == Some(recording.channel.as_str())
+        })
+    }
+
+    fn start_voice_recording(&mut self, context: &egui::Context, root: Option<String>) {
+        let Some(channel) = self.selected_channel.clone() else {
+            return;
+        };
+        if !self.can_attach() || self.voice_recording.is_some() {
+            return;
+        }
+        // Recording never plays over a voice message.
+        self.stop_voice_playback();
+        self.error = None;
+        // Tests never open a real microphone; they deliver recorder events.
+        let recorder = (!cfg!(test)).then(|| {
+            voice_note::Recorder::start(
+                self.voice.preferences.input.clone(),
+                self.voice.preferences.input_percent,
+                context.clone(),
+            )
+        });
+        self.voice_recording = Some(VoiceRecording::new(channel, root, recorder));
+        context.request_repaint();
+    }
+
+    /// Trash or Escape: dropping the recorder closes the microphone and
+    /// nothing is uploaded.
+    fn discard_voice_recording(&mut self) {
+        self.voice_recording = None;
+    }
+
+    /// Send or Enter: stop, then upload and send once encoded.
+    fn finish_voice_recording(&mut self) {
+        if let Some(recording) = &mut self.voice_recording
+            && recording.started.is_some()
+            && !recording.sending
+        {
+            recording.sending = true;
+            if let Some(recorder) = &recording.recorder {
+                recorder.finish();
+            }
+        }
+    }
+
+    fn voice_recorder_event(&mut self, event: voice_note::RecorderEvent) {
+        let Some(recording) = &mut self.voice_recording else {
+            return;
+        };
+        match event {
+            voice_note::RecorderEvent::Started => recording.started = Some(Instant::now()),
+            // Under a second is a tap: nothing is uploaded.
+            voice_note::RecorderEvent::TooShort => self.voice_recording = None,
+            voice_note::RecorderEvent::Failed(error) => {
+                self.voice_recording = None;
+                self.error = Some(error);
+            }
+            voice_note::RecorderEvent::Ready(prepared) => {
+                let Some(recording) = self.voice_recording.take() else {
+                    return;
+                };
+                // The reply shown above the composer goes with the voice message.
+                let reply = self
+                    .reply_targets
+                    .remove(recording.root.as_deref().unwrap_or("channel"));
+                self.draft_keys += 1;
+                let key = self.draft_keys;
+                self.voice_sends.push(VoiceSend {
+                    key,
+                    channel: recording.channel,
+                    root: recording.root,
+                    reply,
+                    prepared: std::sync::Arc::new(*prepared),
+                    progress: 0.0,
+                    uploading: false,
+                    error: None,
+                    attachment: None,
+                    cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                });
+                self.upload_voice(key);
+            }
+        }
+    }
+
+    /// Uploads (or retries) the recorded file as it is: the prepared voice
+    /// file skips the composer's compression.
+    fn upload_voice(&mut self, key: u64) {
+        let token = self.token.clone();
+        let settings = self.uploads.clone().unwrap_or_default();
+        let Some(send) = self.voice_sends.iter_mut().find(|send| send.key == key) else {
+            return;
+        };
+        let Some(token) = token else {
+            send.error = Some("Failed to upload.".into());
+            return;
+        };
+        send.uploading = true;
+        send.error = None;
+        send.progress = 0.0;
+        self.worker.send(Command::Upload {
+            key,
+            token,
+            channel: send.channel.clone(),
+            path: std::path::PathBuf::new(),
+            name: send.prepared.name.clone(),
+            edit: None,
+            source_scratch: None,
+            prepared: Some(send.prepared.clone()),
+            settings,
+            cancel: send.cancel.clone(),
+        });
+    }
+
+    /// Takes a voice upload's event; any other upload's comes back.
+    fn voice_upload_update(
+        &mut self,
+        key: u64,
+        update: worker::UploadUpdate,
+    ) -> Option<worker::UploadUpdate> {
+        let Some(send) = self.voice_sends.iter_mut().find(|send| send.key == key) else {
+            return Some(update);
+        };
+        match update {
+            worker::UploadUpdate::Progress(fraction) => {
+                send.progress = send.progress.max(fraction);
+            }
+            worker::UploadUpdate::Finished(Ok(attachment)) => {
+                send.uploading = false;
+                send.progress = 1.0;
+                send.attachment = Some(attachment);
+            }
+            worker::UploadUpdate::Finished(Err(error)) => {
+                send.uploading = false;
+                send.error = Some(error.message);
+            }
+            _ => {}
+        }
+        self.send_voice_messages();
+        None
+    }
+
+    fn discard_voice_send(&mut self, key: u64) {
+        if let Some(index) = self.voice_sends.iter().position(|send| send.key == key) {
+            let send = self.voice_sends.remove(index);
+            send.cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(attachment) = send.attachment {
+                self.cancel_assets(vec![attachment.id]);
+            }
+        }
+    }
+
+    /// Sends the oldest uploaded voice message once the conversation has no
+    /// other pending send. It goes on its own, with the completed upload's
+    /// description: the composer's text and files stay where they are.
+    fn send_voice_messages(&mut self) {
+        if self.pending.is_some() {
+            return;
+        }
+        let (Some(chat_token), Some(channel)) = (
+            self.session.as_ref().map(|session| session.token.clone()),
+            self.selected_channel.clone(),
+        ) else {
+            return;
+        };
+        let Some(index) = self.voice_sends.iter().position(|send| {
+            send.channel == channel && send.attachment.is_some() && send.error.is_none()
+        }) else {
+            return;
+        };
+        let send = self.voice_sends.remove(index);
+        let Some(attachment) = send.attachment else {
+            return;
+        };
+        let attachment_ids = vec![attachment.id.clone()];
+        let mut pending = PendingSend::prepare(None, "", vec![attachment]);
+        pending.thread_root_id = send.root;
+        pending.reply_to = send.reply;
+        let client_id = pending.id.clone();
+        let thread_root_id = pending.thread_root_id.clone();
+        let reply_to_id = pending.reply_to.as_ref().map(|reply| reply.id.clone());
+        self.pending = Some(pending);
+        self.pending_recovered = false;
+        self.pending_needs_upload = false;
+        self.worker.send(Command::Send {
+            generation: self.generation,
+            token: self.token.clone(),
+            chat_token,
+            channel,
+            client_id,
+            text: String::new(),
+            attachment_ids,
+            spoiler_attachment_ids: Vec::new(),
+            thread_root_id,
+            broadcast: false,
+            reply_to_id,
+        });
+    }
+
+    /// Every pass: the recorder's news, the live meter, queued sends and the
+    /// player's clock. A recording, upload or player belongs to the open
+    /// conversation; leaving it discards them.
+    fn poll_voice(&mut self, context: &egui::Context) {
+        let channel = self.selected_channel.clone();
+        if self.voice_recording.as_ref().is_some_and(|recording| {
+            channel.as_ref() != Some(&recording.channel)
+                || recording.root.as_ref().is_some_and(|root| {
+                    self.thread_view
+                        .as_ref()
+                        .is_none_or(|thread| &thread.root != root)
+                })
+        }) {
+            self.discard_voice_recording();
+        }
+        let gone: Vec<_> = self
+            .voice_sends
+            .iter()
+            .filter(|send| channel.as_ref() != Some(&send.channel))
+            .map(|send| send.key)
+            .collect();
+        for key in gone {
+            self.discard_voice_send(key);
+        }
+        while let Some(event) = self
+            .voice_recording
+            .as_ref()
+            .and_then(|recording| recording.recorder.as_ref())
+            .and_then(voice_note::Recorder::poll)
+        {
+            self.voice_recorder_event(event);
+        }
+        if let Some(recording) = &mut self.voice_recording {
+            if recording.started.is_some() && !recording.sending {
+                let now = Instant::now();
+                if recording
+                    .sampled
+                    .is_none_or(|sampled| now.duration_since(sampled) >= voice_note::LIVE_INTERVAL)
+                {
+                    recording.sampled = Some(now);
+                    let level = recording
+                        .recorder
+                        .as_ref()
+                        .map_or(0.0, |recorder| voice_note::live_level(recorder.level()));
+                    recording.levels.push_back(level);
+                    while recording.levels.len() > 160 {
+                        recording.levels.pop_front();
+                    }
+                }
+                // The recorder stops itself at 10:00; the message then sends.
+                if recording.elapsed() >= voice_note::MAX_DURATION {
+                    recording.sending = true;
+                }
+            }
+            if recording.recorder.is_some() {
+                context.request_repaint_after(voice_note::LIVE_INTERVAL);
+            }
+        }
+        self.send_voice_messages();
+        if self
+            .voice_playback
+            .as_ref()
+            .is_some_and(|playback| !self.voice_message_loaded(&playback.id))
+        {
+            self.stop_voice_playback();
+        }
+        if let Some(player) = self
+            .voice_playback
+            .as_mut()
+            .and_then(|playback| playback.player.as_mut())
+        {
+            player.update(context);
+            match player.state() {
+                // Reaching the end returns the message to idle.
+                player::State::Ended => self.stop_voice_playback(),
+                player::State::Playing => {
+                    context.request_repaint_after(Duration::from_millis(50));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The playing voice message is still in the open conversation's
+    /// history or pins.
+    fn voice_message_loaded(&self, id: &str) -> bool {
+        let has = |message: &model::Message| {
+            message
+                .content
+                .attachments
+                .iter()
+                .chain(
+                    message
+                        .forward
+                        .iter()
+                        .filter_map(|forward| forward.message.as_ref())
+                        .flat_map(|forwarded| &forwarded.content.attachments),
+                )
+                .any(|attachment| attachment.id == id)
+        };
+        self.timeline.messages().any(has)
+            || self.timeline.pinned_messages().any(has)
+            || self.pending.as_ref().is_some_and(|pending| {
+                pending
+                    .attachments
+                    .iter()
+                    .any(|attachment| attachment.id == id)
+            })
+    }
+
+    fn stop_voice_playback(&mut self) {
+        if let Some(playback) = self.voice_playback.take()
+            && let (Some(proxy), Some(local)) = (&self.media_proxy, &playback.local)
+        {
+            proxy.remove(local);
+        }
+    }
+
+    /// Play or pause `attachment` (or play it from `at` ms), pausing any
+    /// other voice message first: one plays at a time, app-wide.
+    fn play_voice(&mut self, attachment: &model::Attachment, at: Option<u64>) {
+        if let Some(player) = self
+            .voice_playback
+            .as_mut()
+            .filter(|playback| playback.id == attachment.id)
+            .and_then(|playback| playback.player.as_mut())
+        {
+            match at {
+                Some(ms) => player.seek(ms, true),
+                None => player.toggle(),
+            }
+            return;
+        }
+        self.stop_voice_playback();
+        let failed = |message: &str| VoicePlayback {
+            id: attachment.id.clone(),
+            player: None,
+            local: None,
+            error: Some(message.into()),
+        };
+        let Some(binary) = ffmpeg::binary() else {
+            self.voice_playback = Some(failed(
+                "Voice playback needs the FFmpeg that ships with Caper.",
+            ));
+            return;
+        };
+        let Some(url) = attachment
+            .url
+            .clone()
+            .filter(|url| api::media_url(url).is_some())
+        else {
+            self.voice_playback = Some(failed("This voice message can’t be played here."));
+            return;
+        };
+        if self.media_proxy.is_none() {
+            self.media_proxy = media_proxy::MediaProxy::start().ok();
+        }
+        let Some(proxy) = &self.media_proxy else {
+            self.voice_playback = Some(failed("This voice message can’t be played here."));
+            return;
+        };
+        let local = proxy.route(&url);
+        let mut player = player::Player::audio(binary, local.clone(), attachment.duration_ms);
+        match at {
+            Some(ms) => player.seek(ms, true),
+            None => player.play(),
+        }
+        self.voice_playback = Some(VoicePlayback {
+            id: attachment.id.clone(),
+            player: Some(player),
+            local: Some(local),
+            error: None,
+        });
+    }
+
+    /// Whether a composer's microphone records, and why not: voice messages
+    /// go wherever files can be attached, one recording at a time.
+    fn mic_state(&self) -> (bool, &'static str) {
+        if !self.can_attach() {
+            (false, self.attach_unavailable_reason())
+        } else if self.voice_recording.is_some() {
+            (false, "Finish the current voice message first")
+        } else {
+            (true, "")
+        }
+    }
+
+    /// How many status rows [`Self::voice_send_status`] shows.
+    fn voice_status_rows(&self, root: Option<&str>) -> f32 {
+        self.voice_sends
+            .iter()
+            .filter(|send| {
+                Some(&send.channel) == self.selected_channel.as_ref()
+                    && send.root.as_deref() == root
+                    && (send.uploading || send.error.is_some())
+            })
+            .count() as f32
+    }
+
+    /// `[trash] ● 0:07 ▁▃▅▇▅ [send]` in place of the composer's input row.
+    /// Escape discards and Enter sends.
+    fn voice_recording_bar(&mut self, ui: &mut egui::Ui, height: f32) {
+        let Some(recording) = &self.voice_recording else {
+            return;
+        };
+        let started = recording.started.is_some() || recording.recorder.is_none();
+        let sending = recording.sending;
+        let elapsed = recording.elapsed();
+        let levels: Vec<f32> = recording.levels.iter().copied().collect();
+        let mut discard = false;
+        let mut send = false;
+        let progress =
+            motion::entrance(ui.ctx(), egui::Id::new("voice-recording-bar"), motion::FAST);
+        let width = ui.available_width();
+        motion::arrive(ui, progress, egui::vec2(0.0, 4.0), |ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 8.0, COMPOSER);
+            ui.painter().rect_stroke(
+                rect,
+                8.0,
+                Stroke::new(1.0, BORDER),
+                egui::StrokeKind::Inside,
+            );
+            let mut row = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect.shrink2(egui::vec2(7.0, 0.0)))
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            row.spacing_mut().item_spacing.x = 8.0;
+            discard =
+                drawn_icon_button(&mut row, NavIcon::Trash, "Discard voice message").clicked();
+            let (dot, _) = row.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            row.painter().circle_filled(
+                dot.center(),
+                4.5,
+                if started && !sending {
+                    TERRACOTTA
+                } else {
+                    MUTED
+                },
+            );
+            let timer = voice_note::duration_label(elapsed.as_millis() as u64);
+            row.add(egui::Label::new(bold(timer.clone()).size(13.0).color(TEXT)).selectable(false))
+                .widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Label,
+                        true,
+                        format!("Recording voice message, {timer}"),
+                    )
+                });
+            let send_size = 32.0;
+            let meter_width = (row.available_width() - send_size - 8.0).max(0.0);
+            let (meter, _) = row.allocate_exact_size(
+                egui::vec2(meter_width, (height - 16.0).max(8.0)),
+                egui::Sense::hover(),
+            );
+            let note = if sending {
+                Some("Sending…")
+            } else if !started {
+                Some("Starting microphone…")
+            } else {
+                None
+            };
+            match note {
+                Some(note) => {
+                    row.painter().text(
+                        meter.left_center(),
+                        egui::Align2::LEFT_CENTER,
+                        note,
+                        egui::FontId::proportional(12.0),
+                        MUTED,
+                    );
+                }
+                None => paint_live_levels(row.painter(), meter, &levels),
+            }
+            send = send_icon_button_sized(
+                &mut row,
+                started && !sending,
+                "Send voice message",
+                send_size,
+            )
+            .clicked();
+        });
+        if !self.conversation_covered() {
+            if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                discard = true;
+            }
+            if ui.memory(|memory| memory.focused().is_none())
+                && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+            {
+                send = true;
+            }
+        }
+        if discard {
+            self.discard_voice_recording();
+        } else if send {
+            self.finish_voice_recording();
+        }
+    }
+
+    /// Voice messages of this composer still uploading or failed, above it.
+    fn voice_send_status(&mut self, ui: &mut egui::Ui, root: Option<&str>) {
+        let channel = self.selected_channel.clone();
+        let rows: Vec<_> = self
+            .voice_sends
+            .iter()
+            .filter(|send| {
+                Some(&send.channel) == channel.as_ref()
+                    && send.root.as_deref() == root
+                    && (send.uploading || send.error.is_some())
+            })
+            .map(|send| (send.key, send.progress, send.error.clone()))
+            .collect();
+        for (key, progress, error) in rows {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let (icon, _) =
+                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                paint_icon(
+                    ui.painter(),
+                    icon,
+                    NavIcon::Mic,
+                    if error.is_some() { ERROR } else { MUTED },
+                );
+                match &error {
+                    Some(error) => {
+                        ui.label(
+                            RichText::new(format!("Voice message not sent. {error}"))
+                                .size(12.0)
+                                .color(ERROR),
+                        );
+                        if ui.small_button("Retry").clicked() {
+                            self.upload_voice(key);
+                        }
+                        if ui.small_button("Discard").clicked() {
+                            self.discard_voice_send(key);
+                        }
+                    }
+                    None => {
+                        ui.label(
+                            RichText::new(format!(
+                                "Sending voice message… {}%",
+                                (progress * 100.0).round() as u32
+                            ))
+                            .size(12.0)
+                            .color(MUTED),
+                        );
+                        if ui.small_button("Cancel").clicked() {
+                            self.discard_voice_send(key);
+                        }
+                    }
+                }
+            });
+            ui.add_space(6.0);
+        }
+    }
+
+    /// A voice message: play/pause, its waveform (click or drag to seek) and
+    /// time, then its transcript. Files that are not ready keep the card.
+    fn voice_message_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        attachment: &model::Attachment,
+        pending: bool,
+    ) {
+        if attachment.unavailable
+            || attachment.status != model::AttachmentStatus::Ready
+            || attachment.url.is_none()
+        {
+            let progress = self.attachment_progress.get(&attachment.id).copied();
+            file_card(ui, attachment, pending, progress);
+            return;
+        }
+        let duration = attachment.duration_ms.unwrap_or(0);
+        let playback = self
+            .voice_playback
+            .as_ref()
+            .filter(|playback| playback.id == attachment.id);
+        let state = playback
+            .and_then(|playback| playback.player.as_ref())
+            .map(|player| (player.state(), player.position_ms()));
+        let error = playback.and_then(|playback| {
+            playback.error.clone().or_else(|| {
+                playback
+                    .player
+                    .as_ref()
+                    .and_then(|player| player.error().map(str::to_owned))
+            })
+        });
+        let playing = matches!(
+            state,
+            Some((player::State::Playing | player::State::Loading, _))
+        );
+        let scrub_id = egui::Id::new(("voice-scrub", &attachment.id));
+        let scrub: Option<f32> = ui.ctx().data(|data| data.get_temp(scrub_id));
+        let played = scrub.unwrap_or_else(|| match state {
+            Some((_, position)) if duration > 0 => position as f32 / duration as f32,
+            _ => 0.0,
+        });
+        let width = ui.available_width().clamp(180.0, 320.0);
+        let mut toggle = false;
+        let mut seek_to = None;
+        ui.vertical(|ui| {
+            ui.set_max_width(width.max(ui.available_width().min(480.0)));
+            ui.spacing_mut().item_spacing.y = 6.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 48.0), egui::Sense::hover());
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, 8.0, SURFACE);
+            painter.rect_stroke(
+                rect,
+                8.0,
+                Stroke::new(1.0, BORDER),
+                egui::StrokeKind::Inside,
+            );
+            let play = egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 26.0, rect.center().y),
+                egui::vec2(32.0, 32.0),
+            );
+            let button = ui.interact(
+                play,
+                egui::Id::new(("voice-play", &attachment.id)),
+                egui::Sense::click(),
+            );
+            let fill = if button.is_pointer_button_down_on() {
+                ACTION_PRESS
+            } else if button.hovered() || button.has_focus() {
+                ACTION_HOVER
+            } else {
+                ACTION
+            };
+            painter.circle_filled(play.center(), 16.0, fill);
+            if button.has_focus() {
+                painter.circle_stroke(play.center(), 18.0, Stroke::new(1.5, TERRACOTTA));
+            }
+            paint_icon(
+                &painter,
+                play.shrink(9.0)
+                    .translate(egui::vec2(if playing { 0.0 } else { 1.0 }, 0.0)),
+                if playing {
+                    NavIcon::Pause
+                } else {
+                    NavIcon::Play
+                },
+                ON_ACTION,
+            );
+            let label = if playing {
+                "Pause voice message"
+            } else {
+                "Play voice message"
+            };
+            button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+            toggle = button
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked();
+            // Idle shows the length; playing or paused, what remains.
+            let shown = match state {
+                Some((_, position)) => duration.saturating_sub(position),
+                None => duration,
+            };
+            let time = painter.layout_no_wrap(
+                voice_note::duration_label(shown),
+                egui::FontId::proportional(12.0),
+                MUTED,
+            );
+            let time_left = rect.right() - 12.0 - time.size().x.max(28.0);
+            painter.galley(
+                egui::pos2(time_left, rect.center().y - time.size().y / 2.0),
+                time,
+                MUTED,
+            );
+            let wave = egui::Rect::from_min_max(
+                egui::pos2(play.right() + 12.0, rect.top() + 10.0),
+                egui::pos2(
+                    (time_left - 10.0).max(play.right() + 13.0),
+                    rect.bottom() - 10.0,
+                ),
+            );
+            let count = (((wave.width() + 2.0) / 5.0).floor() as usize).max(1);
+            let bars = voice_note::bars(attachment.waveform.as_deref(), count);
+            for (index, level) in bars.iter().enumerate() {
+                let x = wave.left() + index as f32 * 5.0;
+                let bar_height = (level * wave.height()).max(3.0);
+                let bar = egui::Rect::from_center_size(
+                    egui::pos2(x + 1.5, wave.center().y),
+                    egui::vec2(3.0, bar_height),
+                );
+                let reached = (index as f32 + 0.5) / count as f32 <= played;
+                painter.rect_filled(
+                    bar,
+                    1.5,
+                    if reached {
+                        TEXT
+                    } else {
+                        MUTED.gamma_multiply(0.45)
+                    },
+                );
+            }
+            let seek = ui.interact(
+                wave,
+                egui::Id::new(("voice-seek", &attachment.id)),
+                egui::Sense::click_and_drag(),
+            );
+            seek.widget_info(|| {
+                egui::WidgetInfo::slider(true, f64::from(played), "Voice message position")
+            });
+            let fraction = seek
+                .interact_pointer_pos()
+                .map(|pointer| ((pointer.x - wave.left()) / wave.width().max(1.0)).clamp(0.0, 1.0));
+            if seek.dragged() {
+                if let Some(fraction) = fraction {
+                    ui.ctx()
+                        .data_mut(|data| data.insert_temp(scrub_id, fraction));
+                }
+            } else if scrub.is_some() {
+                ui.ctx().data_mut(|data| data.remove::<f32>(scrub_id));
+            }
+            if (seek.clicked() || seek.drag_stopped()) && duration > 0 {
+                seek_to = fraction
+                    .or(scrub)
+                    .map(|fraction| (fraction * duration as f32) as u64);
+            }
+            seek.on_hover_cursor(egui::CursorIcon::PointingHand);
+            if let Some(error) = &error {
+                ui.label(RichText::new(error).size(11.0).color(ERROR));
+            }
+            voice_transcript(ui, attachment);
+        });
+        if let Some(ms) = seek_to {
+            self.play_voice(attachment, Some(ms));
+        } else if toggle {
+            self.play_voice(attachment, None);
+        }
+    }
+}
+
+/// Slack-style transcript under a voice message: muted, behind a thin rule,
+/// three lines until "View transcript"; "Transcribing…" while pending.
+fn voice_transcript(ui: &mut egui::Ui, attachment: &model::Attachment) {
+    let text = match attachment.transcript_view() {
+        model::TranscriptView::Hidden => return,
+        model::TranscriptView::Pending => None,
+        model::TranscriptView::Text(text) => Some(text),
+    };
+    let expanded_id = egui::Id::new(("voice-transcript", &attachment.id));
+    let expanded = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(expanded_id))
+        .unwrap_or(false);
+    let width = (ui.available_width() - 12.0).max(40.0);
+    let frame = egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 12,
+            right: 0,
+            top: 2,
+            bottom: 2,
+        })
+        .show(ui, |ui| {
+            ui.set_max_width(width);
+            ui.spacing_mut().item_spacing.y = 4.0;
+            let Some(text) = text else {
+                ui.label(RichText::new("Transcribing…").size(12.0).color(MUTED));
+                return;
+            };
+            let mut job = egui::text::LayoutJob::simple(
+                text.to_owned(),
+                egui::FontId::proportional(12.5),
+                MUTED,
+                width,
+            );
+            if !expanded {
+                job.wrap.max_rows = 3;
+                job.wrap.overflow_character = Some('…');
+            }
+            let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+            let clamped = galley.elided;
+            ui.add(egui::Label::new(galley).selectable(true));
+            if clamped || expanded {
+                let label = if expanded {
+                    "Hide transcript"
+                } else {
+                    "View transcript"
+                };
+                let toggle = ui
+                    .add(
+                        egui::Button::new(bold(label).size(12.0).color(TEXT))
+                            .frame(false)
+                            .min_size(egui::vec2(0.0, 18.0)),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if toggle.hovered() {
+                    ui.painter().hline(
+                        toggle.rect.shrink2(egui::vec2(4.0, 0.0)).x_range(),
+                        toggle.rect.bottom() - 2.0,
+                        Stroke::new(1.0, TEXT),
+                    );
+                }
+                if toggle.clicked() {
+                    ui.ctx()
+                        .data_mut(|data| data.insert_temp(expanded_id, !expanded));
+                }
+            }
+        });
+    let rect = frame.response.rect;
+    ui.painter()
+        .vline(rect.left() + 1.0, rect.y_range(), Stroke::new(2.0, BORDER));
+}
+
+/// The composer's microphone, beside Emoji. True when it was clicked.
+fn mic_button(ui: &mut egui::Ui, enabled: bool, unavailable: &str, size: f32) -> bool {
+    ui.add_enabled_ui(enabled, |ui| {
+        drawn_icon_button_sized(ui, NavIcon::Mic, "Record voice message", size)
+    })
+    .inner
+    .on_disabled_hover_text(unavailable)
+    .clicked()
+}
+
+/// The recording bar's live input meter: newest level on the right, one
+/// rounded 3 px bar every 5 px, scrolling left as levels arrive.
+fn paint_live_levels(painter: &egui::Painter, rect: egui::Rect, levels: &[f32]) {
+    let count = (((rect.width() + 2.0) / 5.0).floor() as usize).max(1);
+    let shown = &levels[levels.len().saturating_sub(count)..];
+    let offset = count - shown.len();
+    for index in 0..count {
+        let level = index.checked_sub(offset).map_or(0.0, |index| shown[index]);
+        let x = rect.left() + index as f32 * 5.0;
+        let bar = egui::Rect::from_center_size(
+            egui::pos2(x + 1.5, rect.center().y),
+            egui::vec2(3.0, (level * rect.height()).max(3.0)),
+        );
+        painter.rect_filled(bar, 1.5, if index < offset { BORDER } else { TEXT });
+    }
+}
+
 /// "Processing…" with the media worker's latest percent, when known.
 fn processing_label(progress: Option<u8>) -> String {
     progress.map_or_else(
@@ -28982,6 +30036,8 @@ fn history_plan(
                 message.deleted_at.is_some(),
                 message.content.text.len(),
                 message.content.attachments.len(),
+                // A transcript arriving grows a voice message.
+                &message.attachments_seq,
                 message.thread.as_ref().map(|thread| thread.reply_count),
                 message.pin.is_some(),
                 message.forward.is_some(),
@@ -29997,7 +31053,7 @@ mod tests {
         permanent_send_rejection, pill_rects, projected_reactions, redundant_invitation,
         resend_countdown, resend_wait, short_time, take_date_divider, timestamp_parts, voice,
     };
-    use crate::{mentions, navigation, whats_new};
+    use crate::{mentions, navigation, uploads, voice_note, whats_new, worker};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -42914,6 +43970,9 @@ mod tests {
                     unavailable: false,
                     status: model::AttachmentStatus::Ready,
                     animated: false,
+                    voice: false,
+                    waveform: None,
+                    transcript: None,
                 }],
                 None,
             );
@@ -43033,6 +44092,9 @@ mod tests {
                 unavailable: false,
                 status: model::AttachmentStatus::Ready,
                 animated: false,
+                voice: false,
+                waveform: None,
+                transcript: None,
             }],
             None,
         );
@@ -46880,6 +47942,295 @@ mod tests {
     }
 
     #[test]
+    fn voice_messages_show_players_and_transcript_states() {
+        let (context, mut app) = fixture("parity-voice-messages");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let shown = texts(&output);
+        // Length while idle: 0:42, 0:07 and 2:05.
+        for time in ["0:42", "0:07", "2:05"] {
+            assert!(shown.contains(&time), "{time} in {shown:?}");
+        }
+        assert!(shown.contains(&"Transcribing…"));
+        assert!(
+            !shown.iter().any(|text| text.contains("Voice message.m4a")),
+            "voice messages never show their file name"
+        );
+        assert!(
+            shown.contains(&"TEST FIXTURE voice note.flac"),
+            "ordinary audio files keep their card"
+        );
+        let players = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.label() == Some("Play voice message"))
+            .count();
+        assert_eq!(players, 3);
+        assert!(node_bounds(&output, "Voice message position").is_some());
+        // The long transcript is clamped to three lines until expanded.
+        let clamped = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.job.text.starts_with("TEST FIXTURE transcript") =>
+                {
+                    Some(text.galley.clone())
+                }
+                _ => None,
+            })
+            .expect("the ready transcript");
+        assert!(clamped.elided);
+        assert_eq!(clamped.rows.len(), 3);
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "View transcript"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        let full = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.job.text.starts_with("TEST FIXTURE transcript") =>
+                {
+                    Some(text.galley.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(!full.elided);
+        assert!(full.rows.len() > 3);
+        assert!(texts(&output).contains(&"Hide transcript"));
+    }
+
+    #[test]
+    fn transcripts_arrive_in_place_from_attachment_updates() {
+        let (context, mut app) = fixture("parity-voice-messages");
+        render(&mut app, &context, vec![]);
+        let message = app
+            .timeline
+            .messages()
+            .find(|message| {
+                message
+                    .content
+                    .attachments
+                    .iter()
+                    .any(|file| file.id == "fixture-voice-pending")
+            })
+            .unwrap()
+            .clone();
+        let mut ready = message.content.attachments[0].clone();
+        ready.transcript = Some(model::Transcript::Ready {
+            text: "TEST FIXTURE arrived transcript".into(),
+        });
+        let update: model::AttachmentUpdate = serde_json::from_value(serde_json::json!({
+            "type": "message.attachments", "schemaVersion": 1,
+            "channelId": message.channel_id, "seq": "5", "messageId": message.id,
+            "attachments": [ready],
+        }))
+        .unwrap();
+        app.timeline.apply_attachments(update).unwrap();
+        let output = render(&mut app, &context, vec![]);
+        let shown = texts(&output);
+        assert!(shown.contains(&"TEST FIXTURE arrived transcript"));
+        assert!(!shown.contains(&"Transcribing…"));
+        assert_eq!(
+            shown
+                .iter()
+                .filter(|text| **text == "View transcript")
+                .count(),
+            1,
+            "only the long transcript has a toggle; a short one needs none"
+        );
+    }
+
+    #[test]
+    fn recording_bar_replaces_the_input_and_escape_discards() {
+        let (context, mut app) = fixture("parity-voice-recording");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(node_bounds(&output, "Discard voice message").is_some());
+        assert!(node_bounds(&output, "Send voice message").is_some());
+        assert!(texts(&output).contains(&"0:07"));
+        assert!(
+            !texts(&output)
+                .iter()
+                .any(|text| text.contains("TEST FIXTURE draft text")),
+            "the input row is replaced"
+        );
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.voice_recording.is_none());
+        assert_eq!(app.draft, "TEST FIXTURE draft text waits while recording");
+        let output = render(&mut app, &context, vec![]);
+        assert!(node_bounds(&output, "Record voice message").is_some());
+        assert!(
+            texts(&output)
+                .iter()
+                .any(|text| text.contains("TEST FIXTURE draft text"))
+        );
+        // Enter (nothing focused) stops and sends.
+        let (context, mut app) = fixture("parity-voice-recording");
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert!(app.voice_recording.as_ref().is_some_and(|bar| bar.sending));
+        // So does the send button; the trash discards.
+        let (context, mut app) = fixture("parity-voice-recording");
+        let output = render(&mut app, &context, vec![]);
+        click(
+            &mut app,
+            &context,
+            node_bounds(&output, "Send voice message").unwrap().center(),
+        );
+        assert!(app.voice_recording.as_ref().is_some_and(|bar| bar.sending));
+        let (context, mut app) = fixture("parity-voice-recording");
+        let output = render(&mut app, &context, vec![]);
+        click(
+            &mut app,
+            &context,
+            node_bounds(&output, "Discard voice message")
+                .unwrap()
+                .center(),
+        );
+        assert!(app.voice_recording.is_none());
+    }
+
+    fn voice_attachment(id: &str) -> model::Attachment {
+        model::Attachment::parse(&serde_json::json!({
+            "id": id, "kind": "audio", "contentType": "audio/mp4", "name": "Voice message.m4a",
+            "size": 9000, "durationMs": 2000, "url": format!("https://fixture.invalid/{id}"),
+            "voice": true, "waveform": "AAECAw==", "transcript": {"status": "pending"}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn recorded_voice_messages_upload_then_send_alone_with_the_reply() {
+        let (context, mut app) = fixture("parity-attachments");
+        let files = app.draft_files.len();
+        assert!(files > 0);
+        app.draft = "keep me".into();
+        let quoted = app.timeline.messages().next().unwrap().clone();
+        app.reply_targets
+            .insert("channel".into(), model::MessageReply::from_message(&quoted));
+        app.start_voice_recording(&context, None);
+        assert!(app.recording_in(None));
+        // A tap (under a second) uploads nothing.
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        app.voice_recorder_event(voice_note::RecorderEvent::TooShort);
+        assert!(app.voice_recording.is_none() && app.voice_sends.is_empty());
+        // A microphone failure says so and leaves no recording bar.
+        app.start_voice_recording(&context, None);
+        app.voice_recorder_event(voice_note::RecorderEvent::Failed(
+            voice_note::ACCESS_NEEDED.into(),
+        ));
+        assert!(app.voice_recording.is_none());
+        assert_eq!(app.error.as_deref(), Some(voice_note::ACCESS_NEEDED));
+        // A real recording uploads as a voice message, then sends on its own.
+        app.start_voice_recording(&context, None);
+        assert_eq!(app.error, None);
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        app.finish_voice_recording();
+        let samples: Vec<i16> = (0..96_000).map(|index| (index % 200) as i16 * 50).collect();
+        let prepared = voice_note::prepare(&samples, None).unwrap();
+        app.voice_recorder_event(voice_note::RecorderEvent::Ready(Box::new(prepared)));
+        assert!(app.voice_recording.is_none());
+        assert_eq!(app.voice_sends.len(), 1);
+        assert!(app.voice_sends[0].uploading);
+        assert!(app.voice_sends[0].prepared.voice.is_some());
+        assert!(
+            !app.reply_targets.contains_key("channel"),
+            "the reply goes with the voice message"
+        );
+        let key = app.voice_sends[0].key;
+        assert!(
+            app.voice_upload_update(key, worker::UploadUpdate::Progress(0.4))
+                .is_none()
+        );
+        assert_eq!(app.voice_sends[0].progress, 0.4);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Sending voice message… 40%"));
+        // Another message is pending: the voice message waits its turn.
+        app.pending = Some(PendingSend::prepare(None, "earlier", Vec::new()));
+        let uploaded = voice_attachment("voice-1");
+        app.voice_upload_update(key, worker::UploadUpdate::Finished(Ok(uploaded.clone())));
+        assert_eq!(app.voice_sends.len(), 1);
+        app.pending = None;
+        app.poll_voice(&context);
+        assert!(app.voice_sends.is_empty());
+        let pending = app.pending.clone().unwrap();
+        assert_eq!(pending.text, "");
+        assert_eq!(pending.attachments, vec![uploaded]);
+        assert_eq!(
+            pending.reply_to.map(|reply| reply.id),
+            Some(quoted.id.clone())
+        );
+        assert_eq!(pending.thread_root_id, None);
+        // The composer keeps its text and files.
+        assert_eq!(app.draft, "keep me");
+        assert_eq!(app.draft_files.len(), files);
+        // Other uploads' events pass through.
+        assert!(
+            app.voice_upload_update(key + 100, worker::UploadUpdate::Progress(0.5))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn failed_voice_uploads_retry_or_discard_and_leaving_cancels_them() {
+        let (context, mut app) = fixture("parity-attachments");
+        app.start_voice_recording(&context, None);
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        let prepared = voice_note::prepare(&[1000; 48_000], None).unwrap();
+        app.voice_recorder_event(voice_note::RecorderEvent::Ready(Box::new(prepared)));
+        let key = app.voice_sends[0].key;
+        app.voice_upload_update(
+            key,
+            worker::UploadUpdate::Finished(Err(uploads::UploadError::new("Storage is full."))),
+        );
+        assert_eq!(
+            app.voice_sends[0].error.as_deref(),
+            Some("Storage is full.")
+        );
+        assert!(app.pending.is_none(), "a failed upload never sends");
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Voice message not sent. Storage is full."));
+        click(&mut app, &context, text_position(&output, "Retry"));
+        assert!(app.voice_sends[0].uploading && app.voice_sends[0].error.is_none());
+        // One recording at a time.
+        app.start_voice_recording(&context, None);
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        assert!(!app.mic_state().0);
+        // Leaving the conversation discards the recording and the upload.
+        app.selected_channel = Some("another-channel".into());
+        app.poll_voice(&context);
+        assert!(app.voice_recording.is_none());
+        assert!(app.voice_sends.is_empty());
+    }
+
+    #[test]
+    fn voice_quotes_and_excerpts_say_voice_message() {
+        let (context, mut app) = fixture("parity-voice-messages");
+        let mut voice = app
+            .timeline
+            .messages()
+            .find(|message| message.content.attachments.iter().any(|file| file.voice))
+            .unwrap()
+            .clone();
+        voice.content.text.clear();
+        let reply = model::MessageReply::from_message(&voice);
+        app.reply_targets.insert("channel".into(), reply);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Voice message"));
+    }
+
+    #[test]
     fn attachment_spoilers_require_reveal_and_are_excluded_from_gallery() {
         for visual_count in [1, 2] {
             let (context, mut app) = fixture("parity-attachments");
@@ -47697,6 +49048,9 @@ mod tests {
             unavailable: false,
             status: model::AttachmentStatus::Processing,
             animated: false,
+            voice: false,
+            waveform: None,
+            transcript: None,
         };
         app.upload_update(
             2,
@@ -48664,6 +50018,7 @@ mod tests {
             duration_ms: None,
             preview: None,
             thumbnail: None,
+            voice: None,
         }));
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);

@@ -918,6 +918,9 @@ mod tests {
             unavailable: false,
             status: AttachmentStatus::Ready,
             animated: false,
+            voice: false,
+            waveform: None,
+            transcript: None,
         }
     }
 

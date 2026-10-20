@@ -731,6 +731,65 @@ pub struct Attachment {
     /// A GIF or animated image stored as a silent looping MP4.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub animated: bool,
+    /// A recorded voice message (`audio/mp4` once the server has normalised
+    /// it), drawn as a voice player instead of a file card.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub voice: bool,
+    /// Standard base64 of 1–256 peak bytes (0–255, normalised to the
+    /// recording's loudest slice). Absent draws a flat placeholder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waveform: Option<String>,
+    /// Absent or an unknown status: transcription is unavailable here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<Transcript>,
+}
+
+/// A voice message's automatic transcript (`transcript.status`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "lowercase")]
+pub enum Transcript {
+    Pending,
+    Ready { text: String },
+    Failed,
+}
+
+impl Transcript {
+    /// Unknown future statuses and malformed values read as absent.
+    pub fn parse(value: &serde_json::Value) -> Option<Self> {
+        let object = value.as_object()?;
+        Some(match object.get("status")?.as_str()? {
+            "pending" => Self::Pending,
+            "ready" => Self::Ready {
+                text: object
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            },
+            "failed" => Self::Failed,
+            _ => return None,
+        })
+    }
+}
+
+/// What a voice message shows under its player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TranscriptView<'a> {
+    /// `failed`, absent, unknown or empty: no transcript UI at all.
+    Hidden,
+    /// "Transcribing…"
+    Pending,
+    Text(&'a str),
+}
+
+/// How a quote or forward excerpt names a message's files when it has no
+/// text: "Voice message" for a voice note, otherwise "Attachment".
+pub fn attachments_label(attachments: &[Attachment]) -> &'static str {
+    if attachments.iter().any(|attachment| attachment.voice) {
+        "Voice message"
+    } else {
+        "Attachment"
+    }
 }
 
 fn preview_marker<S: serde::Serializer>(_: &bool, serializer: S) -> Result<S::Ok, S::Error> {
@@ -830,7 +889,28 @@ impl Attachment {
                 _ => AttachmentStatus::Ready,
             },
             animated: object.get("animated") == Some(&serde_json::Value::Bool(true)),
+            voice: object.get("voice") == Some(&serde_json::Value::Bool(true)),
+            // Kept as sent; it is decoded (and resampled) where it is drawn.
+            waveform: object
+                .get("waveform")
+                .and_then(serde_json::Value::as_str)
+                .filter(|waveform| !waveform.is_empty())
+                .map(str::to_owned),
+            transcript: object.get("transcript").and_then(Transcript::parse),
         })
+    }
+
+    /// The transcript UI for this attachment: none unless it is a voice
+    /// message whose transcript is pending or has visible text.
+    pub fn transcript_view(&self) -> TranscriptView<'_> {
+        match &self.transcript {
+            _ if !self.voice => TranscriptView::Hidden,
+            Some(Transcript::Pending) => TranscriptView::Pending,
+            Some(Transcript::Ready { text }) if !text.trim().is_empty() => {
+                TranscriptView::Text(text.trim())
+            }
+            _ => TranscriptView::Hidden,
+        }
     }
 }
 
@@ -3186,6 +3266,135 @@ mod tests {
 
     fn message_without_attachments() -> Message {
         message("plain", 1)
+    }
+
+    fn voice_note(transcript: serde_json::Value) -> serde_json::Value {
+        let mut file = serde_json::json!({
+            "id": "voice", "kind": "audio", "contentType": "audio/mp4",
+            "name": "Voice message.m4a", "size": 31337, "durationMs": 4200,
+            "url": "https://cdn.caper.chat/original/voice?exp=9&sig=s",
+            "voice": true, "waveform": "AAECAw=="
+        });
+        if !transcript.is_null() {
+            file["transcript"] = transcript;
+        }
+        file
+    }
+
+    #[test]
+    fn voice_attachments_parse_transcript_states_tolerantly() {
+        let parse = |value| Attachment::parse(&value).unwrap();
+        let pending = parse(voice_note(serde_json::json!({"status": "pending"})));
+        assert!(pending.voice);
+        assert_eq!(pending.waveform.as_deref(), Some("AAECAw=="));
+        assert_eq!(pending.duration_ms, Some(4200));
+        assert_eq!(pending.transcript, Some(Transcript::Pending));
+        assert_eq!(pending.transcript_view(), TranscriptView::Pending);
+
+        let ready = parse(voice_note(
+            serde_json::json!({"status": "ready", "text": "  Yo what's going on  "}),
+        ));
+        assert_eq!(
+            ready.transcript_view(),
+            TranscriptView::Text("Yo what's going on")
+        );
+        for hidden in [
+            serde_json::json!({"status": "ready", "text": "   "}),
+            serde_json::json!({"status": "ready"}),
+            serde_json::json!({"status": "failed"}),
+            serde_json::json!({"status": "summarising", "text": "future"}),
+            serde_json::json!({"status": 3}),
+            serde_json::json!("ready"),
+            serde_json::Value::Null,
+        ] {
+            let file = parse(voice_note(hidden.clone()));
+            assert_eq!(file.transcript_view(), TranscriptView::Hidden, "{hidden}");
+        }
+        assert_eq!(
+            parse(voice_note(serde_json::json!({"status": "summarising"}))).transcript,
+            None,
+            "unknown statuses read as absent"
+        );
+        // Only `voice: true` attachments ever show a transcript.
+        let mut plain = voice_note(serde_json::json!({"status": "ready", "text": "hi"}));
+        plain["voice"] = serde_json::json!("yes");
+        let plain = parse(plain);
+        assert!(!plain.voice);
+        assert_eq!(plain.transcript_view(), TranscriptView::Hidden);
+        // An empty or non-string waveform draws the placeholder.
+        let mut flat = voice_note(serde_json::Value::Null);
+        flat["waveform"] = serde_json::json!("");
+        assert_eq!(parse(flat).waveform, None);
+        let mut odd = voice_note(serde_json::Value::Null);
+        odd["waveform"] = serde_json::json!([1, 2]);
+        assert_eq!(parse(odd).waveform, None);
+    }
+
+    #[test]
+    fn voice_fields_round_trip_and_ordinary_files_stay_unchanged() {
+        let message: Message =
+            serde_json::from_value(wire_message(serde_json::json!([voice_note(
+                serde_json::json!({"status": "ready", "text": "Hello"})
+            )])))
+            .unwrap();
+        let encoded = serde_json::to_value(&message).unwrap();
+        let file = &encoded["content"]["attachments"][0];
+        assert_eq!(file["voice"], true);
+        assert_eq!(file["waveform"], "AAECAw==");
+        assert_eq!(
+            file["transcript"],
+            serde_json::json!({"status": "ready", "text": "Hello"})
+        );
+        let decoded: Message = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, message);
+        let pending = serde_json::to_value(Transcript::Pending).unwrap();
+        assert_eq!(pending, serde_json::json!({"status": "pending"}));
+        let ordinary: Message = serde_json::from_value(wire_message(serde_json::json!([
+            {"id": "a", "kind": "audio", "contentType": "audio/flac", "name": "a.flac", "size": 3}
+        ])))
+        .unwrap();
+        let encoded = serde_json::to_value(&ordinary).unwrap();
+        let file = encoded["content"]["attachments"][0].as_object().unwrap();
+        for absent in ["voice", "waveform", "transcript"] {
+            assert!(!file.contains_key(absent), "{absent} is not written back");
+        }
+        assert_eq!(
+            attachments_label(&ordinary.content.attachments),
+            "Attachment"
+        );
+        assert_eq!(
+            attachments_label(&message.content.attachments),
+            "Voice message"
+        );
+    }
+
+    #[test]
+    fn transcript_updates_replace_voice_files_without_losing_their_fields() {
+        let mut timeline = Timeline::default();
+        let mut sent: Message =
+            serde_json::from_value(wire_message(serde_json::json!([voice_note(
+                serde_json::json!({"status": "pending"})
+            )])))
+            .unwrap();
+        sent.attachments_seq = Some("1".into());
+        timeline.reset(vec![sent], "1").unwrap();
+        let update: AttachmentUpdate = serde_json::from_value(serde_json::json!({
+            "type": "message.attachments", "schemaVersion": 1, "channelId": "channel",
+            "seq": "2", "messageId": "m1",
+            "attachments": [voice_note(serde_json::json!({"status": "ready", "text": "Yo"}))]
+        }))
+        .unwrap();
+        assert_eq!(timeline.apply_attachments(update), Ok(Apply::Applied));
+        let file = &timeline
+            .messages()
+            .find(|message| message.id == "m1")
+            .unwrap()
+            .content
+            .attachments[0];
+        assert!(file.voice);
+        assert_eq!(file.waveform.as_deref(), Some("AAECAw=="));
+        assert_eq!(file.duration_ms, Some(4200));
+        assert_eq!(file.transcript_view(), TranscriptView::Text("Yo"));
     }
 
     #[test]

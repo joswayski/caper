@@ -49,6 +49,7 @@ pub struct Player {
     session: Option<Session>,
     texture: Option<egui::TextureHandle>,
     error: Option<String>,
+    audio_only: bool,
 }
 
 struct Frame {
@@ -109,6 +110,16 @@ impl Player {
             session: None,
             texture: None,
             error: None,
+            audio_only: false,
+        }
+    }
+
+    /// Sound alone (a voice message): no picture decoder runs, and the
+    /// audio clock ends playback.
+    pub fn audio(binary: &std::path::Path, input: String, duration_ms: Option<u64>) -> Self {
+        Self {
+            audio_only: true,
+            ..Self::new(binary, input, 2, 2, duration_ms, None, egui::vec2(2.0, 2.0))
         }
     }
 
@@ -297,6 +308,20 @@ impl Session {
     fn start(player: &Player, start_ms: u64, play: bool) -> Result<Self, String> {
         let [width, height] = player.size;
         let seek = format!("{start_ms}ms");
+        if player.audio_only {
+            // No frames ever come: the picture is done from the start.
+            let (_, frames) = mpsc::sync_channel(1);
+            return Ok(Self {
+                start_ms,
+                frames,
+                next: None,
+                video_done: true,
+                video: Arc::new(Mutex::new(None)),
+                audio: Audio::start(player, &seek, play),
+                wall: None,
+                shown_any: false,
+            });
+        }
         let mut video = crate::ffmpeg::command(&player.binary)
             .args(["-loglevel", "error", "-ss", &seek, "-i", &player.input])
             .args(["-map", "0:v:0", "-an", "-sn"])
