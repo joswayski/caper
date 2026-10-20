@@ -475,6 +475,42 @@ final class ProfilePictureTests: XCTestCase {
     // MARK: Own profile refresh
 
     @MainActor
+    func testRegenerationPostsNoBodyAndRefreshesOwnIdentity() async throws {
+        PictureURLProtocol.handler = { _ in
+            (200, Data(#"{"id":"self","username":"me","avatarId":17}"#.utf8))
+        }
+        let model = AppModel(api: client())
+        model.account = Account(id: "self", username: "me", avatarId: 4)
+        model.detail = SpaceDetail(space: Space(id: spaceID, name: "Space", ownerId: "self"), channels: [],
+                                   members: [Member(id: "self", username: "me", displayName: "Me", owner: true, avatarId: 4)])
+        try await model.regenerateAvatar()
+        XCTAssertEqual(model.account?.avatarId, 17)
+        XCTAssertEqual(model.detail?.members.first?.avatarId, 17)
+        let request = try XCTUnwrap(PictureURLProtocol.requests.last)
+        XCTAssertEqual(request.method, "POST")
+        XCTAssertEqual(request.url.path, "/api/account/avatar/regenerate")
+        XCTAssertNil(request.body)
+    }
+
+    @MainActor
+    func testRegenerationConflictRefreshesTheCustomPicture() async throws {
+        PictureURLProtocol.handler = { request in
+            if request.httpMethod == "POST" { return (409, Data(#"{"error":"custom avatar present"}"#.utf8)) }
+            return (200, Data(#"{"id":"self","username":"me","avatarId":4,"avatarAsset":"\#(pictureID)","avatarUrl":"\#(pictureURL)"}"#.utf8))
+        }
+        let model = AppModel(api: client())
+        model.account = Account(id: "self", username: "me", avatarId: 4)
+        do {
+            try await model.regenerateAvatar()
+            XCTFail("expected a conflict")
+        } catch {
+            XCTAssertEqual((error as? APIError)?.status, 409)
+        }
+        XCTAssertEqual(model.account?.avatarAsset, pictureID)
+        XCTAssertEqual(PictureURLProtocol.requests.last?.url.path, "/api/account/me")
+    }
+
+    @MainActor
     func testHistoryPaginationAndStaleSelectionKeepCurrentIdentity() async throws {
         PictureURLProtocol.handler = { request in
             if request.httpMethod == "POST" { return (409, Data(#"{"error":"stale avatar"}"#.utf8)) }

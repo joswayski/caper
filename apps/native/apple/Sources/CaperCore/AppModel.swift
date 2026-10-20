@@ -575,6 +575,24 @@ public final class AppModel {
         refreshOwnIdentity(updated)
     }
 
+    public func regenerateAvatar() async throws {
+        guard let current = account, current.avatarAsset == nil else { throw CancellationError() }
+        let attempt = generation
+        let updated: Account
+        do { updated = try await api.regenerateAvatar() }
+        catch let failure as APIError where failure.status == 409 {
+            if let refreshed = try? await api.account(), generation == attempt,
+               account?.id == current.id, refreshed.id == current.id {
+                account = refreshed
+                refreshOwnIdentity(refreshed)
+            }
+            throw failure
+        }
+        guard generation == attempt, account?.id == current.id, updated.id == current.id else { throw CancellationError() }
+        account = updated
+        refreshOwnIdentity(updated)
+    }
+
     public func avatarHistory(cursor: String?) async throws -> AvatarHistory {
         let attempt = generation
         let result = try await api.avatarHistory(cursor: cursor)

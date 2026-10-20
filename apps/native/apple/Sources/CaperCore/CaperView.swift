@@ -8958,6 +8958,9 @@ private struct ProfileSheet: View {
                           }, select: { asset, expected in
                               guard model.account?.id == account.id, model.accountEpoch == epoch else { throw CancellationError() }
                               try await model.selectAvatar(asset, expected: expected)
+                          }, regenerate: {
+                              guard model.account?.id == account.id, model.accountEpoch == epoch else { throw CancellationError() }
+                              try await model.regenerateAvatar()
                           }) {
                 if account.avatarAsset == nil {
                     ChangeMeMascot(name: name, avatarID: account.avatarId, size: side)

@@ -823,8 +823,8 @@ data class DraftAttachmentUi(
 const val PROFILE_PICTURE_KEY = "avatar"
 
 /** A picture change in flight, [uploading] a new one or [removing] it, or the inline [error] it ended with. */
-data class PictureSaveUi(val uploading: Boolean = false, val removing: Boolean = false, val error: String? = null) {
-    val busy: Boolean get() = uploading || removing
+data class PictureSaveUi(val uploading: Boolean = false, val removing: Boolean = false, val error: String? = null, val regenerating: Boolean = false) {
+    val busy: Boolean get() = uploading || removing || regenerating
 }
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)

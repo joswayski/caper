@@ -41,11 +41,23 @@ pub struct File {
     pub editable: Option<crate::attachment_edit::Kind>,
     /// Applied to the original before preparing and uploading.
     pub edit: Option<crate::attachment_edit::Edit>,
+    /// A recorded voice message (`voice_note`), uploaded exactly as prepared.
+    pub voice: Option<Arc<uploads::Prepared>>,
 }
 
 impl File {
     pub fn picked(path: PathBuf) -> Self {
         Self::staged(path, None)
+    }
+
+    /// A voice message sent on its own from the profile card: never staged
+    /// in the draft, compressed or edited.
+    pub fn voice(prepared: Arc<uploads::Prepared>) -> Self {
+        Self {
+            size: prepared.size,
+            voice: Some(prepared),
+            ..Self::staged(PathBuf::new(), None)
+        }
     }
 
     fn staged(path: PathBuf, scratch: Option<Arc<uploads::Scratch>>) -> Self {
@@ -62,6 +74,7 @@ impl File {
             texture: None,
             preview_requested: false,
             edit: None,
+            voice: None,
         }
     }
 
@@ -148,7 +161,9 @@ impl File {
     }
 
     pub fn name(&self) -> String {
-        if self.scratch.is_some() {
+        if let Some(voice) = &self.voice {
+            voice.name.clone()
+        } else if self.scratch.is_some() {
             "Pasted image.png".into()
         } else {
             self.path
@@ -176,6 +191,16 @@ pub struct Draft {
     pub retry_id: Option<String>,
     pub error: Option<String>,
     pub status: Option<String>,
+    /// A voice message that did not send: Retry resends it (same ID, the
+    /// uploaded file reused) and Discard drops it. The text draft stays.
+    pub voice_retry: Option<Box<Send>>,
+}
+
+impl Send {
+    /// Sends only a recorded voice message to the person's DM.
+    pub fn is_voice(&self) -> bool {
+        self.files.iter().any(|file| file.voice.is_some())
+    }
 }
 
 impl Draft {
@@ -428,13 +453,14 @@ impl Send {
                 message: "File uploads are not ready. Try again shortly.".into(),
                 uncertain: retrying,
             })?;
-            status(format!(
-                "Preparing and uploading {} ({})…",
-                file.name(),
-                index + 1
-            ));
-            let prepared = match &file.edit {
-                Some(edit) => uploads::prepare_edited_path(
+            status(if file.voice.is_some() {
+                "Uploading voice message…".into()
+            } else {
+                format!("Preparing and uploading {} ({})…", file.name(), index + 1)
+            });
+            let prepared = match (&file.voice, &file.edit) {
+                (Some(voice), _) => Ok(voice.as_ref().clone()),
+                (None, Some(edit)) => uploads::prepare_edited_path(
                     &file.path,
                     &file.name(),
                     edit,
@@ -442,7 +468,9 @@ impl Send {
                     &|_| {},
                     &self.cancel,
                 ),
-                None => uploads::prepare_path_with(&file.path, settings, &|_| {}, &self.cancel),
+                (None, None) => {
+                    uploads::prepare_path_with(&file.path, settings, &|_| {}, &self.cancel)
+                }
             };
             let mut prepared = prepared.map_err(|message| Failure {
                 message,
@@ -872,6 +900,56 @@ mod tests {
                 .filter(|request| request.line == "POST /api/assets HTTP/1.1")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn voice_messages_upload_as_recorded_and_send_alone() {
+        let prepared = crate::voice_note::prepare(&[4_000; 48_000], None).unwrap();
+        let size = prepared.size;
+        let mut operation = operation(vec![File::voice(Arc::new(prepared))]);
+        operation.text = String::new();
+        assert!(operation.is_voice());
+        assert_eq!(operation.files[0].name(), "voice-message.wav");
+        let client_id = operation.client_id.clone();
+        let (api, requests) = server(move |base| {
+            vec![
+            (200, json!({"conversations":[]}).to_string()),
+            (201, DIRECT.into()),
+            (200, json!({"token":"chat","author":{"id":"owner","name":"Owner","isGuest":false}}).to_string()),
+            (201, json!({"id":"voice1","upload":{"method":"PUT","url":format!("{base}/storage/voice1"),"headers":{}}}).to_string()),
+            (200, String::new()),
+            (200, json!({"id":"voice1","kind":"audio","contentType":"audio/mp4","name":"Voice message.m4a","size":900,"durationMs":1000,"voice":true,"transcript":{"status":"pending"}}).to_string()),
+            (200, json!({"id":"m1","channelId":"dm0000000002","seq":"1","createdAt":"2026-10-11T00:00:00Z","clientMessageId":client_id,"author":{"id":"owner","name":"Owner","isGuest":false},"content":{"version":1,"type":"text","text":""}}).to_string()),
+        ]
+        });
+        let mut statuses = std::sync::Mutex::new(Vec::new());
+        let direct = operation
+            .run(&api, "account", &|status| {
+                statuses.lock().unwrap().push(status)
+            })
+            .unwrap();
+        assert_eq!(direct.id, "dm0000000002");
+        assert!(
+            statuses
+                .get_mut()
+                .unwrap()
+                .contains(&"Uploading voice message…".into())
+        );
+        let attachment = operation.files[0].attachment.as_ref().unwrap();
+        assert!(attachment.voice, "the completed description is kept");
+        let seen = requests.join().unwrap();
+        let reservation: Value = serde_json::from_slice(&seen[3].body).unwrap();
+        assert_eq!(reservation["channelId"], "dm0000000002");
+        assert_eq!(reservation["voice"], true);
+        assert_eq!(reservation["durationMs"], 1000);
+        assert_eq!(reservation["byteSize"], size);
+        assert!(reservation["waveform"].is_string());
+        assert_eq!(seen[4].body.len() as u64, size, "uploaded as recorded");
+        let sent: Value = serde_json::from_slice(&seen[6].body).unwrap();
+        assert_eq!(
+            sent,
+            json!({"clientMessageId":operation.client_id,"text":"","attachmentIds":["voice1"]})
         );
     }
 

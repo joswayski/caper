@@ -440,6 +440,69 @@ async fn profile_keeps_an_existing_reserved_username_before_database_access() {
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable Postgres DATABASE_URL"]
+async fn regenerate_avatar_changes_saved_mascot_and_never_replaces_a_photo(pool: sqlx::PgPool) {
+    let user_id: i64 = sqlx::query_scalar(
+        "INSERT INTO public.users(external_id,username,display_name,avatar_id)
+         VALUES ('regenerate-fixture','regen','Regenerate',799) RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 hour')")
+        .bind(Sha256::digest(b"regenerate-session").as_slice()).bind(user_id)
+        .execute(&pool).await.unwrap();
+    let (mut state, _) = state();
+    state.database = Some(pool.clone());
+    state.auth = auth::AuthVerifier::new();
+    let router = app(state);
+    let send = |token: Option<&str>| {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/account/avatar/regenerate");
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        router.clone().oneshot(request.body(Body::empty()).unwrap())
+    };
+    assert_eq!(send(None).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+    let mut previous = 799;
+    for _ in 0..20 {
+        let response = send(Some("regenerate-session")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 8192).await.unwrap()).unwrap();
+        let next = body["avatarId"].as_i64().unwrap();
+        assert!((0..800).contains(&next));
+        assert_ne!(next, previous);
+        assert_eq!(body["username"], "regen");
+        assert_eq!(body["displayName"], "Regenerate");
+        let saved: i16 = sqlx::query_scalar("SELECT avatar_id FROM public.users WHERE id=$1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(i64::from(saved), next);
+        previous = next;
+    }
+    sqlx::query("INSERT INTO public.assets(external_id,owner_id,purpose,kind,content_type,filename,byte_size,uploaded_at)
+        VALUES ('custom-picture',$1,'avatar','image','image/png','avatar.png',1,now())")
+        .bind(user_id).execute(&pool).await.unwrap();
+    sqlx::query("UPDATE public.users SET avatar_asset='custom-picture' WHERE id=$1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        send(Some("regenerate-session")).await.unwrap().status(),
+        StatusCode::CONFLICT
+    );
+    let saved = accounts::load(&pool, user_id).await.unwrap().unwrap();
+    assert_eq!(i64::from(saved.avatar_id), previous);
+    assert_eq!(saved.avatar_asset.as_deref(), Some("custom-picture"));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable Postgres DATABASE_URL"]
 async fn profile_updates_preserve_reserved_names_but_reject_new_claims(pool: sqlx::PgPool) {
     let user_id: i64 = sqlx::query_scalar(
         "INSERT INTO public.users(external_id) VALUES ('profile-fixture') RETURNING id",

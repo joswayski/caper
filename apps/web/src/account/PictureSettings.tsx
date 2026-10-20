@@ -1,4 +1,4 @@
-import { Images, ImageUp, Pencil, Trash2 } from "lucide-react";
+import { Images, ImageUp, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import AttachmentEditor from "../chat/AttachmentEditor";
 import type { AttachmentEdit } from "../chat/edit";
@@ -8,13 +8,26 @@ import Avatar from "../components/Avatar";
 import SpaceIcon from "../components/SpaceIcon";
 import { removeSpaceIcon, SpacesApiError, type Space } from "../spaces/client";
 import { avatarUrl } from "./avatar";
-import { AccountApiError, getRememberedAccount, removeAvatar, subscribeAccount, type Account } from "./client";
+import {
+  AccountApiError,
+  getAccount,
+  getRememberedAccount,
+  regenerateAvatar,
+  removeAvatar,
+  subscribeAccount,
+  type Account,
+} from "./client";
 import AvatarHistory from "./AvatarHistory";
 import { PictureError, uploadAvatar, uploadSpaceIcon } from "./picture-upload";
 import { gifSize, pictureErrorMessage, pictureMessages } from "./pictures";
 import "./pictures.css";
 
-type Phase = { kind: "idle" } | { kind: "preparing" } | { kind: "uploading"; progress: number } | { kind: "removing" };
+type Phase =
+  | { kind: "idle" }
+  | { kind: "preparing" }
+  | { kind: "uploading"; progress: number }
+  | { kind: "removing" }
+  | { kind: "regenerating" };
 
 function uploadError(error: unknown) {
   if (error instanceof PictureError) return error.message;
@@ -33,6 +46,7 @@ function PictureEditor({
   onUpload,
   onRemove,
   onHistory,
+  onRegenerate,
 }: {
   title: string;
   preview: ReactNode;
@@ -44,6 +58,7 @@ function PictureEditor({
   onUpload: (file: Blob, progress: (fraction: number) => void, edit?: AttachmentEdit) => Promise<void>;
   onRemove: () => Promise<void>;
   onHistory?: () => void;
+  onRegenerate?: () => Promise<void>;
 }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [error, setError] = useState<string>();
@@ -145,15 +160,17 @@ function PictureEditor({
   };
 
   const status =
-    phase.kind === "preparing"
-      ? "Preparing…"
-      : phase.kind === "uploading"
-        ? `Uploading… ${Math.round(phase.progress * 100)}%`
-        : phase.kind === "removing"
-          ? "Removing…"
-          : unavailable
-            ? pictureMessages.unavailable
-            : done;
+    phase.kind === "regenerating"
+      ? "Regenerating…"
+      : phase.kind === "preparing"
+        ? "Preparing…"
+        : phase.kind === "uploading"
+          ? `Uploading… ${Math.round(phase.progress * 100)}%`
+          : phase.kind === "removing"
+            ? "Removing…"
+            : unavailable
+              ? pictureMessages.unavailable
+              : done;
   // With uploads unavailable, the frame still offers removal of a custom picture.
   const disabled = busy || (unavailable && !offersMenu);
 
@@ -282,6 +299,35 @@ function PictureEditor({
           </div>
         )}
       </div>
+      {onRegenerate && !removable && (
+        <button
+          type="button"
+          className="mt-2 inline-flex min-h-11 items-center gap-2 rounded-control border border-border bg-surface px-3 text-[.85rem] text-content hover:bg-surface-raised disabled:cursor-wait disabled:text-content-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-terracotta"
+          disabled={busy}
+          onClick={async () => {
+            if (busy) return;
+            setMenu(false);
+            setError(undefined);
+            setDone(undefined);
+            setPhase({ kind: "regenerating" });
+            try {
+              await onRegenerate();
+              setDone("Avatar regenerated.");
+            } catch (reason) {
+              setError(
+                reason instanceof AccountApiError && reason.status === 409
+                  ? "Your picture changed elsewhere. Remove your custom picture before regenerating."
+                  : "Your avatar couldn’t be regenerated. Try again.",
+              );
+            } finally {
+              setPhase({ kind: "idle" });
+            }
+          }}
+        >
+          <RefreshCw size={16} aria-hidden="true" />
+          Regenerate avatar
+        </button>
+      )}
       <input
         ref={(element) => {
           input.current = element;
@@ -396,6 +442,14 @@ export function ProfilePictureSettings({ account: initial }: { account: Account 
           await removeAvatar();
         }}
         onHistory={() => setHistory(account)}
+        onRegenerate={async () => {
+          try {
+            await regenerateAvatar();
+          } catch (error) {
+            if (error instanceof AccountApiError && error.status === 409) await getAccount().catch(() => {});
+            throw error;
+          }
+        }}
       />
       {history?.id === account.id && <AvatarHistory account={history} onClose={closeHistory} />}
     </>

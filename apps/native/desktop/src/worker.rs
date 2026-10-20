@@ -18,6 +18,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub enum Command {
+    RegenerateAvatar {
+        epoch: u64,
+        token: String,
+    },
     AvatarHistory {
         epoch: u64,
         request: Instant,
@@ -1558,6 +1562,32 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 person,
                 send: operation,
                 result,
+            }
+        }
+        Command::RegenerateAvatar { epoch, token } => {
+            let result = api
+                .regenerate_avatar(&token)
+                .map(|account| {
+                    api.reset_chat_session();
+                    crate::pictures::Changed {
+                        applied: crate::pictures::Applied::Account(account),
+                        local: None,
+                    }
+                })
+                .map_err(|error| {
+                    crate::pictures::Failure::new(
+                        if error.status.is_some_and(|status| status.as_u16() == 409) {
+                            "Your picture changed elsewhere. Remove your custom picture before regenerating your avatar."
+                        } else {
+                            "Could not regenerate your avatar. Try again."
+                        },
+                    )
+                });
+            let refreshed = result.is_err().then(|| api.me(&token).ok()).flatten();
+            Event::AvatarSelected {
+                epoch,
+                result,
+                refreshed,
             }
         }
         Command::AvatarHistory {

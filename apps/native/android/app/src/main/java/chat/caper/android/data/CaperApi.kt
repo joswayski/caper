@@ -277,6 +277,8 @@ class CaperApi(
     /** Back to the saved mascot; returns the account without a picture. */
     suspend fun removeAvatar(token: String): Account = request("/api/account/avatar", "DELETE", token)
 
+    suspend fun regenerateAvatar(token: String): Account = request("/api/account/avatar/regenerate", "POST", token, body = "")
+
     suspend fun avatarHistory(token: String, cursor: String? = null): AvatarHistory =
         get("/api/account/avatar/history" + (cursor?.let { "?cursor=${it.assetPathId()}" } ?: ""), token)
 

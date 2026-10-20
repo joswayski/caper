@@ -325,6 +325,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/account/avatar", delete(remove_avatar))
         .route("/api/account/avatar/history", get(avatar_history))
         .route("/api/account/avatar/select", post(select_avatar))
+        .route("/api/account/avatar/regenerate", post(regenerate_avatar))
         .route("/api/spaces/{space}/icon", delete(remove_icon))
 }
 
@@ -335,6 +336,31 @@ fn pool(state: &AppState) -> Result<&PgPool, ApiError> {
             "account service unavailable",
         )
     })
+}
+
+/// Pick one of the other 799 mascots. The guard and choice use the current row,
+/// so a concurrent photo upload cannot be replaced by a stale regeneration.
+async fn regenerate_avatar(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Json<Value>, ApiError> {
+    let user: crate::accounts::User = sqlx::query_as(
+        "UPDATE public.users SET avatar_id=(avatar_id + 1 + floor(random()*799)::int)%800,
+         updated_at=now() WHERE id=$1 AND deleted_at IS NULL AND avatar_asset IS NULL
+         RETURNING id, external_id, avatar_id, avatar_asset, email, username, display_name",
+    )
+    .bind(principal.user.id)
+    .fetch_optional(pool(&state)?)
+    .await
+    .map_err(|_| crate::assets::unavailable())?
+    .ok_or_else(|| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "custom picture present or account unavailable",
+        )
+    })?;
+    crate::profiles::account_changed(&state, user.id);
+    Ok(Json(crate::own_account(&state, &user).await))
 }
 
 /// Back to the same saved mascot: only the custom reference is cleared.

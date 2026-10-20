@@ -147,6 +147,12 @@ export async function removeAvatar() {
   return rememberSavedAccount(await request<Account>("/api/account/avatar", { method: "DELETE" }));
 }
 
+export async function regenerateAvatar() {
+  const owner = currentAccount?.id;
+  const saved = await request<Account>("/api/account/avatar/regenerate", { method: "POST" });
+  return currentAccount?.id === owner ? rememberSavedAccount(saved) : saved;
+}
+
 export interface PreviousPicture {
   avatarAsset: string;
   avatarUrl?: string;

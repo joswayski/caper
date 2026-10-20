@@ -940,6 +940,9 @@ struct VoiceRecording {
     sampled: Option<Instant>,
     /// The fixture's frozen timer.
     fixed_elapsed: Option<Duration>,
+    /// Recorded in a profile card's quick-message composer: the person's ID
+    /// and username. `channel` and `root` are then unused.
+    profile: Option<(String, String)>,
 }
 
 impl VoiceRecording {
@@ -953,6 +956,14 @@ impl VoiceRecording {
             levels: std::collections::VecDeque::new(),
             sampled: None,
             fixed_elapsed: None,
+            profile: None,
+        }
+    }
+
+    fn for_profile(person: &str, username: &str, recorder: Option<voice_note::Recorder>) -> Self {
+        Self {
+            profile: Some((person.to_owned(), username.to_owned())),
+            ..Self::new(String::new(), None, recorder)
         }
     }
 
@@ -1992,6 +2003,9 @@ impl CaperApp {
                     }
                 } else if name == "parity-voice-messages" || name == "parity-voice-recording" {
                     app.install_voice_messages_fixture(name == "parity-voice-recording");
+                } else if name == "parity-voice-profile" || name == "parity-voice-profile-recording"
+                {
+                    app.install_voice_profile_fixture(name == "parity-voice-profile-recording");
                 } else if name.starts_with("parity-file-drop") {
                     // Holds the drop overlay open for rendering checks; no file is dragged.
                     app.install_attachments_fixture();
@@ -3418,17 +3432,45 @@ impl CaperApp {
             .expect("valid voice message fixture");
         if recording {
             let channel = self.selected_channel.clone().unwrap_or_default();
-            let mut bar = VoiceRecording::new(channel, None, None);
-            bar.started = Some(Instant::now());
-            bar.fixed_elapsed = Some(Duration::from_secs(7));
-            bar.levels = (0..120)
-                .map(|index| {
-                    let x = index as f32 / 9.0;
-                    (0.15 + 0.8 * (x.sin() * (x * 0.37).cos()).abs()).min(1.0)
-                })
-                .collect();
-            self.voice_recording = Some(bar);
+            self.voice_recording =
+                Some(fixture_recording(VoiceRecording::new(channel, None, None)));
             self.draft = "TEST FIXTURE draft text waits while recording".into();
+        }
+    }
+
+    /// Alex's profile card over the voice message fixture, with typed text
+    /// in its quick-message composer; with `recording`, its recording bar.
+    fn install_voice_profile_fixture(&mut self, recording: bool) {
+        self.install_voice_messages_fixture(false);
+        self.mention_card = Some(MentionCard {
+            pill: PillClick {
+                id: egui::Id::new("fixture-alex-pill"),
+                rect: egui::Rect::from_min_size(egui::pos2(402.0, 330.0), egui::vec2(48.0, 18.0)),
+                entry: model::Mention {
+                    kind: "user".into(),
+                    id: Some("fixture-alex".into()),
+                    username: Some("alex".into()),
+                },
+            },
+            author: None,
+            focus_on_open: false,
+            choosing_space: false,
+            inviting: None,
+            invited: BTreeMap::new(),
+            status: None,
+            error: None,
+            fresh: false,
+        });
+        self.profile_drafts
+            .entry("fixture-alex".into())
+            .or_default()
+            .text = "TEST FIXTURE typed text waits while recording".into();
+        if recording {
+            self.voice_recording = Some(fixture_recording(VoiceRecording::for_profile(
+                "fixture-alex",
+                "alex",
+                None,
+            )));
         }
     }
 
@@ -3903,6 +3945,40 @@ impl CaperApp {
                             Ok(_) => ReportState::Sent,
                             Err(error) => ReportState::Failed(error.message),
                         };
+                    }
+                }
+                // A voice message from the card: like a text send it opens the
+                // DM, but the card's typed text and files stay in its draft.
+                Event::ProfileSent {
+                    epoch,
+                    person,
+                    mut send,
+                    result,
+                } if epoch == self.account_epoch && send.is_voice() => {
+                    self.profile_send_cancel = None;
+                    if let Some(direct) = &send.direct {
+                        self.directs.retain(|item| item.id != direct.id);
+                        self.directs.push(direct.clone());
+                    }
+                    let draft = self.profile_drafts.entry(person.clone()).or_default();
+                    draft.sending = false;
+                    draft.status = None;
+                    match result {
+                        Ok(direct) => {
+                            self.composer_emoji = None;
+                            self.mention_card = None;
+                            self.directs.retain(|item| item.id != direct.id);
+                            self.directs.push(direct.clone());
+                            self.select_direct(direct);
+                            self.profile_navigation = self.opening.then_some(self.navigation);
+                        }
+                        Err(error) => {
+                            draft.error =
+                                Some(format!("Voice message not sent. {}", error.message));
+                            // An uncertain write retries with the same ID.
+                            send.retrying = error.uncertain;
+                            draft.voice_retry = Some(send);
+                        }
                     }
                 }
                 Event::ProfileSent {
@@ -21766,11 +21842,25 @@ impl CaperApp {
                 egui::FontId::proportional(13.6),
             )
         };
+        // Recording replaces the field; the typed text waits untouched.
+        if self.recording_for_profile(person) {
+            self.voice_recording_bar(ui, 42.0);
+            self.profile_drafts.insert(person.to_owned(), draft);
+            return false;
+        }
         let pending_picker = self
             .profile_picker
             .as_ref()
             .is_some_and(|(id, _)| id == person);
         let can_send = draft.ready() && !busy && !pending_picker && self.token.is_some();
+        // Voice messages go wherever the card can upload files.
+        let can_record = editable
+            && self.token.is_some()
+            && self.uploads.is_some()
+            && self.voice_recording.is_none()
+            && self.gif_picker.is_none()
+            && !self.is_blocked(person);
+        let mut record = false;
         let mut pick = false;
         let mut paste_now = false;
         let mut menu_open = false;
@@ -21804,7 +21894,7 @@ impl CaperApp {
                         }
                         menu_open = egui::Popup::menu(&attach).is_open();
                     });
-                    let width = (ui.available_width() - 62.0).max(0.0);
+                    let width = (ui.available_width() - 92.0).max(0.0);
                     let output = ui
                         .allocate_ui_with_layout(
                             egui::vec2(width, 120.0),
@@ -21855,6 +21945,18 @@ impl CaperApp {
                                 })
                                 .inner
                                 .clicked();
+                            record = mic_button(
+                                ui,
+                                can_record,
+                                if self.gif_picker.is_some() {
+                                    "Close the GIF picker first"
+                                } else if editable {
+                                    "Finish the current voice message first"
+                                } else {
+                                    "Wait for this message to send"
+                                },
+                                28.0,
+                            );
                             send = send_icon_button(
                                 ui,
                                 can_send,
@@ -21956,6 +22058,17 @@ impl CaperApp {
         if let Some(error) = &draft.error {
             ui.label(RichText::new(error).size(12.0).color(ERROR));
         }
+        let mut voice_retry = None;
+        if draft.voice_retry.is_some() && !draft.sending {
+            ui.horizontal(|ui| {
+                if ui.small_button("Retry voice message").clicked() {
+                    voice_retry = Some(true);
+                }
+                if ui.small_button("Discard").clicked() {
+                    voice_retry = Some(false);
+                }
+            });
+        }
         if draft.needs_upload()
             && !busy
             && !self.is_blocked(person)
@@ -21968,6 +22081,12 @@ impl CaperApp {
             draft.upload_files(&api, token, (person, username), settings, ui.ctx());
         }
         self.profile_drafts.insert(person.to_owned(), draft);
+        if let Some(retry) = voice_retry {
+            self.profile_voice_retry(person, retry);
+        }
+        if record {
+            self.start_profile_voice_recording(ui.ctx(), person, username);
+        }
         send || (enter && can_send)
     }
 
@@ -23806,17 +23925,55 @@ impl CaperApp {
             change = response.clicked();
         }
         ui.add_space(4.0);
+        if target == pictures::Target::Avatar
+            && self
+                .account
+                .as_ref()
+                .is_some_and(|account| account.avatar_asset.is_none())
+        {
+            let regenerate = ui.add_enabled(
+                idle && !self.loading,
+                egui::Button::image(
+                    egui::Image::new(egui::include_image!("../resources/icons/rotate-ccw.svg"))
+                        .tint(TEXT)
+                        .fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                )
+                .min_size(egui::vec2(32.0, 32.0))
+                .corner_radius(16.0),
+            );
+            regenerate.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    idle && !self.loading,
+                    "Regenerate avatar",
+                )
+            });
+            if regenerate.on_hover_text("Regenerate avatar").clicked()
+                && let Some(token) = self.token.clone()
+            {
+                self.picture_edit.error = None;
+                self.picture_edit.busy = Some((pictures::Target::Avatar, false));
+                self.worker.send(Command::RegenerateAvatar {
+                    epoch: self.account_epoch,
+                    token,
+                });
+            }
+        }
         if let Some(removing) = busy {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().size(12.0).color(MUTED));
                 ui.label(
-                    RichText::new(if self.picture_edit.gallery.is_some() {
-                        "Saving…"
-                    } else if removing {
-                        "Removing…"
-                    } else {
-                        "Uploading…"
-                    })
+                    RichText::new(
+                        if self.picture_edit.gallery.is_some()
+                            || (target == pictures::Target::Avatar && !custom && !removing)
+                        {
+                            "Saving…"
+                        } else if removing {
+                            "Removing…"
+                        } else {
+                            "Uploading…"
+                        },
+                    )
                     .size(12.0)
                     .color(MUTED),
                 );
@@ -27806,8 +27963,31 @@ impl CaperApp {
     /// `None`) shows the recording bar instead of its input row.
     fn recording_in(&self, root: Option<&str>) -> bool {
         self.voice_recording.as_ref().is_some_and(|recording| {
-            recording.root.as_deref() == root
+            recording.profile.is_none()
+                && recording.root.as_deref() == root
                 && self.selected_channel.as_deref() == Some(recording.channel.as_str())
+        })
+    }
+
+    /// Whether `person`'s profile card composer shows the recording bar.
+    fn recording_for_profile(&self, person: &str) -> bool {
+        self.voice_recording
+            .as_ref()
+            .and_then(|recording| recording.profile.as_ref())
+            .is_some_and(|(id, _)| id == person)
+    }
+
+    /// Opens the microphone, stopping any voice message that plays. Tests
+    /// never open a real microphone; they deliver recorder events.
+    fn voice_recorder(&mut self, context: &egui::Context) -> Option<voice_note::Recorder> {
+        self.stop_voice_playback();
+        context.request_repaint();
+        (!cfg!(test)).then(|| {
+            voice_note::Recorder::start(
+                self.voice.preferences.input.clone(),
+                self.voice.preferences.input_percent,
+                context.clone(),
+            )
         })
     }
 
@@ -27815,22 +27995,75 @@ impl CaperApp {
         let Some(channel) = self.selected_channel.clone() else {
             return;
         };
-        if !self.can_attach() || self.voice_recording.is_some() {
+        if !self.mic_state().0 {
             return;
         }
-        // Recording never plays over a voice message.
-        self.stop_voice_playback();
         self.error = None;
-        // Tests never open a real microphone; they deliver recorder events.
-        let recorder = (!cfg!(test)).then(|| {
-            voice_note::Recorder::start(
-                self.voice.preferences.input.clone(),
-                self.voice.preferences.input_percent,
-                context.clone(),
-            )
-        });
+        let recorder = self.voice_recorder(context);
         self.voice_recording = Some(VoiceRecording::new(channel, root, recorder));
-        context.request_repaint();
+    }
+
+    /// The profile card's microphone: the voice message goes to the
+    /// person's DM through the card's own send (`profile_dm`).
+    fn start_profile_voice_recording(
+        &mut self,
+        context: &egui::Context,
+        person: &str,
+        username: &str,
+    ) {
+        if self.voice_recording.is_some() || self.gif_picker.is_some() {
+            return;
+        }
+        if let Some(draft) = self.profile_drafts.get_mut(person) {
+            draft.error = None;
+        }
+        let recorder = self.voice_recorder(context);
+        self.voice_recording = Some(VoiceRecording::for_profile(person, username, recorder));
+    }
+
+    /// Sends a recorded voice message alone to the person's DM, as the
+    /// card's Send does, leaving the card's text and files as they are.
+    fn send_profile_voice(&mut self, send: Box<profile_dm::Send>) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        let draft = self.profile_drafts.entry(send.person.clone()).or_default();
+        draft.sending = true;
+        draft.error = None;
+        draft.voice_retry = None;
+        draft.status = Some("Sending voice message…".into());
+        self.profile_send_cancel = Some(send.cancel.clone());
+        self.worker.send(Command::SendProfile {
+            epoch: self.account_epoch,
+            person: send.person.clone(),
+            token,
+            send,
+        });
+    }
+
+    /// Retry (`true`) or Discard a voice message the card couldn't send.
+    fn profile_voice_retry(&mut self, person: &str, retry: bool) {
+        let Some(mut send) = self
+            .profile_drafts
+            .get_mut(person)
+            .and_then(|draft| draft.voice_retry.take())
+        else {
+            return;
+        };
+        if let Some(draft) = self.profile_drafts.get_mut(person) {
+            draft.error = None;
+        }
+        if retry {
+            send.cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            self.send_profile_voice(send);
+        } else {
+            self.cancel_assets(
+                send.files
+                    .iter()
+                    .filter_map(|file| file.attachment.as_ref().map(|file| file.id.clone()))
+                    .collect(),
+            );
+        }
     }
 
     /// Trash or Escape: dropping the recorder closes the microphone and
@@ -27861,13 +28094,42 @@ impl CaperApp {
             // Under a second is a tap: nothing is uploaded.
             voice_note::RecorderEvent::TooShort => self.voice_recording = None,
             voice_note::RecorderEvent::Failed(error) => {
-                self.voice_recording = None;
-                self.error = Some(error);
+                match self
+                    .voice_recording
+                    .take()
+                    .and_then(|recording| recording.profile)
+                {
+                    Some((person, _)) => {
+                        self.profile_drafts.entry(person).or_default().error = Some(error);
+                    }
+                    None => self.error = Some(error),
+                }
             }
             voice_note::RecorderEvent::Ready(prepared) => {
                 let Some(recording) = self.voice_recording.take() else {
                     return;
                 };
+                if let Some((person, username)) = recording.profile {
+                    let send = Box::new(profile_dm::Send {
+                        person,
+                        username,
+                        name: self
+                            .account
+                            .as_ref()
+                            .and_then(|account| account.display_name.clone())
+                            .unwrap_or_default(),
+                        client_id: uuid::Uuid::new_v4().to_string(),
+                        text: String::new(),
+                        files: vec![profile_dm::File::voice(std::sync::Arc::new(*prepared))],
+                        settings: self.uploads.clone(),
+                        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                        retrying: false,
+                        open_only: false,
+                        direct: None,
+                    });
+                    self.send_profile_voice(send);
+                    return;
+                }
                 // The reply shown above the composer goes with the voice message.
                 let reply = self
                     .reply_targets
@@ -28012,14 +28274,26 @@ impl CaperApp {
     /// conversation; leaving it discards them.
     fn poll_voice(&mut self, context: &egui::Context) {
         let channel = self.selected_channel.clone();
-        if self.voice_recording.as_ref().is_some_and(|recording| {
-            channel.as_ref() != Some(&recording.channel)
-                || recording.root.as_ref().is_some_and(|root| {
-                    self.thread_view
-                        .as_ref()
-                        .is_none_or(|thread| &thread.root != root)
-                })
-        }) {
+        let card = self
+            .mention_card
+            .as_ref()
+            .and_then(|card| card.pill.entry.id.clone());
+        if self
+            .voice_recording
+            .as_ref()
+            .is_some_and(|recording| match &recording.profile {
+                // A card's recording ends with its card.
+                Some((person, _)) => card.as_ref() != Some(person),
+                None => {
+                    channel.as_ref() != Some(&recording.channel)
+                        || recording.root.as_ref().is_some_and(|root| {
+                            self.thread_view
+                                .as_ref()
+                                .is_none_or(|thread| &thread.root != root)
+                        })
+                }
+            })
+        {
             self.discard_voice_recording();
         }
         let gone: Vec<_> = self
@@ -28189,6 +28463,8 @@ impl CaperApp {
             (false, self.attach_unavailable_reason())
         } else if self.voice_recording.is_some() {
             (false, "Finish the current voice message first")
+        } else if self.gif_picker.is_some() {
+            (false, "Close the GIF picker first")
         } else {
             (true, "")
         }
@@ -28612,6 +28888,19 @@ fn voice_transcript(ui: &mut egui::Ui, attachment: &model::Attachment) {
     let rect = frame.response.rect;
     ui.painter()
         .vline(rect.left() + 1.0, rect.y_range(), Stroke::new(2.0, BORDER));
+}
+
+/// A labelled preview's recording bar: frozen at 0:07 with a sample meter.
+fn fixture_recording(mut bar: VoiceRecording) -> VoiceRecording {
+    bar.started = Some(Instant::now());
+    bar.fixed_elapsed = Some(Duration::from_secs(7));
+    bar.levels = (0..120)
+        .map(|index| {
+            let x = index as f32 / 9.0;
+            (0.15 + 0.8 * (x.sin() * (x * 0.37).cos()).abs()).min(1.0)
+        })
+        .collect();
+    bar
 }
 
 /// The composer's microphone, beside Emoji. True when it was clicked.
@@ -48576,6 +48865,210 @@ mod tests {
         app.poll_voice(&context);
         assert!(app.voice_recording.is_none());
         assert!(app.voice_sends.is_empty());
+    }
+
+    fn alex_direct() -> model::DirectConversation {
+        serde_json::from_value(serde_json::json!({
+            "id": "dm-alex", "peer": {"id": "fixture-alex", "username": "alex", "displayName": "Alex"},
+            "lastSeq": "1", "readSeq": "1", "status": "accepted"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn profile_card_records_and_sends_only_the_voice_message() {
+        let (context, mut app) = fixture("parity-voice-profile");
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let typed = "TEST FIXTURE typed text waits while recording";
+        assert!(texts(&output).contains(&typed));
+        let mics: Vec<_> = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.label() == Some("Record voice message"))
+            .filter_map(|(_, node)| node.bounds())
+            .collect();
+        assert_eq!(mics.len(), 2, "the channel composer's and the card's");
+        // The card's sits above the channel composer's, at the bottom.
+        let card_mic = mics
+            .iter()
+            .min_by(|a, b| a.y0.total_cmp(&b.y0))
+            .map(|bounds| {
+                egui::pos2(
+                    ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                    ((bounds.y0 + bounds.y1) / 2.0) as f32,
+                )
+            })
+            .unwrap();
+        click(&mut app, &context, card_mic);
+        assert!(app.recording_for_profile("fixture-alex"));
+        assert!(!app.recording_in(None), "the channel composer is untouched");
+        let output = render(&mut app, &context, vec![]);
+        assert!(node_bounds(&output, "Discard voice message").is_some());
+        assert!(
+            !texts(&output).contains(&typed),
+            "the bar replaces the field"
+        );
+        // Escape discards the recording; the card stays open.
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.voice_recording.is_none());
+        assert!(app.mention_card.is_some());
+        // A finished recording sends on its own through the card's send.
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        let prepared = voice_note::prepare(&[2_000; 96_000], None).unwrap();
+        app.voice_recorder_event(voice_note::RecorderEvent::Ready(Box::new(prepared)));
+        assert!(app.voice_recording.is_none());
+        let draft = &app.profile_drafts["fixture-alex"];
+        assert!(draft.sending);
+        assert_eq!(draft.status.as_deref(), Some("Sending voice message…"));
+        assert_eq!(draft.text, typed);
+        let voice = |client_id: &str| {
+            let prepared = voice_note::prepare(&[2_000; 96_000], None).unwrap();
+            let mut file = crate::profile_dm::File::voice(std::sync::Arc::new(prepared));
+            file.attachment = Some(voice_attachment("voice-dm"));
+            Box::new(crate::profile_dm::Send {
+                person: "fixture-alex".into(),
+                username: "alex".into(),
+                name: "Fixture Owner".into(),
+                client_id: client_id.into(),
+                text: String::new(),
+                files: vec![file],
+                settings: None,
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                retrying: false,
+                open_only: false,
+                direct: Some(alex_direct()),
+            })
+        };
+        // An uncertain failure keeps the voice message for Retry or Discard.
+        events
+            .send(crate::worker::Event::ProfileSent {
+                epoch: app.account_epoch,
+                person: "fixture-alex".into(),
+                send: voice("voice-client"),
+                result: Err(crate::profile_dm::Failure {
+                    message: "Local test failure".into(),
+                    uncertain: true,
+                }),
+            })
+            .unwrap();
+        app.receive();
+        let draft = &app.profile_drafts["fixture-alex"];
+        assert!(!draft.sending);
+        assert_eq!(draft.text, typed, "the typed text stays");
+        assert!(draft.retry_id.is_none(), "the text draft is not frozen");
+        let retry = draft.voice_retry.as_ref().unwrap();
+        assert!(retry.retrying, "same message ID on retry");
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Voice message not sent. Local test failure"));
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Retry voice message"),
+        );
+        let draft = &app.profile_drafts["fixture-alex"];
+        assert!(draft.sending && draft.voice_retry.is_none());
+        // Success opens the DM as a text send does, keeping the typed text.
+        events
+            .send(crate::worker::Event::ProfileSent {
+                epoch: app.account_epoch,
+                person: "fixture-alex".into(),
+                send: voice("voice-client"),
+                result: Ok(alex_direct()),
+            })
+            .unwrap();
+        app.receive();
+        assert!(app.mention_card.is_none(), "the card closes");
+        assert!(
+            app.navigation_target
+                .as_ref()
+                .and_then(|target| target.channel.as_deref())
+                .or(app.selected_channel.as_deref())
+                == Some("dm-alex"),
+            "the DM opens as after a text send"
+        );
+        let draft = &app.profile_drafts["fixture-alex"];
+        assert!(!draft.sending && draft.error.is_none());
+        assert_eq!(draft.text, typed);
+    }
+
+    #[test]
+    fn microphones_wait_while_the_gif_picker_is_open() {
+        let (context, mut app) = fixture("parity-voice-profile");
+        assert!(app.mic_state().0);
+        app.gif_picker = Some(crate::klipy::Picker::new(None, None, 0));
+        assert_eq!(app.mic_state(), (false, "Close the GIF picker first"));
+        app.start_voice_recording(&context, None);
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        assert!(
+            app.voice_recording.is_none(),
+            "no composer records meanwhile"
+        );
+        app.gif_picker = None;
+        assert!(app.mic_state().0);
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        assert!(app.recording_for_profile("fixture-alex"));
+    }
+
+    #[test]
+    fn profile_voice_discard_and_closing_the_card_end_it() {
+        let (context, mut app) = fixture("parity-voice-profile-recording");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"0:07"));
+        click(
+            &mut app,
+            &context,
+            node_bounds(&output, "Discard voice message")
+                .unwrap()
+                .center(),
+        );
+        assert!(app.voice_recording.is_none());
+        assert!(app.mention_card.is_some());
+        // Closing the card discards a recording in it.
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        app.mention_card = None;
+        app.poll_voice(&context);
+        assert!(app.voice_recording.is_none());
+        // A microphone failure reads in the card.
+        app.install_voice_profile_fixture(false);
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        app.voice_recorder_event(voice_note::RecorderEvent::Failed(
+            voice_note::ACCESS_NEEDED.into(),
+        ));
+        assert_eq!(
+            app.profile_drafts["fixture-alex"].error.as_deref(),
+            Some(voice_note::ACCESS_NEEDED)
+        );
+        assert!(app.error.is_none(), "not in the channel composer");
+        // Discarding a failed voice message cancels its upload.
+        app.profile_drafts
+            .get_mut("fixture-alex")
+            .unwrap()
+            .voice_retry = Some(Box::new(crate::profile_dm::Send {
+            person: "fixture-alex".into(),
+            username: "alex".into(),
+            name: String::new(),
+            client_id: "c".into(),
+            text: String::new(),
+            files: Vec::new(),
+            settings: None,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            retrying: false,
+            open_only: false,
+            direct: None,
+        }));
+        app.profile_voice_retry("fixture-alex", false);
+        assert!(app.profile_drafts["fixture-alex"].voice_retry.is_none());
+        assert!(!app.profile_drafts["fixture-alex"].sending);
     }
 
     #[test]

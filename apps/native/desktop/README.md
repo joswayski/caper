@@ -115,7 +115,11 @@ It does not embed Electron, Tauri, a WebView, or a JavaScript runtime.
   transcript: three lines with View/Hide transcript, "Transcribing…" while
   pending, nothing when failed or unavailable; `message.attachments` updates
   fill it in place. Quotes and forward previews read "Voice message". The
-  profile card's quick-message composer has no microphone yet.
+  profile card's quick-message composer has the same microphone and bar; its
+  voice message goes alone to the person's DM through the card's own send
+  (DM lookup or creation, request/block checks, same-ID retry), then opens the
+  DM like a text send while the card's typed text and files stay. A failed one
+  offers Retry voice message or Discard.
 - Sending up to 10 files per message in channel, DM and thread composers,
   including attachment-only thread replies. Staged files and text belong to
   their conversation/thread and survive closing a thread or switching conversations;
@@ -515,7 +519,8 @@ uploads.
 `parity-voice-messages` previews labelled voice messages with a clamped ready
 transcript, a pending one, one without transcript or waveform, and an ordinary
 audio card; `parity-voice-recording` adds the recording bar at a frozen 0:07.
-Neither plays, uploads nor opens a microphone.
+Neither plays, uploads nor opens a microphone. `parity-voice-profile` opens
+Alex's profile card over them with typed text, and `-recording` its bar.
 `parity-thread-attachments` previews the same chips inside a thread;
 `parity-thread-attachments-ready` previews an attachment-only reply, and
 `parity-thread-attachments-rejected` previews a rejected reply with Edit/Dismiss.

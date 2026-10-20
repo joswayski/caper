@@ -3213,6 +3213,35 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun regenerateAvatar() {
+        val key = PROFILE_PICTURE_KEY
+        if (mutable.value.pictureSaves[key]?.busy == true || mutable.value.account?.avatarAsset != null) return
+        val token = accountToken ?: return
+        val epoch = accountGeneration
+        setPictureSave(key, PictureSaveUi(regenerating = true))
+        pictureJobs[key] = viewModelScope.launch {
+            try {
+                val updated = api.regenerateAvatar(token)
+                if (epoch != accountGeneration) return@launch
+                applyOwnAccount(updated)
+                setPictureSave(key, null)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                if (failure is chat.caper.android.data.ApiException && failure.status == 409) {
+                    try {
+                        val refreshed = api.me(token)
+                        if (epoch == accountGeneration) applyOwnAccount(refreshed)
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { }
+                }
+                if (epoch == accountGeneration) setPictureSave(key, PictureSaveUi(error =
+                    if (failure is chat.caper.android.data.ApiException && failure.status == 409)
+                        "Your picture changed elsewhere. Remove your custom picture before regenerating."
+                    else "Couldn’t regenerate avatar. Please retry."))
+            }
+        }
+    }
+
     suspend fun avatarHistory(epoch: Long, cursor: String?) : chat.caper.android.model.AvatarHistory {
         check(epoch == accountGeneration)
         val result = api.avatarHistory(accountToken ?: error("Signed out"), cursor)
