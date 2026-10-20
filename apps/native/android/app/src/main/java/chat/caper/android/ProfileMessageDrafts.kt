@@ -2,7 +2,10 @@ package chat.caper.android
 
 import chat.caper.android.data.*
 import chat.caper.android.model.*
+import java.io.IOException
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -15,10 +18,18 @@ internal data class ProfileMessageDraft(
     val sending: Boolean = false,
     val uncertain: Boolean = false,
     val error: String? = null,
+    /** A voice message that didn't send (or isn't confirmed) and waits for Retry or Discard. */
+    val voice: ProfileVoiceStatus? = null,
 ) {
     val editable: Boolean get() = !sending && !uncertain
     val canSend: Boolean get() = !sending && (text.isNotBlank() || files.isNotEmpty()) &&
         files.all { it.localUrl != null }
+}
+
+/** [uncertain]: a send may have reached the server, so Retry resends the same message. */
+internal data class ProfileVoiceStatus(val uncertain: Boolean) {
+    val message: String get() =
+        if (uncertain) "Voice message delivery isn’t confirmed. Retry resends the same message." else "Voice message didn’t send."
 }
 
 /** Profile drafts never use the active conversation's composer; only Send posts a message. */
@@ -30,6 +41,7 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
     private val pending = mutableMapOf<String, PendingSendTracker>()
     private val uploader = AttachmentUploader(api)
     private val uploadLocks = mutableMapOf<String, Mutex>()
+    private val voices = mutableMapOf<String, WaitingVoice>()
     @Volatile private var epoch = 0L
 
     operator fun get(person: String): ProfileMessageDraft = mutable.value[person] ?: ProfileMessageDraft()
@@ -75,12 +87,16 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
         return true
     }
 
-    /** Logout invalidates in-flight completions as well as every person's text, files and retry ID. */
+    /**
+     * Logout invalidates in-flight completions as well as every person's text, files, retry ID and
+     * waiting voice message (returned like a file, so its upload is cancelled and its copy deleted).
+     */
     fun clear(): List<DraftAttachmentUi> {
         ++epoch
-        val files = mutable.value.values.flatMap { it.files }
+        val files = mutable.value.values.flatMap { it.files } +
+            voices.values.map { DraftAttachmentUi(it.key, VoiceMessages.LABEL, "audio", attachment = it.attachment) }
         mutable.value = emptyMap()
-        prepared.clear(); conversations.clear(); pending.clear(); uploadLocks.clear()
+        prepared.clear(); conversations.clear(); pending.clear(); uploadLocks.clear(); voices.clear()
         return files
     }
 
@@ -179,7 +195,8 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
             current()
             tracker.confirm(message)
             draft.files.forEach { prepared.remove(it.key) }
-            mutable.update { it - person }
+            // A voice message waiting for Retry stays with the person.
+            mutable.update { drafts -> drafts[person]?.voice?.let { drafts + (person to ProfileMessageDraft(voice = it)) } ?: (drafts - person) }
             pending.remove(person)
             conversations.remove(person)
             return conversation to message
@@ -197,6 +214,123 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
         } finally {
             if (request == epoch && person in mutable.value) update(person) { it.copy(sending = false) }
         }
+    }
+
+    /**
+     * Sends a recorded voice message ([voice], prepared with `voice = true`, its working copy
+     * under [key]) to this person's DM on its own, through the same voice upload as the
+     * conversation composers. The typed text, staged files and any unconfirmed text send stay as
+     * they are; the DM is resolved and checked exactly as for Send. One waits at a time: a send
+     * that fails or whose outcome is unknown keeps the recording for [retryVoice] or [discardVoice].
+     */
+    suspend fun sendVoice(
+        person: String, id: String?, username: String, token: String, key: String, voice: PreparedAttachment,
+        session: suspend () -> Pair<String, ChatAuthor>,
+        directs: () -> List<DirectConversation>, blocked: () -> Set<String>,
+    ): Pair<DirectConversation, ChatMessage>? {
+        if (!voice.voice || person in voices || !get(person).editable) return null
+        voices[person] = WaitingVoice(key, voice)
+        return deliverVoice(person, id, username, token, session, directs, blocked)
+    }
+
+    /** Sends the waiting voice message again: the same upload, and the same message once a send may have arrived. */
+    suspend fun retryVoice(
+        person: String, id: String?, username: String, token: String,
+        session: suspend () -> Pair<String, ChatAuthor>,
+        directs: () -> List<DirectConversation>, blocked: () -> Set<String>,
+    ): Pair<DirectConversation, ChatMessage>? {
+        if (person !in voices || get(person).sending) return null
+        return deliverVoice(person, id, username, token, session, directs, blocked)
+    }
+
+    /** The working-copy key of [person]'s waiting voice message, if one waits. */
+    fun voiceKey(person: String): String? = voices[person]?.key
+
+    /** Drops the waiting voice message: its reservation is cancelled; returns its key so the caller deletes the file. */
+    suspend fun discardVoice(person: String, token: String?): String? {
+        if (get(person).sending) return null
+        val waiting = voices.remove(person) ?: return null
+        update(person) { it.copy(voice = null) }
+        dropIfEmpty(person)
+        waiting.attachment?.let { if (token != null) api.cancelAsset(token, it.id) }
+        return waiting.key
+    }
+
+    private suspend fun deliverVoice(
+        person: String, id: String?, username: String, token: String,
+        session: suspend () -> Pair<String, ChatAuthor>,
+        directs: () -> List<DirectConversation>, blocked: () -> Set<String>,
+    ): Pair<DirectConversation, ChatMessage>? {
+        val waiting = voices[person] ?: return null
+        val request = epoch
+        fun current() { if (request != epoch) throw CancellationException("Signed out.") }
+        update(person) { it.copy(sending = true, error = null) }
+        try {
+            val (capability, author) = session()
+            current()
+            val conversation = upload(person, id, username, token, directs, blocked, keys = emptySet(), request = request)
+            // Once a send may have arrived, a retry repeats it exactly: same conversation, file and ID.
+            if (waiting.clientMessageId != null) check(waiting.conversationId == conversation.id) {
+                "The conversation changed. The previous voice message is still unconfirmed."
+            }
+            val stale = waiting.clientMessageId == null && System.currentTimeMillis() - waiting.uploadedAt >= 23 * 60 * 60 * 1000L
+            if (waiting.attachment == null || stale) {
+                waiting.attachment?.let { api.cancelAsset(token, it.id) }
+                waiting.attachment = null
+                waiting.attachment = uploader.upload(token, conversation.id, waiting.file)
+                waiting.uploadedAt = System.currentTimeMillis()
+                current()
+            }
+            val attachment = requireNotNull(waiting.attachment)
+            val clientMessageId = waiting.clientMessageId ?: UUID.randomUUID().also {
+                waiting.clientMessageId = it
+                waiting.conversationId = conversation.id
+            }
+            val send = suspend { api.sendMessage(token, capability, conversation.id, author, clientMessageId, "", listOf(attachment.id)) }
+            // Retried once after a lost response, like the composers' sends.
+            val message = try { send() } catch (error: IOException) {
+                if (error is ApiException) throw error
+                delay(250)
+                send()
+            }
+            current()
+            voices.remove(person)
+            update(person) { it.copy(voice = null) }
+            dropIfEmpty(person)
+            return conversation to message
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            current()
+            val refused = error is ApiException && classifySendFailure(error.status) != SendFailure.UNKNOWN
+            if (refused) {
+                // A definitive refusal drops the recording and says why; nothing was or will be sent.
+                voices.remove(person)
+                waiting.attachment?.let { api.cancelAsset(token, it.id) }
+                update(person) { it.copy(voice = null, error = (error as ApiException).code?.let(::directMessageError) ?: friendlyError(error)) }
+            } else {
+                update(person) { it.copy(voice = ProfileVoiceStatus(uncertain = waiting.clientMessageId != null)) }
+            }
+            return null
+        } finally {
+            if (request == epoch && person in mutable.value) update(person) { it.copy(sending = false) }
+        }
+    }
+
+    /** A draft with nothing left in it (no text, files, error or waiting voice message) goes away. */
+    private fun dropIfEmpty(person: String) {
+        mutable.update { drafts ->
+            val draft = drafts[person] ?: return@update drafts
+            if (draft.text.isEmpty() && draft.files.isEmpty() && !draft.uncertain && draft.error == null && draft.voice == null) drafts - person
+            else drafts
+        }
+    }
+
+    /** A recording kept after a failed send: its file, upload and (once a send may have arrived) message ID. */
+    private class WaitingVoice(val key: String, val file: PreparedAttachment) {
+        var attachment: ChatAttachment? = null
+        var uploadedAt = 0L
+        var clientMessageId: UUID? = null
+        var conversationId: String? = null
     }
 
     private fun update(person: String, change: (ProfileMessageDraft) -> ProfileMessageDraft) {

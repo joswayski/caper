@@ -83,6 +83,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -97,6 +98,8 @@ import chat.caper.android.data.seekPosition
 import chat.caper.android.data.transcriptState
 import chat.caper.android.model.ChatAttachment
 import chat.caper.android.ui.*
+import chat.caper.android.voice.VoiceCallService
+import chat.caper.android.voice.VoiceState
 import java.io.File
 import java.util.UUID
 import kotlin.math.roundToInt
@@ -508,6 +511,12 @@ internal fun voiceRecordBlockedReason(pendingMessage: Boolean, inVoiceCall: Bool
     pendingMessage -> "Wait for your last message to send, then record."
     inVoiceCall && sdk < 29 -> "Leave the voice channel to record a voice message on this Android version."
     else -> null
+}
+
+/** [voiceRecordBlockedReason] for this device, following the voice call as it starts and ends. */
+@Composable internal fun voiceRecordBlocked(pendingMessage: Boolean): String? {
+    val call by VoiceCallService.state.collectAsStateWithLifecycle()
+    return voiceRecordBlockedReason(pendingMessage, call.phase != VoiceState.Phase.IDLE && call.phase != VoiceState.Phase.FAILED)
 }
 
 /**

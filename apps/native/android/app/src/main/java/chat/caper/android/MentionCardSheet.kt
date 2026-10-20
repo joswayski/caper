@@ -176,6 +176,13 @@ import kotlinx.coroutines.launch
                         edit = { key, change, preview -> viewModel.editProfileAttachment(person, key, change, preview) },
                         retry = { viewModel.retryProfileAttachment(person, it) },
                         pickerInteraction = { picking = it },
+                        recordVoice = { recording ->
+                            if (viewModel.accountEpoch == pickerEpoch) viewModel.sendProfileVoice(person, card.id, card.username,
+                                recording.file, recording.durationMs, recording.waveform, onMessageSent ?: onDismiss)
+                            else recording.file.delete()
+                        },
+                        retryVoice = { viewModel.retryProfileVoice(person, card.id, card.username, onMessageSent ?: onDismiss) },
+                        discardVoice = { viewModel.discardProfileVoice(person) },
                     )
                 }
             }
@@ -251,8 +258,15 @@ import kotlinx.coroutines.launch
     toggleSpoiler: ((String) -> Unit)? = null,
     edit: ((String, AttachmentEdit?, Bitmap?) -> Unit)? = null,
     retry: ((String) -> Unit)? = null,
+    /** Sends a held-to-record voice message on its own (the typed text and files stay); null hides the mic. */
+    recordVoice: ((VoiceRecording) -> Unit)? = null,
+    retryVoice: () -> Unit = {},
+    discardVoice: () -> Unit = {},
 ) {
     var field by remember { mutableStateOf(TextFieldValue(draft.text, TextRange(draft.text.length))) }
+    val recorder = rememberVoiceRecorder(username) { recording -> recordVoice?.invoke(recording) ?: recording.file.delete() }
+    // One voice message waits at a time.
+    val voiceBlocked = if (draft.voice != null) "Retry or discard the voice message that didn’t send first." else voiceRecordBlocked(pendingMessage = false)
     var emojiPicker by remember { mutableStateOf(false) }
     var filePicker by remember { mutableStateOf(false) }
     LaunchedEffect(draft.text) {
@@ -261,44 +275,58 @@ import kotlinx.coroutines.launch
     val editable = writable && draft.editable
     DraftAttachmentStrip(draft.files, remove, retry, enabled = editable, uploadOnSend = true, sending = draft.sending,
         edit = edit, toggleSpoiler = toggleSpoiler)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-        EmojiTextField(
-            field, { value ->
-                val limited = if (value.text.codePointCount(0, value.text.length) <= 4000) value else {
-                    val limitedText = value.text.substring(0, value.text.offsetByCodePoints(0, 4000))
-                    value.copy(text = limitedText, selection = TextRange(value.selection.start.coerceAtMost(limitedText.length), value.selection.end.coerceAtMost(limitedText.length)), composition = null)
-                }
-                field = limited; text(limited.text)
-            }, Modifier.weight(1f).attachmentPaste(editable && uploadsEnabled, add), placeholder = { Text("Message @$username", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
-            visualTransformation = MentionVisualTransformation(MentionSource(listOf(MentionCandidate(username, username)), specials = false, feedback = true)),
-            leadingIcon = {
-                AttachButton(
-                    when {
-                        !uploadsEnabled -> "File uploads are unavailable"
-                        draft.files.size >= chat.caper.android.data.AttachmentPolicy.MAX_ATTACHMENTS -> "You can attach up to ${chat.caper.android.data.AttachmentPolicy.MAX_ATTACHMENTS} files."
-                        !editable -> "Sending…"
-                        else -> null
-                    }, add, interaction = { filePicker = it; pickerInteraction(it || emojiPicker) }, paste = paste,
-                    drawer = AttachDrawerHost(draft.files, remove, canSend = writable && draft.canSend, send = send),
-                )
-            },
-            trailingIcon = {
-                EmojiInsertButton(editable, interaction = { emojiPicker = it; pickerInteraction(it || filePicker) }) { emoji ->
-                    if (editable) insertEmojiAtSelection(field, emoji)?.let { field = it; text(it.text) }
-                }
-            },
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-            enabled = editable, colors = composerFieldColors(),
-        )
-        FilledIconButton(
-            send,
-            Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = if (draft.uncertain) "Retry send" else "Send to @$username" },
-            enabled = writable && draft.canSend, shape = MaterialTheme.shapes.small,
-            colors = IconButtonDefaults.filledIconButtonColors(
-                containerColor = Action, contentColor = OnAction,
-                disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
-            ),
-        ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
+    VoiceRecordingNotice(recorder)
+    Box {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+            EmojiTextField(
+                field, { value ->
+                    val limited = if (value.text.codePointCount(0, value.text.length) <= 4000) value else {
+                        val limitedText = value.text.substring(0, value.text.offsetByCodePoints(0, 4000))
+                        value.copy(text = limitedText, selection = TextRange(value.selection.start.coerceAtMost(limitedText.length), value.selection.end.coerceAtMost(limitedText.length)), composition = null)
+                    }
+                    field = limited; text(limited.text)
+                }, Modifier.weight(1f).attachmentPaste(editable && uploadsEnabled, add), placeholder = { Text("Message @$username", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
+                visualTransformation = MentionVisualTransformation(MentionSource(listOf(MentionCandidate(username, username)), specials = false, feedback = true)),
+                leadingIcon = {
+                    AttachButton(
+                        when {
+                            !uploadsEnabled -> "File uploads are unavailable"
+                            draft.files.size >= chat.caper.android.data.AttachmentPolicy.MAX_ATTACHMENTS -> "You can attach up to ${chat.caper.android.data.AttachmentPolicy.MAX_ATTACHMENTS} files."
+                            !editable -> "Sending…"
+                            else -> null
+                        }, add, interaction = { filePicker = it; pickerInteraction(it || emojiPicker) }, paste = paste,
+                        drawer = AttachDrawerHost(draft.files, remove, canSend = writable && draft.canSend, send = send),
+                    )
+                },
+                trailingIcon = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        EmojiInsertButton(editable, interaction = { emojiPicker = it; pickerInteraction(it || filePicker) }) { emoji ->
+                            if (editable) insertEmojiAtSelection(field, emoji)?.let { field = it; text(it.text) }
+                        }
+                        if (uploadsEnabled && recordVoice != null) VoiceRecordButton(recorder, editable, voiceBlocked)
+                    }
+                },
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                enabled = editable, colors = composerFieldColors(),
+            )
+            FilledIconButton(
+                send,
+                Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = if (draft.uncertain) "Retry send" else "Send to @$username" },
+                enabled = writable && draft.canSend, shape = MaterialTheme.shapes.small,
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = Action, contentColor = OnAction,
+                    disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
+                ),
+            ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
+        }
+        if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
+    }
+    draft.voice?.let { voice ->
+        Row(Modifier.semantics { liveRegion = LiveRegionMode.Polite }, verticalAlignment = Alignment.CenterVertically) {
+            Text(voice.message, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+            TextButton(retryVoice, enabled = writable && !draft.sending, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry") }
+            TextButton(discardVoice, enabled = !draft.sending, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Discard") }
+        }
     }
     if (draft.sending) Text("Sending…", Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp)
     draft.error?.let {
