@@ -767,6 +767,10 @@ html:has(.sidebar-sections-resize:active) * {
 .channel-select[aria-current="page"] svg {
   color: var(--terracotta-bright);
 }
+.direct-select[data-unread] > span:nth-child(2) {
+  color: var(--text);
+  font-weight: 700;
+}
 .channel-select[aria-busy="true"],
 .space-rail button[aria-busy="true"] {
   cursor: progress;
@@ -2827,7 +2831,8 @@ html:has(.sidebar-sections-resize:active) * {
     transition: none;
   }
 }
-.direct-request-count {
+.direct-request-count,
+.direct-unread-count {
   flex: 0 0 auto;
   min-width: 18px;
   height: 18px;

@@ -2300,6 +2300,7 @@ impl CaperApp {
                             peer,
                             last_seq: "1".into(),
                             read_seq: "1".into(),
+                            unread_count: None,
                             status,
                             blocked: false,
                         };
@@ -2399,6 +2400,7 @@ impl CaperApp {
                         },
                         last_seq: "2".into(),
                         read_seq: "2".into(),
+                        unread_count: None,
                         status: model::DirectStatus::Accepted,
                         blocked: false,
                     }];
@@ -2486,6 +2488,7 @@ impl CaperApp {
                         },
                         last_seq: "4".into(),
                         read_seq: "1".into(),
+                        unread_count: None,
                         status: model::DirectStatus::Accepted,
                         blocked: false,
                     };
@@ -12684,8 +12687,9 @@ impl CaperApp {
                     .as_ref()
                     .is_some_and(|direct| self.selected_direct.as_deref() == Some(&direct.id));
             let self_unread = self_direct.as_ref().is_some_and(|direct| {
-                model::sequence(&direct.last_seq).unwrap_or(0)
-                    > model::sequence(&direct.read_seq).unwrap_or(0)
+                direct.unread_count != Some(0)
+                    && model::sequence(&direct.last_seq).unwrap_or(0)
+                        > model::sequence(&direct.read_seq).unwrap_or(0)
             });
             ui.horizontal(|ui| {
                 let display_name = account
@@ -12734,8 +12738,22 @@ impl CaperApp {
                     rect.width() - 32.0 - if self_unread { 22.0 } else { 6.0 },
                     (
                         display_name,
-                        egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into())),
-                        if self_active || lit { TEXT } else { MUTED },
+                        egui::FontId::new(
+                            13.0,
+                            egui::FontFamily::Name(
+                                if self_unread {
+                                    "Satoshi Bold"
+                                } else {
+                                    "Satoshi Medium"
+                                }
+                                .into(),
+                            ),
+                        ),
+                        if self_active || lit || self_unread {
+                            TEXT
+                        } else {
+                            MUTED
+                        },
                     ),
                     (
                         "you",
@@ -12766,8 +12784,12 @@ impl CaperApp {
                     && self.selected_direct.as_deref() == Some(&direct.id);
                 let scope = Scope::Direct(direct.id.clone());
                 let muted = self.muted_label(&scope);
-                // A muted DM shows no unread dot.
+                // A known zero overrides cursor activity (edits/reactions also
+                // advance it). Local read acknowledgement hides stale counts.
                 let unread = muted.is_none()
+                    && !direct.blocked
+                    && !self.is_blocked(&direct.peer.id)
+                    && direct.unread_count != Some(0)
                     && model::sequence(&direct.last_seq).unwrap_or(0)
                         > model::sequence(&direct.read_seq).unwrap_or(0);
                 // As on web: you blocked them, or they haven't accepted yet.
@@ -12787,6 +12809,7 @@ impl CaperApp {
                         active,
                         RowExtras {
                             feedback_waiting: 0,
+                            unread_count: direct.unread_count.filter(|_| unread),
                             muted,
                             unread,
                             direct: true,
@@ -27422,11 +27445,13 @@ struct RowMenu<'a> {
 struct RowExtras<'a> {
     /// Team reply backlog, independent of unread activity.
     feedback_waiting: u64,
+    /// Authoritative DM count, already gated by cursor and mute/block state.
+    unread_count: Option<u64>,
     /// Muted rows are dimmed with a bell-slash; this is its tooltip, like
     /// "Muted until 5:00 PM".
     muted: Option<String>,
     unread: bool,
-    /// A DM row: its unread dot is terracotta, as on web.
+    /// A DM row: bold white unread name and terracotta badge (legacy dot).
     direct: bool,
     /// A quieter note after the name, such as a DM's "Blocked".
     suffix: Option<&'a str>,
@@ -27479,6 +27504,8 @@ fn channel_button(
                     "{name}, {} feedback conversations waiting for a reply",
                     extras.feedback_waiting
                 )
+            } else if let Some(count) = extras.unread_count {
+                format!("{name}, {count} unread messages")
             } else if extras.unread {
                 format!("{name}, unread activity")
             } else {
@@ -27508,11 +27535,13 @@ fn channel_button(
         }
     };
     // Web's `.channel-select:hover` brightens the name and icon too.
-    let color = dim(if active || response.hovered() {
-        TEXT
-    } else {
-        MUTED
-    });
+    let color = dim(
+        if active || response.hovered() || (extras.direct && extras.unread) {
+            TEXT
+        } else {
+            MUTED
+        },
+    );
     if let Some(icon) = icon {
         paint_icon(
             ui.painter(),
@@ -27682,7 +27711,29 @@ fn channel_button(
         muted_indicator(ui, bell, response.id.with("muted"), label);
         name_right -= 20.0;
     }
-    if extras.unread {
+    if let Some(count) = extras.unread_count {
+        let text = if count > 99 {
+            "99+".to_owned()
+        } else {
+            count.to_string()
+        };
+        let font = egui::FontId::new(11.5, egui::FontFamily::Name("Satoshi Bold".into()));
+        let (galley, width) = tabular_galley(ui, &text, &font, TEXT);
+        let badge = egui::Rect::from_center_size(
+            egui::pos2(name_right - (width + 12.0) / 2.0, rect.center().y),
+            egui::vec2(width + 12.0, 18.0),
+        );
+        ui.painter().rect_filled(badge, 8.0, TERRACOTTA);
+        ui.painter().galley(
+            egui::pos2(
+                badge.center().x - width / 2.0,
+                badge.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            TEXT,
+        );
+        name_right = badge.left() - 8.0;
+    } else if extras.unread {
         // A DM's dot is terracotta (web's `.direct-unread`), a channel's text.
         ui.painter().circle_filled(
             egui::pos2(name_right - 6.0, rect.center().y),
@@ -27695,7 +27746,17 @@ fn channel_button(
         );
         name_right -= 16.0;
     }
-    let name_font = egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Medium".into()));
+    let name_font = egui::FontId::new(
+        13.0,
+        egui::FontFamily::Name(
+            if extras.direct && extras.unread {
+                "Satoshi Bold"
+            } else {
+                "Satoshi Medium"
+            }
+            .into(),
+        ),
+    );
     if let Some(suffix) = extras.suffix {
         paint_row_name(
             ui,
@@ -35521,6 +35582,7 @@ mod tests {
             },
             last_seq: "1".into(),
             read_seq: "0".into(),
+            unread_count: None,
             status: model::DirectStatus::Incoming,
             blocked: false,
         });
@@ -36275,6 +36337,92 @@ mod tests {
             labels.iter().any(|item| item == "Mute channel"),
             "{labels:?}"
         );
+    }
+
+    #[test]
+    fn dm_unread_counts_render_badges_names_and_accessible_totals() {
+        let context = egui::Context::default();
+        let mut app = notification_app(
+            &context,
+            "http://127.0.0.1:9",
+            "parity-direct",
+            serde_json::json!([]),
+        );
+        app.directs[0].last_seq = "900".into();
+        app.directs[0].read_seq = "1".into();
+        app.selected_direct = None;
+        let name = "TEST FIXTURE Maya";
+        for (count, badge) in [
+            (None, None),
+            (Some(0), None),
+            (Some(7), Some("7")),
+            (Some(99), Some("99")),
+            (Some(120), Some("99+")),
+        ] {
+            app.directs[0].unread_count = count;
+            // The sidebar renders cloned conversations: the count must survive.
+            let output = settle(&mut app, &context);
+            let unread = count != Some(0);
+            let label = match count {
+                Some(n) if n > 0 => format!("{name}, {n} unread messages"),
+                None => format!("{name}, unread activity"),
+                _ => name.to_owned(),
+            };
+            let row = node_bounds(&output, &label).expect("accessible unread total");
+            assert_eq!(
+                text_color(&output, name),
+                if unread { super::TEXT } else { super::MUTED }
+            );
+            let font = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == name => {
+                        Some(&text.galley.job.sections[0].format.font_id.family)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                font,
+                &egui::FontFamily::Name(
+                    if unread {
+                        "Satoshi Bold"
+                    } else {
+                        "Satoshi Medium"
+                    }
+                    .into()
+                )
+            );
+            assert_eq!(direct_dots(&output), usize::from(count.is_none()));
+            if let Some(badge) = badge {
+                assert!(texts(&output).contains(&badge));
+                assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Rect(rect) if rect.fill == super::TERRACOTTA && row.contains_rect(rect.rect) && rect.rect.height() == 18.0
+                )));
+            }
+        }
+        for state in ["read", "blocked", "muted", "incoming"] {
+            app.directs[0].unread_count = Some(120);
+            app.directs[0].read_seq = if state == "read" { "900" } else { "1" }.into();
+            app.directs[0].blocked = state == "blocked";
+            app.directs[0].status = if state == "incoming" {
+                model::DirectStatus::Incoming
+            } else {
+                model::DirectStatus::Accepted
+            };
+            app.notifications = notification_settings(serde_json::json!({
+                "level": "mentions", "mobile": "whenInactive", "overrides": if state == "muted" {
+                    serde_json::json!([{"conversationId":"dm0000000001","mutedUntil":"forever"}])
+                } else { serde_json::json!([]) }
+            }));
+            let output = settle(&mut app, &context);
+            assert!(!texts(&output).contains(&"99+"), "{state}");
+            assert!(
+                node_bounds(&output, &format!("{name}, 120 unread messages")).is_none(),
+                "{state}"
+            );
+        }
     }
 
     #[test]
@@ -39302,6 +39450,7 @@ mod tests {
             },
             last_seq: "0".into(),
             read_seq: "0".into(),
+            unread_count: None,
             status: crate::model::DirectStatus::Accepted,
             blocked: false,
         }];
@@ -43433,6 +43582,7 @@ mod tests {
                     },
                     last_seq: "0".into(),
                     read_seq: "0".into(),
+                    unread_count: None,
                     status: model::DirectStatus::Accepted,
                     blocked: false,
                 };
@@ -45680,6 +45830,7 @@ mod tests {
             },
             last_seq: "0".into(),
             read_seq: "0".into(),
+            unread_count: None,
             status: model::DirectStatus::Accepted,
             blocked: false,
         };
@@ -48180,6 +48331,7 @@ mod tests {
             },
             last_seq: "3".into(),
             read_seq: "2".into(),
+            unread_count: None,
             status: model::DirectStatus::Accepted,
             blocked: false,
         };
@@ -48241,6 +48393,7 @@ mod tests {
             },
             last_seq: "0".into(),
             read_seq: "0".into(),
+            unread_count: None,
             status: model::DirectStatus::Accepted,
             blocked: false,
         };
@@ -54685,6 +54838,7 @@ mod tests {
             },
             last_seq: "9".into(),
             read_seq: "1".into(),
+            unread_count: None,
             status: model::DirectStatus::Accepted,
             blocked: false,
         }];

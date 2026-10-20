@@ -364,7 +364,7 @@ async function testDirectMessages() {
   wait('document.querySelector(".chat-messages")?.textContent.includes("a private conversation across spaces.")');
   await control({ incomingMessage: { channelId: "dm0000000001", text: "A live reply from Alex." } });
   wait('document.querySelector(".chat-messages")?.textContent.includes("A live reply from Alex.")');
-  wait('!document.querySelector(".direct-unread")');
+  wait('!document.querySelector(".direct-select[data-unread]")');
   screenshot("dm-desktop");
   browser("click", "#space-channel-list li:first-child .channel-select");
   wait('document.querySelector(".chat-heading")?.textContent.includes("general")');
@@ -375,10 +375,19 @@ async function testDirectMessages() {
   );
   await control({ incomingMessage: { channelId: "dm0000000001", text: "Unread while browsing a channel." } });
   browser("reload");
-  wait('!!document.querySelector(".direct-unread")');
+  wait('document.querySelector(".direct-unread-count")?.textContent === "1"');
+  assert.equal(
+    evaluate('document.querySelector(".direct-unread-count").getAttribute("aria-label")'),
+    "1 unread message",
+  );
+  assert.equal(
+    evaluate('getComputedStyle(document.querySelector(".direct-select[data-unread] > span:nth-child(2)")).fontWeight'),
+    "700",
+  );
+  screenshot("dm-unread-desktop");
   browser("click", ".direct-select:not(.direct-self)");
   wait(
-    'document.querySelector(".chat-messages")?.textContent.includes("Unread while browsing a channel.") && !document.querySelector(".direct-unread")',
+    'document.querySelector(".chat-messages")?.textContent.includes("Unread while browsing a channel.") && !document.querySelector(".direct-select[data-unread]")',
   );
   assert.equal((await conversations()).conversations[0].readSeq, "3");
   const dmHistory = await (

@@ -47,6 +47,11 @@ test("DM requests are global and unread comparisons preserve large sequence valu
     directUnread({ id: "direct000001", peer, lastSeq: "9007199254740992", readSeq: "9007199254740993" }),
     false,
   );
+  const conversation = { id: "direct000001", peer, lastSeq: "24", readSeq: "7" };
+  assert.equal(directUnread({ ...conversation, unreadCount: 0 }), false, "activity alone is not unread mail");
+  assert.equal(directUnread({ ...conversation, unreadCount: 3 }), true);
+  assert.equal(directUnread({ ...conversation, unreadCount: 3, readSeq: "24" }), false, "local read clears unread");
+  assert.equal(directUnread({ ...conversation, unreadCount: 3, status: "incoming" }), false);
 });
 
 test("space and channel names enforce the browser-visible API rules", () => {

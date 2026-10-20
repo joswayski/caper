@@ -2826,6 +2826,7 @@ export default function Spaces({
             <button
               type="button"
               className="channel-select direct-select direct-self"
+              data-unread={selfDirect && directUnread(selfDirect) ? "" : undefined}
               disabled={selfDirectPending}
               aria-busy={selfDirectPending || (!!selfDirect && pendingDirect === selfDirect.id)}
               aria-current={selfDirect && selfDirect.id === directView?.conversation.id ? "page" : undefined}
@@ -2896,12 +2897,14 @@ export default function Spaces({
           .map((conversation) => {
             const conversationNotifications = overrideFor(notifications, { conversationId: conversation.id });
             const muted = isMuted(conversationNotifications?.mutedUntil);
+            const unread = !muted && !blockedIds.has(conversation.peer.id) && directUnread(conversation);
             return (
               <li key={conversation.id} data-muted={muted ? "" : undefined}>
                 <div className="direct-line">
                   <button
                     type="button"
                     className="channel-select direct-select"
+                    data-unread={unread ? "" : undefined}
                     aria-current={conversation.id === directView?.conversation.id ? "page" : undefined}
                     title={`@${conversation.peer.username}`}
                     aria-busy={pendingDirect === conversation.id}
@@ -2918,14 +2921,29 @@ export default function Spaces({
                     ) : (
                       directStatus(conversation) === "outgoing" && <small>Request sent</small>
                     )}
-                    {/* A muted DM shows no unread dot. */}
+                    {/* Muted DMs keep their quiet presentation. */}
                     {muted ? (
                       <>
                         <BellOff className="muted-icon" aria-hidden="true" />
                         <span className="sr-only">, muted</span>
                       </>
                     ) : (
-                      directUnread(conversation) && <span className="direct-unread" aria-label="Unread messages" />
+                      unread && (
+                        <span
+                          className={conversation.unreadCount === undefined ? "direct-unread" : "direct-unread-count"}
+                          aria-label={
+                            conversation.unreadCount === undefined
+                              ? "Unread messages"
+                              : `${conversation.unreadCount} unread ${conversation.unreadCount === 1 ? "message" : "messages"}`
+                          }
+                        >
+                          {conversation.unreadCount === undefined
+                            ? null
+                            : conversation.unreadCount > 99
+                              ? "99+"
+                              : conversation.unreadCount}
+                        </span>
+                      )
                     )}
                   </button>
                   <details

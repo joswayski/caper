@@ -55,6 +55,13 @@ fn pool(state: &AppState) -> Result<&PgPool, ApiError> {
 pub(crate) async fn conversations(pool: &PgPool, user: i64) -> Result<Vec<Value>, ApiError> {
     sqlx::query_scalar(
         "SELECT jsonb_build_object('id',c.external_id,'peer',jsonb_build_object('id',u.external_id,'username',u.username,'displayName',u.display_name,'avatarId',u.avatar_id,'avatarAsset',u.avatar_asset,'team',u.team_account,'admin',EXISTS(SELECT 1 FROM public.feedback_team f WHERE f.user_id=u.id AND f.deleted_at IS NULL)),'lastSeq',c.last_seq::text,'readSeq',COALESCE(r.seq,0)::text,
+                'unreadCount',(SELECT count(*) FROM public.messages m
+                  JOIN public.chat_sessions author ON author.id=m.session_id
+                  WHERE m.channel_id=c.id AND m.channel_seq>COALESCE(r.seq,0)
+                    AND m.deleted_at IS NULL AND author.user_id<>$1
+                    AND (m.thread_root_id IS NULL OR m.broadcast)
+                    AND d.accepted_at IS NOT NULL
+                    AND NOT EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=u.id AND b.deleted_at IS NULL)),
                 'status',CASE WHEN d.accepted_at IS NOT NULL THEN 'accepted' WHEN d.requested_by=$1 THEN 'outgoing' ELSE 'incoming' END,
                 'blocked',EXISTS(SELECT 1 FROM public.user_blocks b WHERE b.blocker_id=$1 AND b.blocked_id=u.id AND b.deleted_at IS NULL))
          FROM public.direct_conversations d JOIN public.channels c ON c.id=d.channel_id

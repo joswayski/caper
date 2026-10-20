@@ -16,6 +16,127 @@ async fn replay(socket: &mut gateway::testing::Socket) -> [Value; 2] {
     [message, ready]
 }
 
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable loopback DATABASE_URL"]
+async fn unread_counts_messages_not_activity_or_own_messages(pool: PgPool) {
+    let mut users = Vec::new();
+    let mut sessions = Vec::new();
+    for name in ["reader", "sender"] {
+        let user: i64 = sqlx::query_scalar(
+            "INSERT INTO users (external_id,username,display_name) VALUES ($1,$2,$2) RETURNING id",
+        )
+        .bind(random_id(12))
+        .bind(name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let session: i64 = sqlx::query_scalar(
+            "INSERT INTO chat_sessions (external_id,token_hash,user_id,name) VALUES ($1,$2,$3,$4) RETURNING id",
+        ).bind(random_id(12)).bind(name.as_bytes()).bind(user).bind(name).fetch_one(&pool).await.unwrap();
+        users.push(user);
+        sessions.push(session);
+    }
+    let id = create_conversation(&pool, users[0], "sender")
+        .await
+        .unwrap();
+    let channel: i64 = sqlx::query_scalar("SELECT id FROM channels WHERE external_id=$1")
+        .bind(&id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    // Sparse sequences represent other events between messages. Only 4 and 9
+    // are unread incoming timeline messages; 9 is a broadcast thread reply.
+    let mut root = None;
+    for (seq, author, deleted, threaded, broadcast) in [
+        (1_i64, 1, false, false, false),
+        (4, 1, false, false, false),
+        (5, 0, false, false, false),
+        (6, 1, true, false, false),
+        (8, 1, false, true, false),
+        (9, 1, false, true, true),
+    ] {
+        let message: i64 = sqlx::query_scalar(
+            "INSERT INTO messages (external_id,channel_id,session_id,client_message_id,request_hash,channel_seq,payload,deleted_at,thread_root_id,broadcast)
+             VALUES ($1,$2,$3,$4,$5,$6,'{}',CASE WHEN $7 THEN now() END,$8,$9) RETURNING id",
+        ).bind(random_id(12)).bind(channel).bind(sessions[author]).bind(Uuid::new_v4())
+            .bind(b"fixture".as_slice()).bind(seq).bind(deleted).bind(if threaded { root } else { None })
+            .bind(broadcast).fetch_one(&pool).await.unwrap();
+        if root.is_none() {
+            root = Some(message);
+        }
+    }
+    sqlx::query("UPDATE channels SET last_seq=12 WHERE id=$1")
+        .bind(channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    mark_read(&pool, users[0], &id, 1).await.unwrap();
+    let mut config = Config::test(false);
+    config.auth_fixture = false;
+    let app = crate::app(AppState::with_database(
+        config,
+        Arc::new(Cloudflare::new()),
+        Some(pool.clone()),
+    ));
+    sqlx::query("INSERT INTO account_sessions (token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 day')")
+        .bind(Sha256::digest(b"reader-token").to_vec()).bind(users[0]).execute(&pool).await.unwrap();
+    // Pending requests do not count. Acceptance exposes the actual count.
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            "/api/dms",
+            Some("reader-token"),
+            None,
+            Value::Null
+        )
+        .await
+        .1["conversations"][0]["unreadCount"],
+        0
+    );
+    sqlx::query("UPDATE direct_conversations SET accepted_at=now() WHERE channel_id=$1")
+        .bind(channel)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let listed = request(
+        &app,
+        "GET",
+        "/api/dms",
+        Some("reader-token"),
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(listed.0, StatusCode::OK);
+    assert_eq!(listed.1["conversations"][0]["unreadCount"], 2);
+    mark_read(&pool, users[0], &id, 4).await.unwrap();
+    assert_eq!(
+        conversations(&pool, users[0]).await.unwrap()[0]["unreadCount"],
+        1
+    );
+    sqlx::query("INSERT INTO user_blocks (blocker_id,blocked_id) VALUES ($1,$2)")
+        .bind(users[0])
+        .bind(users[1])
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        conversations(&pool, users[0]).await.unwrap()[0]["unreadCount"],
+        0
+    );
+    sqlx::query("UPDATE user_blocks SET deleted_at=now() WHERE blocker_id=$1")
+        .bind(users[0])
+        .execute(&pool)
+        .await
+        .unwrap();
+    mark_read(&pool, users[0], &id, 9).await.unwrap();
+    assert_eq!(
+        conversations(&pool, users[0]).await.unwrap()[0]["unreadCount"],
+        0
+    );
+}
+
 async fn request(
     app: &Router,
     method: &str,

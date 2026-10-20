@@ -101,7 +101,7 @@ public final class AppModel {
                 return DirectMessageConversation(id: conversation.id,
                     peer: DirectMessagePeer(admin: conversation.peer.admin, id: conversation.peer.id, username: username, displayName: name, avatarId: conversation.peer.avatarId, team: conversation.peer.team,
                                             avatarAsset: picture.asset, avatarUrl: picture.url),
-                    lastSeq: conversation.lastSeq, readSeq: conversation.readSeq, status: conversation.status, blocked: conversation.blocked)
+                    lastSeq: conversation.lastSeq, readSeq: conversation.readSeq, status: conversation.status, blocked: conversation.blocked, unreadCount: conversation.unreadCount)
             }
         }
         set { directMessageSnapshots = newValue }

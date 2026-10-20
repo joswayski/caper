@@ -80,11 +80,12 @@ final class ProfileUpdatesTests: XCTestCase {
 
         XCTAssertEqual(profiles.apply(Person(id: maya.id, username: "maya", displayName: "Maya")).displayName, "Maya R")
         let peer = DirectMessagePeer(id: maya.id, username: "maya", displayName: "Maya", avatarId: 31, team: true)
-        let conversation = profiles.apply(DirectMessageConversation(id: "Dm0000000001", peer: peer, lastSeq: "4", readSeq: "2", status: .incoming, blocked: true))
+        let conversation = profiles.apply(DirectMessageConversation(id: "Dm0000000001", peer: peer, lastSeq: "4", readSeq: "2", status: .incoming, blocked: true, unreadCount: 120))
         XCTAssertEqual(conversation.peer.displayName, "Maya R")
         XCTAssertEqual(conversation.peer.avatarPicture?.asset, "Pic0000000000000new1")
         XCTAssertTrue(conversation.peer.isTeam)
         XCTAssertEqual([conversation.lastSeq, conversation.readSeq], ["4", "2"], "cursors never change")
+        XCTAssertEqual(conversation.unreadCount, 120, "profile updates preserve message counts")
         XCTAssertEqual(conversation.status, .incoming)
         XCTAssertTrue(conversation.blocked)
 

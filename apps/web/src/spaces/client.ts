@@ -48,6 +48,8 @@ export interface DirectConversation {
   };
   lastSeq: string;
   readSeq: string;
+  /** Incoming main-timeline messages, not stream events. Older servers omit it. */
+  unreadCount?: number;
   /** Older servers omit it: treat as accepted. */
   status?: "accepted" | "outgoing" | "incoming";
   /** You blocked the peer. The other side is never told. */
@@ -61,7 +63,12 @@ export function directStatus(conversation: DirectConversation) {
 
 /** Requests for you never count as unread. */
 export function directUnread(conversation: DirectConversation) {
-  return directStatus(conversation) !== "incoming" && BigInt(conversation.lastSeq) > BigInt(conversation.readSeq);
+  return (
+    directStatus(conversation) !== "incoming" &&
+    !conversation.blocked &&
+    BigInt(conversation.lastSeq) > BigInt(conversation.readSeq) &&
+    (conversation.unreadCount === undefined || conversation.unreadCount > 0)
+  );
 }
 
 /** People sharing a space or DM with you, for `@` suggestions in DMs. */

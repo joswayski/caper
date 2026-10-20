@@ -67,6 +67,7 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     val readSeq: String,
     val status: String? = null,
     val blocked: Boolean = false,
+    val unreadCount: Long? = null,
 ) {
     val incoming: Boolean get() = status == "incoming"
     val outgoing: Boolean get() = status == "outgoing"
