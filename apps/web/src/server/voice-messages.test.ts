@@ -21,13 +21,15 @@ import {
   encodeWaveform,
   formatVoiceDuration,
   isVoiceAttachment,
+  LiveBars,
+  liveBarLevel,
+  liveBarShape,
   barFill,
   barsFor,
   getVoiceSendOnStop,
   loudness,
   resampleWaveform,
   setVoiceSendOnStop,
-  smoothLevel,
   spokenDuration,
   transcriptView,
   voiceContentType,
@@ -113,14 +115,34 @@ test("any waveform length resamples by linear interpolation to the bars that fit
   assert.equal(barFill(3, 4, 1), 1);
 });
 
-test("the live meter rises fast and falls slowly", () => {
-  let level = 0;
-  level = smoothLevel(level, 1);
-  assert.equal(level, 0.6, "attack");
-  const before = level;
-  level = smoothLevel(level, 0);
-  assert.ok(level < before && level > 0.5, "release is slower");
-  assert.equal(smoothLevel(0.2, Number.NaN), 0.2 * 0.88);
+test("live bars keep each slice's peak and fall fast between words", () => {
+  const bars = new LiveBars(3);
+  assert.equal(bars.sample(0.4, 0), false, "the first sample starts the clock");
+  bars.sample(0.9, 10);
+  assert.equal(bars.sample(0.2, 25), true);
+  assert.deepEqual(bars.values, [0.9], "the loudest level in the slice");
+  bars.sample(0, 50);
+  assert.ok(Math.abs(bars.values[1] - 0.9 * 0.35) < 1e-9, "falls at most to 35%");
+  bars.sample(Number.NaN, 60);
+  assert.equal(bars.sample(0.5, 75), true, "constant cadence");
+  assert.equal(bars.lastBarAt, 75);
+  bars.sample(0.5, 400);
+  assert.equal(bars.lastBarAt, 400, "a stall restarts the cadence");
+  assert.equal(bars.values.length, 3, "history is capped");
+});
+
+test("live bars stretch speech and pinch toward the left", () => {
+  assert.equal(liveBarLevel(0.28), 0);
+  assert.equal(liveBarLevel(0.75), 1);
+  assert.equal(liveBarLevel(1), 1);
+  const right = liveBarShape(400, 400);
+  assert.equal(right.scale, 0, "arrives flat");
+  assert.equal(right.alpha, 0, "and invisible");
+  const middle = liveBarShape(200, 400);
+  assert.deepEqual(middle, { scale: 1, alpha: 1 });
+  const left = liveBarShape(0, 400);
+  assert.ok(Math.abs(left.scale - 0.3) < 1e-9, "pinched to 30%");
+  assert.equal(left.alpha, 0, "faded out");
 });
 
 test("sending as soon as recording stops is off unless the person turns it on", (t) => {

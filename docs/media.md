@@ -2784,8 +2784,17 @@ instead, on its own. The profile card's quick message works the same way.
 Waveforms are per-slice RMS loudness on a -50..0 dB scale, lightly smoothed
 and normalised (Android approximates RMS from MediaRecorder's amplitude
 readings). Players draw evenly spaced rounded bars by linear interpolation,
-with per-frame progress; live levels use fast-attack, slow-release smoothing
-and scroll at a steady rate (stepped under reduced motion).
+with per-frame progress.
+
+The live recording meter is the same on every client. It adds a bar every
+25 ms holding the loudest level in that slice, and a bar may fall to 35% of the
+one before, so gaps between words show. The meter draws `clamp((v - 0.28) /
+0.47) ^ 1.2` of its height, which stretches speech (about -35 to -12 dB) to the
+full height. Bars are 3 px pills 6 px apart and at least a 3 px dot; loud bars
+warm from grey toward eggshell. A new bar arrives flat at the right edge and
+swells to full size over 36 px. Within 40 px of the left edge bars pinch to 30%
+of their height, and they fade out over the left 10% of the meter. It redraws
+every frame and scrolls continuously, stepping instead under reduced motion.
 
 ### Platform status
 

@@ -16,7 +16,9 @@ export const WAVEFORM_SLICES = 64;
 /** How often the input level is sampled while recording (50 Hz). */
 export const LEVEL_INTERVAL_MS = 20;
 /** The live meter adds one bar this often and scrolls between them. */
-export const LIVE_BAR_MS = 70;
+export const LIVE_BAR_MS = 25;
+/** A live bar may fall to this share of the one before, so gaps between words show. */
+const LIVE_FALL = 0.35;
 /** Waveform bars: width and gap in CSS pixels, shared by the player, chip and meter. */
 export const BAR_WIDTH = 3;
 export const BAR_GAP = 2;
@@ -228,10 +230,53 @@ export function attachmentsExcerpt(attachments: readonly unknown[] | undefined) 
     : "Attachment";
 }
 
-/** The live meter's level: fast attack, slower release, per 20 ms sample. */
-export function smoothLevel(previous: number, rms: number): number {
-  const next = Math.max(0, rms || 0);
-  return previous + (next - previous) * (next > previous ? 0.6 : 0.12);
+/** The live meter's bars, newest last: the loudest level (0–1) in each
+ * LIVE_BAR_MS, falling at most to LIVE_FALL of the bar before. */
+export class LiveBars {
+  readonly values: number[] = [];
+  /** When the newest bar was added (ms); undefined before the first sample. */
+  lastBarAt: number | undefined;
+  private peak = 0;
+  constructor(private readonly capacity = 240) {}
+
+  /** Feeds one level at `now`; true when that added a bar. */
+  sample(level: number, now: number): boolean {
+    this.peak = Math.max(this.peak, Math.min(1, Math.max(0, level || 0)));
+    const last = this.lastBarAt;
+    if (last === undefined) {
+      this.lastBarAt = now;
+      return false;
+    }
+    if (now - last < LIVE_BAR_MS) return false;
+    const value = Math.max(this.peak, (this.values.at(-1) ?? 0) * LIVE_FALL);
+    this.values.push(value);
+    if (this.values.length > this.capacity) this.values.shift();
+    this.peak = 0;
+    // Constant cadence; after a stall, restart from now instead of catching up.
+    this.lastBarAt = now - last > LIVE_BAR_MS * 3 ? now : last + LIVE_BAR_MS;
+    return true;
+  }
+}
+
+/** A live bar's drawn height (0–1): speech sits around -35 to -12 dB, so that
+ * band is stretched to the meter's full height. */
+export function liveBarLevel(value: number): number {
+  return Math.min(1, Math.max(0, (value - 0.28) / 0.47)) ** 1.2;
+}
+
+const smoothstep = (from: number, to: number, value: number) => {
+  const t = Math.min(1, Math.max(0, (value - from) / (to - from)));
+  return t * t * (3 - 2 * t);
+};
+
+/** How a live bar centred `x` px into a `width` px meter is drawn: it arrives
+ * flat at the right and swells over 36 px, then pinches to 30% and fades out
+ * near the left edge. */
+export function liveBarShape(x: number, width: number): { scale: number; alpha: number } {
+  const fromRight = width - x;
+  const pinch = 1 - 0.7 * (1 - smoothstep(0, Math.min(40, width * 0.8), x));
+  const swell = 1 - (1 - Math.min(1, Math.max(0, fromRight / 36))) ** 3;
+  return { scale: pinch * swell, alpha: smoothstep(0, width * 0.1, x) * smoothstep(0, 10, fromRight) };
 }
 
 // One voice message plays at a time across the app; recording stops playback.

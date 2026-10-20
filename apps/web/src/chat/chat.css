@@ -5728,31 +5728,14 @@ a.chat-draft-preview {
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
 }
-/* The live meter scrolls right to left at a constant rate: a new bar every
-   70 ms, slid in by --shift between additions (static with reduced motion). */
+/* The live meter, drawn on a canvas: a new bar every 25 ms scrolling right to
+   left (stepping with reduced motion). */
 .chat-voice-levels {
-  display: flex;
-  flex: 1 1 auto;
-  justify-content: flex-end;
+  display: block;
+  /* A zero basis, so the canvas's own pixel size never feeds back into the row. */
+  flex: 1 1 0;
   min-width: 0;
   height: 24px;
-  overflow: hidden;
-}
-.chat-voice-levels > span {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 2px;
-  height: 100%;
-  margin-right: -5px;
-  translate: var(--shift, 0) 0;
-}
-.chat-voice-levels > span > span {
-  flex: none;
-  width: 3px;
-  min-height: 3px;
-  border-radius: 999px;
-  background: var(--text-muted);
 }
 .chat-voice-recorder[data-mode="hold"] {
   padding-right: 52px;
