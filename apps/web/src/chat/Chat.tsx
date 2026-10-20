@@ -50,7 +50,9 @@ import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
-import { MAX_ATTACHMENTS, AttachmentUpload, refreshAttachmentUrls, uploadSettings } from "./uploads.ts";
+import { MAX_ATTACHMENTS, AttachmentUpload, refreshAttachmentUrls, uploadSettings, UploadError } from "./uploads.ts";
+import { isVoiceAttachment, type VoiceRecording } from "./voice.ts";
+import type { VoiceComposer } from "./VoiceRecorder.tsx";
 import { editableKind, type CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar, { type AvatarPerson } from "../components/Avatar";
@@ -648,9 +650,10 @@ export default function Chat({
       latestMessage &&
       !blockedAuthor(latestMessage.author, blockedIds, state.author?.id)
     ) {
-      const files = attachmentsOf(latestMessage).length;
+      const attached = attachmentsOf(latestMessage);
+      const files = attached.length;
       setAnnouncement(
-        `${latestMessage.author.name}: ${latestMessage.content.text || `sent ${files === 1 ? "a file" : `${files} files`}`}`,
+        `${latestMessage.author.name}: ${latestMessage.content.text || (files && attached.every(isVoiceAttachment) ? "sent a voice message" : `sent ${files === 1 ? "a file" : `${files} files`}`)}`,
       );
     }
   }, [latestMessage?.id, state.phase]);
@@ -1311,6 +1314,81 @@ export default function Chat({
       setScrollTarget("latest");
     }
     return sent;
+  };
+
+  // Voice messages upload as recorded, then send on their own: the composer's
+  // text and staged files stay where they are. One per composer at a time.
+  const voiceUploads = useRef(new Map<string, { upload: AttachmentUpload; broadcast: boolean }>());
+  const [voiceSends, setVoiceSends] = useState<Record<string, { error?: string } | undefined>>({});
+  const latestState = useRef(state);
+  latestState.current = state;
+  const setVoiceSend = (key: string, value: { error?: string } | undefined) =>
+    setVoiceSends((current) => ({ ...current, [key]: value }));
+  const sendVoice = async (key: string) => {
+    const entry = voiceUploads.current.get(key);
+    const client = clientRef.current;
+    if (!entry || !client) return;
+    setVoiceSend(key, {});
+    let attachment: ChatAttachment;
+    try {
+      attachment = await entry.upload.ensure();
+    } catch (error) {
+      if (voiceUploads.current.get(key) === entry)
+        setVoiceSend(key, { error: error instanceof UploadError ? error.message : "Failed to upload." });
+      return;
+    }
+    if (voiceUploads.current.get(key) !== entry || client !== clientRef.current) return;
+    // The client sends one message at a time and would retry the pending one instead.
+    if (latestState.current.pendingSend) {
+      setVoiceSend(key, { error: "Wait for your last message to send, then retry." });
+      return;
+    }
+    // From here the pending row owns the file, with its own retry and errors.
+    voiceUploads.current.delete(key);
+    setVoiceSend(key, undefined);
+    const threadRootId = key === "channel" ? undefined : key;
+    await client
+      .send("", {
+        attachments: [attachment],
+        uploads: [entry.upload],
+        threadRootId,
+        broadcast: entry.broadcast,
+        replyTo: replyTargets[key],
+      })
+      .catch(() => false);
+  };
+  const discardVoice = (key: string) => {
+    voiceUploads.current.get(key)?.upload.release(true);
+    voiceUploads.current.delete(key);
+    setVoiceSend(key, undefined);
+  };
+  const recordVoice = (recording: VoiceRecording, threadRootId?: string, broadcast = false) => {
+    const channel = state.channelId;
+    if (!signedIn || !channel) return;
+    const key = threadRootId ?? "channel";
+    voiceUploads.current.get(key)?.upload.release(true);
+    voiceUploads.current.set(key, { upload: AttachmentUpload.voice(channel, recording), broadcast });
+    void sendVoice(key);
+  };
+  useEffect(
+    () => () => {
+      for (const entry of voiceUploads.current.values()) entry.upload.release(true);
+      voiceUploads.current.clear();
+      setVoiceSends({});
+    },
+    [channelId],
+  );
+  const voiceFor = (threadRootId?: string): VoiceComposer | undefined => {
+    if (!signedIn || readOnly) return;
+    const key = threadRootId ?? "channel";
+    const status = voiceSends[key];
+    return {
+      onRecorded: (recording, options) => recordVoice(recording, threadRootId, options?.broadcast),
+      sending: !!status && !status.error,
+      error: status?.error,
+      onRetry: () => void sendVoice(key),
+      onDiscard: () => discardVoice(key),
+    };
   };
 
   // Share the formatters across visible rows (memoized rows compare them), but
@@ -2161,6 +2239,7 @@ export default function Chat({
                       onToggleSpoiler: toggleSpoiler,
                       // A pending send carries these files; editing would cancel them under it.
                       editing: state.pendingSend ? undefined : draftEditing,
+                      voice: voiceFor(),
                     }
                   : undefined
               }
@@ -2194,6 +2273,7 @@ export default function Chat({
                 onRetry: retryUpload,
                 onToggleSpoiler: toggleSpoiler,
                 editing: state.pendingSend ? undefined : draftEditing,
+                voice: state.thread ? voiceFor(state.thread.rootId) : undefined,
               }
             : undefined
         }

@@ -10,6 +10,7 @@ import { insertEmoji } from "./emoji-autocomplete.ts";
 import MentionTextarea from "./MentionTextarea.tsx";
 import type { MentionCandidate } from "./mentions.ts";
 import { MAX_ATTACHMENTS } from "./uploads.ts";
+import { useVoiceRecorder, type VoiceComposer } from "./VoiceRecorder.tsx";
 
 /** Files picked for the next message; the conversation owns their uploads. */
 export interface ComposerAttachments {
@@ -26,6 +27,8 @@ export interface ComposerAttachments {
   onToggleSpoiler?: (key: string) => void;
   /** Opens images and videos in the editor before sending. */
   editing?: DraftEditing;
+  /** Recording and sending voice messages, where attachments can be sent. */
+  voice?: VoiceComposer;
 }
 
 export interface ComposerHandle {
@@ -197,6 +200,12 @@ export default function Composer({
   const characterCount = Array.from(draft).length;
   const error = validationError ?? attachments?.error;
   const canAttach = !!attachments?.enabled;
+  const voice = useVoiceRecorder({
+    voice: attachments?.voice,
+    // One send at a time: a voice message waits for the pending one.
+    disabled: !canAttach || disabled || !identityReady || sending || sendRejected || !!pendingSend,
+    returnFocus: composerRef,
+  });
 
   return (
     <>
@@ -205,6 +214,7 @@ export default function Composer({
           {error}
         </p>
       )}
+      {voice.notice}
       {attachments && (
         <DraftAttachments
           drafts={attachments.drafts}
@@ -216,6 +226,7 @@ export default function Composer({
       )}
       <form
         data-attach={!!attachments || undefined}
+        data-voice={!!attachments?.voice || undefined}
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -277,6 +288,7 @@ export default function Composer({
         />
         <div className="chat-composer-tools">
           <EmojiButton disabled={disabled} onSelect={chooseEmoji} returnFocus={composerRef} />
+          {voice.button}
           {/* Touch layouts get a visible send button, as in the native apps; a
               keyboard's Enter still sends everywhere. */}
           <button
@@ -297,6 +309,7 @@ export default function Composer({
             <Send size={16} aria-hidden="true" />
           </button>
         </div>
+        {voice.bar}
         <span id="chat-composer-hint" className="sr-only">
           Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
           suggestions. Enter to send. Shift+Enter for a new line.

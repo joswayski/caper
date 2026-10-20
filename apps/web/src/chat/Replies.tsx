@@ -1,4 +1,4 @@
-import { EyeOff, File, Paperclip, X } from "lucide-react";
+import { EyeOff, File, Mic, Paperclip, X } from "lucide-react";
 import { Reply } from "../../../../shared/message-icons.ts";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import socketArtwork from "../../../../shared/reply-socket.svg";
@@ -10,6 +10,7 @@ import {
   type ChatMessage,
   type ChatReplyReference,
 } from "./types.ts";
+import { attachmentLabel, attachmentsExcerpt, isVoiceAttachment } from "./voice.ts";
 
 export function replyReference(message: ChatMessage): ChatReplyReference {
   const text = message.content.text || (message.forward ? "Forwarded message" : "");
@@ -33,13 +34,19 @@ function ReplyThumbnail({ file }: { file: ChatAttachment }) {
       ? file.previewUrl ||
         (file.kind === "image" && !file.animated && file.contentType !== "image/gif" ? file.url : undefined)
       : undefined;
-  const label = file.spoiler ? "Spoiler attachment" : file.unavailable ? "Unavailable attachment" : file.name;
+  const label = file.spoiler
+    ? "Spoiler attachment"
+    : file.unavailable
+      ? "Unavailable attachment"
+      : attachmentLabel(file);
   return (
     <span className="chat-reply-thumbnail" title={label}>
       {source && !failed ? (
         <img src={source} alt={label} loading="lazy" onError={() => setFailed(true)} />
       ) : file.spoiler ? (
         <EyeOff size={18} aria-label={label} />
+      ) : isVoiceAttachment(file) ? (
+        <Mic size={18} aria-label={label} />
       ) : (
         <File size={18} aria-label={label} />
       )}
@@ -251,7 +258,8 @@ export function ReplyContext({
             >
               {reference.deleted
                 ? "Original message was deleted."
-                : (expanded ? text : preview) || (reference.hasAttachments ? "Attachment" : "Message")}
+                : (expanded ? text : preview) ||
+                  (reference.hasAttachments ? attachmentsExcerpt(reference.attachments) : "Message")}
               {!expanded && preview !== text && "…"}
             </span>
           )}
@@ -298,7 +306,8 @@ export function ReplyDraft({
         </span>
         {!hidden && (
           <span className="chat-reply-draft-excerpt">
-            {(reference.fullText ?? reference.text) || (reference.hasAttachments ? "Attachment" : "Message")}
+            {(reference.fullText ?? reference.text) ||
+              (reference.hasAttachments ? attachmentsExcerpt(reference.attachments) : "Message")}
           </span>
         )}
       </div>

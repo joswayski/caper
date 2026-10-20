@@ -36,6 +36,9 @@ const author = (member) => ({ id: member.id, name: member.displayName, isGuest: 
 const demoSpace = { id: ids.demoSpace, name: "Caper", ownerId: ids.owner, demo: true };
 const demoChannel = { id: ids.demo, spaceId: ids.demoSpace, name: "general", private: false };
 const clone = (value) => structuredClone(value);
+const voiceTranscriptDelayMs = Number(process.env.CAPER_FIXTURE_TRANSCRIPT_MS ?? 1500);
+const fixtureTranscript =
+  "TEST FIXTURE transcript. Yo, what's going on? Just checking in about Saturday: are we still meeting at the park around noon, or did that move to the afternoon? Let me know when you get a chance and I'll bring snacks and the speaker.";
 
 function historyWindow(messages, url) {
   const before = url.searchParams.get("before"),
@@ -118,6 +121,7 @@ function initialState() {
     forwardEvents: new Map(),
     forwardSources: new Map(),
     editEvents: new Map(),
+    attachmentEvents: new Map(),
     versions: new Map(),
     invitations: new Map(),
     inviteLinks: new Map(),
@@ -312,6 +316,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       ...(state.pinEvents.get(channelId) ?? []),
       ...(state.forwardEvents.get(channelId) ?? []),
       ...(state.editEvents.get(channelId) ?? []),
+      ...(state.attachmentEvents.get(channelId) ?? []),
     ].sort((a, b) => (BigInt(a.seq) < BigInt(b.seq) ? -1 : 1));
   const channelHead = (channelId) => channelEvents(channelId).at(-1)?.seq ?? "0";
   const directDTO = ({ declined: _declined, ...conversation }) => ({
@@ -349,6 +354,31 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       state.forwardEvents.set(wrapper.channelId, [...(state.forwardEvents.get(wrapper.channelId) ?? []), event]);
       broadcast("chat", wrapper.channelId, event);
     }
+  };
+  // TEST FIXTURE transcription: a voice message's transcript lands a moment
+  // after it is sent, as a sequenced message.attachments event like the API's.
+  const transcribe = (message) => {
+    if (!message.content.attachments?.some((attachment) => attachment.voice)) return;
+    setTimeout(() => {
+      const current = state.messages.get(message.channelId)?.find((row) => row.id === message.id);
+      if (!current || current.deletedAt) return;
+      current.content.attachments = current.content.attachments.map((attachment) =>
+        attachment.voice && attachment.transcript?.status === "pending"
+          ? { ...attachment, transcript: { status: "ready", text: fixtureTranscript } }
+          : attachment,
+      );
+      current.attachmentsSeq = String(BigInt(channelHead(current.channelId)) + 1n);
+      const event = {
+        type: "message.attachments",
+        schemaVersion: 1,
+        channelId: current.channelId,
+        seq: current.attachmentsSeq,
+        messageId: current.id,
+        attachments: clone(current.content.attachments),
+      };
+      state.attachmentEvents.set(current.channelId, [...(state.attachmentEvents.get(current.channelId) ?? []), event]);
+      broadcast("chat", current.channelId, event);
+    }, voiceTranscriptDelayMs);
   };
   const created = (message) => {
     const event = { type: "message.created", channelId: message.channelId, seq: message.seq, message: clone(message) };
@@ -481,13 +511,15 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       const path = url.pathname.replace(/^\/api\/v1\//, "/api/");
       let bytes = 0;
       const chunks = [];
+      const assetPut = /^\/api\/assets\/([^/]+)\/fixture-(upload|preview)$/.exec(path);
       for await (const chunk of request) {
         bytes += chunk.length;
-        if (bytes > 256 * 1024) return reject(response, 413, "Fixture request too large.");
+        // Voice recordings go up whole; everything else stays small.
+        if (bytes > (assetPut ? 8 * 1024 * 1024 : 256 * 1024))
+          return reject(response, 413, "Fixture request too large.");
         chunks.push(chunk);
       }
       const method = request.method;
-      const assetPut = /^\/api\/assets\/([^/]+)\/fixture-(upload|preview)$/.exec(path);
       const body = chunks.length && !assetPut ? JSON.parse(Buffer.concat(chunks)) : {};
       if (path === "/health") return json(response, 200, { fixture: true });
       if (path === "/__fixture/push-devices" && method === "GET")
@@ -710,11 +742,22 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const channel = channelFor(body.channelId);
         if (!channel || !canParticipate(channel, user)) return reject(response, 404, "resource not found");
         const id = randomUUID().replaceAll("-", "").slice(0, 15);
+        const voice = body.voice === true;
+        if (
+          voice &&
+          (!String(body.contentType).startsWith("audio/") ||
+            !Number.isSafeInteger(body.durationMs) ||
+            body.durationMs < 1 ||
+            body.durationMs > 600_000 ||
+            (body.waveform !== undefined && typeof body.waveform !== "string"))
+        )
+          return reject(response, 400, "Invalid voice message.");
         state.assets.set(id, {
           channelId: body.channelId,
           name: body.filename,
           contentType: body.contentType,
           size: body.byteSize,
+          ...(voice ? { voice, durationMs: body.durationMs, waveform: body.waveform } : {}),
         });
         return json(response, 200, {
           id,
@@ -726,21 +769,52 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const asset = state.assets.get(assetPut[1]);
         if (!asset) return reject(response, 404, "Asset not found.");
         if (assetPut[2] === "upload") asset.bytes = bytes;
+        if (assetPut[2] === "upload" && asset.voice) asset.data = Buffer.concat(chunks);
         return json(response, 204);
+      }
+      const assetFile = /^\/api\/assets\/([^/]+)\/fixture-file$/.exec(path);
+      if (assetFile && method === "GET") {
+        const asset = state.assets.get(assetFile[1]);
+        if (!asset?.data) return reject(response, 404, "Asset not found.");
+        // Served as recorded: the fixture labels voice notes audio/mp4 like the
+        // API's transcode, but never transcodes them.
+        response.writeHead(200, {
+          "content-type": asset.contentType,
+          "content-length": asset.data.length,
+          "accept-ranges": "none",
+          "cache-control": "no-store",
+        });
+        return response.end(asset.data);
       }
       const assetComplete = /^\/api\/assets\/([^/]+)\/complete$/.exec(path);
       if (assetComplete && method === "POST") {
         const asset = state.assets.get(assetComplete[1]);
         if (!user || !asset) return reject(response, 404, "Asset not found.");
         if (asset.bytes !== asset.size) return reject(response, 422, "Upload incomplete.");
-        asset.attachment = {
-          id: assetComplete[1],
-          name: asset.name,
-          contentType: asset.contentType,
-          size: asset.size,
-          kind: "file",
-          status: "ready",
-        };
+        asset.attachment = asset.voice
+          ? {
+              id: assetComplete[1],
+              name: "Voice message.m4a",
+              contentType: "audio/mp4",
+              size: asset.size,
+              kind: "audio",
+              status: "ready",
+              durationMs: asset.durationMs,
+              voice: true,
+              ...(asset.waveform ? { waveform: asset.waveform } : {}),
+              transcript: { status: "pending" },
+              // Straight to the fixture, like a signed storage URL: Vite's dev
+              // server answers media requests (Sec-Fetch-Dest: audio) itself.
+              url: `http://127.0.0.1:${request.socket.localPort}/api/assets/${assetComplete[1]}/fixture-file`,
+            }
+          : {
+              id: assetComplete[1],
+              name: asset.name,
+              contentType: asset.contentType,
+              size: asset.size,
+              kind: "file",
+              status: "ready",
+            };
         return json(response, 200, asset.attachment);
       }
       if (path === "/api/push/config")
@@ -1393,6 +1467,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           state.messages.set(channel.id, messages);
           state.sendKeys.set(key, { token: request.headers["x-caper-chat-token"], text: body.text, message });
           created(message);
+          transcribe(message);
           return json(response, 200, message);
         }
         const page = historyWindow(
