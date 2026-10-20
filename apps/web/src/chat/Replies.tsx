@@ -1,8 +1,9 @@
-import { EyeOff, File, Paperclip, X } from "lucide-react";
+import { EyeOff, File, Mic, Paperclip, X } from "lucide-react";
 import { Reply } from "../../../../shared/message-icons.ts";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import socketArtwork from "../../../../shared/reply-socket.svg";
 import Avatar from "../components/Avatar";
+import { gifOf } from "./klipy.ts";
 import {
   attachmentsOf,
   isChatAttachment,
@@ -10,9 +11,13 @@ import {
   type ChatMessage,
   type ChatReplyReference,
 } from "./types.ts";
+import { attachmentLabel, attachmentsExcerpt, isVoiceAttachment } from "./voice.ts";
 
 export function replyReference(message: ChatMessage): ChatReplyReference {
-  const text = message.content.text || (message.forward ? "Forwarded message" : "");
+  const gif = gifOf(message.content);
+  const text =
+    message.content.text ||
+    (message.forward ? "Forwarded message" : gif ? (gif.kind === "sticker" ? "Sticker" : "GIF") : "");
   const characters = Array.from(text);
   return {
     id: message.id,
@@ -33,13 +38,19 @@ function ReplyThumbnail({ file }: { file: ChatAttachment }) {
       ? file.previewUrl ||
         (file.kind === "image" && !file.animated && file.contentType !== "image/gif" ? file.url : undefined)
       : undefined;
-  const label = file.spoiler ? "Spoiler attachment" : file.unavailable ? "Unavailable attachment" : file.name;
+  const label = file.spoiler
+    ? "Spoiler attachment"
+    : file.unavailable
+      ? "Unavailable attachment"
+      : attachmentLabel(file);
   return (
     <span className="chat-reply-thumbnail" title={label}>
       {source && !failed ? (
         <img src={source} alt={label} loading="lazy" onError={() => setFailed(true)} />
       ) : file.spoiler ? (
         <EyeOff size={18} aria-label={label} />
+      ) : isVoiceAttachment(file) ? (
+        <Mic size={18} aria-label={label} />
       ) : (
         <File size={18} aria-label={label} />
       )}
@@ -67,10 +78,11 @@ export function ReplyContext({
   const [expanded, setExpanded] = useState(false);
   const [clipped, setClipped] = useState(false);
   const [connection, setConnection] = useState({ sourceX: 57, sourceY: 21, targetX: 0, height: 117 });
-  const text = reference.fullText ?? reference.text;
+  const text =
+    (reference.fullText ?? reference.text) ||
+    (reference.hasAttachments ? attachmentsExcerpt(reference.attachments) : "Message");
   const files = hidden || reference.deleted ? [] : (reference.attachments ?? []).filter(isChatAttachment);
-  const preview = [...text].slice(0, 100).join("");
-  const canExpand = preview !== text || clipped;
+  const canExpand = !reference.deleted && clipped;
   useLayoutEffect(() => {
     const element = root.current!;
     const update = () => {
@@ -96,14 +108,6 @@ export function ReplyContext({
       );
       const content = excerpt.current;
       setClipped(!!content && content.scrollHeight > parseFloat(getComputedStyle(content).lineHeight) * 3 + 1);
-      if (content) {
-        const body = element.querySelector<HTMLElement>(".chat-reply-body")!;
-        const previewBounds = content.getBoundingClientRect();
-        element.style.setProperty(
-          "--reply-expand-top",
-          `${previewBounds.top - body.getBoundingClientRect().top - body.clientTop + previewBounds.height * 0.7}px`,
-        );
-      }
     };
     update();
     const observer = new ResizeObserver(update);
@@ -124,8 +128,8 @@ export function ReplyContext({
     // same original have their own weight, tension and settling time on remount.
     let seed = 2166136261;
     for (const byte of new TextEncoder().encode(motionKey)) seed = Math.imul(seed ^ byte, 16777619) >>> 0;
-    const stiffness = 140 + ((seed & 255) / 255) * 100;
-    const damping = 11 + (((seed >>> 8) & 255) / 255) * 7;
+    const stiffness = 560 + ((seed & 255) / 255) * 400;
+    const damping = 28 + (((seed >>> 8) & 255) / 255) * 14;
     const impulse = 1 + (((seed >>> 16) & 255) / 255) * 0.4;
     const limit = 5 + ((seed >>> 24) / 255) * 2;
     const speedLimit = limit * 16;
@@ -144,9 +148,10 @@ export function ReplyContext({
       const endX = sourceX - dx;
       const endY = sourceY - dy;
       const span = startY - endY;
+      // Bend inward from the lower cup, even at maximum sway, away from the row edge.
       wire.current!.setAttribute(
         "d",
-        `M${startX} ${startY}C${startX - 7 + offset} ${startY - span * 0.3} ${endX - 30 + offset} ${endY + span * 0.3} ${endX} ${endY}`,
+        `M${startX} ${startY}C${startX + 8 + offset} ${startY - span * 0.3} ${endX - 30 + offset} ${endY + span * 0.3} ${endX} ${endY}`,
       );
       sourceCup.current!.setAttribute(
         "transform",
@@ -249,10 +254,7 @@ export function ReplyContext({
               id={excerptId}
               className={`chat-reply-excerpt${reference.deleted ? " chat-reply-excerpt-deleted" : ""}`}
             >
-              {reference.deleted
-                ? "Original message was deleted."
-                : (expanded ? text : preview) || (reference.hasAttachments ? "Attachment" : "Message")}
-              {!expanded && preview !== text && "…"}
+              {reference.deleted ? "Original message was deleted." : text}
             </span>
           )}
           {!!files.length && (
@@ -298,7 +300,8 @@ export function ReplyDraft({
         </span>
         {!hidden && (
           <span className="chat-reply-draft-excerpt">
-            {(reference.fullText ?? reference.text) || (reference.hasAttachments ? "Attachment" : "Message")}
+            {(reference.fullText ?? reference.text) ||
+              (reference.hasAttachments ? attachmentsExcerpt(reference.attachments) : "Message")}
           </span>
         )}
       </div>

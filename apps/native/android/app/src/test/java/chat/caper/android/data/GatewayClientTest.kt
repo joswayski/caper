@@ -17,6 +17,32 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class GatewayClientTest {
+    @Test fun `whole space presence sends no user ID list and repeated watches do not resubscribe`() {
+        val server = MockWebServer()
+        val incoming = ArrayBlockingQueue<String>(8)
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { webSocket.send("""{"type":"hello","serverTime":1}""") }
+            override fun onMessage(webSocket: WebSocket, text: String) { incoming.add(text) }
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
+        }))
+        val gateway = GatewayClient(server.url("/").toString().trimEnd('/'), null, "channel", "0",
+            onMessage = {}, onAccessDenied = {}, onResync = {})
+        try {
+            gateway.watchPresence("space", allMembers = true)
+            gateway.start()
+            val frames = (0..1).map { Json.parseToJsonElement(incoming.poll(2, TimeUnit.SECONDS)!!).jsonObject }
+            val presence = frames.single { it["kind"]?.jsonPrimitive?.content == "presence" }
+            assertEquals("true", presence["allMembers"]?.jsonPrimitive?.content)
+            assertEquals("space", presence["spaceId"]?.jsonPrimitive?.content)
+            assertFalse(presence.containsKey("userIds"))
+            gateway.watchPresence("space", allMembers = true)
+            assertNull(incoming.poll(250, TimeUnit.MILLISECONDS))
+        } finally {
+            gateway.close()
+            server.close()
+        }
+    }
+
     @Test fun `reaction protocol validates shape channel and sequence`() {
         fun event(seq: String = "2", channel: String = "channel") = Json.parseToJsonElement(
             """{"type":"message.reactions","schemaVersion":1,"channelId":"$channel","seq":"$seq","messageId":"message","reactions":[{"emoji":"👍","authorIds":["author"]}]}""",

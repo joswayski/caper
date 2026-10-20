@@ -112,6 +112,9 @@ fn image_files(items: &[EmbedImage], name: &str) -> Vec<Attachment> {
         .map(|image| Attachment {
             id: key(&image.url),
             spoiler: false,
+            voice: false,
+            waveform: None,
+            transcript: None,
             kind: AttachmentKind::Image,
             // The decoders sniff the real format; this only picks the path.
             content_type: "image/jpeg".into(),
@@ -151,6 +154,9 @@ fn video_file(block: &EmbedBlock, name: &str) -> Option<Attachment> {
     Some(Attachment {
         id: key(url),
         spoiler: false,
+        voice: false,
+        waveform: None,
+        transcript: None,
         kind: AttachmentKind::Video,
         content_type: if url.to_ascii_lowercase().contains(".webm") {
             "video/webm"

@@ -147,6 +147,10 @@ public actor Gateway {
         await subscribe(frame: ["kind": "presence", "spaceId": spaceID, "userIds": userIDs], handler: handler)
     }
 
+    public func subscribeSpacePresence(spaceID: String, handler: @escaping Handler) async -> String {
+        await subscribe(frame: ["kind": "presence", "spaceId": spaceID, "allMembers": true], handler: handler)
+    }
+
     /// The `profiles` feed's fixed subscription ID.
     public static let profilesSubscriptionID = "profiles"
 

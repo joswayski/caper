@@ -1,4 +1,7 @@
 import json
+from contextlib import redirect_stdout
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
 import os
 from pathlib import Path
 import plistlib
@@ -7,7 +10,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from threading import Thread
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 
 UPLOAD = Path(__file__).resolve().parents[1] / "apps/native/apple/upload-testflight.sh"
@@ -161,6 +167,92 @@ if stage == "archive":
         self.assertNotIn("Uploaded", result.stdout)
 
 
+class TestFlightDistributionTests(unittest.TestCase):
+    def test_newly_valid_build_visibility_retries_but_permanent_errors_stop(self):
+        script = UPLOAD.parents[3] / "scripts/testflight-distribute.py"
+        # Authentication is unrelated to distribution; no Apple credentials or
+        # publishing dependencies are needed for this local HTTP contract test.
+        with patch.dict(sys.modules, {"jwt": SimpleNamespace()}):
+            main = runpy.run_path(str(script))["main"]
+        for error, failures, succeeds in ((404, 2, True), (404, 100, False), (403, 1, False)):
+            with self.subTest(error=error, failures=failures):
+                state = {"remaining": failures, "added": False, "reviewed": False}
+                clock = [0]
+
+                def sleep(seconds):
+                    clock[0] += seconds
+
+                class AppleAPI(BaseHTTPRequestHandler):
+                    def log_message(self, *args):
+                        pass
+
+                    def respond(self, status, body):
+                        self.send_response(status)
+                        self.end_headers()
+                        self.wfile.write(json.dumps(body).encode())
+
+                    def do_GET(self):
+                        data = {
+                            "/apps": [{"id": "app"}],
+                            "/builds": [{"id": "build-205", "attributes": {"processingState": "VALID"}}],
+                            "/apps/app/betaGroups": [
+                                {"id": "friends", "attributes": {"name": "Friends", "isInternalGroup": False}}
+                            ],
+                        }.get(self.path.split("?")[0])
+                        self.respond(200 if data is not None else 404, {"data": data})
+
+                    def do_POST(self):
+                        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                        if self.path == "/betaGroups/friends/relationships/builds":
+                            if body != {"data": [{"type": "builds", "id": "build-205"}]}:
+                                self.respond(400, {})
+                            elif state["remaining"]:
+                                state["remaining"] -= 1
+                                self.respond(
+                                    error, {"errors": [{"code": "NOT_FOUND" if error == 404 else "FORBIDDEN"}]}
+                                )
+                            else:
+                                state["added"] = True
+                                self.respond(204, {})
+                        elif self.path == "/betaAppReviewSubmissions" and state["added"]:
+                            state["reviewed"] = True
+                            self.respond(201, {})
+                        else:
+                            self.respond(400, {})
+
+                server = ThreadingHTTPServer(("127.0.0.1", 0), AppleAPI)
+                worker = Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                try:
+                    with (
+                        patch.dict(os.environ, {"BUILD_NUMBER": "205.1", "WHAT_TO_TEST": ""}),
+                        patch.dict(
+                            main.__globals__,
+                            {
+                                "API": f"http://127.0.0.1:{server.server_port}",
+                                "token": lambda: "fixture",
+                                "time": SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep),
+                            },
+                        ),
+                        redirect_stdout(io.StringIO()),
+                    ):
+                        if succeeds:
+                            main()
+                        else:
+                            with self.assertRaisesRegex(SystemExit, f"HTTP {error}"):
+                                main()
+                    self.assertEqual(state["added"], succeeds)
+                    self.assertEqual(state["reviewed"], succeeds)
+                    if error == 403:
+                        self.assertEqual(clock[0], 0, "authorization failures must fail immediately")
+                    elif not succeeds:
+                        self.assertEqual(clock[0], 600, "persistent 404 must stop after ten minutes")
+                finally:
+                    server.shutdown()
+                    worker.join()
+                    server.server_close()
+
+
 class MacDiskImageTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -282,7 +374,7 @@ elif tool == "spctl":
             with self.subTest(stage=stage):
                 self.log.unlink(missing_ok=True)
                 (self.app / "stapled-fixture").unlink(missing_ok=True)
-                result, _ = self.sign(FAIL_STAPLER_STAGE=stage)
+                result, _ = self.sign(FAIL_STAPLER_STAGE=stage, FAIL_STAPLER_COUNT="6")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual((self.apple / "dist/Caper-macOS-Intel.zip").read_bytes(), b"stapled")
                 self.assertEqual((self.apple / "dist/Caper-macOS-Intel.dmg").read_bytes(), b"disk-image")

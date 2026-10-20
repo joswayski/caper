@@ -62,19 +62,21 @@ notarize() {
 # Both operations contact Apple's ticket service. EX_NOHOST (68) can be a
 # transient network failure even after notarization was accepted; never retry
 # invalid/missing tickets or revoked signatures, and never bypass validation.
+# Allow about ten minutes of backoff for outages (plus request time).
 stapler() {
-  local attempt=1 status
+  local attempt=1 delay=10 status
   while true; do
     if xcrun stapler "$@"; then
       return 0
     else
       status=$?
     fi
-    if [[ "$status" -ne 68 || "$attempt" -ge 5 ]]; then
+    if [[ "$status" -ne 68 || "$attempt" -ge 9 ]]; then
       return "$status"
     fi
-    echo "::warning::Apple ticket service failed during stapler $1 (attempt $attempt/5); retrying." >&2
-    sleep "$((attempt * 10))"
+    echo "::warning::Apple ticket service failed during stapler $1 (attempt $attempt/9); retrying in ${delay}s." >&2
+    sleep "$delay"
+    delay=$((delay * 2 < 120 ? delay * 2 : 120))
     attempt=$((attempt + 1))
   done
 }

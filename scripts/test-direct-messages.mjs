@@ -92,6 +92,64 @@ async function conversations() {
     await fetch(`${api}/api/dms`, { headers: { authorization: "Bearer fixture-owner-token", connection: "close" } })
   ).json();
 }
+async function testRecipientLookup() {
+  for (const width of [1440, 390]) {
+    await control({ reset: true });
+    browser("set", "viewport", String(width), "844", "2");
+    browser("open", `${web}/spaces`);
+    wait('!!document.querySelector(".direct-section")');
+    if (width === 390 && !evaluate('!!document.querySelector(".navigation-open")')) {
+      browser("click", ".navigation-toggle");
+      wait('!!document.querySelector(".navigation-open")');
+    }
+    browser("click", '[aria-label="New direct message"]');
+    const submit = '.space-dialog button[type="submit"]';
+    screenshot(`dm-lookup-empty-${width}`);
+    browser("fill", ".space-dialog input", "a");
+    wait('!!document.querySelector(".people-suggestions")');
+    assert.equal(evaluate(`document.querySelector('${submit}').disabled`), true);
+    screenshot(`dm-lookup-suggestions-${width}`);
+    browser("fill", ".space-dialog input", "az");
+    assert.equal(evaluate('!!document.querySelector(".people-suggestions")'), false);
+    assert.equal(evaluate(`document.querySelector('${submit}').disabled`), true);
+    browser("fill", ".space-dialog input", "azz");
+    assert.equal(evaluate(`document.querySelector('${submit}').textContent`), "Find person");
+    screenshot(`dm-lookup-unknown-${width}`);
+    browser("click", submit);
+    wait('!!document.querySelector(".space-form-error")');
+    assert.match(evaluate('document.querySelector(".space-form-error").textContent'), /not found/i);
+    assert.equal((await conversations()).conversations.length, 0);
+    screenshot(`dm-lookup-error-${width}`);
+    // Jordan shares no spaces or DMs: absence from suggestions isn't absence from Caper.
+    browser("fill", ".space-dialog input", "jordan");
+    browser("press", "Enter");
+    wait('document.querySelector(".start-direct-recipient")?.textContent.includes("Jordan (@jordan)")');
+    assert.equal(evaluate(`document.querySelector('${submit}').textContent`), "Open conversation");
+    assert.equal((await conversations()).conversations.length, 0, "Finding a recipient must not send a request");
+    screenshot(`dm-lookup-confirmed-${width}`);
+    browser("fill", ".space-dialog input", "jordanx");
+    assert.equal(evaluate(`document.querySelector('${submit}').textContent`), "Find person");
+    assert.equal(evaluate('!!document.querySelector(".start-direct-recipient")'), false);
+    browser("fill", ".space-dialog input", "alex");
+    assert.equal(
+      evaluate(`document.querySelector('${submit}').textContent`),
+      "Open conversation",
+      "Known exact recipients need no lookup",
+    );
+    browser("fill", ".space-dialog input", "jordan");
+    browser("click", submit);
+    wait('!!document.querySelector(".start-direct-recipient")');
+    browser("click", submit);
+    wait('!document.querySelector(".space-dialog[open]")');
+    const created = (await conversations()).conversations;
+    assert.equal(created.length, 1);
+    assert.equal(created[0].peer.username, "jordan");
+    assert.equal(created[0].status, "outgoing");
+    console.log(
+      `PASS: recipient lookup, missing account, confirmation, edit invalidation, known recipient and explicit creation at ${width}px`,
+    );
+  }
+}
 function testFirstSpace() {
   for (const width of [1440, 390]) {
     browser("set", "viewport", String(width), "844", "2");
@@ -207,7 +265,7 @@ async function testDirectMessages() {
     wait('!!document.querySelector(".space-dialog[open]")');
     assert.equal(
       evaluate('document.querySelector(".space-dialog > header p").textContent'),
-      "Enter an exact username. Conversations stay private across all your spaces.",
+      "Choose someone you know, or find another person by their exact username.",
     );
     for (const [typed, expected, disabled] of [
       ["  !@#$ 🪐", "", true],
@@ -276,6 +334,8 @@ async function testDirectMessages() {
   assert.match(evaluate('document.querySelector(".space-form-error").textContent'), /not found/i);
   screenshot("dm-start-error");
   browser("fill", ".space-dialog input", "fixture_alex");
+  browser("click", '.space-dialog button[type="submit"]');
+  wait('!!document.querySelector(".start-direct-recipient")');
   browser("click", '.space-dialog button[type="submit"]');
   wait(
     'document.querySelector(".chat-heading")?.textContent.includes("TEST FIXTURE Alex") && !document.querySelector(".space-dialog[open]")',
@@ -723,7 +783,9 @@ try {
   browser("set", "media", "reduced-motion");
   browser("cookies", "set", "caper_fixture", "owner", "--url", web, "--path", "/", "--sameSite", "Lax");
   const firstSpaceOnly = process.argv.includes("--first-space");
-  if (process.argv.includes("--navigation") || firstSpaceOnly) {
+  const lookupOnly = process.argv.includes("--lookup");
+  if (lookupOnly) await testRecipientLookup();
+  else if (process.argv.includes("--navigation") || firstSpaceOnly) {
     // Run setup/switching independently of the longer account/layout walkthrough.
     for (const username of ["fixture_alex", "fixture_owner"]) {
       const response = await fetch(`${api}/api/dms`, {
@@ -754,7 +816,10 @@ try {
     console.log(
       "PASS: first-space setup omits DMs at 1440px/390px; creation opens workspace DMs; no-space DM deep links remain writable.",
     );
-  } else await testNavigation();
+  } else if (!lookupOnly) await testNavigation();
+} catch (error) {
+  console.error(browser("snapshot"));
+  throw error;
 } finally {
   browser("close");
   rmSync(scratch, { recursive: true, force: true });

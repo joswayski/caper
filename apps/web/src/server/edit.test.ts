@@ -8,7 +8,9 @@ import {
   NO_EDIT,
   paintEdit,
   rotateLeft,
+  strokesTouched,
   type AttachmentEdit,
+  type EditMark,
   type PixelRect,
 } from "../chat/edit.ts";
 
@@ -27,6 +29,18 @@ const shared = JSON.parse(
     expected: PixelRect;
   }[];
   edited: { note: string; edit: AttachmentEdit; edited: boolean }[];
+  erase: {
+    cases: {
+      note: string;
+      width: number;
+      height: number;
+      x: number;
+      y: number;
+      radius: number;
+      marks: EditMark[];
+      touched: number[];
+    }[];
+  };
 };
 
 /** Deep equality with fractions compared to 1e-9. */
@@ -62,6 +76,12 @@ test("shared crop pixel cases match", () => {
 test("shared edited cases match", () => {
   for (const { note, edit, edited } of shared.edited) assert.equal(isEdited(edit), edited, note);
   assert.equal(isEdited(undefined), false);
+});
+
+test("shared erase cases match", () => {
+  assert.ok(shared.erase.cases.length >= 6);
+  for (const { note, width, height, x, y, radius, marks, touched } of shared.erase.cases)
+    assert.deepEqual(strokesTouched(marks, x, y, radius, width, height), touched, note);
 });
 
 test("crops stay inside the image with a minimum size", () => {

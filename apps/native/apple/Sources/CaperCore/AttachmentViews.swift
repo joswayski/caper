@@ -345,7 +345,7 @@ struct ReplyAttachmentThumbnail: View {
             if source != nil, let image {
                 Image(decorative: image, scale: 1).resizable().scaledToFill()
             } else {
-                Image(systemName: attachment.spoiler ? "eye.slash" : "paperclip")
+                Image(systemName: attachment.spoiler ? "eye.slash" : attachment.voice ? "mic" : "paperclip")
                     .font(.system(size: 14)).foregroundStyle(CaperTheme.muted)
             }
         }
@@ -373,7 +373,9 @@ struct MessageAttachmentsView: View {
     @State private var revealed: Set<String> = []
 
     private var visuals: [ChatAttachment] { attachments.filter { $0.kind == .image || $0.kind == .video } }
-    private var files: [ChatAttachment] { attachments.filter { $0.kind != .image && $0.kind != .video } }
+    private var files: [ChatAttachment] { attachments.filter { $0.kind != .image && $0.kind != .video && !$0.voice } }
+    /// Voice players take their own width rather than a file-grid column.
+    private var voiceNotes: [ChatAttachment] { attachments.filter { $0.kind != .image && $0.kind != .video && $0.voice } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -402,6 +404,7 @@ struct MessageAttachmentsView: View {
             } else if let attachment = visuals.first {
                 attachmentView(attachment)
             }
+            ForEach(voiceNotes) { attachment in attachmentView(attachment) }
             SentFileLayout {
                 ForEach(files) { attachment in attachmentView(attachment) }
             }
@@ -455,7 +458,13 @@ struct MessageAttachmentsView: View {
                 } else {
                     AttachmentVideoView(attachment: attachment, chat: chat, openViewer: viewer(attachment))
                 }
-            case .audio: AttachmentAudioView(attachment: attachment, chat: chat)
+            case .audio:
+                // Recorded voice messages get the voice player and transcript; uploaded audio files keep the card.
+                if attachment.voice {
+                    VoiceMessageView(attachment: attachment, chat: chat)
+                } else {
+                    AttachmentAudioView(attachment: attachment, chat: chat)
+                }
             case .file: AttachmentOpenCard(attachment: attachment, chat: chat)
             }
         }
@@ -2306,31 +2315,34 @@ struct AttachmentDraftsView: View {
     var body: some View {
         if !files.isEmpty {
             let failed = files.filter { $0.error != nil }.count
-            let uploading = files.filter { $0.attachment == nil && $0.error == nil }.count
             if failed > 0 {
                 Text(failed == 1 ? "1 file failed to upload. Send will retry it, or you can remove it." : "\(failed) files failed to upload. Send will retry them, or you can remove them.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
                     .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                     .background(CaperTheme.terracotta.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
             }
-            if uploading > 0 {
-                Text("Uploading \(uploading) \(uploading == 1 ? "file" : "files")… Your message won’t send until every file is ready.")
-                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                    .accessibilityAddTraits(.updatesFrequently)
-            }
             StagedFileLayout() {
-                ForEach(files) { draft in
-                    AttachmentDraftChip(draft: draft, preview: { preview(draft) }, retry: { chat.retryAttachmentDraft(id: draft.id) },
-                                        toggleSpoiler: { chat.toggleAttachmentSpoiler(id: draft.id) },
-                                        edit: editAction(draft), remove: { chat.removeAttachmentDraft(id: draft.id) })
-                    .modifier(Entrance.chip)
-                }
+                ForEach(files) { draft in chip(draft).modifier(Entrance.chip) }
             }
             .accessibilityLabel("Files to send")
             .quickLookPreview(Binding(
                 get: { files.first(where: { $0.id == previewID }).map { Self.shownURL($0) } },
                 set: { if $0 == nil { previewID = nil } }
             ))
+        }
+    }
+
+    /// A staged voice note gets its own chip (play, waveform, duration, Remove).
+    @ViewBuilder private func chip(_ draft: AttachmentDraft) -> some View {
+        if let duration = draft.voiceDurationMs {
+            VoiceDraftChip(id: draft.id, url: draft.localURL, durationMs: duration, waveform: draft.voiceWaveform,
+                           status: draft.error ?? (draft.attachment == nil ? "Uploading…" : nil), failed: draft.error != nil,
+                           retry: draft.error == nil ? nil : { chat.retryAttachmentDraft(id: draft.id) },
+                           remove: { chat.removeAttachmentDraft(id: draft.id) })
+        } else {
+            AttachmentDraftChip(draft: draft, preview: { preview(draft) }, retry: { chat.retryAttachmentDraft(id: draft.id) },
+                                toggleSpoiler: { chat.toggleAttachmentSpoiler(id: draft.id) },
+                                edit: editAction(draft), remove: { chat.removeAttachmentDraft(id: draft.id) })
         }
     }
 
@@ -2908,9 +2920,7 @@ private struct DropFileCard: View {
 struct AttachmentPickerButton: View {
     @Bindable var chat: ChatModel
     var inThread = false
-    @State private var showPhotos = false
     @State private var showFiles = false
-    @State private var photoItems: [PhotosPickerItem] = []
     @State private var selectionTarget: ChatModel.AttachmentTarget?
 
     private var remaining: Int { max(0, AttachmentPolicy.maxAttachments - chat.attachmentFiles(inThread: inThread).count) }
@@ -2940,7 +2950,7 @@ struct AttachmentPickerButton: View {
         .disabled(!chat.canAttach)
         .opacity(chat.canAttach ? 1 : 0.4)
         .accessibilityLabel("Attach files")
-        .accessibilityValue(!chat.canAttach ? chat.attachUnavailableReason : AttachCapacity.label(AttachmentPolicy.maxAttachments - remaining))
+        .accessibilityValue(!chat.canAttach ? chat.attachUnavailableReason : AttachCapacity.label(AttachmentPolicy.maxAttachments - remaining) ?? "")
         .accessibilityIdentifier("attach-files-button")
         .sheet(isPresented: $showDrawer) {
             if let target = drawerTarget { AttachDrawer(draft: drawerDraft(target)) }
@@ -2959,16 +2969,19 @@ struct AttachmentPickerButton: View {
             valid: { chat.canAttach && chat.attachmentTarget(inThread: inThread) == target })
     }
     #else
+    /// The Mac, like web on desktop, has one unfiltered "Upload a file"; the
+    /// menu still opens at the limit to say so.
     var body: some View {
         Menu {
-            Button {
-                selectionTarget = chat.attachmentTarget(inThread: inThread)
-                showPhotos = selectionTarget != nil
-            } label: { Label("Photos and videos", systemImage: "photo.on.rectangle") }
+            if let limit = AttachCapacity.label(AttachmentPolicy.maxAttachments - remaining) {
+                Text(limit)
+                if let hint = AttachCapacity.hint(AttachmentPolicy.maxAttachments - remaining) { Text(hint) }
+            }
             Button {
                 selectionTarget = chat.attachmentTarget(inThread: inThread)
                 showFiles = selectionTarget != nil
-            } label: { Label("Files", systemImage: "doc") }
+            } label: { Label("Upload a file", systemImage: "arrow.up.doc") }
+                .disabled(remaining == 0)
         } label: {
             // The shared Lucide plus (CaperIcons.xcassets), as on web and in the profile composer.
             Image("caper-plus").renderingMode(.template).resizable().frame(width: 18, height: 18)
@@ -2981,28 +2994,12 @@ struct AttachmentPickerButton: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(!chat.canAttach || remaining == 0)
+        .disabled(!chat.canAttach)
         .opacity(chat.canAttach ? 1 : 0.4)
         .help(disabledReason ?? "Attach files")
         .accessibilityLabel("Attach files")
         .accessibilityValue(disabledReason ?? "")
         .accessibilityIdentifier("attach-files-button")
-        .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: max(1, remaining),
-                      matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
-        .onChange(of: photoItems) { _, items in
-            guard !items.isEmpty, let target = selectionTarget else { return }
-            photoItems = []
-            Task { @MainActor in
-                var files: [LocalAttachmentFile] = []
-                for item in items {
-                    if let picked = try? await item.loadTransferable(type: PickedAttachmentMedia.self) { files.append(picked.file) }
-                }
-                chat.addAttachments(files, to: target)
-                if files.count < items.count && chat.attachmentNotice(target: target) == nil {
-                    chat.setAttachmentNotice("Some items couldn’t be added.", target: target)
-                }
-            }
-        }
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             guard case .success(let urls) = result, let target = selectionTarget else { return }
             let files = urls.prefix(AttachmentPolicy.maxAttachments).compactMap { try? AttachmentStaging.stage(copying: $0) }

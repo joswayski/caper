@@ -651,10 +651,16 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
         capture("composer-single-line-keyboard", app: app)
 
-        timeline.swipeDown()
+        // A drag that never reaches the keyboard must not resign focus as soon
+        // as scrolling starts. Continue through the keyboard to dismiss it.
+        let dragStart = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        dragStart.press(forDuration: 0.05, thenDragTo: dragStart.withOffset(CGVector(dx: 0, dy: 40)))
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "A short history drag must keep the keyboard open")
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
+        dragStart.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
         let scrollDismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [scrollDismissed], timeout: 5), .completed,
-                       "Dragging message history must dismiss the keyboard")
+                       "Dragging message history through the keyboard must dismiss it")
         XCTAssertEqual(composer.value as? String, short, "Scrolling must keep the unsent draft")
         XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2)
         XCTAssertTrue(focus(composer))
@@ -741,6 +747,31 @@ final class CaperParityUITests: XCTestCase {
         return nil
     }
 
+    func testIPhoneComposerSharesEmojiGifAndStickerSheet() throws {
+        let app = launch()
+        let composer = try require(app.textViews.matching(NSPredicate(format: "label BEGINSWITH %@", "Message #general")).firstMatch,
+                                   timeout: 30, "Missing channel composer")
+        XCTAssertTrue(focus(composer))
+        composer.typeText("Keep this draft")
+        let picker = try XCTUnwrap(visible(app.buttons.matching(NSPredicate(format: "label == %@", "Emojis, GIFs and stickers"))))
+        XCTAssertFalse(app.buttons["composer-gif"].exists, "Mobile must not keep a second GIF control")
+        picker.tap()
+        try require(app.textFields["reaction-picker-search"], timeout: 5, "Emojis must be the default tab")
+        let tabs = app.segmentedControls.firstMatch
+        XCTAssertEqual(tabs.buttons.count, 3)
+        tabs.buttons["GIFs"].tap()
+        try require(app.textFields["gif-picker-search"], timeout: 5, "Missing GIF search")
+        tabs.buttons["Stickers"].tap()
+        try require(app.textFields["gif-picker-search"], timeout: 5, "Missing sticker search")
+        XCTAssertEqual(app.segmentedControls.count, 1, "Media tabs must not nest another picker")
+        tabs.buttons["Emojis"].tap()
+        let search = try require(app.textFields["reaction-picker-search"], timeout: 5, "Missing emoji search")
+        search.tap(); search.typeText("tomato")
+        try require(app.buttons["tomato"], timeout: 5, "Missing tomato emoji").tap()
+        XCTAssertEqual(composer.value as? String, "Keep this draft🍅", "Emoji selection inserts without sending")
+        XCTAssertFalse(app.textFields["reaction-picker-search"].exists, "Selection must dismiss the shared sheet")
+    }
+
     func testIPhoneThreadComposerDoesNotFillItsMaximumHeight() throws {
         let app = launch()
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
@@ -766,7 +797,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
         XCTAssertEqual(send.frame.midY, composer.frame.midY, accuracy: 2,
                        "Send must align with the single-line reply input")
-        for label in ["Attach files", "Insert emoji"] {
+        for label in ["Attach files", "Emojis, GIFs and stickers"] {
             let button = try XCTUnwrap(visible(app.buttons.matching(NSPredicate(format: "label == %@", label))), "Missing \(label)")
             XCTAssertEqual(button.frame.midY, composer.frame.midY, accuracy: 2,
                            "Thread tools must align with the single-line reply input")
@@ -774,6 +805,10 @@ final class CaperParityUITests: XCTestCase {
         let broadcast = try require(app.switches["Also send to #general"], timeout: 5, "Missing named broadcast option")
         XCTAssertLessThanOrEqual(broadcast.frame.maxY, composer.frame.minY,
                                 "The broadcast checkbox must stay above the input, away from Send")
+        broadcast.tap()
+        XCTAssertEqual(broadcast.value as? String, "1")
+        broadcast.tap()
+        XCTAssertEqual(broadcast.value as? String, "0")
         XCTAssertTrue(send.isHittable)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2,
@@ -781,10 +816,14 @@ final class CaperParityUITests: XCTestCase {
         capture("thread-composer-single-line-keyboard", app: app)
 
         let timeline = try XCTUnwrap(visible(app.scrollViews), "Missing the visible thread timeline")
-        timeline.swipeDown()
+        let dragStart = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        dragStart.press(forDuration: 0.05, thenDragTo: dragStart.withOffset(CGVector(dx: 0, dy: 40)))
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "A short thread drag must keep the keyboard open")
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
+        dragStart.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
         let scrollDismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [scrollDismissed], timeout: 5), .completed,
-                       "Dragging thread history must dismiss the keyboard, even without replies")
+                       "Dragging thread history through the keyboard must dismiss it, even without replies")
         XCTAssertEqual(composer.value as? String, "Short reply", "Scrolling must keep the reply draft")
         XCTAssertTrue(back.isHittable, "Vertical scrolling must not close the thread")
         timeline.swipeLeft()
@@ -792,10 +831,15 @@ final class CaperParityUITests: XCTestCase {
         let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.7))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 35, dy: 0)))
         XCTAssertTrue(back.isHittable, "A short right drag must not close the thread")
-        timeline.swipeRight()
+        // Start on selectable message text, not the empty part of the list:
+        // the old gesture excluded every UITextView, including read-only bodies.
+        let body = try XCTUnwrap(visible(app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "local sample data, not a live conversation"))), "Missing root body")
+        let textStart = body.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5))
+        textStart.press(forDuration: 0.05, thenDragTo: textStart.withOffset(CGVector(dx: 160, dy: 0)))
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: back)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed,
-                       "A right swipe must return to the channel")
+                       "A right swipe starting on message text must return to the channel")
         // Reopening the same root must retain the unsent draft.
         hold(row)
         let reopenActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,
@@ -1102,9 +1146,49 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
     }
 
+    func testVoiceTranscriptExpansionKeepsToggleBelowText() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let messageID = "chan00000001m04"
+        // Explicit line breaks exercise the reported multiline transcript,
+        // without depending on a particular device's font wrapping.
+        let transcript = "TEST FIXTURE transcript.\nFirst line of the recording.\nSecond line.\nThird line.\nFourth line.\nEnd of the recording."
+        try await Self.fixtureControl(["incomingEdit": [
+            "channelId": "chan00000001", "messageId": messageID, "text": "",
+            "attachments": [["id": "fixturevoice001", "kind": "audio", "status": "ready",
+                             "name": "TEST FIXTURE voice.m4a", "contentType": "audio/mp4",
+                             "size": 1024, "durationMs": 14000, "voice": true,
+                             "transcript": ["status": "ready", "text": transcript]]],
+        ]])
+        let app = launch()
+        let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 30,
+                              "Missing voice message")
+        let text = row.descendants(matching: .any)["voice-transcript-text"].firstMatch
+        let expand = try require(row.buttons["View transcript"], timeout: 10, "Missing transcript toggle")
+        XCTAssertTrue(text.exists)
+        let collapsedHeight = text.frame.height
+        XCTAssertGreaterThan(collapsedHeight, 0)
+        XCTAssertGreaterThanOrEqual(expand.frame.minY, text.frame.maxY)
+        capture("voice-transcript-collapsed", app: app)
+        // Repeated expansion must not leave stale text sizing or lose the toggle.
+        for index in 0..<3 {
+            expand.tap()
+            let collapse = try require(row.buttons["Hide transcript"], timeout: 5, "Missing collapse toggle")
+            XCTAssertGreaterThan(text.frame.height, collapsedHeight + 10)
+            XCTAssertGreaterThanOrEqual(collapse.frame.minY, text.frame.maxY,
+                                       "The toggle must never occupy the transcript's text bounds")
+            if index == 0 { capture("voice-transcript-expanded", app: app) }
+            collapse.tap()
+            XCTAssertTrue(expand.waitForExistence(timeout: 5))
+            XCTAssertEqual(text.frame.height, collapsedHeight, accuracy: 1)
+            XCTAssertGreaterThanOrEqual(expand.frame.minY, text.frame.maxY)
+        }
+    }
+
     #if os(iOS)
     /// The attach drawer asks for photo access the first time, then shows the
-    /// simulator's sample library; taps attach in order and fill the capacity line.
+    /// simulator's sample library; taps attach in order, numbered, and the
+    /// draft shows no count until it reaches the limit.
     func testIPhoneAttachDrawerAddsLibraryItemsInTapOrder() async throws {
         try await Self.fixtureControl(["reset": true, "uploadsEnabled": true])
         addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
@@ -1117,24 +1201,22 @@ final class CaperParityUITests: XCTestCase {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let allow = springboard.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Full Access' OR label BEGINSWITH[c] 'Allow'")).firstMatch
         if allow.waitForExistence(timeout: 5) { allow.tap() }
-        let capacity = try require(app.descendants(matching: .any)["attach-drawer-capacity"], timeout: 10, "Missing drawer capacity")
-        XCTAssertTrue(capacity.label.contains("Up to 10 files"), capacity.label)
         let tiles = app.buttons.matching(identifier: "attach-drawer-tile")
         XCTAssertTrue(tiles.firstMatch.waitForExistence(timeout: 10), "The simulator's sample photos must appear")
+        XCTAssertFalse(app.descendants(matching: .any)["attach-drawer-capacity"].exists, "Below the limit the drawer shows no count")
         capture("attach-drawer-open", app: app)
         guard tiles.count >= 2 else { return }
         tiles.element(boundBy: 1).tap()
         tiles.element(boundBy: 0).tap()
-        let two = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "2 of 10 attached"), object: capacity)
-        XCTAssertEqual(XCTWaiter.wait(for: [two], timeout: 15), .completed, capacity.label)
         let first = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Attached 1"), object: tiles.element(boundBy: 1))
-        XCTAssertEqual(XCTWaiter.wait(for: [first], timeout: 5), .completed, "The first tap is attached first")
+        let second = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Attached 2"), object: tiles.element(boundBy: 0))
+        XCTAssertEqual(XCTWaiter.wait(for: [first, second], timeout: 15), .completed, "Taps attach in the order they were made")
         XCTAssertTrue(app.buttons["attach-drawer-send"].waitForExistence(timeout: 5), "Send appears once files are attached")
         capture("attach-drawer-selected", app: app)
         // Tapping again removes it from the draft.
         tiles.element(boundBy: 1).tap()
-        let one = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "1 of 10 attached"), object: capacity)
-        XCTAssertEqual(XCTWaiter.wait(for: [one], timeout: 5), .completed, capacity.label)
+        let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Attached 1"), object: tiles.element(boundBy: 0))
+        XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 5), .completed, "The remaining file moves up to first")
     }
     #endif
 
@@ -1798,8 +1880,13 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(cardMute.value as? String, "On")
         cardMute.tap()
         XCTAssertEqual(cardMute.value as? String, "Muted")
+        #if os(macOS)
         XCTAssertEqual(accountMute.value as? String, "Muted", "The card and the account bar show the same microphone")
         accountMute.tap()
+        #else
+        XCTAssertFalse(accountMute.exists, "Mobile audio controls live on the call card, not the account bar")
+        cardMute.tap()
+        #endif
         XCTAssertEqual(cardMute.value as? String, "On")
         XCTAssertFalse(app.buttons["join-voice-chan00000001"].exists, "The connected channel's row has no join shortcut")
         let switchHere = app.buttons["live-join-chan00000002"]
@@ -2517,6 +2604,7 @@ final class CaperParityUITests: XCTestCase {
         capture("voice-ready", app: app)
         let microphone = app.buttons["microphone-toggle"]
         let headphones = app.buttons["deafen-toggle"]
+        #if os(macOS)
         XCTAssertTrue(microphone.waitForExistence(timeout: 5))
         XCTAssertTrue(headphones.exists)
         XCTAssertEqual(microphone.value as? String, "On")
@@ -2530,7 +2618,6 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(microphone.value as? String, "Muted", "Undeafen must preserve an explicitly muted microphone")
         microphone.tap()
         XCTAssertEqual(microphone.value as? String, "On")
-        #if os(macOS)
         app.buttons["Input Options"].tap()
         XCTAssertTrue(app.sliders["Input volume"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.sliders["Voice processing"].exists, "Web's input menu has only the device and input volume")
@@ -2540,6 +2627,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.sliders["Output volume"].waitForExistence(timeout: 2))
         capture("output-options", app: app)
         app.typeKey(.escape, modifierFlags: [])
+        #else
+        XCTAssertFalse(microphone.exists)
+        XCTAssertFalse(headphones.exists)
+        XCTAssertFalse(app.buttons["Input Options"].exists)
+        XCTAssertFalse(app.buttons["Output Options"].exists)
         #endif
         let settings = app.descendants(matching: .any)["account-settings-menu"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
@@ -2646,6 +2738,60 @@ final class CaperParityUITests: XCTestCase {
         capture("audio-preferences", app: app)
     }
 
+    func testProfilePictureControlsStayAlignedDuringRegeneration() async throws {
+        try await Self.fixtureControl(["reset": true])
+        try await Self.fixtureControl(["holdAvatarRegeneration": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let app = launch()
+        let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
+                              "Missing your seeded message")
+        try require(row.buttons["Open profile for Fixture Owner"], timeout: 5, "Missing your profile button").tap()
+        try require(app.buttons["mention-card-edit-profile"], timeout: 5, "Missing Edit profile").tap()
+        let username = try require(app.textFields["Username"], timeout: 5, "Missing profile editor")
+        let regenerate = try require(app.buttons["regenerate-avatar"], timeout: 5, "Missing regenerate control")
+        let edit = app.descendants(matching: .any)["change-profile-picture"].firstMatch
+        let originalUsernameFrame = username.frame
+        let originalRegenerateFrame = regenerate.frame
+        let originalEditFrame = edit.frame
+        XCTAssertEqual(regenerate.label, "Regenerate avatar")
+        XCTAssertEqual(edit.label, "Change profile picture")
+        XCTAssertEqual(regenerate.frame.midY, edit.frame.midY, accuracy: 1)
+        XCTAssertLessThan(regenerate.frame.maxX, edit.frame.minX)
+        XCTAssertGreaterThanOrEqual(regenerate.frame.height, 44)
+        capture("profile-picture-idle", app: app)
+
+        regenerate.tap()
+        assertStaticText("Regenerating…", in: app)
+        XCTAssertFalse(regenerate.isEnabled)
+        XCTAssertFalse(edit.isEnabled)
+        XCTAssertEqual(username.frame, originalUsernameFrame, "Progress must not move the form or resize its sheet")
+        XCTAssertEqual(regenerate.frame, originalRegenerateFrame)
+        XCTAssertEqual(edit.frame, originalEditFrame)
+        capture("profile-picture-regenerating", app: app)
+
+        try await Self.fixtureControl(["holdAvatarRegeneration": false])
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: regenerate)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        XCTAssertFalse(app.staticTexts["Regenerating…"].exists)
+        XCTAssertEqual(username.frame, originalUsernameFrame, "Replacing the avatar must not move the form")
+        XCTAssertEqual(regenerate.frame, originalRegenerateFrame)
+        XCTAssertEqual(edit.frame, originalEditFrame)
+        capture("profile-picture-regenerated", app: app)
+
+        #if os(macOS)
+        regenerate.hover()
+        capture("profile-picture-regenerate-hover", app: app)
+        username.hover()
+        edit.hover()
+        capture("profile-picture-edit-hover", app: app)
+        #endif
+        edit.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["Choose image…"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["Photo library…"].firstMatch.exists)
+        XCTAssertFalse(app.descendants(matching: .any)["Files"].firstMatch.exists)
+        capture("profile-picture-menu", app: app)
+    }
+
     func testOwnMessageAuthorOpensProfileEditorRetainsRejectedValuesAndRetries() async throws {
         let app = launch()
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
@@ -2700,7 +2846,7 @@ final class CaperParityUITests: XCTestCase {
         let submit = app.buttons["profile-continue"]
         XCTAssertTrue(username.waitForExistence(timeout: 5))
         assertStaticText("Choose how you show up.", in: app)
-        XCTAssertEqual(submit.label, "Finish account")
+        XCTAssertEqual(submit.label, "Finish setup")
         XCTAssertFalse(submit.isEnabled)
         type("ab", into: username)
         #if os(iOS)

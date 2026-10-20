@@ -106,6 +106,7 @@ import {
   refreshedFeedback,
   archiveFeedback,
   listPeople,
+  lookupDirectPerson,
   readDirectConversation,
   listUnreadSpaces,
   listSpaceVoiceActivity,
@@ -1255,19 +1256,23 @@ function StartDirectDialog({
   const [username, setUsername] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const [resolved, setResolved] = useState<Person>();
+  const recipient = resolved ?? people?.find((person) => person.username === username);
   const matches = usePeopleSuggestions({
     value: username,
-    people,
+    people: pending ? undefined : people,
     onChoose: (value) => {
       setUsername(value);
       setError(undefined);
+      setResolved(undefined);
     },
   });
   return (
     <Dialog
       title="New direct message"
-      description="Enter an exact username. Conversations stay private across all your spaces."
+      description="Choose someone you know, or find another person by their exact username."
       dismissOnBackdrop={!pending}
+      closeDisabled={pending}
       onClose={onClose}
     >
       <form
@@ -1277,12 +1282,14 @@ function StartDirectDialog({
           if (pending || usernameError(username)) return;
           setPending(true);
           setError(undefined);
-          void createDirectConversation(username)
-            .then(onCreated)
+          const action = recipient
+            ? createDirectConversation(recipient.username).then(onCreated)
+            : lookupDirectPerson(username).then(setResolved);
+          void action
             .catch((reason) => {
               setError(errorMessage(reason));
-              setPending(false);
-            });
+            })
+            .finally(() => setPending(false));
         }}
       >
         <label className="space-field">
@@ -1298,17 +1305,24 @@ function StartDirectDialog({
             onChange={(event) => {
               setUsername(normalizeUsername(event.target.value));
               setError(undefined);
+              setResolved(undefined);
             }}
           />
         </label>
         {matches.list}
         <div className="start-direct-error" aria-live="polite" aria-atomic="true">
-          {error && <p className="space-form-error">{error}</p>}
+          {error ? (
+            <p className="space-form-error">{error}</p>
+          ) : recipient ? (
+            <p className="start-direct-recipient">
+              {recipient.displayName} (@{recipient.username})
+            </p>
+          ) : null}
         </div>
         <SubmitRow
           pending={pending}
-          label="Open conversation"
-          pendingLabel="Opening…"
+          label={recipient ? "Open conversation" : "Find person"}
+          pendingLabel={recipient ? "Opening…" : "Finding…"}
           disabled={!!usernameError(username)}
           onCancel={onClose}
         />
@@ -3091,7 +3105,6 @@ export default function Spaces({
             }}
           />
           {!canCreateSpace && <small>You have reached your space limit.</small>}
-          <JoinInviteLinkForm />
         </section>
       </main>
     );

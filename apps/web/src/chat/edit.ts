@@ -37,7 +37,8 @@ export interface TextMark {
 
 export type EditMark = StrokeMark | TextMark;
 
-/** The editor's tools; the pencil opens Draw, and the preview can open any of them. */
+/** The editor's tools; the pencil opens Draw, and the preview can open any of
+ * them. Draw's eraser is a mode of Draw, not a tool of its own. */
 export type EditTool = "crop" | "draw" | "text";
 
 export interface AttachmentEdit {
@@ -281,6 +282,46 @@ export function dragCrop(
   if (handle.includes("n")) top = clamp(top + dy, 0, bottom - min.height);
   if (handle.includes("s")) bottom = clamp(bottom + dy, top + min.height, 1);
   return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/**
+ * The strokes a round eraser of `radius` at `x`, `y` (fractions) touches, by
+ * index: those whose line, half its width either side, comes within reach.
+ * `width` × `height` is the rotated picture in the same unit as `radius`.
+ * Text is never erased; the Text tool removes it by clearing it.
+ */
+export function strokesTouched(
+  marks: EditMark[],
+  x: number,
+  y: number,
+  radius: number,
+  width: number,
+  height: number,
+): number[] {
+  const edge = Math.max(width, height);
+  const px = x * width;
+  const py = y * height;
+  const touched: number[] = [];
+  marks.forEach((mark, index) => {
+    if (mark.kind !== "stroke" || mark.points.length < 2) return;
+    const reach = radius + (mark.width * edge) / 2;
+    let ax = mark.points[0] * width;
+    let ay = mark.points[1] * height;
+    let nearest = Math.hypot(px - ax, py - ay);
+    for (let point = 2; point + 1 < mark.points.length && nearest > reach; point += 2) {
+      const bx = mark.points[point] * width;
+      const by = mark.points[point + 1] * height;
+      const dx = bx - ax;
+      const dy = by - ay;
+      const length = dx * dx + dy * dy;
+      const t = length ? Math.min(1, Math.max(0, ((px - ax) * dx + (py - ay) * dy) / length)) : 0;
+      nearest = Math.min(nearest, Math.hypot(px - (ax + t * dx), py - (ay + t * dy)));
+      ax = bx;
+      ay = by;
+    }
+    if (nearest <= reach) touched.push(index);
+  });
+  return touched;
 }
 
 export function sameEdit(a: AttachmentEdit | undefined, b: AttachmentEdit | undefined) {

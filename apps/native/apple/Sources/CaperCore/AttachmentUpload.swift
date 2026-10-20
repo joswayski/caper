@@ -71,9 +71,38 @@ public enum AttachmentStaging {
     }
 }
 
-/// Called only by an explicit native Paste action. File URLs and image bytes
+/// Called only by an explicit native Paste action. File URLs and file-like bytes
 /// become private staging copies; ordinary text/links stay with the text view.
 @MainActor enum NativeAttachmentPaste {
+    /// Match staging's type policy without reading payloads while building the edit menu.
+    #if os(iOS)
+    static var hasAttachments: Bool {
+        UIPasteboard.general.hasImages || UIPasteboard.general.types.contains {
+            $0 == UTType.fileURL.identifier || attachmentType($0) != nil
+        }
+    }
+    #endif
+
+    private static func attachmentType(_ identifier: String) -> UTType? {
+        guard let type = UTType(identifier), type.conforms(to: .data),
+              (!type.conforms(to: .text) || type.conforms(to: .image)), !type.conforms(to: .url),
+              type.preferredFilenameExtension != nil || type == .data else { return nil }
+        return type
+    }
+
+    private static func preferredTypes(_ identifiers: [String]) -> [String] {
+        identifiers.filter { attachmentType($0) != nil }.sorted {
+            if ($0 == UTType.gif.identifier) != ($1 == UTType.gif.identifier) {
+                return $0 == UTType.gif.identifier
+            }
+            // Prefer a named format over an opaque alternative of the same item.
+            if ($0 == UTType.data.identifier) != ($1 == UTType.data.identifier) {
+                return $1 == UTType.data.identifier
+            }
+            return $0 < $1
+        }
+    }
+
     static func stage() throws -> [LocalAttachmentFile] {
         var files: [LocalAttachmentFile] = []
         do {
@@ -83,11 +112,12 @@ public enum AttachmentStaging {
                     files.append(try AttachmentStaging.stage(copying: url))
                     continue
                 }
-                if let identifier = item.keys.sorted().first(where: { UTType($0)?.conforms(to: .image) == true }),
-                   let data = item[identifier] as? Data {
-                    files.append(try stageImage(data, identifier: identifier))
+                if let (identifier, data) = preferredTypes(Array(item.keys)).compactMap({ identifier in
+                    (item[identifier] as? Data).map { (identifier, $0) }
+                }).first {
+                    files.append(try stageData(data, identifier: identifier))
                 } else if let image = item.values.compactMap({ $0 as? UIImage }).first, let data = image.pngData() {
-                    files.append(try stageImage(data, identifier: UTType.png.identifier))
+                    files.append(try stageData(data, identifier: UTType.png.identifier))
                 }
             }
             #elseif os(macOS)
@@ -96,9 +126,10 @@ public enum AttachmentStaging {
                     files.append(try AttachmentStaging.stage(copying: url))
                     continue
                 }
-                if let type = item.types.first(where: { UTType($0.rawValue)?.conforms(to: .image) == true }),
-                   let data = item.data(forType: type) {
-                    files.append(try stageImage(data, identifier: type.rawValue))
+                for identifier in preferredTypes(item.types.map(\.rawValue)) {
+                    guard let data = item.data(forType: NSPasteboard.PasteboardType(identifier)) else { continue }
+                    files.append(try stageData(data, identifier: identifier))
+                    break
                 }
             }
             #endif
@@ -118,9 +149,11 @@ public enum AttachmentStaging {
         return url?.isFileURL == true ? url : nil
     }
 
-    private static func stageImage(_ data: Data, identifier: String) throws -> LocalAttachmentFile {
-        let ext = UTType(identifier)?.preferredFilenameExtension ?? "png"
-        return try AttachmentStaging.stage(data: data, filename: "pasted-image.\(ext)")
+    private static func stageData(_ data: Data, identifier: String) throws -> LocalAttachmentFile {
+        let type = UTType(identifier)
+        let ext = type?.preferredFilenameExtension ?? "bin"
+        let name = type?.conforms(to: .image) == true ? "pasted-image" : "pasted-file"
+        return try AttachmentStaging.stage(data: data, filename: "\(name).\(ext)")
     }
 }
 
@@ -139,7 +172,8 @@ public enum AttachmentUploader {
             sourceByteSize: file.sourceSize > 0 ? file.sourceSize : nil,
             width: dimension(file.width), height: dimension(file.height),
             durationMs: file.durationMs.flatMap { (0...86_400_000).contains($0) ? $0 : nil },
-            preview: file.preview.map { AssetCreateInput.Preview(contentType: $0.contentType, byteSize: $0.data.count) }
+            preview: file.preview.map { AssetCreateInput.Preview(contentType: $0.contentType, byteSize: $0.data.count) },
+            voice: file.voice ? true : nil, waveform: file.voice ? file.waveform : nil
         )
         let reservation = try await api.createAsset(input)
         do {

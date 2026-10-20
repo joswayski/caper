@@ -9,17 +9,11 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
-import androidx.compose.ui.test.captureToImage
-import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
-import androidx.compose.ui.test.filterToOne
-import androidx.compose.ui.test.hasAnyDescendant
-import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -60,9 +54,12 @@ class AttachDrawerUiTest {
     private fun save(name: String) {
         val directory = File(requireNotNull(InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")))
         check(directory.mkdirs() || directory.isDirectory)
-        // The sheet is its own window: capture the root that holds the drawer.
-        val screenshot = compose.onAllNodes(isRoot()).filterToOne(hasAnyDescendant(hasText("Attach")))
-            .captureToImage().asAndroidBitmap()
+        // The sheet is its own window, which Compose's node capture draws blank:
+        // take the whole screen as the system shows it.
+        compose.waitForIdle()
+        // The sheet lays out before its window first reaches the screen.
+        Thread.sleep(1_000)
+        val screenshot = requireNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
         try {
             File(directory, "$name.png").outputStream().use { check(screenshot.compress(Bitmap.CompressFormat.PNG, 100, it)) }
         } finally { screenshot.recycle() }
@@ -84,18 +81,19 @@ class AttachDrawerUiTest {
                 }
             }
             compose.waitUntil(15_000) { compose.onAllNodesWithTag("attach-drawer-tile", useUnmergedTree = true).fetchSemanticsNodes().size >= 3 }
-            compose.onNodeWithText("Up to 10 files").assertExists()
+            // Below the limit the drawer shows no count.
+            compose.onNodeWithText("of 10 attached", substring = true).assertDoesNotExist()
             save("attach-drawer-open-test-fixture")
             val tiles = compose.onAllNodesWithTag("attach-drawer-tile", useUnmergedTree = true)
             tiles[1].performClick()
             tiles[0].performClick()
-            compose.onNodeWithText("2 of 10 attached").assertExists()
             // Draft order follows taps, not the grid.
             tiles[1].assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Attached 1"))
             tiles[0].assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Attached 2"))
             save("attach-drawer-selected-test-fixture")
             tiles[1].performClick()
-            compose.onNodeWithText("1 of 10 attached").assertExists()
+            tiles[0].assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Attached 1"))
+            compose.onNodeWithText("of 10 attached", substring = true).assertDoesNotExist()
 
             compose.runOnIdle {
                 files.value = (0 until 10).map { DraftAttachmentUi("full-$it", "file.txt", "file") }

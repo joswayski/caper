@@ -39,6 +39,8 @@ private struct SendInput: Encodable {
     let threadRootId: String?
     let broadcast: Bool?
     let replyToId: String?
+    /// Omitted (nil) unless a KLIPY GIF is sent; never with `attachmentIds`.
+    let gif: ChatGif?
     /// Only `true` (the composer's preview was removed); otherwise omitted.
     let suppressEmbeds: Bool?
 }
@@ -215,6 +217,9 @@ public actor APIClient {
     public func createDirectMessage(username: String) async throws -> DirectMessageConversation {
         try await request("api/dms", method: "POST", body: UsernameInput(username: username))
     }
+    public func lookupDirectPerson(username: String) async throws -> Person {
+        try await request("api/dms/lookup", method: "POST", body: UsernameInput(username: username))
+    }
     /// Accepts an incoming request (idempotent); the conversation comes back `accepted`.
     public func acceptDirectMessage(id: String) async throws -> DirectMessageConversation {
         let conversation: DirectMessageConversation = try await request("api/dms/\(try pathID(id))/accept", method: "POST")
@@ -260,6 +265,8 @@ public actor APIClient {
                                          body: Input(channelId: channelID, threadRootId: threadRootID, archived: archived))
     }
     public func pushConfiguration() async throws -> PushConfiguration { try await request("api/push/config") }
+    /// KLIPY's client key and this account's customer id; 404 while GIFs are off.
+    public func klipyConfiguration() async throws -> KlipyConfiguration { try await request("api/klipy") }
     public func registerPushDevice(platform: String, token: String, appID: String? = nil) async throws {
         let _: Empty = try await request("api/push/devices", method: "POST", body: PushDeviceInput(platform: platform, token: token, appId: appID))
     }
@@ -488,11 +495,13 @@ public actor APIClient {
 
     public func send(channelID: String, sessionToken: String, clientMessageID: String, text: String, attachmentIDs: [String] = [],
                      spoilerAttachmentIDs: [String] = [], threadRootId: String? = nil, broadcast: Bool = false, replyToId: String? = nil,
-                     suppressEmbeds: Bool = false) async throws -> ChatMessage {
+                     gif: ChatGif? = nil, suppressEmbeds: Bool = false) async throws -> ChatMessage {
+        // A GIF travels on its own; the API refuses it alongside files.
+        guard gif == nil || (attachmentIDs.isEmpty && gif!.isValid) else { throw APIError(status: 400, message: "invalid gif") }
         let spoilers = attachmentIDs.filter { spoilerAttachmentIDs.contains($0) }
         let body = SendInput(clientMessageId: clientMessageID, text: text, attachmentIds: attachmentIDs.isEmpty ? nil : attachmentIDs,
                              spoilerAttachmentIds: spoilers.isEmpty ? nil : spoilers,
-                             threadRootId: threadRootId, broadcast: threadRootId == nil ? nil : broadcast, replyToId: replyToId,
+                             threadRootId: threadRootId, broadcast: threadRootId == nil ? nil : broadcast, replyToId: replyToId, gif: gif,
                              suppressEmbeds: suppressEmbeds ? true : nil)
         return try await request("api/chat/channels/\(try pathID(channelID))/messages", method: "POST", body: body, extraHeaders: ["x-caper-chat-token": sessionToken])
     }
@@ -535,7 +544,8 @@ public actor APIClient {
         guard message.id == messageID, message.channelId == channelID, (message.revision ?? 1) >= 1,
               message.content.version == 1, message.content.type == "text",
               // A deleted message's tombstone has empty content.
-              message.deletedAt != nil || MessageValidation.error(for: message.content.text, attachmentCount: message.content.attachments?.count ?? 0) == nil,
+              message.deletedAt != nil || MessageValidation.error(for: message.content.text, attachmentCount: message.content.attachments?.count ?? 0,
+                                                                  hasGif: message.content.gif != nil) == nil,
               (try? Sequence.compare(message.seq, "0")) != nil else { throw APIError(status: 502, message: "Invalid message snapshot.") }
         if (message.revision ?? 1) > 1 {
             let raw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(message))
@@ -601,6 +611,10 @@ public actor APIClient {
     /// Back to the same saved mascot (`avatarId` never changes).
     public func removeAvatar() async throws -> Account {
         try await request("api/account/avatar", method: "DELETE")
+    }
+
+    public func regenerateAvatar() async throws -> Account {
+        try await request("api/account/avatar/regenerate", method: "POST")
     }
 
     public func avatarHistory(cursor: String? = nil) async throws -> AvatarHistory {

@@ -83,8 +83,10 @@ just that player in the card.
 - File attachments, when the server has storage configured (otherwise the
   attach control stays disabled, without shifting the composer). Inline images show the uploaded preview, else
   the PNG/JPEG/WebP/GIF/AVIF original, decoded off the UI thread and cached by
-  attachment id. Videos show their poster with a play button. Clicking an
-  image or video opens the in-app viewer over the window (`viewer.rs`): the
+  attachment id. Videos play inline from their poster's play button; a separate
+  expand button opens the viewer. GIF-style videos autoplay silently while visible,
+  respecting reduced motion. Leaving the message or expanding stops its inline player.
+  Clicking an image or expanding a video opens the in-app viewer (`viewer.rs`): the
   message's images and videos with arrows, Left/Right, an "n / m" counter,
   zoom (double-click, Ctrl+scroll or pinch) and pan, animated GIF/WebP,
   Save (file dialog), Open in browser and Esc to close. Full-size AVIF/HEIC
@@ -123,6 +125,36 @@ just that player in the card.
   `gstreamer1.0-libav` and `gstreamer1.0-plugins-bad` (the `.deb` recommends
   them). Clicks in the video go to the web view; on X11 keyboard focus follows
   the window manager.
+- Voice messages (`voice_note.rs`) in channel, DM and thread composers and the
+  profile card, wherever files can be attached. A click on the microphone
+  beside Emoji starts hands-free recording: the input row becomes a recording
+  bar (Discard, a pulsing terracotta dot and timer, a live meter, eggshell
+  Stop). Enter stops, Escape discards, 10:00 stops on its own, and recordings
+  under a second are dropped. By default a stopped recording is staged in the
+  composer as a voice chip (play/pause, small waveform, length, ×) beside any
+  files; it uploads at once (so transcription starts) and goes with the next
+  Send together with the text and files. One voice message per message; ×
+  cancels its upload. **Settings → Voice messages → Send voice messages as
+  soon as I stop recording** (per device, off by default) sends it alone at
+  once instead (composer text and files stay; a reply target goes with it;
+  the card's goes to the person's DM through the card's own send, then opens
+  the DM like a text send, with Retry voice message or Discard on failure).
+  Capture opens its own private libwebrtc device module like the Audio test
+  (the selected input and input volume apply) and does not change an active
+  call's microphone or publication; sharing a physical microphone with a live
+  call is not yet device-verified. The bundled FFmpeg encodes AAC in MP4 (a
+  16 kHz WAV without it), uploaded as is with `voice`, its duration and 64
+  waveform values: per-slice RMS on a -50–0 dBFS scale, 3-tap smoothed and
+  normalised to the loudest slice. Waveforms draw linearly resampled 3 px
+  rounded bars with 2 px gaps and a minimum height, the played part (boundary
+  bar partly) in text colour and moving every frame; the live meter smooths
+  the input (fast attack, slow release) and scrolls a new bar in every 70 ms
+  (stepwise, and a still dot, with reduced motion). `voice: true` attachments
+  show a player (play/pause, waveform, click or drag to seek, length or time
+  left; one plays at a time) and a Slack-style transcript: three lines with
+  View/Hide transcript, "Transcribing…" while pending, nothing when failed or
+  unavailable; `message.attachments` updates fill it in place. Quotes and
+  forward previews read "Voice message".
 - Sending up to 10 files per message in channel, DM and thread composers,
   including attachment-only thread replies. Staged files and text belong to
   their conversation/thread and survive closing a thread or switching conversations;
@@ -513,6 +545,12 @@ above the account bar and in the Audio test dialog without starting capture or a
 transport.
 `parity-direct` and `parity-direct-new` preview a two-person DM and its
 exact-username dialog without a live account or notification provider.
+`parity-direct-emoji` checks bundled Twemoji in display names (pepper, skin-tone
+joiner sequence, flag, and a truncated name), including the self row, account
+bar, conversation heading, message authors and composer placeholder. These
+labels do not rely on installed system emoji fonts. Linux fixture rendering
+and headless tests cover the shared desktop path; Windows device validation
+remains separate.
 `parity-mentions` previews mention pills, an unresolved `@name`, and rows that
 mention you; click `@alex` or `@fixture_owner` for the cards, or type `@` in its
 composer for space suggestions.
@@ -522,6 +560,13 @@ even when the account has an existing conversation.
 without a preview), failed, animated ("GIF") and removed files, file/audio
 cards and upload chips from synthetic local images; it never fetches media or
 uploads.
+`parity-voice-messages` previews labelled voice messages with a clamped ready
+transcript, a pending one, one without transcript or waveform, and an ordinary
+audio card; `parity-voice-recording` adds the recording bar at a frozen 0:07.
+Neither plays, uploads nor opens a microphone. `parity-voice-profile` opens
+Alex's profile card over them with typed text, and `-recording` its bar.
+`parity-voice-staged` stages an uploaded voice chip beside a photo under typed
+text, above a message with text, a photo and a voice message.
 `parity-thread-attachments` previews the same chips inside a thread;
 `parity-thread-attachments-ready` previews an attachment-only reply, and
 `parity-thread-attachments-rejected` previews a rejected reply with Edit/Dismiss.

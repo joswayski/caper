@@ -17,6 +17,7 @@ import type { PendingChatMessage } from "./client.ts";
 import { MessageAttachments, type LocalPreview } from "./Attachments.tsx";
 import { MessageEmbeds } from "./Embeds.tsx";
 import { embedsOf } from "./embeds.ts";
+import MessageGif from "./MessageGif.tsx";
 import type { ViewAttachment } from "./MediaViewer.tsx";
 import Avatar from "../components/Avatar";
 import AdminBadge from "./AdminBadge.tsx";
@@ -485,6 +486,7 @@ function MessageRowView({
                 {grouped && edited && <> {edited}</>}
               </p>
             )}
+            {!deleted && <MessageGif content={"content" in message ? message.content : message} />}
             <MessageAttachments
               attachments={
                 "content" in message ? withFreshUrls(attachmentsOf(message), freshUrls) : (message.attachments ?? [])

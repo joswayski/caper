@@ -294,7 +294,13 @@ async function fixture() {
           request.kind === "chat" || request.kind === "notifications"
             ? { type: "ready", cursor: request.after ?? "0" }
             : request.kind === "presence"
-              ? { type: "snapshot", members: request.userIds.map((userId) => ({ userId, status: "online" })) }
+              ? {
+                  type: "snapshot",
+                  members: (request.allMembers ? [account.id] : request.userIds).map((userId) => ({
+                    userId,
+                    status: "online",
+                  })),
+                }
               : {
                   type: "snapshot",
                   ...room,
@@ -832,11 +838,15 @@ try {
     // header, and a strip under it on phones with the card's faces.
     evaluate(`voiceFixture.timerEnabled = true; voiceFixture.showSpaces();`);
     wait(`document.querySelector('[aria-label="Join voice in #alpha"]')?.getAttribute('aria-disabled') === 'false'`);
-    const footerControls = () => {
-      for (const label of ["Input Options", "Output Options", "User Settings"]) {
-        assert.equal(evaluate(`return document.querySelectorAll('[aria-label="${label}"]').length;`), 1);
+    const footerControls = (phone) => {
+      for (const label of ["Input Options", "Output Options"]) {
+        assert.equal(evaluate(`return document.querySelectorAll('[aria-label="${label}"]').length;`), phone ? 0 : 1);
       }
-      assert.equal(evaluate(`return document.querySelectorAll('.call-account .voice-action-group').length;`), 2);
+      assert.equal(evaluate(`return document.querySelectorAll('[aria-label="User Settings"]').length;`), 1);
+      assert.equal(
+        evaluate(`return document.querySelectorAll('.call-account .voice-action-group').length;`),
+        phone ? 0 : 2,
+      );
     };
     const current = (name) =>
       `document.querySelector('.channel-select[aria-current="page"] > span')?.textContent === '${name}'`;
@@ -864,7 +874,7 @@ try {
       ]);`);
       wait(`document.querySelector('.live-room')?.getAttribute('aria-label') === 'Voice in #alpha, 2 in voice'`);
       browser("mouse", "move", "5", "5");
-      footerControls();
+      footerControls(phone);
       assert.deepEqual(
         evaluate(`const room = document.querySelector('.live-room'), join = room.querySelector('.live-join');
           return [!!room.closest('#space-channel-list > li'), room.querySelector('.channel-select > span').textContent,
@@ -920,8 +930,11 @@ try {
         assert.equal(evaluate(`return !!document.querySelector('.voice-strip');`), false, "Wide layouts have no strip");
       }
 
+      // Configure saved preferences on desktop; phones keep these controls out of the account bar.
+      if (phone) browser("set", "viewport", "1280", "900", "2");
       click("Input Options");
-      browser("select", 'select[name="input-device"]', "headset");
+      click("Input device");
+      browser("find", "role", "menuitemradio", "click", "--name", "Headset microphone", "--exact");
       browser("focus", '[aria-label="Input volume"]');
       browser("press", "Home");
       browser("press", "PageUp");
@@ -931,7 +944,8 @@ try {
       );
       browser("press", "Escape");
       click("Output Options");
-      browser("select", 'select[name="output-device"]', "headphones");
+      click("Output device");
+      browser("find", "role", "menuitemradio", "click", "--name", "Headphones", "--exact");
       browser("focus", '[aria-label="Output volume"]');
       browser("press", "End");
       browser("press", "PageDown");
@@ -942,6 +956,13 @@ try {
       browser("press", "Escape");
       click("Mute microphone");
       click("Deafen audio");
+      if (phone) {
+        // An open desktop menu must disappear, not become an orphaned top-layer popover.
+        click("Output Options");
+        browser("set", "viewport", String(width), "900", "2");
+        wait(`!document.querySelector('.call-settings-panel')`);
+        footerControls(true);
+      }
       const captures = evaluate(`return voiceFixture.captures.length;`);
       // Desktop joins from the room card; phones from the strip, staying in the conversation.
       if (phone) {
@@ -1003,7 +1024,7 @@ try {
         evaluate(`return [voiceFixture.client.muted, voiceFixture.client.deafened, voiceFixture.client.inputVolume];`),
         [true, true, 10],
       );
-      footerControls();
+      footerControls(phone);
       evaluate(`document.activeElement.blur();`);
       browser("mouse", "move", "5", "5");
       screenshot(`voice-live-connected-${width}`);
@@ -1106,14 +1127,15 @@ try {
         "Switching spaces does not leave voice",
       );
       assert.equal(evaluate(`return document.querySelectorAll('[aria-label="Leave voice"]').length;`), 1);
-      footerControls();
+      footerControls(phone);
       screenshot(`voice-live-other-space-${width}`);
+      browser("click", '.live-call [aria-label="Undeafen audio"]');
+      if (evaluate(`return !!document.querySelector('.live-call [aria-label="Unmute microphone"]');`))
+        browser("click", '.live-call [aria-label="Unmute microphone"]');
       click("Leave voice");
       wait(`voiceFixture.client.phase === 'idle' && !document.querySelector('.live-call')`);
       assert.equal(evaluate(`return voiceFixture.joinedTrack.readyState;`), "ended");
-      footerControls();
-      click("Undeafen audio");
-      if (evaluate(`return !!document.querySelector('[aria-label="Unmute microphone"]');`)) click("Unmute microphone");
+      footerControls(phone);
       click("Test space");
       wait(`document.querySelector('.space-menu h1')?.textContent === 'Test space'`);
       if (phone) openBrowse();
@@ -2343,30 +2365,17 @@ try {
     browser("set", "media", "no-preference");
 
     browser("set", "viewport", "390", "844", "2");
-    click("Input Options");
     assert.ok(
-      evaluate(
-        `const r = document.querySelector('.call-settings-panel').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`,
-      ),
+      evaluate(`return !document.querySelector('.call-account .voice-action-group');`),
+      "Mobile account bars leave audio controls to the call and Settings → Audio test",
     );
     screenshot("voice-controls-narrow");
-    browser("press", "Escape");
-    click("Output Options");
-    assert.ok(
-      evaluate(
-        `const r = document.querySelector('.call-settings-panel').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth;`,
-      ),
-    );
-    screenshot("voice-output-narrow");
-    click("Output device");
-    assert.ok(
-      evaluate(`const r = document.querySelector('.audio-device-drawer').getBoundingClientRect();
-      return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;`),
-    );
-    screenshot("voice-output-choices-narrow");
-    browser("press", "Escape");
-    browser("press", "Escape");
     click("User Settings");
+    assert.ok(
+      evaluate(`const r = document.querySelector('.call-settings-panel').getBoundingClientRect();
+        return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;`),
+      "Mobile settings stay fully inside the viewport",
+    );
     screenshot("voice-settings-narrow");
     browser("press", "Escape");
     click("User Settings");

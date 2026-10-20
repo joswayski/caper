@@ -54,10 +54,15 @@ when it asks:
   them to messages. Only items you choose are uploaded."
 - Camera: "Caper uses your camera when you take a photo or video to attach to a
   message."
-- Microphone: "Caper uses your microphone when you join a voice channel or
-  record a video to attach."
+- Microphone: "Caper uses your microphone when you join a voice channel,
+  record a voice message or record a video to attach."
 
 App Store Connect → App Privacy: if "Photos or Videos" is not already declared,
 add it as **User Content → Photos or Videos**, collected, linked to the user's
 account, used for **App Functionality**, not for tracking. Sent attachments
 already reach Caper's servers, so this may already be declared.
+
+Voice messages (October 2026) upload recorded audio and send it to an AI
+provider for a transcript. If "Audio Data" is not already declared, add it as
+**User Content → Audio Data**, collected, linked to the user's account, used
+for **App Functionality**, not for tracking.

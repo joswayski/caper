@@ -1,33 +1,27 @@
-//! The composer's attach panel, as on web (`chat/AttachmentPicker.tsx`): a
-//! popup above Attach with the draft's capacity, Photos and videos, and
-//! Files. It still opens at the attachment limit, where the choices nudge the
-//! capacity line instead of opening a dialog that couldn't add anything.
+//! The composer's attach menu, as on web (`chat/AttachmentPicker.tsx`) and
+//! Discord: one unfiltered "Upload a file" (and Paste for profile messages).
+//! It still opens at the attachment limit, where it says so and the choices
+//! nudge that line instead of opening a dialog that couldn't add anything.
 
-use crate::{BORDER, MUTED, TERRACOTTA, TERRACOTTA_BRIGHT, TEXT, motion, uploads};
+use crate::{MUTED, TERRACOTTA, TERRACOTTA_BRIGHT, TEXT, motion, uploads};
 use eframe::egui::{self, RichText};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttachChoice {
-    /// The system dialog, filtered to photos and videos first.
-    Media,
     /// The system dialog for any file.
-    Files,
+    Upload,
     /// Files copied to the clipboard (profile messages).
     Paste,
 }
 
-/// The capacity line, worded as on every client.
-pub fn label(attached: usize) -> String {
+/// The limit line, worded as on every client. Drafts below the limit show
+/// nothing, so only a full one has a label.
+pub fn label(attached: usize) -> Option<String> {
     let max = uploads::MAX_ATTACHMENTS;
-    let count = attached.min(max);
-    if count == 0 {
-        format!("Up to {max} files")
-    } else {
-        format!("{count} of {max} attached")
-    }
+    (attached >= max).then(|| format!("{max} of {max} attached"))
 }
 
-/// Shown once full: how to make room.
+/// How to make room once full.
 pub fn hint(attached: usize) -> Option<&'static str> {
     (attached >= uploads::MAX_ATTACHMENTS).then_some("Remove a file to add another.")
 }
@@ -46,7 +40,7 @@ pub fn popup(button: &egui::Response, attached: usize, paste: bool) -> Option<At
     let full = attached >= uploads::MAX_ATTACHMENTS;
     let nudge_id = button.id.with("attach-nudge");
     let mut choice = None;
-    egui::Popup::menu(button).width(248.0).show(|ui| {
+    egui::Popup::menu(button).width(200.0).show(|ui| {
         let now = ui.input(|input| input.time);
         let started = ui.data(|data| data.get_temp::<f64>(nudge_id));
         let elapsed = started.map_or(f32::MAX, |start| (now - start) as f32);
@@ -58,44 +52,31 @@ pub fn popup(button: &egui::Response, attached: usize, paste: bool) -> Option<At
         if elapsed < motion::SLOW {
             ui.ctx().request_repaint();
         }
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        if let Some(label) = label(attached) {
             ui.add_space(4.0);
-            ui.label(RichText::new("Attach").strong().size(13.0).color(TEXT));
-        });
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            // The row rests 4 points in, so the shake can move it either way.
-            ui.add_space(4.0 + offset);
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(uploads::MAX_ATTACHMENTS as f32 * 9.0 - 3.0, 10.0),
-                egui::Sense::hover(),
-            );
-            for index in 0..uploads::MAX_ATTACHMENTS {
-                let fill = if full {
-                    TERRACOTTA
-                } else if index < attached {
-                    TEXT
-                } else {
-                    BORDER
-                };
-                ui.painter().circle_filled(
-                    egui::pos2(rect.min.x + 3.0 + index as f32 * 9.0, rect.center().y),
-                    3.0,
-                    fill,
-                );
-            }
-            ui.label(RichText::new(label(attached)).size(12.0).color(if full {
-                TERRACOTTA_BRIGHT
-            } else {
-                MUTED
-            }));
-        });
-        if let Some(hint) = hint(attached) {
             ui.horizontal(|ui| {
-                ui.add_space(4.0);
-                ui.label(RichText::new(hint).size(12.0).color(MUTED));
+                // The row rests 4 points in, so the shake can move it either way.
+                ui.add_space(4.0 + offset);
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(uploads::MAX_ATTACHMENTS as f32 * 9.0 - 3.0, 10.0),
+                    egui::Sense::hover(),
+                );
+                for index in 0..uploads::MAX_ATTACHMENTS {
+                    ui.painter().circle_filled(
+                        egui::pos2(rect.min.x + 3.0 + index as f32 * 9.0, rect.center().y),
+                        3.0,
+                        TERRACOTTA,
+                    );
+                }
+                ui.label(RichText::new(label).size(12.0).color(TERRACOTTA_BRIGHT));
             });
+            if let Some(hint) = hint(attached) {
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(hint).size(12.0).color(MUTED));
+                });
+            }
+            ui.add_space(2.0);
         }
         ui.add_space(4.0);
         let row = |ui: &mut egui::Ui, image: egui::Image<'static>, text: &str| {
@@ -106,27 +87,18 @@ pub fn popup(button: &egui::Response, attached: usize, paste: bool) -> Option<At
                         .fit_to_exact_size(egui::vec2(16.0, 16.0)),
                     RichText::new(text).color(if full { MUTED } else { TEXT }),
                 )
-                .min_size(egui::vec2(232.0, 36.0)),
+                .min_size(egui::vec2(184.0, 32.0)),
             )
         };
         let mut picked = None;
         if row(
             ui,
-            egui::Image::new(egui::include_image!("../resources/icons/images.svg")),
-            "Photos and videos",
+            egui::Image::new(egui::include_image!("../resources/icons/file-up.svg")),
+            "Upload a file",
         )
         .clicked()
         {
-            picked = Some(AttachChoice::Media);
-        }
-        if row(
-            ui,
-            egui::Image::new(egui::include_image!("../resources/icons/file-text.svg")),
-            "Files",
-        )
-        .clicked()
-        {
-            picked = Some(AttachChoice::Files);
+            picked = Some(AttachChoice::Upload);
         }
         if paste
             && row(
@@ -158,10 +130,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capacity_matches_web_wording() {
-        assert_eq!(label(0), "Up to 10 files");
-        assert_eq!(label(3), "3 of 10 attached");
-        assert_eq!(label(12), "10 of 10 attached");
+    fn capacity_shows_only_at_the_limit_as_on_web() {
+        assert_eq!(label(0), None);
+        assert_eq!(label(9), None);
+        assert_eq!(label(10).as_deref(), Some("10 of 10 attached"));
+        assert_eq!(label(12).as_deref(), Some("10 of 10 attached"));
         assert_eq!(hint(9), None);
         assert_eq!(hint(10), Some("Remove a file to add another."));
     }

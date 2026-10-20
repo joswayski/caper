@@ -179,6 +179,30 @@ fn previews_trim_truncate_to_180_characters_and_name_empty_messages() {
 }
 
 #[test]
+fn gif_notifications_name_the_gif_unless_captioned() {
+    let gif = json!({"provider":"klipy","kind":"gif","slug":"hi","width":1,"height":1,"gif":"https://static.klipy.com/a.gif"});
+    let mut sticker = gif.clone();
+    sticker["kind"] = json!("sticker");
+    for (message, expected) in [
+        (json!({"content":{"text":"","gif":gif}}), "Sent a GIF"),
+        (
+            json!({"content":{"text":" ","gif":sticker}}),
+            "Sent a sticker",
+        ),
+        (json!({"content":{"text":"lol","gif":gif}}), "lol"),
+        (
+            json!({"content":{"text":""},"forward":{"message":{"content":{"text":"","gif":gif}}}}),
+            "Sent a GIF",
+        ),
+    ] {
+        let text = message["content"]["text"].as_str().unwrap();
+        let alert = apns::payload(&channel_alert(text).with_content(&message, None));
+        assert_eq!(alert["aps"]["alert"]["body"], expected);
+        assert!(alert.get("attachmentUrl").is_none());
+    }
+}
+
+#[test]
 fn file_notifications_use_one_original_and_keep_text_without_media() {
     let signer = CdnSigner::new("https://cdn.test".into(), vec![7; 32]);
     let photo = json!({"id":"photo1","kind":"image","contentType":"image/webp","size":50_000_000});

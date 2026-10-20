@@ -176,13 +176,6 @@ private struct FirstSpaceView: View {
                     Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                Divider().overlay(CaperTheme.border)
-                HStack {
-                    Text("Have an invite link?").font(CaperTheme.font(13)).foregroundStyle(CaperTheme.muted)
-                    Spacer()
-                    Button("Join with invite link") { opened = nil; joining = true }.buttonStyle(CaperSecondaryButton(minHeight: 42))
-                        .disabled(pending).accessibilityIdentifier("first-space-join-invite")
-                }
                 HStack {
                     Spacer()
                     Button("Log out") { Task { await model.logout() } }.buttonStyle(.plain)
@@ -2941,14 +2934,20 @@ private struct MemberPresenceView: View {
     var close: (() -> Void)?
     @State private var profile: MentionCardTarget?
     @State private var pointer = MentionPointer()
+    @State private var searching = false
+    @FocusState private var searchFocused: Bool
     init(model: AppModel, close: (() -> Void)? = nil) { self.model = model; presence = model.presence; self.close = close }
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("Members").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                Spacer()
                 if model.detail?.space.demo != true {
                     Text("\(model.detail?.members.count ?? 0)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                }
+                Spacer()
+                if model.detail?.space.demo != true && !searching {
+                    Button { searching = true } label: { Image(systemName: "magnifyingglass").font(.system(size: 16)) }
+                        .buttonStyle(SidebarIconButton()).accessibilityLabel("Search members")
                 }
                 if let close {
                     Button(action: SwipeTapGuard.unlessSwiping(close)) { CaperIcon(name: "x") }
@@ -2956,14 +2955,30 @@ private struct MemberPresenceView: View {
                 }
             }.padding(.horizontal, 12).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            if searching {
+            HStack {
+                    TextField("Name or username", text: $presence.query)
+                        .font(CaperTheme.font(12))
+                        .focused($searchFocused)
+                        .onAppear { searchFocused = true }
+                        #if os(macOS)
+                        .onExitCommand { presence.query = ""; searching = false }
+                        #endif
+                    Button { presence.query = ""; searching = false } label: { CaperIcon(name: "x") }
+                        .buttonStyle(SidebarIconButton()).accessibilityLabel("Clear and close member search")
+            }.padding(.horizontal, 12)
+            }
             ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
+            LazyVStack(alignment: .leading, spacing: 0) {
             if model.detail?.space.demo == true {
                 Text("General is open to everyone. People in voice appear in the channel sidebar.")
                     .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             } else if model.detail?.members.isEmpty != false {
                 Text("No members to show.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             } else {
+                if presence.visibleMembers.isEmpty {
+                    Text("No matching members.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                }
                 if let groups = model.detail?.memberGroups(channelID: model.selectedChannelID) {
                     // A private channel's readers lead on a slightly brighter
                     // neutral fill; the rest of the space follows, quieter.
@@ -2971,29 +2986,22 @@ private struct MemberPresenceView: View {
                     let top = presence.visibleMembers.filter { ids.contains($0.id) }
                     let rest = presence.visibleMembers.filter { !ids.contains($0.id) }
                     if !top.isEmpty {
-                        VStack(alignment: .leading, spacing: 0) {
-                            groupLabel("In #\(channelName)", count: groups.inChannel.count, primary: true)
-                            ForEach(top) { memberRow($0, quiet: false, ring: CaperTheme.sidebarRaised) }
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            groupLabel("In #\(channelName)", count: top.count, primary: true)
+                            presenceSections(top, quiet: false, ring: CaperTheme.sidebarRaised)
                         }.padding(.horizontal, 6).padding(.vertical, 4)
                             .background(CaperTheme.sidebarRaised, in: RoundedRectangle(cornerRadius: 8))
                             .accessibilityElement(children: .contain).accessibilityLabel("In #\(channelName)")
                     }
                     if !rest.isEmpty {
-                        VStack(alignment: .leading, spacing: 0) {
-                            groupLabel("Others in this space", count: groups.others.count, primary: false)
-                            ForEach(rest) { memberRow($0, quiet: true, ring: CaperTheme.sidebar) }
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            groupLabel("Others in this space", count: rest.count, primary: false)
+                            presenceSections(rest, quiet: true, ring: CaperTheme.sidebar)
                         }.padding(.horizontal, 6).padding(.top, top.isEmpty ? 0 : 4)
                             .accessibilityElement(children: .contain).accessibilityLabel("Others in this space")
                     }
                 } else {
-                    ForEach(presence.visibleMembers) { memberRow($0, quiet: false, ring: CaperTheme.sidebar) }
-                }
-                if presence.pageCount > 1 {
-                    HStack {
-                        Button("Previous") { if !SwipeTapGuard.swiping { Task { await presence.showPage(presence.page - 1) } } }.disabled(presence.page == 0)
-                        Spacer(); Text("\(presence.page + 1) / \(presence.pageCount)")
-                        Spacer(); Button("Next") { if !SwipeTapGuard.swiping { Task { await presence.showPage(presence.page + 1) } } }.disabled(presence.page + 1 >= presence.pageCount)
-                    }.font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+                    presenceSections(presence.visibleMembers, quiet: false, ring: CaperTheme.sidebar)
                 }
             }
             }.padding(.horizontal, 12)
@@ -3003,7 +3011,8 @@ private struct MemberPresenceView: View {
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
             .coordinateSpace(.named(MentionCard.timelineSpace))
             .modifier(MentionCardHost(target: $profile, model: model, viewerID: model.account?.id))
-            .onChange(of: model.detail?.space.id) { _, _ in profile = nil }
+            .onChange(of: model.detail?.space.id) { _, _ in profile = nil; searching = false }
+            .onDisappear { presence.query = ""; searching = false }
     }
     private var channelName: String {
         model.detail?.channels.first { $0.id == model.selectedChannelID }?.name ?? ""
@@ -3016,6 +3025,19 @@ private struct MemberPresenceView: View {
             .foregroundStyle(primary ? CaperTheme.text : CaperTheme.muted)
             .padding(.horizontal, 6).padding(.top, 6).padding(.bottom, 2)
             .accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
+    }
+    @ViewBuilder private func presenceSections(_ visible: [Member], quiet: Bool, ring: Color) -> some View {
+        // Preserve the roster's order within each section.
+        ForEach([PresenceStatus.online, .offline, .unknown], id: \.rawValue) { section in
+            let rows = visible.filter { member in
+                let status = presence.status(for: member)
+                return section == .online ? status == .online || status == .idle : status == section
+            }
+            if !rows.isEmpty {
+                groupLabel(section == .online ? "Online" : section == .offline ? "Offline" : "Status unavailable", count: rows.count, primary: false)
+                ForEach(rows) { memberRow($0, quiet: quiet || section == .offline, ring: ring) }
+            }
+        }
     }
     @ViewBuilder private func memberRow(_ listed: Member, quiet: Bool, ring: Color) -> some View {
         // Rows show live profile updates and your latest saved name and picture.
@@ -3202,6 +3224,7 @@ private struct AccountBar: View {
     @FocusState private var settingsFocused: Bool
     #else
     @Bindable private var effects = CaperEffects.shared
+    @Bindable private var voiceMessages = VoiceMessageSettings.shared
     #endif
     @State private var inputOptions = false
     @State private var outputOptions = false
@@ -3261,6 +3284,7 @@ private struct AccountBar: View {
                     // Web: the account's name, else the guest chat identity, with its profile label.
                     .accessibilityLabel(model.account == nil ? "Sign in to edit your profile" : "Edit profile for \(identityName)")
                     .accessibilityIdentifier("account-profile")
+            #if os(macOS)
             Button { CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) } } label: {
                 CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
                     .foregroundStyle(voice.muted ? CaperTheme.voiceOff : CaperTheme.muted)
@@ -3296,6 +3320,7 @@ private struct AccountBar: View {
                     .contentShape(Rectangle())
             }.buttonStyle(.plain).modifier(ControlHover()).help("Output Options").accessibilityLabel("Output Options")
                 .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
+            #endif
             Menu {
                 #if os(macOS)
                 Button("Settings…") { openSettings() }
@@ -3308,6 +3333,8 @@ private struct AccountBar: View {
                 Section("Audio settings") {
                     Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
                         .accessibilityIdentifier("sound-effects")
+                    Toggle(VoiceMessage.sendOnStopTitle, isOn: $voiceMessages.sendOnStop)
+                        .accessibilityIdentifier("voice-messages-send-on-stop")
                 }
                 #endif
                 Button("Audio test") { sheet = .audio }
@@ -3767,7 +3794,8 @@ private struct ChatView: View {
         }
         #if os(iOS)
         .fullScreenCover(isPresented: Binding(get: { narrow && chat.threadRootID != nil }, set: { if !$0 { chat.closeThread() } })) {
-            threadContent
+            NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource, fullScreen: true)
+                .presentationBackground(.clear)
         }
         #else
         // Web: Escape closes the thread unless a picker or dialog is open. Sheets,
@@ -3831,6 +3859,61 @@ private struct ChatView: View {
                     }
             }
             .modifier(Entrance.panel)
+    }
+    /// The channel's text field box. A separate property keeps `channelBody`
+    /// within the Swift type checker's time limit.
+    private var channelComposerField: some View {
+        HStack(alignment: .bottom, spacing: 0) {
+            HStack(alignment: .bottom, spacing: 0) {
+                AttachmentPickerButton(chat: chat).frame(height: composerMinHeight).padding(.leading, 4)
+                ZStack(alignment: .topLeading) {
+                    if chat.draft.isEmpty {
+                        Text(composerPlaceholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                            .padding(.leading, 5).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                    messageComposer
+                }
+                .frame(minHeight: composerMinHeight, maxHeight: 174)
+                // Measure the text view instead of filling the 174-point maximum.
+                .fixedSize(horizontal: false, vertical: true)
+                .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
+                // The first link's card, after a pause in typing (a newer link cancels it).
+                .task(id: chat.composerPreviewLink) { await chat.loadComposerLinkPreview() }
+                #if os(iOS)
+                .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                #endif
+                channelGifButton
+                #if os(macOS)
+                ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight)
+                #endif
+            }
+            #if os(iOS)
+            // The held microphone stays put while the bar covers the field.
+            .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight))
+            #endif
+            VoiceRecordButton(chat: chat, inThread: false, height: composerMinHeight).padding(.trailing, 2)
+        }
+        .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+        #if os(macOS)
+        // The conversation draws suggestions above this box (see ComposerSuggestionsOverlay).
+        .anchorPreference(key: ChatComposerAnchorKey.self, value: .bounds) { $0 }
+        #endif
+    }
+    /// Its own property: inline in `channelBody` it pushed that expression past
+    /// the Swift type checker's time limit.
+    @ViewBuilder private var channelGifButton: some View {
+        #if os(iOS)
+        ComposerEmojiButton(controller: composerAutocomplete, configuration: chat.klipy, mediaEnabled: chat.canSendGif(), send: { gif, query in
+            Task { await chat.sendGif(gif, query: query) }
+        }).frame(height: composerMinHeight)
+        #else
+        if let klipy = chat.klipy {
+            ComposerGifButton(configuration: klipy, enabled: chat.canSendGif(), controller: composerAutocomplete, send: { gif, query in
+                Task { await chat.sendGif(gif, query: query) }
+            }).frame(height: composerMinHeight)
+        }
+        #endif
     }
     private var channelBody: some View {
         VStack(spacing: 0) {
@@ -4021,7 +4104,7 @@ private struct ChatView: View {
                     }
                 }
                 #if os(iOS)
-                .scrollDismissesKeyboard(.immediately)
+                .scrollDismissesKeyboard(.interactively)
                 #endif
                 .accessibilityIdentifier("chat-timeline")
                 // Pills report the pointer in this space; the popover anchors in it too.
@@ -4151,6 +4234,7 @@ private struct ChatView: View {
             if let notice = chat.attachmentNotice {
                 Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
             }
+            VoiceComposerNotice(chat: chat, inThread: false)
             AttachmentDraftsView(chat: chat)
             ComposerEmbedPreview(chat: chat)
             HStack(alignment: .bottom, spacing: 8) {
@@ -4172,32 +4256,7 @@ private struct ChatView: View {
                     #if os(iOS)
                     ComposerSuggestionsView(controller: composerAutocomplete)
                     #endif
-                    HStack(alignment: .bottom, spacing: 0) {
-                        AttachmentPickerButton(chat: chat).frame(height: composerMinHeight).padding(.leading, 4)
-                        ZStack(alignment: .topLeading) {
-                            if chat.draft.isEmpty {
-                                Text(composerPlaceholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                                    .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
-                            }
-                            messageComposer
-                        }
-                        .frame(minHeight: composerMinHeight, maxHeight: 174)
-                        // Measure the text view instead of filling the 174-point maximum.
-                        .fixedSize(horizontal: false, vertical: true)
-                        .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
-                        // The first link's card, after a pause in typing (a newer link cancels it).
-                        .task(id: chat.composerPreviewLink) { await chat.loadComposerLinkPreview() }
-                        #if os(iOS)
-                        .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
-                        #endif
-                        ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight).padding(.trailing, 2)
-                    }
-                    .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-                    #if os(macOS)
-                    // The conversation draws suggestions above this box (see ComposerSuggestionsOverlay).
-                    .anchorPreference(key: ChatComposerAnchorKey.self, value: .bounds) { $0 }
-                    #endif
+                    channelComposerField
                 }
                 Button { Task { await chat.send() } } label: {
                     CaperIcon(name: "send", size: 16)
@@ -4213,6 +4272,11 @@ private struct ChatView: View {
                 .accessibilityValue(chat.sending ? "Sending" : "")
                 .accessibilityIdentifier("send-message-button")
             }
+            #if os(macOS)
+            // Clicking the microphone replaces this row with the recording bar.
+            .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight,
+                                         restoreFocus: { composerAutocomplete.restoreFocus() }))
+            #endif
             }
             }
             }.padding(.horizontal, 18).padding(.top, 12)
@@ -4226,8 +4290,12 @@ private struct ChatView: View {
             // ignores the safe area, so the controls still avoid the keyboard.
             CaperTheme.conversation.ignoresSafeArea()
         }
-            // Uploads are optional server configuration; recheck per conversation.
-            .task(id: model.selectedDirectMessageID ?? model.selectedChannelID ?? model.visit?.channelID) { await chat.checkUploadAvailability() }
+            // Uploads and GIFs (KLIPY_APP_KEY) are optional server configuration;
+            // recheck per conversation.
+            .task(id: model.selectedDirectMessageID ?? model.selectedChannelID ?? model.visit?.channelID) {
+                await chat.checkUploadAvailability()
+                await chat.checkKlipyAvailability()
+            }
             // Finder, Files, Photos and other apps (iPad split view and Slide Over).
             // addAttachments keeps the first files that fit and removes the rest.
             .dropDestination(for: DroppedAttachment.self) { items, _ in
@@ -4403,12 +4471,17 @@ private struct ThreadBroadcastToggleStyle: ToggleStyle {
                     .font(.system(size: 18))
                     .foregroundStyle(configuration.isOn ? CaperTheme.terracottaBright : CaperTheme.muted)
                     .frame(width: 24, height: 24)
+                    .contentTransition(.identity)
+                    .symbolEffectsRemoved()
                 configuration.label.fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // A binary choice should acknowledge the tap immediately, not inherit
+        // a presentation animation or the system's symbol replacement effect.
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
         // Preserve the native toggle's label, value and action for VoiceOver.
         .accessibilityRepresentation {
             Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(.switch)
@@ -4417,12 +4490,15 @@ private struct ThreadBroadcastToggleStyle: ToggleStyle {
 }
 
 #if os(iOS)
-/// Deliberately not a drawer: only a completed rightward drag navigates.
-/// Gesture state resets on cancellation; vertical/left starts stay rejected.
+/// Follow a rightward drag over history, without borrowing the composer's gestures.
 private struct ThreadBackSwipe: ViewModifier {
     let enabled: Bool
-    let close: () -> Void
-    @GestureState private var direction = 0
+    let move: (CGFloat) -> Void
+    let release: (Bool) -> Void
+    // GestureState can reset before onEnded; the direction decision must survive
+    // until release. The separate active flag also handles system cancellation.
+    @State private var direction = 0
+    @GestureState private var active = false
 
     /// Leave text selection, controls and nested horizontal scrollers alone.
     private func reservedStart(_ point: CGPoint) -> Bool {
@@ -4430,7 +4506,11 @@ private struct ThreadBackSwipe: ViewModifier {
             .flatMap(\.windows).first(where: \.isKeyWindow)
         var view = window?.hitTest(point, with: nil)
         while let current = view {
-            if current is UIControl || current is UITextView { return true }
+            if current is UIControl { return true }
+            // Read-only message text can also be backed by UITextView; only
+            // editors and active text selections should reserve its gesture.
+            if let text = current as? UITextView,
+               text.isEditable || text.selectedRange.length > 0 { return true }
             if let scroll = current as? UIScrollView,
                scroll.contentSize.width > scroll.bounds.width + 1 { return true }
             view = current.superview
@@ -4439,25 +4519,39 @@ private struct ThreadBackSwipe: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        content.contentShape(Rectangle()).simultaneousGesture(
+        content.contentShape(Rectangle()).scrollDisabled(active && direction == 1).simultaneousGesture(
             DragGesture(minimumDistance: 16, coordinateSpace: .global)
-                .updating($direction) { value, direction, _ in
+                .updating($active) { _, active, _ in active = true }
+                .onChanged { value in
                     if direction == 0 {
                         direction = enabled && !reservedStart(value.startLocation) &&
                             value.translation.width > abs(value.translation.height) * 1.5 ? 1 : -1
                     }
-                }
-                .onChanged { _ in
-                    if direction == 1 { SwipeTapGuard.follow() }
+                    if direction == 1 {
+                        SwipeTapGuard.follow()
+                        move(max(0, value.translation.width))
+                    }
                 }
                 .onEnded { value in
-                    guard direction == 1 else { return }
+                    let followed = direction == 1
+                    // A child control can defer a fast drag's moves until lift.
+                    let unobserved = direction == 0 && !reservedStart(value.startLocation)
+                    direction = 0
+                    guard followed || unobserved else { return }
                     SwipeTapGuard.release()
-                    guard enabled, value.translation.width >= 72,
-                          value.translation.width > abs(value.translation.height) * 1.5 else { return }
-                    close()
+                    release(enabled && value.translation.width >= 72 &&
+                            value.translation.width > abs(value.translation.height) * 1.5)
                 }
         )
+        .onChange(of: active) { _, active in
+            guard !active else { return }
+            DispatchQueue.main.async {
+                guard !self.active, direction != 0 else { return }
+                let followed = direction == 1
+                direction = 0
+                if followed { SwipeTapGuard.release(); release(false) }
+            }
+        }
     }
 }
 #endif
@@ -4470,6 +4564,11 @@ private struct NativeThreadView: View {
     let viewerID: String?
     /// The conversation's `@` candidates, shared with the main composer.
     let mentions: MentionSource
+    var fullScreen = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var backOffset: CGFloat = 0
+    @State private var backWidth: CGFloat = 0
+    @State private var closingBack = false
     @StateObject private var composerAutocomplete = ComposerAutocompleteController()
     @State private var fileDropTargeted = false
     @State private var fileDropTarget: ChatModel.AttachmentTarget?
@@ -4481,9 +4580,11 @@ private struct NativeThreadView: View {
     @State private var mentionPointer = MentionPointer()
     private var mentionCards: MentionCardContext {
         MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
+            guard !SwipeTapGuard.swiping else { return }
             reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
             mentionCard = MentionCardTarget(pill: pill, pointer: mentionPointer.location)
         }, openAuthor: { author in
+            guard !SwipeTapGuard.swiping else { return }
             reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
             mentionCard = MentionCardTarget(author: author, pointer: mentionPointer.location)
         })
@@ -4578,8 +4679,27 @@ private struct NativeThreadView: View {
     }
     #if os(iOS)
     private var canSwipeBack: Bool {
-        reactionMessage == nil && !showingEmojiPicker && reactorsTarget == nil && mentionCard == nil &&
+        fullScreen && !closingBack && reactionMessage == nil && !showingEmojiPicker && reactorsTarget == nil && mentionCard == nil &&
         blockTarget == nil && forwardMessage == nil && !fileDropTargeted
+    }
+    private func moveBack(_ offset: CGFloat) {
+        guard !closingBack else { return }
+        backOffset = reduceMotion ? 0 : min(backWidth, offset)
+    }
+    private func releaseBack(_ commit: Bool) {
+        guard !closingBack else { return }
+        closingBack = commit
+        withAnimation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.fast), completionCriteria: .removed) {
+            backOffset = commit && !reduceMotion ? backWidth : 0
+        } completion: {
+            if commit {
+                // The horizontal slide has already left the screen; don't run
+                // fullScreenCover's second, vertical dismissal animation.
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { chat.closeThread() }
+            }
+        }
     }
     #endif
     var body: some View {
@@ -4604,7 +4724,7 @@ private struct NativeThreadView: View {
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
                 #if os(iOS)
-                .modifier(ThreadBackSwipe(enabled: canSwipeBack, close: { chat.closeThread() }))
+                .modifier(ThreadBackSwipe(enabled: canSwipeBack, move: moveBack, release: releaseBack))
                 #endif
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
@@ -4663,8 +4783,8 @@ private struct NativeThreadView: View {
                     }
                 }
                 #if os(iOS)
-                .scrollDismissesKeyboard(.immediately)
-                .modifier(ThreadBackSwipe(enabled: canSwipeBack, close: { chat.closeThread() }))
+                .scrollDismissesKeyboard(.interactively)
+                .modifier(ThreadBackSwipe(enabled: canSwipeBack, move: moveBack, release: releaseBack))
                 #endif
                 #if os(macOS)
                 .accessibilityIdentifier("thread-timeline")
@@ -4714,6 +4834,7 @@ private struct NativeThreadView: View {
                 if let notice = chat.threadAttachmentNotice {
                     Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright)
                 }
+                VoiceComposerNotice(chat: chat, inThread: true)
                 AttachmentDraftsView(chat: chat, inThread: true)
                 Toggle(isOn: $chat.threadBroadcast) {
                     (Text("Also send to ") + Text(direct ? chat.channelName : "#\(chat.channelName)").font(CaperTheme.font(11, weight: .bold)))
@@ -4726,21 +4847,30 @@ private struct NativeThreadView: View {
                 #endif
                 HStack(alignment: .bottom, spacing: 8) {
                     HStack(alignment: .bottom, spacing: 0) {
-                        AttachmentPickerButton(chat: chat, inThread: true).padding(.leading, 4)
-                        // Like the channel composer: the placeholder sits behind the clear editor, which draws none.
-                        ZStack(alignment: .topLeading) {
-                            if chat.threadDraft.isEmpty {
-                                Text("Reply to thread…").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                                    .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                        HStack(alignment: .bottom, spacing: 0) {
+                            AttachmentPickerButton(chat: chat, inThread: true).padding(.leading, 4)
+                            // Like the channel composer: the placeholder sits behind the clear editor, which draws none.
+                            ZStack(alignment: .topLeading) {
+                                if chat.threadDraft.isEmpty {
+                                    Text("Reply to thread…").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                                        .padding(.leading, 5).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                                }
+                                threadComposer
                             }
-                            threadComposer
-                        }
-                            .frame(minHeight: 42, maxHeight: 174)
-                            .fixedSize(horizontal: false, vertical: true)
-                            #if os(iOS)
-                            .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                                .frame(minHeight: 42, maxHeight: 174)
+                                .fixedSize(horizontal: false, vertical: true)
+                                #if os(iOS)
+                                .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                                #endif
+                            threadGifButton
+                            #if os(macOS)
+                            ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading)
                             #endif
-                        ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading).padding(.trailing, 2)
+                        }
+                        #if os(iOS)
+                        .modifier(VoiceComposerCover(chat: chat, inThread: true))
+                        #endif
+                        VoiceRecordButton(chat: chat, inThread: true).padding(.trailing, 2)
                     }
                         // Clipped too: the fill's square corners showed outside the rounded border.
                         .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -4750,6 +4880,9 @@ private struct NativeThreadView: View {
                         #endif
                     sendReplyButton
                 }
+                #if os(macOS)
+                .modifier(VoiceComposerCover(chat: chat, inThread: true, restoreFocus: { composerAutocomplete.restoreFocus() }))
+                #endif
                 if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID,
                    !chat.sending, chat.error != nil || chat.sendRejected {
                     Text("Confirm or dismiss the pending message before sending a reply.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
@@ -4760,6 +4893,9 @@ private struct NativeThreadView: View {
             }
         }.background { CaperTheme.conversation.ignoresSafeArea() }
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { backWidth = $0 }
+            .offset(x: backOffset)
+            .allowsHitTesting(!closingBack)
             .dropDestination(for: DroppedAttachment.self) { items, _ in
                 guard let target = fileDropTarget ?? chat.attachmentTarget(inThread: true), !items.isEmpty else {
                     items.forEach { AttachmentStaging.remove($0.file.url) }
@@ -4821,6 +4957,23 @@ private struct NativeThreadView: View {
             .accessibilityIdentifier("message-thread")
     }
 
+    /// Kept out of `body`, like the channel's, for the Swift type checker.
+    @ViewBuilder private var threadGifButton: some View {
+        #if os(iOS)
+        ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading, configuration: chat.klipy,
+                            mediaEnabled: chat.canSendGif(inThread: true), send: { gif, query in
+            Task { await chat.sendGif(gif, inThread: true, query: query) }
+        })
+        #else
+        if let klipy = chat.klipy {
+            ComposerGifButton(configuration: klipy, enabled: chat.canSendGif(inThread: true), controller: composerAutocomplete,
+                              accessibilityID: "thread-composer-gif", send: { gif, query in
+                Task { await chat.sendGif(gif, inThread: true, query: query) }
+            })
+        }
+        #endif
+    }
+
     private var threadComposer: NativeMessageComposer {
         let paste: (() -> Bool)? = chat.canAttach ? { chat.pasteAttachments(inThread: true) } : nil
         return NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: composerAutocomplete,
@@ -4858,7 +5011,7 @@ private struct TypingDots: View {
     }
 }
 
-private struct PrimaryIconButton: ButtonStyle {
+struct PrimaryIconButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.modifier(PrimaryActionFill(pressed: configuration.isPressed))
     }
@@ -4977,6 +5130,7 @@ private struct MessageRow: View {
     @FocusState private var actionsFocused: Bool
     @FocusState private var threadLinkFocused: Bool
     @FocusState private var editedFocused: Bool
+    @FocusState private var authorFocused: String?
     #endif
     var body: some View {
         let mentionsMe = MentionAutocomplete.mentionsCurrentUser(message, currentUserID: currentUserID)
@@ -5010,12 +5164,12 @@ private struct MessageRow: View {
             // A grouped row lines its text up with the avatar column's time.
             HStack(alignment: grouped ? .firstTextBaseline : .top, spacing: 10) {
                 if grouped { groupedGutter } else {
-                    authorProfile { Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId, picture: message.author.avatarPicture) }
+                    authorProfile("avatar") { Avatar(name: message.author.name, size: 34, avatarID: message.author.avatarId, picture: message.author.avatarPicture) }
                 }
                 VStack(alignment: .leading, spacing: 4) {
                 if !grouped {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        authorProfile { Text(message.author.name).font(CaperTheme.font(13, weight: .bold)) }
+                        authorProfile("name") { Text(message.author.name).font(CaperTheme.font(13, weight: .bold)) }
                         if message.author.isAdmin { AdminBadge() }
                         if message.author.isGuest { Text("GUEST").font(CaperTheme.font(9, weight: .bold)).foregroundStyle(CaperTheme.muted).padding(.horizontal, 5).overlay(RoundedRectangle(cornerRadius: 4).stroke(CaperTheme.border)) }
                         Text(inPins ? ChatDateDivider.date(message.createdAt)?.formatted(date: .abbreviated, time: .shortened) ?? timeLabel(message.createdAt) : timeLabel(message.createdAt)).font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
@@ -5043,7 +5197,7 @@ private struct MessageRow: View {
                     .padding(.trailing, grouped ? actionsInset : 0)
                     // The 24pt targets start 6pt from the row top. A short caption
                     // needs their full height before the attachment's 4pt gap.
-                    .frame(minHeight: grouped && !(message.content.attachments?.isEmpty ?? true) ? 28 : nil, alignment: .topLeading)
+                    .frame(minHeight: grouped && (!(message.content.attachments?.isEmpty ?? true) || message.content.gif != nil) ? 28 : nil, alignment: .topLeading)
                     #endif
                     }
                     if let attachments = message.content.attachments, !attachments.isEmpty {
@@ -5051,6 +5205,13 @@ private struct MessageRow: View {
                             #if os(macOS)
                             // File-only follow-ups need the same action strip, even
                             // without a caption or edited marker to reserve it.
+                            .padding(.top, grouped && message.content.text.isEmpty && !edited ? 32 : 0)
+                            #endif
+                    }
+                    if let gif = message.content.gif {
+                        MessageGifView(gif: gif)
+                            #if os(macOS)
+                            // Like files: a captionless follow-up keeps room for the action strip.
                             .padding(.top, grouped && message.content.text.isEmpty && !edited ? 32 : 0)
                             #endif
                     }
@@ -5095,9 +5256,13 @@ private struct MessageRow: View {
                         }.font(CaperTheme.font(11, weight: .medium)).foregroundStyle(CaperTheme.terracottaBright)
                             .padding(.horizontal, 6)
                             .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                    }.buttonStyle(ProfileButtonStyle())
+                    }
                         #if os(macOS)
+                        // The outer modifier owns this control's focus ring.
+                        .buttonStyle(ProfileButtonStyle(isFocused: false))
                         .focused($threadLinkFocused).modifier(ControlHover(isFocused: threadLinkFocused, wash: false))
+                        #else
+                        .buttonStyle(ProfileButtonStyle())
                         #endif
                         .accessibilityLabel(chat.threadUnread(message.threadRootId ?? message.id) ? "View thread, unread" : "View thread")
                 }
@@ -5197,10 +5362,15 @@ private struct MessageRow: View {
             .contextMenu { messageMenuItems }
         #endif
     }
-    @ViewBuilder private func authorProfile<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+    @ViewBuilder private func authorProfile<Content: View>(_ control: String, @ViewBuilder _ content: () -> Content) -> some View {
         if !message.author.isGuest, let openAuthor = mentionCards.openAuthor {
             Button { openAuthor(message.author) } label: { content() }
+                #if os(macOS)
+                .buttonStyle(ProfileButtonStyle(isFocused: authorFocused == control))
+                .focused($authorFocused, equals: control)
+                #else
                 .buttonStyle(ProfileButtonStyle())
+                #endif
                 .accessibilityLabel("Open profile for \(message.author.name)")
                 #if os(macOS)
                 .onContinuousHover(coordinateSpace: CoordinateSpace.named(MentionCard.timelineSpace)) { phase in
@@ -5726,6 +5896,7 @@ private struct MentionCardView: View {
     @StateObject private var autocomplete = ComposerAutocompleteController()
     @State private var showingEmojiPicker = false
     @State private var insertEmoji: ((String) -> Void)?
+    @State private var showingGifPicker = false
     @State private var showingFiles = false
     @State private var showingPhotos = false
     /// The attach drawer (iPhone and iPad).
@@ -6071,27 +6242,13 @@ private struct MentionCardView: View {
                         .background(CaperTheme.terracotta.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                 }
                 StagedFileLayout() {
-                    ForEach(draft.files) { file in
-                        StagedFileChip(id: file.id, name: file.local.name,
-                                       kind: AttachmentKind.local(contentType: file.local.contentType),
-                                       localURL: file.local.url,
-                                       thumbnailURL: file.editPreview,
-                                       status: file.uploadError ?? AttachmentPolicy.formatBytes(file.local.size),
-                                       failed: file.uploadError != nil,
-                                       busyLabel: file.progress != nil ? "Uploading…" : nil,
-                                       progress: file.progress,
-                                       removable: draft.editable,
-                                       spoiler: file.spoiler,
-                                       // Shown but locked while sending (not `removable`).
-                                       toggleSpoiler: { draft.toggleSpoiler(id: file.id) },
-                                       edit: editAction(file),
-                                       preview: { preview(file) },
-                                       remove: { draft.remove(id: file.id) })
-                    }
+                    ForEach(draft.files) { file in stagedChip(file) }
                 }.accessibilityLabel("Files to send")
             }
             ComposerSuggestionsView(controller: autocomplete).disabled(!draft.editable || pending != nil)
+            VoiceComposerNotice(owner: voiceTarget.owner, identifier: voiceTarget.identifier)
             HStack(alignment: .bottom, spacing: 0) {
+                HStack(alignment: .bottom, spacing: 0) {
                 Group {
                 #if os(iOS)
                 Button { showingDrawer = true; updateDialogState() } label: {
@@ -6103,20 +6260,23 @@ private struct MentionCardView: View {
                 .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog)
                 .sheet(isPresented: $showingDrawer, onDismiss: updateDialogState) { AttachDrawer(draft: drawerDraft) }
                 #else
+                // One unfiltered "Upload a file", as on the desktop clients; at the limit it says so.
                 Menu {
-                    Button { draft.presentingDialog = true; showingPhotos = true } label: {
-                        Label("Photos and videos", systemImage: "photo.on.rectangle")
+                    if let limit = AttachCapacity.label(draft.files.count) {
+                        Text(limit)
+                        if let hint = AttachCapacity.hint(draft.files.count) { Text(hint) }
                     }
                     Button { draft.presentingDialog = true; showingFiles = true } label: {
-                        Label("Files", systemImage: "doc")
+                        Label("Upload a file", systemImage: "arrow.up.doc")
                     }
+                    .disabled(draft.files.count >= AttachmentPolicy.maxAttachments)
                 } label: {
                     CaperIcon(name: "plus", size: 18).foregroundStyle(CaperTheme.muted)
                         .frame(width: 40, height: 42).contentShape(Rectangle())
                 }
                 .menuStyle(.button).menuOrder(.fixed).buttonStyle(.plain).menuIndicator(.hidden)
                 .fixedSize()
-                .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog || draft.files.count >= AttachmentPolicy.maxAttachments)
+                .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog)
                 #endif
                 }
                 .opacity(uploadsAvailable ? 1 : 0.4)
@@ -6126,7 +6286,7 @@ private struct MentionCardView: View {
                 ZStack(alignment: .topLeading) {
                     if draft.text.isEmpty {
                         Text("Message @\(person.username ?? person.title)").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                            .lineLimit(1).padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                            .lineLimit(1).padding(.leading, 5).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
                     }
                     NativeMessageComposer(text: Binding(get: { draft.text }, set: { if draft.editable { draft.text = $0 } }),
                                           placeholder: "Message @\(person.username ?? person.title)", controller: autocomplete, mentions: .empty,
@@ -6135,6 +6295,13 @@ private struct MentionCardView: View {
                                           highlightSource: MentionSource(members: person.username.map { [.member(id: person.id, username: $0, displayName: person.title)] } ?? [], specials: false))
                 }
                 .frame(minHeight: 42, maxHeight: 140).fixedSize(horizontal: false, vertical: true)
+                #if os(iOS)
+                ComposerEmojiButton(controller: autocomplete, enabled: draft.editable && pending == nil,
+                                    configuration: model.chat.klipy, presenting: { showingGifPicker = $0; updateDialogState() },
+                                    send: { gif, query in
+                    Task { if await model.sendProfileGif(to: person, gif: gif, query: query) { close() } }
+                })
+                #else
                 Button {
                     insertEmoji = autocomplete.insertAction
                     draft.presentingDialog = true; showingEmojiPicker = true
@@ -6145,6 +6312,21 @@ private struct MentionCardView: View {
                 .buttonStyle(.plain).disabled(!draft.editable || pending != nil)
                 .help("Insert emoji").accessibilityLabel("Insert emoji")
                 .accessibilityIdentifier("mention-card-emoji")
+                if let klipy = model.chat.klipy {
+                    // Sends the GIF on its own at once; the typed draft stays.
+                    ComposerGifButton(configuration: klipy, enabled: draft.editable && pending == nil, controller: autocomplete,
+                                      accessibilityID: "mention-card-gif", presenting: { showingGifPicker = $0; updateDialogState() },
+                                      send: { gif, query in
+                        Task { if await model.sendProfileGif(to: person, gif: gif, query: query) { close() } }
+                    })
+                }
+                #endif
+                }
+                #if os(iOS)
+                // The held microphone stays put while the bar covers the field.
+                .modifier(VoiceComposerCover(target: voiceTarget))
+                #endif
+                VoiceRecordButton(target: voiceTarget)
                 Button { send() } label: {
                     CaperIcon(name: "send", size: 15)
                         .frame(width: 32, height: 32).contentShape(Rectangle())
@@ -6158,6 +6340,29 @@ private struct MentionCardView: View {
             }
             .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+            #if os(macOS)
+            // Clicking the microphone replaces the box with the recording bar.
+            .modifier(VoiceComposerCover(target: voiceTarget, restoreFocus: { autocomplete.restoreFocus() }))
+            #endif
+            if let voice = draft.voice, !draft.sending {
+                // A voice message that didn't go stays for Retry; typed text is untouched.
+                HStack(spacing: 10) {
+                    CaperIcon(name: "mic", size: 14).foregroundStyle(CaperTheme.muted)
+                    Text(VoiceMessage.retryNotice(unconfirmed: voice.command != nil))
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button("Retry") { retryVoice() }
+                        .buttonStyle(.plain).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.text)
+                        .disabled(pending != nil || draft.presentingDialog)
+                        .accessibilityLabel("Retry voice message")
+                        .accessibilityIdentifier("mention-card-voice-retry")
+                    Button("Discard") { draft.discardVoice() }
+                        .buttonStyle(.plain).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                        .accessibilityLabel("Discard voice message")
+                        .accessibilityIdentifier("mention-card-voice-discard")
+                }
+            }
             if draft.pending != nil, !draft.sending {
                 Text("Delivery isn’t confirmed. Send retries the same message.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
@@ -6170,6 +6375,7 @@ private struct MentionCardView: View {
                     .accessibilityIdentifier("mention-card-error")
             }
         }
+        .task { await model.chat.checkKlipyAvailability() }
         .task {
             do {
                 _ = try await model.api.assetUsage()
@@ -6182,6 +6388,54 @@ private struct MentionCardView: View {
     private func send() {
         guard draft.canSend, pending == nil, !draft.presentingDialog else { return }
         Task { if await model.sendProfileMessage(to: person) { close() } }
+    }
+
+    /// The card's microphone: a voice message goes to this person's DM on
+    /// its own, and success closes the card into the DM as Send does.
+    private var voiceTarget: VoiceTarget {
+        let model = model, person = person, close = close, draft = draft
+        let incoming = model.directMessages.contains { $0.peer.id == person.id && $0.status == .incoming }
+        let sendsOnStop = VoiceMessageSettings.shared.sendOnStop
+        let ready = sendsOnStop ? draft.canRecordVoice : draft.canStageVoice
+        let reason: String
+        if !uploadsAvailable { reason = "File uploads are unavailable" }
+        else if draft.files.contains(where: { $0.voiceDurationMs != nil }) { reason = VoiceMessage.oneVoicePerMessage }
+        else { reason = "Send or retry the current message first." }
+        return VoiceTarget(owner: VoiceComposerID(profilePersonID: person.id),
+                           enabled: uploadsAvailable && canMessage && !incoming && ready && pending == nil && !draft.presentingDialog,
+                           unavailableReason: reason, identifier: "mention-card-voice",
+                           send: { recording in if await model.sendProfileVoice(recording, to: person) { close() } },
+                           stage: { recording in _ = draft.stageVoice(recording) })
+    }
+
+    /// A staged file's square, or a staged voice note's chip.
+    @ViewBuilder private func stagedChip(_ file: ProfileMessageDraft.File) -> some View {
+        if let duration = file.voiceDurationMs {
+            VoiceDraftChip(id: file.id, url: file.local.url, durationMs: duration, waveform: file.voiceWaveform,
+                           status: file.uploadError ?? (file.progress != nil ? "Uploading…" : nil), failed: file.uploadError != nil,
+                           removable: draft.editable, remove: { draft.remove(id: file.id) })
+        } else {
+            StagedFileChip(id: file.id, name: file.local.name,
+                           kind: AttachmentKind.local(contentType: file.local.contentType),
+                           localURL: file.local.url,
+                           thumbnailURL: file.editPreview,
+                           status: file.uploadError ?? AttachmentPolicy.formatBytes(file.local.size),
+                           failed: file.uploadError != nil,
+                           busyLabel: file.progress != nil ? "Uploading…" : nil,
+                           progress: file.progress,
+                           removable: draft.editable,
+                           spoiler: file.spoiler,
+                           // Shown but locked while sending (not `removable`).
+                           toggleSpoiler: { draft.toggleSpoiler(id: file.id) },
+                           edit: editAction(file),
+                           preview: { preview(file) },
+                           remove: { draft.remove(id: file.id) })
+        }
+    }
+
+    private func retryVoice() {
+        guard draft.voice != nil, !draft.sending, pending == nil, !draft.presentingDialog else { return }
+        Task { if await model.sendProfileVoice(nil, to: person) { close() } }
     }
 
     private var emojiPicker: some View {
@@ -6197,7 +6451,7 @@ private struct MentionCardView: View {
     }
 
     private func updateDialogState() {
-        draft.presentingDialog = showingFiles || showingPhotos || photoLoading != nil || showingEmojiPicker || previewFile != nil
+        draft.presentingDialog = showingFiles || showingPhotos || photoLoading != nil || showingEmojiPicker || showingGifPicker || previewFile != nil
             || editingFile != nil || previewingFile != nil || showingDrawer
     }
 
@@ -6313,6 +6567,9 @@ private struct ReactionRow: View {
     @Bindable var chat: ChatModel
     let reactors: ReactorContext
     let showReactionPicker: () -> Void
+    #if os(macOS)
+    @FocusState private var addFocused: Bool
+    #endif
 
     var body: some View {
         ReactionFlowLayout(spacing: 6) {
@@ -6332,7 +6589,12 @@ private struct ReactionRow: View {
                         #endif
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).modifier(ControlHover())
+                .buttonStyle(.plain)
+                #if os(macOS)
+                .focused($addFocused).modifier(ControlHover(isFocused: addFocused))
+                #else
+                .modifier(ControlHover())
+                #endif
                 .help("Add reaction").accessibilityLabel("Add reaction")
                 .accessibilityIdentifier("reaction-row-add-\(message.id)")
             }
@@ -7133,6 +7395,10 @@ private struct CardIconButton: View {
 private struct ComposerEmojiButton: View {
     let controller: ComposerAutocompleteController
     var enabled = true
+    var configuration: KlipyConfiguration? = nil
+    var mediaEnabled = true
+    var presenting: ((Bool) -> Void)? = nil
+    var send: ((ChatGif, String) -> Void)? = nil
     @State private var showing = false
     @State private var insert: ((String) -> Void)?
 
@@ -7146,14 +7412,29 @@ private struct ComposerEmojiButton: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
+        #if os(iOS)
+        .help("Emojis, GIFs and stickers")
+        .accessibilityLabel("Emojis, GIFs and stickers")
+        #else
         .help("Insert emoji")
         .accessibilityLabel("Insert emoji")
+        #endif
         .accessibilityIdentifier("composer-emoji")
         #if os(macOS)
         .popover(isPresented: $showing) { picker.onDisappear(perform: finish) }
         #else
-        .sheet(isPresented: $showing, onDismiss: finish) { picker }
+        .sheet(isPresented: $showing, onDismiss: finish) {
+            ComposerExpressionPicker(configuration: configuration, mediaEnabled: mediaEnabled, select: { emoji in
+                insert?(emoji); showing = false
+            }, send: { gif, query in
+                showing = false; send?(gif, query)
+            })
+            .presentationDetents([.medium, .large])
+            .presentationBackground(CaperTheme.surface)
+            .preferredColorScheme(.dark)
+        }
         #endif
+        .onChange(of: showing) { _, value in presenting?(value) }
     }
 
     private var picker: some View {
@@ -7169,6 +7450,40 @@ private struct ComposerEmojiButton: View {
     }
 }
 
+#if os(iOS)
+private struct ComposerExpressionPicker: View {
+    let configuration: KlipyConfiguration?
+    let mediaEnabled: Bool
+    let select: (String) -> Void
+    let send: (ChatGif, String) -> Void
+    @State private var tab = "Emojis"
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Picker("Expression type", selection: $tab) {
+                    Text("Emojis").tag("Emojis")
+                    Text("GIFs").tag("GIFs")
+                    Text("Stickers").tag("Stickers")
+                }.pickerStyle(.segmented).padding(12)
+                if tab == "Emojis" {
+                    ReactionPicker(embedded: true, select: select)
+                } else if let configuration, mediaEnabled {
+                    KlipyPicker(configuration: configuration, embeddedKind: tab == "GIFs" ? .gif : .sticker, select: send)
+                        .id(tab)
+                } else {
+                    ContentUnavailableView("\(tab) unavailable", systemImage: "photo", description: Text(configuration == nil ? "KLIPY is not configured." : "Media cannot be sent right now."))
+                }
+            }
+            .navigationTitle("Emojis, GIFs & Stickers")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }
+    }
+}
+#endif
+
 private struct ReactionPicker: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
@@ -7183,6 +7498,7 @@ private struct ReactionPicker: View {
     @FocusState private var focusedEmoji: String?
     #endif
     var title = "Add reaction"
+    var embedded = false
     let select: (String) -> Void
     private var choices: [EmojiCatalogEntry] {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -7209,18 +7525,22 @@ private struct ReactionPicker: View {
         .contentShape(.accessibility, Rectangle())
         .accessibilityIdentifier("reaction-picker")
         #else
-        NavigationStack {
+        if embedded {
             content
-                .navigationTitle(title)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { dismiss() }
+        } else {
+            NavigationStack {
+                content
+                    .navigationTitle(title)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { dismiss() }
+                        }
                     }
-                }
+            }
+            .frame(minWidth: 320, minHeight: 420)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("reaction-picker")
         }
-        .frame(minWidth: 320, minHeight: 420)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("reaction-picker")
         #endif
     }
     private var content: some View {
@@ -7284,7 +7604,6 @@ private struct NativeReplyContext: View {
     @State private var expanded = false
     @State private var fullHeight: CGFloat = 0
     @State private var collapsedHeight: CGFloat = 0
-    @State private var buttonHeight: CGFloat = 0
     @State private var previousY: CGFloat?
     @State private var displacement: CGFloat = 0
     @State private var velocity: CGFloat = 0
@@ -7293,26 +7612,18 @@ private struct NativeReplyContext: View {
     private var excerpt: String {
         if reference.deleted == true { return MessageDeletion.quote }
         let text = reference.fullText ?? reference.text
-        return text.isEmpty ? (reference.hasAttachments ? "Attachment" : "Message") : text
+        return text.isEmpty ? VoiceMessage.excerptFallback(hasAttachments: reference.hasAttachments, hasVoice: reference.hasVoice, attachments: reference.attachments ?? []) : text
     }
-    private var preview: String { String(String.UnicodeScalarView(excerpt.unicodeScalars.prefix(100))) }
     var body: some View {
         // Match the other clients; seed the reply, not the original it quotes.
         let seed = motionKey.utf8.reduce(UInt32(2166136261)) { ($0 ^ UInt32($1)) &* 16777619 }
-        let stiffness = 140 + CGFloat(seed & 255) / 255 * 100
-        let damping = 11 + CGFloat((seed >> 8) & 255) / 255 * 7
+        let stiffness = 560 + CGFloat(seed & 255) / 255 * 400
+        let damping = 28 + CGFloat((seed >> 8) & 255) / 255 * 14
         let impulse = 1 + CGFloat((seed >> 16) & 255) / 255 * 0.4
         let limit = 5 + CGFloat(seed >> 24) / 255 * 2
         let speedLimit = limit * 16
-        let canExpand = !hidden && (expanded || preview != excerpt || fullHeight > collapsedHeight + 1)
-        // Keep the collapsed pill over text, above the 44pt previews and 3pt gap.
-        let attachmentOffset: CGFloat = !hidden && reference.deleted != true && !(reference.attachments ?? []).isEmpty ? 47 : 0
-        #if os(iOS)
-        let previewMinHeight: CGFloat = 54
-        #else
-        let previewMinHeight: CGFloat = 36
-        #endif
-        ZStack(alignment: .bottom) {
+        let canExpand = !hidden && (expanded || fullHeight > collapsedHeight + 1)
+        VStack(alignment: .leading, spacing: 0) {
             Button { Task { _ = await chat.goToReply(reference) } } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
@@ -7320,25 +7631,15 @@ private struct NativeReplyContext: View {
                         else {
                             Avatar(name: reference.author.name, size: 16, avatarID: reference.author.avatarId, picture: reference.author.avatarPicture)
                             Text(reference.author.name).fontWeight(.bold).lineLimit(1)
-                            if reference.hasAttachments && reference.deleted != true { CaperIcon(name: "paperclip", size: 13) }
+                            if reference.hasAttachments && reference.deleted != true { CaperIcon(name: reference.hasVoice ? "mic" : "paperclip", size: 13) }
                         }
                         Spacer(minLength: 4)
                         Text("View original").font(CaperTheme.font(11)).fixedSize()
                     }.frame(minHeight: 20)
                     if !hidden {
-                        Text(expanded ? excerpt : preview + (preview != excerpt ? "…" : "")).lineLimit(expanded ? nil : 3).fixedSize(horizontal: false, vertical: true)
+                        Text(excerpt).lineLimit(expanded ? nil : 3).fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if !expanded { collapsedHeight = $0 } }
-                            .frame(minHeight: !expanded && canExpand ? previewMinHeight : 0, alignment: .topLeading)
-                            .overlay {
-                                if !expanded && (preview != excerpt || fullHeight > collapsedHeight + 1) {
-                                    LinearGradient(stops: [
-                                        .init(color: CaperTheme.surface.opacity(0), location: 0),
-                                        .init(color: CaperTheme.surface.opacity(0), location: 0.4),
-                                        .init(color: CaperTheme.surface, location: 1),
-                                    ], startPoint: .top, endPoint: .bottom).allowsHitTesting(false).accessibilityHidden(true)
-                                }
-                            }
                             .background {
                                 Text(excerpt).lineLimit(nil).fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading).hidden().accessibilityHidden(true)
@@ -7366,13 +7667,10 @@ private struct NativeReplyContext: View {
             }.buttonStyle(.plain)
                 .accessibilityLabel(hidden ? "View original blocked message" : "View original message from \(reference.author.name)")
                 .accessibilityHint(hidden ? "" : excerpt)
-                .padding(.bottom, expanded && canExpand ? buttonHeight + 6 : 0)
             if canExpand {
                 Button(expanded ? "Show less" : "Show more") { expanded.toggle() }
                     .buttonStyle(ReplyExpandButton())
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { buttonHeight = $0 }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .offset(y: expanded ? 0 : buttonHeight / 2 - max(collapsedHeight, previewMinHeight) * 0.3 - attachmentOffset)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityValue(expanded ? "Expanded" : "Collapsed")
             }
         }.padding(.horizontal, 12).padding(.vertical, 10)
@@ -7392,8 +7690,9 @@ private struct NativeReplyContext: View {
                             let span = start.y - end.y
                             let wire = Path { path in
                                 path.move(to: start)
+                                // Keep the lower bend inward of the cup back throughout its sway.
                                 path.addCurve(to: end,
-                                    control1: CGPoint(x: start.x - 7 + displacement, y: start.y - span * 0.3),
+                                    control1: CGPoint(x: start.x + 8 + displacement, y: start.y - span * 0.3),
                                     control2: CGPoint(x: end.x - 30 + displacement, y: end.y + span * 0.3))
                             }
                             var string = context
@@ -7465,20 +7764,17 @@ private struct NativeReplyContext: View {
 }
 
 private struct ReplyExpandButton: ButtonStyle {
-    @State private var hovered = false
     @Environment(\.isFocused) private var focused
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(CaperTheme.font(11, weight: .bold)).foregroundStyle(CaperTheme.blackout)
-            .padding(.horizontal, 14).padding(.vertical, 6)
+        configuration.label.font(CaperTheme.font(11)).underline().foregroundStyle(CaperTheme.link)
             #if os(iOS)
             .frame(minHeight: 44)
             #else
             .frame(minHeight: 32)
             #endif
-            .background(configuration.isPressed ? CaperTheme.text.opacity(0.85) : hovered ? Color.white : CaperTheme.text)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(focused ? CaperTheme.terracotta : .clear, lineWidth: 2))
-            .onHover { hovered = $0 }.modifier(ControlPointer())
+            .contentShape(Rectangle())
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(focused ? CaperTheme.terracotta : .clear, lineWidth: 2))
+            .modifier(ControlPointer())
     }
 }
 
@@ -7494,7 +7790,7 @@ private struct NativeReplyDraft: View {
                     .fontWeight(.bold).lineLimit(1)
                 if !hidden {
                     let text = reference.fullText ?? reference.text
-                    Text(text.isEmpty ? (reference.hasAttachments ? "Attachment" : "Message") : text)
+                    Text(text.isEmpty ? VoiceMessage.excerptFallback(hasAttachments: reference.hasAttachments, hasVoice: reference.hasVoice, attachments: reference.attachments ?? []) : text)
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
@@ -7534,13 +7830,17 @@ private struct PendingMessageRow: View {
                     // Local copies until the server's signed URLs arrive.
                     MessageAttachmentsView(attachments: pending.attachments, chat: nil).opacity(0.7)
                 }
+                if let gif = pending.gif { MessageGifView(gif: gif).opacity(0.7) }
                 if let error {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(uploadFailed ? error : "\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")
                         HStack(spacing: 12) {
                             if rejected {
-                                Button("Edit", action: edit).disabled(!canEdit)
-                                    .help(canEdit ? "" : "Clear your current draft to edit this message.")
+                                // A GIF has no draft to return to.
+                                if pending.gif == nil {
+                                    Button("Edit", action: edit).disabled(!canEdit)
+                                        .help(canEdit ? "" : "Clear your current draft to edit this message.")
+                                }
                                 Button("Dismiss", action: dismiss)
                             } else { Button(uploadFailed ? "Retry" : "Retry send", action: retry) }
                         }
@@ -7583,11 +7883,11 @@ private struct ProfileView: View {
                 }
                 // The sign-in page's action style, as on web.
                 Button { Task { await model.saveProfile(username: username, displayName: displayName) } } label: {
-                    LoginActionLabel(title: "Finish account", busyTitle: "Saving…", busy: model.busy)
+                    LoginActionLabel(title: "Finish setup", busyTitle: "Saving…", busy: model.busy)
                 }
                     .buttonStyle(LoginActionButton(minWidth: 200))
                     .disabled(model.busy || ProfileValidation.error(username: username, displayName: displayName, saved: model.account?.displayName) != nil)
-                    .accessibilityLabel(model.busy ? "Saving…" : "Finish account")
+                    .accessibilityLabel(model.busy ? "Saving…" : "Finish setup")
                     .accessibilityIdentifier("profile-continue")
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 HStack {
@@ -7643,6 +7943,7 @@ extension EnvironmentValues {
 @MainActor public struct CaperSettingsView: View {
     @State private var loginItem = CaperLoginItem.shared
     @Bindable private var effects = CaperEffects.shared
+    @Bindable private var voiceMessages = VoiceMessageSettings.shared
     @Bindable private var notes: WhatsNewModel
     @Environment(\.desktopUpdates) private var updates
     public init(whatsNew: WhatsNewModel) { notes = whatsNew }
@@ -7682,6 +7983,8 @@ extension EnvironmentValues {
                         }
                     }.toggleStyle(.switch).accessibilityIdentifier("sound-effects")
                 }
+                Rectangle().fill(CaperTheme.border).frame(height: 1)
+                VoiceMessageSettingsSection(settings: voiceMessages)
                 Rectangle().fill(CaperTheme.border).frame(height: 1)
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Updates").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
@@ -8413,9 +8716,14 @@ private struct NewDirectMessageSheet: View {
     @State private var username = ""
     @State private var pending = false
     @State private var error: String?
+    @State private var resolved: Person?
     @FocusState private var usernameFocused: Bool
     @State private var suggestions = PeopleSuggestionState()
     private var candidates: [MentionCandidate] { PeopleSuggestions.directMessage(people: model.people, accountID: model.account?.id) }
+    private var recipientName: String? { resolved?.displayName ?? candidates.first(where: { $0.username == username })?.displayName }
+    private var validUsername: Bool { username.range(of: "^[a-z0-9_]{3,32}$", options: .regularExpression) != nil }
+    private var actionLabel: String { recipientName == nil ? "Find person" : "Open conversation" }
+    private var pendingLabel: String { recipientName == nil ? "Finding…" : "Opening…" }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             SheetHeader(title: "New direct message", detail: "Enter an account’s exact username.", closeDisabled: pending, close: close)
@@ -8426,8 +8734,9 @@ private struct NewDirectMessageSheet: View {
                     .textInputAutocapitalization(.never)
                     #endif
                     .autocorrectionDisabled()
+                    .disabled(pending)
                     .focused($usernameFocused)
-                    .onChange(of: username) { _, _ in error = nil }
+                    .onChange(of: username) { _, _ in error = nil; resolved = nil }
                     // Return only picks a suggestion; the button starts the conversation.
                     .onSubmit(pickHighlighted)
                     .modifier(PeopleSuggestionKeys(text: username, count: choices.count, state: $suggestions))
@@ -8443,18 +8752,21 @@ private struct NewDirectMessageSheet: View {
                     Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("dm-create-error")
+                } else if let recipientName {
+                    Text("\(recipientName) (@\(resolved?.username ?? username))")
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
             HStack {
                 Spacer()
                 Button(action: start) {
-                    Text("Start conversation").hidden().overlay { Text(pending ? "Opening…" : "Start conversation") }
+                    Text("Open conversation").hidden().overlay { Text(pending ? pendingLabel : actionLabel) }
                 }
                 // The primary action stays neutral until a valid username is entered.
                 .buttonStyle(CaperPrimaryButton()).frame(width: 180)
-                .disabled(pending || username.count < 3)
-                .accessibilityLabel(pending ? "Opening…" : "Start conversation")
+                .disabled(pending || !validUsername)
+                .accessibilityLabel(pending ? pendingLabel : actionLabel)
                 .accessibilityIdentifier("dm-create-submit")
             }
         }.padding(22).onAppear { usernameFocused = true }
@@ -8474,14 +8786,19 @@ private struct NewDirectMessageSheet: View {
         suggestions.close(for: username)
     }
     private func start() {
-        guard !pending, username.count >= 3 else { return }
-        let submitted = username
+        guard !pending, validUsername else { return }
+        let submitted = resolved?.username ?? username
+        let opening = recipientName != nil
         pending = true; error = nil
         Task {
             defer { pending = false }
             do {
-                if try await model.createDirectMessage(username: submitted) { close() }
-                else { error = "Couldn’t open that conversation." }
+                if opening {
+                    if try await model.createDirectMessage(username: submitted) { close() }
+                    else { error = "Couldn’t open that conversation." }
+                } else {
+                    resolved = try await model.lookupDirectPerson(username: submitted)
+                }
             } catch { self.error = FriendlyError.message(for: error) }
         }
     }
@@ -8567,7 +8884,7 @@ private struct LoginPage: View {
                         .frame(maxWidth: .infinity, alignment: .trailing).padding(.top, 12)
                 } else {
                     // An exhausted code keeps its error; a new code re-enables the field.
-                    CaperField(title: "Sign-in code", text: input($code, clearsError: model.loginAttemptsRemaining != 0), focus: $codeFocused)
+                    CaperField(title: "Sign-in code", text: input($code, clearsError: model.loginAttemptsRemaining != 0), placeholder: "e.g. ABC234", focus: $codeFocused)
                         .disabled(model.loginAttemptsRemaining == 0)
                         .onChange(of: code) { _, value in
                             // A keystroke during a request is put back by `input`, not filtered into the code.
@@ -8816,7 +9133,10 @@ private struct ProfileSheet: View {
                           }, select: { asset, expected in
                               guard model.account?.id == account.id, model.accountEpoch == epoch else { throw CancellationError() }
                               try await model.selectAvatar(asset, expected: expected)
-                          }) {
+                          }, regenerate: {
+                              guard model.account?.id == account.id, model.accountEpoch == epoch else { throw CancellationError() }
+                              try await model.regenerateAvatar()
+                          }, mascot: account.avatarAsset == nil && CaperAvatar.index(for: account.avatarId) != nil) {
                 if account.avatarAsset == nil {
                     ChangeMeMascot(name: name, avatarID: account.avatarId, size: side)
                 } else {
@@ -9878,7 +10198,7 @@ struct CaperPrimaryButton: ButtonStyle {
 /// Web's primary action: an eggshell fill with a blackout label that brightens on hover and
 /// deepens on press. A white hover wash would vanish on eggshell, so focus is a terracotta ring.
 /// Disabled, it steps back to neutral chrome rather than a faded fill.
-private struct PrimaryActionFill: ViewModifier {
+struct PrimaryActionFill: ViewModifier {
     let pressed: Bool
     @Environment(\.isEnabled) private var enabled
     @Environment(\.isFocused) private var focused
@@ -9903,18 +10223,19 @@ private struct PrimaryActionFill: ViewModifier {
 
 /// Profile entry points keep their content's size and use the common control feedback.
 private struct ProfileButtonStyle: ButtonStyle {
+    var isFocused: Bool? = nil
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.foregroundStyle(CaperTheme.text)
             .contentShape(Rectangle())
             .background(configuration.isPressed ? CaperTheme.border.opacity(0.55) : Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 4))
-            .modifier(ControlHover())
+            .modifier(ControlHover(isFocused: isFocused))
     }
 }
 
 /// Web's control feedback: a --surface-hover (white 6%) wash under the pointer
 /// and a 2pt terracotta ring for keyboard focus, in place of the system's.
-private struct ControlHover: ViewModifier {
+struct ControlHover: ViewModifier {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.isFocused) private var focused
     @State private var hovered = false

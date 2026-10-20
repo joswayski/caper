@@ -444,8 +444,8 @@ retains up to 20 channel/DM snapshots in account-scoped memory, rejects incomple
 context windows, and clears removed/revoked conversations and sign-out data;
 the authorized gateway replays from each retained cursor.
 Apple displays prepared history while its sending session opens and retains the
-same space's member page/presence subscription. Rust desktop retains member
-statuses and pagination, but reconnects its combined chat/presence gateway on
+same space's roster/presence subscription. Rust desktop retains member
+statuses, but reconnects its combined chat/presence gateway on
 channel changes. Web keeps its unchanged member subscription mounted.
 
 Web direct messages use page-scoped prepared histories like channels. Hover/focus
@@ -498,10 +498,12 @@ focus and can be implemented by future desktop/mobile clients.
   and heartbeat traffic do **not** reset activity. Native clients may report their
   own actual input activity. The browser exports `reportActivity()` for future
   local speech detection; merely sending audio packets is not treated as speech.
-- `subscribe {id,kind,channelId?,after?,token?,spaceId?,userIds?}` opens one logical
+- `subscribe {id,kind,channelId?,after?,token?,spaceId?,userIds?,allMembers?}` opens one logical
   stream. `event {id,event}` routes updates to it; `subscribed {id}` follows its
   initial snapshot/replay. `unsubscribe {id}` releases interest. There are at most
-  32 subscriptions per socket and 100 users per presence subscription. Credentials
+  32 subscriptions per socket and 100 explicit IDs per presence subscription.
+  A presence subscription with `allMembers: true` and no `userIds` instead derives
+  the roster from the authenticated space membership, using one slot. Credentials
   never appear in the URL. Sessions and memberships are checked again during use.
 - Account presence is **online** if any live session has recent input, **idle**
   otherwise, and **offline** only after every session lease expires. Default
@@ -512,9 +514,14 @@ focus and can be implemented by future desktop/mobile clients.
   Records represent connected sessions, not installed devices. Multiple browser
   tabs each have a connection. A suspended phone whose heartbeats stop loses its
   lease; native background/voice execution still needs platform-specific support.
-- The space member list watches only its current 25-member page. Pagination swaps
-  the subscription; collapsing releases it. Initial member *metadata* still comes
-  from the space detail endpoint, but presence never loads the entire population.
+- The space member list watches the complete space roster, with Online (including
+  idle), Offline and Status unavailable sections. Private-channel readers remain
+  separate from other space members. There is no UI pagination. The search icon
+  opens a local name/username filter; X or Escape clears it and restores the list
+  without changing the subscription. Section counts describe the filtered roster;
+  the Members count remains the space total. Initial member metadata still comes
+  from the space detail endpoint. Membership changes are repaired within the
+  existing ten-second authorization interval; removed requesters fail closed.
   Gateways batch expiration checks once per watched user per pod every two seconds,
   then push only changed snapshots. Heartbeats do not broadcast user lists. During
   an outage the UI shows unknown/updating rather than inventing offline status.
@@ -522,6 +529,50 @@ focus and can be implemented by future desktop/mobile clients.
   subscribes only where it has local interest, and releases unused subscriptions.
   Committed chat cursors repair missed messages; versioned room snapshots repair
   current mute/deafen/roster state. Typing expires and is intentionally not replayed.
+
+#### Member and channel list performance
+
+The [Discord mobile performance write-up](https://discord.com/blog/supercharging-discord-mobile-our-journey-to-a-faster-app)
+supports predictable row measurement, lazy/recycled views and testing low-end
+devices. It does not establish which list library is fastest for Caper. Our
+Android, Apple and Rust clients are native, not React Native; importing Discord's
+React Native list architecture would not apply directly.
+
+Current preparation: Android member rows are individually keyed `LazyColumn`
+items, Apple uses lazy stacks, Rust desktop skips offscreen member contents, and
+web uses `content-visibility` with a 44px row estimate. The web still retains all
+row DOM nodes; this is not full virtualization. Search does not fetch, subscribe,
+or reconnect. Full-roster presence is still proportional to space membership,
+with complete snapshots on changes, so this is not a large-community capacity claim.
+
+Before increasing the current 100-channel-per-space quota:
+
+1. Benchmark channel switching, fast scrolling, filtering and presence churn with
+   100 channels and 100/1,000/10,000-member fixtures. Include expanded voice rows,
+   avatars, private groups and a low-end Android device. Record p95 input-to-paint,
+   slow/blank frames, peak memory, rendered row count, and gateway bytes/queries.
+2. Keep stable channel/member IDs and explicit row-height variants; flatten group
+   headers and expanded voice rows into list items. Virtualize web channel/member
+   rows using the existing list tooling, and use native lazy/recycled rows, only
+   after these measurements show the bottleneck. Preserve keyboard focus, profile
+   anchors and scroll position during presence moves; overscan must survive fast
+   flings without blank rows. Keep thumbnails bounded and pause offscreen animation.
+3. If wire/DB work dominates, introduce server-maintained presence counts and
+   deltas plus an internally windowed roster/search API before raising capacity.
+   Counts must remain whole-space counts, and search must cover unloaded members.
+   Transport windows must stay invisible to users—no Previous/Next sidebar or
+   per-page count disclaimers. Add repeatable regression budgets from the baseline.
+
+Roster revision validation: web component/gateway tests cover 151 members; real
+Postgres/Valkey gateway tests cover 102 members, cross-space isolation, membership
+removal/restoration and requester revocation. `MEMBERS_ONLY=1` with
+`scripts/test-space-controls.mjs` covers public/private roster filtering and live
+status changes in desktop/narrow Chromium using mocked API/gateway data. Android
+build/JVM checks do not prove native runtime behavior. Rust desktop fixture
+rendering, search, no-match and Escape states were inspected under Xvfb. Apple
+requires Xcode; physical-device scrolling and large-roster capacity remain unverified.
+Deploy the gateway supporting `allMembers` before the updated clients; an older
+gateway rejects the new request instead of providing roster presence.
 
 Typing is best-effort: it is sent only over an already connected socket, never
 queued/replayed after reconnect, and never stored in the command ledger. Lost
@@ -974,10 +1025,19 @@ username substring; at most six, nothing until you type). Rows match `@`
 suggestions: avatar, display name, and `@username` in small type beneath it, shown
 inline below the field. Choosing one fills in the exact username and never submits;
 Up/Down, Enter and Escape work from hardware keyboards, and Escape closes the list,
-not the dialog. Nothing is searched server-side: there is no account directory,
-and lookups, the shared invitation-attempt limit and block handling stay
-exact-username, so typing a username by hand still works. No API, migration or
-configuration change.
+not the dialog. Suggestions are local, not a global account directory.
+In **New direct message**, an exact known recipient enables **Open conversation**;
+other valid usernames offer **Find person**. `POST /api/dms/lookup` with
+`{"username":"…"}` returns a person without creating a conversation or accepting
+an incoming request. The user confirms the returned name/username before opening.
+Editing discards that confirmation. Lookup shares the existing per-account
+exact-username rate limit with DM creation; creation still enforces blocks and
+privacy. No migration or configuration change is required.
+`node scripts/test-direct-messages.mjs --lookup` checks this flow at desktop and
+narrow web widths against the labelled local parity fixture. API integration
+coverage checks no creation/acceptance during lookup and the shared lookup budget.
+Android API tests and Rust desktop tests cover the contract; Apple changes require
+macOS/Xcode validation, and native device presentation remains unverified in the orb.
 Non-owner members can leave a space themselves. Removing a space member also
 removes their private-channel grants. The owner cannot be removed. Removal is a
 soft delete: space memberships, private-channel grants and channel joins get
@@ -1698,21 +1758,32 @@ A forward embeds a snapshot of
 its source message, including its attachments, whose URLs are signed with the
 forward; they refresh when the forward is reloaded, not through
 `POST /api/assets/urls`. Pinned messages and thread replies show their files.
-Thread replies may carry files through the API; the client composers attach
-files only in channels and DMs.
+Channel, DM, thread-reply and profile-message composers accept attachments.
 
-Pasting copied files or images into a channel/DM text box uses the same draft
+Pasting copied files or images into a composer uses the same draft
 attachments as the file picker: preparation/upload starts immediately, but no
 message is sent until Send/Enter. Existing text stays intact, and ordinary text
 and links still paste at the selection. The 10-file limit, upload errors, retry,
 removal and conversation permissions are unchanged. Web accepts the files the
 browser exposes in the paste event (not HTML images or URLs to download); Apple
-accepts native file URLs and image data; Android accepts clipboard content URIs
-through the text box's Paste menu or Ctrl+V; Rust desktop accepts native file
-lists and images with Ctrl+V. Android keeps its value-based composer and adds a
-file-aware text menu/keyboard handler rather than changing selection/mention
-editing. Rust's egui integration suppresses image-only paste key-downs, so its
-key-up supplies the missing event without duplicating text-bearing pastes.
+accepts native file URLs and file-like data (including GIF, PDF, audio, video and
+archives), preferring GIF bytes to a static image representation. Text, HTML and
+ordinary web URLs stay with the text view. Android accepts clipboard content
+URIs through the text box's Paste menu or Ctrl+V, and keyboard rich content via
+`commitContent` (including Gboard GIF/sticker and clipboard buttons). It advertises
+`*/*` rather than an image-only filter and retains the temporary URI permission
+until the asynchronous attachment job finishes, including cancellation. Rust
+desktop accepts native file lists, encoded media/documents and images with Ctrl+V.
+Native file references remain first so copied documents of any type keep their
+names and bytes. The encoded fallback recognizes media, PDF, ZIP and generic
+binary data, preferring GIF bytes over a static PNG. Text/HTML and clipboard
+bookkeeping are not attachments. A source app/browser that exposes only a bitmap
+has already discarded the animation, and pasting cannot reconstruct it. Android
+keeps its value-based composer and selection/mention editing. Rust vendors a narrow
+`egui-winit` 0.33.3 patch to deliver paste intent on key-down even without text;
+the composer then reads its file formats. This replaces the old key-up fallback,
+which missed pastes when Ctrl was released before V. See the vendored `PATCHES.md`
+when upgrading egui.
 
 No API, gateway, database, infrastructure or secret change is needed. Clients
 can release independently against the existing upload API; rolling a client
@@ -1731,6 +1802,32 @@ Rust desktop fmt, Clippy, Linux build and 484 tests pass (12 existing ignored).
 Android's Gradle attempt stops at the missing SDK; Apple has no Swift/Apple
 toolchain in this orb. Native OS clipboard/device acceptance remains unverified.
 No Docker daemon is available; the web production build was checked directly.
+
+Keyboard/file paste follow-up (October 20, 2026): Android `compileDebugKotlin`,
+`testDebugUnitTest` (542 tests), `lintDebug`, and `compileDebugAndroidTestKotlin`
+pass. The instrumentation regression exercises the real composer's input
+connection with GIF, PDF, ZIP and custom MIME content, ordinary text and disabled
+uploads; it was compiled, not run. No connected Android device was available,
+and the full APK/native audio build was not run. `npm run check` passes.
+`npm test -- --maxWorkers=1`
+passes all 732 tests (an initial parallel run timed out in the existing GIF
+picture-shrinking test while Gradle was also running). The browser paste suite
+passes at 1280px and 390px, including synthetic animated-GIF/PDF/binary file
+pastes with retained MIME types and byte sizes, real Chromium clipboard
+PNG/text, channel/DM/thread delivery, retries, limits and disabled uploads.
+These use the disposable fixture, not live storage. Apple pasteboard regression
+tests require Apple SDKs; Gboard/OEM keyboard, iOS/macOS pasteboard and Windows/
+Linux desktop clipboard acceptance remain device/OS checks, not browser proof.
+
+Desktop encoded-file follow-up (October 20, 2026): the Linux build, Rust fmt and
+full desktop suite pass (725 tests, 20 ignored; two test threads to stay within
+orb memory limits). The separately run isolated-X11 clipboard test passes for
+original GIF/PNG bytes, PDF/ZIP/binary data, copied files and text/HTML controls.
+The inspected Linux UI recording shows GIF and binary paste adding one attachment
+each without losing draft text, including releasing Ctrl before V. Ordinary text
+paste and subsequent typing also work. Uploads were deliberately offline; these
+checks prove clipboard ingestion, not live storage. Windows/Wayland clipboard
+acceptance and physical-device keyboard behavior still need their own checks.
 
 ### Editing attachments before sending
 
@@ -1768,7 +1865,13 @@ takes over the preview's history entry, so Back closes the editor. The editor of
   the size and colour of the brush in place of the cursor (at least 6 px).
   Both take one of six colours (red, yellow, green, blue, white, black) or any
   colour from the platform's colour picker, and a size slider (2–40 pt lines,
-  14–96 pt text, as seen on screen).
+  14–96 pt text, as seen on screen) with its value in points beside it.
+  Draw's **Eraser** button (after the colours; beside the size on phones)
+  turns presses into an eraser the size of the brush: every line its ring
+  passes over is removed, as one undo step. It removes whole lines, never the
+  picture or text (clear a text to remove it); picking a colour or another
+  tool turns it off. Sliding the size repaints only the controls, not the
+  picture.
 - **Undo**, **Redo** (Ctrl/⌘+Z, Ctrl/⌘+Shift+Z, Ctrl+Y) and **Reset** to the
   original; Escape closes a text field, then cancels. Done with no change just
   closes.
@@ -1797,7 +1900,7 @@ turned picture, then marks painted in order: strokes (points as fractions,
 width as a fraction of the longer edge) and text centred on a point (size as a
 fraction of the longer edge, always upright). Every client's tests run
 `shared/messages/edit-cases.json` (turns, crop rounding including even video
-crops, and when a file counts as edited).
+crops, when a file counts as edited, and which lines an eraser touches).
 
 **What gets uploaded.**
 
@@ -2356,20 +2459,23 @@ npx wrangler deploy --env staging
 
 | Platform | Send files | Show files |
 | --- | --- | --- |
-| Web (desktop and mobile layouts) | Yes: attach drawer (Photos and videos, Files, and Camera on touch devices), clipboard files/images, and drag and drop with an overlay | Images, video, audio, file cards; images and videos open in the in-app viewer |
-| Apple (iOS and macOS) | Yes: attach drawer with the photo library and camera on iPhone/iPad (Photos picker on macOS), file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
+| Web (desktop and mobile layouts) | Yes: Upload a file on desktop; attach drawer (Photos and videos, Files, and Camera on touch devices), clipboard files/images, and drag and drop with an overlay | Images, video, audio, file cards; images and videos open in the in-app viewer |
+| Apple (iOS and macOS) | Yes: attach drawer with the photo library and camera on iPhone/iPad (Upload a file on macOS), file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
 | Android | Yes: attach drawer with the photo library and camera (system photo picker without library access), document picker, clipboard content URIs, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
-| Rust desktop (Windows, Linux) | Yes: attach panel opening the file dialog (Win32; XDG desktop portal on Linux), clipboard files/images, and drag and drop with an overlay, up to 10. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+| Rust desktop (Windows, Linux) | Yes: Upload a file opening the file dialog (Win32; XDG desktop portal on Linux), clipboard files/images, and drag and drop with an overlay, up to 10. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
 
 #### Attach drawer (October 19, 2026)
 
 Attach (the composer's `+`, in channel, thread and profile-DM composers) opens
-the attach drawer on every client. It is the base for later tabs (emoji, GIFs,
-stickers); none are shown until they work.
+the attach drawer on phones and an attach menu on desktop. The smiley opens a
+separate, unified Emojis / GIFs / Stickers drawer on mobile; `+` stays for files.
+Phones keep a photo library apart from their files, so they offer both; desktop
+web, the Mac and Rust desktop offer one unfiltered "Upload a file", as Discord
+does.
 
-- **Capacity line**: ten pips and "Up to 10 files" / "N of 10 attached"; full,
-  it turns terracotta and adds "Remove a file to add another." The drawer stays
-  openable at the limit. Choosing anything then shakes the line sideways (4 px,
+- **Limit line**: nothing below the limit. At 10 files it shows ten terracotta
+  pips, "10 of 10 attached" and "Remove a file to add another." The drawer and
+  menu stay openable at the limit. Choosing anything then shakes the line sideways (4 px,
   `--motion-slow`, none under reduced motion) and, on phones, buzzes, instead
   of opening a picker that couldn't add anything.
 - **iPhone/iPad** (`AttachDrawer.swift`): a sheet (medium/large detents) with a
@@ -2385,7 +2491,8 @@ stickers); none are shown until they work.
   (`presentLimitedLibraryPicker`; the automatic limited-access alert is off).
   Denied or restricted access offers Settings, the system Photos picker (no
   permission) and the camera. The camera (`UIImagePickerController`, photo or
-  video) needs `NSCameraUsageDescription`. macOS keeps its Photos and Files menu.
+  video) needs `NSCameraUsageDescription`. The Mac menu has one "Upload a file"
+  (the file importer, any type).
 - **Android** (`AttachDrawer.kt`): the same drawer as a bottom sheet over
   MediaStore. It asks the first time it opens: `READ_MEDIA_IMAGES` and
   `READ_MEDIA_VIDEO`, plus `READ_MEDIA_VISUAL_USER_SELECTED` on Android 14+
@@ -2395,13 +2502,25 @@ stickers); none are shown until they work.
   the camera. The camera tile uses `TakePicture`/`CaptureVideo` into the app's
   FileProvider cache (no `CAMERA` permission). Selection, order, Send and the
   limit work as on iPhone. Drafts map back to tiles by `pickedUri`.
-- **Web**: no browser can list a photo library. The `+` opens a panel (desktop)
-  or a bottom sheet (touch layouts) with the capacity line and Photos and
-  videos, Files, and Camera (`capture`, touch devices only). Each choice opens
-  the browser's picker.
-- **Rust desktop** (`attach_drawer.rs`): a panel above `+` with the capacity
-  line and Photos and videos (media filter first) or Files (no filter). Profile
-  messages add Paste from clipboard.
+- **Web**: no browser can list a photo library. On desktop layouts the `+`
+  opens a menu with "Upload a file" (no filter). Touch layouts open a bottom
+  sheet with Camera (`capture`, touch devices only), Photos and videos, and
+  Files. Each choice opens the browser's picker.
+- **Rust desktop** (`attach_drawer.rs`): a menu above `+` with "Upload a file"
+  (the system dialog, no filter). Profile messages add Paste from clipboard.
+
+**Gallery previews (October 20, 2026):** iOS and Android animate local GIF
+originals in visible Photos tiles, with a GIF badge even when playback falls
+back to a still. At most six GIFs animate at once; leaving the viewport,
+backgrounding the app, or reduced motion stops them. Android decodes at 120dp;
+iOS caps each animation at 240px, 200 frames and 2 MiB decoded, downsampling
+to fit. iOS rejects encoded data above 16 MiB after PhotoKit supplies it and
+does not download cloud-only originals just for autoplay. Videos use a play
+icon plus duration rather than concurrent gallery video players. Selected
+uploads still use the original staging path, not these previews. The system
+photo picker opened by mobile web owns its previews; Caper cannot change them.
+Native gallery playback/lifecycle and rendered drawers still need device
+validation; browser checks do not establish it.
 
 Google Play: photo/video permissions need the Photo and Video Permissions
 declaration in Play Console (App content); the text is in
@@ -2410,7 +2529,7 @@ three `READ_MEDIA_*` lines from the manifest leaves the drawer working through
 the system photo picker. Validation: web was checked in Chromium at 1280 px and
 390 px touch (open, full, nudge). iOS has unit tests (`AttachDrawerTests`) and a
 simulator UI test (`testIPhoneAttachDrawerAddsLibraryItemsInTapOrder`). Android
-has JVM tests (`AttachDrawerTest`). Rust has unit tests. Physical-device
+has JVM tests (`AttachDrawerTest`) and an emulator test (`AttachDrawerUiTest`). Rust has unit tests. Physical-device
 permission flows, iCloud-only originals, camera capture and Play review are not
 yet verified.
 
@@ -2585,6 +2704,282 @@ and physical devices are not yet validated.
   storage). Not yet validated on Android: the Compose attachment UI and pickers
   on an emulator or device, Bitmap/WebP encoding and EXIF handling, Media3
   Transformer transcoding and playback, and uploads to live R2/CDN.
+## Voice messages and AI
+
+Voice messages are recorded from the composer's microphone button and play
+inline with the sender's waveform. Transcripts appear under them Slack-style
+(three lines, then "View transcript").
+
+### Flow
+
+1. The client records in whatever its platform does best (Opus/WebM in
+   browsers, AAC/M4A on Apple and Android) and reserves an ordinary attachment
+   with `voice: true`, `durationMs` (1 ms to 10 minutes) and an optional
+   `waveform`. The waveform is base64 of 64 bytes (1 to 256 accepted): the peak
+   level of each equal slice, normalised so the loudest slice is 255.
+2. `complete` re-encodes the recording to mono AAC in MP4 at 64 kbps
+   (`audio/mp4`, named `Voice message.m4a`) through the same metadata-stripping
+   step as other media, so every client can play every voice message. A
+   minute is about half a megabyte and counts toward quota as usual.
+3. When an AI provider is configured, `complete` also marks the transcript
+   `pending` and queues an `ai_jobs` row. Transcription therefore starts before
+   the message is sent; an upload that is never sent is cleaned up like any
+   other, and its job finds the asset deleted and stops.
+4. The transcriber (one per API pod, leased jobs, three attempts with
+   backoff) converts the stored AAC to 16 kHz mono FLAC, sends it to
+   `POST {AI_BASE_URL}/audio/transcriptions` and tries each model in
+   `AI_TRANSCRIBE_MODELS` in order until one succeeds.
+5. A transcript that finishes before sending is copied into the message when
+   it is sent. One that finishes later updates the message and emits the
+   existing `message.attachments` event (seq-gated by `attachmentsSeq`), which
+   every client already applies.
+
+Voice attachments carry `voice`, `waveform` and `transcript`
+(`{"status":"pending"}`, `{"status":"ready","text":…}` or
+`{"status":"failed"}`; absent when no provider is configured). Push
+notifications say "Sent a voice message".
+
+### AI layer
+
+`apps/api/src/ai.rs` calls one OpenAI-compatible gateway (OpenRouter by
+default). Features ask for a task; the models serving it are configuration,
+so trying a newer model is an environment change. Every provider attempt is
+stored in `ai_calls` with its model, outcome, HTTP status, latency, cost (as
+reported by the gateway), full request (inline audio replaced by its size and
+asset) and full response, for comparing models on real traffic:
+
+```sql
+SELECT model, count(*), avg(latency_ms)::int AS ms, sum(cost_usd) AS usd,
+       count(*) FILTER (WHERE NOT succeeded) AS failures
+FROM ai_calls WHERE task='transcribe' GROUP BY model;
+```
+
+Spending limits live on the OpenRouter key itself.
+
+| Variable | Where | Meaning |
+| --- | --- | --- |
+| `OPENROUTER_API_KEY` | API | Enables transcripts. Without it voice messages still work, with no transcript. |
+| `AI_BASE_URL` | API | OpenAI-compatible gateway, default `https://openrouter.ai/api/v1`. HTTPS only (loopback HTTP for tests). |
+| `AI_TRANSCRIBE_MODELS` | API | Comma-separated models in fallback order, default `microsoft/mai-transcribe-2,elevenlabs/scribe-v2`. |
+
+All three are read from `production/apps/caper` like other API settings;
+changing them needs only an API restart.
+
+### Recording and sending
+
+Tapping or clicking the microphone records hands-free: a bar with discard,
+a pulsing dot and timer, live levels and a Stop button (Enter stops, Escape
+discards). On touch layouts holding the microphone also records until
+release; sliding left cancels. Recordings under a second are dropped and
+10:00 stops automatically.
+
+By default stopping does not send. The recording becomes a voice chip in the
+composer beside any staged files (play, waveform, duration, remove), so text,
+photos and the voice note go out together on the next Send. It uploads at
+once, so the transcript is usually ready before sending; removing the chip
+cancels the upload. One voice note per message. The per-device setting "Send
+voice messages as soon as I stop recording" (off by default) sends on stop
+instead, on its own. The profile card's quick message works the same way.
+
+Waveforms are per-slice RMS loudness on a -50..0 dB scale, lightly smoothed
+and normalised (Android approximates RMS from MediaRecorder's amplitude
+readings). Players draw evenly spaced rounded bars by linear interpolation,
+with per-frame progress; live levels use fast-attack, slow-release smoothing
+and scroll at a steady rate (stepped under reduced motion).
+
+### Platform status
+
+| Platform | Record | Play + transcript | Verified |
+| --- | --- | --- | --- |
+| Web desktop and mobile layout | MediaRecorder; click/tap, plus hold on touch | Player, seek, one at a time, 3-line transcript | `npm run check`, Vitest, Playwright with a fake microphone against the fixture (no real API audio, iOS Safari or real phone) |
+| Android | MediaRecorder AAC/M4A; tap or hold | Media3 player, transcript | 547 JVM tests, compile, lint; no device run |
+| iOS / macOS | AVAudioRecorder AAC/M4A; tap/hold (iOS), click (macOS) | AVPlayer, transcript | Apple CI build and XCTests; logic also tested on Linux Swift; no device run of the v2 changes yet |
+| Desktop (Windows, Linux) | Bundled FFmpeg AAC/M4A (WAV fallback); click | Bundled FFmpeg audio-only player | `cargo test`, clippy, Xvfb screenshots, virtual-microphone recording beside a live call capture (Linux only) |
+
+Physical microphones, recording during a real call on phones and Windows,
+and a live transcript round trip still need checking by hand.
+
+### Validation boundary
+
+- `cargo test` covers upload validation, transcript states, the FLAC
+  conversion and the gateway client's fallback and call log against a local
+  fake. The ignored Postgres test
+  `voice_messages_store_aac_and_deliver_transcripts` covers a WebM recording
+  re-encoded to AAC, a transcript stored before sending and copied into the
+  message, and one stored after sending through the real worker with a
+  failing first model, the `message.attachments` event, URL signing and the
+  `ai_calls` rows.
+- Not covered by automated tests: a live OpenRouter request. Watch the first
+  production voice messages in `ai_calls`.
+
+## GIFs and stickers (KLIPY)
+
+Mobile web, iOS and Android composers have one **smiley** button opening
+**Emojis / GIFs / Stickers**, defaulting to Emojis. This covers channels, DMs,
+threads and profile-card composers. Emoji selection inserts at the caret;
+choosing a GIF or sticker sends it at once as its own message, keeping the typed
+draft and staged files. Media tabs show an unavailable message without KLIPY.
+Desktop keeps its separate emoji and **GIF** controls; the GIF control is hidden
+until the API has `KLIPY_APP_KEY`. Media tabs use "Search KLIPY" (KLIPY requires
+that placeholder) and trending results until something is typed.
+
+KLIPY's [integration requirements](https://docs.klipy.com/integration-requirements)
+shape the design:
+
+- Search, trending, share and media requests go straight from each device to
+  `api.klipy.com` and `static*.klipy.com`. The API never proxies, caches or
+  re-hosts KLIPY media, so KLIPY sees the viewer's IP address and user agent,
+  like any linked image.
+- Results keep KLIPY's order and mix, ads included. Filtering happens only in
+  the Partner Panel; we request `content_filter=off` and filter nothing.
+- A sent GIF keeps KLIPY's media URLs exactly as returned.
+
+### API contract
+
+`GET /api/klipy` (signed in) returns `{"appKey","customerId"}`, or 404 when
+GIFs are off. The app key is KLIPY's client key and ships to devices by design.
+`customerId` is 32 hex characters, an HMAC of the account id keyed from
+`AUTH_SECRET`: stable per account and meaningless to KLIPY.
+
+Sending adds an optional `gif` to the usual message body. It never travels with
+`attachmentIds`, and text may then be empty:
+
+```json
+{"clientMessageId":"…","text":"","gif":{"provider":"klipy","kind":"gif",
+ "slug":"hello-hi-662","title":"Hello","width":498,"height":498,
+ "gif":"https://static.klipy.com/…/a.gif","webp":"https://static.klipy.com/…/a.webp",
+ "mp4":"https://static.klipy.com/…/a.mp4","still":"https://static.klipy.com/…/a.jpg"}}
+```
+
+The API stores it as `content.gif` (`content.type` stays `"text"`, so older
+clients show the message text alone). Rules, shared by the API
+(`apps/api/src/klipy.rs`) and every client through `shared/klipy/cases.json`:
+
+- `provider` is `klipy`; `kind` is `gif` or `sticker`.
+- `slug` is 1–200 letters, digits, `-` or `_`; `title` is at most 200
+  characters without control characters.
+- `width` and `height` are whole numbers from 1 to 4096.
+- At least one of `gif` and `webp` is present.
+- Every URL is at most 2048 characters: HTTPS on `klipy.com` or a subdomain,
+  with no credentials, port or fragment. A query string is fine.
+
+Clients render `content.gif` only when it passes these rules. Otherwise they
+show the text alone.
+
+Edits change only the caption; the GIF stays. Forwards copy it. Reply quotes
+and push notifications of a captionless GIF read `GIF` / `Sticker` and
+`Sent a GIF` / `Sent a sticker`. The retry hash covers the text and the GIF.
+
+### KLIPY requests (from the device)
+
+Base `https://api.klipy.com/api/v1/{appKey}/`, with `{kind}` either `gifs` or
+`stickers`:
+
+| Purpose | Request |
+| --- | --- |
+| Trending | `GET {kind}/trending?page=N&per_page=24&customer_id=…&content_filter=off&locale=xx` |
+| Search | `GET {kind}/search?q=…&page=N&per_page=24&customer_id=…&content_filter=off&locale=xx` |
+| Share (after a successful send, best effort) | `POST {kind}/share/{slug}` with JSON `{"customer_id","q"}` (`q` is the search text, empty for trending) |
+
+`locale` is the device region as ISO 3166 alpha-2. Searches wait 300 ms after
+typing stops, and pages load as the grid nears its end while `has_next` is true.
+
+Parsing (`parse` in `shared/klipy/cases.json`) keeps KLIPY's order:
+
+- **Ad items** (`type: "ad"`) need a non-empty `content` HTML string. They
+  become `{type:"ad", html, width, height}`; the size is null when absent or
+  not positive.
+- **Other items** need a valid slug.
+  - The sent GIF comes from the first of `file.md`, `file.hd`, `file.sm`.
+    `gif` and `webp` are taken from it, `mp4` too, and `still` is its `jpg`,
+    or `png` for stickers.
+  - URLs that break the rules are dropped. The width and height come from
+    the size's first valid `gif`, then its `webp`; without them the item is
+    skipped.
+  - `kind` is the tab that requested it. Control characters are stripped from
+    the title, which is then cut to 200 characters.
+  - The grid tile comes from the first of `sm`, `xs`, `md`, `hd`: its `webp`
+    or else `gif`, plus a `jpg`/`png` still when that size has one.
+
+### Ads
+
+Ads come on with the Ads API toggle in the Partner Panel, and KLIPY serves
+them only to mobile user agents.
+
+- **Who asks for them:** Android, iPhone and the touch-layout web picker add
+  `ad-min-width=50`, `ad-max-width=<grid width in CSS px or dp>`,
+  `ad-min-height=50` and `ad-max-height=250`.
+  - They also send the recommended device fields they can read without
+    permission prompts: `ad-os`, `ad-osv`, `ad-make`, `ad-model`,
+    `ad-device-w`, `ad-device-h`, `ad-pxratio` and `ad-language`.
+  - Native apps send their WebView's user agent: Android's
+    `WebSettings.getDefaultUserAgent`, iOS's `WKWebView` `navigator.userAgent`.
+  - Carrier fields, advertising IDs and location are never sent, and no
+    tracking prompt is shown.
+- **Where they don't appear:** desktop web, macOS, Windows and Linux omit the
+  ad parameters, so they never receive ads.
+- **How they show:** an ad fills a full-width grid row labelled
+  **Sponsored**, sized to the ad or else 100 px tall.
+  - The HTML renders in an isolated web view: a sandboxed `iframe srcdoc`
+    with scripts and popups but no same-origin access on the web, and a
+    non-persistent WebView on Android and iPhone.
+  - Taps open in the system browser, and an ad can never reach Caper's
+    session.
+
+### Rendering
+
+- **Size:** a GIF shows below any text at its aspect ratio, at most 300 px on
+  its longer edge (stickers 160 px). Stickers have no background.
+- **Format:**
+  - The web prefers a muted, looping, inline `mp4` for GIFs and the `webp`
+    for stickers (transparency).
+  - Native apps use the animated format their decoder supports (`webp` or
+    `gif`).
+- **Reduced motion:** reduced-motion settings show `still` (or the first
+  frame).
+- **Labels:** the accessible label is the title, or `GIF` / `Sticker`.
+- **Failures:** a GIF that fails to load leaves a quiet "GIF unavailable"
+  placeholder.
+
+### Configuration and rollout
+
+| Variable | Where | Meaning |
+| --- | --- | --- |
+| `KLIPY_APP_KEY` | API | KLIPY Partner Panel key (letters, digits, `-` or `_`). Unset or malformed disables mobile media tabs and hides desktop GIF controls. Needs `AUTH_SECRET`. |
+
+Rollout:
+
+1. Create the key in the [Partner Panel](https://partner.klipy.com/api-keys)
+   with the Ads API on. A test key allows 100 requests an hour for the whole
+   app; request production access from the panel before real traffic.
+2. Add `KLIPY_APP_KEY` to `staging/apps/caper` and `production/apps/caper` in
+   AWS Secrets Manager.
+3. Roll the API so it reads the new key.
+4. Set the Partner Panel content filter to off, matching `content_filter=off`.
+
+### Platform status (October 20, 2026)
+
+| Client | Picker | Ads | Validation |
+| --- | --- | --- | --- |
+| API | — | — | Unit tests, shared cases and a Postgres send/retry/reply/edit test pass. |
+| Web | Channel, thread and profile-card composers; popover, or bottom drawer on touch layouts | Touch layouts | Vitest shared cases pass. Chromium was driven against the fixture with KLIPY mocked by route (labelled test mock): desktop, 390 px touch (ads row), reduced motion, paging, search, send and share. |
+| Android | Channel, thread and profile-card composers; unified bottom sheet | Yes | Kotlin and instrumentation tests compile; 550 JVM tests and lint pass for the unified picker change. Instrumentation tests and gallery animation have not run on a device. |
+| iPhone / macOS | Channel, thread and profile-card composers; sheet / popover | iPhone only | Foundation core and shared cases checked with Swift on Linux. Not compiled with the Apple SDK, not run. |
+| Desktop (Rust) | Channel/DM and thread composers; popup | No (skipped) | fmt, clippy and tests incl. shared cases pass. Not checked on screen. The profile-card first-DM composer has no GIF button yet. |
+
+Unified mobile-picker validation: web check/build and 738 web/shared tests pass.
+The extended `scripts/test-emoji-composer.mjs` exercises three tabs in one
+dialog, emoji insertion, GIF/sticker sends retaining the draft, keyboard tab
+navigation and Escape focus against the disposable fixture, with KLIPY mocked.
+Touch Chromium (390px, coarse pointer, 2x) covers results, empty/error/retry
+states and scroll/viewport bounds; desktop retains separate controls. iOS
+implementation and UI regression tests are not compiled or run in this Linux
+orb (no Apple toolchain or connected runner).
+
+Not yet validated anywhere: live KLIPY responses (the shape of ad objects is
+undocumented beyond `type` and `content`), real ad delivery and taps, physical
+devices, and screen readers.
+
 ## Message reactions
 
 Desktop web exposes **Add reaction** on message hover or keyboard focus; clicking
@@ -3259,6 +3654,26 @@ order). Desktop/wide clients use a right panel; narrow web, Android and iPhone
 take over the conversation screen. The selected root has a slightly stronger
 pin-gold wash; other messages are not dimmed. No nested threads: replying from a
 broadcast opens its original root. The same contracts also apply to DMs.
+
+On phones, rightward drags over thread history/header move the thread over the
+channel beneath it. Releasing at 72px/points/dp returns to the channel; short or
+cancelled drags settle back. The release takes the shared 140ms fast timing.
+Vertical scrolling, selected text, and composer gestures remain separate; drafts
+survive returning. iPhone read-only message text can start a swipe too. Apple and
+Android phone broadcast checkboxes update without a checkmark/color tween.
+
+Thread-swipe validation (October 20, 2026): `npm run check`, all 737 Vitest tests,
+and `scripts/test-message-threads.mjs` pass. Chromium touch emulation checks
+finger tracking before release, snap-back, direction/cancellation/composer guards,
+draft retention, and reduced motion; rendered states and a recording are inspected
+separately. These are disposable fixtures, not physical-phone or Safari evidence.
+Apple's text-start swipe/checkbox UI regression needs Xcode and an iPhone simulator;
+neither is available in this Linux orb.
+Android's `testDebugUnitTest` passes 548 tests; `compileDebugAndroidTestKotlin` and
+`lintDebug` pass (lint retains warnings). The new instrumentation regression covers
+tracking across rendered frames and release/cancellation, but has not run: no
+Android device is connected. Native rendering, keyboard/insets and device smoothness
+remain unverified; Rust desktop's mouse-only navigation is unchanged.
 
 The unchecked **Also send to channel** option publishes one reply in both places,
 not a copied root message. IDs, content and reactions are shared. Drafts and the
@@ -6504,12 +6919,18 @@ certificates and does not publish releases or submit to stores.
   Developer ID Application certificate/private key. A distributable app needs
   hardened-runtime signing, notarization with `notarytool`, and ticket stapling.
   Development/ad-hoc signing does not substitute for Developer ID notarization.
+  Ticket-service exit 68 retries up to nine attempts with capped exponential
+  backoff (about ten minutes of waits). Invalid/revoked tickets still fail
+  immediately; retries never bypass ticket validation or Gatekeeper assessment.
   See [Apple's distribution guidance](https://developer.apple.com/developer-id/).
 - **iPhone:** register the final bundle ID and App Store Connect app, then use
   the correct development/ad-hoc provisioning profile for registered devices,
   or an App Store distribution archive for TestFlight. An unsigned simulator
   `.app` cannot run on a phone, even with a paid developer membership. TestFlight
   also has review/distribution requirements; no automatic approval is promised.
+  After processing reports `VALID`, tester-group assignment can still return
+  HTTP 404. Distribution retries that relationship for up to ten minutes without
+  uploading a replacement binary; other errors retain their existing handling.
   See [Apple's preparation guide](https://developer.apple.com/documentation/xcode/preparing_your_app_for_distribution).
   Release CI archives with a local ad-hoc signature (`CODE_SIGN_IDENTITY=-`,
   `AD_HOC_CODE_SIGNING_ALLOWED=YES`) to retain push entitlements without creating
@@ -8456,26 +8877,22 @@ The quoted original sits in a separate neutral card, with clear spacing before
 the current reply and a visible **View original** affordance. Small shaded
 pewter cup sockets touch the left edges of the original and replying avatars,
 joined by one thin curved string in the gutter. Web and Rust desktop share the
-SVG artwork; Android and Apple draw matching vectors. Collapsed quotes show the first 100
-Unicode scalars, wrap to at most three lines and fade into the dark card.
-The fade spans the lower 60% of the preview. **Show more** floats
-at the midpoint of that fade, without a separate button row; clipped previews
-retain enough height to keep it clear of the author heading. **Show less** stays
-below expanded text so nothing is covered. Both controls are centered white
-pills with black text, hover and pressed feedback, and at least 44px touch targets
-on mobile. Expansion reveals the complete saved text separately from source
-navigation. Short quotes have
-neither a fade nor an expansion control unless
-line breaks overflow the preview. Scrolling flexes the string by a few pixels
+SVG artwork; Android and Apple draw matching vectors. Collapsed quotes wrap to
+at most three rendered lines, without a character cutoff or fade. **Show more**
+appears only when the saved quote exceeds those lines, including explicit line
+breaks. **Show more** and **Show less** are small, leading-aligned, link-blue underlined text
+actions below the content, with transparent touch targets of at least 44px on
+mobile. Neither covers the text. Expansion and collapse are immediate and reveal
+the complete saved text separately from source navigation. Scrolling flexes the string by a few pixels
 and slightly rotates the cups around their fixed avatar attachment points.
 A damped spring settles back to rest; there is no repeating glow or idle jiggling.
 Each reply derives its spring tension, damping, scroll response and travel limit
 from its own client message ID, not the quoted original. Replies to the same
 source therefore move and settle differently, with stable settings on remount
 and across pending/delivered rows. All clients use the same UTF-8 FNV-1a seed
-and tuning ranges: stiffness 140–240, damping 11–18, scroll impulse 1.0–1.4,
-travel 5–7 logical pixels and speed capped at 16 times that travel. This is a
-modest increase over the previous uniform 0.8 impulse and 4px travel. Web uses
+and tuning ranges: stiffness 560–960, damping 28–42, scroll impulse 1.0–1.4,
+travel 5–7 logical pixels and speed capped at 16 times that travel. The faster,
+more damped spring avoids a lingering wobble. Web uses
 actual scroll events, including touch/inertial scrolling; native clients track
 the row's position as their scroll view moves, without intercepting swipes.
 Both string ends follow the rotating cup backs. Animation work stops at rest
@@ -8585,6 +9002,35 @@ cancellation retaining the draft. Android compilation cannot configure without
 an Android SDK; Apple has no Swift/Xcode toolchain here. These are local fixture
 checks, not physical-device or live-account acceptance. No Docker daemon is
 available; the web image's application build stages were checked directly.
+
+**Compact quote controls (October 20, 2026).** `npm run check` and all 737 web/shared
+unit tests pass. The full `scripts/test-message-threads.mjs` suite passes on
+desktop and 390px Chromium with coarse pointer verified: the reported short
+question stays fully visible despite exceeding 100 characters; explicit four-line
+and longer quotes expand independently of source navigation; underlined controls
+do not obscure text; connections settle within 700ms and remain static with
+reduced motion. Desktop/narrow short, collapsed and expanded screenshots were
+inspected, along with a pointer interaction recording; Space/Enter also toggle
+the control. These are disposable local fixtures, not iPhone acceptance.
+Linux desktop formatting, compile, linked build and application Clippy pass;
+722 tests passed, 19 were ignored and one unrelated media-proxy test failed with
+an HTTP `UnexpectedMessage` error, then passed alone. Its actual reply fixture
+was rendered and expanded/collapsed with pointer input and inspected. Android
+Kotlin compilation and unit tests pass after preparing fonts; lint still reports
+two unchanged `SuspiciousIndentation` errors. Apple remains uncompiled and
+unrendered without Swift/Xcode; Android device rendering is also unverified.
+No Docker daemon is available; the web application build was validated directly.
+This is a client-only correction with no API, migration or infrastructure change.
+
+The link-blue refinement uses each client's existing link color. After integrating
+newer `main`, web checks and all 738 unit tests pass, as do Android compilation/tests
+and the Linux build/Clippy. The focused quote checks pass on desktop and coarse-pointer
+Chromium; the full thread rerun stops at the newer, unrelated finger-follow swipe
+assertion. Quote reload checks now wait for hydration and bring the virtualized
+reply into view before checking its expansion control. Fresh blue collapsed/expanded
+web and Linux captures and a pointer recording were inspected. The new transcript
+SSR test retains the full transcript for browser line measurement rather than
+expecting the removed 100-character cutoff. Apple/device validation gaps remain.
 
 **Deployment order.**
 
@@ -8830,10 +9276,11 @@ same command and reuses completed uploads. Web's Edit action warns that the
 previous copy may have arrived before allowing changes.
 
 Clipboard files: web accepts files carried by a browser paste event; Apple uses
-its native Paste action for file URLs and image bytes. Android and Rust desktop
+its native Paste action for file URLs and file-like bytes. Android and Rust desktop
 put **Paste from clipboard** in the Attach menu (beside Photos/Files or Choose
-files): Android reads clipboard content URIs, and egui delivers no event for an
-image-only Ctrl+V. Native clipboard formats and provider permissions vary.
+files): Android reads clipboard content URIs and accepts keyboard `commitContent`
+for any MIME type. Rust repairs egui's missing image-only Ctrl+V event.
+Native clipboard formats and provider permissions vary.
 
 Emoji buttons: channel, thread and profile composers on every client have an
 Emoji button beside the existing `:name:` shortcut. It opens the reaction
@@ -9397,6 +9844,7 @@ uploads reserved before a selection or removal cannot overwrite it on completion
 | `POST /api/assets/{id}/complete` | Checks size and magic bytes as for attachments, then the real pixel size read from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), ≤ 1024 px (`422 picture_invalid`). The first successful completion **applies** the picture and returns `account` (avatar) or `space` (icon); a retry returns the current state without re-applying, so a late retry never undoes a newer picture. Pictures are ordered by reservation: one that completes after a later-reserved picture already completed is kept but not applied, and the response shows the newer one. |
 | `POST /api/assets/{id}/cancel` | Cancels a picture before completion; `409` afterwards. |
 | `DELETE /api/account/avatar` | Back to the saved mascot; returns the account. |
+| `POST /api/account/avatar/regenerate` | No body. Saves a randomly chosen different mascot ID and returns the account; broadcasts the profile change, including active voice participants. `409` if a custom picture is present. No upload/storage configuration required. |
 | `GET /api/account/avatar/history?cursor=<asset ID>` | Returns `{pictures:[{avatarAsset,avatarUrl}],nextCursor}` for your own retained, completed avatar uploads only. Stable newest-first pages of 40; `nextCursor: null` at the end. Includes the current picture. |
 | `POST /api/account/avatar/select` `{"avatarAsset":"chosen asset ID","expectedAvatarAsset":"current asset ID" \| null}` | Locks the account, compares the expected current image, and applies the chosen owned/completed/retained avatar. Returns the account and broadcasts its profile change. `409` if the current image changed; `404` for an invalid target (including another user's picture). |
 | `DELETE /api/spaces/{space}/icon` | Owner only; back to the initial; returns the space. |
@@ -9454,6 +9902,27 @@ Without a custom profile picture, the saved mascot holds
 up a "change me!" sign (`assets/avatars/change-me.svg`, one vector drawn over
 any mascot); a successful change updates the signed-in client everywhere through the
 existing own-profile refresh path.
+All clients also offer a circular-arrow **Regenerate avatar** action only when no
+custom picture is set. Each press immediately saves a different mascot; it does
+not require Save profile. Pending requests disable the picture controls, and
+failures remain inline. A custom picture set elsewhere wins over regeneration.
+
+### Mascot regeneration validation (October 20, 2026)
+
+- Web: `npm run check` and the Vitest suite pass. Chromium at desktop and 390px
+  widths exercised regeneration against the local API/Postgres and confirmed
+  persistence after reload. Injected delay/failure/custom-picture responses
+  covered disabled controls, inline errors, retry, and hiding the action.
+- API: workspace tests, formatting, Clippy and build pass. The disposable
+  PostgreSQL endpoint test checks authentication, changed/in-range persisted IDs,
+  preserved names, and refusal to replace a custom picture. Voice snapshot tests
+  cover the changed mascot ID; no live SFU call was used.
+- Rust desktop: the full test suite passes (existing ignored tests excluded), scoped formatting, Clippy
+  and build pass. The profile fixture was visually inspected under Linux Xvfb.
+- Android: `testDebugUnitTest compileDebugKotlin` passes after preparing the
+  pinned fonts; no device rendering. Apple implementation/tests are present but
+  were not compiled because this Linux orb has no Swift/Xcode toolchain. Physical
+  iOS, Android, macOS and Windows checks remain outstanding.
 
 ### Previous-picture gallery validation (October 19, 2026)
 

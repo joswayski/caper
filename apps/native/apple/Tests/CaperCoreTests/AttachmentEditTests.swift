@@ -25,9 +25,23 @@ final class AttachmentEditTests: XCTestCase {
             let edit: AttachmentEdit
             let edited: Bool
         }
+        struct Erase: Decodable {
+            struct Case: Decodable {
+                let note: String
+                let width: Double
+                let height: Double
+                let x: Double
+                let y: Double
+                let radius: Double
+                let marks: [EditMark]
+                let touched: [Int]
+            }
+            let cases: [Case]
+        }
         let rotateLeft: [Rotation]
         let cropPixels: [Crop]
         let edited: [Edited]
+        let erase: Erase
     }
 
     private func cases() throws -> Cases {
@@ -78,6 +92,15 @@ final class AttachmentEditTests: XCTestCase {
         for item in cases {
             let edit = AttachmentEdit(rotation: item.rotation, crop: item.crop)
             XCTAssertEqual(edit.cropPixels(width: item.width, height: item.height, even: item.even), item.expected, item.note)
+        }
+    }
+
+    func testSharedEraseCases() throws {
+        let cases = try cases().erase.cases
+        XCTAssertGreaterThanOrEqual(cases.count, 6, "edit-cases.json lost its erase cases")
+        for item in cases {
+            XCTAssertEqual(AttachmentEdit.strokesTouched(item.marks, x: item.x, y: item.y, radius: item.radius,
+                                                         width: item.width, height: item.height), item.touched, item.note)
         }
     }
 

@@ -501,6 +501,15 @@ pub fn original(ui: &mut egui::Ui, message: &Message, textures: &mut crate::emoj
         return;
     }
     crate::linked_text(ui, &message.id, &message.content.text);
+    if message.content.text.is_empty()
+        && message
+            .content
+            .attachments
+            .iter()
+            .any(|attachment| attachment.voice)
+    {
+        ui.label(RichText::new("Voice message").color(crate::MUTED));
+    }
     if message.edited_at.is_some() {
         ui.label(RichText::new("edited").size(10.0).color(crate::MUTED));
     }

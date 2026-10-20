@@ -73,6 +73,7 @@ class GatewayClient(
     private var presenceSubscriptionId: String? = null
     private var presenceSpaceId: String? = null
     private var presenceUserIds = emptyList<String>()
+    private var presenceAllMembers = false
     private val mediaSubscriptions = mutableMapOf<String, String>()
     private val mediaRevisions = mutableMapOf<String, Long>()
     private var active: Stream? = null
@@ -97,8 +98,10 @@ class GatewayClient(
         else -> "online"
     }
 
-    @Synchronized fun watchPresence(spaceId: String, userIds: List<String>) {
-        require(userIds.size in 1..100) { "Presence supports 1 to 100 members." }
+    @Synchronized fun watchPresence(spaceId: String, userIds: List<String> = emptyList(), allMembers: Boolean = false) {
+        require(allMembers || userIds.size in 1..100) { "Presence supports 1 to 100 members." }
+        if (presenceSpaceId == spaceId && presenceUserIds == userIds.distinct() && presenceAllMembers == allMembers) return
+        presenceAllMembers = allMembers
         val old = presenceSubscriptionId
         presenceSpaceId = spaceId; presenceUserIds = userIds.distinct(); presenceSubscriptionId = UUID.randomUUID().toString()
         streams().forEach { stream ->
@@ -316,7 +319,7 @@ class GatewayClient(
         put("method", "typing"); put("channelId", channelId); put("chatToken", chatToken); putJsonObject("body") { put("typing", typing) }
     }.toString()) }
     private fun sendPresenceSubscription(ws: WebSocket) { val id = presenceSubscriptionId ?: return; val space = presenceSpaceId ?: return
-        ws.send(buildJsonObject { put("type", "subscribe"); put("id", id); put("kind", "presence"); put("spaceId", space); putJsonArray("userIds") { presenceUserIds.forEach { add(it) } } }.toString()) }
+        ws.send(buildJsonObject { put("type", "subscribe"); put("id", id); put("kind", "presence"); put("spaceId", space); if (presenceAllMembers) put("allMembers", true) else putJsonArray("userIds") { presenceUserIds.forEach { add(it) } } }.toString()) }
     private fun armWatchdog(s: Stream, timeout: Long) { s.watchdog?.cancel(); s.watchdog = scope.launch { delay(timeout); fail(s, false) } }
     private fun dispose(s: Stream, reason: String, graceful: Boolean = false) {
         s.heartbeat?.cancel(); s.watchdog?.cancel(); s.catchup?.cancel()

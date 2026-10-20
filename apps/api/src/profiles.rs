@@ -50,7 +50,14 @@ pub(crate) async fn publish_account(state: &AppState, user: i64) -> Result<(), (
     else {
         return Ok(());
     };
-    refresh_calls(state, user, &display_name, avatar_asset.as_deref()).await;
+    refresh_calls(
+        state,
+        user,
+        &display_name,
+        avatar_id,
+        avatar_asset.as_deref(),
+    )
+    .await;
     let mut person = json!({"id":id,"username":username,"displayName":display_name,"avatarId":avatar_id,"admin":admin});
     if let Some(asset) = avatar_asset {
         person["avatarAsset"] = json!(asset);
@@ -117,7 +124,13 @@ async fn publish(state: &AppState, audience: Vec<i64>, event: Value) -> Result<(
 /// Participants carry the name and picture they joined with; update them in
 /// every active call this account is in, so the room snapshot carries the
 /// change to everyone watching it.
-async fn refresh_calls(state: &AppState, user: i64, name: &str, asset: Option<&str>) {
+async fn refresh_calls(
+    state: &AppState,
+    user: i64,
+    name: &str,
+    avatar_id: i16,
+    asset: Option<&str>,
+) {
     let Ok(rooms) = state.media_rooms().await else {
         return;
     };
@@ -137,6 +150,7 @@ async fn refresh_calls(state: &AppState, user: i64, name: &str, asset: Option<&s
                     .filter(|p| p.user_id == Some(user))
                 {
                     name.clone_into(&mut participant.name);
+                    participant.avatar_id = Some(avatar_id);
                     participant.avatar_asset = asset.map(str::to_owned);
                 }
                 Ok(())

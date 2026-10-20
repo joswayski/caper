@@ -273,6 +273,10 @@ export interface PreparedFile {
   height?: number;
   durationMs?: number;
   preview?: Blob;
+  /** A recorded voice message, uploaded as recorded (never prepared). */
+  voice?: boolean;
+  /** Base64 peaks sent with a voice message. */
+  waveform?: string;
 }
 
 export type Surface = OffscreenCanvas | HTMLCanvasElement;

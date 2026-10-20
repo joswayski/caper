@@ -76,23 +76,24 @@ const history = (channel) =>
     headers: { authorization: "Bearer fixture-owner-token", connection: "close" },
   }).then((response) => response.json());
 
-const chooseUpload = (scope, label) => {
+// Desktop layouts offer one unfiltered "Upload a file", as Discord does.
+const chooseUpload = (scope) => {
   browser("click", `${scope} [aria-label="Attach files"]`);
-  wait('!!document.querySelector(".chat-profile-menu")');
+  wait('!!document.querySelector(".chat-attach-drawer")');
   assert.deepEqual(
-    evaluate('return [...document.querySelectorAll(".chat-profile-menu button")].map(button => button.textContent)'),
-    ["Photos and videos", "Files"],
+    evaluate('return [...document.querySelectorAll(".chat-attach-options button")].map(button => button.textContent)'),
+    ["Upload a file"],
   );
   // Mock only the OS dialog: headless Chrome cancels it before upload can supply files.
   evaluate(`window.pickedAccept = null;
     for (const input of document.querySelectorAll('${scope} input[type="file"]')) {
       input.addEventListener('click', event => { event.preventDefault(); window.pickedAccept = input.accept; }, {once:true});
     }`);
-  browser("find", "role", "menuitem", "click", "--name", label, "--exact");
-  assert.equal(evaluate("return window.pickedAccept"), label === "Photos and videos" ? "image/*,video/*" : "");
+  browser("find", "role", "button", "click", "--name", "Upload a file", "--exact");
+  assert.equal(evaluate("return window.pickedAccept"), "");
 };
 const uploadFile = (scope) => {
-  chooseUpload(scope, "Files");
+  chooseUpload(scope);
   browser("upload", `${scope} input[type="file"]:not([accept])`, file);
 };
 
@@ -201,9 +202,9 @@ try {
   browser("fill", "#profile-message", "Hello suffix");
   evaluate('document.querySelector("#profile-message").setSelectionRange(6, 6)');
   // Cancelling a chooser keeps both the draft and the selected caret.
-  chooseUpload(".chat-profile-composer", "Photos and videos");
+  chooseUpload(".chat-profile-composer");
   evaluate(
-    'document.querySelector(\'.chat-profile-composer input[accept="image/*,video/*"]\').dispatchEvent(new Event("cancel"))',
+    'document.querySelector(\'.chat-profile-composer input[type="file"]:not([accept])\').dispatchEvent(new Event("cancel"))',
   );
   wait('document.activeElement.id === "profile-message"');
   assert.equal(value(), "Hello suffix");

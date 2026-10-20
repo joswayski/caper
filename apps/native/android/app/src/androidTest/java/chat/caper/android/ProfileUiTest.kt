@@ -45,7 +45,8 @@ class ProfileUiTest {
         }
         compose.onNodeWithText("1 file failed to upload. Send will retry it, or you can remove it.").assertExists()
         compose.onNodeWithText("Retry upload").performClick()
-        compose.onNodeWithText("Uploading 1 file… Your message won’t send until every file is ready.").assertExists()
+        compose.onNodeWithText("Uploading 1 file… Your message won’t send until every file is ready.").assertDoesNotExist()
+        compose.onNodeWithText("Uploading 20%").assertExists()
         compose.runOnIdle { sending.value = false }
         compose.onNodeWithText("Uploading 1 file… Your message won’t send until every file is ready.").assertDoesNotExist()
         compose.onNodeWithText("1 file failed to upload. Send will retry it, or you can remove it.").assertDoesNotExist()
@@ -71,10 +72,10 @@ class ProfileUiTest {
         compose.onNodeWithText("Choose how you show up.").assertExists()
         compose.onNodeWithText("Create your profile").assertDoesNotExist()
         compose.onNodeWithText("Save profile").assertDoesNotExist()
-        compose.onNodeWithText("Finish account").assertIsNotEnabled()
+        compose.onNodeWithText("Finish setup").assertIsNotEnabled()
         compose.onNodeWithText("Username").performTextInput("fixture_new")
         compose.onNodeWithText("Display name").performTextInput("Fixture New")
-        compose.onNodeWithText("Finish account").assertIsEnabled().performClick()
+        compose.onNodeWithText("Finish setup").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals("fixture_new" to "Fixture New", submitted) }
 
         val directory = File(requireNotNull(InstrumentationRegistry.getArguments().getString("additionalTestOutputDir")))
@@ -88,13 +89,13 @@ class ProfileUiTest {
 
         compose.runOnIdle { busy.value = true }
         compose.onNodeWithText("Saving…").assertIsNotEnabled()
-        compose.onNodeWithText("Finish account").assertDoesNotExist()
+        compose.onNodeWithText("Finish setup").assertDoesNotExist()
         compose.runOnIdle {
             busy.value = false
             account.value = Account("existing-account", "fixture_owner", "Fixture Owner")
         }
         compose.onNodeWithText("Edit profile").assertExists()
-        compose.onNodeWithText("Finish account").assertDoesNotExist()
+        compose.onNodeWithText("Finish setup").assertDoesNotExist()
         compose.onNodeWithText("Save profile").assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals("fixture_owner" to "Fixture Owner", submitted) }
     }

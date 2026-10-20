@@ -70,6 +70,30 @@ final class APIClientTests: XCTestCase {
         return APIClient(baseURL: URL(string: "https://caper.invalid")!, session: URLSession(configuration: configuration), tokenStore: MemoryTokenStore(token))
     }
 
+    func testDirectRecipientLookupReturnsPersonWithoutCreatingConversation() async throws {
+        let api = client()
+        var requests = 0
+        MockURLProtocol.handler = { request in
+            requests += 1
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.path, "/api/dms/lookup")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "authorization"), "Bearer account-secret")
+            let body = try JSONSerialization.jsonObject(with: XCTUnwrap(requestBodyData(request))) as? [String: String]
+            XCTAssertEqual(body, ["username": "mira"])
+            return (200, Data(#"{"id":"account00002","username":"mira","displayName":"Mira","avatarId":2}"#.utf8))
+        }
+        let person = try await api.lookupDirectPerson(username: "mira")
+        XCTAssertEqual(person.username, "mira")
+        XCTAssertEqual(person.displayName, "Mira")
+        XCTAssertEqual(person.avatarId, 2)
+        XCTAssertEqual(requests, 1)
+        MockURLProtocol.handler = { _ in (404, Data(#"{"error":"Account not found."}"#.utf8)) }
+        do {
+            _ = try await api.lookupDirectPerson(username: "missing")
+            XCTFail("Missing recipients must fail lookup")
+        } catch let error as APIError { XCTAssertEqual(error.status, 404) }
+    }
+
     func testSpaceVoiceActivityUsesAuthenticatedLightweightSnapshot() async throws {
         let api = client()
         MockURLProtocol.handler = { request in

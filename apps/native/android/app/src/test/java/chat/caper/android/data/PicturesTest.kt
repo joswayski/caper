@@ -18,6 +18,20 @@ class PicturesTest {
 
     @After fun close() { server.close() }
 
+    @Test fun `regeneration posts no body and decodes the account or conflict`() = runBlocking {
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        server.enqueue(MockResponse().setBody("""{"id":"account00001","username":"jose","avatarId":17}"""))
+        assertEquals(17, api.regenerateAvatar("account-secret").avatarId)
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/account/avatar/regenerate", request.path)
+        assertEquals(0L, request.bodySize)
+        assertEquals("Bearer account-secret", request.getHeader("Authorization"))
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"error":"Custom avatar present"}"""))
+        val error = runCatching { api.regenerateAvatar("account-secret") }.exceptionOrNull()
+        assertEquals(409, (error as ApiException).status)
+    }
+
     private fun gif(version: String, width: Int, height: Int): ByteArray =
         version.toByteArray(Charsets.US_ASCII) + byteArrayOf(
             (width and 0xFF).toByte(), (width shr 8).toByte(), (height and 0xFF).toByte(), (height shr 8).toByte(), 0, 0, 0,

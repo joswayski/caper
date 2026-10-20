@@ -65,6 +65,9 @@ class CaperApi(
     suspend fun space(token: String, id: String): SpaceDetail = get("/api/spaces/${id.pathId()}", token)
     suspend fun directConversations(token: String): DirectConversationList = get("/api/dms", token)
     suspend fun people(token: String): PeopleList = get("/api/people", token)
+    suspend fun lookupDirectPerson(token: String, username: String): Person = post(
+        "/api/dms/lookup", buildJsonObject { put("username", username.trim()) }, token,
+    )
     suspend fun startDirectConversation(token: String, username: String): DirectConversation = post(
         "/api/dms", buildJsonObject { put("username", username.trim()) }, token,
     )
@@ -98,6 +101,9 @@ class CaperApi(
         }.toString())
     }
     suspend fun pushConfig(token: String): PushConfig = get("/api/push/config", token)
+    /** KLIPY's client key and this account's customer id; 404 while GIFs are off. */
+    suspend fun klipyConfig(token: String): KlipyConfig =
+        get<KlipyConfig>("/api/klipy", token).also { require(it.valid) { "Invalid GIF configuration." } }
     /** Registers this FCM token for the calling sign-in session; [appId] is the application ID. */
     suspend fun registerPush(token: String, deviceToken: String, appId: String) { request<Unit>("/api/push/devices", "POST", token, pushDevice(deviceToken, appId)) }
     suspend fun unregisterPush(token: String, deviceToken: String, appId: String) { request<Unit>("/api/push/devices", "DELETE", token, pushDevice(deviceToken, appId)) }
@@ -188,10 +194,13 @@ class CaperApi(
         broadcast: Boolean = false,
         replyToId: String? = null,
         spoilerAttachmentIds: List<String> = emptyList(),
+        /** A KLIPY GIF, sent on its own: never with files, and the text may be empty. */
+        gif: KlipyGif? = null,
         /** The composer's link card was removed: the message gets no cards. */
         suppressEmbeds: Boolean = false,
     ): ChatMessage {
         require(attachmentIds.size <= AttachmentPolicy.MAX_ATTACHMENTS) { "Attach up to 10 files." }
+        require(gif == null || attachmentIds.isEmpty()) { "A GIF is sent without files." }
         require(attachmentIds.containsAll(spoilerAttachmentIds)) { "Spoilers must be attached files." }
         val message: ChatMessage = post(
             "/api/chat/channels/${channel.pathId()}/messages",
@@ -204,6 +213,7 @@ class CaperApi(
                 if (replyToId != null) put("replyToId", replyToId)
                 // Only when set, like the files: other requests keep their idempotency hash.
                 if (suppressEmbeds) put("suppressEmbeds", true)
+                if (gif != null) put("gif", gif.toJson())
             },
             token, mapOf("x-caper-chat-token" to chatToken),
         )
@@ -226,17 +236,21 @@ class CaperApi(
 
     /**
      * Reserves one upload of the bytes this device will store (after compression): their exact
-     * size, the picked file's size, measured dimensions/duration and an optional preview.
+     * size, the picked file's size, measured dimensions/duration and an optional preview. A
+     * [voice] recording adds its [waveform] (base64 peaks).
      */
     suspend fun createAsset(
         token: String, channel: String, filename: String, contentType: String, byteSize: Long,
         sourceByteSize: Long? = null, width: Int? = null, height: Int? = null, durationMs: Long? = null,
         previewContentType: String? = null, previewByteSize: Long? = null,
+        voice: Boolean = false, waveform: String? = null,
     ): AssetReservation {
         val reservation: AssetReservation = post("/api/assets", buildJsonObject {
             put("channelId", channel.pathId()); put("filename", filename); put("contentType", contentType); put("byteSize", byteSize)
             sourceByteSize?.let { put("sourceByteSize", it) }
             width?.let { put("width", it) }; height?.let { put("height", it) }; durationMs?.let { put("durationMs", it) }
+            // A recorded voice message (durationMs required); the server transcodes and transcribes it.
+            if (voice) { put("voice", true); waveform?.let { put("waveform", it) } }
             if (previewContentType != null && previewByteSize != null) putJsonObject("preview") {
                 put("contentType", previewContentType); put("byteSize", previewByteSize)
             }
@@ -275,6 +289,8 @@ class CaperApi(
 
     /** Back to the saved mascot; returns the account without a picture. */
     suspend fun removeAvatar(token: String): Account = request("/api/account/avatar", "DELETE", token)
+
+    suspend fun regenerateAvatar(token: String): Account = request("/api/account/avatar/regenerate", "POST", token, body = "")
 
     suspend fun avatarHistory(token: String, cursor: String? = null): AvatarHistory =
         get("/api/account/avatar/history" + (cursor?.let { "?cursor=${it.assetPathId()}" } ?: ""), token)

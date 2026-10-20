@@ -174,6 +174,10 @@ struct AttachmentEditor: View {
     @State private var textPoints = AttachmentEdit.initialTextSize
     @State private var liveStroke: StrokeMark?
     @State private var lastStrokeLocation: CGPoint?
+    /// Draw's eraser: presses remove the lines they touch instead of drawing.
+    @State private var erasing = false
+    /// Committed marks the eraser has touched in the press under way.
+    @State private var erased: Set<Int> = []
     @State private var liveCrop: EditRect?
     @State private var textDrag: TextDrag?
     @State private var liveText: LiveText?
@@ -227,6 +231,8 @@ struct AttachmentEditor: View {
     /// What the stage shows: the committed edit with any drag in progress.
     private var shown: AttachmentEdit {
         var edit = history.current
+        // The eraser's indices are the committed edit's, so they go first.
+        if !erased.isEmpty { edit.marks = edit.marks.indices.filter { !erased.contains($0) }.map { edit.marks[$0] } }
         if let liveText, edit.marks.indices.contains(liveText.index), case .text(var mark) = edit.marks[liveText.index] {
             mark.x = liveText.x
             mark.y = liveText.y
@@ -234,7 +240,6 @@ struct AttachmentEditor: View {
         }
         // The text being changed shows only in its field.
         if let index = field?.index, edit.marks.indices.contains(index) { edit.marks.remove(at: index) }
-        if let liveStroke { edit.marks.append(.stroke(liveStroke)) }
         if let liveCrop { edit.crop = liveCrop }
         return edit
     }
@@ -287,10 +292,12 @@ struct AttachmentEditor: View {
         if field != nil { commitField() }
         if next != .draw { brush.pointer = AttachmentEditBrushPointer() }
         tool = next
+        erasing = false
     }
 
     private func chooseColor(_ hex: String) {
         color = hex
+        erasing = false
         field?.color = hex
     }
 
@@ -431,13 +438,20 @@ struct AttachmentEditor: View {
             .buttonStyle(CaperSecondaryButton(minHeight: Self.textButtonHeight))
         } else {
             #if os(iOS)
+            // A phone's row of colours has no room left, so the eraser leads the size's row.
             VStack(spacing: 6) {
                 colorChoices
-                sizeControl
+                HStack(spacing: 8) {
+                    if tool == .draw { eraserButton }
+                    sizeControl
+                }
             }
             #else
             HStack(spacing: 20) {
-                colorChoices
+                HStack(spacing: 6) {
+                    colorChoices
+                    if tool == .draw { eraserButton }
+                }
                 sizeControl
             }
             #endif
@@ -447,19 +461,40 @@ struct AttachmentEditor: View {
     private var colorChoices: some View {
         HStack(spacing: 2) {
             ForEach(AttachmentEdit.colors, id: \.self) { preset in
-                Button { chooseColor(preset) } label: { EditorSwatch(color: editColor(preset), selected: color == preset) }
+                let selected = !erasing && color == preset
+                Button { chooseColor(preset) } label: { EditorSwatch(color: editColor(preset), selected: selected) }
                     .buttonStyle(.plain)
                     .help(AttachmentEdit.colorNames[preset] ?? preset)
                     .accessibilityLabel(AttachmentEdit.colorNames[preset] ?? preset)
-                    .accessibilityAddTraits(color == preset ? .isSelected : [])
+                    .accessibilityAddTraits(selected ? .isSelected : [])
             }
             ColorPicker("Custom colour", selection: customColor, supportsOpacity: false)
                 .labelsHidden()
                 .padding(4)
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(isCustomColor ? CaperTheme.terracottaBright : Color.clear, lineWidth: 2))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(isCustomColor && !erasing ? CaperTheme.terracottaBright : Color.clear, lineWidth: 2))
                 .help("Custom colour")
                 .accessibilityLabel("Custom colour")
         }
+    }
+
+    /// Draw's eraser: pressed, presses erase lines; a colour or another tool turns it off.
+    private var eraserButton: some View {
+        Button { erasing.toggle() } label: {
+            CaperIcon(name: "eraser", size: 18)
+                .foregroundStyle(erasing ? CaperTheme.text : CaperTheme.muted)
+                .frame(width: 36, height: 36)
+                .background(erasing ? CaperTheme.terracotta.opacity(0.16) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(erasing ? CaperTheme.terracotta : CaperTheme.border, lineWidth: 1))
+                #if os(iOS)
+                .frame(width: 44, height: 44)
+                #endif
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .modifier(ControlPointer())
+        .help("Eraser")
+        .accessibilityLabel("Eraser")
+        .accessibilityAddTraits(erasing ? .isSelected : [])
     }
 
     /// The platform colour picker, in and out of web's `#RRGGBB`.
@@ -489,8 +524,12 @@ struct AttachmentEditor: View {
             DefaultSlider(value: Binding(get: { value }, set: { chooseSize($0) }), in: range, step: 1,
                           defaultValue: drawing ? AttachmentEdit.initialStrokeSize : AttachmentEdit.initialTextSize)
                 .frame(minWidth: 120, maxWidth: 240)
-                .accessibilityLabel(drawing ? "Line size" : "Text size")
-                .accessibilityValue("\(Int(value)) points")
+                .accessibilityLabel(drawing ? (erasing ? "Eraser size" : "Line size") : "Text size")
+                .accessibilityValue("\(Int(value.rounded())) points")
+            Text("\(Int(value.rounded()))")
+                .font(CaperTheme.font(12, weight: .medium)).monospacedDigit().foregroundStyle(CaperTheme.muted)
+                .frame(minWidth: 20, alignment: .trailing)
+                .accessibilityHidden(true)
             sizePreview(drawing: drawing)
                 .frame(width: 44, height: 44)
                 .accessibilityHidden(true)
@@ -498,7 +537,10 @@ struct AttachmentEditor: View {
     }
 
     @ViewBuilder private func sizePreview(drawing: Bool) -> some View {
-        if drawing {
+        if drawing, erasing {
+            Circle().strokeBorder(CaperTheme.muted, lineWidth: 1.5)
+                .frame(width: min(strokePoints, 40), height: min(strokePoints, 40))
+        } else if drawing {
             Circle().fill(editColor(color))
                 .overlay(Circle().strokeBorder(Color.white.opacity(0.3), lineWidth: 1))
                 .frame(width: min(strokePoints, 40), height: min(strokePoints, 40))
@@ -552,7 +594,8 @@ struct AttachmentEditor: View {
                 interaction(edit: edit, region: region, layout: layout)
                 if let field { textField(field, region: region, layout: layout) }
                 if tool == .draw {
-                    BrushRing(tracker: brush, color: editColor(color), diameter: layout.brushDiameter(points: strokePoints))
+                    BrushRing(tracker: brush, color: erasing ? Color.white.opacity(0.4) : editColor(color),
+                              diameter: layout.brushDiameter(points: strokePoints))
                 }
             }
             .frame(width: layout.width, height: layout.height)
@@ -564,22 +607,21 @@ struct AttachmentEditor: View {
     /// The whole rotated picture with its marks, moved so `region` fills the
     /// frame. The image turns on the GPU; the marks paint in the picture's
     /// on-screen points, so stroke widths and text sizes match the upload.
+    /// The committed picture redraws only when it changes, not for a size
+    /// slider, a colour or the line being drawn, which paints on its own.
     private func pictureLayer(_ image: CGImage, edit: AttachmentEdit, region: EditRect, layout: AttachmentEditLayout) -> some View {
-        let upright = AttachmentEdit.rotatedSize(width: layout.fullWidth, height: layout.fullHeight, rotation: edit.rotation)
-        let marks = edit.marks
-        return ZStack(alignment: .topLeading) {
-            Image(decorative: image, scale: 1)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: upright.width, height: upright.height)
-                .rotationEffect(.degrees(Double(edit.rotation)))
-                .frame(width: layout.fullWidth, height: layout.fullHeight)
-            Canvas { context, size in
-                context.withCGContext { cg in
-                    AttachmentEditRenderer.paintMarks(cg, marks, width: size.width, height: size.height)
+        ZStack(alignment: .topLeading) {
+            EditorPicture(image: image, rotation: edit.rotation, marks: edit.marks,
+                          width: layout.fullWidth, height: layout.fullHeight)
+                .equatable()
+            if let liveStroke {
+                Canvas { context, size in
+                    context.withCGContext { cg in
+                        AttachmentEditRenderer.paintMarks(cg, [.stroke(liveStroke)], width: size.width, height: size.height)
+                    }
                 }
+                .frame(width: layout.fullWidth, height: layout.fullHeight)
             }
-            .frame(width: layout.fullWidth, height: layout.fullHeight)
         }
         .frame(width: layout.fullWidth, height: layout.fullHeight, alignment: .topLeading)
         .offset(x: -region.x * layout.fullWidth, y: -region.y * layout.fullHeight)
@@ -607,7 +649,7 @@ struct AttachmentEditor: View {
                 .background(HiddenPointerRegion().allowsHitTesting(false).accessibilityHidden(true))
                 .accessibilityElement()
                 .accessibilityLabel(pictureLabel)
-                .accessibilityHint("Drag on the picture to draw.")
+                .accessibilityHint(erasing ? "Drag over lines to erase them." : "Drag on the picture to draw.")
                 .accessibilityAddTraits(.isImage)
         case .text:
             Color.clear
@@ -631,6 +673,12 @@ struct AttachmentEditor: View {
     private func drawGesture(region: EditRect, layout: AttachmentEditLayout) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
+                if erasing {
+                    brush.pointer.pressed(at: value.location, starting: lastStrokeLocation == nil)
+                    erase(from: lastStrokeLocation ?? value.location, to: value.location, region: region, layout: layout)
+                    lastStrokeLocation = value.location
+                    return
+                }
                 brush.pointer.pressed(at: value.location, starting: liveStroke == nil)
                 let point = layout.fraction(x: Double(value.location.x), y: Double(value.location.y), region: region)
                 if var stroke = liveStroke, let last = lastStrokeLocation {
@@ -648,10 +696,32 @@ struct AttachmentEditor: View {
                     next.marks.append(.stroke(liveStroke))
                     history.commit(next)
                 }
+                if !erased.isEmpty {
+                    var next = history.current
+                    next.marks = next.marks.indices.filter { !erased.contains($0) }.map { next.marks[$0] }
+                    history.commit(next)
+                }
+                erased = []
                 liveStroke = nil
                 lastStrokeLocation = nil
                 brush.pointer.released()
             }
+    }
+
+    /// Adds the committed lines the eraser's ring touches on its way from
+    /// `from` to `to`, sampled closely enough that a fast swipe skips none.
+    private func erase(from: CGPoint, to: CGPoint, region: EditRect, layout: AttachmentEditLayout) {
+        let radius = layout.brushDiameter(points: strokePoints) / 2
+        let distance = hypot(Double(to.x - from.x), Double(to.y - from.y))
+        let steps = max(1, Int((distance / max(1, radius / 2)).rounded(.up)))
+        var touched = erased
+        for step in 1...steps {
+            let t = CGFloat(step) / CGFloat(steps)
+            let point = layout.fraction(x: Double(from.x + (to.x - from.x) * t), y: Double(from.y + (to.y - from.y) * t), region: region)
+            touched.formUnion(AttachmentEdit.strokesTouched(history.current.marks, x: point.x, y: point.y, radius: radius,
+                                                            width: layout.fullWidth, height: layout.fullHeight))
+        }
+        if touched != erased { erased = touched }
     }
 
     /// A tap on the picture opens a field there, a tap on a text opens it for
@@ -818,6 +888,40 @@ struct AttachmentEditToolButton: View {
         .modifier(ControlPointer())
         .accessibilityLabel(tool.title)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// The turned picture with its committed marks, in the picture's on-screen
+/// points. Equatable, so the editor's other state (the size slider above
+/// all) doesn't repaint it.
+private struct EditorPicture: View, Equatable {
+    let image: CGImage
+    let rotation: Int
+    let marks: [EditMark]
+    let width: Double
+    let height: Double
+
+    static func == (lhs: EditorPicture, rhs: EditorPicture) -> Bool {
+        lhs.image === rhs.image && lhs.rotation == rhs.rotation && lhs.marks == rhs.marks
+            && lhs.width == rhs.width && lhs.height == rhs.height
+    }
+
+    var body: some View {
+        let upright = AttachmentEdit.rotatedSize(width: width, height: height, rotation: rotation)
+        ZStack(alignment: .topLeading) {
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: upright.width, height: upright.height)
+                .rotationEffect(.degrees(Double(rotation)))
+                .frame(width: width, height: height)
+            Canvas { context, size in
+                context.withCGContext { cg in
+                    AttachmentEditRenderer.paintMarks(cg, marks, width: size.width, height: size.height)
+                }
+            }
+            .frame(width: width, height: height)
+        }
     }
 }
 

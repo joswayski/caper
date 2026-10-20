@@ -6,9 +6,10 @@ final class AttachDrawerTests: XCTestCase {
         LocalAttachmentFile(url: URL(fileURLWithPath: "/tmp/\(name)"), name: name, contentType: "image/jpeg", size: 1, source: name)
     }
 
-    func testCapacityMatchesWebWording() {
-        XCTAssertEqual(AttachCapacity.label(0), "Up to 10 files")
-        XCTAssertEqual(AttachCapacity.label(3), "3 of 10 attached")
+    func testCapacityShowsOnlyAtTheLimitAsOnWeb() {
+        XCTAssertNil(AttachCapacity.label(0))
+        XCTAssertNil(AttachCapacity.label(9))
+        XCTAssertEqual(AttachCapacity.label(10), "10 of 10 attached")
         XCTAssertEqual(AttachCapacity.label(12), "10 of 10 attached")
         XCTAssertNil(AttachCapacity.hint(9))
         XCTAssertEqual(AttachCapacity.hint(10), "Remove a file to add another.")

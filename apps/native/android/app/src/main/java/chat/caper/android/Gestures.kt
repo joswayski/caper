@@ -2,7 +2,13 @@ package chat.caper.android
 
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
@@ -26,29 +32,47 @@ internal class ThreadBackSwipe(private val slop: Float, private val distance: Fl
 }
 
 /** Applied only to the phone thread's header/timeline, never its editor or the Browse drawer. */
-internal fun Modifier.threadBackSwipe(enabled: Boolean, close: () -> Unit): Modifier =
-    if (!enabled) this else pointerInput(close) {
+@Composable internal fun Modifier.threadBackSwipe(
+    enabled: Boolean, drag: (Float) -> Unit, settle: (Boolean) -> Unit,
+): Modifier {
+    val coordinates = remember { mutableStateOf<LayoutCoordinates?>(null) }
+    val currentDrag = rememberUpdatedState(drag)
+    val currentSettle = rememberUpdatedState(settle)
+    return if (!enabled) this else onGloballyPositioned { coordinates.value = it }.pointerInput(Unit) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
+            val layout = coordinates.value ?: return@awaitEachGesture
+            val start = layout.localToRoot(down.position)
             val swipe = ThreadBackSwipe(viewConfiguration.touchSlop, 72.dp.toPx())
-            while (true) {
-                // Let scrolling win until direction lock; then cancel child presses before release.
-                val event = awaitPointerEvent(if (swipe.claimed) PointerEventPass.Initial else PointerEventPass.Main)
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                val dx = change.position.x - down.position.x
-                val dy = change.position.y - down.position.y
-                val interrupted = event.changes.size != 1 || change.isConsumed
-                val claimed = swipe.move(dx, dy, interrupted)
-                if (claimed) event.changes.forEach { it.consume() }
-                if (!change.pressed) {
-                    if (swipe.released(dx)) close()
-                    break
+            var completed = false
+            try {
+                while (true) {
+                    // Let scrolling win until direction lock; then cancel child presses before release.
+                    val event = awaitPointerEvent(if (swipe.claimed) PointerEventPass.Initial else PointerEventPass.Main)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (!layout.isAttached) break
+                    // Use the rendered transform, not the pending offset state: the timeline
+                    // moves beneath the pointer, but the dialog's coordinates remain stationary.
+                    val delta = layout.localToRoot(change.position) - start
+                    val interrupted = event.changes.size != 1 || change.isConsumed
+                    val claimed = swipe.move(delta.x, delta.y, interrupted)
+                    if (claimed) {
+                        event.changes.forEach { it.consume() }
+                        currentDrag.value(delta.x.coerceAtLeast(0f))
+                    }
+                    if (!change.pressed) {
+                        completed = swipe.released(delta.x)
+                        break
+                    }
+                    // Keep consuming a recognized swipe even if a second finger cancels it.
+                    if (interrupted && !claimed) break
                 }
-                // Keep consuming an already recognized swipe even if a second finger cancels it.
-                if (interrupted && !claimed) break
+            } finally {
+                if (swipe.claimed) currentSettle.value(completed)
             }
         }
     }
+}
 
 /**
  * A press that a finger slides away from never acts: once a touch moves past the touch slop

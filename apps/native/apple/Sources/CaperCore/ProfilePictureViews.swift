@@ -127,10 +127,9 @@ struct SpaceIconTile: View {
     }
 }
 
-/// Edit profile's picture and Manage space's icon: the current picture in a
-/// frame with an edit badge on its corner. The frame opens a menu: Photos or
-/// Files (GIF bytes are kept unchanged) and, while a custom one is set,
-/// **Remove**. Progress and inline errors show beneath it.
+/// Edit profile's picture and Manage space's icon. Only the corner controls
+/// are buttons, so opening a menu or saving never dims the picture itself.
+/// Progress has a reserved line beneath the picture to keep the form still.
 struct PictureEditor<Preview: View>: View {
     let purpose: PicturePurpose
     /// A custom picture is set (Remove is offered).
@@ -141,6 +140,8 @@ struct PictureEditor<Preview: View>: View {
     let history: ((String?) async throws -> AvatarHistory)?
     let select: ((String, String?) async throws -> Void)?
     let currentAsset: String?
+    let regenerate: (() async throws -> Void)?
+    let mascot: Bool
     @State private var showHistory = false
     @State private var historyExpected: String?
     private let preview: Preview
@@ -158,7 +159,7 @@ struct PictureEditor<Preview: View>: View {
     @State private var showAnimationChoice = false
     @State private var loadTask: Task<Void, Never>?
 
-    private enum Phase { case loading, uploading, removing }
+    private enum Phase { case loading, uploading, removing, regenerating }
 
     /// The frame's side, in points.
     static var side: CGFloat { 112 }
@@ -166,7 +167,8 @@ struct PictureEditor<Preview: View>: View {
     init(purpose: PicturePurpose, hasPicture: Bool, currentURL: URL? = nil, upload: @escaping (PreparedPicture) async throws -> Void,
          remove: @escaping () async throws -> Void, currentAsset: String? = nil,
          history: ((String?) async throws -> AvatarHistory)? = nil,
-         select: ((String, String?) async throws -> Void)? = nil, @ViewBuilder preview: () -> Preview) {
+         select: ((String, String?) async throws -> Void)? = nil,
+         regenerate: (() async throws -> Void)? = nil, mascot: Bool = false, @ViewBuilder preview: () -> Preview) {
         self.purpose = purpose
         self.hasPicture = hasPicture
         self.currentURL = currentURL
@@ -175,6 +177,8 @@ struct PictureEditor<Preview: View>: View {
         self.history = history
         self.select = select
         self.currentAsset = currentAsset
+        self.regenerate = regenerate
+        self.mascot = mascot
         self.preview = preview()
     }
 
@@ -185,67 +189,34 @@ struct PictureEditor<Preview: View>: View {
         case .loading: "Opening picture…"
         case .uploading: "Uploading…"
         case .removing: "Removing…"
+        case .regenerating: "Regenerating…"
         case nil: unavailable ? ProfilePicturePolicy.unavailableMessage : nil
         }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Menu {
-                if hasPicture, let currentURL {
-                    Button("Edit current \(noun)") {
-                        start {
-                            let configuration = URLSessionConfiguration.ephemeral
-                            configuration.httpCookieAcceptPolicy = .never
-                            configuration.httpShouldSetCookies = false
-                            let session = URLSession(configuration: configuration)
-                            defer { session.invalidateAndCancel() }
-                            return try await ProfilePictureDecoder.fetch(currentURL, session: session)
-                        }
+            framedPicture
+                .overlay(alignment: .bottomTrailing) { pictureMenu.offset(x: 6, y: 6) }
+                .overlay(alignment: .bottomLeading) { regenerateButton.offset(x: -6, y: 6) }
+                .padding(6)
+                .dropDestination(for: DroppedAttachment.self) { items, _ in
+                    dropping = false
+                    guard phase == nil, editing == nil, !showAnimationChoice, !unavailable, let first = items.first else {
+                        items.forEach { AttachmentStaging.remove($0.file.url) }
+                        return false
                     }
-                    .disabled(unavailable)
-                }
-                Button { showPhotos = true } label: { Label("Photos", systemImage: "photo.on.rectangle") }
-                    .disabled(unavailable)
-                Button { showFiles = true } label: { Label("Files", systemImage: "doc") }
-                    .disabled(unavailable)
-                if history != nil {
-                    Button("Previous pictures") { historyExpected = currentAsset; showHistory = true }
-                }
-                if hasPicture {
-                    Divider()
-                    Button(role: .destructive, action: { removePicture() }) { Label("Remove \(noun)", systemImage: "trash") }
-                }
-            } label: {
-                framedPicture
-            }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .disabled(phase != nil || (unavailable && !hasPicture && history == nil))
-            .accessibilityLabel(avatar ? "Change profile picture" : "Change space icon")
-            .accessibilityIdentifier(avatar ? "change-profile-picture" : "change-space-icon")
-            .dropDestination(for: DroppedAttachment.self) { items, _ in
-                dropping = false
-                guard phase == nil, editing == nil, !showAnimationChoice, !unavailable, let first = items.first else {
-                    items.forEach { AttachmentStaging.remove($0.file.url) }
-                    return false
-                }
-                items.dropFirst().forEach { AttachmentStaging.remove($0.file.url) }
-                start {
-                    defer { AttachmentStaging.remove(first.file.url) }
-                    return try await Task.detached(priority: .userInitiated) { try PictureFile.read(first.file.url) }.value
-                }
-                return true
-            } isTargeted: { dropping = $0 && phase == nil && !unavailable }
-            if let error {
-                Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if let status {
-                Text(status).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+                    items.dropFirst().forEach { AttachmentStaging.remove($0.file.url) }
+                    start {
+                        defer { AttachmentStaging.remove(first.file.url) }
+                        return try await Task.detached(priority: .userInitiated) { try PictureFile.read(first.file.url) }.value
+                    }
+                    return true
+                } isTargeted: { dropping = $0 && phase == nil && !unavailable }
+            Text(error ?? status ?? " ").font(CaperTheme.font(12))
+                .foregroundStyle(error == nil ? CaperTheme.muted : CaperTheme.error)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityHidden(error == nil && status == nil)
         }
         .sheet(isPresented: $showHistory) {
             if let history, let select {
@@ -298,26 +269,91 @@ struct PictureEditor<Preview: View>: View {
         }
     }
 
-    /// The picture, framed in the rounded square it has everywhere, with the
-    /// eggshell edit badge on its corner.
+    private var pictureMenu: some View {
+        Menu {
+            if hasPicture, let currentURL {
+                Button("Edit current \(noun)") {
+                    start {
+                        let configuration = URLSessionConfiguration.ephemeral
+                        configuration.httpCookieAcceptPolicy = .never
+                        configuration.httpShouldSetCookies = false
+                        let session = URLSession(configuration: configuration)
+                        defer { session.invalidateAndCancel() }
+                        return try await ProfilePictureDecoder.fetch(currentURL, session: session)
+                    }
+                }
+                .disabled(unavailable)
+            }
+            Button { showPhotos = true } label: { Label("Photo library…", systemImage: "photo.on.rectangle") }
+                .disabled(unavailable)
+            Button { showFiles = true } label: { Label("Choose image…", systemImage: "photo") }
+                .disabled(unavailable)
+            if history != nil {
+                Button("Previous pictures") { historyExpected = currentAsset; showHistory = true }
+            }
+            if hasPicture {
+                Divider()
+                Button(role: .destructive, action: { removePicture() }) { Label("Remove \(noun)", systemImage: "trash") }
+            }
+        } label: {
+            CaperIcon(name: "pencil", size: 17).frame(width: 44, height: 44)
+        }
+        .menuStyle(.button)
+        .buttonStyle(PrimaryIconButton())
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .padding(4)
+        .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+        .disabled(phase != nil || (unavailable && !hasPicture && history == nil))
+        .accessibilityLabel(avatar ? "Change profile picture" : "Change space icon")
+        .help(avatar ? "Change profile picture" : "Change space icon")
+        .accessibilityIdentifier(avatar ? "change-profile-picture" : "change-space-icon")
+    }
+
+    @ViewBuilder private var regenerateButton: some View {
+        if avatar, !hasPicture, let regenerate {
+            Button {
+                guard phase == nil else { return }
+                phase = .regenerating
+                error = nil
+                Task { @MainActor in
+                    defer { phase = nil }
+                    do { try await regenerate() }
+                    catch is CancellationError {}
+                    catch let failure as APIError where failure.status == 409 {
+                        error = "Your picture changed elsewhere. Remove your custom picture before regenerating."
+                    }
+                    catch { self.error = "Couldn’t regenerate avatar. Please retry." }
+                }
+            } label: {
+                Image(systemName: "arrow.clockwise").font(.system(size: 17, weight: .medium))
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(PrimaryIconButton())
+            .padding(4)
+            .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+            .disabled(phase != nil)
+            .accessibilityLabel("Regenerate avatar")
+            .accessibilityValue(phase == .regenerating ? "Regenerating" : "")
+            .help("Generate a new random avatar")
+            .accessibilityIdentifier("regenerate-avatar")
+        }
+    }
+
+    /// Passive artwork: menu tracking and disabled controls must not fade it.
     private var framedPicture: some View {
         let shape = Avatar.pictureShape(Self.side)
         return preview
             .frame(width: Self.side, height: Self.side)
-            .background(CaperTheme.raised)
-            .clipShape(shape)
-            .overlay(shape.stroke(dropping ? CaperTheme.terracotta : CaperTheme.border, lineWidth: dropping ? 2 : 1))
-            .opacity(phase == nil ? 1 : 0.55)
-            .overlay(alignment: .bottomTrailing) {
-                CaperIcon(name: "pencil", size: 15)
-                    .foregroundStyle(phase == nil ? CaperTheme.blackout : CaperTheme.muted)
-                    .frame(width: 28, height: 28)
-                    .background(phase == nil ? CaperTheme.action : CaperTheme.border, in: RoundedRectangle(cornerRadius: 8))
-                    .padding(3)
-                    .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 10))
-                    .offset(x: 6, y: 6)
+            .background(mascot ? .clear : CaperTheme.raised)
+            .clipShape(RoundedRectangle(cornerRadius: mascot ? 0 : ProfilePicturePolicy.cornerRadius(side: Self.side), style: .continuous))
+            .overlay {
+                if mascot {
+                    if dropping { Circle().stroke(CaperTheme.terracotta, lineWidth: 2) }
+                } else {
+                    shape.stroke(dropping ? CaperTheme.terracotta : CaperTheme.border, lineWidth: dropping ? 2 : 1)
+                }
             }
-            .padding([.trailing, .bottom], 6)
             .contentShape(Rectangle())
     }
 

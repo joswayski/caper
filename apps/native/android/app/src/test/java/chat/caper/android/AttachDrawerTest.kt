@@ -12,9 +12,10 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class AttachDrawerTest {
-    @Test fun capacityMatchesWebWording() {
-        assertEquals("Up to 10 files", AttachCapacity.label(0))
-        assertEquals("3 of 10 attached", AttachCapacity.label(3))
+    @Test fun capacityShowsOnlyAtTheLimitAsOnWeb() {
+        assertNull(AttachCapacity.label(0))
+        assertNull(AttachCapacity.label(9))
+        assertEquals("10 of 10 attached", AttachCapacity.label(10))
         assertEquals("10 of 10 attached", AttachCapacity.label(12))
         assertNull(AttachCapacity.hint(9))
         assertEquals("Remove a file to add another.", AttachCapacity.hint(10))

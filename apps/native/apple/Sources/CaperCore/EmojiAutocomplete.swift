@@ -371,7 +371,7 @@ final class ComposerTextView: UITextView {
     }
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(paste(_:)), isEditable, pasteAttachments != nil,
-           UIPasteboard.general.hasImages || UIPasteboard.general.hasURLs { return true }
+           NativeAttachmentPaste.hasAttachments { return true }
         return super.canPerformAction(action, withSender: sender)
     }
     /// Once Browse has covered the conversation, UIKit gave the composer its
@@ -441,7 +441,8 @@ struct NativeMessageComposer: UIViewRepresentable {
         view.autocompleteActive = { [weak controller] in controller?.match != nil }
         view.handleKey = { [weak coordinator = context.coordinator] in coordinator?.handle($0) }
         view.backgroundColor = .clear; view.textColor = UIColor(CaperTheme.text); view.font = UIFont(name: "Satoshi-Regular", size: 14)
-        view.textContainerInset = UIEdgeInsets(top: 11, left: 7, bottom: 11, right: 7)
+        // The text container already supplies 5 points of line-fragment padding.
+        view.textContainerInset = UIEdgeInsets(top: 11, left: 0, bottom: 11, right: 7)
         view.isScrollEnabled = true; view.accessibilityIdentifier = "message-composer"
         view.accessibilityLabel = placeholder
         context.coordinator.view = view; context.coordinator.refresh(view); return view
@@ -572,7 +573,7 @@ struct NativeMessageComposer: NSViewRepresentable {
         let scroll = NSScrollView(); let view = ComposerTextView()
         scroll.documentView = view; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         view.delegate = context.coordinator; view.drawsBackground = false; view.textColor = NSColor(CaperTheme.text)
-        view.font = NSFont(name: "Satoshi-Regular", size: 14); view.textContainerInset = NSSize(width: 8, height: 10)
+        view.font = NSFont(name: "Satoshi-Regular", size: 14); view.textContainerInset = NSSize(width: 0, height: 10)
         // AppKit sizes the text view: its width follows the scroll view and its height the text.
         view.minSize = NSSize(width: 0, height: 42)
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)

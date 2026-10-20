@@ -25,6 +25,7 @@ mod forwarding;
 mod gateway;
 mod grouping;
 mod invites;
+mod klipy;
 mod links;
 #[path = "../voice-spike/src/media.rs"]
 mod media;
@@ -52,6 +53,7 @@ mod uploads;
 mod viewer;
 mod virtual_list;
 mod voice;
+mod voice_note;
 mod web_player;
 mod whats_new;
 mod window_state;
@@ -112,7 +114,6 @@ const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 168, 107);
 const PIN_GOLD: Color32 = Color32::from_rgb(228, 199, 106);
 const ERROR: Color32 = Color32::from_rgb(255, 155, 130);
 const MESSAGE_TEXT: Color32 = Color32::from_rgb(222, 223, 224);
-const MEMBER_PAGE_SIZE: usize = 25;
 
 #[derive(Clone, Copy)]
 enum NavigationSlide {
@@ -417,6 +418,7 @@ impl EmojiTarget {
 
 #[derive(Clone, Copy)]
 enum NavIcon {
+    Search,
     Chevron,
     ArrowLeft,
     Close,
@@ -464,6 +466,7 @@ enum NavIcon {
     MessageCircle,
     Thread,
     Brush,
+    Eraser,
     Crop,
     Type,
     Undo,
@@ -487,6 +490,10 @@ struct PendingSend {
     thread_root_id: Option<String>,
     broadcast: bool,
     reply_to: Option<model::MessageReply>,
+    /// A KLIPY GIF sent on its own (no text or files), and what to tell
+    /// KLIPY once the send is confirmed.
+    gif: Option<klipy::Gif>,
+    share: Option<klipy::Share>,
     /// The composer's link preview was removed; retries keep it.
     suppress_embeds: bool,
 }
@@ -505,6 +512,8 @@ impl PendingSend {
                 thread_root_id: None,
                 broadcast: false,
                 reply_to: None,
+                gif: None,
+                share: None,
                 suppress_embeds: false,
             },
             |pending| Self {
@@ -518,6 +527,8 @@ impl PendingSend {
                 thread_root_id: pending.thread_root_id.clone(),
                 broadcast: pending.broadcast,
                 reply_to: pending.reply_to.clone(),
+                gif: pending.gif.clone(),
+                share: pending.share.clone(),
                 suppress_embeds: pending.suppress_embeds,
             },
         )
@@ -902,6 +913,13 @@ struct DraftUpload {
 }
 
 impl DraftUpload {
+    /// A recorded voice message staged in the composer.
+    fn voice(&self) -> Option<&std::sync::Arc<uploads::Prepared>> {
+        self.prepared
+            .as_ref()
+            .filter(|prepared| prepared.voice.is_some())
+    }
+
     fn send_attachment(&self) -> Option<model::Attachment> {
         self.attachment.clone().map(|mut attachment| {
             attachment.spoiler = self.spoiler;
@@ -916,6 +934,121 @@ impl DraftUpload {
                 .uploaded_at
                 .is_some_and(|at| at.elapsed() >= Duration::from_secs(23 * 60 * 60))
     }
+}
+
+/// A voice message being recorded: the composer's input row becomes the
+/// recording bar until it is sent or discarded.
+struct VoiceRecording {
+    channel: String,
+    /// A thread's root for its reply composer; `None` for the conversation.
+    root: Option<String>,
+    /// `None` only in the labelled fixture preview, which opens no microphone.
+    recorder: Option<voice_note::Recorder>,
+    /// When the microphone opened; the timer counts from here.
+    started: Option<Instant>,
+    /// Stop was pressed (or 10:00 reached): waiting for the encoded file.
+    sending: bool,
+    /// The live meter's bars, oldest first, one per `voice_note::LIVE_INTERVAL`.
+    levels: std::collections::VecDeque<f32>,
+    /// When the newest bar was added; the bars scroll left from there.
+    sampled: Option<Instant>,
+    /// The smoothed input level (fast attack, slow release).
+    envelope: f32,
+    /// The loudest smoothed level since the newest bar.
+    bar_peak: f32,
+    /// The fixture's frozen timer.
+    fixed_elapsed: Option<Duration>,
+    /// Recorded in a profile card's quick-message composer: the person's ID
+    /// and username. `channel` and `root` are then unused.
+    profile: Option<(String, String)>,
+}
+
+impl VoiceRecording {
+    fn new(channel: String, root: Option<String>, recorder: Option<voice_note::Recorder>) -> Self {
+        Self {
+            channel,
+            root,
+            recorder,
+            started: None,
+            sending: false,
+            levels: std::collections::VecDeque::new(),
+            sampled: None,
+            envelope: 0.0,
+            bar_peak: 0.0,
+            fixed_elapsed: None,
+            profile: None,
+        }
+    }
+
+    /// Reads the input level (about 60 times a second) and adds a bar every
+    /// `voice_note::LIVE_INTERVAL`.
+    fn sample(&mut self, rms: f32, now: Instant) {
+        self.envelope = voice_note::envelope(self.envelope, voice_note::perceptual(rms));
+        self.bar_peak = self.bar_peak.max(self.envelope);
+        if self
+            .sampled
+            .is_none_or(|sampled| now.duration_since(sampled) >= voice_note::LIVE_INTERVAL)
+        {
+            self.sampled = Some(now);
+            self.levels.push_back(self.bar_peak);
+            self.bar_peak = self.envelope;
+            while self.levels.len() > 200 {
+                self.levels.pop_front();
+            }
+        }
+    }
+
+    /// How far (0–1) the bars have scrolled toward the next one.
+    fn scroll(&self, now: Instant) -> f32 {
+        if self.fixed_elapsed.is_some() || motion::reduced() {
+            return 0.0;
+        }
+        self.sampled.map_or(0.0, |sampled| {
+            (now.duration_since(sampled).as_secs_f32() / voice_note::LIVE_INTERVAL.as_secs_f32())
+                .clamp(0.0, 1.0)
+        })
+    }
+
+    fn for_profile(person: &str, username: &str, recorder: Option<voice_note::Recorder>) -> Self {
+        Self {
+            profile: Some((person.to_owned(), username.to_owned())),
+            ..Self::new(String::new(), None, recorder)
+        }
+    }
+
+    fn elapsed(&self) -> Duration {
+        self.fixed_elapsed
+            .or_else(|| self.started.map(|started| started.elapsed()))
+            .unwrap_or_default()
+            .min(voice_note::MAX_DURATION)
+    }
+}
+
+/// A recorded voice message on its way: uploading, failed, or uploaded and
+/// waiting for the conversation's one pending send.
+struct VoiceSend {
+    /// Matches upload events (shared with draft keys).
+    key: u64,
+    channel: String,
+    root: Option<String>,
+    reply: Option<model::MessageReply>,
+    prepared: std::sync::Arc<uploads::Prepared>,
+    progress: f32,
+    uploading: bool,
+    error: Option<String>,
+    attachment: Option<model::Attachment>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The voice message playing or paused, by attachment id.
+struct VoicePlayback {
+    id: String,
+    player: Option<player::Player>,
+    /// The media proxy route the player streams from.
+    local: Option<String>,
+    /// A staged recording's bytes on disk, removed when playback ends.
+    _scratch: Option<std::sync::Arc<uploads::Scratch>>,
+    error: Option<String>,
 }
 
 type PictureDownload = std::sync::mpsc::Receiver<Result<std::sync::Arc<uploads::Scratch>, String>>;
@@ -1058,6 +1191,9 @@ struct CaperApp {
     voice: Voice,
     effects: Effects,
     sound_effects: bool,
+    /// "Send voice messages as soon as I stop recording": off stages the
+    /// recording in the composer, on sends it at once. Per device.
+    voice_send_on_stop: bool,
     launch_at_login: bool,
     startup_error: Option<String>,
     announced_voice: Option<u64>,
@@ -1187,7 +1323,6 @@ struct CaperApp {
     /// `:`/`@` suggestions by composer editor ID (channel and thread).
     composer_suggestions: egui::IdMap<SuggestionState>,
     ime_composing: bool,
-    paste_shortcut: profile_dm::PasteShortcut,
     pending: Option<PendingSend>,
     mention_card: Option<MentionCard>,
     profile_drafts: BTreeMap<String, profile_dm::Draft>,
@@ -1247,7 +1382,8 @@ struct CaperApp {
     typing_edited: Instant,
     typing_pulse: Instant,
     presence: BTreeMap<String, String>,
-    member_page: usize,
+    member_search: String,
+    member_search_open: bool,
     members_visible: bool,
     narrow_members_visible: bool,
     navigation_touch: Option<NavigationTouch>,
@@ -1322,6 +1458,10 @@ struct CaperApp {
     member_username: String,
     /// People suggested below the username fields, which share `member_username`.
     people_suggestions: PeopleSuggestions,
+    direct_lookup_request: u64,
+    direct_lookup_pending: Option<(u64, u64)>,
+    direct_lookup_scope: Option<(u64, u64)>,
+    direct_recipient: Option<model::Person>,
     member_error: Option<&'static str>,
     /// Refocus the username field once an add or invite finishes.
     member_refocus: bool,
@@ -1345,6 +1485,11 @@ struct CaperApp {
     whats_new: whats_new::WhatsNew,
     /// Compression settings while uploads are configured; `None` disables Attach.
     uploads: Option<compress::Compression>,
+    /// KLIPY's key while the server has GIFs on; `None` hides the GIF button.
+    klipy: Option<klipy::Config>,
+    klipy_checked: Option<Instant>,
+    /// The open GIF picker and the composer it sends from.
+    gif_picker: Option<klipy::Picker>,
     /// Latest `attachment.progress` percent per processing attachment id.
     attachment_progress: BTreeMap<String, u8>,
     uploads_checked: Option<Instant>,
@@ -1359,6 +1504,14 @@ struct CaperApp {
     media: attachments::Media,
     /// The full-screen image and video viewer, while open.
     viewer: Option<viewer::Viewer>,
+    /// Message players, last visible frame, and whether playback was automatic.
+    inline_videos: BTreeMap<String, (viewer::Viewer, u64, bool)>,
+    /// A voice message being recorded in a composer.
+    voice_recording: Option<VoiceRecording>,
+    /// Recorded voice messages uploading, failed, or waiting to send.
+    voice_sends: Vec<VoiceSend>,
+    /// The one voice message playing (or paused) anywhere in the app.
+    voice_playback: Option<VoicePlayback>,
     /// Editing a draft's file before it is sent, while open.
     attachment_editor: Option<attachment_editor::Editor>,
     /// A draft's file the editor can open, previewed with its tools, while open.
@@ -1428,7 +1581,8 @@ impl CaperApp {
         configure(context);
         let voice = Voice::new(api.base().clone(), context.clone());
         let api_base = api.base().clone();
-        // Fixtures never fetch attachment media or pictures.
+        // Static fixtures never fetch media; the playback fixture enables
+        // loopback attachment media explicitly below.
         let media = attachments::Media::new(fixture.is_none().then(|| api.clone()));
         let pictures = pictures::Shared::of(context);
         pictures.install(fixture.is_none().then(|| api.clone()));
@@ -1450,6 +1604,7 @@ impl CaperApp {
             voice,
             effects: Effects::new(fixture.is_none()),
             sound_effects: true,
+            voice_send_on_stop: false,
             launch_at_login: false,
             startup_error: None,
             announced_voice: None,
@@ -1544,7 +1699,6 @@ impl CaperApp {
             staged_files: BTreeMap::new(),
             composer_suggestions: egui::IdMap::default(),
             ime_composing: false,
-            paste_shortcut: profile_dm::PasteShortcut::default(),
             pending: None,
             mention_card: None,
             profile_drafts: BTreeMap::new(),
@@ -1593,7 +1747,8 @@ impl CaperApp {
             typing_edited: now,
             typing_pulse: now,
             presence: BTreeMap::new(),
-            member_page: 0,
+            member_search: String::new(),
+            member_search_open: false,
             members_visible: true,
             narrow_members_visible: false,
             navigation_touch: None,
@@ -1642,6 +1797,10 @@ impl CaperApp {
             form_private: false,
             member_username: String::new(),
             people_suggestions: PeopleSuggestions::default(),
+            direct_lookup_request: 0,
+            direct_lookup_pending: None,
+            direct_lookup_scope: None,
+            direct_recipient: None,
             member_error: None,
             member_refocus: false,
             member_status: None,
@@ -1659,6 +1818,9 @@ impl CaperApp {
             updates: updates::Updates::start(context, fixture.is_none()),
             whats_new,
             uploads: None,
+            klipy: None,
+            klipy_checked: None,
+            gif_picker: None,
             attachment_progress: BTreeMap::new(),
             uploads_checked: None,
             uploads_pending: false,
@@ -1670,6 +1832,10 @@ impl CaperApp {
             draft_keys: 0,
             media,
             viewer: None,
+            inline_videos: BTreeMap::new(),
+            voice_recording: None,
+            voice_sends: Vec::new(),
+            voice_playback: None,
             attachment_editor: None,
             draft_preview: None,
             opened_files: Vec::new(),
@@ -1867,6 +2033,27 @@ impl CaperApp {
                 } else if name.starts_with("parity-attachment-editor") {
                     app.install_attachments_fixture();
                     app.install_attachment_editor_fixture(context, name);
+                } else if name == "parity-inline-videos" {
+                    app.install_attachments_fixture();
+                    let base = app.api_base.clone();
+                    app.media =
+                        attachments::Media::new(Some(api::Api::new(base.as_str()).unwrap()));
+                    let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                    let mut video = messages[2].content.attachments[2].clone();
+                    video.name = "TEST FIXTURE inline video.mp4".into();
+                    video.animated = false;
+                    video.url = Some(base.join("fixture-video.mp4").unwrap().to_string());
+                    video.preview_url = Some(base.join("fixture-poster.png").unwrap().to_string());
+                    messages[2].content.attachments = vec![video.clone()];
+                    video.id = "fixture-loop".into();
+                    video.name = "TEST FIXTURE looping GIF.mp4".into();
+                    video.animated = true;
+                    messages[3].content.attachments = vec![video];
+                    messages[1].content.attachments.clear();
+                    app.timeline
+                        .reset(messages, "4")
+                        .expect("valid video fixture");
+                    app.draft_files.clear();
                 } else if name == "parity-attachments" || name == "parity-attachments-spoilers" {
                     app.install_attachments_fixture();
                     if name == "parity-attachments-spoilers" {
@@ -1879,6 +2066,13 @@ impl CaperApp {
                     }
                 } else if name == "parity-embeds" {
                     app.install_embeds_fixture();
+                } else if name == "parity-voice-staged" {
+                    app.install_voice_staged_fixture();
+                } else if name == "parity-voice-messages" || name == "parity-voice-recording" {
+                    app.install_voice_messages_fixture(name == "parity-voice-recording");
+                } else if name == "parity-voice-profile" || name == "parity-voice-profile-recording"
+                {
+                    app.install_voice_profile_fixture(name == "parity-voice-profile-recording");
                 } else if name.starts_with("parity-file-drop") {
                     // Holds the drop overlay open for rendering checks; no file is dragged.
                     app.install_attachments_fixture();
@@ -2185,7 +2379,10 @@ impl CaperApp {
                     }
                 } else if matches!(
                     name,
-                    "parity-direct" | "parity-direct-new" | "parity-direct-no-spaces"
+                    "parity-direct"
+                        | "parity-direct-new"
+                        | "parity-direct-no-spaces"
+                        | "parity-direct-emoji"
                 ) {
                     let id = "dm0000000001".to_owned();
                     app.directs = vec![model::DirectConversation {
@@ -2237,6 +2434,29 @@ impl CaperApp {
                         app.selected_space = None;
                         app.selected_direct = None;
                         app.clear_channel_state();
+                    } else if name == "parity-direct-emoji" {
+                        app.account.as_mut().unwrap().display_name = Some("Spicy Mike🌶️".into());
+                        app.directs[0].peer.display_name = "Spicy Mike🌶️".into();
+                        for (id, name) in [
+                            ("dm0000000002", "Alex 👩🏽‍💻🇵🇷"),
+                            (
+                                "dm0000000003",
+                                "🌶️ A very long display name with a trailing pepper 🌶️",
+                            ),
+                        ] {
+                            let mut direct = app.directs[0].clone();
+                            direct.id = id.into();
+                            direct.peer.id = id.into();
+                            direct.peer.display_name = name.into();
+                            app.directs.push(direct);
+                        }
+                        let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                        for message in &mut messages {
+                            message.author.name = "Spicy Mike🌶️".into();
+                        }
+                        app.timeline
+                            .reset(messages, "2")
+                            .expect("valid emoji name fixture");
                     }
                 } else if matches!(name, "parity-muted" | "parity-unread") {
                     // Labelled mutes: a muted space in the rail, a muted
@@ -3141,6 +3361,7 @@ impl CaperApp {
                     text: text.into(),
                     attachments: Vec::new(),
                     mentions: Vec::new(),
+                    gif: None,
                     embeds: Vec::new(),
                     suppress_embeds: false,
                 },
@@ -3214,6 +3435,160 @@ impl CaperApp {
                 created_at: at(-chrono::TimeDelta::days(3)),
             },
         ]
+    }
+
+    /// Labelled voice messages in each transcript state (ready and clamped,
+    /// pending, none, no waveform) beside an ordinary audio file; with
+    /// `recording`, the composer's recording bar at a frozen 0:07. Nothing
+    /// plays, uploads or opens a microphone.
+    fn install_voice_messages_fixture(&mut self, recording: bool) {
+        self.install_attachments_fixture();
+        self.draft_files.clear();
+        let shape: Vec<u8> = (0..voice_note::WAVEFORM_BARS)
+            .map(|index| {
+                let x = index as f32 / 63.0;
+                let envelope = (x * std::f32::consts::PI).sin().max(0.15);
+                let ripple = 0.55 + 0.45 * (index as f32 * 1.7).sin().abs();
+                (envelope * ripple * 255.0) as u8
+            })
+            .collect();
+        let voice =
+            |id: &str, duration_ms: u64, transcript: Option<model::Transcript>| model::Attachment {
+                spoiler: false,
+                id: id.into(),
+                kind: model::AttachmentKind::Audio,
+                content_type: "audio/mp4".into(),
+                name: "Voice message.m4a".into(),
+                size: duration_ms * 6,
+                width: None,
+                height: None,
+                duration_ms: Some(duration_ms),
+                preview: false,
+                url: Some(format!("https://fixture.invalid/original/{id}")),
+                preview_url: None,
+                unavailable: false,
+                status: model::AttachmentStatus::Ready,
+                animated: false,
+                voice: true,
+                waveform: Some(voice_note::encode_base64(&shape)),
+                transcript,
+            };
+        let mut messages: Vec<_> = self.timeline.messages().cloned().collect();
+        messages[1].content.text.clear();
+        messages[1].content.attachments = vec![voice(
+            "fixture-voice-ready",
+            42_000,
+            Some(model::Transcript::Ready {
+                text: "TEST FIXTURE transcript — Yo, what's going on? I just listened to the \
+                       new build on my phone and the voice notes sound great. The waveform \
+                       lines up with what I said, and the transcript shows up a few seconds \
+                       after sending. Let's check the narrow layout and the thread panel next."
+                    .into(),
+            }),
+        )];
+        messages[2].content.text.clear();
+        messages[2].content.attachments = vec![voice(
+            "fixture-voice-pending",
+            7_000,
+            Some(model::Transcript::Pending),
+        )];
+        let mut flat = voice("fixture-voice-flat", 125_000, None);
+        flat.waveform = None;
+        messages[3].content.attachments.truncate(1);
+        messages[3].content.attachments.insert(0, flat);
+        self.timeline
+            .reset(messages, "4")
+            .expect("valid voice message fixture");
+        if recording {
+            let channel = self.selected_channel.clone().unwrap_or_default();
+            self.voice_recording =
+                Some(fixture_recording(VoiceRecording::new(channel, None, None)));
+            self.draft = "TEST FIXTURE draft text waits while recording".into();
+        }
+    }
+
+    /// A staged (uploaded) voice chip beside a staged photo under typed
+    /// text, over a sent message carrying text, a photo and a voice message.
+    fn install_voice_staged_fixture(&mut self) {
+        self.install_attachments_fixture();
+        let photo: Vec<_> = self
+            .draft_files
+            .drain(..)
+            .filter(|file| file.attachment.is_some() && file.kind == model::AttachmentKind::Image)
+            .take(1)
+            .collect();
+        let image = self
+            .timeline
+            .messages()
+            .flat_map(|message| message.content.attachments.clone())
+            .find(|file| file.id == "fixture-image");
+        self.install_voice_messages_fixture(false);
+        self.draft_files = photo;
+        let mut messages: Vec<_> = self.timeline.messages().cloned().collect();
+        messages[1].content.text =
+            "TEST FIXTURE — text, a photo and a voice message in one message".into();
+        messages[1].content.attachments.extend(image);
+        self.timeline
+            .reset(messages, "4")
+            .expect("valid staged voice fixture");
+        // A synthetic recording: syllable-like bursts, so the chip's
+        // waveform has shape. It is never played or uploaded.
+        let samples: Vec<i16> = (0..48_000 * 6)
+            .map(|index| {
+                let t = index as f32 / 48_000.0;
+                let envelope = ((t * 2.7).sin() * (t * 0.9).cos()).abs();
+                ((t * 220.0 * std::f32::consts::TAU).sin() * envelope * 12_000.0) as i16
+            })
+            .collect();
+        let prepared =
+            std::sync::Arc::new(voice_note::prepare(&samples, None).expect("fixture recording"));
+        let channel = self.selected_channel.clone().unwrap_or_default();
+        let mut voice = self.voice_draft(channel, None, prepared);
+        voice.attachment = model::Attachment::parse(&serde_json::json!({
+            "id": "fixture-staged-voice", "kind": "audio", "contentType": "audio/mp4",
+            "name": "Voice message.m4a", "size": 36_000, "durationMs": 6_000,
+            "url": "https://fixture.invalid/original/fixture-staged-voice",
+            "voice": true, "transcript": {"status": "pending"}
+        }));
+        voice.progress = 1.0;
+        self.draft_files.push(voice);
+        self.draft = "TEST FIXTURE caption typed beside a staged voice message".into();
+    }
+
+    /// Alex's profile card over the voice message fixture, with typed text
+    /// in its quick-message composer; with `recording`, its recording bar.
+    fn install_voice_profile_fixture(&mut self, recording: bool) {
+        self.install_voice_messages_fixture(false);
+        self.mention_card = Some(MentionCard {
+            pill: PillClick {
+                id: egui::Id::new("fixture-alex-pill"),
+                rect: egui::Rect::from_min_size(egui::pos2(402.0, 330.0), egui::vec2(48.0, 18.0)),
+                entry: model::Mention {
+                    kind: "user".into(),
+                    id: Some("fixture-alex".into()),
+                    username: Some("alex".into()),
+                },
+            },
+            author: None,
+            focus_on_open: false,
+            choosing_space: false,
+            inviting: None,
+            invited: BTreeMap::new(),
+            status: None,
+            error: None,
+            fresh: false,
+        });
+        self.profile_drafts
+            .entry("fixture-alex".into())
+            .or_default()
+            .text = "TEST FIXTURE typed text waits while recording".into();
+        if recording {
+            self.voice_recording = Some(fixture_recording(VoiceRecording::for_profile(
+                "fixture-alex",
+                "alex",
+                None,
+            )));
+        }
     }
 
     /// Static attachment preview: synthetic local images, never fetched, and
@@ -3364,6 +3739,9 @@ impl CaperApp {
             unavailable: false,
             status: model::AttachmentStatus::Ready,
             animated: false,
+            voice: false,
+            waveform: None,
+            transcript: None,
         };
         let processing = |mut attachment: model::Attachment| {
             attachment.url = None;
@@ -3798,6 +4176,40 @@ impl CaperApp {
                         };
                     }
                 }
+                // A voice message from the card: like a text send it opens the
+                // DM, but the card's typed text and files stay in its draft.
+                Event::ProfileSent {
+                    epoch,
+                    person,
+                    mut send,
+                    result,
+                } if epoch == self.account_epoch && send.voice_only => {
+                    self.profile_send_cancel = None;
+                    if let Some(direct) = &send.direct {
+                        self.directs.retain(|item| item.id != direct.id);
+                        self.directs.push(direct.clone());
+                    }
+                    let draft = self.profile_drafts.entry(person.clone()).or_default();
+                    draft.sending = false;
+                    draft.status = None;
+                    match result {
+                        Ok(direct) => {
+                            self.composer_emoji = None;
+                            self.mention_card = None;
+                            self.directs.retain(|item| item.id != direct.id);
+                            self.directs.push(direct.clone());
+                            self.select_direct(direct);
+                            self.profile_navigation = self.opening.then_some(self.navigation);
+                        }
+                        Err(error) => {
+                            draft.error =
+                                Some(format!("Voice message not sent. {}", error.message));
+                            // An uncertain write retries with the same ID.
+                            send.retrying = error.uncertain;
+                            draft.voice_retry = Some(send);
+                        }
+                    }
+                }
                 Event::ProfileSent {
                     epoch,
                     person,
@@ -4062,6 +4474,25 @@ impl CaperApp {
                     result: Ok(people),
                 } if generation == self.generation => {
                     self.people = Some(people);
+                }
+                Event::DirectLookedUp {
+                    generation,
+                    navigation,
+                    request,
+                    username,
+                    result,
+                } if generation == self.generation
+                    && navigation == self.navigation
+                    && request == self.direct_lookup_request
+                    && self.direct_lookup_pending == Some((generation, navigation))
+                    && matches!(self.dialog, Some(Dialog::StartDirect))
+                    && username == self.member_username =>
+                {
+                    self.direct_lookup_pending = None;
+                    match result {
+                        Ok(person) => self.direct_recipient = Some(person),
+                        Err(error) => self.error = Some(error),
+                    }
                 }
                 Event::DirectCreated {
                     generation,
@@ -4405,6 +4836,12 @@ impl CaperApp {
                     self.uploads = settings;
                     self.uploads_pending = false;
                 }
+                Event::Klipy { token, config } if self.token.as_ref() == Some(&token) => {
+                    self.klipy = config;
+                    if self.klipy.is_none() {
+                        self.gif_picker = None;
+                    }
+                }
                 Event::AttachmentUrls { token, ids, result }
                     if self.token.as_ref() == Some(&token) =>
                 {
@@ -4413,6 +4850,10 @@ impl CaperApp {
                     }
                 }
                 Event::Upload { key, token, update } => {
+                    let update = match self.voice_upload_update(key, update) {
+                        Some(update) => update,
+                        None => continue,
+                    };
                     if !self
                         .draft_files
                         .iter()
@@ -4778,6 +5219,9 @@ impl CaperApp {
         self.uploads = None;
         self.uploads_checked = None;
         self.uploads_pending = false;
+        self.klipy = None;
+        self.klipy_checked = None;
+        self.gif_picker = None;
         self.check_uploads();
         self.username = account.username.clone().unwrap_or_default();
         self.display_name = account.display_name.clone().unwrap_or_default();
@@ -4872,6 +5316,7 @@ impl CaperApp {
     }
 
     fn reset_account_state(&mut self) {
+        self.reset_direct_lookup();
         self.worker.showing(None);
         self.worker.send(Command::StopNotifications);
         self.account_epoch += 1;
@@ -5981,7 +6426,15 @@ impl CaperApp {
         self.dialog = Some(Dialog::JoinInvite);
     }
 
+    fn reset_direct_lookup(&mut self) {
+        self.direct_lookup_request += 1;
+        self.direct_lookup_pending = None;
+        self.direct_lookup_scope = None;
+        self.direct_recipient = None;
+    }
+
     fn open_start_direct(&mut self) {
+        self.reset_direct_lookup();
         self.member_username.clear();
         self.error = None;
         self.load_people();
@@ -6316,6 +6769,17 @@ impl CaperApp {
         let Some(token) = self.token.clone() else {
             return;
         };
+        // GIFs follow the same rule: hidden until `GET /api/klipy` succeeds.
+        if self.klipy.is_none()
+            && self
+                .klipy_checked
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(60))
+        {
+            self.klipy_checked = Some(Instant::now());
+            self.worker.send(Command::Klipy {
+                token: token.clone(),
+            });
+        }
         if self.uploads.is_some()
             || self
                 .uploads_checked
@@ -6366,12 +6830,7 @@ impl CaperApp {
         let presence = if self.token.is_some() {
             self.detail
                 .as_ref()
-                .map(|detail| {
-                    let users =
-                        member_page_ids(detail, self.selected_channel.as_deref(), self.member_page);
-                    (detail.space.id.clone(), users)
-                })
-                .filter(|(_, users): &(String, Vec<String>)| !users.is_empty())
+                .map(|detail| (detail.space.id.clone(), Vec::new()))
         } else {
             None
         };
@@ -6687,7 +7146,8 @@ impl CaperApp {
                 if space_changed {
                     self.voice_join_request += 1;
                     self.presence.clear();
-                    self.member_page = 0;
+                    self.member_search.clear();
+                    self.member_search_open = false;
                 }
                 self.generation += 1;
                 if self.profile_navigation == Some(navigation) {
@@ -7137,6 +7597,7 @@ impl CaperApp {
                 self.live = if online { "Live".into() } else { detail };
                 if !online {
                     self.typers.clear();
+                    self.presence.clear();
                 }
             }
             GatewayEvent::Message {
@@ -7378,9 +7839,10 @@ impl CaperApp {
             } if generation == self.generation
                 && self.selected_space.as_deref() == Some(&space) =>
             {
-                for Presence { user_id, status } in members {
-                    self.presence.insert(user_id, status);
-                }
+                self.presence = members
+                    .into_iter()
+                    .map(|Presence { user_id, status }| (user_id, status))
+                    .collect();
             }
             GatewayEvent::Resync {
                 generation,
@@ -7422,7 +7884,10 @@ impl CaperApp {
                         })
                     });
                 if confirmed && self.timeline.merge_sent(message).is_ok() {
-                    self.pending = None;
+                    // Best effort, once KLIPY's GIF is really sent.
+                    if let Some(share) = self.pending.take().and_then(|pending| pending.share) {
+                        share.send();
+                    }
                     self.release_pending_files();
                     self.focused_message = None;
                     // A reply can answer a report.
@@ -7685,6 +8150,9 @@ impl CaperApp {
         self.uploads = None;
         self.uploads_checked = None;
         self.uploads_pending = false;
+        self.klipy = None;
+        self.klipy_checked = None;
+        self.gif_picker = None;
         self.media.clear();
         self.pictures.clear();
         self.local_pictures.clear();
@@ -7953,8 +8421,12 @@ impl CaperApp {
                 .collect()
         };
         let count = text.chars().count();
-        // Text may be empty only when files are attached.
-        if (text.trim().is_empty() && attachments.is_empty())
+        let gif = self
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.gif.clone());
+        // Text may be empty only when files or a GIF are attached.
+        if (text.trim().is_empty() && attachments.is_empty() && gif.is_none())
             || count > 4_000
             || text
                 .chars()
@@ -8039,8 +8511,149 @@ impl CaperApp {
             thread_root_id,
             broadcast,
             reply_to_id,
+            gif,
             suppress_embeds,
         });
+    }
+
+    /// Sends a GIF chosen in the picker as its own message, at once: into
+    /// `root`'s thread (with its "Also send to channel" choice) or the
+    /// channel, answering the composer's reply. The draft and its files stay.
+    fn send_gif(&mut self, root: Option<String>, choice: klipy::Choice) {
+        if self.pending.is_some() || self.upload_send_intent.is_some() {
+            self.error = Some("Wait for your last message to send first.".into());
+            return;
+        }
+        let (Some(chat_token), Some(channel)) = (
+            self.session.as_ref().map(|session| session.token.clone()),
+            self.selected_channel.clone(),
+        ) else {
+            return;
+        };
+        let mut pending = PendingSend::prepare(None, "", Vec::new());
+        pending.broadcast = root
+            .as_ref()
+            .is_some_and(|root| self.thread_drafts.get(root).is_some_and(|draft| draft.1));
+        pending.thread_root_id = root.clone();
+        pending.reply_to = self
+            .reply_targets
+            .remove(root.as_deref().unwrap_or("channel"));
+        pending.gif = Some(choice.gif.clone());
+        pending.share = Some(choice.share);
+        let (id, broadcast) = (pending.id.clone(), pending.broadcast);
+        let reply_to_id = pending.reply_to.as_ref().map(|reply| reply.id.clone());
+        self.pending = Some(pending);
+        self.pending_recovered = false;
+        self.pending_files.clear();
+        self.pending_needs_upload = false;
+        self.error = None;
+        self.worker.send(Command::Send {
+            generation: self.generation,
+            token: self.token.clone(),
+            chat_token,
+            channel,
+            client_id: id,
+            text: String::new(),
+            attachment_ids: Vec::new(),
+            spoiler_attachment_ids: Vec::new(),
+            thread_root_id: root,
+            broadcast,
+            reply_to_id,
+            gif: Some(choice.gif),
+            suppress_embeds: false,
+        });
+    }
+
+    /// Whether this composer can send a GIF now: GIFs are on, the viewer can
+    /// write here and no other send is waiting.
+    fn can_send_gif(&self) -> bool {
+        self.klipy.is_some()
+            && self.token.is_some()
+            && self.session.is_some()
+            && self.selected_is_joined()
+            && !self.detail.as_ref().is_some_and(|detail| detail.space.demo)
+    }
+
+    /// The composer's GIF button toggles its picker, as Emoji does.
+    fn toggle_gif_picker(&mut self, context: &egui::Context, root: Option<String>) {
+        if self
+            .gif_picker
+            .as_ref()
+            .is_some_and(|picker| picker.root == root)
+        {
+            self.close_gif_picker(context);
+            return;
+        }
+        if self.composer_emoji.is_some() {
+            self.close_emoji_picker(context, false);
+        }
+        let anchor = context.input(|input| input.pointer.interact_pos());
+        let mut picker = klipy::Picker::new(root, anchor, context.cumulative_frame_nr());
+        picker.channel.clone_from(&self.selected_channel);
+        self.gif_picker = Some(picker);
+    }
+
+    /// Closes the GIF picker and returns focus to its composer.
+    fn close_gif_picker(&mut self, context: &egui::Context) {
+        if let Some(picker) = self.gif_picker.take() {
+            let id = picker.root.map_or_else(
+                || egui::Id::new("message-composer"),
+                |root| egui::Id::new(("thread-draft", root)),
+            );
+            context.memory_mut(|memory| memory.request_focus(id));
+        }
+    }
+
+    /// Draws the open GIF picker; a choice is sent at once and closes it.
+    fn gif_picker(&mut self, context: &egui::Context) {
+        let Some(picker) = &self.gif_picker else {
+            return;
+        };
+        let thread_open = picker.root.as_ref().is_none_or(|root| {
+            self.thread_view
+                .as_ref()
+                .is_some_and(|thread| thread.root == *root)
+        });
+        if !thread_open
+            || picker.channel != self.selected_channel
+            || !self.can_send_gif()
+            || self.conversation_covered()
+        {
+            self.gif_picker = None;
+            return;
+        }
+        let Some(picker) = &mut self.gif_picker else {
+            return;
+        };
+        match picker.show(context, self.klipy.as_ref(), &mut self.media) {
+            Ok(None) => {}
+            Ok(Some(choice)) => {
+                let root = picker.root.clone();
+                self.close_gif_picker(context);
+                self.send_gif(root, choice);
+            }
+            Err(()) => self.close_gif_picker(context),
+        }
+    }
+
+    /// A click outside the GIF picker closes it, except the opening click.
+    fn dismiss_gif_picker_outside(&mut self, context: &egui::Context) {
+        let Some((rect, opened)) = self.gif_picker.as_ref().and_then(klipy::Picker::bounds) else {
+            return;
+        };
+        if opened == context.cumulative_frame_nr() {
+            return;
+        }
+        let outside = context.input(|input| {
+            input.pointer.any_click()
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|position| !rect.contains(position))
+        });
+        if outside {
+            self.gif_picker = None;
+        }
     }
 
     /// A dialog or modal layer covers the conversation and its composer.
@@ -8081,8 +8694,8 @@ impl CaperApp {
         }
     }
 
-    /// Opens the system file dialog; `media` lists photos and videos first.
-    fn pick_files(&mut self, context: &egui::Context, root: Option<String>, media: bool) {
+    /// Opens the system file dialog for any file.
+    fn pick_files(&mut self, context: &egui::Context, root: Option<String>) {
         if self.file_picker.is_some() || !self.can_attach() {
             return;
         }
@@ -8093,7 +8706,7 @@ impl CaperApp {
         let context = context.clone();
         // The native dialog blocks its own thread, never the UI.
         std::thread::spawn(move || {
-            let files = attach_dialog(media).pick_files().unwrap_or_default();
+            let files = attach_dialog().pick_files().unwrap_or_default();
             let _ = sender.send(files);
             context.request_repaint();
         });
@@ -8494,6 +9107,7 @@ impl CaperApp {
             thread_root_id: pending.thread_root_id.clone(),
             broadcast: pending.broadcast,
             reply_to_id: pending.reply_to.as_ref().map(|reply| reply.id.clone()),
+            gif: pending.gif.clone(),
             suppress_embeds: pending.suppress_embeds,
         });
     }
@@ -9213,6 +9827,12 @@ impl CaperApp {
             self.sound_effects = enabled;
             self.effects = Effects::new(enabled);
         }
+        if let Some(enabled) = storage
+            .get_string("voice-send-on-stop-v1")
+            .and_then(|value| value.parse::<bool>().ok())
+        {
+            self.voice_send_on_stop = enabled;
+        }
         if let Some(width) = storage
             .get_string("sidebar-width-v1")
             .and_then(|value| value.parse::<f32>().ok())
@@ -9276,7 +9896,6 @@ impl eframe::App for CaperApp {
 
     fn raw_input_hook(&mut self, _: &egui::Context, raw_input: &mut egui::RawInput) {
         pointer_follows_touch_release(&mut raw_input.events);
-        self.paste_shortcut.update(&mut raw_input.events);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -9295,6 +9914,7 @@ impl eframe::App for CaperApp {
             );
             storage.set_string("members-width-v1", self.members_width.to_string());
             storage.set_string("sound-effects-v1", self.sound_effects.to_string());
+            storage.set_string("voice-send-on-stop-v1", self.voice_send_on_stop.to_string());
             self.whats_new.save(storage);
         }
         if self.persist_preferences
@@ -9336,6 +9956,7 @@ impl eframe::App for CaperApp {
         let was_foreground = self.foreground;
         self.foreground = context.input(|input| input.viewport().focused.unwrap_or(false));
         self.receive();
+        self.poll_voice(context);
         self.refresh_thread_unread();
         if self
             .thread_unread_retry
@@ -9385,6 +10006,13 @@ impl eframe::App for CaperApp {
         self.update_notice(context);
         self.poll_whats_new(context);
         self.page(context);
+        self.inline_videos.retain(|_, (player, seen, _)| {
+            let keep = *seen == context.cumulative_frame_nr() && self.viewer.is_none();
+            if !keep {
+                player.stop_video(self.media_proxy.as_ref());
+            }
+            keep
+        });
         // Includes Escape, backdrop, close/Done, logout and navigation that
         // replaces a dialog. Pending/error views have no shown sequence.
         if !matches!(self.dialog, Some(Dialog::WhatsNew))
@@ -9604,6 +10232,7 @@ impl CaperApp {
                 self.avatar_gallery(context);
             }
             self.dismiss_emoji_picker_outside(context);
+            self.dismiss_gif_picker_outside(context);
         }
         if self.account.is_some() && !self.updates.has_available() {
             self.space_notice(context);
@@ -10145,24 +10774,6 @@ impl CaperApp {
                                 {
                                     self.logout();
                                 }
-                                ui.with_layout(
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        if ui
-                                            .add(
-                                                egui::Button::new(
-                                                    RichText::new("Join with invite link")
-                                                        .size(13.6)
-                                                        .color(MUTED),
-                                                )
-                                                .frame(false),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.open_join_invite();
-                                        }
-                                    },
-                                );
                             });
                         });
                     });
@@ -10237,8 +10848,8 @@ impl CaperApp {
                             ui.add_space(24.0);
                             if compact_login_action(
                                 ui,
-                                if self.loading { "Saving…" } else { "Finish account" },
-                                "Finish account",
+                                if self.loading { "Saving…" } else { "Finish setup" },
+                                "Finish setup",
                                 self.loading
                                     || self.username.len() < 3
                                     || self.display_name.trim().is_empty()
@@ -10329,6 +10940,7 @@ impl CaperApp {
                                 !exhausted,
                                 egui::TextEdit::singleline(text)
                                     .id(egui::Id::new("sign-in-code"))
+                                    .hint_text("e.g. ABC234")
                                     .vertical_align(egui::Align::Center)
                                     .font(egui::FontId::proportional(16.0))
                                     .margin(egui::Margin::symmetric(14, 4))
@@ -11420,7 +12032,8 @@ impl CaperApp {
                             title_rect.width() - if muted.is_some() { 46.0 } else { 24.0 },
                         );
                         let truncated = galley.elided;
-                        ui.painter().galley(
+                        emoji::paint_galley(
+                            ui.painter(),
                             egui::pos2(title_rect.left(), title_rect.center().y - galley.size().y / 2.0),
                             galley,
                             TEXT,
@@ -12834,7 +13447,7 @@ impl CaperApp {
             let line = |text: String, font: egui::FontId, color: Color32, width: f32| {
                 let mut job = egui::text::LayoutJob::simple_singleline(text, font, color);
                 job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(1.0));
-                ui.painter().layout_job(job)
+                emoji::layout_job(ui, job)
             };
             let name = line(
                 name,
@@ -12853,8 +13466,7 @@ impl CaperApp {
             let height = name.size().y + subtitle.as_ref().map_or(0.0, |line| line.size().y);
             let top = text.center().y - height / 2.0;
             let name_size = name.size();
-            ui.painter()
-                .galley(egui::pos2(text.left(), top), name, TEXT);
+            emoji::paint_galley(ui.painter(), egui::pos2(text.left(), top), name, TEXT);
             paint_icon(
                 ui.painter(),
                 egui::Rect::from_center_size(
@@ -12865,8 +13477,12 @@ impl CaperApp {
                 MUTED,
             );
             if let Some(subtitle) = subtitle {
-                ui.painter()
-                    .galley(egui::pos2(text.left(), top + name_size.y), subtitle, MUTED);
+                emoji::paint_galley(
+                    ui.painter(),
+                    egui::pos2(text.left(), top + name_size.y),
+                    subtitle,
+                    MUTED,
+                );
             }
             // Full width under the header, 8px in from each side.
             let anchor = egui::Rect::from_min_max(
@@ -13247,13 +13863,15 @@ impl CaperApp {
             ui.painter().rect_filled(link, 6.0, SURFACE_HOVER);
         }
         let name_size = name.size();
-        ui.painter().galley(
+        emoji::paint_galley(
+            ui.painter(),
             egui::pos2(left, row.center().y - name_size.y / 2.0),
             name,
             TEXT,
         );
         if let Some(space) = space {
-            ui.painter().galley(
+            emoji::paint_galley(
+                ui.painter(),
                 egui::pos2(
                     left + name_size.x + 6.0,
                     row.center().y - space.size().y / 2.0,
@@ -13548,7 +14166,8 @@ impl CaperApp {
             MUTED,
         );
         let name_height = name.size().y;
-        ui.painter().galley(
+        emoji::paint_galley(
+            ui.painter(),
             egui::pos2(row.left() + 22.0, row.center().y - name_height / 2.0),
             name,
             TEXT,
@@ -13642,7 +14261,7 @@ impl CaperApp {
                     );
                     let (rect, response) =
                         ui.allocate_exact_size(galley.size(), egui::Sense::hover());
-                    ui.painter().galley(rect.min, galley, MUTED);
+                    emoji::paint_galley(ui.painter(), rect.min, galley, MUTED);
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &names)
                     });
@@ -13943,18 +14562,16 @@ impl CaperApp {
                                             }
                                     });
                                     ui.add_space(((36.0 - lines) / 2.0).max(0.0));
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(if own {
-                                                format!("{} (you)", person.name)
-                                            } else {
-                                                person.name.clone()
-                                            })
-                                            .font(name_font)
-                                            .color(if speaking { TEXT } else { MUTED }),
-                                        )
-                                        .truncate()
-                                        .selectable(false),
+                                    emoji::name_label(
+                                        ui,
+                                        RichText::new(if own {
+                                            format!("{} (you)", person.name)
+                                        } else {
+                                            person.name.clone()
+                                        })
+                                        .font(name_font)
+                                        .color(if speaking { TEXT } else { MUTED }),
+                                        egui::Sense::hover(),
                                     );
                                     if let Some((status, tone)) = &status {
                                         ui.add(
@@ -14127,7 +14744,8 @@ impl CaperApp {
             && right - left >= 24.0
         {
             let galley = truncated_galley(ui, &status, font, tone, right - left);
-            ui.painter().galley(
+            emoji::paint_galley(
+                ui.painter(),
                 egui::pos2(left, inner.center().y - galley.size().y / 2.0),
                 galley,
                 tone,
@@ -14313,10 +14931,10 @@ impl CaperApp {
                 // At the narrowest sidebar the name would collapse to "F…":
                 // show the avatar alone; the button keeps the full name.
                 if ui.available_width() >= 40.0 {
-                    ui.add(
-                        egui::Label::new(bold(self.identity_name()).size(12.8))
-                            .truncate()
-                            .selectable(false),
+                    emoji::name_label(
+                        ui,
+                        bold(self.identity_name()).size(12.8),
+                        egui::Sense::hover(),
                     );
                 }
             },
@@ -15075,11 +15693,9 @@ impl CaperApp {
             None => detail.members.iter().collect(),
         }
         .into_iter()
-        .skip(self.member_page * MEMBER_PAGE_SIZE)
-        .take(MEMBER_PAGE_SIZE)
         .cloned()
         .collect();
-        let groups = split.map(|(readers, others)| {
+        let groups = split.map(|(readers, _)| {
             let name = detail
                 .channels
                 .iter()
@@ -15091,8 +15707,6 @@ impl CaperApp {
                     .iter()
                     .map(|member| member.id.clone())
                     .collect::<std::collections::HashSet<_>>(),
-                readers.len(),
-                others.len(),
             )
         });
         let demo = detail.space.demo;
@@ -15111,7 +15725,7 @@ impl CaperApp {
                     .vline(bounds.left(), bounds.y_range(), Stroke::new(1.0, BORDER));
             }
             let (heading, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), 54.0),
+                egui::vec2(ui.available_width(), 44.0),
                 egui::Sense::hover(),
             );
             // Level with the rows' avatars below (16px in).
@@ -15136,11 +15750,11 @@ impl CaperApp {
                     self.members_visible = false;
                 }
             }
-            let count_end = close.left() - 8.0;
+            let count_end = heading.left() + 76.0;
             if !demo {
                 ui.painter().text(
                     egui::pos2(count_end, heading.center().y),
-                    egui::Align2::RIGHT_CENTER,
+                    egui::Align2::LEFT_CENTER,
                     member_count.to_string(),
                     egui::FontId::proportional(10.4),
                     MUTED,
@@ -15148,7 +15762,32 @@ impl CaperApp {
             }
             ui.painter()
                 .hline(heading.x_range(), heading.bottom(), Stroke::new(1.0, BORDER));
-            ui.add_space(8.0);
+            let mut focus_search = false;
+            if !demo && !self.member_search_open {
+                let search_rect = close.translate(egui::vec2(-32.0, 0.0));
+                let mut search_ui = ui.new_child(egui::UiBuilder::new().max_rect(search_rect));
+                if drawn_icon_button(&mut search_ui, NavIcon::Search, "Search members").clicked() {
+                    self.member_search_open = true;
+                    focus_search = true;
+                }
+            }
+            if self.member_search_open {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    let input = ui.add(egui::TextEdit::singleline(&mut self.member_search).id(egui::Id::new("member-search")).hint_text("Search members").desired_width((ui.available_width() - 56.0).max(0.0)));
+                    if focus_search { input.request_focus(); }
+                    if drawn_icon_button(ui, NavIcon::Close, "Clear and close member search").clicked() {
+                        self.member_search.clear();
+                        self.member_search_open = false;
+                    }
+                });
+                ui.add_space(4.0);
+                if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                    self.member_search.clear();
+                    self.member_search_open = false;
+                }
+            }
             if demo {
                 ui.label(
                     RichText::new(
@@ -15159,9 +15798,8 @@ impl CaperApp {
             );
             return;
         }
-        let page_count = member_count.div_ceil(MEMBER_PAGE_SIZE);
-        // Like web's `overflow-y: auto`: a full page of 25 rows and its pager
-        // stay reachable in short windows instead of painting past the panel.
+        let query = self.member_search.trim().to_lowercase();
+        let members: Vec<_> = members.into_iter().filter(|member| member.display_name.to_lowercase().contains(&query) || member.username.to_lowercase().contains(&query)).collect();
         egui::ScrollArea::vertical()
             .id_salt("member-list")
             .auto_shrink([false, false])
@@ -15171,11 +15809,41 @@ impl CaperApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.add_space(16.0);
-                ui.label(RichText::new("No members to show.").size(11.0).color(MUTED));
+                ui.label(RichText::new(if query.is_empty() { "No members to show." } else { "No members match your search." }).size(11.0).color(MUTED));
             });
         }
+        let label = |ui: &mut egui::Ui, title: &str, count: usize, primary: bool| {
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new(title).family(egui::FontFamily::Name("Satoshi Bold".into())).size(11.0).color(if primary { TEXT } else { MUTED }));
+                ui.label(RichText::new(count.to_string()).size(10.0).color(MUTED));
+            });
+            ui.add_space(4.0);
+        };
         let mut rows = |ui: &mut egui::Ui, members: Vec<model::Member>, quiet: bool, ring: Color32| {
+            // Split the entire filtered roster, after private reader grouping. Push
+            // in source order so each presence section remains stable.
+            let mut sections: [Vec<model::Member>; 3] = Default::default();
             for member in members {
+                let section = match self.presence.get(&member.id).map(String::as_str) {
+                    Some("online" | "idle") => 0,
+                    Some("offline") => 1,
+                    _ => 2,
+                };
+                sections[section].push(member);
+            }
+            for (index, (title, members)) in ["Online", "Offline", "Status unavailable"].into_iter().zip(sections).enumerate() {
+                if members.is_empty() {
+                    continue;
+                }
+                ui.add_space(8.0);
+                label(ui, title, members.len(), false);
+                for member in members {
+                if !ui.is_rect_visible(egui::Rect::from_min_size(ui.next_widget_position(), egui::vec2(ui.available_width(), 44.0))) {
+                    ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::hover());
+                    continue;
+                }
                 let tint = ui.painter().add(egui::Shape::Noop);
                 let row = ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.set_min_width(ui.available_width());
@@ -15186,10 +15854,10 @@ impl CaperApp {
                         .get(&member.id)
                         .map_or("unknown", String::as_str);
                     presence_avatar_on(ui, &member.display_name, member.avatar_id, member.picture(), 30.0, status, ring);
-                    if quiet {
-                        ui.add(egui::Label::new(RichText::new(&member.display_name).size(12.0).color(MUTED)).truncate());
+                    if quiet || index == 1 {
+                        emoji::name_label(ui, RichText::new(&member.display_name).size(12.0).color(MUTED), egui::Sense::hover());
                     } else {
-                        ui.add(egui::Label::new(bold(&member.display_name).size(12.0)).truncate());
+                        emoji::name_label(ui, bold(&member.display_name).size(12.0), egui::Sense::hover());
                     }
                 });
                 let response = ui.interact(row.response.rect, ui.id().with(("member-profile", &member.id)), egui::Sense::click())
@@ -15202,23 +15870,15 @@ impl CaperApp {
                     self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, avatar_asset: member.avatar_asset, avatar_url: member.avatar_url, is_guest: false, admin: member.admin }, &response, true);
                 }
 
+                }
             }
         };
-        let label = |ui: &mut egui::Ui, title: &str, count: usize, primary: bool| {
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                ui.spacing_mut().item_spacing.x = 6.0;
-                ui.label(RichText::new(title).family(egui::FontFamily::Name("Satoshi Bold".into())).size(11.0).color(if primary { TEXT } else { MUTED }));
-                ui.label(RichText::new(count.to_string()).size(10.0).color(MUTED));
-            });
-            ui.add_space(4.0);
-        };
-        if let Some((name, readers, reader_count, other_count)) = &groups {
+        if let Some((name, readers)) = &groups {
             let (top, rest): (Vec<_>, Vec<_>) = members.into_iter().partition(|member| readers.contains(&member.id));
             if !top.is_empty() {
                 egui::Frame::new().fill(SIDEBAR_RAISED).corner_radius(8).inner_margin(egui::Margin::symmetric(0, 6)).outer_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    label(ui, &format!("In #{name}"), *reader_count, true);
+                    label(ui, &format!("In #{name}"), top.len(), true);
                     rows(ui, top, false, SIDEBAR_RAISED);
                 });
             }
@@ -15226,35 +15886,12 @@ impl CaperApp {
                 ui.add_space(12.0);
                 egui::Frame::new().outer_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    label(ui, "Others in this space", *other_count, false);
+                    label(ui, "Others in this space", rest.len(), false);
                     rows(ui, rest, true, SIDEBAR);
                 });
             }
         } else {
             rows(ui, members, false, SIDEBAR);
-        }
-        if page_count > 1 {
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(self.member_page > 0, egui::Button::new("Previous"))
-                    .clicked()
-                {
-                    self.member_page -= 1;
-                    self.connect_gateway();
-                }
-                ui.label(
-                    RichText::new(format!("{} / {page_count}", self.member_page + 1))
-                        .size(10.0)
-                        .color(MUTED),
-                );
-                if ui
-                    .add_enabled(self.member_page + 1 < page_count, egui::Button::new("Next"))
-                    .clicked()
-                {
-                    self.member_page += 1;
-                    self.connect_gateway();
-                }
-            });
         }
             });
             });
@@ -15528,6 +16165,8 @@ impl CaperApp {
             self.mention_card(ui.ctx());
             self.reactors_window(ui.ctx());
         }
+        // Closes itself while Pins or a dialog covers the composers.
+        self.gif_picker(ui.ctx());
         // Suggestions and the mention card consume Escape; dialogs and the
         // other windows draw after the conversation.
         if self.thread_view.is_some()
@@ -15686,7 +16325,15 @@ impl CaperApp {
             let width = (ui.available_width() - 36.0).max(1.0);
             // Send sits beside the field; attachment and emoji stay inside it.
             let editor_width = (width - 44.0).max(1.0);
-            let text_width = (editor_width - 22.0 - 72.0).max(1.0);
+            // Narrow panels move the microphone up beside "Also send to", so the
+            // field keeps room for its placeholder. GIF sits in the field while the
+            // server has GIFs on.
+            let gif_shown = self.can_send_gif();
+            let gif_width = if gif_shown { 36.0 } else { 0.0 };
+            let mic_in_field = editor_width - 22.0 - 108.0 - gif_width >= 120.0;
+            let text_width =
+                (editor_width - 22.0 - gif_width - if mic_in_field { 108.0 } else { 72.0 })
+                    .max(1.0);
             let draft_height = draft_layout(
                 ui,
                 &text,
@@ -15700,14 +16347,15 @@ impl CaperApp {
             let max_editor_height = (ui.ctx().viewport_rect().height() * 0.4).clamp(48.0, 320.0);
             let editor_height = (draft_height + 30.0).clamp(48.0, max_editor_height);
             // The checkbox has its own full-width row above the input.
-            broadcast_label.wrap.max_width = (width - 23.0).max(1.0);
+            broadcast_label.wrap.max_width =
+                (width - 23.0 - if mic_in_field { 0.0 } else { 36.0 }).max(1.0);
             let label_height = ui.painter().layout_job(broadcast_label.clone()).size().y;
             let broadcast_height = label_height.max(44.0);
             let files = self.draft_file_count(Some(&root));
             let per_row = (((width + 8.0) / 244.0).floor() as usize).max(1);
             let chips_height = (files.div_ceil(per_row) as f32 * 56.0).min(120.0);
             egui::TopBottomPanel::bottom("thread-composer")
-                .min_height(editor_height + 8.0 + broadcast_height + 28.0 + chips_height)
+                .min_height(editor_height + 8.0 + broadcast_height + 28.0 + chips_height + self.voice_status_rows(Some(&root)) * 30.0)
                 .show_separator_line(false)
                 .frame(composer_frame)
                 .show_inside(ui, |ui| {
@@ -15719,7 +16367,8 @@ impl CaperApp {
                     if let Some(error) = &pending.rejection {
                         ui.colored_label(ERROR, format!("Not sent. {error}"));
                         ui.horizontal(|ui| {
-                            if ui.add_enabled(self.thread_drafts.entry(root.clone()).or_default().0.is_empty(), egui::Button::new("Edit")).clicked()
+                            // A GIF has no caption to edit back into the draft.
+                            if pending.gif.is_none() && ui.add_enabled(self.thread_drafts.entry(root.clone()).or_default().0.is_empty(), egui::Button::new("Edit")).clicked()
                                 && let Some(rejected) = self.take_rejected() {
                                     self.thread_drafts.entry(root.clone()).or_default().0 = rejected.text;
                                     self.thread_drafts.entry(root.clone()).or_default().1 = rejected.broadcast;
@@ -15759,6 +16408,8 @@ impl CaperApp {
                         _ => {}
                     }
                 }
+                let (mic, mic_unavailable) = self.mic_state(Some(&root));
+                let mut record = false;
                 ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), broadcast_height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.spacing_mut().icon_width = 16.0;
                     ui.spacing_mut().icon_spacing = 7.0;
@@ -15768,8 +16419,17 @@ impl CaperApp {
                     ui.visuals_mut().widgets.active.corner_radius = CornerRadius::same(2);
                     let draft = self.thread_drafts.entry(root.clone()).or_default();
                     ui.add_enabled(!blocked, egui::Checkbox::new(&mut draft.1, broadcast_label.clone()));
+                    if !mic_in_field {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| record = mic_button(ui, mic && !loading, mic_unavailable, 28.0));
+                    }
                 });
                 ui.add_space(8.0);
+                self.voice_send_status(ui, Some(&root));
+                // Recording replaces the input row; the reply text waits untouched.
+                if self.recording_in(Some(&root)) {
+                    self.voice_recording_bar(ui, editor_height.min(48.0));
+                    return;
+                }
                 let text = self.thread_drafts.entry(root.clone()).or_default().0.clone();
                 let suggestions = self.suggestion_keys(ui, composer_id, &text);
                 let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| draft_layout(ui, text.as_str(), width, &people, specials, egui::FontId::proportional(13.6));
@@ -15777,6 +16437,7 @@ impl CaperApp {
                 let attach_unavailable = self.attach_unavailable_reason();
                 let mut pick = None;
                 let mut choose_emoji = false;
+                let mut choose_gif = false;
                 let mut send = false;
                 let draft = self.thread_drafts.entry(root.clone()).or_default();
                 let editor = ui.horizontal_top(|ui| {
@@ -15809,7 +16470,11 @@ impl CaperApp {
                                             .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))).show(ui)).inner
                                 }).inner
                             }).inner;
+                            if gif_shown {
+                                choose_gif = ui.add_enabled_ui(!loading && !blocked, |ui| klipy::button(ui, 28.0)).inner.clicked();
+                            }
                             choose_emoji = ui.add_enabled_ui(!loading, |ui| drawn_icon_button_sized(ui, NavIcon::Smile, "Insert emoji", 28.0)).inner.clicked();
+                            if mic_in_field { record = mic_button(ui, mic && !loading, mic_unavailable, 28.0); }
                             output
                         }).inner
                     });
@@ -15823,12 +16488,16 @@ impl CaperApp {
                 let mut output = editor.inner;
                 ui.painter().rect_stroke(editor.response.rect, 8.0, Stroke::new(1.0, if output.response.has_focus() { TERRACOTTA } else { BORDER }), egui::StrokeKind::Inside);
                 let text = draft.0.clone();
-                if let Some(choice) = pick { self.pick_files(ui.ctx(), Some(root.clone()), choice == attach_drawer::AttachChoice::Media); }
+                if pick.is_some() { self.pick_files(ui.ctx(), Some(root.clone())); }
+                if record { self.start_voice_recording(ui.ctx(), Some(root.clone())); }
                 if let Some(value) = self.suggestion_popup(ui, &suggestions, &text, editor.response.rect, &mut output) {
                     self.thread_drafts.entry(root.clone()).or_default().0 = value;
                 }
                 let enter = output.response.has_focus() && !self.ime_composing && !suggestions.ime && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift)));
                 let draft = self.thread_drafts.get(&root).cloned().unwrap_or_default();
+                if choose_gif {
+                    self.toggle_gif_picker(ui.ctx(), Some(root.clone()));
+                }
                 if choose_emoji {
                     self.open_composer_emoji(EmojiTarget::Thread(root.clone()), &output, &draft.0);
                 }
@@ -15973,6 +16642,9 @@ impl CaperApp {
                             ui.label(&pending.text);
                         }
                         self.attachment_list(ui, &pending.attachments, true);
+                        if let Some(gif) = &pending.gif {
+                            self.message_gif(ui, gif, 62);
+                        }
                     });
                 }
                 if has_newer
@@ -16049,12 +16721,12 @@ impl CaperApp {
                                     if visit.is_none() && let Some(item) = direct {
                                         avatar(ui, &item.peer.display_name, item.peer.avatar_id, item.peer.picture(), 28.0, false);
                                     }
-                                    ui.add(egui::Label::new(RichText::new(match (direct, visit) {
+                                    emoji::name_label(ui, RichText::new(match (direct, visit) {
                                         // "#plans · Studio", or "Alice & Bob".
                                         (_, Some(title)) => title,
                                         (Some(item), None) => item.peer.display_name.clone(),
                                         (None, None) => format!("# {}", self.channel_name()),
-                                    }).size(13.76)).truncate());
+                                    }).size(13.76), egui::Sense::hover());
                                 },
                             );
                             // Web: a failed refresh keeps the conversation and offers Retry in the header.
@@ -16102,8 +16774,10 @@ impl CaperApp {
             let attach_unavailable = self.attach_unavailable_reason();
             let draft_height = ui.fonts_mut(|fonts| fonts.layout(
                 self.draft.clone(), egui::FontId::proportional(13.6), TEXT,
-                (ui.available_width() - 36.0 - 22.0 - attach_width).max(1.0),
+                // Emoji and the microphone sit at the end of the field.
+                (ui.available_width() - 36.0 - 8.0 - attach_width - 36.0).max(1.0),
             ).size().y);
+            let voice_rows = self.voice_status_rows(None) * 30.0;
             let chip_rows = if attach && self.draft_file_count(None) > 0 {
                 let per_row = (((ui.available_width() - 36.0 + 8.0) / 244.0).floor() as usize).max(1);
                 self.draft_file_count(None).div_ceil(per_row) as f32
@@ -16127,7 +16801,7 @@ impl CaperApp {
                 (((28.0 - first_line) / 2.0).max(0.0) + galley.size().y).max(28.0) + 6.0
             });
             let composer = egui::TopBottomPanel::bottom("composer")
-                .min_height(voice_error_row + if joined { editor_height + 28.0 + session_row + chip_rows * 56.0 } else { 44.0 })
+                .min_height(voice_error_row + if joined { editor_height + 28.0 + session_row + chip_rows * 56.0 + voice_rows } else { 44.0 })
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
@@ -16253,6 +16927,12 @@ impl CaperApp {
                         ui.add_space(8.0);
                     }
                     self.reply_draft(ui, "channel");
+                    self.voice_send_status(ui, None);
+                    // Recording replaces the input row; the draft text waits untouched.
+                    if self.recording_in(None) {
+                        self.voice_recording_bar(ui, 42.0);
+                        return;
+                    }
                     let before = self.draft.clone();
                     let placeholder = if self.conversation_is_direct() {
                         format!("Message {}", self.channel_name())
@@ -16275,13 +16955,20 @@ impl CaperApp {
                     let suggestions = self.suggestion_keys(ui, composer_id, &draft);
                     let (people, specials) = self.mention_people();
                     let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| draft_layout(ui, text.as_str(), width, &people, specials, egui::FontId::proportional(13.6));
-                    let editor_area = |ui: &mut egui::Ui, draft: &mut String| egui::ScrollArea::vertical()
+                    let mut editor_area = |ui: &mut egui::Ui, draft: &mut String| egui::ScrollArea::vertical()
                         .id_salt("composer-scroll")
                         .max_height(max_editor_height)
                         .min_scrolled_height(42.0)
                         .auto_shrink([false, true])
-                        .show(ui, |ui|
-                        egui::TextEdit::multiline(draft)
+                        .show(ui, |ui| {
+                        let mut hint = egui::text::LayoutJob::simple_singleline(
+                            placeholder.clone(),
+                            egui::FontId::proportional(13.6),
+                            Color32::from_rgb(142, 149, 152),
+                        );
+                        hint.wrap = egui::text::TextWrapping::truncate_at_width((ui.available_width() - 8.0).max(1.0));
+                        let hint = emoji::layout_job(ui, hint);
+                        let output = egui::TextEdit::multiline(draft)
                             .id(composer_id)
                             .layouter(&mut layouter)
                             .desired_width(f32::INFINITY)
@@ -16290,22 +16977,30 @@ impl CaperApp {
                             .desired_rows(1)
                             .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter)))
                             .font(egui::FontId::proportional(13.6))
-                            .margin(egui::vec2(11.0, 10.0))
-                            .hint_text(
-                                RichText::new(placeholder)
-                                    .color(Color32::from_rgb(142, 149, 152)),
-                            )
+                            .margin(egui::vec2(4.0, 10.0))
+                            .hint_text(hint.clone())
                             .frame(false)
-                            .char_limit(4_000).show(ui)
-                    );
+                            .char_limit(4_000).show(ui);
+                        if draft.is_empty() {
+                            let position = egui::pos2(output.galley_pos.x, output.response.rect.center().y - hint.size().y / 2.0);
+                            emoji::paint_inline(&ui.painter().with_clip_rect(output.text_clip_rect), position, &hint);
+                        }
+                        output
+                    });
+                    // GIF sits beside Emoji while the server has GIFs on.
+                    let gif_shown = self.can_send_gif();
+                    let gif_enabled = self.pending.is_none();
                     let editor = egui::Frame::new()
                         .fill(COMPOSER)
                         .corner_radius(8)
                         .inner_margin(egui::Margin::symmetric(6, 0))
                         .show(ui, |ui| {
                             let attached = self.draft_file_count(None);
+                            let (mic, mic_unavailable) = self.mic_state(None);
+                            let mut record = false;
                             let mut pick = None;
                             let mut choose_emoji = false;
+                            let mut choose_gif = false;
                             let editor = ui.horizontal_top(|ui| {
                                 ui.vertical(|ui| {
                                     ui.add_space(7.0);
@@ -16320,26 +17015,42 @@ impl CaperApp {
                                         });
                                     pick = attach_drawer::popup(&button, attached, false);
                                 });
-                                // Leave room for Emoji at the end of the field.
-                                let width = (ui.available_width() - 36.0).max(0.0);
+                                // Leave room for GIF, Emoji and the microphone at the end of the field.
+                                let width = (ui.available_width() - if gif_shown { 108.0 } else { 72.0 }).max(0.0);
                                 let editor = ui
                                     .allocate_ui_with_layout(egui::vec2(width, max_editor_height), egui::Layout::top_down(egui::Align::Min), |ui| {
                                         ui.set_width(width);
                                         editor_area(ui, &mut self.draft)
                                     })
                                     .inner;
+                                if gif_shown {
+                                    ui.vertical(|ui| {
+                                        ui.add_space(7.0);
+                                        choose_gif = ui.add_enabled_ui(gif_enabled, |ui| klipy::button(ui, 28.0)).inner.clicked();
+                                    });
+                                }
                                 ui.vertical(|ui| {
                                     ui.add_space(7.0);
                                     choose_emoji = drawn_icon_button(ui, NavIcon::Smile, "Insert emoji").clicked();
                                 });
+                                ui.vertical(|ui| {
+                                    ui.add_space(7.0);
+                                    record = mic_button(ui, mic, mic_unavailable, 28.0);
+                                });
                                 editor
                             }).inner;
-                            if let Some(choice) = pick {
-                                self.pick_files(ui.ctx(), None, choice == attach_drawer::AttachChoice::Media);
+                            if pick.is_some() {
+                                self.pick_files(ui.ctx(), None);
                             }
-                            (editor, choose_emoji)
+                            if record {
+                                self.start_voice_recording(ui.ctx(), None);
+                            }
+                            (editor, choose_emoji, choose_gif)
                         });
-                    let (mut output, choose_emoji) = (editor.inner.0.inner, editor.inner.1);
+                    let (mut output, choose_emoji, choose_gif) = (editor.inner.0.inner, editor.inner.1, editor.inner.2);
+                    if choose_gif {
+                        self.toggle_gif_picker(ui.ctx(), None);
+                    }
                     if choose_emoji {
                         let draft = self.draft.clone();
                         self.open_composer_emoji(EmojiTarget::Channel, &output, &draft);
@@ -16483,9 +17194,16 @@ impl CaperApp {
             }
             // ScrollArea's paint margin must not bleed into the fixed heading or composer.
             let history_clip = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+            // Sticking to the scroll end does not bottom-align content shorter
+            // than the viewport. Measure the whole history (including its header
+            // and pending sends), and put spare space above it on the next pass.
+            let height_id = ui.id().with(("history-natural-height", &scope));
+            let natural_height = ui.ctx().data_mut(|data| data.get_temp::<f32>(height_id)).unwrap_or(0.0);
+            let top_space = if empty { 0.0 } else { (history_clip.height() - natural_height).max(0.0) };
             let history = history.show_viewport(ui, |ui, viewport| {
                     let origin = ui.max_rect().top();
                     ui.set_clip_rect(ui.clip_rect().intersect(history_clip));
+                    ui.add_space(top_space);
                     if let Some(error) = self.load_error.clone().filter(|_| empty) {
                         chat_state(ui, 2, |ui| {
                             ui.label(RichText::new(error).color(MUTED));
@@ -16590,12 +17308,15 @@ impl CaperApp {
                                 }
                             });
                             self.attachment_list(ui, &pending.attachments, true);
+                        if let Some(gif) = &pending.gif {
+                            self.message_gif(ui, gif, 62);
+                        }
                             if let Some(rejection) = &pending.rejection {
                                 egui::Frame::new().inner_margin(egui::Margin { left: 62, right: 18, top: 0, bottom: 8 }).show(ui, |ui| {
                                     ui.colored_label(ERROR, format!("Not sent. {rejection}"));
                                     ui.horizontal(|ui| {
                                         let button = |label| egui::Button::new(RichText::new(label).size(12.0)).min_size(egui::vec2(60.0, 32.0));
-                                        if toned(ui, QUIET_TONE, self.draft.is_empty(), button("Edit"))
+                                        if pending.gif.is_none() && toned(ui, QUIET_TONE, self.draft.is_empty(), button("Edit"))
                                             .on_disabled_hover_text("Clear your current draft to edit this message.").clicked()
                                             && let Some(rejected) = self.take_rejected() {
                                             self.draft = rejected.text;
@@ -16636,6 +17357,13 @@ impl CaperApp {
                     }
                     Some((plan, drawn, start))
                 });
+            let measured_height = history.content_size.y - top_space;
+            ui.ctx().data_mut(|data| data.insert_temp(height_id, measured_height));
+            let measured_space = if empty { 0.0 } else { (history.inner_rect.height() - measured_height).max(0.0) };
+            if (measured_space - top_space).abs() > 0.5 {
+                ui.ctx().request_discard("bottom-align short conversations");
+                ui.ctx().request_repaint();
+            }
             if let Some((plan, drawn, start)) = &history.inner
                 && self.history_list.finish(plan, drawn, *start, history.content_size.y, history.state.offset.y)
             {
@@ -16905,6 +17633,16 @@ impl CaperApp {
                                                 ))
                                                 .corner_radius(6)
                                                 .paint_at(ui, rect);
+                                        } else if attachment.voice {
+                                            paint_icon(
+                                                ui.painter(),
+                                                egui::Rect::from_center_size(
+                                                    rect.center(),
+                                                    egui::vec2(18.0, 18.0),
+                                                ),
+                                                NavIcon::Mic,
+                                                MUTED,
+                                            );
                                         } else {
                                             ui.painter().text(
                                                 rect.center(),
@@ -16926,28 +17664,21 @@ impl CaperApp {
                             let text = reference.full_text.as_deref().unwrap_or(&reference.text);
                             let text = if text.is_empty() {
                                 if reference.has_attachments {
-                                    "Attachment"
+                                    model::attachments_label(&reference.attachments)
                                 } else {
                                     "Message"
                                 }
                             } else {
                                 text
                             };
-                            let preview: String = text.chars().take(100).collect();
                             let mut job = egui::text::LayoutJob::simple(
-                                if expanded {
-                                    text.to_owned()
-                                } else if preview != text {
-                                    format!("{preview}…")
-                                } else {
-                                    preview.clone()
-                                },
+                                text.to_owned(),
                                 egui::FontId::proportional(12.0),
                                 MUTED,
                                 ui.available_width(),
                             );
                             let full = ui.fonts_mut(|fonts| fonts.layout_job(job.clone()));
-                            let clipped = preview != text || full.rows.len() > 3;
+                            let clipped = full.rows.len() > 3;
                             let galley = if expanded || !clipped {
                                 full
                             } else {
@@ -16964,69 +17695,14 @@ impl CaperApp {
                                 )
                                 .on_hover_cursor(egui::CursorIcon::PointingHand);
                             open |= excerpt.clicked();
-                            let mut preview_rect = excerpt.rect;
-                            if clipped && !expanded {
-                                let height = preview_rect.height().max(36.0);
-                                ui.add_space(height - preview_rect.height());
-                                preview_rect.set_height(height);
-                                let rect = preview_rect;
-                                let top = rect.top() + rect.height() * 0.4;
-                                let mut fade = egui::Mesh::default();
-                                fade.colored_vertex(
-                                    egui::pos2(rect.left(), top),
-                                    Color32::TRANSPARENT,
-                                );
-                                fade.colored_vertex(
-                                    egui::pos2(rect.right(), top),
-                                    Color32::TRANSPARENT,
-                                );
-                                fade.colored_vertex(rect.right_bottom(), SURFACE);
-                                fade.colored_vertex(rect.left_bottom(), SURFACE);
-                                fade.add_triangle(0, 1, 2);
-                                fade.add_triangle(0, 2, 3);
-                                ui.painter().add(egui::Shape::mesh(fade));
-                            }
                             if clipped {
                                 let label = if expanded { "Show less" } else { "Show more" };
-                                let font = history_button_font();
-                                let width = ui.fonts_mut(|fonts| {
-                                    fonts
-                                        .layout_no_wrap(label.into(), font.clone(), BLACKOUT)
-                                        .size()
-                                        .x
-                                }) + 28.0;
-                                let height = ui.spacing().interact_size.y.max(32.0);
-                                let top = if expanded {
-                                    ui.add_space(6.0);
-                                    ui.next_widget_position().y
-                                } else {
-                                    preview_rect.top() + preview_rect.height() * 0.7 - height / 2.0
-                                };
-                                let rect = egui::Rect::from_min_size(
-                                    egui::pos2(ui.max_rect().center().x - width / 2.0, top),
-                                    egui::vec2(width, height),
+                                let button = ui.add(
+                                    egui::Button::new(
+                                        RichText::new(label).size(11.0).color(LINK).underline(),
+                                    )
+                                    .frame(false),
                                 );
-                                let mut controls = ui.new_child(
-                                    egui::UiBuilder::new()
-                                        .id_salt("reply-expand")
-                                        .max_rect(rect),
-                                );
-                                controls.spacing_mut().button_padding = egui::vec2(14.0, 6.0);
-                                let button = toned_rounded(
-                                    &mut controls,
-                                    Tone {
-                                        rest: (TEXT, TEXT, BLACKOUT),
-                                        hover: (Color32::WHITE, Color32::WHITE, BLACKOUT),
-                                        press: (TEXT.gamma_multiply(0.85), TERRACOTTA, BLACKOUT),
-                                    },
-                                    255,
-                                    true,
-                                    egui::Button::new(RichText::new(label).font(font))
-                                        .min_size(egui::vec2(width, height)),
-                                );
-                                if expanded {
-                                    ui.advance_cursor_after_rect(button.rect);
-                                }
                                 if button.clicked() {
                                     expanded = !expanded;
                                     ui.data_mut(|data| data.insert_temp(expanded_id, expanded));
@@ -17081,7 +17757,7 @@ impl CaperApp {
                                     reference.full_text.as_deref().unwrap_or(&reference.text);
                                 let text = if text.is_empty() {
                                     if reference.has_attachments {
-                                        "Attachment"
+                                        model::attachments_label(&reference.attachments)
                                     } else {
                                         "Message"
                                     }
@@ -17515,6 +18191,13 @@ impl CaperApp {
                     }
                 });
         }
+        // A GIF shows under the text; a message never has both it and files.
+        if let Some(gif) = message.content.gif.as_ref().filter(|_| !deleted) {
+            egui::Frame::new().fill(fill).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                self.message_gif(ui, gif, 62);
+            });
+        }
         // Files follow the forward context target so their own clicks (open
         // in the browser or player) stay on top of it.
         if !deleted && !message.content.attachments.is_empty() {
@@ -17580,6 +18263,9 @@ impl CaperApp {
                                     false,
                                     0,
                                 );
+                                if let Some(gif) = &original.content.gif {
+                                    self.message_gif(ui, gif, 0);
+                                }
                                 let count = original
                                     .thread
                                     .as_ref()
@@ -18018,19 +18704,13 @@ impl CaperApp {
                     });
             });
         }
-        // The message body already ends with 10px padding. Keep its compact
-        // footer 4px below the text rather than stacking that padding and the
-        // timeline's default item gap above it.
+        // The message body already ends with 10px padding. Remove only the
+        // timeline's extra item gap: moving into the body's padding overlaps
+        // its background with the thread summary's hover/pressed feedback.
         if mentions::notifies_team(&message.content.mentions)
             || (!in_thread && message.thread_root_id.is_none() && message.thread.is_some())
         {
-            let body_padding =
-                if message.content.attachments.is_empty() && message.forward.is_none() {
-                    8.0
-                } else {
-                    0.0
-                };
-            ui.add_space(-ui.spacing().item_spacing.y - body_padding);
+            ui.add_space(-ui.spacing().item_spacing.y);
         }
         let controls = egui::Frame::new()
             .inner_margin(egui::Margin {
@@ -18526,6 +19206,18 @@ impl CaperApp {
         }
     }
 
+    /// A message's KLIPY GIF or sticker, loaded straight from KLIPY.
+    fn message_gif(&mut self, ui: &mut egui::Ui, gif: &klipy::Gif, left: i8) {
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left,
+                right: 18,
+                top: 2,
+                bottom: 4,
+            })
+            .show(ui, |ui| klipy::message(ui, &mut self.media, gif));
+    }
+
     fn attachment_list(
         &mut self,
         ui: &mut egui::Ui,
@@ -18704,6 +19396,10 @@ impl CaperApp {
                             let mut card_rect = None;
                             let clicked = if tiles {
                                 self.media_tile(ui, attachment, pending, progress, placed)
+                            } else if attachment.voice && !attachment.spoiler {
+                                // Plays in place; it never opens elsewhere.
+                                self.voice_message_card(ui, attachment, pending);
+                                false
                             } else if !attachment.spoiler {
                                 file_card(ui, attachment, pending, progress)
                             } else {
@@ -18888,7 +19584,7 @@ impl CaperApp {
             );
         }
         if !processing && !removed && !failed && video && attachment.animated {
-            // Looping MP4s from GIFs: the browser autoplays them.
+            // Reduced-motion or inactive-window poster for looping MP4s.
             let badge =
                 egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(34.0, 20.0));
             painter.rect_filled(badge, 6.0, Color32::from_black_alpha(190));
@@ -18949,6 +19645,67 @@ impl CaperApp {
         if !clickable {
             return false;
         }
+        if video && ui.is_rect_visible(rect) && self.viewer.is_none() {
+            let autoplay = attachment.animated && reply_motion_enabled() && pictures::playing(ui);
+            if !autoplay
+                && self
+                    .inline_videos
+                    .get(&attachment.id)
+                    .is_some_and(|(_, _, automatic)| *automatic)
+                && let Some((mut player, _, _)) = self.inline_videos.remove(&attachment.id)
+            {
+                player.stop_video(self.media_proxy.as_ref());
+            }
+            if (autoplay || response.clicked()) && !self.inline_videos.contains_key(&attachment.id)
+            {
+                self.inline_videos.insert(
+                    attachment.id.clone(),
+                    (
+                        viewer::Viewer::open(vec![attachment.clone()], 0),
+                        0,
+                        autoplay,
+                    ),
+                );
+            }
+            if let Some((player, seen, _)) = self.inline_videos.get_mut(&attachment.id) {
+                *seen = ui.ctx().cumulative_frame_nr();
+                painter.rect_filled(rect, radius, SURFACE);
+                player.show_inline(ui, rect, attachment, &mut self.media, &mut self.media_proxy);
+            }
+            // Register after the player so this button wins hit testing.
+            let expand_rect = egui::Rect::from_min_size(
+                rect.right_top() + egui::vec2(-36.0, 4.0),
+                egui::vec2(32.0, 32.0),
+            );
+            let expand = ui.interact(
+                expand_rect,
+                ui.id().with(("expand-video", &attachment.id)),
+                egui::Sense::click(),
+            );
+            painter.circle_filled(expand_rect.center(), 16.0, Color32::from_black_alpha(170));
+            paint_icon(
+                &painter,
+                expand_rect.shrink(8.0),
+                NavIcon::ExternalLink,
+                TEXT,
+            );
+            expand.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    true,
+                    format!("Open {} in viewer", attachment.name),
+                )
+            });
+            let expand = expand
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Open in viewer");
+            if expand.clicked() {
+                if let Some((mut player, _, _)) = self.inline_videos.remove(&attachment.id) {
+                    player.stop_video(self.media_proxy.as_ref());
+                }
+                return true;
+            }
+        }
         let response = response
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text(label);
@@ -18983,13 +19740,14 @@ impl CaperApp {
                 }
             });
         }
-        response.clicked()
+        response.clicked() && !video
     }
 
     /// Compact square previews wrap at the composer's available edge.
     fn draft_chips(&mut self, ui: &mut egui::Ui, root: Option<&str>) {
         let mut remove = None;
         let mut preview = None;
+        let mut media_preview = None;
         let mut view = None;
         let mut retry = None;
         let mut edit = None;
@@ -19003,7 +19761,6 @@ impl CaperApp {
             })
             .collect();
         let failed = files.iter().filter(|file| file.error.is_some()).count();
-        let uploading = files.iter().filter(|file| file.uploading).count();
         if failed > 0 {
             let message = if failed == 1 {
                 "1 file failed to upload. Send will retry it, or you can remove it.".into()
@@ -19014,22 +19771,49 @@ impl CaperApp {
             };
             ui.label(RichText::new(message).size(12.0).color(ERROR));
         }
-        if uploading > 0 {
-            ui.label(
-                RichText::new(format!(
-                    "Uploading {uploading} {}… Your message won’t send until every file is ready.",
-                    if uploading == 1 { "file" } else { "files" }
-                ))
-                .size(12.0)
-                .color(MUTED),
-            );
-        }
+        let playing = self.voice_playback.as_ref().map(|playback| {
+            let state = self.voice_play_state(&playback.id);
+            (playback.id.clone(), (state.0, state.1))
+        });
+        let mut toggle_voice = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
             let width = draft_tile_width(ui.available_width());
             for draft in self.draft_files.iter_mut().filter(|file| {
                 Some(&file.channel) == channel.as_ref() && file.thread_root_id.as_deref() == root
             }) {
+                // A staged recording: a compact voice chip beside the files.
+                if let Some(prepared) = draft.voice() {
+                    let id = staged_voice_id(prepared);
+                    let state = playing
+                        .as_ref()
+                        .filter(|(playing, _)| *playing == id)
+                        .map_or((false, None), |(_, state)| *state);
+                    let clicks = voice_chip(
+                        ui,
+                        egui::Id::new(("draft-voice", draft.key)),
+                        prepared
+                            .voice
+                            .as_ref()
+                            .and_then(|voice| voice.waveform.as_deref()),
+                        prepared.duration_ms.unwrap_or(0),
+                        state,
+                        (draft.attachment.is_none() && draft.error.is_none())
+                            .then_some(draft.progress),
+                        draft.error.as_deref(),
+                        true,
+                    );
+                    if clicks.toggle {
+                        toggle_voice = Some(prepared.clone());
+                    }
+                    if clicks.remove {
+                        remove = Some(draft.key);
+                    }
+                    if clicks.retry {
+                        retry = Some(draft.key);
+                    }
+                    continue;
+                }
                 let entering = motion::entrance(
                     ui.ctx(),
                     egui::Id::new(("draft-chip", draft.slot)),
@@ -19193,10 +19977,16 @@ impl CaperApp {
                             .on_hover_text(label)
                             .clicked()
                         {
-                            // Files the editor can open preview in the app,
-                            // with its tools; others in the system viewer.
+                            // Keep editor tools for editable originals, but
+                            // uploaded animations also belong in the app viewer.
                             if editable {
                                 view = Some(draft.key);
+                            } else if let Some(attachment) = draft
+                                .attachment
+                                .as_ref()
+                                .filter(|item| viewer::viewable(item))
+                            {
+                                media_preview = Some(attachment.clone());
                             } else {
                                 preview = Some(url);
                             }
@@ -19260,6 +20050,9 @@ impl CaperApp {
                 );
             }
         });
+        if let Some(prepared) = toggle_voice {
+            self.play_staged_voice(&prepared, None);
+        }
         if let Some(key) = remove {
             self.remove_draft(key);
         }
@@ -19271,6 +20064,10 @@ impl CaperApp {
         }
         if let Some(key) = view {
             self.preview_draft(ui.ctx(), key);
+        }
+        if let Some(attachment) = media_preview {
+            self.viewer = Some(viewer::Viewer::open(vec![attachment], 0));
+            ui.ctx().request_repaint();
         }
         if let Some(url) = preview {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
@@ -19902,7 +20699,11 @@ impl CaperApp {
                                         );
                                         ui.vertical(|ui| {
                                             ui.spacing_mut().item_spacing.y = 0.0;
-                                            ui.label(bold(name.as_str()).size(13.0));
+                                            emoji::name_label(
+                                                ui,
+                                                bold(name.as_str()).size(13.0),
+                                                egui::Sense::hover(),
+                                            );
                                             if let Some(username) = &author.username {
                                                 ui.label(
                                                     RichText::new(format!("@{username}"))
@@ -20316,6 +21117,7 @@ impl CaperApp {
             .response
             .ctx
             .input(|input| input.pointer.interact_pos());
+        self.gif_picker = None;
         self.reaction_picker = None;
         self.reaction_search.clear();
         self.reaction_category = 0;
@@ -20943,11 +21745,10 @@ impl CaperApp {
                                 |ui| {
                                     ui.spacing_mut().item_spacing.y = 2.0;
                                     ui.add_space(6.0);
-                                    ui.add(
-                                        egui::Label::new(
-                                            bold(profile.title()).size(15.0).color(TEXT),
-                                        )
-                                        .truncate(),
+                                    emoji::name_label(
+                                        ui,
+                                        bold(profile.title()).size(15.0).color(TEXT),
+                                        egui::Sense::hover(),
                                     );
                                     if profile.display_name.is_some()
                                         && let Some(username) = &profile.username
@@ -21274,11 +22075,46 @@ impl CaperApp {
             let mut view = None;
             let mut edit = None;
             let touch = self.narrow_layout;
+            let playing = self.voice_playback.as_ref().map(|playback| {
+                let state = self.voice_play_state(&playback.id);
+                (playback.id.clone(), (state.0, state.1))
+            });
+            let mut toggle_voice = None;
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
                 let width = draft_tile_width(ui.available_width());
                 let context = ui.ctx().clone();
                 for (index, file) in draft.files.iter_mut().enumerate() {
+                    // A staged recording: a compact voice chip beside the files.
+                    if let Some(prepared) = &file.voice {
+                        let id = staged_voice_id(prepared);
+                        let state = playing
+                            .as_ref()
+                            .filter(|(playing, _)| *playing == id)
+                            .map_or((false, None), |(_, state)| *state);
+                        let (status, failed) = file.upload_status();
+                        let clicks = voice_chip(
+                            ui,
+                            egui::Id::new(("profile-voice", person, index)),
+                            prepared
+                                .voice
+                                .as_ref()
+                                .and_then(|voice| voice.waveform.as_deref()),
+                            prepared.duration_ms.unwrap_or(0),
+                            state,
+                            // Eager card uploads report no fraction; Send waits for them.
+                            None,
+                            failed.then_some(status),
+                            editable,
+                        );
+                        if clicks.toggle {
+                            toggle_voice = Some(prepared.clone());
+                        }
+                        if clicks.remove {
+                            remove = Some(index);
+                        }
+                        continue;
+                    }
                     let name = file.name();
                     let url = url::Url::from_file_path(&file.path).ok().map(String::from);
                     let (status, failed) = file.upload_status();
@@ -21349,8 +22185,17 @@ impl CaperApp {
                 ));
             }
             if let Some(index) = remove {
-                draft.files.remove(index);
+                let file = draft.files.remove(index);
+                // A removed recording's upload is cancelled on the server too.
+                if file.voice.is_some()
+                    && let Some(asset) = file.uploaded_id()
+                {
+                    self.cancel_assets(vec![asset]);
+                }
                 ui.memory_mut(|memory| memory.request_focus(id));
+            }
+            if let Some(prepared) = toggle_voice {
+                self.play_staged_voice(&prepared, None);
             }
             if let Some(url) = preview {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(url));
@@ -21378,13 +22223,32 @@ impl CaperApp {
                 egui::FontId::proportional(13.6),
             )
         };
+        // Recording replaces the field; the typed text waits untouched.
+        if self.recording_for_profile(person) {
+            self.voice_recording_bar(ui, 42.0);
+            self.profile_drafts.insert(person.to_owned(), draft);
+            return false;
+        }
         let pending_picker = self
             .profile_picker
             .as_ref()
             .is_some_and(|(id, _)| id == person);
         let can_send = draft.ready() && !busy && !pending_picker && self.token.is_some();
-        // Some(true) for Photos and videos, Some(false) for Files.
-        let mut pick = None;
+        // Voice messages go wherever the card can upload files.
+        let (has_voice, full) = (
+            draft.has_voice(),
+            draft.files.len() >= uploads::MAX_ATTACHMENTS,
+        );
+        let can_record = editable
+            && self.token.is_some()
+            && self.uploads.is_some()
+            && self.voice_recording.is_none()
+            && self.gif_picker.is_none()
+            && !has_voice
+            && !full
+            && !self.is_blocked(person);
+        let mut record = false;
+        let mut pick = false;
         let mut paste_now = false;
         let mut menu_open = false;
         let mut choose_emoji = false;
@@ -21412,14 +22276,12 @@ impl CaperApp {
                         // Paste is also offered for when no keyboard is available.
                         match attach_drawer::popup(&attach, draft.files.len(), true) {
                             Some(attach_drawer::AttachChoice::Paste) => paste_now = true,
-                            Some(choice) => {
-                                pick = Some(choice == attach_drawer::AttachChoice::Media)
-                            }
+                            Some(attach_drawer::AttachChoice::Upload) => pick = true,
                             None => {}
                         }
                         menu_open = egui::Popup::menu(&attach).is_open();
                     });
-                    let width = (ui.available_width() - 62.0).max(0.0);
+                    let width = (ui.available_width() - 92.0).max(0.0);
                     let output = ui
                         .allocate_ui_with_layout(
                             egui::vec2(width, 120.0),
@@ -21449,7 +22311,7 @@ impl CaperApp {
                                                     egui::Key::Enter,
                                                 )))
                                                 .font(egui::FontId::proportional(13.6))
-                                                .margin(egui::vec2(8.0, 10.0))
+                                                .margin(egui::vec2(4.0, 10.0))
                                                 .frame(false)
                                                 .char_limit(4_000)
                                                 .show(ui)
@@ -21470,6 +22332,22 @@ impl CaperApp {
                                 })
                                 .inner
                                 .clicked();
+                            record = mic_button(
+                                ui,
+                                can_record,
+                                if self.gif_picker.is_some() {
+                                    "Close the GIF picker first"
+                                } else if has_voice {
+                                    "Remove the voice message to record another"
+                                } else if full {
+                                    "Remove a file to add a voice message"
+                                } else if editable {
+                                    "Finish the current voice message first"
+                                } else {
+                                    "Wait for this message to send"
+                                },
+                                28.0,
+                            );
                             send = send_icon_button(
                                 ui,
                                 can_send,
@@ -21538,11 +22416,11 @@ impl CaperApp {
             let text = draft.text.clone();
             self.open_composer_emoji(EmojiTarget::Profile(person.to_owned()), &output, &text);
         }
-        if let Some(media) = pick {
+        if pick {
             let (sender, receiver) = std::sync::mpsc::channel();
             let context = ui.ctx().clone();
             std::thread::spawn(move || {
-                let files = attach_dialog(media).pick_files().unwrap_or_default();
+                let files = attach_dialog().pick_files().unwrap_or_default();
                 let _ = sender.send(files);
                 context.request_repaint();
             });
@@ -21571,6 +22449,17 @@ impl CaperApp {
         if let Some(error) = &draft.error {
             ui.label(RichText::new(error).size(12.0).color(ERROR));
         }
+        let mut voice_retry = None;
+        if draft.voice_retry.is_some() && !draft.sending {
+            ui.horizontal(|ui| {
+                if ui.small_button("Retry voice message").clicked() {
+                    voice_retry = Some(true);
+                }
+                if ui.small_button("Discard").clicked() {
+                    voice_retry = Some(false);
+                }
+            });
+        }
         if draft.needs_upload()
             && !busy
             && !self.is_blocked(person)
@@ -21583,6 +22472,12 @@ impl CaperApp {
             draft.upload_files(&api, token, (person, username), settings, ui.ctx());
         }
         self.profile_drafts.insert(person.to_owned(), draft);
+        if let Some(retry) = voice_retry {
+            self.profile_voice_retry(person, retry);
+        }
+        if record {
+            self.start_profile_voice_recording(ui.ctx(), person, username);
+        }
         send || (enter && can_send)
     }
 
@@ -21629,6 +22524,7 @@ impl CaperApp {
                 cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 retrying: false,
                 open_only: false,
+                voice_only: false,
                 direct: None,
             }),
         });
@@ -21681,6 +22577,7 @@ impl CaperApp {
                 cancel,
                 retrying: draft.retry_id.is_some(),
                 open_only,
+                voice_only: false,
                 direct: None,
             }),
         });
@@ -21758,9 +22655,17 @@ impl CaperApp {
             return;
         }
         let Some(dialog) = self.dialog.clone() else {
+            self.reset_direct_lookup();
             self.dialog_shown = None;
             return;
         };
+        if !matches!(dialog, Dialog::StartDirect)
+            || self
+                .direct_lookup_scope
+                .is_some_and(|scope| scope != (self.generation, self.navigation))
+        {
+            self.reset_direct_lookup();
+        }
         // A dialog's first field takes focus once, in the frame it opens.
         let kind = std::mem::discriminant(&dialog);
         self.focus_dialog_field = self.dialog_shown.replace(kind) != Some(kind);
@@ -21888,6 +22793,8 @@ impl CaperApp {
         let join_dialog = matches!(dialog, Dialog::JoinInvite);
         // These requests navigate when they finish, so their dialogs stay open
         // (Cancel, close, Escape and backdrop do nothing) until then.
+        let lookup_pending =
+            matches!(dialog, Dialog::StartDirect) && self.direct_lookup_pending.is_some();
         let hold_while_loading = return_to.is_some()
             || matches!(
                 dialog,
@@ -21905,6 +22812,7 @@ impl CaperApp {
             Dialog::Settings
             | Dialog::Profile
             | Dialog::WhatsNew
+            | Dialog::CreateSpace
             | Dialog::CreateChannel
             | Dialog::StartDirect
             | Dialog::JoinInvite => true,
@@ -22134,8 +23042,10 @@ impl CaperApp {
                                                 ui.label("Enter an exact username.");
                                                 ui.add_space(12.0);
                                                 let id = egui::Id::new("direct-username");
-                                                let people: Vec<_> = self.people.iter().flatten().map(mentions::Person::from).collect();
-                                                let username = people_field(ui, id, &mut self.people_suggestions, &mut self.member_username, &people, |ui, value| {
+                                                let pending = self.loading || lookup_pending;
+                                                let people: Vec<_> = self.people.iter().flatten().filter(|_| !pending).map(mentions::Person::from).collect();
+                                                let before = self.member_username.clone();
+                                                let username = ui.add_enabled_ui(!pending, |ui| people_field(ui, id, &mut self.people_suggestions, &mut self.member_username, &people, |ui, value| {
                                                     let field = ui.add_sized(
                                                         [ui.available_width(), 42.0],
                                                         egui::TextEdit::singleline(value)
@@ -22147,27 +23057,42 @@ impl CaperApp {
                                                     *value = normalize_username(value);
                                                     focus_frame(ui, &field);
                                                     field
-                                                });
+                                                })).inner;
                                                 if self.focus_dialog_field {
                                                     username.request_focus();
                                                 }
-                                                if username.changed() {
+                                                if before != self.member_username {
+                                                    self.reset_direct_lookup();
                                                     self.error = None;
                                                 }
+                                                let recipient = self.direct_recipient.as_ref()
+                                                    .or_else(|| self.people.iter().flatten().find(|person| person.username == self.member_username));
+                                                let confirmed = recipient.is_some();
+                                                if let Some(person) = recipient {
+                                                    ui.label(format!("{} · @{}", person.display_name, person.username));
+                                                }
+                                                let recipient_username = recipient.map(|person| person.username.clone());
                                                 let (cancel, open) = dialog_buttons(
                                                     ui,
                                                     "Cancel",
-                                                    if self.loading { "Opening…" } else { "Open conversation" },
+                                                    if self.loading { "Opening…" } else if lookup_pending { "Finding…" } else if confirmed { "Open conversation" } else { "Find person" },
                                                     PRIMARY_TONE,
-                                                    !self.loading,
-                                                    !self.loading && self.member_username.len() >= 3,
+                                                    !pending,
+                                                    !pending && self.member_username.len() >= 3,
                                                 );
                                                 if cancel.clicked() { close = true; }
                                                 if open.clicked()
                                                     && let Some(token) = self.token.clone() {
-                                                    self.loading = true;
                                                     self.error = None;
-                                                    self.worker.send(Command::CreateDirect { generation: self.generation, navigation: self.navigation, token, username: self.member_username.trim().to_owned() });
+                                                    if let Some(username) = recipient_username {
+                                                        self.loading = true;
+                                                        self.worker.send(Command::CreateDirect { generation: self.generation, navigation: self.navigation, token, username });
+                                                    } else {
+                                                        self.direct_lookup_request += 1;
+                                                        self.direct_lookup_pending = Some((self.generation, self.navigation));
+                                                        self.direct_lookup_scope = self.direct_lookup_pending;
+                                                        self.worker.send(Command::LookupDirect { generation: self.generation, navigation: self.navigation, request: self.direct_lookup_request, token, username: self.member_username.clone() });
+                                                    }
                                                 }
                                             }
                                         }
@@ -22246,11 +23171,16 @@ impl CaperApp {
         }
         // A join navigates when it finishes, so its dialog stays until then.
         let joining = join_dialog && self.invite_join.joining;
-        if close && !(self.loading && hold_while_loading) && !joining {
+        if close
+            && !(self.loading && hold_while_loading)
+            && !joining
+            && self.direct_lookup_pending.is_none()
+        {
             if whats_new {
                 self.whats_new.dismiss();
             }
             self.dialog = return_to;
+            self.reset_direct_lookup();
             self.error = None;
         }
     }
@@ -22371,6 +23301,17 @@ impl CaperApp {
                 self.effects.play(Effect::ToggleOn);
             }
         }
+        ui.add_space(18.0);
+        ui.separator();
+        ui.add_space(18.0);
+        ui.label(bold("Voice messages").size(12.0).color(MUTED));
+        ui.add_space(6.0);
+        settings_switch(
+            ui,
+            &mut self.voice_send_on_stop,
+            "Send voice messages as soon as I stop recording",
+            "Off: a stopped recording waits in the composer with your text and files until you press Send.",
+        );
         ui.add_space(18.0);
         ui.separator();
         ui.add_space(18.0);
@@ -22602,7 +23543,7 @@ impl CaperApp {
                             24.0,
                             false,
                         );
-                        ui.label(&account.display_name);
+                        emoji::name_label(ui, &account.display_name, egui::Sense::hover());
                         if !account.username.is_empty() {
                             ui.label(
                                 RichText::new(format!("@{}", account.username))
@@ -23282,6 +24223,12 @@ impl CaperApp {
         };
         let rect = egui::Rect::from_min_size(outer.min, egui::vec2(side, side));
         let space_icon = matches!(target, pictures::Target::SpaceIcon(_));
+        let mascot = !space_icon
+            && !custom
+            && self
+                .account
+                .as_ref()
+                .is_some_and(|account| caper_avatar_index(account.avatar_id).is_some());
         let corner = if space_icon {
             16.0
         } else {
@@ -23309,13 +24256,23 @@ impl CaperApp {
         } else {
             None
         };
-        ui.painter().rect_filled(rect, corner, RAISED);
+        if !mascot {
+            ui.painter().rect_filled(rect, corner, RAISED);
+        }
         face(ui, rect);
         if busy.is_some() {
-            ui.painter()
-                .rect_filled(rect, corner, SURFACE.gamma_multiply(0.45));
+            if mascot {
+                ui.painter()
+                    .circle_filled(rect.center(), side / 2.0, SURFACE.gamma_multiply(0.45));
+            } else {
+                ui.painter()
+                    .rect_filled(rect, corner, SURFACE.gamma_multiply(0.45));
+            }
         }
-        if !space_icon || dropping || response.has_focus() {
+        if mascot && (dropping || response.has_focus()) {
+            ui.painter()
+                .circle_stroke(rect.center(), side / 2.0, Stroke::new(2.0, TERRACOTTA));
+        } else if !mascot && (!space_icon || dropping || response.has_focus()) {
             ui.painter().rect_stroke(
                 rect,
                 corner,
@@ -23388,17 +24345,55 @@ impl CaperApp {
             change = response.clicked();
         }
         ui.add_space(4.0);
+        if target == pictures::Target::Avatar
+            && self
+                .account
+                .as_ref()
+                .is_some_and(|account| account.avatar_asset.is_none())
+        {
+            let regenerate = ui.add_enabled(
+                idle && !self.loading,
+                egui::Button::image(
+                    egui::Image::new(egui::include_image!("../resources/icons/rotate-ccw.svg"))
+                        .tint(TEXT)
+                        .fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                )
+                .min_size(egui::vec2(32.0, 32.0))
+                .corner_radius(16.0),
+            );
+            regenerate.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    idle && !self.loading,
+                    "Regenerate avatar",
+                )
+            });
+            if regenerate.on_hover_text("Regenerate avatar").clicked()
+                && let Some(token) = self.token.clone()
+            {
+                self.picture_edit.error = None;
+                self.picture_edit.busy = Some((pictures::Target::Avatar, false));
+                self.worker.send(Command::RegenerateAvatar {
+                    epoch: self.account_epoch,
+                    token,
+                });
+            }
+        }
         if let Some(removing) = busy {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().size(12.0).color(MUTED));
                 ui.label(
-                    RichText::new(if self.picture_edit.gallery.is_some() {
-                        "Saving…"
-                    } else if removing {
-                        "Removing…"
-                    } else {
-                        "Uploading…"
-                    })
+                    RichText::new(
+                        if self.picture_edit.gallery.is_some()
+                            || (target == pictures::Target::Avatar && !custom && !removing)
+                        {
+                            "Saving…"
+                        } else if removing {
+                            "Removing…"
+                        } else {
+                            "Uploading…"
+                        },
+                    )
                     .size(12.0)
                     .color(MUTED),
                 );
@@ -24459,7 +25454,11 @@ impl CaperApp {
                     false,
                 );
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(&member.display_name).strong());
+                    emoji::name_label(
+                        ui,
+                        RichText::new(&member.display_name).strong(),
+                        egui::Sense::hover(),
+                    );
                     ui.label(
                         RichText::new(format!(
                             "@{}{}",
@@ -25257,22 +26256,9 @@ fn send_icon_button_sized(
     response.on_hover_text(label)
 }
 
-/// The attach panel's system dialog: Photos and videos lists media first;
-/// Files shows everything.
-fn attach_dialog(media: bool) -> rfd::FileDialog {
-    let dialog = rfd::FileDialog::new().set_title("Attach files");
-    if !media {
-        return dialog;
-    }
-    dialog
-        .add_filter(
-            "Photos and videos",
-            &[
-                "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "avif", "bmp", "tif", "tiff",
-                "mp4", "mov", "m4v", "webm", "mkv", "avi", "mpeg", "mpg", "3gp",
-            ],
-        )
-        .add_filter("All files", &["*"])
+/// The attach menu's "Upload a file": the system dialog for any file.
+fn attach_dialog() -> rfd::FileDialog {
+    rfd::FileDialog::new().set_title("Upload a file")
 }
 
 fn drawn_icon_button(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Response {
@@ -25858,6 +26844,7 @@ fn carries_identities(event: &Event) -> bool {
             | Event::MediaStatus { .. }
             | Event::VoiceChecked { .. }
             | Event::AssetUsage { .. }
+            | Event::Klipy { .. }
             | Event::AttachmentUrls { .. }
             | Event::Upload { .. }
             | Event::Gateway(
@@ -25936,6 +26923,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Archive => egui::include_image!("../resources/icons/archive.svg"),
         NavIcon::Restore => egui::include_image!("../resources/icons/archive-restore.svg"),
         NavIcon::Brush => egui::include_image!("../resources/icons/brush.svg"),
+        NavIcon::Eraser => egui::include_image!("../resources/icons/eraser.svg"),
         NavIcon::Crop => egui::include_image!("../resources/icons/crop.svg"),
         NavIcon::Type => egui::include_image!("../resources/icons/type.svg"),
         NavIcon::Undo => egui::include_image!("../resources/icons/undo-2.svg"),
@@ -25944,6 +26932,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Eye => egui::include_image!("../resources/icons/eye.svg"),
         NavIcon::EyeOff => egui::include_image!("../resources/icons/eye-off.svg"),
         NavIcon::Trash => egui::include_image!("../resources/icons/trash-2.svg"),
+        NavIcon::Search => egui::include_image!("../resources/icons/search.svg"),
     };
     let image = egui::Image::new(source).tint(color);
     if let Ok(egui::load::TexturePoll::Ready { texture }) =
@@ -26304,7 +27293,8 @@ fn strip_lead(ui: &egui::Ui, inner: egui::Rect, text: &str, width: f32) -> f32 {
         (width - (left - inner.left())).max(1.0),
     );
     let end = left + galley.size().x;
-    ui.painter().galley(
+    emoji::paint_galley(
+        ui.painter(),
         egui::pos2(left, inner.center().y - galley.size().y / 2.0),
         galley,
         TEXT,
@@ -26722,7 +27712,8 @@ fn channel_button(
     } else {
         // Long names end in "…" rather than a letter cut in half.
         let label = truncated_galley(ui, name, name_font, color, name_right - rect.left() - 32.0);
-        ui.painter().galley(
+        emoji::paint_galley(
+            ui.painter(),
             egui::pos2(
                 rect.left() + 32.0,
                 rect.center().y - 1.0 - label.size().y / 2.0,
@@ -26807,7 +27798,7 @@ fn truncated_galley(
         egui::TextFormat::simple(font, color),
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(width.max(1.0));
-    ui.fonts_mut(|fonts| fonts.layout_job(job))
+    emoji::layout_job(ui, job)
 }
 
 /// A sidebar row's name and its quieter suffix ("you", "@username"), cut
@@ -26833,9 +27824,10 @@ fn paint_row_name(
         0.0,
         egui::TextFormat::simple(suffix_font.clone(), suffix_color),
     );
-    let whole = ui.fonts_mut(|fonts| fonts.layout_job(whole));
+    let whole = emoji::layout_job(ui, whole);
     if whole.size().x <= width {
-        ui.painter().galley(
+        emoji::paint_galley(
+            ui.painter(),
             egui::pos2(left_center.x, left_center.y - whole.size().y / 2.0),
             whole,
             name_color,
@@ -26860,11 +27852,16 @@ fn paint_row_name(
         (rest >= 24.0).then(|| truncated_galley(ui, suffix, suffix_font, suffix_color, rest))
     };
     let suffix_left = left_center.x + name.size().x + GAP;
-    ui.painter()
-        .galley(egui::pos2(left_center.x, top), name, name_color);
+    emoji::paint_galley(
+        ui.painter(),
+        egui::pos2(left_center.x, top),
+        name,
+        name_color,
+    );
     if let Some(suffix) = suffix {
         // Share the name's baseline.
-        ui.painter().galley(
+        emoji::paint_galley(
+            ui.painter(),
             egui::pos2(suffix_left, bottom - suffix.size().y),
             suffix,
             suffix_color,
@@ -26926,8 +27923,8 @@ fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32, key: &str
     let seed = key.bytes().fold(2166136261_u32, |hash, byte| {
         (hash ^ u32::from(byte)).wrapping_mul(16777619)
     });
-    let stiffness = 140.0 + (seed & 255) as f32 / 255.0 * 100.0;
-    let damping = 11.0 + ((seed >> 8) & 255) as f32 / 255.0 * 7.0;
+    let stiffness = 560.0 + (seed & 255) as f32 / 255.0 * 400.0;
+    let damping = 28.0 + ((seed >> 8) & 255) as f32 / 255.0 * 14.0;
     let impulse = 1.0 + ((seed >> 16) & 255) as f32 / 255.0 * 0.4;
     let limit = 5.0 + (seed >> 24) as f32 / 255.0 * 2.0;
     let speed_limit = limit * 16.0;
@@ -26976,7 +27973,8 @@ fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32, key: &str
         .add(egui::epaint::CubicBezierShape::from_points_stroke(
             [
                 start,
-                start + egui::vec2(-7.0 + motion.displacement, -span * 0.3),
+                // Keep the lower bend inward of the cup back throughout its sway.
+                start + egui::vec2(8.0 + motion.displacement, -span * 0.3),
                 end + egui::vec2(-30.0 + motion.displacement, span * 0.3),
                 end,
             ],
@@ -27078,7 +28076,11 @@ fn feedback_row(
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
-                        ui.label(bold(&report.reporter.display_name).size(13.0));
+                        emoji::name_label(
+                            ui,
+                            bold(&report.reporter.display_name).size(13.0),
+                            egui::Sense::hover(),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new(feedback::relative_time(&report.created_at, now))
@@ -27315,14 +28317,15 @@ fn message_row<R>(
                                 if author.admin {
                                     ui.spacing_mut().item_spacing.x = 4.0;
                                 }
-                                let name =
-                                    ui.add(egui::Label::new(bold(&author.name).size(13.0)).sense(
-                                        if profile {
-                                            egui::Sense::click()
-                                        } else {
-                                            egui::Sense::hover()
-                                        },
-                                    ));
+                                let name = emoji::name_label(
+                                    ui,
+                                    bold(&author.name).size(13.0),
+                                    if profile {
+                                        egui::Sense::click()
+                                    } else {
+                                        egui::Sense::hover()
+                                    },
+                                );
                                 ui.spacing_mut().item_spacing.x = header_spacing;
                                 if profile {
                                     if name.hovered() {
@@ -27373,6 +28376,1396 @@ fn message_row<R>(
             (None, None, result)
         }
     }
+}
+
+/// Voice messages: recording from a composer, uploading and sending them on
+/// their own, and the one player shared by every voice message.
+impl CaperApp {
+    /// Whether the composer for `root` (a thread's, or the conversation's
+    /// `None`) shows the recording bar instead of its input row.
+    fn recording_in(&self, root: Option<&str>) -> bool {
+        self.voice_recording.as_ref().is_some_and(|recording| {
+            recording.profile.is_none()
+                && recording.root.as_deref() == root
+                && self.selected_channel.as_deref() == Some(recording.channel.as_str())
+        })
+    }
+
+    /// Whether `person`'s profile card composer shows the recording bar.
+    fn recording_for_profile(&self, person: &str) -> bool {
+        self.voice_recording
+            .as_ref()
+            .and_then(|recording| recording.profile.as_ref())
+            .is_some_and(|(id, _)| id == person)
+    }
+
+    /// Opens the microphone, stopping any voice message that plays. Tests
+    /// never open a real microphone; they deliver recorder events.
+    fn voice_recorder(&mut self, context: &egui::Context) -> Option<voice_note::Recorder> {
+        self.stop_voice_playback();
+        context.request_repaint();
+        (!cfg!(test)).then(|| {
+            voice_note::Recorder::start(
+                self.voice.preferences.input.clone(),
+                self.voice.preferences.input_percent,
+                context.clone(),
+            )
+        })
+    }
+
+    fn start_voice_recording(&mut self, context: &egui::Context, root: Option<String>) {
+        let Some(channel) = self.selected_channel.clone() else {
+            return;
+        };
+        if !self.mic_state(root.as_deref()).0 {
+            return;
+        }
+        self.error = None;
+        let recorder = self.voice_recorder(context);
+        self.voice_recording = Some(VoiceRecording::new(channel, root, recorder));
+    }
+
+    /// The profile card's microphone: the voice message goes to the
+    /// person's DM through the card's own send (`profile_dm`).
+    fn start_profile_voice_recording(
+        &mut self,
+        context: &egui::Context,
+        person: &str,
+        username: &str,
+    ) {
+        if self.voice_recording.is_some()
+            || self.gif_picker.is_some()
+            || self
+                .profile_drafts
+                .get(person)
+                .is_some_and(profile_dm::Draft::has_voice)
+        {
+            return;
+        }
+        if let Some(draft) = self.profile_drafts.get_mut(person) {
+            draft.error = None;
+        }
+        let recorder = self.voice_recorder(context);
+        self.voice_recording = Some(VoiceRecording::for_profile(person, username, recorder));
+    }
+
+    /// Sends a recorded voice message alone to the person's DM, as the
+    /// card's Send does, leaving the card's text and files as they are.
+    fn send_profile_voice(&mut self, send: Box<profile_dm::Send>) {
+        let Some(token) = self.token.clone() else {
+            return;
+        };
+        let draft = self.profile_drafts.entry(send.person.clone()).or_default();
+        draft.sending = true;
+        draft.error = None;
+        draft.voice_retry = None;
+        draft.status = Some("Sending voice message…".into());
+        self.profile_send_cancel = Some(send.cancel.clone());
+        self.worker.send(Command::SendProfile {
+            epoch: self.account_epoch,
+            person: send.person.clone(),
+            token,
+            send,
+        });
+    }
+
+    /// Retry (`true`) or Discard a voice message the card couldn't send.
+    fn profile_voice_retry(&mut self, person: &str, retry: bool) {
+        let Some(mut send) = self
+            .profile_drafts
+            .get_mut(person)
+            .and_then(|draft| draft.voice_retry.take())
+        else {
+            return;
+        };
+        if let Some(draft) = self.profile_drafts.get_mut(person) {
+            draft.error = None;
+        }
+        if retry {
+            send.cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            self.send_profile_voice(send);
+        } else {
+            self.cancel_assets(
+                send.files
+                    .iter()
+                    .filter_map(|file| file.attachment.as_ref().map(|file| file.id.clone()))
+                    .collect(),
+            );
+        }
+    }
+
+    /// Trash or Escape: dropping the recorder closes the microphone and
+    /// nothing is uploaded.
+    fn discard_voice_recording(&mut self) {
+        self.voice_recording = None;
+    }
+
+    /// Send or Enter: stop, then upload and send once encoded.
+    fn finish_voice_recording(&mut self) {
+        if let Some(recording) = &mut self.voice_recording
+            && recording.started.is_some()
+            && !recording.sending
+        {
+            recording.sending = true;
+            if let Some(recorder) = &recording.recorder {
+                recorder.finish();
+            }
+        }
+    }
+
+    fn voice_recorder_event(&mut self, event: voice_note::RecorderEvent) {
+        let Some(recording) = &mut self.voice_recording else {
+            return;
+        };
+        match event {
+            voice_note::RecorderEvent::Started => recording.started = Some(Instant::now()),
+            // Under a second is a tap: nothing is uploaded.
+            voice_note::RecorderEvent::TooShort => self.voice_recording = None,
+            voice_note::RecorderEvent::Failed(error) => {
+                match self
+                    .voice_recording
+                    .take()
+                    .and_then(|recording| recording.profile)
+                {
+                    Some((person, _)) => {
+                        self.profile_drafts.entry(person).or_default().error = Some(error);
+                    }
+                    None => self.error = Some(error),
+                }
+            }
+            voice_note::RecorderEvent::Ready(prepared) => {
+                let Some(recording) = self.voice_recording.take() else {
+                    return;
+                };
+                let prepared = std::sync::Arc::new(*prepared);
+                // By default a stopped recording waits in the composer.
+                if !self.voice_send_on_stop {
+                    match recording.profile {
+                        Some((person, _)) => {
+                            let draft = self.profile_drafts.entry(person).or_default();
+                            draft.files.push(profile_dm::File::voice(prepared));
+                        }
+                        None => self.stage_voice(recording.channel, recording.root, prepared),
+                    }
+                    return;
+                }
+                if let Some((person, username)) = recording.profile {
+                    let send = Box::new(profile_dm::Send {
+                        person,
+                        username,
+                        name: self
+                            .account
+                            .as_ref()
+                            .and_then(|account| account.display_name.clone())
+                            .unwrap_or_default(),
+                        client_id: uuid::Uuid::new_v4().to_string(),
+                        text: String::new(),
+                        files: vec![profile_dm::File::voice(prepared)],
+                        settings: self.uploads.clone(),
+                        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                        retrying: false,
+                        open_only: false,
+                        voice_only: true,
+                        direct: None,
+                    });
+                    self.send_profile_voice(send);
+                    return;
+                }
+                // The reply shown above the composer goes with the voice message.
+                let reply = self
+                    .reply_targets
+                    .remove(recording.root.as_deref().unwrap_or("channel"));
+                self.draft_keys += 1;
+                let key = self.draft_keys;
+                self.voice_sends.push(VoiceSend {
+                    key,
+                    channel: recording.channel,
+                    root: recording.root,
+                    reply,
+                    prepared,
+                    progress: 0.0,
+                    uploading: false,
+                    error: None,
+                    attachment: None,
+                    cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                });
+                self.upload_voice(key);
+            }
+        }
+    }
+
+    /// Stages a stopped recording in its composer beside any files: it
+    /// uploads now (so transcription starts) and goes with the next Send.
+    fn stage_voice(
+        &mut self,
+        channel: String,
+        root: Option<String>,
+        prepared: std::sync::Arc<uploads::Prepared>,
+    ) {
+        let draft = self.voice_draft(channel.clone(), root, prepared);
+        let key = draft.key;
+        if self.selected_channel.as_ref() == Some(&channel) {
+            self.draft_files.push(draft);
+        } else {
+            self.staged_files.entry(channel).or_default().push(draft);
+        }
+        self.retry_upload(key);
+    }
+
+    /// A composer file holding a recording, not yet uploaded.
+    fn voice_draft(
+        &mut self,
+        channel: String,
+        root: Option<String>,
+        prepared: std::sync::Arc<uploads::Prepared>,
+    ) -> DraftUpload {
+        self.draft_keys += 1;
+        let key = self.draft_keys;
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        DraftUpload {
+            key,
+            slot: key,
+            spoiler: false,
+            channel,
+            thread_root_id: root,
+            name: prepared.name.clone(),
+            source_name: prepared.name.clone(),
+            kind: model::AttachmentKind::Audio,
+            local_path: None,
+            editable: None,
+            edit: None,
+            source_scratch: None,
+            source_size: prepared.size,
+            stored_size: Some(prepared.size),
+            compressing: None,
+            progress: 0.0,
+            error: None,
+            attachment: None,
+            uploaded_at: None,
+            upload_expired: false,
+            uploading: false,
+            prepared: Some(prepared),
+            thumbnail_image: None,
+            thumbnail: None,
+            cancel,
+        }
+    }
+
+    /// Uploads (or retries) the recorded file as it is: the prepared voice
+    /// file skips the composer's compression.
+    fn upload_voice(&mut self, key: u64) {
+        let token = self.token.clone();
+        let settings = self.uploads.clone().unwrap_or_default();
+        let Some(send) = self.voice_sends.iter_mut().find(|send| send.key == key) else {
+            return;
+        };
+        let Some(token) = token else {
+            send.error = Some("Failed to upload.".into());
+            return;
+        };
+        send.uploading = true;
+        send.error = None;
+        send.progress = 0.0;
+        self.worker.send(Command::Upload {
+            key,
+            token,
+            channel: send.channel.clone(),
+            path: std::path::PathBuf::new(),
+            name: send.prepared.name.clone(),
+            edit: None,
+            source_scratch: None,
+            prepared: Some(send.prepared.clone()),
+            settings,
+            cancel: send.cancel.clone(),
+        });
+    }
+
+    /// Takes a voice upload's event; any other upload's comes back.
+    fn voice_upload_update(
+        &mut self,
+        key: u64,
+        update: worker::UploadUpdate,
+    ) -> Option<worker::UploadUpdate> {
+        let Some(send) = self.voice_sends.iter_mut().find(|send| send.key == key) else {
+            return Some(update);
+        };
+        match update {
+            worker::UploadUpdate::Progress(fraction) => {
+                send.progress = send.progress.max(fraction);
+            }
+            worker::UploadUpdate::Finished(Ok(attachment)) => {
+                send.uploading = false;
+                send.progress = 1.0;
+                send.attachment = Some(attachment);
+            }
+            worker::UploadUpdate::Finished(Err(error)) => {
+                send.uploading = false;
+                send.error = Some(error.message);
+            }
+            _ => {}
+        }
+        self.send_voice_messages();
+        None
+    }
+
+    fn discard_voice_send(&mut self, key: u64) {
+        if let Some(index) = self.voice_sends.iter().position(|send| send.key == key) {
+            let send = self.voice_sends.remove(index);
+            send.cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(attachment) = send.attachment {
+                self.cancel_assets(vec![attachment.id]);
+            }
+        }
+    }
+
+    /// Sends the oldest uploaded voice message once the conversation has no
+    /// other pending send. It goes on its own, with the completed upload's
+    /// description: the composer's text and files stay where they are.
+    fn send_voice_messages(&mut self) {
+        if self.pending.is_some() {
+            return;
+        }
+        let (Some(chat_token), Some(channel)) = (
+            self.session.as_ref().map(|session| session.token.clone()),
+            self.selected_channel.clone(),
+        ) else {
+            return;
+        };
+        let Some(index) = self.voice_sends.iter().position(|send| {
+            send.channel == channel && send.attachment.is_some() && send.error.is_none()
+        }) else {
+            return;
+        };
+        let send = self.voice_sends.remove(index);
+        let Some(attachment) = send.attachment else {
+            return;
+        };
+        let attachment_ids = vec![attachment.id.clone()];
+        let mut pending = PendingSend::prepare(None, "", vec![attachment]);
+        pending.thread_root_id = send.root;
+        pending.reply_to = send.reply;
+        let client_id = pending.id.clone();
+        let thread_root_id = pending.thread_root_id.clone();
+        let reply_to_id = pending.reply_to.as_ref().map(|reply| reply.id.clone());
+        self.pending = Some(pending);
+        self.pending_recovered = false;
+        self.pending_needs_upload = false;
+        self.worker.send(Command::Send {
+            generation: self.generation,
+            token: self.token.clone(),
+            chat_token,
+            channel,
+            client_id,
+            text: String::new(),
+            attachment_ids,
+            spoiler_attachment_ids: Vec::new(),
+            thread_root_id,
+            broadcast: false,
+            reply_to_id,
+            gif: None,
+            suppress_embeds: false,
+        });
+    }
+
+    /// Every pass: the recorder's news, the live meter, queued sends and the
+    /// player's clock. A recording, upload or player belongs to the open
+    /// conversation; leaving it discards them.
+    fn poll_voice(&mut self, context: &egui::Context) {
+        let channel = self.selected_channel.clone();
+        let card = self
+            .mention_card
+            .as_ref()
+            .and_then(|card| card.pill.entry.id.clone());
+        if self
+            .voice_recording
+            .as_ref()
+            .is_some_and(|recording| match &recording.profile {
+                // A card's recording ends with its card.
+                Some((person, _)) => card.as_ref() != Some(person),
+                None => {
+                    channel.as_ref() != Some(&recording.channel)
+                        || recording.root.as_ref().is_some_and(|root| {
+                            self.thread_view
+                                .as_ref()
+                                .is_none_or(|thread| &thread.root != root)
+                        })
+                }
+            })
+        {
+            self.discard_voice_recording();
+        }
+        let gone: Vec<_> = self
+            .voice_sends
+            .iter()
+            .filter(|send| channel.as_ref() != Some(&send.channel))
+            .map(|send| send.key)
+            .collect();
+        for key in gone {
+            self.discard_voice_send(key);
+        }
+        while let Some(event) = self
+            .voice_recording
+            .as_ref()
+            .and_then(|recording| recording.recorder.as_ref())
+            .and_then(voice_note::Recorder::poll)
+        {
+            self.voice_recorder_event(event);
+        }
+        if let Some(recording) = &mut self.voice_recording {
+            if recording.started.is_some() && !recording.sending {
+                if let Some(recorder) = &recording.recorder {
+                    let level = recorder.level();
+                    recording.sample(level, Instant::now());
+                }
+                // The recorder stops itself at 10:00; the message then
+                // stages (or sends).
+                if recording.elapsed() >= voice_note::MAX_DURATION {
+                    recording.sending = true;
+                }
+            }
+            if recording.recorder.is_some() {
+                // About 60 Hz for a smooth meter; reduced motion steps per bar.
+                context.request_repaint_after(if motion::reduced() {
+                    voice_note::LIVE_INTERVAL
+                } else {
+                    voice_note::LIVE_SAMPLE
+                });
+            }
+        }
+        self.send_voice_messages();
+        if self
+            .voice_playback
+            .as_ref()
+            .is_some_and(|playback| !self.voice_message_loaded(&playback.id))
+        {
+            self.stop_voice_playback();
+        }
+        if let Some(player) = self
+            .voice_playback
+            .as_mut()
+            .and_then(|playback| playback.player.as_mut())
+        {
+            player.update(context);
+            match player.state() {
+                // Reaching the end returns the message to idle.
+                player::State::Ended => self.stop_voice_playback(),
+                // Progress moves every frame, not in coarse steps.
+                player::State::Playing => context.request_repaint(),
+                _ => {}
+            }
+        }
+    }
+
+    /// The playing voice message is still in the open conversation's
+    /// history or pins, or still staged in a composer.
+    fn voice_message_loaded(&self, id: &str) -> bool {
+        if id.starts_with("staged-voice-") {
+            return self
+                .staged_voices()
+                .any(|prepared| staged_voice_id(prepared) == id);
+        }
+        let has = |message: &model::Message| {
+            message
+                .content
+                .attachments
+                .iter()
+                .chain(
+                    message
+                        .forward
+                        .iter()
+                        .filter_map(|forward| forward.message.as_ref())
+                        .flat_map(|forwarded| &forwarded.content.attachments),
+                )
+                .any(|attachment| attachment.id == id)
+        };
+        self.timeline.messages().any(has)
+            || self.timeline.pinned_messages().any(has)
+            || self.pending.as_ref().is_some_and(|pending| {
+                pending
+                    .attachments
+                    .iter()
+                    .any(|attachment| attachment.id == id)
+            })
+    }
+
+    fn stop_voice_playback(&mut self) {
+        if let Some(playback) = self.voice_playback.take()
+            && let (Some(proxy), Some(local)) = (&self.media_proxy, &playback.local)
+        {
+            proxy.remove(local);
+        }
+    }
+
+    /// Play or pause `attachment` (or play it from `at` ms), pausing any
+    /// other voice message first: one plays at a time, app-wide.
+    fn play_voice(&mut self, attachment: &model::Attachment, at: Option<u64>) {
+        if let Some(player) = self
+            .voice_playback
+            .as_mut()
+            .filter(|playback| playback.id == attachment.id)
+            .and_then(|playback| playback.player.as_mut())
+        {
+            match at {
+                Some(ms) => player.seek(ms, true),
+                None => player.toggle(),
+            }
+            return;
+        }
+        self.stop_voice_playback();
+        let failed = |message: &str| VoicePlayback {
+            id: attachment.id.clone(),
+            player: None,
+            local: None,
+            _scratch: None,
+            error: Some(message.into()),
+        };
+        let Some(binary) = ffmpeg::binary() else {
+            self.voice_playback = Some(failed(
+                "Voice playback needs the FFmpeg that ships with Caper.",
+            ));
+            return;
+        };
+        let Some(url) = attachment
+            .url
+            .clone()
+            .filter(|url| api::media_url(url).is_some())
+        else {
+            self.voice_playback = Some(failed("This voice message can’t be played here."));
+            return;
+        };
+        if self.media_proxy.is_none() {
+            self.media_proxy = media_proxy::MediaProxy::start().ok();
+        }
+        let Some(proxy) = &self.media_proxy else {
+            self.voice_playback = Some(failed("This voice message can’t be played here."));
+            return;
+        };
+        let local = proxy.route(&url);
+        let mut player = player::Player::audio(binary, local.clone(), attachment.duration_ms);
+        match at {
+            Some(ms) => player.seek(ms, true),
+            None => player.play(),
+        }
+        self.voice_playback = Some(VoicePlayback {
+            id: attachment.id.clone(),
+            player: Some(player),
+            local: Some(local),
+            _scratch: None,
+            error: None,
+        });
+    }
+
+    /// Every recording staged in a composer: the conversation's (including
+    /// other conversations' kept drafts) and the profile cards'.
+    fn staged_voices(&self) -> impl Iterator<Item = &std::sync::Arc<uploads::Prepared>> {
+        self.draft_files
+            .iter()
+            .chain(self.staged_files.values().flatten())
+            .filter_map(DraftUpload::voice)
+            .chain(
+                self.profile_drafts
+                    .values()
+                    .flat_map(|draft| &draft.files)
+                    .filter_map(|file| file.voice.as_ref()),
+            )
+    }
+
+    /// Play or pause a staged recording from its own bytes (it may not have
+    /// finished uploading), one playing at a time as for sent messages.
+    fn play_staged_voice(&mut self, prepared: &std::sync::Arc<uploads::Prepared>, at: Option<u64>) {
+        let id = staged_voice_id(prepared);
+        if let Some(player) = self
+            .voice_playback
+            .as_mut()
+            .filter(|playback| playback.id == id)
+            .and_then(|playback| playback.player.as_mut())
+        {
+            match at {
+                Some(ms) => player.seek(ms, true),
+                None => player.toggle(),
+            }
+            return;
+        }
+        self.stop_voice_playback();
+        let source = ffmpeg::binary()
+            .ok_or("Voice playback needs the FFmpeg that ships with Caper.")
+            .and_then(|binary| {
+                prepared
+                    .on_disk()
+                    .map(|scratch| (binary, scratch))
+                    .map_err(|_| "This recording can’t be played here.")
+            });
+        self.voice_playback = Some(match source {
+            Ok((binary, scratch)) => {
+                let input = scratch.path().to_string_lossy().into_owned();
+                let mut player = player::Player::audio(binary, input, prepared.duration_ms);
+                match at {
+                    Some(ms) => player.seek(ms, true),
+                    None => player.play(),
+                }
+                VoicePlayback {
+                    id,
+                    player: Some(player),
+                    local: None,
+                    _scratch: Some(scratch),
+                    error: None,
+                }
+            }
+            Err(error) => VoicePlayback {
+                id,
+                player: None,
+                local: None,
+                _scratch: None,
+                error: Some(error.into()),
+            },
+        });
+    }
+
+    /// What a voice player shows for `id`: whether it plays, the position
+    /// (while playing or paused) and any error.
+    fn voice_play_state(&self, id: &str) -> (bool, Option<u64>, Option<String>) {
+        let Some(playback) = self
+            .voice_playback
+            .as_ref()
+            .filter(|playback| playback.id == id)
+        else {
+            return (false, None, None);
+        };
+        let state = playback
+            .player
+            .as_ref()
+            .map(|player| (player.state(), player.position_ms()));
+        let error = playback.error.clone().or_else(|| {
+            playback
+                .player
+                .as_ref()
+                .and_then(|player| player.error().map(str::to_owned))
+        });
+        (
+            matches!(
+                state,
+                Some((player::State::Playing | player::State::Loading, _))
+            ),
+            state.map(|(_, position)| position),
+            error,
+        )
+    }
+
+    /// Whether a composer's microphone records, and why not: voice messages
+    /// go wherever files can be attached, one recording at a time.
+    /// `root` names the composer: a thread's, or the conversation's `None`.
+    fn mic_state(&self, root: Option<&str>) -> (bool, &'static str) {
+        let staged = self.draft_files.iter().filter(|file| {
+            Some(&file.channel) == self.selected_channel.as_ref()
+                && file.thread_root_id.as_deref() == root
+        });
+        if !self.can_attach() {
+            (false, self.attach_unavailable_reason())
+        } else if self.voice_recording.is_some() {
+            (false, "Finish the current voice message first")
+        } else if self.gif_picker.is_some() {
+            (false, "Close the GIF picker first")
+        } else if staged.clone().any(|file| file.voice().is_some()) {
+            (false, "Remove the voice message to record another")
+        } else if staged.count() >= uploads::MAX_ATTACHMENTS {
+            (false, "Remove a file to add a voice message")
+        } else {
+            (true, "")
+        }
+    }
+
+    /// How many status rows [`Self::voice_send_status`] shows.
+    fn voice_status_rows(&self, root: Option<&str>) -> f32 {
+        self.voice_sends
+            .iter()
+            .filter(|send| {
+                Some(&send.channel) == self.selected_channel.as_ref()
+                    && send.root.as_deref() == root
+                    && (send.uploading || send.error.is_some())
+            })
+            .count() as f32
+    }
+
+    /// `[trash] ● 0:07 ▁▃▅▇▅ [send]` in place of the composer's input row.
+    /// Escape discards and Enter sends.
+    fn voice_recording_bar(&mut self, ui: &mut egui::Ui, height: f32) {
+        let Some(recording) = &self.voice_recording else {
+            return;
+        };
+        let started = recording.started.is_some() || recording.recorder.is_none();
+        let sending = recording.sending;
+        let elapsed = recording.elapsed();
+        let levels: Vec<f32> = recording.levels.iter().copied().collect();
+        let scroll = recording.scroll(Instant::now());
+        let send_on_stop = self.voice_send_on_stop;
+        let mut discard = false;
+        let mut send = false;
+        let progress =
+            motion::entrance(ui.ctx(), egui::Id::new("voice-recording-bar"), motion::FAST);
+        let width = ui.available_width();
+        motion::arrive(ui, progress, egui::vec2(0.0, 4.0), |ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 8.0, COMPOSER);
+            ui.painter().rect_stroke(
+                rect,
+                8.0,
+                Stroke::new(1.0, BORDER),
+                egui::StrokeKind::Inside,
+            );
+            let mut row = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect.shrink2(egui::vec2(7.0, 0.0)))
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            row.spacing_mut().item_spacing.x = 8.0;
+            discard =
+                drawn_icon_button(&mut row, NavIcon::Trash, "Discard voice message").clicked();
+            let (dot, _) = row.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            // The dot pulses while recording; reduced motion keeps it still.
+            let live = started && !sending;
+            let pulse = if live && !motion::reduced() {
+                let phase = (row.input(|input| input.time) * std::f64::consts::TAU / 1.2).cos();
+                0.6 + 0.4 * phase as f32
+            } else {
+                1.0
+            };
+            row.painter().circle_filled(
+                dot.center(),
+                4.5,
+                if live {
+                    TERRACOTTA.gamma_multiply(pulse)
+                } else {
+                    MUTED
+                },
+            );
+            let timer = voice_note::duration_label(elapsed.as_millis() as u64);
+            row.add(egui::Label::new(bold(timer.clone()).size(13.0).color(TEXT)).selectable(false))
+                .widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Label,
+                        true,
+                        format!("Recording voice message, {timer}"),
+                    )
+                });
+            let send_size = 32.0;
+            let meter_width = (row.available_width() - send_size - 8.0).max(0.0);
+            let (meter, _) = row.allocate_exact_size(
+                egui::vec2(meter_width, (height - 16.0).max(8.0)),
+                egui::Sense::hover(),
+            );
+            let note = if sending {
+                Some(if send_on_stop {
+                    "Sending…"
+                } else {
+                    "Adding to your message…"
+                })
+            } else if !started {
+                Some("Starting microphone…")
+            } else {
+                None
+            };
+            match note {
+                Some(note) => {
+                    row.painter().text(
+                        meter.left_center(),
+                        egui::Align2::LEFT_CENTER,
+                        note,
+                        egui::FontId::proportional(12.0),
+                        MUTED,
+                    );
+                }
+                None => paint_live_levels(row.painter(), meter, &levels, scroll),
+            }
+            // Stop stages the recording (or sends it, with the setting on).
+            send =
+                stop_button(&mut row, started && !sending, "Stop recording", send_size).clicked();
+        });
+        if !self.conversation_covered() {
+            if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                discard = true;
+            }
+            if ui.memory(|memory| memory.focused().is_none())
+                && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+            {
+                send = true;
+            }
+        }
+        if discard {
+            self.discard_voice_recording();
+        } else if send {
+            self.finish_voice_recording();
+        }
+    }
+
+    /// Voice messages of this composer still uploading or failed, above it.
+    fn voice_send_status(&mut self, ui: &mut egui::Ui, root: Option<&str>) {
+        let channel = self.selected_channel.clone();
+        let rows: Vec<_> = self
+            .voice_sends
+            .iter()
+            .filter(|send| {
+                Some(&send.channel) == channel.as_ref()
+                    && send.root.as_deref() == root
+                    && (send.uploading || send.error.is_some())
+            })
+            .map(|send| (send.key, send.progress, send.error.clone()))
+            .collect();
+        for (key, progress, error) in rows {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let (icon, _) =
+                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+                paint_icon(
+                    ui.painter(),
+                    icon,
+                    NavIcon::Mic,
+                    if error.is_some() { ERROR } else { MUTED },
+                );
+                match &error {
+                    Some(error) => {
+                        ui.label(
+                            RichText::new(format!("Voice message not sent. {error}"))
+                                .size(12.0)
+                                .color(ERROR),
+                        );
+                        if ui.small_button("Retry").clicked() {
+                            self.upload_voice(key);
+                        }
+                        if ui.small_button("Discard").clicked() {
+                            self.discard_voice_send(key);
+                        }
+                    }
+                    None => {
+                        ui.label(
+                            RichText::new(format!(
+                                "Sending voice message… {}%",
+                                (progress * 100.0).round() as u32
+                            ))
+                            .size(12.0)
+                            .color(MUTED),
+                        );
+                        if ui.small_button("Cancel").clicked() {
+                            self.discard_voice_send(key);
+                        }
+                    }
+                }
+            });
+            ui.add_space(6.0);
+        }
+    }
+
+    /// A voice message: play/pause, its waveform (click or drag to seek) and
+    /// time, then its transcript. Files that are not ready keep the card.
+    fn voice_message_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        attachment: &model::Attachment,
+        pending: bool,
+    ) {
+        if attachment.unavailable
+            || attachment.status != model::AttachmentStatus::Ready
+            || attachment.url.is_none()
+        {
+            let progress = self.attachment_progress.get(&attachment.id).copied();
+            file_card(ui, attachment, pending, progress);
+            return;
+        }
+        let duration = attachment.duration_ms.unwrap_or(0);
+        let playback = self
+            .voice_playback
+            .as_ref()
+            .filter(|playback| playback.id == attachment.id);
+        let state = playback
+            .and_then(|playback| playback.player.as_ref())
+            .map(|player| (player.state(), player.position_ms()));
+        let error = playback.and_then(|playback| {
+            playback.error.clone().or_else(|| {
+                playback
+                    .player
+                    .as_ref()
+                    .and_then(|player| player.error().map(str::to_owned))
+            })
+        });
+        let playing = matches!(
+            state,
+            Some((player::State::Playing | player::State::Loading, _))
+        );
+        let scrub_id = egui::Id::new(("voice-scrub", &attachment.id));
+        let scrub: Option<f32> = ui.ctx().data(|data| data.get_temp(scrub_id));
+        let played = scrub.unwrap_or_else(|| match state {
+            Some((_, position)) if duration > 0 => position as f32 / duration as f32,
+            _ => 0.0,
+        });
+        let width = ui.available_width().clamp(180.0, 320.0);
+        let mut toggle = false;
+        let mut seek_to = None;
+        ui.vertical(|ui| {
+            ui.set_max_width(width.max(ui.available_width().min(480.0)));
+            ui.spacing_mut().item_spacing.y = 6.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 48.0), egui::Sense::hover());
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, 8.0, SURFACE);
+            painter.rect_stroke(
+                rect,
+                8.0,
+                Stroke::new(1.0, BORDER),
+                egui::StrokeKind::Inside,
+            );
+            let play = egui::Rect::from_center_size(
+                egui::pos2(rect.left() + 26.0, rect.center().y),
+                egui::vec2(32.0, 32.0),
+            );
+            let button = ui.interact(
+                play,
+                egui::Id::new(("voice-play", &attachment.id)),
+                egui::Sense::click(),
+            );
+            let fill = if button.is_pointer_button_down_on() {
+                ACTION_PRESS
+            } else if button.hovered() || button.has_focus() {
+                ACTION_HOVER
+            } else {
+                ACTION
+            };
+            painter.circle_filled(play.center(), 16.0, fill);
+            if button.has_focus() {
+                painter.circle_stroke(play.center(), 18.0, Stroke::new(1.5, TERRACOTTA));
+            }
+            paint_icon(
+                &painter,
+                play.shrink(9.0)
+                    .translate(egui::vec2(if playing { 0.0 } else { 1.0 }, 0.0)),
+                if playing {
+                    NavIcon::Pause
+                } else {
+                    NavIcon::Play
+                },
+                ON_ACTION,
+            );
+            let label = if playing {
+                "Pause voice message"
+            } else {
+                "Play voice message"
+            };
+            button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+            toggle = button
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked();
+            // Idle shows the length; playing or paused, what remains.
+            let shown = match state {
+                Some((_, position)) => duration.saturating_sub(position),
+                None => duration,
+            };
+            let time = painter.layout_no_wrap(
+                voice_note::duration_label(shown),
+                egui::FontId::proportional(12.0),
+                MUTED,
+            );
+            let time_left = rect.right() - 12.0 - time.size().x.max(28.0);
+            painter.galley(
+                egui::pos2(time_left, rect.center().y - time.size().y / 2.0),
+                time,
+                MUTED,
+            );
+            let wave = egui::Rect::from_min_max(
+                egui::pos2(play.right() + 12.0, rect.top() + 10.0),
+                egui::pos2(
+                    (time_left - 10.0).max(play.right() + 13.0),
+                    rect.bottom() - 10.0,
+                ),
+            );
+            paint_waveform(&painter, wave, attachment.waveform.as_deref(), played);
+            let seek = ui.interact(
+                wave,
+                egui::Id::new(("voice-seek", &attachment.id)),
+                egui::Sense::click_and_drag(),
+            );
+            seek.widget_info(|| {
+                egui::WidgetInfo::slider(true, f64::from(played), "Voice message position")
+            });
+            let fraction = seek
+                .interact_pointer_pos()
+                .map(|pointer| ((pointer.x - wave.left()) / wave.width().max(1.0)).clamp(0.0, 1.0));
+            if seek.dragged() {
+                if let Some(fraction) = fraction {
+                    ui.ctx()
+                        .data_mut(|data| data.insert_temp(scrub_id, fraction));
+                }
+            } else if scrub.is_some() {
+                ui.ctx().data_mut(|data| data.remove::<f32>(scrub_id));
+            }
+            if (seek.clicked() || seek.drag_stopped()) && duration > 0 {
+                seek_to = fraction
+                    .or(scrub)
+                    .map(|fraction| (fraction * duration as f32) as u64);
+            }
+            seek.on_hover_cursor(egui::CursorIcon::PointingHand);
+            if let Some(error) = &error {
+                ui.label(RichText::new(error).size(11.0).color(ERROR));
+            }
+            voice_transcript(ui, attachment);
+        });
+        if let Some(ms) = seek_to {
+            self.play_voice(attachment, Some(ms));
+        } else if toggle {
+            self.play_voice(attachment, None);
+        }
+    }
+}
+
+/// Slack-style transcript under a voice message: muted, behind a thin rule,
+/// three lines until "View transcript"; "Transcribing…" while pending.
+fn voice_transcript(ui: &mut egui::Ui, attachment: &model::Attachment) {
+    let text = match attachment.transcript_view() {
+        model::TranscriptView::Hidden => return,
+        model::TranscriptView::Pending => None,
+        model::TranscriptView::Text(text) => Some(text),
+    };
+    let expanded_id = egui::Id::new(("voice-transcript", &attachment.id));
+    let expanded = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(expanded_id))
+        .unwrap_or(false);
+    let width = (ui.available_width() - 12.0).max(40.0);
+    let frame = egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 12,
+            right: 0,
+            top: 2,
+            bottom: 2,
+        })
+        .show(ui, |ui| {
+            ui.set_max_width(width);
+            ui.spacing_mut().item_spacing.y = 4.0;
+            let Some(text) = text else {
+                ui.label(RichText::new("Transcribing…").size(12.0).color(MUTED));
+                return;
+            };
+            let mut job = egui::text::LayoutJob::simple(
+                text.to_owned(),
+                egui::FontId::proportional(12.5),
+                MUTED,
+                width,
+            );
+            if !expanded {
+                job.wrap.max_rows = 3;
+                job.wrap.overflow_character = Some('…');
+            }
+            let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+            let clamped = galley.elided;
+            ui.add(egui::Label::new(galley).selectable(true));
+            if clamped || expanded {
+                let label = if expanded {
+                    "Hide transcript"
+                } else {
+                    "View transcript"
+                };
+                let toggle = ui
+                    .add(
+                        egui::Button::new(bold(label).size(12.0).color(TEXT))
+                            .frame(false)
+                            .min_size(egui::vec2(0.0, 18.0)),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if toggle.hovered() {
+                    ui.painter().hline(
+                        toggle.rect.shrink2(egui::vec2(4.0, 0.0)).x_range(),
+                        toggle.rect.bottom() - 2.0,
+                        Stroke::new(1.0, TEXT),
+                    );
+                }
+                if toggle.clicked() {
+                    ui.ctx()
+                        .data_mut(|data| data.insert_temp(expanded_id, !expanded));
+                }
+            }
+        });
+    let rect = frame.response.rect;
+    ui.painter()
+        .vline(rect.left() + 1.0, rect.y_range(), Stroke::new(2.0, BORDER));
+}
+
+/// The player id of a staged recording: stable while it stays staged.
+fn staged_voice_id(prepared: &std::sync::Arc<uploads::Prepared>) -> String {
+    format!("staged-voice-{:p}", std::sync::Arc::as_ptr(prepared))
+}
+
+/// A labelled preview's recording bar: frozen at 0:07 with a sample meter.
+fn fixture_recording(mut bar: VoiceRecording) -> VoiceRecording {
+    bar.started = Some(Instant::now());
+    bar.fixed_elapsed = Some(Duration::from_secs(7));
+    bar.levels = (0..120)
+        .map(|index| {
+            let x = index as f32 / 9.0;
+            (0.15 + 0.8 * (x.sin() * (x * 0.37).cos()).abs()).min(1.0)
+        })
+        .collect();
+    bar
+}
+
+/// The composer's microphone, beside Emoji. True when it was clicked.
+fn mic_button(ui: &mut egui::Ui, enabled: bool, unavailable: &str, size: f32) -> bool {
+    ui.add_enabled_ui(enabled, |ui| {
+        drawn_icon_button_sized(ui, NavIcon::Mic, "Record voice message", size)
+    })
+    .inner
+    .on_disabled_hover_text(unavailable)
+    .clicked()
+}
+
+/// The recording bar's live input meter: newest level on the right, one
+/// rounded 3 px bar every 5 px, scrolling left as levels arrive.
+fn paint_live_levels(painter: &egui::Painter, rect: egui::Rect, levels: &[f32], scroll: f32) {
+    let painter = painter.with_clip_rect(painter.clip_rect().intersect(rect));
+    // The newest bar enters at the right edge and glides left by one pitch
+    // until the next arrives; older bars follow at a constant rate.
+    let count = (rect.width() / WAVE_PITCH).ceil() as usize + 1;
+    for age in 0..count {
+        let level = levels.len().checked_sub(age + 1).map(|index| levels[index]);
+        let right = rect.right() - (age as f32 + scroll) * WAVE_PITCH;
+        paint_wave_bar(
+            &painter,
+            right - WAVE_BAR,
+            rect,
+            level.unwrap_or(0.0),
+            if level.is_some() { TEXT } else { BORDER },
+        );
+    }
+}
+
+/// Waveform bars: 3 px wide with fully rounded caps and a 2 px gap.
+const WAVE_BAR: f32 = 3.0;
+const WAVE_PITCH: f32 = 5.0;
+
+/// One bar, vertically centred, never shorter than its own width so
+/// silence reads as a neat line of dots.
+fn paint_wave_bar(
+    painter: &egui::Painter,
+    left: f32,
+    rect: egui::Rect,
+    level: f32,
+    color: Color32,
+) {
+    let height = (level.clamp(0.0, 1.0) * rect.height()).max(WAVE_BAR);
+    painter.rect_filled(
+        egui::Rect::from_min_size(
+            egui::pos2(left, rect.center().y - height / 2.0),
+            egui::vec2(WAVE_BAR, height),
+        ),
+        WAVE_BAR / 2.0,
+        color,
+    );
+}
+
+/// A voice message's waveform across `rect`: the stored values linearly
+/// resampled to the bars that fit, the played part (0–1, the boundary bar
+/// partly) in text colour over the muted rest.
+fn paint_waveform(painter: &egui::Painter, rect: egui::Rect, waveform: Option<&str>, played: f32) {
+    let count = (((rect.width() + WAVE_PITCH - WAVE_BAR) / WAVE_PITCH).floor() as usize).max(1);
+    let levels = voice_note::bars(waveform, count);
+    let draw = |painter: &egui::Painter, color: Color32| {
+        for (index, level) in levels.iter().enumerate() {
+            paint_wave_bar(
+                painter,
+                rect.left() + index as f32 * WAVE_PITCH,
+                rect,
+                *level,
+                color,
+            );
+        }
+    };
+    draw(painter, MUTED.gamma_multiply(0.45));
+    let played = played.clamp(0.0, 1.0);
+    if played > 0.0 {
+        let mut clip = rect.expand2(egui::vec2(0.0, 1.0));
+        clip.max.x = rect.left() + rect.width() * played;
+        draw(
+            &painter.with_clip_rect(painter.clip_rect().intersect(clip)),
+            TEXT,
+        );
+    }
+}
+
+/// The square glyph of a Stop button.
+fn stop_button(ui: &mut egui::Ui, enabled: bool, label: &str, size: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(size, size),
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    if enabled {
+        let fill = if response.is_pointer_button_down_on() {
+            ACTION_PRESS
+        } else if response.hovered() || response.has_focus() {
+            ACTION_HOVER
+        } else {
+            ACTION
+        };
+        ui.painter().rect_filled(rect, 8.0, fill);
+    }
+    ui.painter().rect_filled(
+        egui::Rect::from_center_size(rect.center(), egui::vec2(size * 0.34, size * 0.34)),
+        2.0,
+        if enabled {
+            ON_ACTION
+        } else {
+            MUTED.gamma_multiply(0.5)
+        },
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    response.on_hover_text(label)
+}
+
+/// What a staged voice chip asks for.
+#[derive(Default)]
+struct VoiceChipClicks {
+    toggle: bool,
+    remove: bool,
+    retry: bool,
+}
+
+/// A staged recording in a composer: play/pause, a small waveform, its
+/// length (or time left while playing), upload state and remove (×).
+#[allow(clippy::too_many_arguments)]
+fn voice_chip(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    waveform: Option<&str>,
+    duration_ms: u64,
+    (playing, position): (bool, Option<u64>),
+    progress: Option<f32>,
+    error: Option<&str>,
+    removable: bool,
+) -> VoiceChipClicks {
+    let mut clicks = VoiceChipClicks::default();
+    let (rect, chip) = ui.allocate_exact_size(egui::vec2(236.0, 52.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 8.0, SURFACE);
+    painter.rect_stroke(
+        rect,
+        8.0,
+        Stroke::new(1.0, if error.is_some() { ERROR } else { BORDER }),
+        egui::StrokeKind::Inside,
+    );
+    let play = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 22.0, rect.center().y),
+        egui::vec2(28.0, 28.0),
+    );
+    let button = ui.interact(play, id.with("play"), egui::Sense::click());
+    let fill = if button.is_pointer_button_down_on() {
+        ACTION_PRESS
+    } else if button.hovered() || button.has_focus() {
+        ACTION_HOVER
+    } else {
+        ACTION
+    };
+    painter.circle_filled(play.center(), 14.0, fill);
+    paint_icon(
+        &painter,
+        play.shrink(8.0)
+            .translate(egui::vec2(if playing { 0.0 } else { 1.0 }, 0.0)),
+        if playing {
+            NavIcon::Pause
+        } else {
+            NavIcon::Play
+        },
+        ON_ACTION,
+    );
+    let label = if playing {
+        "Pause voice message"
+    } else {
+        "Play voice message"
+    };
+    button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    clicks.toggle = button
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked();
+    let remove = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - 18.0, rect.center().y),
+        egui::vec2(24.0, 24.0),
+    );
+    if removable {
+        let response = ui.interact(remove, id.with("remove"), egui::Sense::click());
+        if response.hovered() || response.has_focus() {
+            painter.rect_filled(remove, 6.0, SURFACE_HOVER);
+        }
+        paint_icon(
+            &painter,
+            remove.shrink(5.0),
+            NavIcon::Close,
+            if response.hovered() { TEXT } else { MUTED },
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Remove voice message")
+        });
+        clicks.remove = response
+            .on_hover_text("Remove voice message")
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked();
+    }
+    let shown = position.map_or(duration_ms, |position| duration_ms.saturating_sub(position));
+    let time = painter.layout_no_wrap(
+        voice_note::duration_label(shown),
+        egui::FontId::proportional(11.0),
+        MUTED,
+    );
+    let time_left = remove.left() - 6.0 - time.size().x.max(26.0);
+    painter.galley(egui::pos2(time_left, rect.top() + 10.0), time, MUTED);
+    let wave = egui::Rect::from_min_max(
+        egui::pos2(play.right() + 8.0, rect.top() + 10.0),
+        egui::pos2(time_left - 6.0, rect.top() + 26.0),
+    );
+    let played = match position {
+        Some(position) if duration_ms > 0 => position as f32 / duration_ms as f32,
+        _ => 0.0,
+    };
+    paint_waveform(&painter, wave, waveform, played);
+    // Upload state along the bottom: progress, then nothing once uploaded.
+    let status = egui::Rect::from_min_max(
+        egui::pos2(wave.left(), rect.bottom() - 18.0),
+        egui::pos2(remove.left() - 6.0, rect.bottom() - 6.0),
+    );
+    match (error, progress) {
+        (Some(_), _) => {
+            let response = ui.put(
+                status,
+                egui::Button::new(RichText::new("Retry upload").size(11.0).color(ERROR))
+                    .frame(false),
+            );
+            clicks.retry = response.clicked();
+        }
+        (None, Some(progress)) => {
+            let track = egui::Rect::from_min_size(
+                egui::pos2(status.left(), status.center().y - 1.0),
+                egui::vec2(status.width(), 2.0),
+            );
+            painter.rect_filled(track, 1.0, BORDER);
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    track.min,
+                    egui::vec2(track.width() * progress.clamp(0.0, 1.0), 2.0),
+                ),
+                1.0,
+                TERRACOTTA,
+            );
+        }
+        (None, None) => {}
+    }
+    let accessible = format!(
+        "Voice message, {}{}",
+        voice_note::duration_label(duration_ms),
+        match (error, progress) {
+            (Some(error), _) => format!(", {error}"),
+            (None, Some(_)) => ", uploading".into(),
+            (None, None) => String::new(),
+        }
+    );
+    chip.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &accessible));
+    clicks
 }
 
 /// "Processing…" with the media worker's latest percent, when known.
@@ -28127,7 +30520,8 @@ fn message_menu_item_in(
             color,
             rect.width() - 40.0,
         );
-        ui.painter().galley(
+        emoji::paint_galley(
+            ui.painter(),
             egui::pos2(rect.left() + 32.0, rect.center().y - galley.size().y / 2.0),
             galley,
             color,
@@ -28423,14 +30817,14 @@ fn suggestion_row(
         let mut job = egui::text::LayoutJob::simple_singleline(text.into(), font, color);
         job.wrap =
             egui::text::TextWrapping::truncate_at_width((rect.right() - padding - left).max(0.0));
-        painter.layout_job(job)
+        emoji::layout_job(ui, job)
     };
     let title = line(title, egui::TextStyle::Button.resolve(ui.style()), TEXT);
     let detail = line(detail, egui::FontId::proportional(11.0), MUTED);
     let top = rect.center().y - (title.size().y + detail.size().y) / 2.0;
     let below = top + title.size().y;
-    painter.galley(egui::pos2(left, top), title, TEXT);
-    painter.galley(egui::pos2(left, below), detail, MUTED);
+    emoji::paint_galley(painter, egui::pos2(left, top), title, TEXT);
+    emoji::paint_galley(painter, egui::pos2(left, below), detail, MUTED);
     response
 }
 
@@ -28725,6 +31119,16 @@ fn paint_avatar(
     } else {
         ui.painter()
             .circle_filled(rect.center(), rect.width() / 2.0, RAISED);
+        if let Some((range, entry)) = emoji::inline(name).first()
+            && range.start == 0
+        {
+            emoji::Textures::shared(ui.ctx()).paint(
+                ui.painter(),
+                entry,
+                egui::Rect::from_center_size(rect.center(), rect.size() * 0.5),
+            );
+            return false;
+        }
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -28838,16 +31242,6 @@ fn normalize_channel(value: &str) -> String {
         }
     }
     output
-}
-
-fn member_page_ids(detail: &SpaceDetail, channel: Option<&str>, page: usize) -> Vec<String> {
-    detail
-        .member_order(channel)
-        .into_iter()
-        .skip(page * MEMBER_PAGE_SIZE)
-        .take(MEMBER_PAGE_SIZE)
-        .map(|member| member.id.clone())
-        .collect()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -29045,6 +31439,8 @@ fn history_plan(
                 message.deleted_at.is_some(),
                 message.content.text.len(),
                 message.content.attachments.len(),
+                // A transcript arriving grows a voice message.
+                &message.attachments_seq,
                 message.thread.as_ref().map(|thread| thread.reply_count),
                 message.pin.is_some(),
                 message.forward.is_some(),
@@ -30056,11 +32452,11 @@ mod tests {
         AccountOperation, CaperApp, ComposerToken, ConnectionReport, DELETE_ACCOUNT_URL, Dialog,
         GatewayEvent, MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingReaction, PendingSend,
         Phase, RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT,
-        display_time, endpoint, media, member_page_ids, message_runs, normalize_channel,
-        permanent_send_rejection, pill_rects, projected_reactions, redundant_invitation,
-        resend_countdown, resend_wait, short_time, take_date_divider, timestamp_parts, voice,
+        display_time, endpoint, media, message_runs, normalize_channel, permanent_send_rejection,
+        pill_rects, projected_reactions, redundant_invitation, resend_countdown, resend_wait,
+        short_time, take_date_divider, timestamp_parts, voice,
     };
-    use crate::{mentions, navigation, whats_new};
+    use crate::{mentions, navigation, uploads, voice_note, whats_new, worker};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -31105,6 +33501,36 @@ mod tests {
         let (_, visible) = painted_rows(&settled);
         assert!(visible.contains(&(60, target)));
         assert!(!app.history_list.jumping());
+    }
+
+    #[test]
+    fn short_conversations_keep_messages_above_the_composer() {
+        let context = egui::Context::default();
+        let mut app = scroll_fixture(&context, 1..=2);
+        for _ in 0..3 {
+            render(&mut app, &context, vec![]);
+        }
+        let output = render(&mut app, &context, vec![]);
+        let first = text_position(&output, "Scroll fixture message 1");
+        let newest = text_position(&output, "Scroll fixture message 2");
+        assert!(first.y < newest.y, "messages remain chronological");
+        assert!(
+            newest.y > 700.0,
+            "short history sits near the composer, not the heading: {newest:?}"
+        );
+        app.draft = "one\ntwo\nthree\nfour".into();
+        let grown = render(&mut app, &context, vec![]);
+        let raised = text_position(&grown, "Scroll fixture message 2");
+        assert!(raised.y < newest.y, "short history rises with the composer");
+        for _ in 0..3 {
+            assert_eq!(
+                text_position(
+                    &render(&mut app, &context, vec![]),
+                    "Scroll fixture message 2"
+                ),
+                raised
+            );
+        }
     }
 
     #[test]
@@ -32296,6 +34722,7 @@ mod tests {
                 cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 retrying: false,
                 open_only: false,
+                voice_only: false,
                 direct: None,
             })
         };
@@ -34180,6 +36607,33 @@ mod tests {
     }
 
     #[test]
+    fn direct_recipient_requires_lookup_confirmation_and_forgets_it_on_navigation() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-direct-new"),
+        );
+        let mut person = app.people.as_ref().unwrap()[0].clone();
+        app.member_username = person.username.clone();
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Open conversation"));
+        person.username = "unknown_person".into();
+        app.member_username = person.username.clone();
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Find person"));
+        assert!(!shows(&output, "Open conversation"));
+        app.direct_recipient = Some(person);
+        app.direct_lookup_scope = Some((app.generation, app.navigation));
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Open conversation"));
+        app.navigation += 1;
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Find person"));
+        assert!(app.direct_recipient.is_none());
+    }
+
+    #[test]
     fn settings_backdrops_dismiss_without_inside_clicks_dismissing() {
         for fixture in ["parity-admin", "parity-channel", "parity-profile"] {
             let context = egui::Context::default();
@@ -34259,13 +36713,18 @@ mod tests {
     }
 
     #[test]
-    fn create_channel_backdrop_dismisses_unless_creation_is_pending() {
-        for name in ["", "project-updates"] {
+    fn create_dialog_backdrops_dismiss_unless_creation_is_pending() {
+        for (fixture, name) in [
+            ("parity-create-space", ""),
+            ("parity-create-space", "Gaming nights"),
+            ("parity-create-channel", ""),
+            ("parity-create-channel", "project-updates"),
+        ] {
             let context = egui::Context::default();
             let mut app = CaperApp::new(
                 &context,
                 crate::api::Api::new("http://127.0.0.1:9").unwrap(),
-                Some("parity-create-channel"),
+                Some(fixture),
             );
             app.form_name = name.into();
             for _ in 0..3 {
@@ -34279,22 +36738,28 @@ mod tests {
                 bounds.left_top() + egui::vec2(10.0, 10.0),
             );
             assert!(
-                matches!(app.dialog, Some(Dialog::CreateChannel)),
-                "inside click dismissed create-channel dialog"
+                matches!(
+                    app.dialog,
+                    Some(Dialog::CreateSpace | Dialog::CreateChannel)
+                ),
+                "inside click dismissed {fixture}"
             );
             app.loading = true;
             click(&mut app, &context, egui::pos2(5.0, 5.0));
             assert!(
-                matches!(app.dialog, Some(Dialog::CreateChannel)),
-                "outside click dismissed pending creation"
+                matches!(
+                    app.dialog,
+                    Some(Dialog::CreateSpace | Dialog::CreateChannel)
+                ),
+                "outside click dismissed pending {fixture}"
             );
             app.loading = false;
             click(&mut app, &context, egui::pos2(5.0, 5.0));
             assert!(
                 app.dialog.is_none(),
-                "outside click did not dismiss create-channel dialog"
+                "outside click did not dismiss {fixture}"
             );
-            assert!(!app.loading, "dismissal must not create a channel");
+            assert!(!app.loading, "dismissal must not start creation");
         }
     }
 
@@ -34778,12 +37243,13 @@ mod tests {
             !texts(&list).contains(&"Audio"),
             "desktop controls hide at rest"
         );
-        let maya_name = text_position(&list, "Maya");
+        // Target the call overlay, not Maya's now-bottom-aligned chat message.
+        let maya_audio = node_bounds(&list, "Audio controls for Maya").unwrap();
         let alex_audio = node_bounds(&list, "Audio controls for Alex").unwrap();
         let hovered = render(
             &mut app,
             &context,
-            vec![egui::Event::PointerMoved(maya_name)],
+            vec![egui::Event::PointerMoved(maya_audio.center())],
         );
         assert_eq!(
             texts(&hovered)
@@ -34792,7 +37258,10 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(text_position(&hovered, "Maya"), maya_name);
+        assert_eq!(
+            node_bounds(&hovered, "Audio controls for Maya"),
+            Some(maya_audio)
+        );
         assert_eq!(
             node_bounds(&hovered, "Audio controls for Alex"),
             Some(alex_audio)
@@ -35927,6 +38396,7 @@ mod tests {
         assert!(texts.contains(&"Name your space"));
         assert!(texts.contains(&"Create space"));
         assert!(!texts.contains(&"Direct messages"));
+        assert!(!texts.contains(&"Join with invite link"));
         // Global DM navigation still belongs to the workspace, not setup.
         app.navigation_open = true;
         assert!(!app.needs_first_space());
@@ -38251,12 +40721,13 @@ mod tests {
                         && *stroke == egui::Stroke::new(1.0, super::BORDER))),
             "no divider sets voice apart from Pins and Members"
         );
-        // Independent values from the current web CSS: 54px header, 44px history.
+        // Independent values from the current web CSS: 54px fixed header,
+        // and the member list's tighter 44px heading row.
+        // The history header moves down with a short, bottom-aligned history.
         for (label, center) in [
             ("Fixture Studio", 27.0),
             ("# general", 27.0),
-            ("Members", 27.0),
-            ("Beginning of conversation", 76.0),
+            ("Members", 22.0),
         ] {
             let shape = text(label);
             assert!(
@@ -39342,6 +41813,78 @@ mod tests {
     }
 
     #[test]
+    fn gif_button_opens_the_klipy_picker_and_sends_a_gif_on_its_own() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        app.token.get_or_insert_with(|| "token".into());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            labelled_center(&output, "Send a GIF").is_none(),
+            "hidden while the server has GIFs off"
+        );
+        app.klipy = Some(crate::klipy::Config {
+            app_key: "fixtureKlipyKey".into(),
+            customer_id: "0123456789abcdef0123456789abcdef".into(),
+        });
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let button = labelled_center(&output, "Send a GIF").expect("GIF button");
+        click(&mut app, &context, button);
+        assert!(
+            app.gif_picker
+                .as_ref()
+                .is_some_and(|picker| picker.root.is_none())
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Powered by KLIPY"));
+        assert!(shows(&output, "GIFs") && shows(&output, "Stickers"));
+        click(&mut app, &context, button);
+        assert!(app.gif_picker.is_none(), "a second click closes it");
+
+        // A choice sends at once as its own message; the draft stays.
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../shared/klipy/cases.json")).unwrap();
+        let gif = crate::klipy::Gif::from_value(&cases["messages"]["valid"][0]).unwrap();
+        app.draft = "still drafting".into();
+        app.send_gif(
+            None,
+            crate::klipy::Choice {
+                share: crate::klipy::Share {
+                    config: app.klipy.clone().unwrap(),
+                    kind: gif.kind,
+                    slug: gif.slug.clone(),
+                    query: String::new(),
+                },
+                gif: gif.clone(),
+            },
+        );
+        let pending = app.pending.clone().expect("GIF send pending");
+        assert_eq!(
+            (pending.text.as_str(), pending.gif.as_ref()),
+            ("", Some(&gif))
+        );
+        assert!(pending.attachments.is_empty() && pending.thread_root_id.is_none());
+        assert_eq!(app.draft, "still drafting");
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            labelled_center(&output, "Hello").is_some(),
+            "the pending row shows the GIF, labelled by its title"
+        );
+        // Retrying keeps the GIF even though the text is empty.
+        app.pending.as_mut().unwrap().sending = false;
+        app.send_message();
+        assert!(app.pending.as_ref().is_some_and(|pending| pending.sending));
+        assert!(app.error.is_none());
+    }
+
+    #[test]
     fn floating_panels_have_app_headers_and_close_on_an_outside_click() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -39423,7 +41966,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_member_page_scrolls_below_its_heading() {
+    fn a_full_member_roster_scrolls_below_its_heading() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -39447,11 +41990,7 @@ mod tests {
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let first = text_position(&output, "Member 0");
-        let pager = text_position(&output, "Next");
-        assert!(
-            pager.y > 900.0,
-            "a full page overflows the window: {pager:?}"
-        );
+        assert!(!shows(&output, "Next"));
         let mut events = vec![
             egui::Event::PointerMoved(first),
             egui::Event::MouseWheel {
@@ -39464,10 +42003,60 @@ mod tests {
             render(&mut app, &context, std::mem::take(&mut events));
         }
         let output = render(&mut app, &context, vec![]);
-        let pager = text_position(&output, "Next");
-        assert!(pager.y < 900.0, "the pager scrolls into view: {pager:?}");
+        assert!(
+            shows(&output, "Member 29"),
+            "the whole roster scrolls into view"
+        );
         let heading = text_position(&output, "Members");
         assert!(heading.y < 54.0, "the heading stays put: {heading:?}");
+
+        click_label(&mut app, &context, "Search members");
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Text("  MEMBER_29  ".into())],
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Member 29"));
+        assert!(!shows(&output, "Member 0"));
+        app.member_search = "  mEmBeR 29  ".into();
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Member 29"));
+        app.member_search = "no such member".into();
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "No members match your search."));
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(app.member_search.is_empty());
+        assert!(!app.member_search_open);
+        app.gateway(GatewayEvent::Presence {
+            generation: app.generation,
+            space: app.selected_space.clone().unwrap(),
+            members: vec![model::Presence {
+                user_id: "member-29".into(),
+                status: "online".into(),
+            }],
+        });
+        assert!(shows(&render(&mut app, &context, vec![]), "Online"));
+        app.gateway(GatewayEvent::Presence {
+            generation: app.generation,
+            space: app.selected_space.clone().unwrap(),
+            members: vec![],
+        });
+        assert!(
+            !shows(&render(&mut app, &context, vec![]), "Online"),
+            "snapshots replace stale presence"
+        );
     }
 
     #[test]
@@ -40366,6 +42955,87 @@ mod tests {
     }
 
     #[test]
+    fn thread_summary_feedback_stays_below_the_parent_message() {
+        for grouped in [false, true] {
+            for multiline in [false, true] {
+                let (context, mut app) = fixture("parity-thread");
+                context.enable_accesskit();
+                let mut message = app.timeline.messages().next().unwrap().clone();
+                message.content.text = if multiline {
+                    "First line\nSecond line"
+                } else {
+                    "False"
+                }
+                .into();
+                let mut frame = |events| {
+                    context.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(700.0, 400.0),
+                            )),
+                            events,
+                            ..Default::default()
+                        },
+                        |context| {
+                            egui::CentralPanel::default().show(context, |ui| {
+                                app.message_in(ui, &message, false, false, grouped);
+                            });
+                        },
+                    )
+                };
+                frame(vec![]);
+                let output = frame(vec![]);
+                let parent = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.fill
+                                == egui::Color32::from_rgba_unmultiplied(182, 77, 50, 31) =>
+                        {
+                            Some(rect.rect)
+                        }
+                        _ => None,
+                    })
+                    .expect("selected parent message");
+                let link = node_bounds(&output, "1 reply · View thread").unwrap();
+                frame(vec![egui::Event::PointerMoved(link.center())]);
+                let output = frame(vec![]);
+                let hover = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.fill == egui::Color32::from_white_alpha(15) =>
+                        {
+                            Some(rect.rect)
+                        }
+                        _ => None,
+                    })
+                    .expect("thread summary hover feedback");
+                assert!(
+                    hover.top() >= parent.bottom(),
+                    "summary {hover:?} overlaps parent {parent:?}"
+                );
+                let output = frame(vec![egui::Event::PointerButton {
+                    pos: link.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }]);
+                assert!(
+                    output.shapes.iter().any(|shape| matches!(&shape.shape,
+                        egui::Shape::Rect(rect) if rect.fill == egui::Color32::from_white_alpha(20)
+                            && rect.rect.top() >= parent.bottom()
+                    )),
+                    "pressed feedback also stays below the parent"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn space_rail_tiles_stay_borderless_on_hover_and_press() {
         for selected in [false, true] {
             let (context, mut app) = fixture("parity-desktop");
@@ -40670,6 +43340,75 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_names_draw_bundled_emoji_without_losing_accessibility_or_ellipsis() {
+        use crate::{RowExtras, channel_button, configure};
+
+        for (name, width, suffix, expected) in [
+            ("Spicy Mike🌶️", 300.0, None, 1),
+            ("Alex 👩🏽‍💻🇵🇷", 300.0, Some("you"), 2),
+            ("Spicy Mike🌶️", 65.0, None, 0),
+            ("🌶️🌶️🌶️🌶️", 65.0, None, 1),
+            ("🌶️ A very long name 🌶️", 120.0, Some("you"), 1),
+            ("Plain name", 300.0, None, 0),
+        ] {
+            let context = egui::Context::default();
+            configure(&context);
+            context.enable_accesskit();
+            let output = context.run(egui::RawInput::default(), |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    channel_button(
+                        ui,
+                        egui::vec2(width, 36.0),
+                        name,
+                        None,
+                        false,
+                        RowExtras {
+                            suffix,
+                            ..Default::default()
+                        },
+                    );
+                });
+            });
+            let images: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                        Some(mesh)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(images.len(), expected, "{name}, width {width}");
+            for image in images {
+                let rect = image.calc_bounds();
+                assert!(
+                    (rect.width() - 13.0).abs() < 1.0,
+                    "one em per emoji: {rect:?}"
+                );
+                assert!((rect.width() - rect.height()).abs() < 0.01);
+                assert!(rect.right() <= width + 8.0, "emoji stays inside the row");
+            }
+            assert!(
+                output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| node.label() == Some(name))
+            );
+            if width < 150.0 {
+                assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.rows.iter().any(|row| row.glyphs.iter().any(|glyph|
+                        glyph.chr == '…' && glyph.advance_width > 4.0
+                            && row.visuals.mesh.vertices[glyph.first_vertex as usize].color.a() > 0)))));
+            }
+        }
+    }
+
+    #[test]
     fn feedback_sidebar_selection_replaces_the_underlying_conversation() {
         let feedback_label = "Feedback, 12 feedback conversations waiting for a reply";
         for kind in ["self", "direct", "request", "channel"] {
@@ -40897,14 +43636,15 @@ mod tests {
             let api =
                 crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
             let requests = std::thread::spawn(move || {
-                let deadline = Instant::now() + Duration::from_secs(3);
+                // Generous: loaded CI machines (Windows especially) stall for seconds.
+                let deadline = Instant::now() + Duration::from_secs(20);
                 while Instant::now() < deadline {
                     let Ok((stream, _)) = server.accept() else {
                         std::thread::sleep(Duration::from_millis(10));
                         continue;
                     };
                     stream
-                        .set_read_timeout(Some(Duration::from_secs(1)))
+                        .set_read_timeout(Some(Duration::from_secs(10)))
                         .unwrap();
                     let mut reader = BufReader::new(stream);
                     let mut request = String::new();
@@ -40955,7 +43695,8 @@ mod tests {
                 app.sent(Ok(message));
             }
             // Receive the authoritative count without running the periodic UI update.
-            let deadline = Instant::now() + Duration::from_secs(2);
+            // The loop ends as soon as the count arrives; the bound only caps a failure.
+            let deadline = Instant::now() + Duration::from_secs(15);
             while app.feedback_waiting != 0 && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
                 app.receive();
@@ -41886,6 +44627,15 @@ mod tests {
         app.attachment_housekeeping(&context);
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
+        let has_picture_frame = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.rect.size() == egui::vec2(super::PICTURE_FRAME, super::PICTURE_FRAME)
+                    && (rect.fill == super::RAISED || rect.stroke.color == super::BORDER)))
+        };
+        assert!(
+            has_picture_frame(&output),
+            "uploaded pictures keep their frame"
+        );
         let frame =
             labelled_center(&output, "Change profile picture").expect("the picture's frame");
         assert!(
@@ -41950,6 +44700,10 @@ mod tests {
         );
         let output = render(&mut app, &context, vec![]);
         assert!(!shows(&output, "Remove picture") && !shows(&output, "Removing…"));
+        assert!(
+            !has_picture_frame(&output),
+            "the mascot supplies its own backdrop and border"
+        );
         egui::Popup::close_all(&context);
         click(&mut app, &context, frame);
         let output = render(&mut app, &context, vec![]);
@@ -42593,6 +45347,12 @@ mod tests {
             );
             // The last message sits just above the composer.
             let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+            // An earlier mention leaves room for a card below it even when
+            // short histories are bottom-aligned.
+            messages[0].content.text = "Hello @alex".into();
+            messages[0].content.mentions = messages[2].content.mentions.clone();
+            messages[2].content.text = "Following conversation context\n".repeat(12);
+            messages[2].content.mentions.clear();
             messages[3].content.text = "Thanks @maya".into();
             messages[3].content.mentions = vec![model::Mention {
                 kind: "user".into(),
@@ -42637,7 +45397,7 @@ mod tests {
                 .unwrap();
             (pill, card)
         };
-        let (pill, card) = card_beside_pill(900.0, ALEX_MESSAGE, "@alex");
+        let (pill, card) = card_beside_pill(900.0, "Hello @alex", "@alex");
         assert!(card.top() >= pill.bottom(), "{pill:?} {card:?}");
         assert!(card.width() <= 320.0 + 0.5, "{card:?}");
         let (pill, card) = card_beside_pill(560.0, "Thanks @maya", "@maya");
@@ -42829,6 +45589,9 @@ mod tests {
                     unavailable: false,
                     status: model::AttachmentStatus::Ready,
                     animated: false,
+                    voice: false,
+                    waveform: None,
+                    transcript: None,
                 }],
                 None,
             );
@@ -42948,6 +45711,9 @@ mod tests {
                 unavailable: false,
                 status: model::AttachmentStatus::Ready,
                 animated: false,
+                voice: false,
+                waveform: None,
+                transcript: None,
             }],
             None,
         );
@@ -43030,6 +45796,7 @@ mod tests {
                         cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                         retrying: true,
                         open_only: false,
+                        voice_only: false,
                         direct: None,
                     }),
                     result: Err(crate::profile_dm::Failure {
@@ -44471,6 +47238,7 @@ mod tests {
         for name in [
             "parity-desktop",
             "parity-direct",
+            "parity-direct-emoji",
             "parity-thread",
             "parity-mentions",
         ] {
@@ -46731,7 +49499,15 @@ mod tests {
                         assert!(!rect.intersects(*other));
                     }
                 }
-                let position = bounds[count - 1].center();
+                let position = if files[count - 1].kind == model::AttachmentKind::Video {
+                    accessible_bounds(
+                        &output,
+                        &format!("Open {} in viewer", files[count - 1].name),
+                    )
+                    .center()
+                } else {
+                    bounds[count - 1].center()
+                };
                 for pressed in [true, false] {
                     draw(
                         &mut app,
@@ -46783,6 +49559,645 @@ mod tests {
         app.restore_drafts(attachments, None);
         assert!(app.draft_files[0].spoiler);
         assert!(app.draft_files[0].send_attachment().unwrap().spoiler);
+    }
+
+    #[test]
+    fn voice_messages_show_players_and_transcript_states() {
+        let (context, mut app) = fixture("parity-voice-messages");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let shown = texts(&output);
+        // Length while idle: 0:42, 0:07 and 2:05.
+        for time in ["0:42", "0:07", "2:05"] {
+            assert!(shown.contains(&time), "{time} in {shown:?}");
+        }
+        assert!(shown.contains(&"Transcribing…"));
+        assert!(
+            !shown.iter().any(|text| text.contains("Voice message.m4a")),
+            "voice messages never show their file name"
+        );
+        assert!(
+            shown.contains(&"TEST FIXTURE voice note.flac"),
+            "ordinary audio files keep their card"
+        );
+        let players = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.label() == Some("Play voice message"))
+            .count();
+        assert_eq!(players, 3);
+        assert!(node_bounds(&output, "Voice message position").is_some());
+        // The long transcript is clamped to three lines until expanded.
+        let clamped = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.job.text.starts_with("TEST FIXTURE transcript") =>
+                {
+                    Some(text.galley.clone())
+                }
+                _ => None,
+            })
+            .expect("the ready transcript");
+        assert!(clamped.elided);
+        assert_eq!(clamped.rows.len(), 3);
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "View transcript"),
+        );
+        let output = render(&mut app, &context, vec![]);
+        let full = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.job.text.starts_with("TEST FIXTURE transcript") =>
+                {
+                    Some(text.galley.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(!full.elided);
+        assert!(full.rows.len() > 3);
+        assert!(texts(&output).contains(&"Hide transcript"));
+    }
+
+    #[test]
+    fn transcripts_arrive_in_place_from_attachment_updates() {
+        let (context, mut app) = fixture("parity-voice-messages");
+        render(&mut app, &context, vec![]);
+        let message = app
+            .timeline
+            .messages()
+            .find(|message| {
+                message
+                    .content
+                    .attachments
+                    .iter()
+                    .any(|file| file.id == "fixture-voice-pending")
+            })
+            .unwrap()
+            .clone();
+        let mut ready = message.content.attachments[0].clone();
+        ready.transcript = Some(model::Transcript::Ready {
+            text: "TEST FIXTURE arrived transcript".into(),
+        });
+        let update: model::AttachmentUpdate = serde_json::from_value(serde_json::json!({
+            "type": "message.attachments", "schemaVersion": 1,
+            "channelId": message.channel_id, "seq": "5", "messageId": message.id,
+            "attachments": [ready],
+        }))
+        .unwrap();
+        app.timeline.apply_attachments(update).unwrap();
+        let output = render(&mut app, &context, vec![]);
+        let shown = texts(&output);
+        assert!(shown.contains(&"TEST FIXTURE arrived transcript"));
+        assert!(!shown.contains(&"Transcribing…"));
+        assert_eq!(
+            shown
+                .iter()
+                .filter(|text| **text == "View transcript")
+                .count(),
+            1,
+            "only the long transcript has a toggle; a short one needs none"
+        );
+    }
+
+    #[test]
+    fn recording_bar_replaces_the_input_and_escape_discards() {
+        let (context, mut app) = fixture("parity-voice-recording");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(node_bounds(&output, "Discard voice message").is_some());
+        assert!(node_bounds(&output, "Stop recording").is_some());
+        assert!(texts(&output).contains(&"0:07"));
+        assert!(
+            !texts(&output)
+                .iter()
+                .any(|text| text.contains("TEST FIXTURE draft text")),
+            "the input row is replaced"
+        );
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.voice_recording.is_none());
+        assert_eq!(app.draft, "TEST FIXTURE draft text waits while recording");
+        let output = render(&mut app, &context, vec![]);
+        assert!(node_bounds(&output, "Record voice message").is_some());
+        assert!(
+            texts(&output)
+                .iter()
+                .any(|text| text.contains("TEST FIXTURE draft text"))
+        );
+        // Enter (nothing focused) stops.
+        let (context, mut app) = fixture("parity-voice-recording");
+        render(&mut app, &context, vec![]);
+        render(&mut app, &context, press(egui::Key::Enter));
+        assert!(app.voice_recording.as_ref().is_some_and(|bar| bar.sending));
+        // So does the Stop button; the trash discards.
+        let (context, mut app) = fixture("parity-voice-recording");
+        let output = render(&mut app, &context, vec![]);
+        click(
+            &mut app,
+            &context,
+            node_bounds(&output, "Stop recording").unwrap().center(),
+        );
+        assert!(app.voice_recording.as_ref().is_some_and(|bar| bar.sending));
+        let (context, mut app) = fixture("parity-voice-recording");
+        let output = render(&mut app, &context, vec![]);
+        click(
+            &mut app,
+            &context,
+            node_bounds(&output, "Discard voice message")
+                .unwrap()
+                .center(),
+        );
+        assert!(app.voice_recording.is_none());
+    }
+
+    fn voice_attachment(id: &str) -> model::Attachment {
+        model::Attachment::parse(&serde_json::json!({
+            "id": id, "kind": "audio", "contentType": "audio/mp4", "name": "Voice message.m4a",
+            "size": 9000, "durationMs": 2000, "url": format!("https://fixture.invalid/{id}"),
+            "voice": true, "waveform": "AAECAw==", "transcript": {"status": "pending"}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn recorded_voice_messages_upload_then_send_alone_with_the_reply() {
+        let (context, mut app) = fixture("parity-attachments");
+        app.voice_send_on_stop = true;
+        let files = app.draft_files.len();
+        assert!(files > 0);
+        app.draft = "keep me".into();
+        let quoted = app.timeline.messages().next().unwrap().clone();
+        app.reply_targets
+            .insert("channel".into(), model::MessageReply::from_message(&quoted));
+        app.start_voice_recording(&context, None);
+        assert!(app.recording_in(None));
+        // A tap (under a second) uploads nothing.
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        app.voice_recorder_event(voice_note::RecorderEvent::TooShort);
+        assert!(app.voice_recording.is_none() && app.voice_sends.is_empty());
+        // A microphone failure says so and leaves no recording bar.
+        app.start_voice_recording(&context, None);
+        app.voice_recorder_event(voice_note::RecorderEvent::Failed(
+            voice_note::ACCESS_NEEDED.into(),
+        ));
+        assert!(app.voice_recording.is_none());
+        assert_eq!(app.error.as_deref(), Some(voice_note::ACCESS_NEEDED));
+        // A real recording uploads as a voice message, then sends on its own.
+        app.start_voice_recording(&context, None);
+        assert_eq!(app.error, None);
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        app.finish_voice_recording();
+        let samples: Vec<i16> = (0..96_000).map(|index| (index % 200) as i16 * 50).collect();
+        let prepared = voice_note::prepare(&samples, None).unwrap();
+        app.voice_recorder_event(voice_note::RecorderEvent::Ready(Box::new(prepared)));
+        assert!(app.voice_recording.is_none());
+        assert_eq!(app.voice_sends.len(), 1);
+        assert!(app.voice_sends[0].uploading);
+        assert!(app.voice_sends[0].prepared.voice.is_some());
+        assert!(
+            !app.reply_targets.contains_key("channel"),
+            "the reply goes with the voice message"
+        );
+        let key = app.voice_sends[0].key;
+        assert!(
+            app.voice_upload_update(key, worker::UploadUpdate::Progress(0.4))
+                .is_none()
+        );
+        assert_eq!(app.voice_sends[0].progress, 0.4);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Sending voice message… 40%"));
+        // Another message is pending: the voice message waits its turn.
+        app.pending = Some(PendingSend::prepare(None, "earlier", Vec::new()));
+        let uploaded = voice_attachment("voice-1");
+        app.voice_upload_update(key, worker::UploadUpdate::Finished(Ok(uploaded.clone())));
+        assert_eq!(app.voice_sends.len(), 1);
+        app.pending = None;
+        app.poll_voice(&context);
+        assert!(app.voice_sends.is_empty());
+        let pending = app.pending.clone().unwrap();
+        assert_eq!(pending.text, "");
+        assert_eq!(pending.attachments, vec![uploaded]);
+        assert_eq!(
+            pending.reply_to.map(|reply| reply.id),
+            Some(quoted.id.clone())
+        );
+        assert_eq!(pending.thread_root_id, None);
+        // The composer keeps its text and files.
+        assert_eq!(app.draft, "keep me");
+        assert_eq!(app.draft_files.len(), files);
+        // Other uploads' events pass through.
+        assert!(
+            app.voice_upload_update(key + 100, worker::UploadUpdate::Progress(0.5))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn failed_voice_uploads_retry_or_discard_and_leaving_cancels_them() {
+        let (context, mut app) = fixture("parity-attachments");
+        app.voice_send_on_stop = true;
+        app.start_voice_recording(&context, None);
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        let prepared = voice_note::prepare(&[1000; 48_000], None).unwrap();
+        app.voice_recorder_event(voice_note::RecorderEvent::Ready(Box::new(prepared)));
+        let key = app.voice_sends[0].key;
+        app.voice_upload_update(
+            key,
+            worker::UploadUpdate::Finished(Err(uploads::UploadError::new("Storage is full."))),
+        );
+        assert_eq!(
+            app.voice_sends[0].error.as_deref(),
+            Some("Storage is full.")
+        );
+        assert!(app.pending.is_none(), "a failed upload never sends");
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Voice message not sent. Storage is full."));
+        click(&mut app, &context, text_position(&output, "Retry"));
+        assert!(app.voice_sends[0].uploading && app.voice_sends[0].error.is_none());
+        // One recording at a time.
+        app.start_voice_recording(&context, None);
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        assert!(!app.mic_state(None).0);
+        // Leaving the conversation discards the recording and the upload.
+        app.selected_channel = Some("another-channel".into());
+        app.poll_voice(&context);
+        assert!(app.voice_recording.is_none());
+        assert!(app.voice_sends.is_empty());
+    }
+
+    fn alex_direct() -> model::DirectConversation {
+        serde_json::from_value(serde_json::json!({
+            "id": "dm-alex", "peer": {"id": "fixture-alex", "username": "alex", "displayName": "Alex"},
+            "lastSeq": "1", "readSeq": "1", "status": "accepted"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn profile_card_records_and_sends_only_the_voice_message() {
+        let (context, mut app) = fixture("parity-voice-profile");
+        app.voice_send_on_stop = true;
+        let (events, receiver) = std::sync::mpsc::channel();
+        app.worker.events = receiver;
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let typed = "TEST FIXTURE typed text waits while recording";
+        assert!(texts(&output).contains(&typed));
+        let mics: Vec<_> = output
+            .platform_output
+            .accesskit_update
+            .as_ref()
+            .unwrap()
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.label() == Some("Record voice message"))
+            .filter_map(|(_, node)| node.bounds())
+            .collect();
+        assert_eq!(mics.len(), 2, "the channel composer's and the card's");
+        // The card's sits above the channel composer's, at the bottom.
+        let card_mic = mics
+            .iter()
+            .min_by(|a, b| a.y0.total_cmp(&b.y0))
+            .map(|bounds| {
+                egui::pos2(
+                    ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                    ((bounds.y0 + bounds.y1) / 2.0) as f32,
+                )
+            })
+            .unwrap();
+        click(&mut app, &context, card_mic);
+        assert!(app.recording_for_profile("fixture-alex"));
+        assert!(!app.recording_in(None), "the channel composer is untouched");
+        let output = render(&mut app, &context, vec![]);
+        assert!(node_bounds(&output, "Discard voice message").is_some());
+        assert!(
+            !texts(&output).contains(&typed),
+            "the bar replaces the field"
+        );
+        // Escape discards the recording; the card stays open.
+        render(&mut app, &context, press(egui::Key::Escape));
+        assert!(app.voice_recording.is_none());
+        assert!(app.mention_card.is_some());
+        // A finished recording sends on its own through the card's send.
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        let prepared = voice_note::prepare(&[2_000; 96_000], None).unwrap();
+        app.voice_recorder_event(voice_note::RecorderEvent::Ready(Box::new(prepared)));
+        assert!(app.voice_recording.is_none());
+        let draft = &app.profile_drafts["fixture-alex"];
+        assert!(draft.sending);
+        assert_eq!(draft.status.as_deref(), Some("Sending voice message…"));
+        assert_eq!(draft.text, typed);
+        let voice = |client_id: &str| {
+            let prepared = voice_note::prepare(&[2_000; 96_000], None).unwrap();
+            let mut file = crate::profile_dm::File::voice(std::sync::Arc::new(prepared));
+            file.attachment = Some(voice_attachment("voice-dm"));
+            Box::new(crate::profile_dm::Send {
+                person: "fixture-alex".into(),
+                username: "alex".into(),
+                name: "Fixture Owner".into(),
+                client_id: client_id.into(),
+                text: String::new(),
+                files: vec![file],
+                settings: None,
+                cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                retrying: false,
+                open_only: false,
+                voice_only: true,
+                direct: Some(alex_direct()),
+            })
+        };
+        // An uncertain failure keeps the voice message for Retry or Discard.
+        events
+            .send(crate::worker::Event::ProfileSent {
+                epoch: app.account_epoch,
+                person: "fixture-alex".into(),
+                send: voice("voice-client"),
+                result: Err(crate::profile_dm::Failure {
+                    message: "Local test failure".into(),
+                    uncertain: true,
+                }),
+            })
+            .unwrap();
+        app.receive();
+        let draft = &app.profile_drafts["fixture-alex"];
+        assert!(!draft.sending);
+        assert_eq!(draft.text, typed, "the typed text stays");
+        assert!(draft.retry_id.is_none(), "the text draft is not frozen");
+        let retry = draft.voice_retry.as_ref().unwrap();
+        assert!(retry.retrying, "same message ID on retry");
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Voice message not sent. Local test failure"));
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Retry voice message"),
+        );
+        let draft = &app.profile_drafts["fixture-alex"];
+        assert!(draft.sending && draft.voice_retry.is_none());
+        // Success opens the DM as a text send does, keeping the typed text.
+        events
+            .send(crate::worker::Event::ProfileSent {
+                epoch: app.account_epoch,
+                person: "fixture-alex".into(),
+                send: voice("voice-client"),
+                result: Ok(alex_direct()),
+            })
+            .unwrap();
+        app.receive();
+        assert!(app.mention_card.is_none(), "the card closes");
+        assert!(
+            app.navigation_target
+                .as_ref()
+                .and_then(|target| target.channel.as_deref())
+                .or(app.selected_channel.as_deref())
+                == Some("dm-alex"),
+            "the DM opens as after a text send"
+        );
+        let draft = &app.profile_drafts["fixture-alex"];
+        assert!(!draft.sending && draft.error.is_none());
+        assert_eq!(draft.text, typed);
+    }
+
+    #[test]
+    fn microphones_wait_while_the_gif_picker_is_open() {
+        let (context, mut app) = fixture("parity-voice-profile");
+        assert!(app.mic_state(None).0);
+        app.gif_picker = Some(crate::klipy::Picker::new(None, None, 0));
+        assert_eq!(app.mic_state(None), (false, "Close the GIF picker first"));
+        app.start_voice_recording(&context, None);
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        assert!(
+            app.voice_recording.is_none(),
+            "no composer records meanwhile"
+        );
+        app.gif_picker = None;
+        assert!(app.mic_state(None).0);
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        assert!(app.recording_for_profile("fixture-alex"));
+    }
+
+    #[test]
+    fn profile_voice_discard_and_closing_the_card_end_it() {
+        let (context, mut app) = fixture("parity-voice-profile-recording");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"0:07"));
+        click(
+            &mut app,
+            &context,
+            node_bounds(&output, "Discard voice message")
+                .unwrap()
+                .center(),
+        );
+        assert!(app.voice_recording.is_none());
+        assert!(app.mention_card.is_some());
+        // Closing the card discards a recording in it.
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        app.mention_card = None;
+        app.poll_voice(&context);
+        assert!(app.voice_recording.is_none());
+        // A microphone failure reads in the card.
+        app.install_voice_profile_fixture(false);
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        app.voice_recorder_event(voice_note::RecorderEvent::Failed(
+            voice_note::ACCESS_NEEDED.into(),
+        ));
+        assert_eq!(
+            app.profile_drafts["fixture-alex"].error.as_deref(),
+            Some(voice_note::ACCESS_NEEDED)
+        );
+        assert!(app.error.is_none(), "not in the channel composer");
+        // Discarding a failed voice message cancels its upload.
+        app.profile_drafts
+            .get_mut("fixture-alex")
+            .unwrap()
+            .voice_retry = Some(Box::new(crate::profile_dm::Send {
+            person: "fixture-alex".into(),
+            username: "alex".into(),
+            name: String::new(),
+            client_id: "c".into(),
+            text: String::new(),
+            files: Vec::new(),
+            settings: None,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            retrying: false,
+            open_only: false,
+            voice_only: true,
+            direct: None,
+        }));
+        app.profile_voice_retry("fixture-alex", false);
+        assert!(app.profile_drafts["fixture-alex"].voice_retry.is_none());
+        assert!(!app.profile_drafts["fixture-alex"].sending);
+    }
+
+    #[test]
+    fn stopped_recordings_stage_beside_files_and_send_with_the_text() {
+        let (context, mut app) = fixture("parity-attachments");
+        assert!(!app.voice_send_on_stop, "staging is the default");
+        app.draft_files.retain(|file| file.attachment.is_some());
+        let files = app.draft_files.len();
+        assert!(files > 0);
+        app.draft = "TEST FIXTURE caption".into();
+        app.start_voice_recording(&context, None);
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        app.finish_voice_recording();
+        let prepared = voice_note::prepare(&[3_000; 96_000], None).unwrap();
+        app.voice_recorder_event(voice_note::RecorderEvent::Ready(Box::new(prepared)));
+        assert!(app.voice_recording.is_none());
+        assert!(app.voice_sends.is_empty(), "nothing sent on stop");
+        assert!(app.pending.is_none());
+        assert_eq!(app.draft, "TEST FIXTURE caption");
+        assert_eq!(app.draft_files.len(), files + 1);
+        let staged = app.draft_files.last().unwrap();
+        assert!(staged.voice().is_some());
+        assert!(staged.uploading, "the upload starts at once");
+        let key = staged.key;
+        // One voice message per message.
+        assert_eq!(
+            app.mic_state(None),
+            (false, "Remove the voice message to record another")
+        );
+        app.start_voice_recording(&context, None);
+        assert!(app.voice_recording.is_none());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(node_bounds(&output, "Play voice message").is_some());
+        assert!(node_bounds(&output, "Remove voice message").is_some());
+        assert!(texts(&output).contains(&"0:02"));
+        // Uploaded, it goes with the next Send beside the text and files.
+        let uploaded = voice_attachment("voice-staged");
+        app.upload_update(key, worker::UploadUpdate::Finished(Ok(uploaded.clone())));
+        app.send_message();
+        let pending = app.pending.clone().expect("one message");
+        assert_eq!(pending.text, "TEST FIXTURE caption");
+        assert_eq!(pending.attachments.len(), files + 1);
+        assert!(pending.attachments.contains(&uploaded));
+        assert!(app.draft.is_empty() && app.draft_files.is_empty());
+    }
+
+    #[test]
+    fn removing_a_staged_voice_message_cancels_its_upload() {
+        let (context, mut app) = fixture("parity-attachments");
+        app.draft_files.clear();
+        app.start_voice_recording(&context, None);
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        let prepared = voice_note::prepare(&[3_000; 96_000], None).unwrap();
+        app.voice_recorder_event(voice_note::RecorderEvent::Ready(Box::new(prepared)));
+        let cancel = app.draft_files[0].cancel.clone();
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(
+            &mut app,
+            &context,
+            node_bounds(&output, "Remove voice message")
+                .unwrap()
+                .center(),
+        );
+        assert!(app.draft_files.is_empty());
+        assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(app.mic_state(None).0, "the microphone is free again");
+    }
+
+    #[test]
+    fn the_card_stages_a_voice_message_with_its_text() {
+        let (context, mut app) = fixture("parity-voice-profile");
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        app.voice_recorder_event(voice_note::RecorderEvent::Started);
+        let prepared = voice_note::prepare(&[3_000; 96_000], None).unwrap();
+        app.voice_recorder_event(voice_note::RecorderEvent::Ready(Box::new(prepared)));
+        let draft = &app.profile_drafts["fixture-alex"];
+        assert!(!draft.sending, "nothing sent on stop");
+        assert!(draft.has_voice());
+        assert_eq!(draft.text, "TEST FIXTURE typed text waits while recording");
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        assert!(
+            app.voice_recording.is_none(),
+            "one voice message per message"
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(node_bounds(&output, "Remove voice message").is_some());
+        click(
+            &mut app,
+            &context,
+            node_bounds(&output, "Remove voice message")
+                .unwrap()
+                .center(),
+        );
+        assert!(!app.profile_drafts["fixture-alex"].has_voice());
+    }
+
+    #[test]
+    fn the_send_on_stop_setting_is_off_by_default_and_persists() {
+        #[derive(Default)]
+        struct Storage(std::collections::BTreeMap<String, String>);
+        impl eframe::Storage for Storage {
+            fn get_string(&self, key: &str) -> Option<String> {
+                self.0.get(key).cloned()
+            }
+            fn set_string(&mut self, key: &str, value: String) {
+                self.0.insert(key.into(), value);
+            }
+            fn flush(&mut self) {}
+        }
+        let (context, mut app) = fixture("parity-desktop");
+        assert!(!app.voice_send_on_stop);
+        app.persist_preferences = true;
+        app.voice_send_on_stop = true;
+        let mut storage = Storage::default();
+        eframe::App::save(&mut app, &mut storage);
+        assert_eq!(storage.0["voice-send-on-stop-v1"], "true");
+        app.voice_send_on_stop = false;
+        app.restore_preferences(&storage);
+        assert!(app.voice_send_on_stop);
+        // Settings has the switch.
+        app.voice_send_on_stop = false;
+        app.dialog = Some(Dialog::Settings);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        click(
+            &mut app,
+            &context,
+            text_position(&output, "Send voice messages as soon as I stop recording"),
+        );
+        assert!(app.voice_send_on_stop);
+    }
+
+    #[test]
+    fn voice_reply_drafts_prefer_transcripts_and_fall_back_while_pending() {
+        let (context, mut app) = fixture("parity-voice-messages");
+        let mut voice = app
+            .timeline
+            .messages()
+            .find(|message| message.content.attachments.iter().any(|file| file.voice))
+            .unwrap()
+            .clone();
+        voice.content.text.clear();
+        voice.content.attachments[0].transcript = Some(model::Transcript::Ready {
+            text: "Meet me at the north entrance.".into(),
+        });
+        let reply = model::MessageReply::from_message(&voice);
+        app.reply_targets.insert("channel".into(), reply);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Meet me at the north entrance."));
+        voice.content.attachments[0].transcript = Some(model::Transcript::Pending);
+        app.reply_targets
+            .insert("channel".into(), model::MessageReply::from_message(&voice));
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Transcribing…"));
     }
 
     #[test]
@@ -46890,8 +50305,13 @@ mod tests {
                     );
                 }
             };
-            if let Some(rect) = visible_before {
-                click(&mut app, rect.center());
+            if visible_before.is_some() {
+                let expand = node_bounds(
+                    &output,
+                    &format!("Open {} in viewer", files[visual + 1].name),
+                )
+                .unwrap();
+                click(&mut app, expand.center());
                 assert_eq!(app.viewer.take().unwrap().len(), 1);
             }
             click(&mut app, cover.center());
@@ -47031,6 +50451,26 @@ mod tests {
     }
 
     #[test]
+    fn video_play_stays_inline_and_expand_opens_viewer() {
+        let (context, mut app) = fixture("parity-inline-videos");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let tile = node_bounds(&output, "Play TEST FIXTURE inline video.mp4").unwrap();
+        assert_eq!(click_opening(&mut app, &context, tile.center()), None);
+        assert!(app.viewer.is_none(), "Play must not open the modal viewer");
+        click_label(
+            &mut app,
+            &context,
+            "Open TEST FIXTURE inline video.mp4 in viewer",
+        );
+        let viewer = app
+            .viewer
+            .as_ref()
+            .expect("explicit expansion opens the viewer");
+        assert_eq!((viewer.index(), viewer.len()), (0, 1));
+    }
+
+    #[test]
     fn attachments_render_by_status_and_open_in_the_viewer_or_browser() {
         let context = egui::Context::default();
         context.enable_accesskit();
@@ -47068,10 +50508,16 @@ mod tests {
             click_opening(&mut app, &context, pdf).as_deref(),
             Some("https://fixture.invalid/original/fixture-pdf")
         );
-        // Images and videos open the in-app viewer, not the browser: here the
-        // message's screenshot and animation, at the animation.
+        // Playing stays in the message; only the explicit expand button opens
+        // the message's screenshot and animation in the viewer.
         let gif = text_position(&output, "GIF");
         assert_eq!(click_opening(&mut app, &context, gif), None);
+        assert!(app.viewer.is_none());
+        click_label(
+            &mut app,
+            &context,
+            "Open TEST FIXTURE reaction.mp4 in viewer",
+        );
         let viewer = app.viewer.take().expect("the viewer opens");
         assert_eq!((viewer.index(), viewer.len()), (1, 2));
         // Removed, failed and processing files are not links.
@@ -47312,7 +50758,9 @@ mod tests {
         );
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
-        let gif = text_position(&output, "GIF");
+        let gif = node_bounds(&output, "View TEST FIXTURE screenshot.webp")
+            .unwrap()
+            .center();
         // What egui-winit sends for one finger: the release keeps the last
         // moved position, and a fast flick's final stretch arrives with it.
         let touch = |phase, pos| egui::Event::Touch {
@@ -47718,6 +51166,9 @@ mod tests {
             unavailable: false,
             status: model::AttachmentStatus::Processing,
             animated: false,
+            voice: false,
+            waveform: None,
+            transcript: None,
         };
         app.upload_update(
             2,
@@ -48349,6 +51800,43 @@ mod tests {
     }
 
     #[test]
+    fn uploaded_noneditable_drafts_open_in_the_media_viewer() {
+        for (kind, content_type, name) in [
+            ("image", "image/gif", "reaction.gif"),
+            ("video", "video/mp4", "reaction.mp4"),
+        ] {
+            let (context, mut app) = fixture("parity-attachments");
+            let draft = &mut app.draft_files[1];
+            draft.editable = None;
+            draft.local_path = Some(std::env::temp_dir().join(name));
+            draft.attachment = Some(
+                crate::model::Attachment::parse(&serde_json::json!({
+                    "id": "uploaded-animation", "kind": kind,
+                    "contentType": content_type, "name": name, "size": 1234,
+                    "url": "https://fixture.invalid/original/uploaded-animation",
+                    "status": "ready"
+                }))
+                .unwrap(),
+            );
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let tile = bounds_starting(&output, "Preview TEST FIXTURE diagram.png\n");
+            assert_eq!(
+                click_opening(
+                    &mut app,
+                    &context,
+                    egui::pos2(tile.left() + 12.0, tile.center().y)
+                ),
+                None,
+                "uploaded {kind} must not launch a browser or default app"
+            );
+            let viewer = app.viewer.as_ref().expect("in-app media viewer opens");
+            assert_eq!((viewer.index(), viewer.len()), (0, 1));
+            assert_eq!(app.draft_files.len(), 3, "preview preserves the draft");
+        }
+    }
+
+    #[test]
     fn editable_drafts_preview_in_the_app_with_tools_that_open_the_editor() {
         use crate::attachment_editor::Tool;
         let context = egui::Context::default();
@@ -48648,6 +52136,7 @@ mod tests {
             duration_ms: None,
             preview: None,
             thumbnail: None,
+            voice: None,
         }));
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
@@ -50370,7 +53859,7 @@ mod tests {
     }
 
     #[test]
-    fn member_presence_pages_use_current_web_page_size() {
+    fn member_roster_keeps_all_private_readers_first() {
         let members = (0..26)
             .map(|index| Member {
                 admin: false,
@@ -50398,18 +53887,20 @@ mod tests {
             channel_invitations: Vec::new(),
             channel_members: Default::default(),
         };
-        assert_eq!(member_page_ids(&detail, None, 0).len(), 25);
-        assert_eq!(member_page_ids(&detail, None, 1), ["member-25"]);
-        // A private channel's readers lead the pages, in the space's order.
+        assert_eq!(detail.member_order(None).len(), 26);
+        // A private channel's readers lead the roster, in the space's order.
         let mut private = detail.clone();
         private.channel_members.insert(
             "leads".into(),
             vec!["member-25".into(), "member-3".into(), "gone".into()],
         );
-        let first = member_page_ids(&private, Some("leads"), 0);
+        let first: Vec<_> = private
+            .member_order(Some("leads"))
+            .into_iter()
+            .map(|member| member.id.as_str())
+            .collect();
         assert_eq!(first[..3], ["member-3", "member-25", "member-0"]);
-        assert_eq!(member_page_ids(&private, Some("leads"), 1), ["member-24"]);
-        assert_eq!(member_page_ids(&private, Some("general"), 1), ["member-25"]);
+        assert_eq!(first.len(), 26);
     }
 
     #[test]
@@ -50437,6 +53928,7 @@ mod tests {
                 text: pending.text.clone(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
+                gif: None,
                 embeds: Vec::new(),
                 suppress_embeds: false,
             },
@@ -50560,6 +54052,7 @@ mod tests {
                     text: "sent".into(),
                     attachments: Vec::new(),
                     mentions: Vec::new(),
+                    gif: None,
                     embeds: Vec::new(),
                     suppress_embeds: false,
                 },

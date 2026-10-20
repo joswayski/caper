@@ -4,7 +4,7 @@ use crate::invites::{InviteLink, InviteLinks, InvitePreview, JoinedInvite};
 use crate::model::{
     Account, Blocks, Channel, ChatSession, DirectConversation, DirectConversations, History,
     Member, Members, Message, NotificationLevel, NotificationOverride, NotificationSettings,
-    People, Privacy, ReactionUpdate, Reactors, Space, SpaceDetail, Spaces,
+    People, Person, Privacy, ReactionUpdate, Reactors, Space, SpaceDetail, Spaces,
 };
 use crate::notifications::{Change, Scope};
 use crate::uploads::UploadError;
@@ -176,6 +176,16 @@ impl Api {
         Ok(account)
     }
 
+    pub fn regenerate_avatar(&self, token: &str) -> Result<Account, ApiError> {
+        self.request(
+            Method::POST,
+            "api/account/avatar/regenerate",
+            Some(token),
+            None,
+            None,
+        )
+    }
+
     pub fn avatar_history(
         &self,
         token: &str,
@@ -286,6 +296,16 @@ impl Api {
 
     pub fn people(&self, token: &str) -> Result<People, ApiError> {
         self.request(Method::GET, "api/people", Some(token), None, None)
+    }
+
+    pub fn lookup_direct(&self, token: &str, username: &str) -> Result<Person, ApiError> {
+        self.request(
+            Method::POST,
+            "api/dms/lookup",
+            Some(token),
+            None,
+            Some(json!({"username": username})),
+        )
     }
 
     pub fn create_direct(
@@ -972,6 +992,7 @@ impl Api {
         spoiler_attachment_ids: &[String],
         thread: (Option<&str>, bool),
         reply_to_id: Option<&str>,
+        gif: Option<&crate::klipy::Gif>,
         suppress_embeds: bool,
     ) -> Result<Message, ApiError> {
         let mut body = json!({"clientMessageId":client_id,"text":text});
@@ -982,6 +1003,10 @@ impl Api {
         // Ids join the idempotency hash; the key is present only with files.
         if !attachment_ids.is_empty() {
             body["attachmentIds"] = json!(attachment_ids);
+        }
+        // A GIF travels alone (never with files) and joins the hash too.
+        if let Some(gif) = gif {
+            body["gif"] = gif.to_value();
         }
         if !spoiler_attachment_ids.is_empty() {
             body["spoilerAttachmentIds"] = json!(spoiler_attachment_ids);
@@ -1020,6 +1045,15 @@ impl Api {
         }
         let body: Value = response.json().ok()?;
         crate::model::Embed::parse(&body["embed"])
+    }
+
+    /// `GET /api/klipy`: `None` (404) while GIFs are off on this server.
+    pub fn klipy(&self, token: &str) -> Result<Option<crate::klipy::Config>, ApiError> {
+        match self.request(Method::GET, "api/klipy", Some(token), None, None) {
+            Ok(config) => Ok(Some(config)),
+            Err(error) if error.status == Some(StatusCode::NOT_FOUND) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Uploads are optional server configuration (503 without storage). Any
@@ -1708,6 +1742,52 @@ mod tests {
     use super::{Api, friendly_error};
     use std::io::{BufRead, BufReader, Write};
 
+    #[test]
+    fn avatar_regeneration_posts_no_body_and_preserves_conflicts() {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for (status, body) in [
+                ("200 OK", r#"{"id":"self","avatarId":412}"#),
+                ("409 Conflict", r#"{"error":"custom avatar present"}"#),
+            ] {
+                let (stream, _) = server.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert_eq!(line, "POST /api/account/avatar/regenerate HTTP/1.1\r\n");
+                let mut authorized = false;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let header = line.to_ascii_lowercase();
+                    authorized |= header == "authorization: bearer test-token\r\n";
+                    if let Some(length) = header.strip_prefix("content-length:") {
+                        assert_eq!(length.trim(), "0");
+                    }
+                    assert!(!header.starts_with("transfer-encoding:"));
+                }
+                assert!(authorized);
+                write!(reader.get_mut(), "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let account = api.regenerate_avatar("test-token").unwrap();
+        assert_eq!(account.avatar_id, Some(412));
+        assert!(account.avatar_asset.is_none());
+        assert_eq!(
+            api.regenerate_avatar("test-token")
+                .unwrap_err()
+                .status
+                .unwrap()
+                .as_u16(),
+            409,
+        );
+        worker.join().unwrap();
+    }
+
     /// Serves one GET: the head, then each chunk after its delay, then holds
     /// the connection open until the returned sender is dropped.
     fn trickle(
@@ -1837,6 +1917,7 @@ mod tests {
                     &["a".into(), "b".into()],
                     &spoilers,
                     (None, false),
+                    None,
                     None,
                     false
                 )
@@ -2319,6 +2400,16 @@ mod tests {
                 "200 OK",
                 r#"{"directMessages":"nobody"}"#,
             ),
+            (
+                "POST /api/dms/lookup",
+                "200 OK",
+                r#"{"id":"stranger0001","username":"jordan","displayName":"Jordan","avatarId":412}"#,
+            ),
+            (
+                "POST /api/dms/lookup",
+                "404 Not Found",
+                r#"{"error":"Person not found"}"#,
+            ),
         ];
         let worker = std::thread::spawn(move || {
             let mut bodies = Vec::new();
@@ -2375,7 +2466,14 @@ mod tests {
                 .direct_messages,
             "nobody"
         );
+        let person = api.lookup_direct("account", "jordan").unwrap();
+        assert_eq!(person.username, "jordan");
+        assert_eq!(person.display_name, "Jordan");
+        assert_eq!(person.avatar_id, Some(412));
+        assert!(api.lookup_direct("account", "unknown").is_err());
         let bodies = worker.join().unwrap();
+        assert_eq!(bodies[9], r#"{"username":"jordan"}"#);
+        assert_eq!(bodies[10], r#"{"username":"unknown"}"#);
         assert_eq!(bodies[0], r#"{"username":"jordan"}"#);
         assert_eq!(bodies[8], r#"{"directMessages":"nobody"}"#);
     }

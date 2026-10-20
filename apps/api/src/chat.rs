@@ -615,6 +615,8 @@ struct SendInput {
     #[serde(default)]
     broadcast: bool,
     reply_to_id: Option<String>,
+    /// A KLIPY GIF or sticker picked on the device; never with attachments.
+    gif: Option<crate::klipy::GifInput>,
     /// The author removed the link previews before sending.
     #[serde(default)]
     suppress_embeds: bool,
@@ -797,7 +799,8 @@ async fn send(
     Json(input): Json<SendInput>,
 ) -> Result<Json<Value>, ApiError> {
     let chat = enabled(&state)?;
-    let payload = send_message_with_options(
+    let gif = input.gif.as_ref().map(crate::klipy::prepare).transpose()?;
+    let payload = send_message_with_gif(
         &chat.pool,
         &channel,
         sender_token(&headers)?,
@@ -808,6 +811,7 @@ async fn send(
         input.thread_root_id.as_deref(),
         input.broadcast,
         input.reply_to_id.as_deref(),
+        gif,
         input.suppress_embeds,
     )
     .await?;
@@ -1033,7 +1037,7 @@ pub(crate) async fn send_message_with_spoilers(
     broadcast: bool,
     reply_to: Option<&str>,
 ) -> Result<Value, ApiError> {
-    send_message_with_options(
+    send_message_with_gif(
         pool,
         channel,
         token,
@@ -1044,13 +1048,15 @@ pub(crate) async fn send_message_with_spoilers(
         root,
         broadcast,
         reply_to,
+        None,
         false,
     )
     .await
 }
 
+/// `gif` is a validated `content.gif` from `klipy::prepare`.
 #[allow(clippy::too_many_arguments)]
-async fn send_message_with_options(
+pub(crate) async fn send_message_with_gif(
     pool: &PgPool,
     channel: &str,
     token: &str,
@@ -1061,8 +1067,15 @@ async fn send_message_with_options(
     root: Option<&str>,
     broadcast: bool,
     reply_to: Option<&str>,
+    gif: Option<Value>,
     suppress_embeds: bool,
 ) -> Result<Value, ApiError> {
+    if gif.is_some() && !attachment_ids.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "send a gif on its own, without files",
+        ));
+    }
     if spoiler_attachment_ids
         .iter()
         .enumerate()
@@ -1084,7 +1097,10 @@ async fn send_message_with_options(
             "attach up to 10 different files",
         ));
     }
-    let mut content = prepare_content(text, !attachment_ids.is_empty())?;
+    let mut content = prepare_content(text, !attachment_ids.is_empty() || gif.is_some())?;
+    if let Some(gif) = gif {
+        content["gif"] = gif;
+    }
     if suppress_embeds {
         content["suppressEmbeds"] = json!(true);
     }
@@ -1142,7 +1158,13 @@ async fn send_message_with_options(
     }
     // Preserve all existing nonspoiler retry hashes; replies are also bound to
     // their destination and broadcast choice below, and files to their ids.
-    let hash = if !spoiler_attachment_ids.is_empty() {
+    let hash = if let Some(gif) = content.get("gif") {
+        // Domain separated like spoilers; a GIF never travels with files.
+        let mut hash = Sha256::new();
+        hash.update(b"\0gif\0");
+        hash.update(serde_json::to_vec(&(text, gif)).expect("serializable send request"));
+        hash.finalize().to_vec()
+    } else if !spoiler_attachment_ids.is_empty() {
         // Canonical attachment order makes the spoiler list a set, not a sequence.
         let spoilers: Vec<_> = attachment_ids
             .iter()
@@ -1211,6 +1233,8 @@ async fn send_message_with_options(
         let text = target["content"]["text"].as_str().unwrap_or_default();
         let text = if text.is_empty() && target.get("forward").is_some() {
             "Forwarded message"
+        } else if let Some(gif) = target["content"].get("gif").filter(|_| text.is_empty()) {
+            crate::klipy::label(gif)
         } else {
             text
         };

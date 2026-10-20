@@ -70,6 +70,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import chat.caper.android.data.AttachmentEdit
 import chat.caper.android.data.AttachmentPolicy
+import chat.caper.android.data.VoiceMessages
+import chat.caper.android.data.isVoiceMessage
 import chat.caper.android.model.AttachmentState
 import chat.caper.android.model.ChatAttachment
 import chat.caper.android.model.DraftAttachmentUi
@@ -229,6 +231,7 @@ internal fun durationLabel(durationMs: Long?): String? {
                     Text(it, Modifier.align(Alignment.BottomEnd).padding(6.dp).background(Blackout.copy(alpha = 0.72f), MaterialTheme.shapes.extraSmall).padding(horizontal = 5.dp, vertical = 2.dp), color = Text, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
             }
+            attachment.isVoiceMessage -> VoiceMessage(attachment, pending, onLoadFailed, modifier)
             attachment.kind == "audio" -> FileCard(attachment, if (pending) null else ({ playing = attachment.id }), R.drawable.lucide_play)
             else -> FileCard(attachment, if (pending) null else ({ open(url) }))
         }
@@ -248,8 +251,11 @@ internal fun durationLabel(durationMs: Long?): String? {
             }
         }
     }
-    val (visuals, files) = attachments.partition { it.kind == "image" || it.kind == "video" }
+    val (visuals, others) = attachments.partition { it.kind == "image" || it.kind == "video" }
+    // Voice messages take their own row (up to the player's width) above other files.
+    val (voices, files) = others.partition { it.isVoiceMessage }
     Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        voices.forEach { attachment -> key(attachment.id) { RenderAttachment(attachment, Modifier, MaterialTheme.shapes.small) } }
         if (visuals.size == 1) RenderAttachment(visuals.single(), Modifier, MaterialTheme.shapes.small)
         else if (visuals.isNotEmpty()) BoxWithConstraints(Modifier.widthIn(max = 480.dp).fillMaxWidth()) {
             val cells = attachmentGalleryCells(visuals.size, maxWidth.value)
@@ -384,6 +390,7 @@ internal fun replyAttachmentPreviewUrl(attachment: ChatAttachment): String? = wh
             Box(Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)).background(Surface)
                 .border(1.dp, Border, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
                 if (source != null && !failed) AttachmentImage(attachment, source, "reply", Modifier.fillMaxSize(), ContentScale.Crop, { _, _ -> failed = true })
+                else if (attachment.isVoiceMessage) Icon(painterResource(R.drawable.lucide_mic), VoiceMessages.LABEL, Modifier.size(18.dp), tint = TextMuted)
                 else Icon(painterResource(R.drawable.lucide_file_text), if (attachment.spoiler) "Spoiler attachment" else "Attachment", Modifier.size(18.dp), tint = TextMuted)
             }
         }
@@ -588,24 +595,27 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
             Toast.makeText(context, "No app is available to preview this file.", Toast.LENGTH_SHORT).show()
         }
     }
+    // A staged recording is a voice chip above the file tiles.
+    val (voices, files) = drafts.partition { it.voice }
     Column(Modifier.fillMaxWidth()) {
-        val failed = drafts.count { it.error != null }
-        val active = drafts.count { it.attachment == null && it.error == null && (!uploadOnSend || sending || it.compressing) }
+        voices.forEach { draft -> key(draft.key) {
+            StagedVoiceChip(draft, remove, retry?.takeIf { !uploadOnSend }, enabled,
+                busy = draft.attachment == null && draft.error == null)
+            Spacer(Modifier.height(8.dp))
+        } }
+        if (files.isEmpty()) return@Column
+        val failed = files.count { it.error != null }
         if (failed > 0) Text(
             if (failed == 1) "1 file failed to upload. Send will retry it, or you can remove it."
             else "$failed files failed to upload. Send will retry them, or you can remove them.",
             Modifier.fillMaxWidth().padding(bottom = 8.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp,
-        )
-        if (active > 0) Text(
-            "Uploading $active file${if (active == 1) "" else "s"}… Your message won’t send until every file is ready.",
-            Modifier.fillMaxWidth().padding(bottom = 8.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp,
         )
         BoxWithConstraints(Modifier.fillMaxWidth().padding(bottom = 8.dp).semantics { contentDescription = "Files to send" }) {
             val columns = ((maxWidth.value + 8f) / 98f).toInt().coerceIn(1, 4)
             val tileSize = minOf(104.dp, (maxWidth - 8.dp * (columns - 1)) / columns)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), maxItemsInEachRow = columns) {
                 // Keyed, so each tile arrives once and keeps its own progress animation.
-                drafts.forEach { draft -> key(draft.key) {
+                files.forEach { draft -> key(draft.key) {
                     var menuOpen by remember { mutableStateOf(false) }
                     LaunchedEffect(enabled) { if (!enabled) menuOpen = false }
                     Surface(Modifier.entrance(MOTION_BASE, scale = 0.94f).size(tileSize), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {

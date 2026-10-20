@@ -409,8 +409,6 @@ const checkLongQuotePreview = async (layout) => {
     "TEST FIXTURE — 🙂🚀 Replies bring an earlier message back into the conversation without moving the original.\nThe quote preserves the original wording and line breaks, even if the source is edited later. This longer paragraph makes the three-line preview wrap on both wide and narrow screens.\nShow more reveals the complete saved quote; View original jumps to the live message.\nhttps://example.test/" +
     "a-long-unbroken-path-".repeat(9) +
     "END-OF-QUOTE";
-  const preview =
-    "TEST FIXTURE — 🙂🚀 Replies bring an earlier message back into the conversation without moving the ori…";
   const send = async (auth, text, replyToId, clientMessageId = randomUUID()) => {
     const response = await fetch(`${api}/api/chat/channels/chan00000001/messages`, {
       method: "POST",
@@ -420,6 +418,23 @@ const checkLongQuotePreview = async (layout) => {
     assert.equal(response.status, 200);
     return response.json();
   };
+  const shortText =
+    "Oh shit how did you have the voice note show the text in the message that is really cool. Is it a setting I have to turn on?";
+  assert.ok([...shortText].length > 100);
+  const shortSource = await send(peer, shortText);
+  const shortReply = await send(own, "TEST FIXTURE — Short quotes need no expansion.", shortSource.id);
+  const shortSelector = `${channel(shortReply.clientMessageId)} .chat-reply-context`;
+  browser("focus", ".chat-panel .chat-scroller[aria-hidden=false]");
+  browser("press", "End");
+  wait(`!!document.querySelector('${shortSelector} .chat-reply-excerpt')`);
+  assert.equal(evaluate(`document.querySelector('${shortSelector} .chat-reply-excerpt').textContent`), shortText);
+  assert.equal(evaluate(`!!document.querySelector('${shortSelector} .chat-reply-expand')`), false);
+  screenshot(`reply-preview-${layout}-short`);
+  // Line count, not character count: even a very short four-line quote needs expansion.
+  const linesSource = await send(peer, "One\nTwo\nThree\nFour");
+  const linesReply = await send(own, "TEST FIXTURE — Four explicit lines.", linesSource.id);
+  browser("press", "End");
+  wait(`!!document.querySelector('${channel(linesReply.clientMessageId)} .chat-reply-expand')`);
   const source = await send(peer, fullText);
   wait(
     '!document.querySelector(".chat-initial-messages") && !!document.querySelector(".chat-panel .chat-scroller[aria-hidden=false]")',
@@ -487,27 +502,30 @@ const checkLongQuotePreview = async (layout) => {
     const excerptBounds = excerpt.getBoundingClientRect();
     const heading = quote.querySelector('.chat-reply-heading').getBoundingClientRect();
     return { clamp: getComputedStyle(excerpt).webkitLineClamp, mask: getComputedStyle(excerpt).maskImage, height: excerpt.clientHeight, natural: excerpt.scrollHeight,
-      expandCenter: Math.abs(expand.left + expand.width / 2 - card.left - card.width / 2), expandHeight: expand.height,
-      fadeCenter: Math.abs(expand.top + expand.height / 2 - excerptBounds.top - excerptBounds.height * 0.7),
+      expandLeft: Math.abs(expand.left - excerptBounds.left), expandHeight: expand.height,
+      expandGap: expand.top - excerptBounds.bottom,
+      expandBackground: getComputedStyle(quote.querySelector('.chat-reply-expand')).backgroundColor,
+      expandDecoration: getComputedStyle(quote.querySelector('.chat-reply-expand')).textDecorationLine,
       footerHeight: card.bottom - excerptBounds.bottom, headingGap: expand.top - heading.bottom,
       connection: Math.abs(line.bottom - avatar.top - avatar.height / 2), overflow: document.documentElement.scrollWidth > innerWidth,
       sourceConnection: Math.hypot(sourceMouth.x - source.left, sourceMouth.y - source.top - source.height / 2),
       replyConnection: Math.hypot(targetMouth.x - avatar.left, targetMouth.y - avatar.top - avatar.height / 2),
+      inward: beam.getBoundingClientRect().left >= targetBack.x - 0.1,
       wireConnection: Math.max(Math.hypot(end.x - sourceBack.x, end.y - sourceBack.y), Math.hypot(start.x - targetBack.x, start.y - targetBack.y)),
       separation: avatar.top - quote.querySelector('.chat-reply-body').getBoundingClientRect().bottom,
       quoteHeight: quote.getBoundingClientRect().height };
   })()`);
-  assert.equal(evaluate(`document.querySelector('${selector} .chat-reply-excerpt').textContent`), preview);
+  assert.equal(evaluate(`document.querySelector('${selector} .chat-reply-excerpt').textContent`), fullText);
   const collapsed = geometry();
   assert.equal(collapsed.clamp, "3");
   assert.ok(collapsed.height <= 54);
-  assert.notEqual(collapsed.mask, "none", "The collapsed quote fades into its dark card");
-  assert.ok(collapsed.expandCenter < 1, "Show more is centered in the quote card");
-  assert.ok(collapsed.fadeCenter < 1, "Show more floats at the midpoint of the lower-60% fade");
-  assert.ok(collapsed.footerHeight <= 12, "Show more does not allocate a separate footer row");
-  assert.ok(collapsed.headingGap >= 1, "The floating pill stays below the original author heading");
+  assert.equal(collapsed.mask, "none", "The preview stays readable without a fade");
+  assert.ok(collapsed.expandLeft < 1, "Show more aligns with the text");
+  assert.ok(collapsed.expandGap >= 0, "Show more does not cover the excerpt");
+  assert.equal(collapsed.expandBackground, "rgba(0, 0, 0, 0)", "No filled pill");
+  assert.equal(collapsed.expandDecoration, "underline", "Text action looks clickable");
   assert.ok(
-    collapsed.expandHeight >= (layout === "desktop" ? 32 : 44),
+    collapsed.expandHeight >= (layout === "desktop" ? 24 : 44),
     "The expansion button keeps its pointer/touch target",
   );
   assert.ok(collapsed.connection < 1, "The connector meets the actual reply avatar");
@@ -516,6 +534,7 @@ const checkLongQuotePreview = async (layout) => {
     "Both avatar attachments match their rendered boundaries",
   );
   assert.ok(collapsed.wireConnection < 0.1, "The string stays attached to both cup backs");
+  assert.ok(collapsed.inward, "The string stays inward of the lower cup instead of bowing into the row edge");
   assert.ok(collapsed.separation >= 8, "The quote card stays separate from the replying author");
   assert.equal(collapsed.overflow, false);
   screenshot(`reply-preview-${layout}-collapsed`);
@@ -526,10 +545,11 @@ const checkLongQuotePreview = async (layout) => {
   assert.equal(expanded.mask, "none", "The expanded original has no fade");
   assert.equal(expanded.height, expanded.natural, "Expansion reveals the full saved text");
   assert.ok(expanded.quoteHeight > collapsed.quoteHeight);
-  assert.ok(expanded.expandCenter < 1, "Show less stays centered after expansion");
+  assert.ok(expanded.expandLeft < 1, "Show less stays aligned with the text");
   assert.ok(expanded.connection < 1, "Expansion does not detach the connector");
   assert.ok(expanded.sourceConnection < 1 && expanded.replyConnection < 1);
   assert.ok(expanded.wireConnection < 0.1);
+  assert.ok(expanded.inward, "Expanding the quote preserves the string's edge clearance");
   assert.ok(expanded.separation >= 8);
   assert.equal(expanded.overflow, false, "Long URLs wrap instead of overflowing");
   browser("scrollintoview", selector);
@@ -555,7 +575,7 @@ const checkLongQuotePreview = async (layout) => {
         const siblingRotation = Math.atan2(sibling.getCTM().b, sibling.getCTM().a);
         const back = new DOMPoint(-12, 0).matrixTransform(cup.getScreenCTM());
         const end = wire.getPointAtLength(0).matrixTransform(wire.getScreenCTM());
-        samples.push({ rotation, siblingRotation, attached: Math.hypot(back.x - end.x, back.y - end.y), changed: wire.getAttribute('d') !== initial });
+        samples.push({ elapsed: performance.now() - start, rotation, siblingRotation, attached: Math.hypot(back.x - end.x, back.y - end.y), inward: wire.getBoundingClientRect().left >= back.x - 0.1, changed: wire.getAttribute('d') !== initial });
         if (performance.now() - start < 2000) requestAnimationFrame(sample);
         else resolve({ samples, initial, final: wire.getAttribute('d'), moved: Math.abs(scroller.scrollTop - top) });
       }; requestAnimationFrame(sample);
@@ -578,7 +598,17 @@ const checkLongQuotePreview = async (layout) => {
     motion.samples.every((sample) => sample.attached < 0.1),
     "The string remains attached throughout the spring",
   );
+  assert.ok(
+    motion.samples.every((sample) => sample.inward),
+    "Sway never pushes the string toward the row edge",
+  );
   assert.equal(motion.final, motion.initial, "The connection settles exactly back to rest");
+  assert.ok(
+    motion.samples
+      .filter((sample) => sample.elapsed >= 700)
+      .every((sample) => sample.rotation === 0 && sample.siblingRotation === 0),
+    "Reply motion settles within 700ms instead of lingering",
+  );
   assert.ok(
     motion.samples
       .slice(-10)
@@ -604,7 +634,7 @@ const checkLongQuotePreview = async (layout) => {
   wait(`document.querySelector('${channel(source.clientMessageId)} p')?.textContent === ${JSON.stringify(edited)}`);
   assert.equal(
     evaluate(`document.querySelector('${selector} .chat-reply-excerpt').textContent`),
-    preview,
+    fullText,
     "Source edits do not rewrite a quote",
   );
   browser("click", `${selector} .chat-reply-view`);
@@ -623,9 +653,16 @@ const checkLongQuotePreview = async (layout) => {
   const unblock = await fetch(`${api}/api/blocks/member000001`, { method: "DELETE", headers: own });
   assert.equal(unblock.status, 204);
   browser("open", `${web}/spaces`);
+  // Source navigation can restore a history anchor; bring the virtualized reply
+  // into view after hydration before checking its measured expansion control.
+  wait(
+    '!document.querySelector(".chat-initial-messages") && !!document.querySelector(".chat-panel .chat-scroller[aria-hidden=false]")',
+  );
+  browser("focus", ".chat-panel .chat-scroller[aria-hidden=false]");
+  browser("press", "End");
   wait(`!!document.querySelector('${selector} .chat-reply-expand')`);
   console.log(
-    `PASS: ${layout}: 100-scalar faded preview, full immutable expansion, both avatar sockets and string attachments, separate quote card, URL containment, source jump and blocked-source privacy; independent scroll-driven springs for replies to the same source, attached endpoints during motion, exact settling, no idle jiggling and static reduced motion.`,
+    `PASS: ${layout}: short quotes over 100 characters need no expansion; four-line and long quotes have readable three-line previews, underlined text controls and full immutable expansion; attached sockets, URL containment, source jump and blocked-source privacy; independent springs settle within 700ms with static reduced motion.`,
   );
 };
 
@@ -1073,6 +1110,15 @@ try {
         sessionId,
       );
     }
+    if (selector !== "#chat-thread-reply" && dx > 12 && dx > Math.abs(dy) * 1.5) {
+      const reduced = evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches");
+      const offset = evaluate('document.querySelector(".chat-thread-panel").getBoundingClientRect().x');
+      assert.ok(
+        Math.abs(offset - (reduced ? 0 : dx)) < 1,
+        "The thread follows the finger before release (unless motion is reduced)",
+      );
+      if (dx === 140 && !cancel && !reduced) screenshot("threads-mobile-dragging");
+    }
     await cdp("Input.dispatchTouchEvent", { type: cancel ? "touchCancel" : "touchEnd", touchPoints: [] }, sessionId);
   };
   const savedThreadDraft = evaluate('document.querySelector("#chat-thread-reply").value');
@@ -1088,6 +1134,7 @@ try {
       true,
       `Left, short, cancelled and vertical drags keep the thread: ${dx}, ${dy}, ${cancel}`,
     );
+    wait('Math.abs(document.querySelector(".chat-thread-panel").getBoundingClientRect().x) < 1');
   }
   await swipeThread("#chat-thread-reply", 90);
   assert.equal(evaluate('!!document.querySelector(".chat-thread-panel")'), true, "The composer keeps its own gestures");
@@ -1105,8 +1152,17 @@ try {
   await swipeThread(".chat-thread-heading", 140);
   wait('!document.querySelector(".chat-thread-panel") && !history.state?.caperThread');
   open(root.clientMessageId);
+  await cdp(
+    "Emulation.setEmulatedMedia",
+    { features: [{ name: "prefers-reduced-motion", value: "reduce" }] },
+    sessionId,
+  );
+  await swipeThread(".chat-thread-messages", 140);
+  wait('!document.querySelector(".chat-thread-panel") && !history.state?.caperThread');
+  await cdp("Emulation.setEmulatedMedia", { features: [] }, sessionId);
+  open(root.clientMessageId);
   console.log(
-    "PASS: thread right-swipes from timeline/header return to channel and preserve draft; left/short/cancelled/vertical/composer drags stay in thread.",
+    "PASS: thread swipes track the finger, settle back on cancellation, return to channel and preserve draft; reduced motion, left/short/vertical/composer guards pass.",
   );
   screenshot("threads-mobile");
   evaluate('document.querySelector(".chat-thread-heading span").textContent = "in #" + "long-channel-name-".repeat(3)');

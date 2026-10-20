@@ -116,10 +116,13 @@ type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn next(socket: &mut Socket, kind: &str, id: Option<&str>) -> Value {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let text = socket.next().await.unwrap().unwrap().into_text().unwrap();
             let value: Value = serde_json::from_str(&text).unwrap();
+            if value["type"] == "heartbeat" {
+                transmit(socket, json!({"type":"heartbeat","activityAgeMs":0})).await;
+            }
             if value["type"] == kind && id.is_none_or(|id| value["id"] == id) {
                 return value;
             }
@@ -269,6 +272,95 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
     let snapshot = next(&mut old, "event", Some("people")).await;
     assert_eq!(snapshot["event"]["members"][0]["status"], "online");
     next(&mut old, "subscribed", Some("people")).await;
+    // The server-derived roster uses one subscription even beyond the explicit
+    // ID limit, and never includes another space's members.
+    let mut roster_socket = connect(gateways[1].1, &token).await;
+    let mut member_ids = Vec::new();
+    for index in 0..102 {
+        let external = crate::auth::random_id(12);
+        let id: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,$2,'Member') RETURNING id")
+            .bind(&external).bind(format!("member{index}")).fetch_one(&pool).await.unwrap();
+        if index < 101 {
+            sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+                .bind(space_id)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            member_ids.push(external);
+        } else {
+            let other_space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,'Other',$2) RETURNING id")
+                .bind(crate::auth::random_id(12)).bind(id).fetch_one(&pool).await.unwrap();
+            sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+                .bind(other_space)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
+    transmit(
+        &mut roster_socket,
+        json!({"type":"subscribe","kind":"presence","id":"all","spaceId":space,"allMembers":true}),
+    )
+    .await;
+    let snapshot = next(&mut roster_socket, "event", Some("all")).await;
+    let members = snapshot["event"]["members"].as_array().unwrap();
+    assert_eq!(members.len(), 102);
+    assert!(
+        members
+            .iter()
+            .all(|member| member["userId"] == user_external
+                || member_ids.iter().any(|id| member["userId"] == *id))
+    );
+    next(&mut roster_socket, "subscribed", Some("all")).await;
+    transmit(&mut roster_socket, json!({"type":"subscribe","kind":"presence","id":"too-many","spaceId":space,"userIds":member_ids})).await;
+    assert_eq!(
+        next(&mut roster_socket, "error", Some("too-many")).await["status"],
+        400
+    );
+    transmit(&mut roster_socket, json!({"type":"subscribe","kind":"presence","id":"mixed","spaceId":space,"allMembers":true,"userIds":[user_external]})).await;
+    assert_eq!(
+        next(&mut roster_socket, "error", Some("mixed")).await["status"],
+        400
+    );
+    sqlx::query("UPDATE public.space_members SET deleted_at=now() WHERE space_id=$1 AND user_id=(SELECT id FROM public.users WHERE external_id=$2)")
+        .bind(space_id).bind(&member_ids[0]).execute(&pool).await.unwrap();
+    let snapshot = next(&mut roster_socket, "event", Some("all")).await;
+    let members = snapshot["event"]["members"].as_array().unwrap();
+    assert_eq!(members.len(), 101);
+    assert!(
+        members
+            .iter()
+            .all(|member| member["userId"] != member_ids[0])
+    );
+    sqlx::query("UPDATE public.space_members SET deleted_at=NULL WHERE space_id=$1 AND user_id=(SELECT id FROM public.users WHERE external_id=$2)")
+        .bind(space_id).bind(&member_ids[0]).execute(&pool).await.unwrap();
+    assert_eq!(
+        next(&mut roster_socket, "event", Some("all")).await["event"]["members"]
+            .as_array()
+            .unwrap()
+            .len(),
+        102
+    );
+    // A restored member gets a live watch as well as the repair snapshot.
+    gateways[1]
+        .0
+        .application
+        .presence
+        .as_ref()
+        .unwrap()
+        .renew(&member_ids[0], "test-roster-connection", 0)
+        .await
+        .unwrap();
+    let snapshot = next(&mut roster_socket, "event", Some("all")).await;
+    assert!(
+        snapshot["event"]["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|member| member["userId"] == member_ids[0] && member["status"] == "online")
+    );
     // Presence fields name the sign-in session, so phone push can tell it apart.
     let mut presence_broker = broker.get_multiplexed_async_connection().await.unwrap();
     let fields: Vec<String> = redis::cmd("HKEYS")
@@ -580,6 +672,24 @@ async fn multiplexed_presence_commands_and_cross_gateway_handoff() {
         .execute(&pool)
         .await
         .unwrap();
+    assert_eq!(
+        next(&mut roster_socket, "error", Some("all")).await["status"],
+        403
+    );
+    // Even a now-empty space cannot retain or establish an all-members feed.
+    sqlx::query(
+        "UPDATE public.space_members SET deleted_at=now() WHERE space_id=$1 AND deleted_at IS NULL",
+    )
+    .bind(space_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    transmit(&mut roster_socket, json!({"type":"subscribe","kind":"presence","id":"empty-denied","spaceId":space,"allMembers":true})).await;
+    assert_eq!(
+        next(&mut roster_socket, "error", Some("empty-denied")).await["status"],
+        403
+    );
+    drop(roster_socket);
     transmit(
         &mut replacement,
         json!({"type":"subscribe","kind":"chat","id":"revoked","channelId":channel,"after":"0"}),

@@ -3031,3 +3031,24 @@ test("live profile updates re-render retained authors, reply references, pins, t
   // A conversation opened later starts with the latest names too.
   assert.equal(initialChatView(history).messages[0].author.name, "Maya Lopez");
 });
+
+test("a staged voice message sends with the text and other files as one message", async (t) => {
+  const f = await sendingFixture(t);
+  const photo = { id: "f1", kind: "image" as const, contentType: "image/webp", name: "shot.webp", size: 10 };
+  const voice = {
+    id: "v1",
+    kind: "audio" as const,
+    contentType: "audio/mp4",
+    name: "Voice message.m4a",
+    size: 2_048,
+    durationMs: 4_200,
+    url: "https://cdn.test/v1.m4a",
+    voice: true,
+    waveform: "AAEC",
+    transcript: { status: "pending" },
+  };
+  void f.client.send("Look at this", { attachments: [photo, voice] });
+  assert.equal(f.posts[0].body.text, "Look at this");
+  assert.deepEqual(f.posts[0].body.attachmentIds, ["f1", "v1"]);
+  assert.deepEqual(f.state.pendingSend?.attachments?.[1], voice, "the pending row keeps the voice fields");
+});

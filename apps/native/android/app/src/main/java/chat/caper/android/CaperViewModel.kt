@@ -75,6 +75,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     internal val spaceAccessEpoch: Long get() = spaceAccessGeneration
     private var voiceAuthorizationRequest = 0L
     private val pendingSends = PendingSendTracker()
+    /** KLIPY is called from the device itself, without Caper credentials (docs/media.md "GIFs and stickers (KLIPY)"). */
+    private val klipy = KlipyClient(api.client)
+    /** The system WebView's user agent: KLIPY serves ads only to mobile user agents. */
+    private val klipyUserAgent: String? by lazy { runCatching { android.webkit.WebSettings.getDefaultUserAgent(getApplication()) }.getOrNull() }
     private val unloadedReactions = mutableMapOf<String, ReactionUpdate>()
     private val unloadedAttachments = mutableMapOf<String, AttachmentsUpdate>()
     /** Link cards for messages not loaded yet, applied when they arrive (`data/Embeds.kt`). */
@@ -224,6 +228,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 createChatSession(requestAccountGeneration)
                 if (requestAccountGeneration != accountGeneration) return@launch
                 checkUploads(requestAccountGeneration)
+                checkKlipy(requestAccountGeneration)
                 startDirectRefresh()
                 if (PushRegistration.enabled(getApplication())) viewModelScope.launch {
                     runCatching { PushRegistration.enable(getApplication()) }
@@ -524,7 +529,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request != generation) return@launch
                 val landing = spaceLandingChannel(detail.channels, preferredChannelId, lastChannelBySpace[id])
                 // While restoring, the loading screen waits for the landing conversation too.
-                mutable.value = mutable.value.copy(selectedSpace = detail, busy = false, presencePage = 0,
+                mutable.value = mutable.value.copy(selectedSpace = detail, busy = false,
                     restoring = mutable.value.restoring && landing != null)
                 // Before a cached conversation of this space opens.
                 repairProfiles(detail.members.map { it.profile() }, since)
@@ -689,6 +694,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         while (conversationHistories.size > 20) conversationHistories.remove(conversationHistories.keys.first())
     }
 
+    fun lookupDirectPerson(username: String, found: (Person) -> Unit, failed: (String) -> Unit) = launchAction { request ->
+        try {
+            val person = api.lookupDirectPerson(requireAccountToken(), username)
+            if (request == accountGeneration) found(person)
+        } catch (error: CancellationException) { throw error }
+        catch (error: Throwable) { if (request == accountGeneration) failed(message(error)) }
+    }
+
     fun startDirect(username: String, done: () -> Unit = {}, failed: ((String) -> Unit)? = null) = launchAction { request ->
         try { openDirectByUsername(username, request, done) }
         catch (error: CancellationException) { throw error }
@@ -734,32 +747,110 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Only Send posts a profile message; opening happens after a confirmed message. */
-    internal fun sendProfileMessage(person: String, id: String?, username: String, done: () -> Unit) {
-        val token = accountToken ?: return
+    /** Send posts the draft; picker media posts alone. Open the DM only after confirmation. */
+    internal fun sendProfileMessage(person: String, id: String?, username: String, done: () -> Unit,
+        gif: KlipyGif? = null, kind: KlipyKind? = null, query: String = ""): Boolean {
+        val token = accountToken ?: return false
+        if (gif != null && (!profileDrafts[person].editable || mutable.value.klipy == null)) return false
+        if (gif == null && !profileDrafts[person].canSend) return false
         val request = accountGeneration
         val navigation = generation
         val directNavigation = conversationOpeningRevision
-        val files = profileDrafts[person].files
+        val media = gif ?: profileDrafts[person].pendingGif
+        val shareQuery = if (profileDrafts[person].pendingGif != null) profileDrafts[person].pendingGifQuery else query
+        val files = if (media == null) profileDrafts[person].files else emptyList()
+        val config = mutable.value.klipy
         viewModelScope.launch {
-            val result = profileDrafts.send(person, id, username, token, session = {
-                val capability = createChatSession(request) ?: error("Chat session is unavailable.")
-                capability to requireNotNull(chatAuthor)
-            }, directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
+            val result = profileDrafts.send(person, id, username, token, session = profileChatSession(request),
+                directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds }, gif = gif, gifQuery = query)
             if (request != accountGeneration) return@launch
             if (result == null) {
                 if (profileDrafts[person].error == directMessageError(DM_BLOCKED)) { refreshBlocks(); refreshDirectConversations() }
                 return@launch
             }
             files.forEach { discardDraftFiles(it.key) }
-            val (conversation, sent) = result
-            mutable.value = mutable.value.copy(directConversations = mergeDirects(mutable.value.directConversations, listOf(conversation)))
-            if (mutable.value.selectedChannel?.id == conversation.id) addMessage(sent)
-            conversationHistories.remove(conversation.id)
-            if (navigation == generation && directNavigation == conversationOpeningRevision) {
-                done()
-                selectDirect(conversation)
+            if (media != null && config != null) viewModelScope.launch {
+                klipy.share(config, kind ?: if (media.sticker) KlipyKind.STICKERS else KlipyKind.GIFS, media.slug, shareQuery, klipyUserAgent)
             }
+            profileMessageSent(result.first, result.second, navigation, directNavigation, done)
+        }
+        return true
+    }
+
+    /**
+     * The profile card's voice message: a [recording] sent to that person's DM on its own (the
+     * draft's text and files stay), then the same as after Send: the DM opens and [done] closes the card.
+     */
+    internal fun sendProfileVoice(person: String, id: String?, username: String, recording: File, durationMs: Long, waveform: String?, done: () -> Unit) {
+        val token = accountToken
+        if (token == null || !mutable.value.uploadsEnabled || !profileDrafts[person].editable || profileDrafts.voiceKey(person) != null ||
+            durationMs !in 1..VoiceMessages.MAX_DURATION_MS) {
+            recording.delete(); return
+        }
+        val key = UUID.randomUUID().toString()
+        val prepared = adoptRecording(key, recording, durationMs, waveform)
+            ?: return profileDrafts.error(person, "Couldn’t save the voice message.")
+        val request = accountGeneration
+        val navigation = generation
+        val directNavigation = conversationOpeningRevision
+        deliverProfileVoice(person, key, request, navigation, directNavigation, done) {
+            profileDrafts.sendVoice(person, id, username, token, key, prepared, session = profileChatSession(request),
+                directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
+        }
+    }
+
+    /** Retry on the card's waiting voice message: the same upload, and the same message once a send may have arrived. */
+    internal fun retryProfileVoice(person: String, id: String?, username: String, done: () -> Unit) {
+        val token = accountToken ?: return
+        val key = profileDrafts.voiceKey(person) ?: return
+        val request = accountGeneration
+        val navigation = generation
+        val directNavigation = conversationOpeningRevision
+        deliverProfileVoice(person, key, request, navigation, directNavigation, done) {
+            profileDrafts.retryVoice(person, id, username, token, session = profileChatSession(request),
+                directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
+        }
+    }
+
+    /** Discard on the card's waiting voice message: its upload is cancelled and the recording deleted. */
+    internal fun discardProfileVoice(person: String) {
+        val token = accountToken
+        viewModelScope.launch { profileDrafts.discardVoice(person, token)?.let(::discardDraftFiles) }
+    }
+
+    /** The recording's copy goes once it is sent or dropped; one that failed waits for Retry or Discard. */
+    private fun deliverProfileVoice(
+        person: String, key: String, request: Long, navigation: Long, directNavigation: Long, done: () -> Unit,
+        attempt: suspend () -> Pair<DirectConversation, ChatMessage>?,
+    ) {
+        viewModelScope.launch {
+            try {
+                val result = attempt()
+                if (request != accountGeneration) return@launch
+                if (result == null) {
+                    if (profileDrafts[person].error == directMessageError(DM_BLOCKED)) { refreshBlocks(); refreshDirectConversations() }
+                    return@launch
+                }
+                profileMessageSent(result.first, result.second, navigation, directNavigation, done)
+            } finally {
+                if (profileDrafts.voiceKey(person) != key) discardDraftFiles(key)
+            }
+        }
+    }
+
+    private fun profileChatSession(request: Long): suspend () -> Pair<String, ChatAuthor> = {
+        val capability = createChatSession(request) ?: error("Chat session is unavailable.")
+        capability to requireNotNull(chatAuthor)
+    }
+
+    /** After a confirmed profile message: list the DM, show the message if it is open, and open it unless you navigated meanwhile. */
+    private fun profileMessageSent(conversation: DirectConversation, sent: ChatMessage, navigation: Long, directNavigation: Long, done: () -> Unit) {
+        mutable.value = mutable.value.copy(directConversations = mergeDirects(mutable.value.directConversations, listOf(conversation)))
+        if (mutable.value.selectedChannel?.id == conversation.id) addMessage(sent)
+        conversationHistories.remove(conversation.id)
+        if (navigation == generation && directNavigation == conversationOpeningRevision) {
+            done()
+            selectDirect(conversation)
         }
     }
 
@@ -1436,7 +1527,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 mutable.value = mutable.value.copy(
                     selectedSpace = destination.detail, selectedChannel = destination.channel,
                     messages = mergeTimelinePins(destination.history.messages), hasMoreMessages = destination.history.hasMore,
-                    presencePage = if (previousSpace == spaceId) mutable.value.presencePage else 0,
                     deniedVoiceChannels = if (previousSpace == spaceId) mutable.value.deniedVoiceChannels else emptySet(),
                     busy = false, error = null,
                 )
@@ -1520,7 +1610,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                         selectedSpace = detail ?: mutable.value.selectedSpace, selectedChannel = channel, selectedDirectId = direct?.id,
                         directConversations = if (direct == null) mutable.value.directConversations else mutable.value.directConversations.filter { it.id != direct.id } + direct,
                         messages = mergeTimelinePins(history.messages), hasMoreMessages = history.hasMore,
-                        presencePage = if (detail == null || previousSpace == detail.space.id) mutable.value.presencePage else 0,
                         deniedVoiceChannels = if (detail == null || previousSpace == detail.space.id) mutable.value.deniedVoiceChannels else emptySet(),
                         busy = false, error = null, messagesLoading = false,
                     )
@@ -1606,14 +1695,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 if (request == generation && anchor == historyAnchorRequest) mutable.value = mutable.value.copy(loadingNewer = false, refreshError = message(error))
             }
         }
-    }
-
-    fun setPresencePage(page: Int) {
-        val members = mutable.value.selectedSpace?.members ?: return
-        val max = ((members.size - 1).coerceAtLeast(0)) / PRESENCE_PAGE_SIZE
-        val next = page.coerceIn(0, max)
-        mutable.value = mutable.value.copy(presencePage = next, presence = emptyMap())
-        watchVisiblePresence()
     }
 
     private val availabilityRequests = mutableMapOf<String, Job>()
@@ -1963,7 +2044,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         if (!state.canParticipate || state.pendingMessage != null || message.channelId != state.selectedChannel?.id || message.deletedAt != null) return
         val root = if (inThread) state.thread?.rootId ?: return else if (message.threadRootId != null && !message.broadcast) message.threadRootId else null
         val key = root ?: "channel"
-        val text = message.content.text.ifEmpty { if (message.forward != null) "Forwarded message" else "" }
+        val text = message.content.text.ifEmpty { if (message.forward != null) "Forwarded message" else message.content.gif?.let { if (it.sticker) "Sticker" else "GIF" } ?: "" }
         val excerpt = text.substring(0, text.offsetByCodePoints(0, minOf(200, text.codePointCount(0, text.length))))
         val reference = MessageReply(message.id, message.author, excerpt, message.content.attachments.isNotEmpty(), message.threadRootId,
             fullText = text.takeIf { it.codePointCount(0, it.length) > 200 }, attachments = message.content.attachments)
@@ -2003,22 +2084,26 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     current.pendingMessage != null || !current.canParticipate) return@launch
                 val ready = current.attachmentDrafts[target].orEmpty()
                 if (ready.map { it.key } != keys || ready.any { it.attachment == null || it.error != null }) return@launch
-                if (sendReady(text, confirmed, threadRootId, broadcast, suppressEmbeds)) accepted()
+                if (sendReady(text, confirmed, threadRootId, broadcast, suppressEmbeds = suppressEmbeds)) accepted()
             }
             return false
         }
-        return sendReady(text, confirmed, threadRootId, broadcast, suppressEmbeds)
+        return sendReady(text, confirmed, threadRootId, broadcast, suppressEmbeds = suppressEmbeds)
     }
 
-    /** Returns false when nothing was sent, so the composer keeps its text and files. */
-    private fun sendReady(text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean, suppressEmbeds: Boolean = false): Boolean {
+    /**
+     * Returns false when nothing was sent, so the composer keeps its text and files. A [voice]
+     * recording is sent on its own instead of the composer's files, which stay where they are.
+     * A [gif] goes alone too.
+     */
+    private fun sendReady(text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean, voice: VoiceSend? = null, gif: KlipyGif? = null, suppressEmbeds: Boolean = false): Boolean {
         if (mutable.value.pendingMessage?.let { it.error == null || it.rejected } == true) return false
         if (mutable.value.pendingMessage?.let { it.threadRootId != threadRootId } == true) return false
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return false
         val target = AttachmentDraftTarget(channel.id, threadRootId)
-        val drafts = mutable.value.attachmentDrafts[target].orEmpty()
+        val drafts = if (gif != null) emptyList() else voice?.let { listOf(it.draft) } ?: mutable.value.attachmentDrafts[target].orEmpty()
         val author = chatAuthor ?: run {
-            if (text.isBlank() && drafts.isEmpty()) return false
+            if (voice != null || text.isBlank() && drafts.isEmpty()) return false
             // The session is still being created (or failed earlier): create
             // it now and send once it exists, instead of refusing the message.
             val request = generation
@@ -2033,21 +2118,23 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         // An unknown outcome must be retried with the same ID, text and files.
         val retry = pendingSends.retrying(channel.id, author)
-        val files = if (retry != null) mutable.value.pendingMessage?.attachments.orEmpty() else {
+        if (voice != null && retry != null) return false
+        val files = if (retry != null) mutable.value.pendingMessage?.attachments.orEmpty() else if (voice != null) listOf(voice.placeholder) else {
             if (drafts.any { it.attachment == null }) {
                 return false
             }
             // Pending messages show the local compressed copies until the server's message arrives.
             drafts.mapNotNull { draft -> draft.attachment?.copy(status = "ready", url = draft.localUrl, previewUrl = draft.thumbnail, spoiler = draft.spoiler) }
         }
-        if (retry == null && text.isBlank() && files.isEmpty()) return false
+        if (retry == null && text.isBlank() && files.isEmpty() && gif == null) return false
         val request = generation
-        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, mutable.value.replyTargets[threadRootId ?: "channel"], files.filter { it.spoiler }.map { it.id }, suppressEmbeds, confirmed)
+        var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, mutable.value.replyTargets[threadRootId ?: "channel"], files.filter { it.spoiler }.map { it.id }, gif = gif, suppressEmbeds = suppressEmbeds, confirmed = confirmed)
         if (retry == null) {
             pendingDrafts = drafts
-            pendingNeedsUpload = drafts.any { uploadStale(it) }
+            // A recording uploads only once it is sending, before the message itself.
+            pendingNeedsUpload = voice != null || drafts.any { uploadStale(it) }
         }
-        if (retry == null) {
+        if (retry == null && voice == null && gif == null) {
             // If a server ever reports these as processing, this device shows its own picked images
             // (the working copies are deleted once the send is confirmed; the picked URI is not).
             val local = drafts.mapNotNull { draft -> draft.attachment?.id?.let { id -> draft.pickedImage?.takeIf { draft.edit == null }?.let { id to it } } }
@@ -2058,7 +2145,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         mutable.value = mutable.value.copy(replyTargets = mutable.value.replyTargets - (threadRootId ?: "channel"), pendingMessage = PendingMessageUi(
             operation.id.toString(), operation.text, author, Instant.now().toString(), attachments = files,
-            threadRootId = operation.threadRootId, broadcast = operation.broadcast, replyTo = operation.replyTo,
+            threadRootId = operation.threadRootId, broadcast = operation.broadcast, replyTo = operation.replyTo, gif = operation.gif,
         ))
         viewModelScope.launch {
             try {
@@ -2082,7 +2169,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     try {
                         sent = retryUnknownSend {
                             api.sendMessage(accountToken, capability, channel.id, author, operation.id, operation.text,
-                                operation.attachmentIds, operation.threadRootId, operation.broadcast, operation.replyTo?.id, operation.spoilerAttachmentIds,
+                                operation.attachmentIds, operation.threadRootId, operation.broadcast, operation.replyTo?.id, operation.spoilerAttachmentIds, operation.gif,
                                 operation.suppressEmbeds)
                         }
                         break
@@ -2128,6 +2215,148 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
+    /** A recording on its way: its working copy (as a draft only the pending message holds) and how it shows meanwhile. */
+    private data class VoiceSend(val draft: DraftAttachmentUi, val placeholder: ChatAttachment)
+
+    private var voiceSend: Job? = null
+
+    /**
+     * Sends a recorded voice message ([recording], an AAC/MP4 file this takes over) on its own:
+     * the composer's text and files stay, the reply target is honoured. The pending message shows
+     * the local recording while it uploads (uncompressed, with `voice`, its duration and
+     * [waveform]) and sends; a failed upload offers Retry like any pending file.
+     */
+    fun sendVoice(recording: File, durationMs: Long, waveform: String?, threadRootId: String? = null, broadcast: Boolean = false) {
+        val state = mutable.value
+        val channel = state.selectedChannel?.takeIf { it.joined }
+        if (channel == null || accountToken == null || !state.canParticipate || !state.uploadsEnabled ||
+            (threadRootId != null && state.thread?.rootId != threadRootId) || durationMs !in 1..VoiceMessages.MAX_DURATION_MS) {
+            recording.delete(); return
+        }
+        val target = AttachmentDraftTarget(channel.id, threadRootId)
+        if (state.pendingMessage != null || uploadSend?.isActive == true || voiceSend?.isActive == true) {
+            recording.delete()
+            voiceError(target, "Wait for your last message to send, then record again.")
+            return
+        }
+        val key = UUID.randomUUID().toString()
+        val prepared = adoptRecording(key, recording, durationMs, waveform)
+            ?: return voiceError(target, "Couldn’t save the voice message.")
+        preparedDrafts[key] = prepared
+        val file = prepared.file
+        val local = Uri.fromFile(file).toString()
+        val voice = VoiceSend(
+            DraftAttachmentUi(key, VoiceMessages.LABEL, "audio", sourceSize = file.length(), storedSize = file.length(), localUrl = local, compressing = false),
+            ChatAttachment(key, "audio", VoiceMessages.UPLOAD_TYPE, VoiceMessages.LABEL, file.length(), durationMs = durationMs,
+                status = "ready", url = local, voice = true, waveform = waveform),
+        )
+        mutable.value = mutable.value.copy(attachmentErrors = mutable.value.attachmentErrors - target)
+        val request = generation
+        val account = accountGeneration
+        val thread = threadRequest
+        voiceSend = viewModelScope.launch {
+            if (chatAuthor == null && createChatSession(account) == null) { discardDraftFiles(key); return@launch }
+            val current = mutable.value
+            val stale = request != generation || account != accountGeneration || current.selectedChannel?.id != channel.id ||
+                (threadRootId != null && (thread != threadRequest || current.thread?.rootId != threadRootId)) || !current.canParticipate
+            if (stale || !sendReady("", {}, threadRootId, broadcast, voice)) {
+                discardDraftFiles(key)
+                if (!stale) voiceError(target, "Wait for your last message to send, then record again.")
+            }
+        }
+    }
+
+    /**
+     * Moves a finished recording into this session's upload folder as [key]'s working copy, which
+     * [discardDraftFiles] deletes, ready to upload as recorded: no compression, `voice` with its
+     * duration and waveform. Null (the recording deleted) when it cannot be kept.
+     */
+    private fun adoptRecording(key: String, recording: File, durationMs: Long, waveform: String?): PreparedAttachment? {
+        val directory = File(uploadSession, key)
+        val file = File(directory, VoiceMessages.UPLOAD_NAME)
+        val moved = runCatching {
+            directory.mkdirs()
+            recording.renameTo(file) || run { recording.copyTo(file, overwrite = true); recording.delete(); true }
+        }.getOrDefault(false)
+        if (!moved || file.length() < 1) {
+            recording.delete(); directory.deleteRecursively()
+            return null
+        }
+        draftDirectories[key] = directory
+        return PreparedAttachment(file, VoiceMessages.UPLOAD_NAME, VoiceMessages.UPLOAD_TYPE, "audio", file.length(),
+            durationMs = durationMs, voice = true, waveform = waveform)
+    }
+
+    /**
+     * Stages a finished recording in [target]'s composer (the default when stopping): a voice chip
+     * beside the staged files, uploading at once (so transcription starts before Send) and sent
+     * with the text and files by the normal Send. One per message; Remove cancels and deletes it.
+     */
+    fun stageVoice(recording: File, durationMs: Long, waveform: String?, target: AttachmentDraftTarget) {
+        val state = mutable.value
+        val files = state.attachmentDrafts[target].orEmpty()
+        if (accountToken == null || !state.uploadsEnabled || state.selectedChannel?.id != target.channelId || !state.canParticipate ||
+            durationMs !in 1..VoiceMessages.MAX_DURATION_MS || files.any { it.voice }) {
+            recording.delete(); return
+        }
+        if (files.size >= AttachmentPolicy.MAX_ATTACHMENTS) {
+            recording.delete()
+            return setAttachmentDrafts(target, files, "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files.")
+        }
+        val key = UUID.randomUUID().toString()
+        val prepared = adoptRecording(key, recording, durationMs, waveform)
+            ?: return voiceError(target, "Couldn’t save the voice message.")
+        preparedDrafts[key] = prepared
+        setAttachmentDrafts(target, files + voiceDraft(key, prepared))
+        retryDraft(key)
+    }
+
+    /** The composer chip for a staged recording. */
+    private fun voiceDraft(key: String, prepared: PreparedAttachment) = DraftAttachmentUi(
+        key, VoiceMessages.LABEL, "audio", sourceSize = prepared.file.length(), storedSize = prepared.file.length(),
+        localUrl = Uri.fromFile(prepared.file).toString(), compressing = false,
+        voice = true, durationMs = prepared.durationMs, waveform = prepared.waveform,
+    )
+
+    /**
+     * The profile card's staged recording: a voice chip among the card's files, uploaded to that
+     * person's DM at once like the card's other files and sent with the text by Send.
+     */
+    internal fun stageProfileVoice(person: String, id: String?, username: String, recording: File, durationMs: Long, waveform: String?) {
+        val token = accountToken
+        val draft = profileDrafts[person]
+        if (token == null || !mutable.value.uploadsEnabled || !draft.editable || draft.files.any { it.voice } ||
+            durationMs !in 1..VoiceMessages.MAX_DURATION_MS) {
+            recording.delete(); return
+        }
+        val key = UUID.randomUUID().toString()
+        val prepared = adoptRecording(key, recording, durationMs, waveform)
+            ?: return profileDrafts.error(person, "Couldn’t save the voice message.")
+        if (profileDrafts.add(person, listOf(voiceDraft(key, prepared))).isEmpty()) { discardDraftFiles(key); return }
+        profileDrafts.ready(person, key, prepared)
+        profileRecipients[person] = id to username
+        val request = accountGeneration
+        uploadJobs[key] = viewModelScope.launch {
+            try {
+                profileDrafts.upload(person, id, username, token,
+                    directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds }, keys = setOf(key))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                if (request != accountGeneration) return@launch
+                val message = (error as? ApiException)?.code?.let(::directMessageError)
+                    ?: if (error is IllegalStateException) friendlyError(error) else AttachmentPolicy.uploadErrorMessage(error)
+                updateDraft(key, person) { it.copy(error = message, compressing = false) }
+            } finally {
+                if (uploadJobs[key] === coroutineContext[Job]) uploadJobs.remove(key)
+            }
+        }
+    }
+
+    private fun voiceError(target: AttachmentDraftTarget, message: String) {
+        mutable.value = mutable.value.copy(attachmentErrors = mutable.value.attachmentErrors + (target to message))
+    }
+
     /** Edit restores a rejected message's files to the composer; Dismiss drops them. */
     fun discardPending(restoreFiles: Boolean = false, restoreReply: Boolean = restoreFiles): String? {
         val pending = mutable.value.pendingMessage ?: return null
@@ -2159,17 +2388,52 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Picked photos, videos or documents: compress on the device, upload, and hold as composer drafts. */
-    fun addAttachments(uris: List<Uri>, target: AttachmentDraftTarget, epoch: Long = accountGeneration) {
-        if (epoch != accountGeneration) return
-        addAttachments(uris, null, target)
+    /** `GET /api/klipy`: any failure (404 while GIFs are off) keeps the GIF button hidden. */
+    private fun checkKlipy(request: Long) {
+        val token = accountToken ?: return
+        viewModelScope.launch {
+            val config = try { api.klipyConfig(token) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Throwable) { null }
+            if (request == accountGeneration) mutable.value = mutable.value.copy(klipy = config)
+        }
+    }
+
+    /** One picker page straight from KLIPY: trending for a blank [query], otherwise search. */
+    internal suspend fun klipyPage(kind: KlipyKind, query: String, page: Int, ads: KlipyAdRequest?): KlipyPage {
+        val config = mutable.value.klipy ?: throw IOException("GIFs are unavailable.")
+        return klipy.page(config, kind, query, page, java.util.Locale.getDefault().country, ads, klipyUserAgent)
+    }
+
+    /**
+     * Sends a picked GIF at once as its own message to the open conversation, or to [threadRootId]
+     * with [broadcast] as the thread composer would, quoting that composer's reply target. The
+     * composer's text and files stay. KLIPY's share trigger follows the confirmed send.
+     */
+    fun sendGif(gif: KlipyGif, kind: KlipyKind, query: String, threadRootId: String? = null, broadcast: Boolean = false): Boolean {
+        val state = mutable.value
+        val config = state.klipy ?: return false
+        if (uploadSend?.isActive == true || state.pendingMessage != null || !state.canParticipate) return false
+        val channel = state.selectedChannel?.takeIf { it.joined } ?: return false
+        val author = chatAuthor ?: return false
+        if (pendingSends.retrying(channel.id, author) != null) return false
+        if (threadRootId != null && state.thread?.rootId != threadRootId) return false
+        val shared = { viewModelScope.launch { klipy.share(config, kind, gif.slug, query, klipyUserAgent) }; Unit }
+        return sendReady("", shared, threadRootId, broadcast, gif = gif)
+    }
+
+    /**
+     * Picked files: prepare, upload and hold as composer drafts. The jobs let keyboard
+     * input retain its temporary URI grants until asynchronous file access has finished.
+     */
+    fun addAttachments(uris: List<Uri>, target: AttachmentDraftTarget, epoch: Long = accountGeneration): List<Job> {
+        if (epoch != accountGeneration) return emptyList()
+        return addAttachments(uris, null, target)
     }
 
     private val profileRecipients = mutableMapOf<String, Pair<String?, String>>()
 
-    internal fun addProfileAttachments(person: String, id: String?, username: String, uris: List<Uri>) {
+    internal fun addProfileAttachments(person: String, id: String?, username: String, uris: List<Uri>): List<Job> {
         profileRecipients[person] = id to username
-        addAttachments(uris, person)
+        return addAttachments(uris, person)
     }
 
     /** Clipboard providers grant URI access; copy the bytes locally just like picked files. */
@@ -2182,22 +2446,23 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         else addProfileAttachments(person, id, username, uris)
     }
 
-    private fun addAttachments(uris: List<Uri>, person: String?, target: AttachmentDraftTarget? = null) {
+    private fun addAttachments(uris: List<Uri>, person: String?, target: AttachmentDraftTarget? = null): List<Job> {
         val current = mutable.value
-        if ((person == null && target == null) || accountToken == null) return
-        if (person == null && current.selectedChannel?.id == target?.channelId && !current.canParticipate) return
-        if (!current.uploadsEnabled || uris.isEmpty()) return
-        if (person != null && !profileDrafts[person].editable) return
+        if ((person == null && target == null) || accountToken == null) return emptyList()
+        if (person == null && current.selectedChannel?.id == target?.channelId && !current.canParticipate) return emptyList()
+        if (!current.uploadsEnabled || uris.isEmpty()) return emptyList()
+        if (person != null && !profileDrafts[person].editable) return emptyList()
         val files = if (person == null) current.attachmentDrafts[target].orEmpty() else profileDrafts[person].files
         val room = AttachmentPolicy.MAX_ATTACHMENTS - files.size
         if (room <= 0) {
             if (person == null) setAttachmentDrafts(requireNotNull(target), files, "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files.")
             else profileDrafts.error(person, "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files.")
-            return
+            return emptyList()
         }
         val error = if (uris.size > room) "Only $room more file${if (room == 1) "" else "s"} can be attached." else null
         val settings = compression
         val request = accountGeneration
+        val jobs = mutableListOf<Job>()
         uris.take(room).forEach { uri ->
             val key = UUID.randomUUID().toString()
             val directory = File(uploadSession, key)
@@ -2206,13 +2471,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             if (person == null) {
                 setAttachmentDrafts(requireNotNull(target), mutable.value.attachmentDrafts[target].orEmpty() + draft, error)
                 retryDraft(key)
+                uploadJobs[key]?.let(jobs::add)
                 return@forEach
             }
             // Resolve a destination and upload without touching navigation or the chat composer.
             profileDrafts.add(person, listOf(draft))
             prepareProfileDraft(person, key, settings, request)
+            uploadJobs[key]?.let(jobs::add)
         }
         if (person != null && uris.size > room) profileDrafts.error(person, "Only $room more file${if (room == 1) "" else "s"} can be attached.")
+        return jobs
     }
 
     /** Copies a profile file (once), prepares its edit, and eagerly uploads it. */
@@ -2333,7 +2601,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 preparedDrafts[key] = it
             }
         }
-        updateDraft(key) { it.copy(name = prepared.name, kind = prepared.kind, storedSize = prepared.file.length(),
+        updateDraft(key) { it.copy(name = if (it.voice) it.name else prepared.name, kind = prepared.kind, storedSize = prepared.file.length(),
             compressing = false, progress = 0f, localUrl = Uri.fromFile(prepared.file).toString(),
             thumbnail = (prepared.preview ?: prepared.file.takeIf { prepared.kind == "image" })?.let { file -> Uri.fromFile(file).toString() } ?: it.thumbnail) }
         val attachment = uploader.upload(token, channel, prepared, progressReporter(key))
@@ -2597,7 +2865,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         )
         gateway = connection
         gatewayStatus = viewModelScope.launch {
-            connection.status.collect { status -> if (generation == request) mutable.value = mutable.value.copy(gateway = status) }
+            connection.status.collect { status -> if (generation == request) mutable.value = mutable.value.copy(gateway = status,
+                presence = if (status == GatewayStatus.LIVE) mutable.value.presence else emptyMap()) }
         }
         connection.start()
         if (participating) watchVisiblePresence()
@@ -2608,10 +2877,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     private fun watchVisiblePresence() {
         val detail = mutable.value.selectedSpace ?: return
         if (detail.space.demo || accountToken == null || detail.members.isEmpty()) return
-        val start = mutable.value.presencePage * PRESENCE_PAGE_SIZE
-        // A private channel's readers lead the member list's pages.
-        val ids = detail.memberOrder(mutable.value.selectedChannel?.id).drop(start).take(PRESENCE_PAGE_SIZE).map { it.id }
-        if (ids.isNotEmpty()) gateway?.watchPresence(detail.space.id, ids)
+        gateway?.watchPresence(detail.space.id, allMembers = true)
     }
 
     private fun receiveTyping(author: ChatAuthor, active: Boolean, revision: String) {
@@ -3060,6 +3326,35 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Throwable) {
                 if (request == accountGeneration) setPictureSave(key, PictureSaveUi(error =
                     pictureError(error, target)))
+            }
+        }
+    }
+
+    fun regenerateAvatar() {
+        val key = PROFILE_PICTURE_KEY
+        if (mutable.value.pictureSaves[key]?.busy == true || mutable.value.account?.avatarAsset != null) return
+        val token = accountToken ?: return
+        val epoch = accountGeneration
+        setPictureSave(key, PictureSaveUi(regenerating = true))
+        pictureJobs[key] = viewModelScope.launch {
+            try {
+                val updated = api.regenerateAvatar(token)
+                if (epoch != accountGeneration) return@launch
+                applyOwnAccount(updated)
+                setPictureSave(key, null)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                if (failure is chat.caper.android.data.ApiException && failure.status == 409) {
+                    try {
+                        val refreshed = api.me(token)
+                        if (epoch == accountGeneration) applyOwnAccount(refreshed)
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { }
+                }
+                if (epoch == accountGeneration) setPictureSave(key, PictureSaveUi(error =
+                    if (failure is chat.caper.android.data.ApiException && failure.status == 409)
+                        "Your picture changed elsewhere. Remove your custom picture before regenerating."
+                    else "Couldn’t regenerate avatar. Please retry."))
             }
         }
     }
@@ -3646,7 +3941,6 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private companion object {
-        const val PRESENCE_PAGE_SIZE = 25
         const val TYPING_INTERVAL_MS = 500L
     }
 }

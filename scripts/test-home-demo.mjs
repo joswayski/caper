@@ -959,6 +959,8 @@ try {
   wait('document.querySelector(".spaces-empty")');
   assert.equal(evaluate("return location.pathname"), "/spaces");
   assert.equal(evaluate('return !!document.querySelector("#email")'), false);
+  assert.equal(evaluate('return !!document.querySelector(".spaces-empty .join-invite-link")'), false);
+  assert.equal(evaluate('return document.querySelector(".spaces-empty h1").textContent'), "Name your space");
   browser("network", "unroute", "**/api/account/me");
   browser(
     "network",
@@ -971,6 +973,8 @@ try {
   wait('document.querySelector(".live-stage[data-ready]")');
   browser("click", ".live-invite");
   wait('location.pathname === "/profile"');
+  wait('document.querySelector("#username")');
+  assert.equal(evaluate('return document.querySelector("button[type=submit]").textContent.trim()'), "Finish setup →");
   console.log(
     "PASS: centered join-only CTA, reduced motion, clipboard failure, no chat/media requests and email login",
   );

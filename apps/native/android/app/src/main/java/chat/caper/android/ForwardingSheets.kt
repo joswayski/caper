@@ -54,6 +54,7 @@ import java.util.UUID
         else {
             // A file-only original has empty text: show just its files, in their processing state.
             if (message.content.text.isNotEmpty()) LinkedText(message.content.text, fontSize = 14.sp)
+            message.content.gif?.let { MessageGif(it) }
             MessageAttachments(
                 message.content.attachments.map { it.withFreshUrls(state?.freshAttachmentUrls?.get(it.id)) }, false, onAttachmentFailed,
                 state?.attachmentProgress.orEmpty(), caption = message.author.name,

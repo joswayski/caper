@@ -227,6 +227,9 @@ impl Viewer {
             unavailable: false,
             status: AttachmentStatus::Ready,
             animated: false,
+            voice: false,
+            waveform: None,
+            transcript: None,
             spoiler: false,
         })
     }
@@ -302,12 +305,33 @@ impl Viewer {
     }
 
     /// Stop playback and free the stream route (closing or leaving a video).
-    fn stop_video(&mut self, proxy: Option<&MediaProxy>) {
+    pub fn stop_video(&mut self, proxy: Option<&MediaProxy>) {
         if let Some(video) = self.video.take()
             && let (Some(proxy), Some(local)) = (proxy, &video.local)
         {
             proxy.remove(local);
         }
+    }
+
+    /// Use the same streaming player inside a message, without modal handling.
+    pub fn show_inline(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        current: &Attachment,
+        media: &mut Media,
+        proxy: &mut Option<MediaProxy>,
+    ) {
+        self.prepare_video(current, media, proxy);
+        // Keep the controls inside the attachment rather than over its reactions.
+        let mut stage = rect;
+        if !current.animated {
+            stage.max.y = (rect.bottom() - CONTROLS - 8.0).max(rect.top() + 1.0);
+        }
+        ui.push_id(("inline-video", &current.id), |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(rect));
+            self.video_stage(ui, stage, current, media);
+        });
     }
 
     /// Draw the viewer over everything. Returns false once it should close.
@@ -1251,19 +1275,29 @@ fn controls(
     let time_galley = ui
         .painter()
         .layout_no_wrap(time, egui::FontId::monospace(12.0), MUTED);
-    let time_width = time_galley.size().x;
-    painter.galley(
-        egui::pos2(play.right() + 10.0, middle - time_galley.size().y / 2.0),
-        time_galley,
-        MUTED,
-    );
+    let compact = bar.width() < 420.0;
+    let time_width = if compact { 0.0 } else { time_galley.size().x };
+    if !compact {
+        painter.galley(
+            egui::pos2(play.right() + 10.0, middle - time_galley.size().y / 2.0),
+            time_galley,
+            MUTED,
+        );
+    }
 
     let volume_slider = egui::Rect::from_center_size(
         egui::pos2(bar.right() - 50.0, middle),
         egui::vec2(80.0, 20.0),
     );
     let mute = egui::Rect::from_center_size(
-        egui::pos2(volume_slider.left() - 22.0, middle),
+        egui::pos2(
+            if compact {
+                bar.right() - 18.0
+            } else {
+                volume_slider.left() - 22.0
+            },
+            middle,
+        ),
         egui::vec2(36.0, 36.0),
     );
     let response = icon_button(
@@ -1281,26 +1315,28 @@ fn controls(
     if response.clicked() {
         player.toggle_mute();
     }
-    // Volume: a small slider.
-    let volume = ui.interact(
-        volume_slider,
-        ui.id().with("viewer-volume"),
-        egui::Sense::click_and_drag(),
-    );
-    if let Some(pointer) = volume.interact_pointer_pos()
-        && (volume.dragged() || volume.clicked())
-    {
-        player.set_volume(
-            ((pointer.x - volume_slider.left()) / volume_slider.width()).clamp(0.0, 1.0),
+    // Narrow message tiles retain mute and seeking without overlapping controls.
+    if !compact {
+        let volume = ui.interact(
+            volume_slider,
+            ui.id().with("viewer-volume"),
+            egui::Sense::click_and_drag(),
         );
-        if player.muted() {
-            player.toggle_mute();
+        if let Some(pointer) = volume.interact_pointer_pos()
+            && (volume.dragged() || volume.clicked())
+        {
+            player.set_volume(
+                ((pointer.x - volume_slider.left()) / volume_slider.width()).clamp(0.0, 1.0),
+            );
+            if player.muted() {
+                player.toggle_mute();
+            }
         }
+        let level = if player.muted() { 0.0 } else { player.volume() };
+        track(&painter, volume_slider, level);
+        volume.widget_info(|| egui::WidgetInfo::slider(true, f64::from(level) * 100.0, "Volume"));
+        hovered |= volume.hovered();
     }
-    let level = if player.muted() { 0.0 } else { player.volume() };
-    track(&painter, volume_slider, level);
-    volume.widget_info(|| egui::WidgetInfo::slider(true, f64::from(level) * 100.0, "Volume"));
-    hovered |= volume.hovered();
 
     // Seek bar between the time and the volume.
     let seek_rect = egui::Rect::from_min_max(
@@ -1701,6 +1737,9 @@ mod tests {
             unavailable: false,
             status: AttachmentStatus::Ready,
             animated: false,
+            voice: false,
+            waveform: None,
+            transcript: None,
         }
     }
 

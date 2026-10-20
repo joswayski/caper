@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Brush, Crop, Redo2, RotateCcw, Type, Undo2, X } from "lucide-react";
+import { Brush, Crop, Eraser, Redo2, RotateCcw, Type, Undo2, X } from "lucide-react";
 import {
   FloatingFocusManager,
   FloatingOverlay,
@@ -35,6 +35,7 @@ import {
   rotateLeft,
   rotatedSize,
   sameEdit,
+  strokesTouched,
   type AttachmentEdit,
   type CropHandle,
   type EditRect,
@@ -143,6 +144,8 @@ interface TextField {
 
 type Gesture =
   | { kind: "draw"; pointer: number; stroke: StrokeMark; last: { x: number; y: number } }
+  /** `erased` indexes the committed marks. */
+  | { kind: "erase"; pointer: number; erased: number[]; last: { x: number; y: number } }
   | { kind: "crop"; pointer: number; handle: CropHandle; start: EditRect; from: { x: number; y: number } }
   | {
       kind: "text";
@@ -209,6 +212,8 @@ export default function AttachmentEditor({
   const [tool, setTool] = useState<Tool>(initialTool);
   const [color, setColor] = useState<string>(EDIT_COLORS[0]);
   const [strokePoints, setStrokePoints] = useState<number>(STROKE_SIZES.initial);
+  /** Draw's eraser: presses remove the lines they touch instead of drawing. */
+  const [erasing, setErasing] = useState(false);
   const [textPoints, setTextPoints] = useState<number>(TEXT_SIZES.initial);
   const [box, setBox] = useState<{ width: number; height: number }>();
   const [gesture, setGesture] = useState<Gesture>();
@@ -329,6 +334,7 @@ export default function AttachmentEditor({
       liveText?.index === index ? { ...mark, x: liveText.x, y: liveText.y } : mark,
     );
     if (field?.index !== undefined) marks = marks.filter((_, index) => index !== field.index);
+    if (gesture?.kind === "erase") marks = marks.filter((_, index) => !gesture.erased.includes(index));
     if (gesture?.kind === "draw") marks = [...marks, gesture.stroke];
     return { ...current, crop: liveCrop ?? current.crop, marks };
   }, [current, liveText, field?.index, gesture, liveCrop]);
@@ -469,6 +475,32 @@ export default function AttachmentEditor({
     );
   };
 
+  /** The committed lines the eraser's ring touches on its way from `from`
+   * (already checked) to `to`, in client pixels, sampled closely enough that a
+   * fast swipe skips none. */
+  const touchedAlong = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+    if (!layout || !rotated) return [];
+    const radius = Math.max(BRUSH_MIN, strokePoints) / 2;
+    const steps = Math.max(1, Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / Math.max(1, radius / 2)));
+    const touched = new Set<number>();
+    for (let step = 1; step <= steps; step++) {
+      const point = pointAt({
+        clientX: from.x + ((to.x - from.x) * step) / steps,
+        clientY: from.y + ((to.y - from.y) * step) / steps,
+      });
+      for (const index of strokesTouched(
+        current.marks,
+        point.x,
+        point.y,
+        radius,
+        rotated.width * layout.scale,
+        rotated.height * layout.scale,
+      ))
+        touched.add(index);
+    }
+    return [...touched];
+  };
+
   const pointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!layout || live.current || event.button !== 0 || tool === "crop") return;
     event.preventDefault();
@@ -479,7 +511,10 @@ export default function AttachmentEditor({
     }
     const point = pointAt(event);
     event.currentTarget.setPointerCapture(event.pointerId);
-    if (tool === "draw") {
+    if (tool === "draw" && erasing) {
+      const at = { x: event.clientX, y: event.clientY };
+      track({ kind: "erase", pointer: event.pointerId, erased: touchedAlong(at, at), last: at });
+    } else if (tool === "draw") {
       track({
         kind: "draw",
         pointer: event.pointerId,
@@ -530,6 +565,16 @@ export default function AttachmentEditor({
       }
       if (points.length !== moving.stroke.points.length)
         track({ ...moving, stroke: { ...moving.stroke, points }, last });
+    } else if (moving.kind === "erase") {
+      const events = event.nativeEvent.getCoalescedEvents?.() ?? [];
+      let { last } = moving;
+      const erased = new Set(moving.erased);
+      for (const step of events.length ? events : [event.nativeEvent]) {
+        const at = { x: step.clientX, y: step.clientY };
+        for (const index of touchedAlong(last, at)) erased.add(index);
+        last = at;
+      }
+      track({ ...moving, erased: erased.size === moving.erased.length ? moving.erased : [...erased], last });
     } else if (moving.kind === "text" && moving.index !== undefined) {
       const point = pointAt(event);
       const distance = Math.hypot(
@@ -548,6 +593,9 @@ export default function AttachmentEditor({
     setLiveText(undefined);
     if (moving.kind === "draw") {
       commit({ ...current, marks: [...current.marks, moving.stroke] });
+    } else if (moving.kind === "erase") {
+      if (moving.erased.length)
+        commit({ ...current, marks: current.marks.filter((_, index) => !moving.erased.includes(index)) });
     } else if (moving.kind === "text") {
       if (moving.index === undefined) {
         setField({ x: moving.from.x, y: moving.from.y, value: "", color, points: textPoints });
@@ -665,10 +713,12 @@ export default function AttachmentEditor({
   const chooseTool = (next: Tool) => {
     if (field) commitField();
     setTool(next);
+    setErasing(false);
   };
   const chooseColor = (next: string) => {
     const value = next.toUpperCase();
     setColor(value);
+    setErasing(false);
     if (field) setField({ ...field, color: value });
   };
   const chooseTextSize = (points: number) => {
@@ -690,7 +740,9 @@ export default function AttachmentEditor({
         ? "Drag the square to reposition. Adjust Crop size to zoom. Arrow keys move the focused frame; Shift and arrow keys resize it."
         : "Drag the frame’s corners or edges to crop, or inside it to move it. Arrow keys move the focused frame; Shift and arrow keys resize it."
       : tool === "draw"
-        ? "Drag on the picture to draw."
+        ? erasing
+          ? "Drag over lines to erase them."
+          : "Drag on the picture to draw."
         : "Click or tap the picture to add text. Click text to change it, or drag it to move it.";
 
   return (
@@ -791,10 +843,11 @@ export default function AttachmentEditor({
                       ref={brush}
                       className="chat-editor-brush"
                       aria-hidden="true"
+                      data-erasing={erasing || undefined}
                       style={{
                         width: Math.max(BRUSH_MIN, strokePoints),
                         height: Math.max(BRUSH_MIN, strokePoints),
-                        background: `${color}4D`,
+                        background: erasing ? undefined : `${color}4D`,
                       }}
                     />
                   )}
@@ -919,54 +972,76 @@ export default function AttachmentEditor({
                   </>
                 ) : (
                   <>
-                    <div className="chat-editor-colors" role="radiogroup" aria-label="Colour">
-                      {EDIT_COLORS.map((preset) => (
+                    <div className="chat-editor-palette">
+                      <div className="chat-editor-colors" role="radiogroup" aria-label="Colour">
+                        {EDIT_COLORS.map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            role="radio"
+                            aria-checked={!(tool === "draw" && erasing) && color === preset}
+                            aria-label={COLOR_NAMES[preset]}
+                            title={COLOR_NAMES[preset]}
+                            className="chat-editor-swatch"
+                            style={{ "--swatch": preset } as CSSProperties}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => chooseColor(preset)}
+                          />
+                        ))}
+                        <label
+                          className="chat-editor-swatch chat-editor-custom"
+                          data-selected={(custom && !(tool === "draw" && erasing)) || undefined}
+                          title="Custom colour"
+                          style={custom ? ({ "--swatch": color } as CSSProperties) : undefined}
+                        >
+                          <input
+                            type="color"
+                            aria-label="Custom colour"
+                            value={color.toLowerCase()}
+                            onChange={(event) => chooseColor(event.target.value)}
+                          />
+                        </label>
+                      </div>
+                      {tool === "draw" && (
                         <button
-                          key={preset}
                           type="button"
-                          role="radio"
-                          aria-checked={color === preset}
-                          aria-label={COLOR_NAMES[preset]}
-                          title={COLOR_NAMES[preset]}
-                          className="chat-editor-swatch"
-                          style={{ "--swatch": preset } as CSSProperties}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => chooseColor(preset)}
-                        />
-                      ))}
-                      <label
-                        className="chat-editor-swatch chat-editor-custom"
-                        data-selected={custom || undefined}
-                        title="Custom colour"
-                        style={custom ? ({ "--swatch": color } as CSSProperties) : undefined}
-                      >
-                        <input
-                          type="color"
-                          aria-label="Custom colour"
-                          value={color.toLowerCase()}
-                          onChange={(event) => chooseColor(event.target.value)}
-                        />
-                      </label>
+                          className="chat-editor-eraser"
+                          aria-pressed={erasing}
+                          aria-label="Eraser"
+                          title="Eraser"
+                          onClick={() => setErasing((on) => !on)}
+                        >
+                          <Eraser size={18} aria-hidden="true" />
+                        </button>
+                      )}
                     </div>
                     <div className="chat-editor-size">
                       <span className="chat-editor-size-preview" aria-hidden="true">
                         {tool === "draw" ? (
                           <span
                             className="chat-editor-dot"
-                            style={{ width: strokePoints, height: strokePoints, background: color }}
+                            data-erasing={erasing || undefined}
+                            style={{
+                              width: strokePoints,
+                              height: strokePoints,
+                              background: erasing ? undefined : color,
+                            }}
                           />
                         ) : (
                           <span style={{ fontSize: Math.min(textPoints, 36), color }}>Aa</span>
                         )}
                       </span>
                       <Slider
-                        label={tool === "draw" ? "Line size" : "Text size"}
+                        label={tool === "draw" ? (erasing ? "Eraser size" : "Line size") : "Text size"}
                         value={tool === "draw" ? strokePoints : textPoints}
                         min={tool === "draw" ? STROKE_SIZES.min : TEXT_SIZES.min}
                         max={tool === "draw" ? STROKE_SIZES.max : TEXT_SIZES.max}
                         defaultValue={tool === "draw" ? STROKE_SIZES.initial : TEXT_SIZES.initial}
                         onChange={tool === "draw" ? setStrokePoints : chooseTextSize}
                       />
+                      <output className="chat-editor-size-value" aria-hidden="true">
+                        {Math.round(tool === "draw" ? strokePoints : textPoints)}
+                      </output>
                     </div>
                   </>
                 )}

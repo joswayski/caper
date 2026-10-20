@@ -25,6 +25,7 @@ export interface SubscriptionRequest {
   userIds?: string[];
   /** Chat only: this client draws link previews and wants `message.embeds`. */
   embeds?: boolean;
+  allMembers?: boolean;
 }
 
 export interface SubscriptionCallbacks {
@@ -723,13 +724,13 @@ export function reportActivity() {
 
 export function watchPresence(
   spaceId: string,
-  userIds: string[],
+  userIds: string[] | "all",
   onMembers: (members: PresenceMember[]) => void,
   onLive?: (online: boolean) => void,
 ) {
-  if (userIds.length > 100) throw new Error("Presence subscriptions support at most 100 users.");
+  if (userIds !== "all" && userIds.length > 100) throw new Error("Presence subscriptions support at most 100 users.");
   const subscription = appGateway().subscribe(
-    { kind: "presence", spaceId, userIds: [...userIds] },
+    { kind: "presence", spaceId, ...(userIds === "all" ? { allMembers: true } : { userIds: [...userIds] }) },
     {
       status: onLive,
       event: (value) => {

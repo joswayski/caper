@@ -1,12 +1,12 @@
 import Foundation
 
-/// The attach drawer's capacity line, worded as on every client (web chat/attach.ts).
+/// The attach drawer's limit line, worded as on every client (web chat/attach.ts).
+/// Drafts below the limit show nothing, so only a full one has a label.
 enum AttachCapacity {
-    static func label(_ attached: Int, max: Int = AttachmentPolicy.maxAttachments) -> String {
-        let count = Swift.max(0, Swift.min(attached, max))
-        return count == 0 ? "Up to \(max) files" : "\(count) of \(max) attached"
+    static func label(_ attached: Int, max: Int = AttachmentPolicy.maxAttachments) -> String? {
+        attached >= max ? "\(max) of \(max) attached" : nil
     }
-    /// Shown once full: how to make room.
+    /// How to make room once full.
     static func hint(_ attached: Int, max: Int = AttachmentPolicy.maxAttachments) -> String? {
         attached >= max ? "Remove a file to add another." : nil
     }
@@ -47,6 +47,7 @@ struct AttachDrawerQueue {
 #if os(iOS)
 import Photos
 import PhotosUI
+import ImageIO
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
@@ -171,6 +172,8 @@ struct AttachDrawer: View {
     @State private var showingFiles = false
     @State private var showingPhotos = false
     @State private var photoItems: [PhotosPickerItem] = []
+    @State private var libraryViewport = CGRect.zero
+    @State private var visibleGIFs: Set<String> = []
 
     static func source(_ identifier: String) -> String { "photos:\(identifier)" }
 
@@ -246,19 +249,20 @@ struct AttachDrawer: View {
             HStack(spacing: 12) {
                 Text("Attach").font(CaperTheme.font(15, weight: .bold))
                 Spacer(minLength: 8)
-                HStack(spacing: 8) {
-                    HStack(spacing: 3) {
-                        ForEach(0..<AttachmentPolicy.maxAttachments, id: \.self) { index in
-                            Circle().fill(full ? CaperTheme.terracotta : index < used ? CaperTheme.text : CaperTheme.border)
-                                .frame(width: 6, height: 6)
+                // Only a full draft says how many files it holds.
+                if let label = AttachCapacity.label(used) {
+                    HStack(spacing: 8) {
+                        HStack(spacing: 3) {
+                            ForEach(0..<AttachmentPolicy.maxAttachments, id: \.self) { _ in
+                                Circle().fill(CaperTheme.terracotta).frame(width: 6, height: 6)
+                            }
                         }
+                        Text(label).font(CaperTheme.font(12).monospacedDigit()).foregroundStyle(CaperTheme.terracottaBright)
                     }
-                    Text(AttachCapacity.label(used)).font(CaperTheme.font(12).monospacedDigit())
-                        .foregroundStyle(full ? CaperTheme.terracottaBright : CaperTheme.muted)
+                    .modifier(LimitNudge(nudges: reduceMotion ? 0 : CGFloat(nudges)))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("attach-drawer-capacity")
                 }
-                .modifier(LimitNudge(nudges: reduceMotion ? 0 : CGFloat(nudges)))
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("attach-drawer-capacity")
             }
             if let hint = AttachCapacity.hint(used) ?? notice {
                 Text(hint).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
@@ -300,6 +304,8 @@ struct AttachDrawer: View {
             if let source = file.source, order[source] == nil { order[source] = (index + 1, file.id) }
         }
         let count = min(library.assets?.count ?? 0, shown)
+        // Bound original-data requests and decoded frames even in a tall iPad drawer.
+        let animated = Set(visibleGIFs.sorted().prefix(6))
         return ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 2)], spacing: 2) {
                 if cameraAvailable {
@@ -321,7 +327,12 @@ struct AttachDrawer: View {
                         let copying = queue.isPending(source)
                         Button { toggle(source, identifier: asset.localIdentifier, draftID: selected?.id) } label: {
                             AttachLibraryTile(asset: asset, order: selected?.position, copying: copying,
-                                              dimmed: full && selected == nil && !copying)
+                                              dimmed: full && selected == nil && !copying, viewport: libraryViewport,
+                                              animate: animated.contains(asset.localIdentifier)) { visible in
+                                if visible { visibleGIFs.insert(asset.localIdentifier) }
+                                else { visibleGIFs.remove(asset.localIdentifier) }
+                            }
+                            .id(asset.localIdentifier)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(AttachLibraryTile.label(asset))
@@ -338,6 +349,7 @@ struct AttachDrawer: View {
             .padding(.bottom, 72)
         }
         .accessibilityIdentifier("attach-drawer-grid")
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { libraryViewport = $0 }
         .overlay {
             if library.status == .notDetermined {
                 ProgressView().tint(CaperTheme.muted)
@@ -468,16 +480,32 @@ private struct AttachLibraryTile: View {
     let order: Int?
     let copying: Bool
     let dimmed: Bool
+    let viewport: CGRect
+    let animate: Bool
+    let gifVisibility: (Bool) -> Void
     @State private var image: UIImage?
     @State private var request: PHImageRequestID?
     @State private var loaded: String?
+    @State private var animationRequest: PHImageRequestID?
+    @State private var decoding: Task<Void, Never>?
+    @State private var frames: AttachmentOriginal?
+    @State private var generation = UUID()
+    @State private var visible = false
+    @State private var started = Date()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         Color.clear.aspectRatio(1, contentMode: .fit)
             .background(CaperTheme.raised)
             .overlay {
-                if let image { Image(uiImage: image).resizable().scaledToFill() }
+                if let frames, !frames.images.isEmpty {
+                    TimelineView(.animation(minimumInterval: 0.04)) { timeline in
+                        let index = MediaViewerPolicy.frameIndex(at: timeline.date.timeIntervalSince(started), durations: frames.durations)
+                        Image(decorative: frames.images[index], scale: 1).resizable().scaledToFill()
+                    }
+                } else if let image { Image(uiImage: image).resizable().scaledToFill() }
             }
             .clipped()
             .overlay { if order != nil || copying { CaperTheme.blackout.opacity(0.25) } }
@@ -500,8 +528,15 @@ private struct AttachLibraryTile: View {
                 .padding(6)
             }
             .overlay(alignment: .bottomLeading) {
-                if asset.mediaType == .video {
-                    Text(String(format: "%d:%02d", Int(asset.duration) / 60, Int(asset.duration) % 60))
+                if asset.mediaType == .video || Self.isGIF(asset) {
+                    HStack(spacing: 4) {
+                        if asset.mediaType == .video {
+                            Image(systemName: "play.fill")
+                            Text(String(format: "%d:%02d", Int(asset.duration) / 60, Int(asset.duration) % 60))
+                        } else {
+                            Text("GIF")
+                        }
+                    }
                         .font(CaperTheme.font(11, weight: .bold).monospacedDigit()).foregroundStyle(CaperTheme.text)
                         .padding(.horizontal, 5).padding(.vertical, 2)
                         .background(CaperTheme.blackout.opacity(0.7), in: RoundedRectangle(cornerRadius: 4))
@@ -511,8 +546,20 @@ private struct AttachLibraryTile: View {
             .opacity(dimmed ? 0.4 : 1)
             .contentShape(Rectangle())
             .onAppear { load() }
-            .onChange(of: asset.localIdentifier) { _, _ in load() }
+            .onGeometryChange(for: Bool.self) { proxy in
+                proxy.frame(in: .global).intersects(viewport)
+            } action: { value in
+                visible = value
+                gifVisibility(value && Self.isGIF(asset))
+                updateAnimation()
+            }
+            .onChange(of: animate) { _, _ in updateAnimation() }
+            .onChange(of: reduceMotion) { _, _ in updateAnimation() }
+            .onChange(of: scenePhase) { _, _ in updateAnimation() }
+            .onChange(of: asset.localIdentifier) { _, _ in load(); updateAnimation() }
             .onDisappear {
+                visible = false; stopAnimation()
+                gifVisibility(false)
                 if let request { PHImageManager.default().cancelImageRequest(request) }
                 request = nil; image = nil; loaded = nil
             }
@@ -521,7 +568,48 @@ private struct AttachLibraryTile: View {
     /// Read by the tile's button, which VoiceOver activates.
     static func label(_ asset: PHAsset) -> String {
         let date = asset.creationDate?.formatted(date: .abbreviated, time: .omitted) ?? ""
-        return asset.mediaType == .video ? "Video, \(Int(asset.duration)) seconds, \(date)" : "Photo, \(date)"
+        if asset.mediaType == .video { return "Video, \(Int(asset.duration)) seconds, \(date)" }
+        return "\(isGIF(asset) ? "GIF" : "Photo"), \(date)"
+    }
+
+    private static func isGIF(_ asset: PHAsset) -> Bool {
+        asset.mediaType == .image && PHAssetResource.assetResources(for: asset).contains {
+            ($0.type == .photo || $0.type == .fullSizePhoto) && UTType($0.uniformTypeIdentifier)?.conforms(to: .gif) == true
+        }
+    }
+
+    private func stopAnimation() {
+        generation = UUID()
+        if let animationRequest { PHImageManager.default().cancelImageRequest(animationRequest) }
+        animationRequest = nil
+        decoding?.cancel(); decoding = nil; frames = nil
+    }
+
+    private func updateAnimation() {
+        stopAnimation()
+        guard animate, visible, !reduceMotion, scenePhase == .active, Self.isGIF(asset) else { return }
+        let token = generation
+        let options = PHImageRequestOptions()
+        options.version = .original
+        options.deliveryMode = .highQualityFormat
+        // Do not fetch large cloud originals just to animate a gallery tile.
+        options.isNetworkAccessAllowed = false
+        animationRequest = PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, uti, _, _ in
+            guard let data, data.count <= 16 * 1024 * 1024,
+                  let uti, UTType(uti)?.conforms(to: .gif) == true else { return }
+            Task { @MainActor in
+                guard generation == token else { return }
+                decoding = Task {
+                    let worker = Task.detached(priority: .utility) { () -> AttachmentOriginal? in
+                        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+                        return try? AttachmentImageLoader.decodeAnimation(source, maxPixelSize: 240, maxFrames: 200, byteLimit: 2 * 1024 * 1024)
+                    }
+                    let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+                    guard !Task.isCancelled, generation == token else { return }
+                    frames = result; started = Date()
+                }
+            }
+        }
     }
 
     private func load() {

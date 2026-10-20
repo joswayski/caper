@@ -36,6 +36,9 @@ const author = (member) => ({ id: member.id, name: member.displayName, isGuest: 
 const demoSpace = { id: ids.demoSpace, name: "Caper", ownerId: ids.owner, demo: true };
 const demoChannel = { id: ids.demo, spaceId: ids.demoSpace, name: "general", private: false };
 const clone = (value) => structuredClone(value);
+const voiceTranscriptDelayMs = Number(process.env.CAPER_FIXTURE_TRANSCRIPT_MS ?? 1500);
+const fixtureTranscript =
+  "TEST FIXTURE transcript. Yo, what's going on? Just checking in about Saturday: are we still meeting at the park around noon, or did that move to the afternoon? Let me know when you get a chance and I'll bring snacks and the speaker.";
 
 function historyWindow(messages, url) {
   const before = url.searchParams.get("before"),
@@ -118,6 +121,7 @@ function initialState() {
     forwardEvents: new Map(),
     forwardSources: new Map(),
     editEvents: new Map(),
+    attachmentEvents: new Map(),
     versions: new Map(),
     invitations: new Map(),
     inviteLinks: new Map(),
@@ -222,6 +226,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
   const heldSends = new Set();
   let holdUploads = false;
   const heldUploads = new Set();
+  let holdAvatarRegeneration = false;
+  const heldAvatarRegenerations = new Set();
   const identity = (request) =>
     request.headers.authorization === "Bearer fixture-owner-token" ||
     /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? "")
@@ -312,6 +318,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       ...(state.pinEvents.get(channelId) ?? []),
       ...(state.forwardEvents.get(channelId) ?? []),
       ...(state.editEvents.get(channelId) ?? []),
+      ...(state.attachmentEvents.get(channelId) ?? []),
     ].sort((a, b) => (BigInt(a.seq) < BigInt(b.seq) ? -1 : 1));
   const channelHead = (channelId) => channelEvents(channelId).at(-1)?.seq ?? "0";
   const directDTO = ({ declined: _declined, ...conversation }) => ({
@@ -349,6 +356,31 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       state.forwardEvents.set(wrapper.channelId, [...(state.forwardEvents.get(wrapper.channelId) ?? []), event]);
       broadcast("chat", wrapper.channelId, event);
     }
+  };
+  // TEST FIXTURE transcription: a voice message's transcript lands a moment
+  // after it is sent, as a sequenced message.attachments event like the API's.
+  const transcribe = (message) => {
+    if (!message.content.attachments?.some((attachment) => attachment.voice)) return;
+    setTimeout(() => {
+      const current = state.messages.get(message.channelId)?.find((row) => row.id === message.id);
+      if (!current || current.deletedAt) return;
+      current.content.attachments = current.content.attachments.map((attachment) =>
+        attachment.voice && attachment.transcript?.status === "pending"
+          ? { ...attachment, transcript: { status: "ready", text: fixtureTranscript } }
+          : attachment,
+      );
+      current.attachmentsSeq = String(BigInt(channelHead(current.channelId)) + 1n);
+      const event = {
+        type: "message.attachments",
+        schemaVersion: 1,
+        channelId: current.channelId,
+        seq: current.attachmentsSeq,
+        messageId: current.id,
+        attachments: clone(current.content.attachments),
+      };
+      state.attachmentEvents.set(current.channelId, [...(state.attachmentEvents.get(current.channelId) ?? []), event]);
+      broadcast("chat", current.channelId, event);
+    }, voiceTranscriptDelayMs);
   };
   const created = (message) => {
     const event = { type: "message.created", channelId: message.channelId, seq: message.seq, message: clone(message) };
@@ -481,13 +513,15 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       const path = url.pathname.replace(/^\/api\/v1\//, "/api/");
       let bytes = 0;
       const chunks = [];
+      const assetPut = /^\/api\/assets\/([^/]+)\/fixture-(upload|preview)$/.exec(path);
       for await (const chunk of request) {
         bytes += chunk.length;
-        if (bytes > 256 * 1024) return reject(response, 413, "Fixture request too large.");
+        // Voice recordings go up whole; everything else stays small.
+        if (bytes > (assetPut ? 8 * 1024 * 1024 : 256 * 1024))
+          return reject(response, 413, "Fixture request too large.");
         chunks.push(chunk);
       }
       const method = request.method;
-      const assetPut = /^\/api\/assets\/([^/]+)\/fixture-(upload|preview)$/.exec(path);
       const body = chunks.length && !assetPut ? JSON.parse(Buffer.concat(chunks)) : {};
       if (path === "/health") return json(response, 200, { fixture: true });
       if (path === "/__fixture/push-devices" && method === "GET")
@@ -501,6 +535,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         if (body.reset || typeof body.holdUploads === "boolean") {
           holdUploads = !body.reset && body.holdUploads;
           if (!holdUploads) for (const release of heldUploads) release();
+        }
+        if (body.reset || typeof body.holdAvatarRegeneration === "boolean") {
+          holdAvatarRegeneration = !body.reset && body.holdAvatarRegeneration;
+          if (!holdAvatarRegeneration) for (const release of heldAvatarRegenerations) release();
         }
         if (body.pushPlatforms !== undefined) {
           if (
@@ -678,7 +716,11 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               }
           }
         }
-        return json(response, 200, { fixture: true, heldSends: heldSends.size });
+        return json(response, 200, {
+          fixture: true,
+          heldSends: heldSends.size,
+          heldAvatarRegenerations: heldAvatarRegenerations.size,
+        });
       }
       if (path === "/api/assets" && method === "POST" && holdUploads) {
         await new Promise((resolve) => {
@@ -703,18 +745,29 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       const user = identity(request);
       if (path === "/api/assets/usage")
         return user && state.uploadsEnabled
-          ? json(response, 200, { compression: {} })
+          ? json(response, 200, { used: 0, limit: 1024 ** 3, compression: {} })
           : reject(response, 503, "TEST FIXTURE: uploads disabled.");
       if (path === "/api/assets" && method === "POST") {
         if (!user || !state.uploadsEnabled) return reject(response, 503, "Uploads unavailable.");
         const channel = channelFor(body.channelId);
         if (!channel || !canParticipate(channel, user)) return reject(response, 404, "resource not found");
         const id = randomUUID().replaceAll("-", "").slice(0, 15);
+        const voice = body.voice === true;
+        if (
+          voice &&
+          (!String(body.contentType).startsWith("audio/") ||
+            !Number.isSafeInteger(body.durationMs) ||
+            body.durationMs < 1 ||
+            body.durationMs > 600_000 ||
+            (body.waveform !== undefined && typeof body.waveform !== "string"))
+        )
+          return reject(response, 400, "Invalid voice message.");
         state.assets.set(id, {
           channelId: body.channelId,
           name: body.filename,
           contentType: body.contentType,
           size: body.byteSize,
+          ...(voice ? { voice, durationMs: body.durationMs, waveform: body.waveform } : {}),
         });
         return json(response, 200, {
           id,
@@ -726,23 +779,58 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
         const asset = state.assets.get(assetPut[1]);
         if (!asset) return reject(response, 404, "Asset not found.");
         if (assetPut[2] === "upload") asset.bytes = bytes;
+        if (assetPut[2] === "upload" && asset.voice) asset.data = Buffer.concat(chunks);
         return json(response, 204);
+      }
+      const assetFile = /^\/api\/assets\/([^/]+)\/fixture-file$/.exec(path);
+      if (assetFile && method === "GET") {
+        const asset = state.assets.get(assetFile[1]);
+        if (!asset?.data) return reject(response, 404, "Asset not found.");
+        // Served as recorded: the fixture labels voice notes audio/mp4 like the
+        // API's transcode, but never transcodes them.
+        response.writeHead(200, {
+          "content-type": asset.contentType,
+          "content-length": asset.data.length,
+          "accept-ranges": "none",
+          "cache-control": "no-store",
+        });
+        return response.end(asset.data);
       }
       const assetComplete = /^\/api\/assets\/([^/]+)\/complete$/.exec(path);
       if (assetComplete && method === "POST") {
         const asset = state.assets.get(assetComplete[1]);
         if (!user || !asset) return reject(response, 404, "Asset not found.");
         if (asset.bytes !== asset.size) return reject(response, 422, "Upload incomplete.");
-        asset.attachment = {
-          id: assetComplete[1],
-          name: asset.name,
-          contentType: asset.contentType,
-          size: asset.size,
-          kind: "file",
-          status: "ready",
-        };
+        asset.attachment = asset.voice
+          ? {
+              id: assetComplete[1],
+              name: "Voice message.m4a",
+              contentType: "audio/mp4",
+              size: asset.size,
+              kind: "audio",
+              status: "ready",
+              durationMs: asset.durationMs,
+              voice: true,
+              ...(asset.waveform ? { waveform: asset.waveform } : {}),
+              transcript: { status: "pending" },
+              // Straight to the fixture, like a signed storage URL: Vite's dev
+              // server answers media requests (Sec-Fetch-Dest: audio) itself.
+              url: `http://127.0.0.1:${request.socket.localPort}/api/assets/${assetComplete[1]}/fixture-file`,
+            }
+          : {
+              id: assetComplete[1],
+              name: asset.name,
+              contentType: asset.contentType,
+              size: asset.size,
+              kind: "file",
+              status: "ready",
+            };
         return json(response, 200, asset.attachment);
       }
+      if (path === "/api/klipy")
+        return user
+          ? json(response, 200, { appKey: "fixtureKlipyKey", customerId: "0123456789abcdef0123456789abcdef" })
+          : reject(response, 401, "Sign in required.");
       if (path === "/api/push/config")
         return user
           ? json(response, 200, { platforms: [...state.pushPlatforms] })
@@ -857,6 +945,15 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           .sort((a, b) => a.username.localeCompare(b.username));
         return json(response, 200, { people });
       }
+      if (path === "/api/dms/lookup" && method === "POST") {
+        if (!user) return reject(response, 401, "Sign in required.");
+        const username = String(body.username).trim().replace(/^@/, "").toLowerCase();
+        const person =
+          username === "fixture_alex"
+            ? { id: ids.other, username, displayName: "TEST FIXTURE Alex", avatarId: 799 }
+            : [state.account, ...accounts.slice(1), stranger].find((person) => person.username === username);
+        return person ? json(response, 200, person) : reject(response, 404, "Account not found.");
+      }
       if (path === "/api/dms") {
         if (!user) return reject(response, 401, "Sign in required.");
         if (method === "POST") {
@@ -957,6 +1054,25 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       }
       if (path === "/api/account/me")
         return user ? json(response, 200, user) : reject(response, 401, "Sign in required.");
+      if (path === "/api/account/avatar/regenerate" && method === "POST") {
+        if (!user) return reject(response, 401, "Sign in required.");
+        const before = state;
+        if (holdAvatarRegeneration)
+          await new Promise((resolve) => {
+            const release = () => {
+              heldAvatarRegenerations.delete(release);
+              response.off("close", release);
+              resolve();
+            };
+            heldAvatarRegenerations.add(release);
+            response.once("close", release);
+          });
+        if (response.destroyed) return;
+        if (state !== before) return reject(response, 409, "TEST FIXTURE: reset during regeneration.");
+        // Deterministic, visibly different artwork for UI checks, not random production selection.
+        state.account = { ...state.account, avatarId: state.account.avatarId === 0 ? 31 : 0 };
+        return json(response, 200, state.account);
+      }
       if (path === "/api/whats-new" && method === "GET") {
         if (state.releaseHighlightsDelay)
           await new Promise((resolve) => setTimeout(resolve, state.releaseHighlightsDelay));
@@ -1293,11 +1409,25 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             })
           )
             return reject(response, 400, "Invalid attachments.");
+          // The API validates every field; the fixture checks the shape clients send.
+          const gif = body.gif ?? undefined;
+          if (
+            gif !== undefined &&
+            (attachmentIds.length ||
+              !gif ||
+              gif.provider !== "klipy" ||
+              !["gif", "sticker"].includes(gif.kind) ||
+              typeof gif.slug !== "string" ||
+              !Number.isInteger(gif.width) ||
+              !Number.isInteger(gif.height) ||
+              (typeof gif.gif !== "string" && typeof gif.webp !== "string"))
+          )
+            return reject(response, 400, "invalid gif");
           if (
             typeof body.clientMessageId !== "string" ||
             !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.clientMessageId) ||
             typeof body.text !== "string" ||
-            (!body.text.trim() && !attachmentIds.length) ||
+            (!body.text.trim() && !attachmentIds.length && !gif) ||
             [...body.text].length > 4000 ||
             /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(body.text)
           )
@@ -1309,6 +1439,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           if (previous)
             return previous.token === request.headers["x-caper-chat-token"] &&
               previous.text === body.text &&
+              JSON.stringify(previous.message.content.gif ?? null) === JSON.stringify(gif ?? null) &&
               JSON.stringify(previous.message.content.attachments?.map((attachment) => attachment.id) ?? []) ===
                 JSON.stringify(attachmentIds) &&
               previous.message.threadRootId === body.threadRootId &&
@@ -1343,6 +1474,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               type: "text",
               text: body.text,
               ...(mentions.length ? { mentions } : {}),
+              ...(gif ? { gif: clone(gif) } : {}),
               ...(attachmentIds.length
                 ? {
                     attachments: attachmentIds.map((id) => ({
@@ -1356,7 +1488,15 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             clientMessageId,
           };
           if (target) {
-            const text = target.content.text || (target.forward ? "Forwarded message" : "");
+            const text =
+              target.content.text ||
+              (target.forward
+                ? "Forwarded message"
+                : target.content.gif
+                  ? target.content.gif.kind === "sticker"
+                    ? "Sticker"
+                    : "GIF"
+                  : "");
             const characters = Array.from(text);
             message.replyTo = {
               id: target.id,
@@ -1384,6 +1524,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           state.messages.set(channel.id, messages);
           state.sendKeys.set(key, { token: request.headers["x-caper-chat-token"], text: body.text, message });
           created(message);
+          transcribe(message);
           return json(response, 200, message);
         }
         const page = historyWindow(
@@ -1752,10 +1893,16 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             client.send({ type: "event", id: frame.id, event });
           client.send({ type: "event", id: frame.id, event: { type: "ready", cursor: channelHead(channelId) } });
         } else if (frame.kind === "presence") {
-          if (!frame.spaceId || !Array.isArray(frame.userIds) || !frame.userIds.length || frame.userIds.length > 100)
+          if (
+            !frame.spaceId ||
+            (frame.allMembers
+              ? frame.userIds?.length
+              : !Array.isArray(frame.userIds) || !frame.userIds.length || frame.userIds.length > 100)
+          )
             return client.send({ type: "error", id: frame.id, status: 400, error: "invalid subscription" });
           const detail = state.spaces.find((entry) => entry.space.id === frame.spaceId);
-          if (!detail || frame.userIds.some((userId) => !detail.members.some((member) => member.id === userId)))
+          const userIds = frame.allMembers ? detail?.members.map((member) => member.id) : frame.userIds;
+          if (!detail || userIds.some((userId) => !detail.members.some((member) => member.id === userId)))
             return client.send({ type: "error", id: frame.id, status: 403, error: "presence subscription denied" });
           client.subscriptions.set(frame.id, frame);
           client.send({
@@ -1763,7 +1910,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             id: frame.id,
             event: {
               type: "snapshot",
-              members: frame.userIds.map((userId) => ({ userId, status: userId === ids.other ? "idle" : "online" })),
+              members: userIds.map((userId) => ({ userId, status: userId === ids.other ? "idle" : "online" })),
             },
           });
         } else if (frame.kind === "media") {
@@ -1865,6 +2012,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     async close() {
       for (const client of sockets) client.socket.destroy();
       for (const release of heldSends) release();
+      for (const release of heldAvatarRegenerations) release();
       await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
     },
   };

@@ -3002,3 +3002,317 @@ async fn multipart_uploads_assemble_parts_copy_documents_and_abort_on_cancel() {
     assert!(published.starts_with(b"\x89PNG"));
     assert!(!marker(&published), "the comment was removed");
 }
+
+#[tokio::test]
+#[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL"]
+async fn voice_messages_store_aac_and_deliver_transcripts() {
+    let url = std::env::var("CHAT_TEST_DATABASE_URL")
+        .expect("CHAT_TEST_DATABASE_URL must point at disposable Postgres");
+    let options = PgConnectOptions::from_str(&url).unwrap();
+    assert!(matches!(options.get_host(), "127.0.0.1" | "localhost"));
+    let mut admin = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    let database = format!("voice_test_{}", Uuid::new_v4().simple());
+    admin
+        .execute(format!("CREATE DATABASE {database}").as_str())
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect_with(options.database(&database))
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let external = random_id(12);
+    let user: i64 = sqlx::query_scalar("INSERT INTO public.users(external_id,username,display_name) VALUES($1,'speaker','Speaker') RETURNING id")
+        .bind(&external).fetch_one(&pool).await.unwrap();
+    let owner = principal(user, &external);
+    let space_id: i64 = sqlx::query_scalar(
+        "INSERT INTO public.spaces(external_id,name,owner_id) VALUES($1,'Friends',$2) RETURNING id",
+    )
+    .bind(random_id(12))
+    .bind(user)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+        .bind(space_id)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let channel = random_id(12);
+    sqlx::query("INSERT INTO public.channels(external_id,space_id,name) VALUES($1,$2,'general')")
+        .bind(&channel)
+        .bind(space_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$2 FROM public.channels WHERE external_id=$1")
+        .bind(&channel)
+        .bind(user)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let account_hash = Sha256::digest(b"voice-account").to_vec();
+    sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+        .bind(&account_hash).bind(user).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,user_id,name,account_session_hash) VALUES($1,$2,$3,'Speaker',$4)")
+        .bind(random_id(12)).bind(Sha256::digest(b"voice-chat").as_slice()).bind(user).bind(&account_hash).execute(&pool).await.unwrap();
+
+    let (endpoint, store, _, _) = fake_r2().await;
+    let mut assets = Assets::new(
+        pool.clone(),
+        R2::new(endpoint, "test".into(), "key".into(), "secret".into()),
+        10_000_000,
+    );
+    assets.enable_transcripts(true);
+    let mut state = AppState::with_database(
+        Config::test(false),
+        Arc::new(Cloudflare::new()),
+        Some(pool.clone()),
+    );
+    state.assets = Some(assets.clone());
+    let recording = media_tool(
+        "ffmpeg",
+        &[
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=330:duration=1",
+            "-c:a",
+            "libopus",
+            "-f",
+            "webm",
+            "-",
+        ],
+    );
+    let record = |waveform: Option<&str>, duration: i64| {
+        serde_json::from_value::<CreateInput>(json!({
+            "channelId": channel, "filename": "voice-message.webm", "contentType": "audio/webm",
+            "byteSize": recording.len(), "durationMs": duration, "voice": true, "waveform": waveform,
+        }))
+        .unwrap()
+    };
+    let upload = |input: CreateInput| {
+        let state = state.clone();
+        let owner = owner.clone();
+        let recording = recording.clone();
+        async move {
+            let (_, Json(created)) =
+                create(State(state.clone()), Extension(owner.clone()), Json(input))
+                    .await
+                    .unwrap();
+            put(&created, "upload", &recording).await;
+            complete(
+                State(state),
+                Extension(owner),
+                Path(created["id"].as_str().unwrap().to_owned()),
+            )
+            .await
+            .unwrap()
+            .0
+        }
+    };
+
+    // Voice uploads must be short audio with a sane waveform.
+    for bad in [
+        record(Some("@@"), 1_000),
+        record(None, 0),
+        record(None, 600_001),
+    ] {
+        let error = create(State(state.clone()), Extension(owner.clone()), Json(bad))
+            .await
+            .unwrap_err();
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    }
+
+    // Completion stores AAC in MP4 under a fixed name and queues a transcript.
+    let early = upload(record(Some("AQID"), 1_000)).await;
+    assert_eq!(early["contentType"], "audio/mp4");
+    assert_eq!(early["name"], "Voice message.m4a");
+    assert_eq!(early["voice"], true);
+    assert_eq!(early["waveform"], "AQID");
+    assert_eq!(early["transcript"], json!({"status": "pending"}));
+    let early_id = early["id"].as_str().unwrap().to_owned();
+    let stored = store
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(key, _)| key.ends_with(&original_key(&early_id)) && !key.contains("staging"))
+        .map(|(_, bytes)| bytes.clone())
+        .unwrap();
+    assert_eq!(&stored[4..8], b"ftyp");
+    assert_eq!(early["size"], stored.len());
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM public.ai_jobs WHERE task='transcribe' AND finished_at IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(queued, 1);
+
+    // A transcript that finishes before sending goes into the message itself.
+    let asset_row = |id: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT id FROM public.assets WHERE external_id=$1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    voice::store(
+        &pool,
+        asset_row(early_id.clone()).await,
+        "ready",
+        Some("before sending"),
+    )
+    .await
+    .unwrap();
+    let sent = crate::chat::send_message(
+        &pool,
+        &channel,
+        "voice-chat",
+        Uuid::new_v4(),
+        "",
+        std::slice::from_ref(&early_id),
+        None,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sent["content"]["attachments"][0]["transcript"],
+        json!({"status": "ready", "text": "before sending"})
+    );
+    assert_eq!(sent["content"]["attachments"][0]["voice"], true);
+
+    // One sent while pending is updated by the worker, with an event for the channel.
+    sqlx::query("UPDATE public.ai_jobs SET finished_at=now()")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let late = upload(record(None, 1_000)).await;
+    let late_id = late["id"].as_str().unwrap().to_owned();
+    assert!(late.get("waveform").is_none());
+    let sent = crate::chat::send_message(
+        &pool,
+        &channel,
+        "voice-chat",
+        Uuid::new_v4(),
+        "",
+        std::slice::from_ref(&late_id),
+        None,
+        false,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sent["content"]["attachments"][0]["transcript"]["status"],
+        "pending"
+    );
+    let provider = {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = Router::new().route(
+            "/audio/transcriptions",
+            post(|Json(body): Json<Value>| async move {
+                assert_eq!(body["input_audio"]["format"], "flac");
+                let audio = base64::engine::general_purpose::STANDARD
+                    .decode(body["input_audio"]["data"].as_str().unwrap())
+                    .unwrap();
+                assert_eq!(&audio[..4], b"fLaC");
+                if body["model"] == "flaky/model" {
+                    return (
+                        StatusCode::BAD_GATEWAY,
+                        Json(json!({"error": {"code": 502, "message": "down"}})),
+                    );
+                }
+                (
+                    StatusCode::OK,
+                    Json(json!({"text": "  after sending  ", "usage": {"cost": 0.00002}})),
+                )
+            }),
+        );
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        format!("http://{address}")
+    };
+    let ai = crate::ai::Ai::new(
+        provider,
+        "key".into(),
+        vec!["flaky/model".into(), "good/model".into()],
+    );
+    assert!(voice::next(&assets, &ai).await.unwrap());
+    assert!(!voice::next(&assets, &ai).await.unwrap());
+    let (payload, last_seq): (Value, i64) = sqlx::query_as(
+        "SELECT m.payload, c.last_seq FROM public.messages m JOIN public.channels c ON c.id=m.channel_id
+         WHERE m.external_id=$1",
+    )
+    .bind(sent["id"].as_str().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        payload["content"]["attachments"][0]["transcript"],
+        json!({"status": "ready", "text": "after sending"})
+    );
+    assert_eq!(payload["attachmentsSeq"], last_seq.to_string());
+    let event: Value = sqlx::query_scalar(
+        "SELECT e.payload FROM public.channel_events e JOIN public.channels c ON c.id=e.channel_id
+         WHERE c.external_id=$1 ORDER BY e.seq DESC LIMIT 1",
+    )
+    .bind(&channel)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(event["type"], "message.attachments");
+    assert_eq!(event["messageId"], sent["id"]);
+    assert_eq!(
+        event["attachments"][0]["transcript"]["text"],
+        "after sending"
+    );
+    // Events are signed on the way out like messages.
+    let signer = CdnSigner::new("https://cdn.test".into(), vec![9; 32]);
+    let signed = sign_attachments(event, Some(&signer));
+    assert!(
+        signed["attachments"][0]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://cdn.test/")
+    );
+    // Both attempts are recorded with their outcome and cost, never the audio.
+    let calls: Vec<(String, bool, Option<i16>, Value)> = sqlx::query_as(
+        "SELECT model, succeeded, http_status, input FROM public.ai_calls ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        (calls[0].0.as_str(), calls[0].1, calls[0].2),
+        ("flaky/model", false, Some(502))
+    );
+    assert_eq!((calls[1].0.as_str(), calls[1].1), ("good/model", true));
+    assert_eq!(
+        calls[1].3["input_audio"]["source"]["asset"],
+        late_id.as_str()
+    );
+    assert!(calls[1].3["input_audio"].get("data").is_none());
+    let cost: f64 = sqlx::query_scalar("SELECT sum(cost_usd)::float8 FROM public.ai_calls")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!((cost - 0.00002).abs() < 1e-9);
+
+    pool.close().await;
+    admin
+        .execute(format!("DROP DATABASE {database} WITH (FORCE)").as_str())
+        .await
+        .unwrap();
+}

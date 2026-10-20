@@ -28,10 +28,38 @@ public struct PreparedAttachment: Equatable, Sendable {
     public var height: Int?
     public var durationMs: Int?
     public var preview: AttachmentPreviewImage?
+    /// A recorded voice message, uploaded as recorded (never compressed).
+    public var voice = false
+    /// Base64 waveform declared with a voice message.
+    public var waveform: String?
 
     public init(original file: LocalAttachmentFile) {
         fileURL = file.url; name = file.name; contentType = file.contentType
         kind = AttachmentKind(contentType: file.contentType); byteSize = file.size; sourceSize = file.size
+    }
+}
+
+extension PreparedAttachment {
+    /// A recorded voice message, uploaded exactly as recorded with `voice`,
+    /// `durationMs` and `waveform`; nil when it can't be sent (empty, under a
+    /// second or over ten minutes). Shared by every voice send.
+    public static func voice(_ recording: VoiceRecording) -> PreparedAttachment? {
+        let size = (try? recording.fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard VoiceMessage.sendable(durationMs: recording.durationMs, byteSize: size) else { return nil }
+        var prepared = PreparedAttachment(original: LocalAttachmentFile(url: recording.fileURL, name: VoiceMessage.uploadFilename,
+                                                                       contentType: VoiceMessage.uploadContentType, size: size))
+        prepared.kind = .audio
+        prepared.durationMs = recording.durationMs
+        prepared.voice = true
+        prepared.waveform = VoiceWaveform.encode(recording.waveform)
+        return prepared
+    }
+
+    /// What a pending row shows for a voice message until the upload
+    /// completes and the server's description replaces it.
+    public func localVoiceAttachment(id: String) -> ChatAttachment {
+        ChatAttachment(id: id, kind: .audio, contentType: contentType, name: VoiceMessage.storedName, size: byteSize,
+                       durationMs: durationMs, url: fileURL.absoluteString, voice: true, waveform: waveform)
     }
 }
 

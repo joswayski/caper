@@ -706,6 +706,64 @@ impl MicTest {
         })
     }
 
+    /// A voice message: the raw 48 kHz mono capture, at most `limit` of
+    /// audio, until `finish_recording` ends it earlier. No processing, no
+    /// comparison playback; the caller stops the test afterwards. It opens
+    /// its own private ADM, so an active call's capture is left as it is.
+    pub async fn record_voice_message(&mut self, limit: Duration) -> Result<Vec<i16>, String> {
+        if self.sample.is_some() || !self.raw.is_empty() {
+            return Err("recording already completed".into());
+        }
+        let limit = (limit.as_millis() as usize).saturating_mul(RATE as usize) / 1000;
+        self.control.set_live_recording(true)?;
+        let mut last_frame = Instant::now();
+        let mut pcm = Vec::new();
+        let mut recorded_epoch = None;
+        while pcm.len() < limit {
+            self.control.ensure_active()?;
+            if self.control.finish_recording.load(Ordering::Acquire) {
+                break;
+            }
+            let epoch = self.control.live_epoch();
+            if recorded_epoch != epoch {
+                self.reset_live_stream();
+                recorded_epoch = epoch;
+                last_frame = Instant::now();
+            }
+            if epoch.is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                continue;
+            }
+            if last_frame.elapsed() >= Duration::from_secs(2) {
+                self.control.cancel();
+                return Err("microphone stopped delivering audio".into());
+            }
+            let frame = tokio::select! {
+                frame = self.stream.next_frame() => frame,
+                _ = tokio::time::sleep(Duration::from_millis(20)) => continue,
+            };
+            match frame {
+                Some(frame) => {
+                    if self.control.live_epoch() != epoch {
+                        continue;
+                    }
+                    let data: &[i16] = frame.data.as_ref();
+                    pcm.extend_from_slice(&data[..data.len().min(limit - pcm.len())]);
+                    self.control.set_input_level(data);
+                    last_frame = Instant::now();
+                }
+                None => {
+                    self.control.cancel();
+                    return Err("microphone stopped delivering audio".into());
+                }
+            }
+        }
+        self.control.set_input_level(&[]);
+        self.control.set_live_recording(false)?;
+        self.control.ensure_active()?;
+        Ok(pcm)
+    }
+
     /// Record at most 30 seconds. `finish_recording` can end it earlier.
     pub async fn record(&mut self, strength: u8) -> Result<&MicSample, String> {
         self.record_with_processing(100, strength).await
@@ -1481,6 +1539,121 @@ mod tests {
                 .iter()
                 .all(|sample| sample.unsigned_abs() <= 29_220)
         );
+    }
+
+    /// A voice message records from its own private ADM while a call-style
+    /// live capture of the same (virtual) microphone keeps delivering audio,
+    /// before, during and after it.
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires isolated private PulseAudio null input and output"]
+    async fn private_virtual_microphone_records_a_voice_message_beside_a_live_capture() {
+        assert_eq!(
+            std::env::var("PULSE_SERVER").unwrap(),
+            "unix:/tmp/caper-voice-silent-parity/native"
+        );
+        // Synthetic speech (WebRTC suppresses pure tones) into the null sink
+        // whose monitor is the default source, for the whole test.
+        let speech = std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                "flite=text=Caper private voice message verification with several syllables and a changing cadence on an isolated null device while the call keeps listening",
+                "-t", "12", "-af", "apad", "-f", "s16le", "-ar", "48000", "-ac", "1", "pipe:1",
+            ])
+            .output()
+            .unwrap();
+        assert!(speech.status.success());
+        let tone = speech.stdout;
+        let mut feeder = std::process::Command::new("pacat")
+            .args([
+                "--playback",
+                "--device=caper_silent_sink",
+                "--raw",
+                "--rate=48000",
+                "--channels=1",
+                "--format=s16le",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut writer = feeder.stdin.take().unwrap();
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = writer.write_all(&tone);
+        });
+        let live_control = MicTestControl::new();
+        let mut live = MicTest::start(live_control.clone(), None, None)
+            .await
+            .unwrap();
+        live_control.set_live_recording(true).unwrap();
+        live.reset_live_stream();
+        /// Frames with speech in them that the call's capture decodes.
+        async fn live_loud(live: &mut MicTest, wait: Duration) -> usize {
+            let deadline = Instant::now() + wait;
+            let mut count = 0;
+            while Instant::now() < deadline {
+                match tokio::time::timeout(Duration::from_millis(200), live.next_live_frame()).await
+                {
+                    Ok(Some(frame)) => {
+                        let data: &[i16] = frame.data.as_ref();
+                        if data.iter().any(|sample| sample.unsigned_abs() > 300) {
+                            count += 1;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => {}
+                }
+            }
+            count
+        }
+        let before = live_loud(&mut live, Duration::from_millis(2_000)).await;
+        assert!(
+            before > 0,
+            "the call's capture hears the virtual microphone"
+        );
+        let voice_control = MicTestControl::new();
+        let mut voice = MicTest::start(voice_control.clone(), None, None)
+            .await
+            .unwrap();
+        let stop = voice_control.clone();
+        let (recorded, during) = tokio::join!(
+            voice.record_voice_message(Duration::from_secs(600)),
+            async {
+                let during = live_loud(&mut live, Duration::from_millis(1_500)).await;
+                stop.finish_recording();
+                during
+            }
+        );
+        let pcm = recorded.unwrap();
+        voice.stop();
+        drop(voice);
+        assert!(
+            pcm.len() >= RATE as usize,
+            "about 1.5 s recorded: {}",
+            pcm.len()
+        );
+        assert!(pcm.iter().any(|sample| sample.unsigned_abs() > 1_000));
+        assert!(during > 0, "the call's capture kept hearing the microphone");
+        assert!(live_control.live_epoch().is_some());
+        let after = live_loud(&mut live, Duration::from_millis(800)).await;
+        assert!(
+            after > 0,
+            "stopping the voice message left the call's capture open"
+        );
+        // A 10:00 limit is counted in samples, never more.
+        let limited_control = MicTestControl::new();
+        let mut limited = MicTest::start(limited_control.clone(), None, None)
+            .await
+            .unwrap();
+        let pcm = limited
+            .record_voice_message(Duration::from_millis(250))
+            .await
+            .unwrap();
+        assert_eq!(pcm.len(), RATE as usize / 4);
+        limited.stop();
+        live.stop();
+        let _ = feeder.kill();
+        let _ = feeder.wait();
     }
 
     #[cfg(target_os = "linux")]

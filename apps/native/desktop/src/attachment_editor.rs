@@ -140,6 +140,11 @@ enum Gesture {
         mark: Mark,
         last: Pos2,
     },
+    /// Draw's eraser; `erased` indexes the committed marks.
+    Erase {
+        erased: Vec<usize>,
+        last: Pos2,
+    },
     Crop {
         handle: Handle,
         start: Crop,
@@ -222,6 +227,8 @@ pub struct Editor {
     color: [u8; 3],
     stroke_points: f32,
     text_points: f32,
+    /// Draw's eraser: presses remove the lines they touch instead of drawing.
+    erasing: bool,
     picture: Option<Picture>,
     loading: Option<Receiver<Option<Loaded>>>,
     failed: bool,
@@ -267,6 +274,7 @@ impl Editor {
             color: COLORS[0],
             stroke_points: STROKE_SIZES.2,
             text_points: TEXT_SIZES.2,
+            erasing: false,
             picture: None,
             loading: Some(receiver),
             failed: false,
@@ -632,6 +640,7 @@ impl Editor {
                 self.commit_field();
                 self.gesture = None;
                 self.tool = tool;
+                self.erasing = false;
             }
         }
         outcome
@@ -667,10 +676,19 @@ impl Editor {
         {
             (*at_x, *at_y) = (x, y);
         }
-        if let Some(index) = self.field.as_ref().and_then(|field| field.index)
-            && index < shown.marks.len()
-        {
-            shown.marks.remove(index);
+        // Both index the committed marks, so they go together.
+        let field = self.field.as_ref().and_then(|field| field.index);
+        let erased = match &self.gesture {
+            Some(Gesture::Erase { erased, .. }) => erased.as_slice(),
+            _ => &[],
+        };
+        if field.is_some() || !erased.is_empty() {
+            let mut index = 0;
+            shown.marks.retain(|_| {
+                let keep = Some(index) != field && !erased.contains(&index);
+                index += 1;
+                keep
+            });
         }
         if let Some(Gesture::Draw { mark, .. }) = &self.gesture {
             shown.marks.push(mark.clone());
@@ -720,6 +738,10 @@ impl Editor {
     }
 
     fn draw(&mut self, ui: &egui::Ui, response: &egui::Response, layout: &Layout) {
+        if self.erasing {
+            self.erase(ui, response, layout);
+            return;
+        }
         if response.drag_started()
             && let Some(press) = ui.input(|input| input.pointer.press_origin())
         {
@@ -769,6 +791,80 @@ impl Editor {
         }
     }
 
+    /// Draw's eraser: a press removes the committed lines its ring passes
+    /// over, as one step to undo.
+    fn erase(&mut self, ui: &egui::Ui, response: &egui::Response, layout: &Layout) {
+        if response.drag_started()
+            && let Some(press) = ui.input(|input| input.pointer.press_origin())
+        {
+            let erased = self.touched_along(layout, press, press, &[]);
+            self.gesture = Some(Gesture::Erase {
+                erased,
+                last: press,
+            });
+        }
+        let Some(Gesture::Erase { erased, last }) = &self.gesture else {
+            return;
+        };
+        let (mut erased, mut last) = (erased.clone(), *last);
+        let moves: Vec<Pos2> = ui.input(|input| {
+            input
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::PointerMoved(pos) => Some(*pos),
+                    _ => None,
+                })
+                .collect()
+        });
+        for pos in moves {
+            erased = self.touched_along(layout, last, pos, &erased);
+            last = pos;
+        }
+        if response.drag_stopped() || !ui.input(|input| input.pointer.primary_down()) {
+            self.gesture = None;
+            if !erased.is_empty() {
+                let mut next = self.current().clone();
+                let mut index = 0;
+                next.marks.retain(|_| {
+                    let keep = !erased.contains(&index);
+                    index += 1;
+                    keep
+                });
+                self.commit(next);
+            }
+        } else {
+            self.gesture = Some(Gesture::Erase { erased, last });
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// `erased` with the committed lines the eraser's ring touches on its way
+    /// from `from` (already checked) to `to`, sampled closely enough that a
+    /// fast swipe skips none.
+    fn touched_along(&self, layout: &Layout, from: Pos2, to: Pos2, erased: &[usize]) -> Vec<usize> {
+        let radius = brush_diameter(self.stroke_points, layout.edge) / 2.0;
+        let steps = (from.distance(to) / (radius / 2.0).max(1.0))
+            .ceil()
+            .max(1.0) as usize;
+        let full = layout.full();
+        let mut erased = erased.to_vec();
+        for step in 1..=steps {
+            let at = from.lerp(to, step as f32 / steps as f32);
+            for index in markup::strokes_touched(
+                &self.current().marks,
+                layout.fraction(at),
+                f64::from(radius),
+                (f64::from(full.x), f64::from(full.y)),
+            ) {
+                if !erased.contains(&index) {
+                    erased.push(index);
+                }
+            }
+        }
+        erased
+    }
+
     /// A ring as wide and coloured as the brush in place of the cursor over
     /// the picture, following the pointer while drawing too. Touch has no
     /// hover, so it gets none.
@@ -784,7 +880,11 @@ impl Editor {
             &ui.painter_at(stage),
             pos,
             brush_diameter(self.stroke_points, layout.edge),
-            self.color,
+            if self.erasing {
+                [255, 255, 255]
+            } else {
+                self.color
+            },
         );
     }
 
@@ -1165,8 +1265,9 @@ impl Editor {
             }
             return;
         }
-        // Colours, then the size: one row, or two on a narrow window.
-        let swatches_width = COLORS.len() as f32 * 32.0 + 32.0;
+        // Colours (and Draw's eraser), then the size: one row, or two on a narrow window.
+        let draw = self.tool == Tool::Draw;
+        let swatches_width = COLORS.len() as f32 * 32.0 + 32.0 + if draw { 44.0 } else { 0.0 };
         let (colors, size) = if options.width() < NARROW {
             let colors = Rect::from_center_size(
                 egui::pos2(options.center().x, options.top() + 26.0),
@@ -1194,7 +1295,7 @@ impl Editor {
                 egui::pos2(x + 4.0, colors.top() + 6.0),
                 egui::vec2(24.0, 24.0),
             );
-            if swatch(ui, rect, color, name, self.color == color).clicked() {
+            if swatch(ui, rect, color, name, !self.erasing && self.color == color).clicked() {
                 self.choose_color(color);
             }
             x += 32.0;
@@ -1204,7 +1305,7 @@ impl Editor {
             egui::vec2(24.0, 24.0),
         );
         let custom = !COLORS.contains(&self.color);
-        let response = custom_swatch(ui, rect, self.color, custom);
+        let response = custom_swatch(ui, rect, self.color, custom && !self.erasing);
         let mut picked = {
             let [red, green, blue] = self.color;
             Color32::from_rgb(red, green, blue)
@@ -1222,8 +1323,14 @@ impl Editor {
         if picked != self.color {
             self.choose_color(picked);
         }
-        // The size, with a live preview of the dot or text.
-        let draw = self.tool == Tool::Draw;
+        if draw {
+            let rect =
+                Rect::from_min_size(egui::pos2(x + 40.0, colors.top()), egui::vec2(36.0, 36.0));
+            if eraser_button(ui, rect, self.erasing).clicked() {
+                self.erasing = !self.erasing;
+            }
+        }
+        // The size, with a live preview of the dot or text and its value.
         let (min, max) = if draw {
             (STROKE_SIZES.0, STROKE_SIZES.1)
         } else {
@@ -1239,7 +1346,10 @@ impl Editor {
         let preview = Rect::from_min_size(size.min, egui::vec2(44.0, 36.0));
         let [red, green, blue] = self.color;
         let color = Color32::from_rgb(red, green, blue);
-        if draw {
+        if draw && self.erasing {
+            ui.painter()
+                .circle_stroke(preview.center(), value / 2.0, Stroke::new(1.5, MUTED));
+        } else if draw {
             ui.painter()
                 .circle_filled(preview.center(), value / 2.0, color);
             ui.painter().circle_stroke(
@@ -1270,7 +1380,10 @@ impl Editor {
             egui::FontId::proportional(12.0),
             MUTED,
         );
-        let slider = Rect::from_min_max(egui::pos2(label.right(), size.top()), size.max);
+        let slider = Rect::from_min_max(
+            egui::pos2(label.right(), size.top()),
+            egui::pos2(size.right() - 32.0, size.bottom()),
+        );
         let response = ui
             .scope_builder(egui::UiBuilder::new().max_rect(slider), |ui| {
                 ui.spacing_mut().slider_width = slider.width();
@@ -1283,7 +1396,18 @@ impl Editor {
                 )
             })
             .inner;
-        let size_label = if draw { "Line size" } else { "Text size" };
+        ui.painter().text(
+            egui::pos2(size.right(), size.center().y),
+            egui::Align2::RIGHT_CENTER,
+            format!("{}", value.round()),
+            egui::FontId::proportional(12.0),
+            MUTED,
+        );
+        let size_label = match (draw, self.erasing) {
+            (false, _) => "Text size",
+            (true, true) => "Eraser size",
+            (true, false) => "Line size",
+        };
         response.widget_info(|| egui::WidgetInfo::slider(true, f64::from(value), size_label));
         if response.changed() {
             if draw {
@@ -1300,6 +1424,7 @@ impl Editor {
 
     fn choose_color(&mut self, color: [u8; 3]) {
         self.color = color;
+        self.erasing = false;
         if let Some(field) = &mut self.field {
             field.color = color;
             field.focus = true;
@@ -2156,6 +2281,46 @@ fn swatch(
         egui::WidgetInfo::selected(egui::WidgetType::RadioButton, true, selected, name)
     });
     response.on_hover_text(name)
+}
+
+/// Draw's eraser, after the colours: on, presses erase lines; a colour or
+/// another tool turns it off.
+fn eraser_button(ui: &mut egui::Ui, rect: Rect, selected: bool) -> egui::Response {
+    let response = ui.interact(
+        rect,
+        ui.id().with("attachment-editor-eraser"),
+        egui::Sense::click(),
+    );
+    let hot = response.hovered() || response.has_focus();
+    if selected {
+        ui.painter()
+            .rect_filled(rect, 8.0, TERRACOTTA.gamma_multiply(0.16));
+    } else if hot {
+        ui.painter().rect_filled(rect, 8.0, RAISED);
+    }
+    ui.painter().rect_stroke(
+        rect,
+        8.0,
+        Stroke::new(
+            1.0,
+            if selected || response.has_focus() {
+                TERRACOTTA
+            } else {
+                BORDER
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    crate::paint_icon(
+        ui.painter(),
+        Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0)),
+        NavIcon::Eraser,
+        if selected || hot { TEXT } else { MUTED },
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, selected, "Eraser")
+    });
+    response.on_hover_text("Eraser")
 }
 
 /// The custom colour: a hue ring around the chosen colour, opening the picker.

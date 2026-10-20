@@ -14,6 +14,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -147,6 +148,7 @@ private val FrameSide = 112.dp
         save = save,
         unavailable = state.uploadsChecked && !state.uploadsEnabled,
         hasPicture = hasPicture,
+        mascot = !hasPicture && caperAvatarIndex(account.avatarId) != null,
         label = "Change profile picture", noun = "picture",
         drop = editPicture,
         edit = account.avatarUrl?.let { url -> { editPicture(Uri.parse(url)) } },
@@ -158,6 +160,11 @@ private val FrameSide = 112.dp
             Avatar(name, FrameSide, avatarId = account.avatarId, avatarAsset = account.avatarAsset, avatarUrl = account.avatarUrl)
         } else {
             ChangeMeMascot(name, account.avatarId, FrameSide)
+        }
+    }
+    if (!hasPicture) {
+        IconButton(onClick = { viewModel.regenerateAvatar() }, enabled = save?.busy != true) {
+            Icon(painterResource(R.drawable.lucide_rotate_ccw), "Regenerate avatar", Modifier.size(20.dp))
         }
     }
 }
@@ -206,6 +213,7 @@ private val FrameSide = 112.dp
     save: PictureSaveUi?, unavailable: Boolean, hasPicture: Boolean, label: String, noun: String,
     change: () -> Unit, remove: () -> Unit, drop: (Uri) -> Unit,
     edit: (() -> Unit)? = null, history: (() -> Unit)? = null,
+    mascot: Boolean = false,
     picture: @Composable () -> Unit,
 ) {
     val busy = save?.busy == true
@@ -245,8 +253,11 @@ private val FrameSide = 112.dp
                     .padding(end = 6.dp, bottom = 6.dp),
             ) {
                 Box(
-                    Modifier.size(FrameSide).alpha(if (busy) 0.55f else 1f).clip(PictureShape)
-                        .background(SurfaceRaised).border(if (dropping) 2.dp else 1.dp, if (dropping) Terracotta else Border, PictureShape),
+                    Modifier.size(FrameSide).alpha(if (busy) 0.55f else 1f)
+                        .then(if (mascot) {
+                            if (dropping) Modifier.border(2.dp, Terracotta, CircleShape) else Modifier
+                        } else Modifier.clip(PictureShape).background(SurfaceRaised)
+                            .border(if (dropping) 2.dp else 1.dp, if (dropping) Terracotta else Border, PictureShape)),
                     contentAlignment = Alignment.Center,
                 ) { picture() }
                 Box(
@@ -273,6 +284,7 @@ private val FrameSide = 112.dp
             }
         }
         val status = when {
+            save?.regenerating == true -> "Regenerating…"
             save?.uploading == true -> "Uploading…"
             save?.removing == true -> "Removing…"
             unavailable -> "Picture uploads aren’t available right now."

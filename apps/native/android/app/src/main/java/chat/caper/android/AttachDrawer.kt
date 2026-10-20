@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -56,6 +57,10 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import coil3.compose.AsyncImage
+import coil3.gif.AnimatedImageDecoder
+import coil3.gif.GifDecoder
+import coil3.request.ImageRequest
 import chat.caper.android.data.AttachCapacity
 import chat.caper.android.data.AttachmentPolicy
 import chat.caper.android.data.LibraryAccess
@@ -78,28 +83,32 @@ internal class AttachDrawerHost(
     val send: () -> Unit,
 )
 
-internal data class LibraryItem(val id: Long, val uri: Uri, val video: Boolean, val durationMs: Long)
+internal data class LibraryItem(val id: Long, val uri: Uri, val video: Boolean, val durationMs: Long, val mime: String? = null) {
+    val gif: Boolean get() = !video && mime.equals("image/gif", ignoreCase = true)
+}
 
 /** Every photo and video the app may read, newest first. Rows are small, so even large libraries list quickly. */
 private fun queryLibrary(context: Context): List<LibraryItem> {
     val image = MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE
     val video = MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
-    val projection = arrayOf(MediaStore.Files.FileColumns._ID, MediaStore.Files.FileColumns.MEDIA_TYPE, "duration")
+    val projection = arrayOf(MediaStore.Files.FileColumns._ID, MediaStore.Files.FileColumns.MEDIA_TYPE, "duration", MediaStore.Files.FileColumns.MIME_TYPE)
     val items = mutableListOf<LibraryItem>()
     context.contentResolver.query(
         MediaStore.Files.getContentUri("external"), projection,
         "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (?, ?)", arrayOf(image.toString(), video.toString()),
-        "${MediaStore.Files.FileColumns.DATE_ADDED} DESC",
+        // Ties (a burst, or several saved at once) fall back to the newest row, so reloads keep the order.
+        "${MediaStore.Files.FileColumns.DATE_ADDED} DESC, ${MediaStore.Files.FileColumns._ID} DESC",
     )?.use { cursor ->
         val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
         val typeColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
         val durationColumn = cursor.getColumnIndex("duration")
+        val mimeColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
         while (cursor.moveToNext()) {
             val id = cursor.getLong(idColumn)
             val isVideo = cursor.getInt(typeColumn) == video
             val base = if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
             val duration = if (isVideo && durationColumn >= 0) cursor.getLong(durationColumn) else 0L
-            items += LibraryItem(id, ContentUris.withAppendedId(base, id), isVideo, duration)
+            items += LibraryItem(id, ContentUris.withAppendedId(base, id), isVideo, duration, cursor.getString(mimeColumn))
         }
     }
     return items
@@ -151,6 +160,8 @@ private fun formatDuration(ms: Long): String {
     val activity = LocalActivity.current
     val view = LocalView.current
     val still = reducedMotion()
+    var resumed by remember { mutableStateOf(false) }
+    val libraryGrid = rememberLazyGridState()
     val scope = rememberCoroutineScope()
     val sdk = Build.VERSION.SDK_INT
     val requested = remember { LibraryPermissions.requested(sdk) }
@@ -159,6 +170,11 @@ private fun formatDuration(ms: Long): String {
     var asked by rememberSaveable { mutableStateOf(false) }
     var blocked by remember { mutableStateOf(false) }
     var library by remember { mutableStateOf<List<LibraryItem>?>(null) }
+    val gifIds = remember(library) { library.orEmpty().filter { it.gif }.map { it.id }.toSet() }
+    // Even a very tall tablet drawer never owns more than six animated decoders at once.
+    val animatedIds by remember(gifIds) { derivedStateOf {
+        libraryGrid.layoutInfo.visibleItemsInfo.map { it.key }.filter { it in gifIds }.take(6).toSet()
+    } }
     var revision by remember { mutableIntStateOf(0) }
     val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         asked = true
@@ -173,9 +189,10 @@ private fun formatDuration(ms: Long): String {
     }
     // Back from Settings or the system's selection screen, read access and the library again.
     LifecycleResumeEffect(Unit) {
+        resumed = true
         access = currentAccess()
         revision++
-        onPauseOrDispose {}
+        onPauseOrDispose { resumed = false }
     }
     LaunchedEffect(access, revision) {
         library = if (access == LibraryAccess.NONE) emptyList()
@@ -222,21 +239,21 @@ private fun formatDuration(ms: Long): String {
     ) {
         Box(Modifier.fillMaxWidth().height(height)) {
             Column(Modifier.fillMaxSize()) {
-                // Header: title and the capacity line, which shakes when a full drawer refuses a file.
+                // Header: the title, and only once full the limit line, which shakes when it refuses a file.
                 Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Attach", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
-                    Row(
-                        Modifier.graphicsLayer { translationX = nudge.value.dp.toPx() }
-                            .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
-                        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.clearAndSetSemantics {}) {
-                            repeat(AttachmentPolicy.MAX_ATTACHMENTS) { index ->
-                                Box(Modifier.size(6.dp).background(if (full) Terracotta else if (index < used) Text else Border, CircleShape))
+                    AttachCapacity.label(used)?.let { label ->
+                        Row(
+                            Modifier.graphicsLayer { translationX = nudge.value.dp.toPx() }
+                                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+                            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.clearAndSetSemantics {}) {
+                                repeat(AttachmentPolicy.MAX_ATTACHMENTS) { Box(Modifier.size(6.dp).background(Terracotta, CircleShape)) }
                             }
+                            Text(label, fontSize = 12.sp, color = TerracottaBright)
                         }
-                        Text(AttachCapacity.label(used), fontSize = 12.sp, color = if (full) TerracottaBright else TextMuted)
                     }
                 }
                 AttachCapacity.hint(used)?.let {
@@ -278,6 +295,7 @@ private fun formatDuration(ms: Long): String {
                             }
                             LazyVerticalGrid(
                                 GridCells.Adaptive(88.dp), Modifier.fillMaxSize().semantics { testTag = "attach-drawer-grid" },
+                                state = libraryGrid,
                                 // Keep the last row clear of the floating Send button.
                                 contentPadding = PaddingValues(start = 2.dp, end = 2.dp, bottom = 76.dp),
                                 horizontalArrangement = Arrangement.spacedBy(2.dp), verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -285,7 +303,8 @@ private fun formatDuration(ms: Long): String {
                                 if (hasCamera) item(key = "camera") { CameraTile(full, ::refuse, camera) }
                                 items(library.orEmpty(), key = { it.id }) { item ->
                                     val selection = selected[item.uri.toString()]
-                                    LibraryTile(item, selection?.first, dimmed = full && selection == null, thumbnails) {
+                                    LibraryTile(item, selection?.first, dimmed = full && selection == null, thumbnails,
+                                        animate = resumed && item.id in animatedIds && !still) {
                                         when {
                                             selection != null -> host.remove(selection.second)
                                             full -> refuse()
@@ -352,9 +371,14 @@ private fun formatDuration(ms: Long): String {
     }
 }
 
-@Composable private fun LibraryTile(item: LibraryItem, order: Int?, dimmed: Boolean, cache: LruCache<Long, ImageBitmap>, onClick: () -> Unit) {
+@Composable private fun LibraryTile(item: LibraryItem, order: Int?, dimmed: Boolean, cache: LruCache<Long, ImageBitmap>, animate: Boolean, onClick: () -> Unit) {
     val context = LocalContext.current
     val px = with(LocalDensity.current) { 120.dp.roundToPx() }
+    var failed by remember(item.uri) { mutableStateOf(false) }
+    val request = remember(item.uri, px) {
+        ImageRequest.Builder(context).data(item.uri).size(px, px)
+            .decoderFactory(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AnimatedImageDecoder.Factory() else GifDecoder.Factory()).build()
+    }
     val bitmap by produceState(cache.get(item.id), item.id) {
         if (value == null) value = withContext(Dispatchers.IO) { loadThumbnail(context, item, px)?.asImageBitmap() }?.also { cache.put(item.id, it) }
     }
@@ -362,7 +386,7 @@ private fun formatDuration(ms: Long): String {
         Modifier.aspectRatio(1f).background(SurfaceRaised).alpha(if (dimmed) 0.4f else 1f)
             .clickable(onClick = onClick)
             .semantics(mergeDescendants = true) {
-                contentDescription = if (item.video) "Video, ${item.durationMs / 1000} seconds" else "Photo"
+                contentDescription = if (item.video) "Video, ${item.durationMs / 1000} seconds" else if (item.gif) "GIF" else "Photo"
                 stateDescription = order?.let { "Attached $it" } ?: if (dimmed) "Attachment limit reached" else ""
                 selected = order != null
                 role = Role.Checkbox
@@ -370,6 +394,14 @@ private fun formatDuration(ms: Long): String {
             },
     ) {
         bitmap?.let { Image(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+        // Removing the painter releases its animation on pause or as soon as the tile leaves the viewport.
+        if (item.gif && animate && !failed) AsyncImage(
+            model = request, imageLoader = AttachmentImages.loader(context), contentDescription = null,
+            modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop, onError = { failed = true },
+        )
+        if (item.gif) Text("GIF", Modifier.align(Alignment.BottomStart).padding(5.dp)
+            .background(Blackout.copy(alpha = 0.7f), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 2.dp),
+            fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Text)
         if (order != null) Box(Modifier.fillMaxSize().background(Blackout.copy(alpha = 0.25f)).border(3.dp, Terracotta))
         Box(Modifier.align(Alignment.TopEnd).padding(6.dp).size(24.dp)) {
             if (order != null) Box(
@@ -379,7 +411,7 @@ private fun formatDuration(ms: Long): String {
             else Box(Modifier.fillMaxSize().background(Blackout.copy(alpha = 0.35f), CircleShape).border(1.5.dp, Text.copy(alpha = 0.9f), CircleShape))
         }
         if (item.video) Text(
-            formatDuration(item.durationMs),
+            "▶ ${formatDuration(item.durationMs)}",
             Modifier.align(Alignment.BottomStart).padding(5.dp).background(Blackout.copy(alpha = 0.7f), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 2.dp),
             fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Text,
         )

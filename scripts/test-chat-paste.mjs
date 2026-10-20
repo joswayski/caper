@@ -47,7 +47,8 @@ function removeFiles() {
   while (count()) browser("click", '.chat-composer .chat-drafts li:first-child [aria-label^="Remove "]');
 }
 function pasteImage(input = "#chat-message", tray = ".chat-composer") {
-  browser("click", input);
+  // Test keyboard paste; narrow thread tool buttons can occupy the field's centre.
+  browser("focus", input);
   evaluate(`return (async () => {
     const canvas = document.createElement('canvas'); canvas.width = 240; canvas.height = 120;
     const ctx = canvas.getContext('2d'); ctx.fillStyle = '#151719'; ctx.fillRect(0,0,240,120);
@@ -111,6 +112,55 @@ try {
     assert.equal(sent.content.text, "Keep plain text suffix");
     assert.equal(sent.content.attachments[0].name, "notes-0.txt");
 
+    // A browser may expose any file, not only a decoded bitmap. Keep animation
+    // and arbitrary document bytes rather than converting them to a still image.
+    const clipboardFiles = [
+      {
+        name: "animated.gif",
+        type: "image/gif",
+        base64:
+          "R0lGODlhCAAIAPAAAGN6QwAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQAAAAAACwAAAAACAAIAAACB4SPqcvtXQAAIfkEABQAAAAsAAAAAAgACACAtk0yAAAAAgeEj6nL7V0AADs=",
+      },
+      { name: "document.pdf", type: "application/pdf", base64: Buffer.from("%PDF-1.7\n%%EOF").toString("base64") },
+      {
+        name: "unknown.bin",
+        type: "application/octet-stream",
+        base64: Buffer.from([0, 255, 13, 42, 128]).toString("base64"),
+      },
+    ];
+    browser("fill", "#chat-message", "GIF and documents");
+    assert.equal(
+      evaluate(`const data = new DataTransfer();
+      for (const file of ${JSON.stringify(clipboardFiles)}) {
+        data.items.add(new File([Uint8Array.from(atob(file.base64), c => c.charCodeAt(0))], file.name, {type:file.type}));
+      }
+      const event = new ClipboardEvent('paste', {clipboardData:data, bubbles:true, cancelable:true});
+      document.querySelector('#chat-message').dispatchEvent(event);
+      return event.defaultPrevented;`),
+      true,
+    );
+    assert.equal(count(), 3);
+    assert.equal(value(), "GIF and documents");
+    browser("click", "#chat-message");
+    browser("press", "Enter");
+    wait(
+      'document.querySelector("#chat-message").value === "" && !document.querySelector(".chat-composer .chat-drafts li, .chat-message-pending")',
+    );
+    const fileHistory = await fetch(`${api}/api/chat/channels/chan00000001/messages`, {
+      headers: { authorization: "Bearer fixture-owner-token", connection: "close" },
+    }).then((response) => response.json());
+    assert.deepEqual(
+      fileHistory.messages
+        .at(-1)
+        .content.attachments.map(({ name, contentType, size }) => ({ name, contentType, size })),
+      clipboardFiles.map(({ name, type, base64 }) => ({
+        name,
+        contentType: type,
+        size: Buffer.from(base64, "base64").length,
+      })),
+    );
+    console.log(`PASS ${width}px: animated GIF, PDF and arbitrary binary paste retain type and byte size`);
+
     // A ready file must not be delivered on its own when another upload fails.
     browser("fill", "#chat-message", "Send both files together");
     files(1, "#chat-message", "ready");
@@ -139,8 +189,8 @@ try {
         '!!document.querySelector(".chat-composer .chat-drafts progress") && !document.querySelector(".chat-composer .chat-draft-notice[data-error]")',
       );
       assert.equal(
-        evaluate('return document.querySelector(".chat-composer .chat-draft-notice").textContent'),
-        "Uploading 1 file… Your message won’t send until every file is ready.",
+        evaluate('return document.querySelector(".chat-composer .chat-drafts progress").getAttribute("aria-label")'),
+        "Uploading retry-0.txt",
       );
       assert.equal((await readMessages()).messages.length, before, "uploading blocks delivery of the complete message");
       if (artifacts && !succeeds) browser("screenshot", `${artifacts}/upload-retry-uploading-${width}.png`);

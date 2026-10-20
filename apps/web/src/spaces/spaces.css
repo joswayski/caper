@@ -1022,24 +1022,23 @@ html:has(.sidebar-sections-resize:active) * {
 }
 .member-presence-heading {
   position: sticky;
-  z-index: 1;
+  z-index: 2;
   top: 0;
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 54px;
+  min-height: 42px;
   margin: 0;
   /* The name column below starts 16px in (list and row padding). */
-  padding: 8px 12px 8px 16px;
+  padding: 4px 8px 4px 16px;
   background: var(--surface-sidebar);
   color: var(--text-muted);
   font-size: 0.75rem;
   font-weight: 700;
 }
-.member-presence-heading span:first-of-type {
-  flex: 1;
-  text-align: left;
+.member-presence-heading .section-count {
+  margin-left: 0;
 }
 .member-list-toggle {
   display: grid;
@@ -1081,6 +1080,7 @@ html:has(.sidebar-sections-resize:active) * {
 .member-list-close {
   display: grid;
   place-items: center;
+  margin-left: auto;
   flex: 0 0 34px;
   width: 34px;
   height: 34px;
@@ -1106,12 +1106,103 @@ html:has(.sidebar-sections-resize:active) * {
   height: 20px;
 }
 .space-member-presence > div {
-  padding: 8px;
+  padding: 0 8px 8px;
 }
 .space-member-presence ul {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+.member-roster {
+  position: relative;
+}
+.member-roster:not(.member-roster-searching) > section:first-of-type > .member-group-label {
+  padding-right: 38px;
+  min-height: 32px;
+}
+.member-search-button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.member-search-open {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  z-index: 1;
+}
+.member-search-button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+}
+@media (hover: hover) {
+  .member-search-button:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
+}
+.member-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+  padding-left: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-composer);
+  color: var(--text-muted);
+  animation: member-search-arrive var(--motion-fast) var(--ease-out);
+}
+.member-search:focus-within {
+  border-color: var(--terracotta);
+}
+.member-search svg,
+.member-search-button svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.member-search input {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.75rem;
+}
+.call-page .member-search input:focus-visible {
+  /* The enclosing search field owns the focus ring. */
+  outline: none;
+}
+@keyframes member-search-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .member-search {
+    animation: none;
+  }
+}
+.member-roster li {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 44px;
 }
 /* Call.tsx measures whether the conversation keeps 320px beside Members. */
 @media (min-width: 1100px) {
@@ -1165,10 +1256,14 @@ html:has(.sidebar-sections-resize:active) * {
   /* Beside the label, as in the channel list's heading. */
   margin-left: 0;
 }
-.member-group-channel .member-group-label {
+.member-group-channel > .member-group-label {
   color: var(--text);
 }
-.member-group-others .member-profile-trigger strong {
+.member-presence-group + .member-presence-group {
+  margin-top: 12px;
+}
+.member-group-others .member-profile-trigger strong,
+.member-offline .member-profile-trigger strong {
   color: var(--text-muted);
   font-weight: 500;
 }
@@ -1224,33 +1319,6 @@ html:has(.sidebar-sections-resize:active) * {
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.member-presence-pages {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  color: var(--text-muted);
-  font-size: 0.65rem;
-}
-.member-presence-pages button {
-  padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
-}
-.member-presence-pages button:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-@media (hover: hover) {
-  .member-presence-pages button:hover:not(:disabled) {
-    border-color: var(--text-muted);
-    background: var(--border);
-  }
 }
 .space-sidebar-error button {
   display: block;
@@ -1850,6 +1918,12 @@ html:has(.sidebar-sections-resize:active) * {
 }
 .start-direct-error .space-form-error {
   margin: 0;
+}
+.start-direct-recipient {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
 }
 .start-direct-form .primary {
   min-width: 140px;

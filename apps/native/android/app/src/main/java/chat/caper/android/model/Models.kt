@@ -164,7 +164,11 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     }
 
     /** The members in the order the member list shows them for [channelId]. */
-    fun memberOrder(channelId: String?): List<Member> = memberGroups(channelId)?.let { it.first + it.second } ?: members
+    fun memberOrder(channelId: String?, query: String = ""): List<Member> {
+        val filter = query.trim()
+        val ordered = memberGroups(channelId)?.let { it.first + it.second } ?: members
+        return ordered.filter { filter.isEmpty() || it.displayName.contains(filter, ignoreCase = true) || it.username.contains(filter, ignoreCase = true) }
+    }
 }
 /** [admin]: sent by a Caper feedback team member (ADMIN badge), stamped by the server at send time. */
 @Serializable data class ChatAuthor(
@@ -189,6 +193,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     @Serializable(with = TolerantEmbedsSerializer::class) val embeds: List<ChatEmbed> = emptyList(),
     /** The author removed the composer's card: the message gets none, and edits keep that. */
     @Serializable(with = TolerantFlagSerializer::class) val suppressEmbeds: Boolean = false,
+    /** A KLIPY GIF or sticker shown under the text; null when absent or invalid (the text shows alone). */
+    @Serializable(with = TolerantGifSerializer::class) val gif: KlipyGif? = null,
 )
 
 /** A file on a message. URLs are signed per response and expire in 1–2 hours. */
@@ -213,6 +219,15 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     /** The file was deleted: show a placeholder. */
     val unavailable: Boolean = false,
     val spoiler: Boolean = false,
+    /** A recorded voice message (always `audio`): the voice player and transcript instead of a file card. */
+    val voice: Boolean = false,
+    /** Standard base64 of 1–256 normalised peaks; absent draws a flat placeholder. */
+    val waveform: String? = null,
+    /**
+     * `{status, text?}` while or once the server transcribes a voice message. Kept as JSON so an
+     * unexpected shape never drops the file; read it through `transcriptState`.
+     */
+    val transcript: JsonElement? = null,
 ) {
     /** How to show the file. Unknown future states fall back on whether a URL was delivered. */
     val state: AttachmentState get() = when (status) {
@@ -614,7 +629,6 @@ data class AppUiState(
     val deniedVoiceChannels: Set<String> = emptySet(),
     /** Voice availability by media root ("" is General's demo root); absent while checking. */
     val voiceAvailability: Map<String, Boolean> = emptyMap(),
-    val presencePage: Int = 0,
     /** The private channel [channelGrants] and [pendingChannelInvitations] belong to; read them with [channelGrantsFor]. */
     val channelGrantsChannelId: String? = null,
     val channelGrants: List<Member> = emptyList(),
@@ -635,6 +649,8 @@ data class AppUiState(
     val uploadsEnabled: Boolean = false,
     /** A usage check has answered, so a disabled attach control is unavailable rather than still checking. */
     val uploadsChecked: Boolean = false,
+    /** `GET /api/klipy`: the GIF button shows only while this is known. */
+    val klipy: KlipyConfig? = null,
     /** Files stay with their channel/DM and, for replies, their thread, even while closed. */
     val attachmentDrafts: Map<AttachmentDraftTarget, List<DraftAttachmentUi>> = emptyMap(),
     val attachmentErrors: Map<AttachmentDraftTarget, String> = emptyMap(),
@@ -770,6 +786,8 @@ data class PendingMessageUi(
     /** Uploaded files with local `file://` copies until the server confirms. */
     val attachments: List<ChatAttachment> = emptyList(),
     val replyTo: MessageReply? = null,
+    /** A GIF sent on its own (never with files), shown straight from KLIPY until confirmed. */
+    val gif: KlipyGif? = null,
 )
 
 /** A regular composer and each of its threads own independent files and upload errors. */
@@ -803,14 +821,19 @@ data class DraftAttachmentUi(
     val attachment: ChatAttachment? = null,
     val uploadedAt: Long? = null,
     val spoiler: Boolean = false,
+    /** A recording staged in the composer (one per message): shown as a voice chip, uploaded with `voice`. */
+    val voice: Boolean = false,
+    val durationMs: Long? = null,
+    /** Its base64 waveform, for the chip. */
+    val waveform: String? = null,
 )
 
 /** The [AppUiState.pictureSaves] key for your own profile picture (space icons use the space ID). */
 const val PROFILE_PICTURE_KEY = "avatar"
 
 /** A picture change in flight, [uploading] a new one or [removing] it, or the inline [error] it ended with. */
-data class PictureSaveUi(val uploading: Boolean = false, val removing: Boolean = false, val error: String? = null) {
-    val busy: Boolean get() = uploading || removing
+data class PictureSaveUi(val uploading: Boolean = false, val removing: Boolean = false, val error: String? = null, val regenerating: Boolean = false) {
+    val busy: Boolean get() = uploading || removing || regenerating
 }
 
 data class ReactionSaveUi(val emoji: String, val active: Boolean, val saving: Boolean = true, val error: String? = null)

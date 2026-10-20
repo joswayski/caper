@@ -57,6 +57,7 @@ const BODY_LIMIT: usize = 256 * 1024;
 const RESERVATION: Duration = Duration::from_secs(30);
 
 pub mod accounts;
+mod ai;
 mod assets;
 mod auth;
 mod channel_media;
@@ -68,6 +69,7 @@ mod embeds;
 mod environment;
 mod feedback;
 pub mod gateway;
+mod klipy;
 mod media_store;
 mod mentions;
 mod names;
@@ -759,6 +761,7 @@ pub struct AppState {
     updates: Arc<updates::Updates>,
     whats_new: Arc<whats_new::WhatsNew>,
     push: push::Push,
+    klipy: klipy::Klipy,
 }
 impl AppState {
     pub fn new(config: Config, provider: Arc<dyn Provider>) -> Self {
@@ -806,6 +809,7 @@ impl AppState {
             updates: Arc::new(updates::Updates::new()),
             whats_new: Arc::new(whats_new::WhatsNew::new()),
             push: push::Push::default(),
+            klipy: klipy::Klipy::default(),
         }
     }
 
@@ -830,9 +834,22 @@ impl AppState {
     /// Uploads need R2 credentials; without them the routes answer 503.
     pub fn enable_assets(&mut self, environment: &RuntimeEnvironment) -> Result<(), String> {
         self.assets = assets::Assets::from_env(self.database.as_ref(), environment)?;
+        let ai = ai::Ai::from_env(environment)?;
+        if let Some(assets) = self.assets.as_mut() {
+            assets.enable_transcripts(ai.is_some());
+        }
         if let Some(assets) = self.assets.clone() {
+            if let Some(ai) = ai {
+                assets::spawn_transcriber(assets.clone(), ai);
+            }
             assets::spawn_purger(assets);
         }
+        Ok(())
+    }
+
+    /// GIFs behind `KLIPY_APP_KEY`; without it the picker stays hidden.
+    pub fn enable_klipy(&mut self, environment: &RuntimeEnvironment) -> Result<(), String> {
+        self.klipy = klipy::Klipy::from_env(environment)?;
         Ok(())
     }
 
@@ -1128,7 +1145,8 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         .merge(direct::routes())
         .merge(feedback::routes())
         .merge(embeds::routes())
-        .merge(push::routes());
+        .merge(push::routes())
+        .merge(klipy::routes());
     let protected = protected.layer(axum::middleware::from_fn_with_state(
         state.clone(),
         account_auth,

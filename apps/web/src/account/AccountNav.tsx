@@ -52,7 +52,7 @@ export default function AccountNav({
         className="min-w-0 truncate rounded-[4px] py-2.5 text-sm font-bold text-content underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2 max-[560px]:text-[.78rem]"
         href="/profile"
       >
-        {profileLabel ?? (account.username ? `@${account.username}` : "Finish account")}
+        {profileLabel ?? (account.username ? `@${account.username}` : "Finish setup")}
       </a>
       <button
         className="shrink-0 cursor-pointer rounded-[4px] border-0 bg-transparent px-0 py-2.5 text-sm font-bold text-content-muted transition-colors hover:text-content focus-visible:outline-2 focus-visible:outline-terracotta focus-visible:outline-offset-2 max-[560px]:text-[.78rem]"

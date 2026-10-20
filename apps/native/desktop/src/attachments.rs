@@ -287,6 +287,9 @@ const BLUR_KEY: &str = "spoiler-cover:";
 /// Link preview media (`crate::embeds`) share this cache under ids with
 /// this prefix. Their URLs are not signed, so they are never refreshed.
 pub const EMBED_KEY: &str = "embed:";
+/// Cache keys for media Caper never signs (KLIPY GIFs): a failed load is
+/// final instead of asking `POST /api/assets/urls` to re-sign it.
+pub const EXTERNAL_KEY: &str = "external:";
 
 /// Display size that reserves layout space before an image loads.
 pub fn frame_size(attachment: &Attachment) -> egui::Vec2 {
@@ -798,7 +801,8 @@ impl Media {
                 }
                 Err(status) => {
                     let action = on_fetch_failure(status, self.retried.contains(&fetched.id));
-                    let retry = action == FailureAction::RefreshThenRetry;
+                    let retry = action == FailureAction::RefreshThenRetry
+                        && !fetched.id.starts_with(EXTERNAL_KEY);
                     if retry {
                         self.retried.insert(fetched.id.clone());
                         self.refresher
@@ -924,6 +928,9 @@ mod tests {
             unavailable: false,
             status: AttachmentStatus::Ready,
             animated: false,
+            voice: false,
+            waveform: None,
+            transcript: None,
         }
     }
 
@@ -1469,6 +1476,32 @@ mod tests {
             media.take_refresh(Instant::now()).is_empty(),
             "only one retry"
         );
+    }
+
+    #[test]
+    fn external_media_failures_never_ask_caper_to_re_sign() {
+        let context = egui::Context::default();
+        let mut media = Media::new(None);
+        let id = format!("{EXTERNAL_KEY}https://static.klipy.com/a.gif");
+        assert!(matches!(
+            media.image(&id, Some("https://static.klipy.com/a.gif")),
+            ImageState::Loading
+        ));
+        media.poll(&context);
+        media
+            .sender
+            .send(Fetched {
+                generation: media.generation,
+                id: id.clone(),
+                result: Err(Some(404)),
+            })
+            .unwrap();
+        media.poll(&context);
+        assert!(matches!(
+            media.image(&id, Some("https://static.klipy.com/a.gif")),
+            ImageState::Failed
+        ));
+        assert!(media.take_refresh(Instant::now()).is_empty());
     }
 
     #[test]

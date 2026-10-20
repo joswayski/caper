@@ -13,12 +13,14 @@ import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { readThreadDrafts, saveThreadDrafts, type ThreadDraft } from "./drafts.ts";
 import type { Arrivals } from "./arrivals.ts";
 import EmojiButton from "./EmojiButton.tsx";
+import type { ChatGif } from "./klipy.ts";
 import { insertEmoji } from "./emoji-autocomplete.ts";
 import MentionTextarea from "./MentionTextarea.tsx";
 import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage, type ChatReplyReference } from "./types.ts";
 import { ReplyDraft } from "./Replies.tsx";
 import { useTimelineKeyboardDismiss } from "./useTimelineKeyboardDismiss.ts";
+import { useVoiceRecorder } from "./VoiceRecorder.tsx";
 
 const DEFAULT_WIDTH = 340;
 const MIN_WIDTH = 300;
@@ -39,6 +41,7 @@ export default function ThreadPanel({
   replyTo,
   attachments,
   onSend,
+  onSendGif,
   onReplyChange,
   blockedIds,
   renderMessage,
@@ -57,6 +60,8 @@ export default function ThreadPanel({
   replyTo?: ChatReplyReference;
   attachments?: ComposerAttachments;
   onSend: (text: string, broadcast: boolean) => Promise<unknown>;
+  /** Sends a KLIPY GIF as its own reply; the draft stays. */
+  onSendGif?: (gif: ChatGif, query: string, broadcast: boolean) => Promise<unknown>;
   onReplyChange: (reference?: ChatReplyReference) => void;
   blockedIds: ReadonlySet<string>;
   /** Renders confirmed replies and the viewer's pending one alike. */
@@ -91,6 +96,7 @@ export default function ThreadPanel({
   const panel = useRef<HTMLElement>(null);
   const [mobile, setMobile] = useState(false);
   const backSwipe = useRef<{ id: number; x: number; y: number; claimed: boolean } | undefined>(undefined);
+  const backSettle = useRef<Animation | undefined>(undefined);
   const suppressSwipeClick = useRef(false);
   const [preferredWidth, setPreferredWidth] = useState(DEFAULT_WIDTH);
   const [maximumWidth, setMaximumWidth] = useState(MAX_WIDTH);
@@ -99,6 +105,38 @@ export default function ThreadPanel({
   const drag = useRef<{ x: number; width: number; scale: number; last?: number } | undefined>(undefined);
   const rootId = state.thread?.rootId;
   const open = !!rootId;
+  useLayoutEffect(() => {
+    const element = panel.current;
+    return () => {
+      backSwipe.current = undefined;
+      backSettle.current?.cancel();
+      backSettle.current = undefined;
+      if (element) element.style.translate = "";
+    };
+  }, [rootId, mobile]);
+  const releaseBackSwipe = (commit: boolean) => {
+    const element = panel.current;
+    backSwipe.current = undefined;
+    if (!element || backSettle.current) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      element.style.translate = "";
+      if (commit) onClose();
+      return;
+    }
+    const style = getComputedStyle(element);
+    const target = commit ? `${element.offsetWidth}px` : "0px";
+    const animation = element.animate([{ translate: element.style.translate || "0px" }, { translate: target }], {
+      duration: parseFloat(style.getPropertyValue("--motion-fast")),
+      easing: style.getPropertyValue("--ease-out").trim(),
+    });
+    element.style.translate = target;
+    backSettle.current = animation;
+    animation.onfinish = () => {
+      backSettle.current = undefined;
+      if (commit) onClose();
+      else element.style.translate = "";
+    };
+  };
   useLayoutEffect(() => {
     try {
       const saved = Number(localStorage.getItem(WIDTH_KEY));
@@ -382,6 +420,17 @@ export default function ThreadPanel({
     // Replies group with the reply above them; the root never groups.
     return rows.map((message, index) => renderMessage(index + 1, message, true, rows[index - 1], rows[index + 1]));
   }, [replies, pending, pendingInline, renderMessage]);
+  const threadVoice = attachments?.voice;
+  const voice = useVoiceRecorder({
+    voice: threadVoice && {
+      ...threadVoice,
+      // A voice reply follows the "Also send to" choice like a typed one.
+      onRecorded: (recording) => threadVoice.onRecorded(recording, { broadcast: draft.broadcast }),
+    },
+    disabled:
+      !canAttach || readOnly || state.phase !== "ready" || !!state.thread?.loading || !!state.pendingSend || !client,
+    returnFocus: composer,
+  });
   if (!state.thread) return null;
   const count = Array.from(draft.text).length;
   const sending = !!state.pendingSend && !state.sendError;
@@ -417,6 +466,11 @@ export default function ThreadPanel({
       role={mobile ? "dialog" : undefined}
       aria-modal={mobile || undefined}
       onPointerDownCapture={(event) => {
+        if (backSettle.current) return;
+        if (backSwipe.current) {
+          releaseBackSwipe(false);
+          return;
+        }
         suppressSwipeClick.current = false;
         backSwipe.current = undefined;
         if (!mobile || event.pointerType !== "touch" || !event.isPrimary) return;
@@ -448,6 +502,8 @@ export default function ThreadPanel({
           suppressSwipeClick.current = true;
           event.currentTarget.setPointerCapture(event.pointerId);
         }
+        if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+          event.currentTarget.style.translate = `${Math.max(0, Math.min(event.currentTarget.offsetWidth, dx))}px`;
       }}
       onPointerUpCapture={(event) => {
         const swipe = backSwipe.current;
@@ -455,14 +511,14 @@ export default function ThreadPanel({
         if (swipe?.id !== event.pointerId || !swipe.claimed) return;
         const dx = event.clientX - swipe.x,
           dy = event.clientY - swipe.y;
-        if (dx >= 72 && dx > Math.abs(dy) * 1.5) onClose();
+        releaseBackSwipe(dx >= 72 && dx > Math.abs(dy) * 1.5);
       }}
       onPointerCancelCapture={() => {
-        backSwipe.current = undefined;
+        if (backSwipe.current) releaseBackSwipe(false);
       }}
       onLostPointerCapture={(event) => {
         // Taking capture from the touched row also bubbles its lost-capture event.
-        if (event.target === event.currentTarget) backSwipe.current = undefined;
+        if (event.target === event.currentTarget && backSwipe.current) releaseBackSwipe(false);
       }}
       onClickCapture={(event) => {
         if (!suppressSwipeClick.current) return;
@@ -691,6 +747,7 @@ export default function ThreadPanel({
             {blocked && state.sendError && (
               <p className="chat-inline-error">Confirm or dismiss the pending message before sending a reply.</p>
             )}
+            {voice.notice}
             {attachments && (
               <DraftAttachments
                 drafts={attachments.drafts}
@@ -703,6 +760,7 @@ export default function ThreadPanel({
             <form
               className="chat-thread-send-row"
               data-attach={!!attachments || undefined}
+              data-voice={!!attachments?.voice || undefined}
               onSubmit={(event) => {
                 event.preventDefault();
                 void submit();
@@ -772,11 +830,25 @@ export default function ThreadPanel({
                 Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
                 suggestions. Enter to send. Shift+Enter for a new line.
               </span>
-              <EmojiButton
-                disabled={state.phase !== "ready" || state.thread.loading}
-                onSelect={chooseEmoji}
-                returnFocus={composer}
-              />
+              <div className="chat-thread-tools">
+                <EmojiButton
+                  disabled={state.phase !== "ready" || state.thread.loading}
+                  onSelect={chooseEmoji}
+                  returnFocus={composer}
+                  gifDisabled={!client || readOnly || !!state.pendingSend || state.sendRejected}
+                  onSendGif={
+                    onSendGif &&
+                    ((gif, query) => {
+                      setValidation(undefined);
+                      onSendGif(gif, query, draft.broadcast).catch((error: unknown) =>
+                        setValidation(error instanceof Error ? error.message : "GIF could not be sent."),
+                      );
+                    })
+                  }
+                />
+                {voice.button}
+              </div>
+              {voice.bar}
               <button
                 type="submit"
                 disabled={

@@ -37,7 +37,18 @@ export interface ChatAttachment {
   previewUrl?: string;
   /** The file was deleted; show a placeholder. */
   unavailable?: boolean;
+  /** A recorded voice message (audio), played with the voice player. */
+  voice?: boolean;
+  /** Base64 peak amplitudes (64 bytes from Caper clients); may be absent. */
+  waveform?: string;
+  /** Automatic transcript. Unknown statuses, failures and empty text show nothing. */
+  transcript?: ChatTranscript;
 }
+
+export type ChatTranscript =
+  | { status: "pending" }
+  | { status: "ready"; text?: string }
+  | { status: string; text?: string };
 
 export interface ChatThreadSummary {
   replyCount: number;
@@ -145,6 +156,8 @@ export interface ChatMessage {
     embeds?: unknown[];
     /** The author removed the previews before sending. */
     suppressEmbeds?: boolean;
+    /** A KLIPY GIF or sticker; render it only through `gifOf`. */
+    gif?: unknown;
   };
   createdAt: string;
   clientMessageId: string;

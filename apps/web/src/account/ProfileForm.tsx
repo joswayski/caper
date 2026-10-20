@@ -110,7 +110,7 @@ export default function ProfileForm({
             </>
           ) : (
             <>
-              {account.username ? "Save profile" : "Finish account"} <span aria-hidden="true">→</span>
+              {account.username ? "Save profile" : "Finish setup"} <span aria-hidden="true">→</span>
             </>
           )}
         </button>

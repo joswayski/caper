@@ -2,6 +2,7 @@ package chat.caper.android.data
 
 import chat.caper.android.model.ChatMessage
 import chat.caper.android.model.ChatAuthor
+import chat.caper.android.model.KlipyGif
 import chat.caper.android.model.MessageReply
 import java.util.UUID
 
@@ -17,6 +18,8 @@ internal data class PendingSend(
     val broadcast: Boolean = false,
     val replyTo: MessageReply? = null,
     val spoilerAttachmentIds: List<String> = emptyList(),
+    /** A KLIPY GIF, part of the idempotency hash like the text. */
+    val gif: KlipyGif? = null,
     /** The composer's link card was removed; retries keep that. */
     val suppressEmbeds: Boolean = false,
 )
@@ -28,10 +31,10 @@ internal class PendingSendTracker {
     fun begin(
         channel: String, author: ChatAuthor, text: String, attachmentIds: List<String> = emptyList(),
         threadRootId: String? = null, broadcast: Boolean = false, replyTo: MessageReply? = null,
-        spoilerAttachmentIds: List<String> = emptyList(), suppressEmbeds: Boolean = false, confirmed: () -> Unit,
+        spoilerAttachmentIds: List<String> = emptyList(), gif: KlipyGif? = null, suppressEmbeds: Boolean = false, confirmed: () -> Unit,
     ): PendingSend =
         retrying(channel, author)
-            ?: PendingSend(channel, author, text, UUID.randomUUID(), confirmed, attachmentIds, threadRootId, broadcast, replyTo, spoilerAttachmentIds, suppressEmbeds).also { pending = it }
+            ?: PendingSend(channel, author, text, UUID.randomUUID(), confirmed, attachmentIds, threadRootId, broadcast, replyTo, spoilerAttachmentIds, gif, suppressEmbeds).also { pending = it }
 
     /** The unknown-outcome send a new attempt must repeat, if any. */
     fun retrying(channel: String, author: ChatAuthor): PendingSend? =

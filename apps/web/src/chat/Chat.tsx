@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { ArrowRight, ChevronDown, MoreHorizontal, Pin, X } from "lucide-react";
 import {
   FloatingFocusManager,
@@ -50,7 +59,15 @@ import MediaViewer, { type ViewerTarget } from "./MediaViewer.tsx";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
-import { MAX_ATTACHMENTS, AttachmentUpload, refreshAttachmentUrls, uploadSettings } from "./uploads.ts";
+import { MAX_ATTACHMENTS, AttachmentUpload, refreshAttachmentUrls, uploadSettings, UploadError } from "./uploads.ts";
+import {
+  getVoiceSendOnStop,
+  isVoiceAttachment,
+  subscribeVoiceSendOnStop,
+  VOICE_LABEL,
+  type VoiceRecording,
+} from "./voice.ts";
+import type { VoiceComposer } from "./VoiceRecorder.tsx";
 import { editableKind, type CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
 import Avatar, { type AvatarPerson } from "../components/Avatar";
@@ -63,6 +80,7 @@ import MentionCard, { type MentionCardTarget } from "./MentionCard.tsx";
 import { blockedAuthor, blockedRuns, type BlockedRun } from "./blocked.ts";
 import { unblock, useBlockedIds } from "../spaces/blocks.ts";
 import { listUnreadSpaces, type Space, type UnreadSpace } from "../spaces/client.ts";
+import { klipyConfig, shareKlipy, type ChatGif } from "./klipy.ts";
 import "./chat.css";
 
 // Virtuoso's prepend index is local bookkeeping, never the bigint server cursor.
@@ -648,9 +666,10 @@ export default function Chat({
       latestMessage &&
       !blockedAuthor(latestMessage.author, blockedIds, state.author?.id)
     ) {
-      const files = attachmentsOf(latestMessage).length;
+      const attached = attachmentsOf(latestMessage);
+      const files = attached.length;
       setAnnouncement(
-        `${latestMessage.author.name}: ${latestMessage.content.text || `sent ${files === 1 ? "a file" : `${files} files`}`}`,
+        `${latestMessage.author.name}: ${latestMessage.content.text || (files && attached.every(isVoiceAttachment) ? "sent a voice message" : `sent ${files === 1 ? "a file" : `${files} files`}`)}`,
       );
     }
   }, [latestMessage?.id, state.phase]);
@@ -1024,6 +1043,37 @@ export default function Chat({
     }
   };
 
+  /** Stages a recorded voice message with the conversation's files: it uploads
+   * now (so transcription starts) and goes with the next Send. One per message. */
+  const stageVoice = (recording: VoiceRecording, threadRootId?: string) => {
+    const channel = state.channelId;
+    if (!signedIn || !channel) return;
+    const staged = drafts.filter((draft) => draft.threadRootId === threadRootId);
+    if (staged.length >= MAX_ATTACHMENTS) {
+      setAttachError(`You can attach up to ${MAX_ATTACHMENTS} files.`, threadRootId);
+      return;
+    }
+    if (staged.some((draft) => draft.voice)) return;
+    const key = crypto.randomUUID();
+    const localUrl = URL.createObjectURL(recording.blob);
+    objectUrls.current.add(localUrl);
+    const upload = AttachmentUpload.voice(channel, recording, (next) => stagedFileChanged(key, next));
+    uploads.current.set(key, upload);
+    setDrafts((current) => [
+      ...current,
+      {
+        key,
+        threadRootId,
+        name: VOICE_LABEL,
+        localUrl,
+        sourceSize: recording.blob.size,
+        progress: 0,
+        voice: { durationMs: recording.durationMs, waveform: recording.waveform },
+      },
+    ]);
+    void upload.ensure().catch(() => {});
+  };
+
   /** Revokes a draft's local copy once nothing can show it. */
   const forgetLocalUrl = (url: string | undefined) => {
     if (!url) return;
@@ -1310,6 +1360,114 @@ export default function Chat({
     if (sent && !threadRootId && state.hasNewer) {
       setJumpMessage(undefined);
       setScrollTarget("latest");
+    }
+    return sent;
+  };
+
+  // Voice messages upload as recorded, then send on their own: the composer's
+  // text and staged files stay where they are. One per composer at a time.
+  const voiceUploads = useRef(new Map<string, { upload: AttachmentUpload; broadcast: boolean }>());
+  const [voiceSends, setVoiceSends] = useState<Record<string, { error?: string } | undefined>>({});
+  const latestState = useRef(state);
+  latestState.current = state;
+  const setVoiceSend = (key: string, value: { error?: string } | undefined) =>
+    setVoiceSends((current) => ({ ...current, [key]: value }));
+  const sendVoice = async (key: string) => {
+    const entry = voiceUploads.current.get(key);
+    const client = clientRef.current;
+    if (!entry || !client) return;
+    setVoiceSend(key, {});
+    let attachment: ChatAttachment;
+    try {
+      attachment = await entry.upload.ensure();
+    } catch (error) {
+      if (voiceUploads.current.get(key) === entry)
+        setVoiceSend(key, { error: error instanceof UploadError ? error.message : "Failed to upload." });
+      return;
+    }
+    if (voiceUploads.current.get(key) !== entry || client !== clientRef.current) return;
+    // The client sends one message at a time and would retry the pending one instead.
+    if (latestState.current.pendingSend) {
+      setVoiceSend(key, { error: "Wait for your last message to send, then retry." });
+      return;
+    }
+    // From here the pending row owns the file, with its own retry and errors.
+    voiceUploads.current.delete(key);
+    setVoiceSend(key, undefined);
+    const threadRootId = key === "channel" ? undefined : key;
+    await client
+      .send("", {
+        attachments: [attachment],
+        uploads: [entry.upload],
+        threadRootId,
+        broadcast: entry.broadcast,
+        replyTo: replyTargets[key],
+      })
+      .catch(() => false);
+  };
+  const discardVoice = (key: string) => {
+    voiceUploads.current.get(key)?.upload.release(true);
+    voiceUploads.current.delete(key);
+    setVoiceSend(key, undefined);
+  };
+  const recordVoice = (recording: VoiceRecording, threadRootId?: string, broadcast = false) => {
+    const channel = state.channelId;
+    if (!signedIn || !channel) return;
+    const key = threadRootId ?? "channel";
+    voiceUploads.current.get(key)?.upload.release(true);
+    voiceUploads.current.set(key, { upload: AttachmentUpload.voice(channel, recording), broadcast });
+    void sendVoice(key);
+  };
+  useEffect(
+    () => () => {
+      for (const entry of voiceUploads.current.values()) entry.upload.release(true);
+      voiceUploads.current.clear();
+      setVoiceSends({});
+    },
+    [channelId],
+  );
+  const sendOnStop = useSyncExternalStore(subscribeVoiceSendOnStop, getVoiceSendOnStop, () => false);
+  const voiceFor = (threadRootId?: string): VoiceComposer | undefined => {
+    if (!signedIn || readOnly) return;
+    const key = threadRootId ?? "channel";
+    const status = voiceSends[key];
+    const staged = drafts.filter((draft) => draft.threadRootId === threadRootId);
+    return {
+      // Read at the moment recording stops, so a changed preference applies at once.
+      onRecorded: (recording, options) =>
+        getVoiceSendOnStop()
+          ? recordVoice(recording, threadRootId, options?.broadcast)
+          : stageVoice(recording, threadRootId),
+      sendOnStop,
+      blockedReason: staged.some((draft) => draft.voice)
+        ? "Remove the voice message to record another"
+        : staged.length >= MAX_ATTACHMENTS
+          ? `You can attach up to ${MAX_ATTACHMENTS} files.`
+          : undefined,
+      sending: !!status && !status.error,
+      error: status?.error,
+      onRetry: () => void sendVoice(key),
+      onDiscard: () => discardVoice(key),
+    };
+  };
+
+  /** A KLIPY GIF goes on its own, replying where the composer would; drafts stay. */
+  const sendGif = async (gif: ChatGif, query: string, threadRootId?: string, broadcast = false) => {
+    const client = clientRef.current;
+    if (!client || state.pendingSend) throw new Error("Wait for the last message to send.");
+    const sent = await client.send("", {
+      gif,
+      threadRootId,
+      broadcast,
+      replyTo: replyTargets[threadRootId ?? "channel"],
+    });
+    if (sent) {
+      const key = await klipyConfig();
+      if (key) shareKlipy(key, gif, query);
+      if (!threadRootId && state.hasNewer) {
+        setJumpMessage(undefined);
+        setScrollTarget("latest");
+      }
     }
     return sent;
   };
@@ -2143,6 +2301,7 @@ export default function Chat({
               mentionMembers={mentionMembers}
               onSend={(text, options) => sendDraft(text, undefined, false, options?.suppressEmbeds)}
               linkPreviews={signedIn}
+              onSendGif={signedIn && !readOnly ? (gif, query) => sendGif(gif, query) : undefined}
               onTyping={setTyping}
               onResize={keepLatestInView}
               onDraftPresence={setHasDraft}
@@ -2163,6 +2322,7 @@ export default function Chat({
                       onToggleSpoiler: toggleSpoiler,
                       // A pending send carries these files; editing would cancel them under it.
                       editing: state.pendingSend ? undefined : draftEditing,
+                      voice: voiceFor(),
                     }
                   : undefined
               }
@@ -2181,6 +2341,11 @@ export default function Chat({
         specialMentions={!direct}
         replyTo={state.thread ? replyTargets[state.thread.rootId] : undefined}
         onSend={(text, broadcast) => sendDraft(text, state.thread?.rootId, broadcast)}
+        onSendGif={
+          signedIn && !readOnly
+            ? (gif, query, broadcast) => sendGif(gif, query, state.thread?.rootId, broadcast)
+            : undefined
+        }
         attachments={
           signedIn || threadDrafts.length
             ? {
@@ -2196,6 +2361,7 @@ export default function Chat({
                 onRetry: retryUpload,
                 onToggleSpoiler: toggleSpoiler,
                 editing: state.pendingSend ? undefined : draftEditing,
+                voice: state.thread ? voiceFor(state.thread.rootId) : undefined,
               }
             : undefined
         }

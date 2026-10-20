@@ -187,6 +187,151 @@ pub fn inline(text: &str) -> Vec<(std::ops::Range<usize>, &'static Entry)> {
     found
 }
 
+/// Lay out names with a square for each emoji, independent of installed fonts.
+/// Keep the original Unicode text for accessibility. Leading space reserves
+/// one em for a grapheme and cancels the advances of sequence continuations.
+pub fn layout_job(ui: &egui::Ui, mut job: egui::text::LayoutJob) -> Arc<egui::Galley> {
+    let emojis = inline(&job.text);
+    if !emojis.is_empty() {
+        let sections = std::mem::take(&mut job.sections);
+        for section in sections {
+            let mut start = section.byte_range.start;
+            let mut gap = section.leading_space;
+            for (range, _) in emojis.iter().filter(|(range, _)| {
+                range.start >= section.byte_range.start && range.end <= section.byte_range.end
+            }) {
+                if start < range.start {
+                    job.sections.push(egui::text::LayoutSection {
+                        leading_space: gap,
+                        byte_range: start..range.start,
+                        format: section.format.clone(),
+                    });
+                    gap = 0.0;
+                }
+                for (offset, character) in job.text[range.clone()].char_indices() {
+                    let format = section.format.clone();
+                    let width = ui.fonts_mut(|fonts| fonts.glyph_width(&format.font_id, character));
+                    let advance = if offset == 0 {
+                        format.font_id.size
+                    } else {
+                        0.0
+                    };
+                    let start = range.start + offset;
+                    job.sections.push(egui::text::LayoutSection {
+                        leading_space: gap + advance - width,
+                        byte_range: start..start + character.len_utf8(),
+                        format,
+                    });
+                    gap = 0.0;
+                }
+                start = range.end;
+            }
+            if start < section.byte_range.end {
+                job.sections.push(egui::text::LayoutSection {
+                    leading_space: gap,
+                    byte_range: start..section.byte_range.end,
+                    format: section.format,
+                });
+            }
+        }
+    }
+    let mut galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+    if !emojis.is_empty() {
+        // Hide only the actual emoji glyph vertices after layout. Keeping
+        // normal font/color during layout makes an overflow ellipsis visible
+        // even when truncation lands inside a multi-code-point emoji.
+        let text = galley.job.text.clone();
+        let row = Arc::make_mut(&mut Arc::make_mut(&mut galley).rows[0].row);
+        for (range, _) in emojis {
+            let start = text[..range.start].chars().count();
+            for (index, character) in text[range].chars().enumerate() {
+                let index = start + index;
+                if let Some(glyph) = row.glyphs.get(index)
+                    && glyph.chr == character
+                {
+                    let first = glyph.first_vertex as usize;
+                    let end = row
+                        .glyphs
+                        .get(index + 1)
+                        .map_or(row.visuals.glyph_vertex_range.end, |next| {
+                            next.first_vertex as usize
+                        });
+                    for vertex in &mut row.visuals.mesh.vertices[first..end] {
+                        vertex.color = egui::Color32::TRANSPARENT;
+                    }
+                }
+            }
+        }
+    }
+    galley
+}
+
+/// Paint a name laid out above, including only emoji that survived truncation.
+pub fn paint_galley(
+    painter: &egui::Painter,
+    position: egui::Pos2,
+    galley: Arc<egui::Galley>,
+    color: egui::Color32,
+) {
+    painter.galley(position, galley.clone(), color);
+    paint_inline(painter, position, &galley);
+}
+
+/// Add artwork when the text itself is painted by an egui widget (a hint).
+pub fn paint_inline(painter: &egui::Painter, position: egui::Pos2, galley: &egui::Galley) {
+    let textures = Textures::shared(painter.ctx());
+    for (range, entry) in inline(&galley.job.text) {
+        let index = galley.job.text[..range.start].chars().count();
+        let character = galley.job.text[range.clone()].chars().next().unwrap();
+        // These are single-line labels. An overflow ellipsis replaces the
+        // first omitted glyph; never paint the omitted emoji over that mark.
+        if let Some(row) = galley.rows.first()
+            && let Some(glyph) = row.glyphs.get(index)
+            && glyph.chr == character
+        {
+            let size = galley
+                .job
+                .sections
+                .iter()
+                .find(|section| section.byte_range.start == range.start)
+                .unwrap()
+                .format
+                .font_id
+                .size;
+            let center = position
+                + row.pos.to_vec2()
+                + egui::vec2(glyph.max_x() - size / 2.0, glyph.logical_rect().center().y);
+            textures.paint(
+                painter,
+                entry,
+                egui::Rect::from_center_size(center, egui::vec2(size, size)),
+            );
+        }
+    }
+}
+
+/// A non-selectable, single-line name label, with the same bundled artwork as
+/// the sidebar. The full original name remains available to screen readers.
+pub fn name_label(
+    ui: &mut egui::Ui,
+    text: impl Into<egui::WidgetText>,
+    sense: egui::Sense,
+) -> egui::Response {
+    let mut job = Arc::unwrap_or_clone(text.into().into_layout_job(
+        ui.style(),
+        egui::FontSelection::Default,
+        egui::Align::Center,
+    ));
+    job.wrap = egui::text::TextWrapping::truncate_at_width(ui.available_width().max(1.0));
+    let galley = layout_job(ui, job);
+    let (rect, response) = ui.allocate_exact_size(galley.size(), sense);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
+    });
+    paint_galley(ui.painter(), rect.min, galley, ui.visuals().text_color());
+    response
+}
+
 /// The catalog's dash-separated name (`thumbs-up`) for a reaction emoji.
 /// Reactions are stored fully qualified while the catalog keys some emoji
 /// without U+FE0F, so the fallback compares with every U+FE0F removed.

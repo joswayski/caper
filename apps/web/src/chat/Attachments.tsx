@@ -29,6 +29,8 @@ import { MediaPreviewContext } from "./MediaPreviewContext.ts";
 import type { AttachmentEdit, EditTool } from "./edit.ts";
 import { attachmentView, type ChatAttachment } from "./types.ts";
 import { formatBytes, type UploadState } from "./uploads.ts";
+import { attachmentLabel, isVoiceAttachment } from "./voice.ts";
+import { VoiceMessage, VoicePlayer } from "./VoiceMessage.tsx";
 
 const AttachmentEditor = lazy(() => import("./AttachmentEditor.tsx"));
 
@@ -126,7 +128,7 @@ function FileCard({ attachment }: { attachment: ChatAttachment }) {
     <>
       <FileText aria-hidden="true" size={18} />
       <span>
-        <strong>{attachment.name}</strong>
+        <strong>{attachmentLabel(attachment)}</strong>
         <small>{attachment.unavailable ? "File removed" : formatBytes(attachment.size)}</small>
       </span>
     </>
@@ -162,11 +164,11 @@ function Processing({
         className="chat-file"
         data-processing
         role="status"
-        aria-label={`${attachment.name}: ${processingLabel(percent)}`}
+        aria-label={`${attachmentLabel(attachment)}: ${processingLabel(percent)}`}
       >
         <span className="chat-spinner" aria-hidden="true" />
         <span>
-          <strong>{attachment.name}</strong>
+          <strong>{attachmentLabel(attachment)}</strong>
           <small>{processingLabel(percent)}</small>
         </span>
       </div>
@@ -333,7 +335,7 @@ export function MessageAttachments({
         <div key={attachment.id} className="chat-file" data-failed>
           <FileWarning aria-hidden="true" size={18} />
           <span>
-            <strong>{attachment.name}</strong>
+            <strong>{attachmentLabel(attachment)}</strong>
             <small>
               {visuals.length > 1 && (attachment.kind === "image" || attachment.kind === "video")
                 ? "Processing failed"
@@ -444,6 +446,8 @@ export function MessageAttachments({
         </div>
       );
     }
+    if (view === "audio" && isVoiceAttachment(attachment))
+      return <VoiceMessage key={attachment.id} attachment={attachment} onError={() => expired(attachment)} />;
     if (view === "audio") {
       return (
         <figure key={attachment.id} className="chat-audio">
@@ -528,6 +532,8 @@ export function MessageAttachments({
 
 export interface DraftAttachment extends UploadState {
   key: string;
+  /** A recorded voice message staged with the files: shown as a voice chip. */
+  voice?: { durationMs: number; waveform?: string };
   spoiler?: boolean;
   /** A thread's files stay separate from the channel and other thread drafts. */
   threadRootId?: string;
@@ -646,13 +652,14 @@ function DraftAttachmentTile({
         ref={refs.setReference}
         data-error={draft.error ? true : undefined}
         data-spoiler={draft.spoiler || undefined}
+        data-voice={draft.voice ? true : undefined}
         title={draft.error ?? draft.name}
         onPointerDown={(event) => {
           cancelPress();
           suppressClick.current = false;
           if (!onRemove || !event.isPrimary || event.button !== 0) return;
           const target = event.target as HTMLElement;
-          if (target.closest(".chat-draft-actions, .chat-draft-retry")) return;
+          if (target.closest(".chat-draft-actions, .chat-draft-retry, .chat-voice")) return;
           returnFocus.current = event.currentTarget.querySelector<HTMLElement>(".chat-draft-preview");
           press.current = {
             x: event.clientX,
@@ -778,20 +785,13 @@ export function DraftAttachments({
   });
   if (!drafts.length) return null;
   const failed = drafts.filter((draft) => draft.error).length;
-  const uploading = drafts.filter((draft) => !draft.attachment && !draft.error && !draft.staged).length;
   return (
     <>
-      {(failed > 0 || uploading > 0) && (
-        <p className="chat-draft-notice" data-error={failed > 0 || undefined} role="status">
-          {failed > 0 ? (
-            <FileWarning size={16} aria-hidden="true" />
-          ) : (
-            <span className="chat-spinner" aria-hidden="true" />
-          )}
+      {failed > 0 && (
+        <p className="chat-draft-notice" data-error={true} role="status">
+          <FileWarning size={16} aria-hidden="true" />
           <span>
-            {failed > 0
-              ? `${failed} ${failed === 1 ? "file" : "files"} failed to upload. Send will retry ${failed === 1 ? "it" : "them"}, or you can remove ${failed === 1 ? "it" : "them"}.`
-              : `Uploading ${uploading} ${uploading === 1 ? "file" : "files"}… Your message won’t send until every file is ready.`}
+            {`${failed} ${failed === 1 ? "file" : "files"} failed to upload. Send will retry ${failed === 1 ? "it" : "them"}, or you can remove ${failed === 1 ? "it" : "them"}.`}
           </span>
         </p>
       )}
@@ -833,6 +833,44 @@ export function DraftAttachments({
             </>
           );
           const viewable = media.some((attachment) => attachment.id === draft.key);
+          if (draft.voice)
+            return (
+              <DraftAttachmentTile key={draft.key} draft={draft} onRemove={onRemove}>
+                <VoicePlayer
+                  compact
+                  attachment={{
+                    url: draft.localUrl ?? draft.attachment?.url,
+                    durationMs: draft.voice.durationMs,
+                    waveform: draft.voice.waveform,
+                  }}
+                />
+                {busy && <progress max={1} value={draft.progress} aria-label={`Uploading ${draft.name}`} />}
+                {draft.error && onRetry && (
+                  <button
+                    type="button"
+                    className="chat-draft-retry"
+                    aria-label={`Retry uploading ${draft.name}`}
+                    title={draft.error}
+                    onClick={() => onRetry(draft.key)}
+                  >
+                    Retry upload
+                  </button>
+                )}
+                {onRemove && (
+                  <div className="chat-draft-actions">
+                    <button
+                      type="button"
+                      className="chat-draft-remove"
+                      aria-label="Remove voice message"
+                      title="Remove"
+                      onClick={() => onRemove(draft.key)}
+                    >
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                )}
+              </DraftAttachmentTile>
+            );
           return (
             <DraftAttachmentTile key={draft.key} draft={draft} onRemove={onRemove}>
               {viewable ? (

@@ -217,7 +217,7 @@ function Avatar({ person }: { person: (typeof people)[number] }) {
 }
 
 /** A local-only, deliberately labelled illustration of a lively Caper room. */
-export default function LiveWindow({ preloadSpace = false }: { preloadSpace?: boolean }) {
+export default function LiveWindow({ joinTo }: { joinTo: "/login" | "/profile" | "/spaces" }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -727,8 +727,8 @@ export default function LiveWindow({ preloadSpace = false }: { preloadSpace?: bo
           className="live-activator"
           data-live-activator
           data-live-control
-          to="/spaces"
-          preload={preloadSpace ? "intent" : false}
+          to={joinTo}
+          preload={joinTo === "/spaces" ? "intent" : false}
           aria-label="Join Caper"
           draggable={false}
         >
