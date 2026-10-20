@@ -3620,6 +3620,52 @@ public final class ChatModel {
         }
     }
 
+    /// The microphone records only where a voice message could be sent now:
+    /// attachments are available and no other message is still pending.
+    public func canRecordVoice(inThread: Bool = false) -> Bool {
+        canAttach && canInteract && !sending && uploadSubmission == nil && delivery.pending == nil && !delivery.rejected
+            && (!inThread || (threadRootID != nil && !threadLoading))
+    }
+
+    /// Sends a recorded voice message on its own (the voice-message contract): the
+    /// composer's text and files stay untouched, a reply target is honoured.
+    /// The pending row appears at once with the local recording; the upload
+    /// (`voice`, `durationMs`, `waveform`, no compression) and send then run
+    /// through the same pending-delivery path as a re-uploaded message, so
+    /// upload failures offer Retry and the completed description is what is sent.
+    public func sendVoice(_ recording: VoiceRecording, inThread: Bool = false) async {
+        let size = (try? recording.fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard canRecordVoice(inThread: inThread), let channelID, session != nil, size > 0,
+              (VoiceMessage.minimumDurationMs...VoiceMessage.maximumDurationMs).contains(recording.durationMs) else {
+            AttachmentStaging.remove(recording.fileURL)
+            return
+        }
+        let rootID = inThread ? threadRootID : nil
+        let id = UUID().uuidString
+        let file = LocalAttachmentFile(url: recording.fileURL, name: VoiceMessage.uploadFilename,
+                                       contentType: VoiceMessage.uploadContentType, size: size)
+        var prepared = PreparedAttachment(original: file)
+        prepared.kind = .audio
+        prepared.durationMs = recording.durationMs
+        prepared.voice = true
+        prepared.waveform = VoiceWaveform.encode(recording.waveform)
+        var draft = AttachmentDraft(id: id, name: VoiceMessage.storedName, kind: .audio, localURL: recording.fileURL, sourceSize: size)
+        draft.preparing = false
+        draft.storedSize = size
+        preparedUploads[id] = prepared
+        draftChannels[id] = channelID
+        pendingDrafts = [draft]
+        pendingNeedsUpload = true
+        // Shown until the upload completes and replaces it with the server's description.
+        let local = ChatAttachment(id: id, kind: .audio, contentType: VoiceMessage.uploadContentType, name: VoiceMessage.storedName,
+                                   size: size, durationMs: recording.durationMs, url: recording.fileURL.absoluteString,
+                                   voice: true, waveform: prepared.waveform)
+        let key = rootID ?? "channel"
+        _ = delivery.begin(text: "", attachments: [local], threadRootId: rootID, broadcast: false, replyTo: replyTargets[key])
+        replyTargets[key] = nil
+        await send(inThread: inThread, retryPending: true)
+    }
+
     public func setReaction(messageID: String, emoji: String, active: Bool) async {
         guard !isPreview, let channelID, session != nil else { return }
         let requestGeneration = generation

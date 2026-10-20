@@ -4146,6 +4146,7 @@ private struct ChatView: View {
             if let notice = chat.attachmentNotice {
                 Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
             }
+            VoiceComposerNotice(chat: chat, inThread: false)
             AttachmentDraftsView(chat: chat)
             HStack(alignment: .bottom, spacing: 8) {
                 VStack(spacing: 6) {
@@ -4167,22 +4168,29 @@ private struct ChatView: View {
                     ComposerSuggestionsView(controller: composerAutocomplete)
                     #endif
                     HStack(alignment: .bottom, spacing: 0) {
-                        AttachmentPickerButton(chat: chat).frame(height: composerMinHeight).padding(.leading, 4)
-                        ZStack(alignment: .topLeading) {
-                            if chat.draft.isEmpty {
-                                Text(composerPlaceholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                                    .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                        HStack(alignment: .bottom, spacing: 0) {
+                            AttachmentPickerButton(chat: chat).frame(height: composerMinHeight).padding(.leading, 4)
+                            ZStack(alignment: .topLeading) {
+                                if chat.draft.isEmpty {
+                                    Text(composerPlaceholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                                        .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                                }
+                                messageComposer
                             }
-                            messageComposer
+                            .frame(minHeight: composerMinHeight, maxHeight: 174)
+                            // Measure the text view instead of filling the 174-point maximum.
+                            .fixedSize(horizontal: false, vertical: true)
+                            .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
+                            #if os(iOS)
+                            .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                            #endif
+                            ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight)
                         }
-                        .frame(minHeight: composerMinHeight, maxHeight: 174)
-                        // Measure the text view instead of filling the 174-point maximum.
-                        .fixedSize(horizontal: false, vertical: true)
-                        .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
                         #if os(iOS)
-                        .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                        // The held microphone stays put while the bar covers the field.
+                        .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight))
                         #endif
-                        ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight).padding(.trailing, 2)
+                        VoiceRecordButton(chat: chat, inThread: false, height: composerMinHeight).padding(.trailing, 2)
                     }
                     .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
@@ -4205,6 +4213,11 @@ private struct ChatView: View {
                 .accessibilityValue(chat.sending ? "Sending" : "")
                 .accessibilityIdentifier("send-message-button")
             }
+            #if os(macOS)
+            // Clicking the microphone replaces this row with the recording bar.
+            .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight,
+                                         restoreFocus: { composerAutocomplete.restoreFocus() }))
+            #endif
             }
             }
             }.padding(.horizontal, 18).padding(.top, 12)
@@ -4706,6 +4719,7 @@ private struct NativeThreadView: View {
                 if let notice = chat.threadAttachmentNotice {
                     Text(notice).font(CaperTheme.font(11)).foregroundStyle(CaperTheme.terracottaBright)
                 }
+                VoiceComposerNotice(chat: chat, inThread: true)
                 AttachmentDraftsView(chat: chat, inThread: true)
                 Toggle(isOn: $chat.threadBroadcast) {
                     (Text("Also send to ") + Text(direct ? chat.channelName : "#\(chat.channelName)").font(CaperTheme.font(11, weight: .bold)))
@@ -4718,21 +4732,27 @@ private struct NativeThreadView: View {
                 #endif
                 HStack(alignment: .bottom, spacing: 8) {
                     HStack(alignment: .bottom, spacing: 0) {
-                        AttachmentPickerButton(chat: chat, inThread: true).padding(.leading, 4)
-                        // Like the channel composer: the placeholder sits behind the clear editor, which draws none.
-                        ZStack(alignment: .topLeading) {
-                            if chat.threadDraft.isEmpty {
-                                Text("Reply to thread…").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                                    .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                        HStack(alignment: .bottom, spacing: 0) {
+                            AttachmentPickerButton(chat: chat, inThread: true).padding(.leading, 4)
+                            // Like the channel composer: the placeholder sits behind the clear editor, which draws none.
+                            ZStack(alignment: .topLeading) {
+                                if chat.threadDraft.isEmpty {
+                                    Text("Reply to thread…").font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                                        .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                                }
+                                threadComposer
                             }
-                            threadComposer
+                                .frame(minHeight: 42, maxHeight: 174)
+                                .fixedSize(horizontal: false, vertical: true)
+                                #if os(iOS)
+                                .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                                #endif
+                            ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading)
                         }
-                            .frame(minHeight: 42, maxHeight: 174)
-                            .fixedSize(horizontal: false, vertical: true)
-                            #if os(iOS)
-                            .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
-                            #endif
-                        ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading).padding(.trailing, 2)
+                        #if os(iOS)
+                        .modifier(VoiceComposerCover(chat: chat, inThread: true))
+                        #endif
+                        VoiceRecordButton(chat: chat, inThread: true).padding(.trailing, 2)
                     }
                         // Clipped too: the fill's square corners showed outside the rounded border.
                         .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -4742,6 +4762,9 @@ private struct NativeThreadView: View {
                         #endif
                     sendReplyButton
                 }
+                #if os(macOS)
+                .modifier(VoiceComposerCover(chat: chat, inThread: true, restoreFocus: { composerAutocomplete.restoreFocus() }))
+                #endif
                 if let pending = chat.pendingMessage, pending.threadRootId != chat.threadRootID,
                    !chat.sending, chat.error != nil || chat.sendRejected {
                     Text("Confirm or dismiss the pending message before sending a reply.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.error)
@@ -4850,7 +4873,7 @@ private struct TypingDots: View {
     }
 }
 
-private struct PrimaryIconButton: ButtonStyle {
+struct PrimaryIconButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.modifier(PrimaryActionFill(pressed: configuration.isPressed))
     }
@@ -7286,7 +7309,7 @@ private struct NativeReplyContext: View {
     private var excerpt: String {
         if reference.deleted == true { return MessageDeletion.quote }
         let text = reference.fullText ?? reference.text
-        return text.isEmpty ? (reference.hasAttachments ? "Attachment" : "Message") : text
+        return text.isEmpty ? VoiceMessage.excerptFallback(hasAttachments: reference.hasAttachments, hasVoice: reference.hasVoice) : text
     }
     private var preview: String { String(String.UnicodeScalarView(excerpt.unicodeScalars.prefix(100))) }
     var body: some View {
@@ -7313,7 +7336,7 @@ private struct NativeReplyContext: View {
                         else {
                             Avatar(name: reference.author.name, size: 16, avatarID: reference.author.avatarId, picture: reference.author.avatarPicture)
                             Text(reference.author.name).fontWeight(.bold).lineLimit(1)
-                            if reference.hasAttachments && reference.deleted != true { CaperIcon(name: "paperclip", size: 13) }
+                            if reference.hasAttachments && reference.deleted != true { CaperIcon(name: reference.hasVoice ? "mic" : "paperclip", size: 13) }
                         }
                         Spacer(minLength: 4)
                         Text("View original").font(CaperTheme.font(11)).fixedSize()
@@ -7487,7 +7510,7 @@ private struct NativeReplyDraft: View {
                     .fontWeight(.bold).lineLimit(1)
                 if !hidden {
                     let text = reference.fullText ?? reference.text
-                    Text(text.isEmpty ? (reference.hasAttachments ? "Attachment" : "Message") : text)
+                    Text(text.isEmpty ? VoiceMessage.excerptFallback(hasAttachments: reference.hasAttachments, hasVoice: reference.hasVoice) : text)
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
@@ -9885,7 +9908,7 @@ struct CaperPrimaryButton: ButtonStyle {
 /// Web's primary action: an eggshell fill with a blackout label that brightens on hover and
 /// deepens on press. A white hover wash would vanish on eggshell, so focus is a terracotta ring.
 /// Disabled, it steps back to neutral chrome rather than a faded fill.
-private struct PrimaryActionFill: ViewModifier {
+struct PrimaryActionFill: ViewModifier {
     let pressed: Bool
     @Environment(\.isEnabled) private var enabled
     @Environment(\.isFocused) private var focused

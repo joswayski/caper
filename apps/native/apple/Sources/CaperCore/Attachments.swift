@@ -59,25 +59,37 @@ public struct ChatAttachment: Codable, Equatable, Identifiable, Sendable {
     /// The file was deleted; show a "File removed" placeholder.
     public var unavailable: Bool
     public var spoiler: Bool
+    /// A recorded voice message (`VoiceMessage`): drawn as the voice player
+    /// with its transcript instead of the generic audio card.
+    public var voice: Bool
+    /// Standard base64 of the voice note's normalised peaks (any length the
+    /// server accepted); nil draws a flat placeholder. See `VoiceWaveform`.
+    public var waveform: String?
+    /// nil when the server has no transcription (or an unknown status).
+    public var transcript: VoiceTranscript?
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, contentType, name, size, width, height, durationMs, preview, status, animated, url, previewUrl, unavailable, spoiler
+        case id, kind, contentType, name, size, width, height, durationMs, preview, status, animated, url, previewUrl, unavailable, spoiler,
+             voice, waveform, transcript
     }
     private struct PreviewMarker: Codable {}
 
     public init(id: String, kind: AttachmentKind, contentType: String, name: String, size: Int, width: Int? = nil, height: Int? = nil,
                 durationMs: Int? = nil, hasPreview: Bool = false, status: AttachmentStatus = .ready, animated: Bool = false,
-                url: String? = nil, previewUrl: String? = nil, unavailable: Bool = false, spoiler: Bool = false) {
+                url: String? = nil, previewUrl: String? = nil, unavailable: Bool = false, spoiler: Bool = false,
+                voice: Bool = false, waveform: String? = nil, transcript: VoiceTranscript? = nil) {
         self.id = id; self.kind = kind; self.contentType = contentType; self.name = name; self.size = size
         self.width = width; self.height = height; self.durationMs = durationMs; self.hasPreview = hasPreview
         self.status = status; self.animated = animated
         self.url = url; self.previewUrl = previewUrl; self.unavailable = unavailable
         self.spoiler = spoiler
+        self.voice = voice; self.waveform = waveform; self.transcript = transcript
     }
 
     /// Strict for one entry (like web's `isChatAttachment`); `ChatContent`
     /// skips entries that fail instead of rejecting the message. The newer
-    /// optional fields (`status`, `animated`) never fail an entry.
+    /// optional fields (`status`, `animated`, and the voice note's `voice`,
+    /// `waveform` and `transcript`) never fail an entry.
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
@@ -94,6 +106,10 @@ public struct ChatAttachment: Codable, Equatable, Identifiable, Sendable {
         unavailable = try values.decodeIfPresent(Bool.self, forKey: .unavailable) ?? false
         spoiler = try values.decodeIfPresent(Bool.self, forKey: .spoiler) ?? false
         animated = (try? values.decodeIfPresent(Bool.self, forKey: .animated)) ?? false
+        voice = (try? values.decodeIfPresent(Bool.self, forKey: .voice)) ?? false
+        // Kept as sent (so it re-encodes unchanged); invalid values draw the flat placeholder.
+        waveform = try? values.decodeIfPresent(String.self, forKey: .waveform)
+        transcript = try? values.decodeIfPresent(VoiceTranscript.self, forKey: .transcript)
         if let raw = try? values.decodeIfPresent(String.self, forKey: .status) {
             // An unknown future state renders like processing until it has a URL.
             status = AttachmentStatus(rawValue: raw) ?? (url == nil ? .processing : .ready)
@@ -123,7 +139,13 @@ public struct ChatAttachment: Codable, Equatable, Identifiable, Sendable {
         try values.encodeIfPresent(previewUrl, forKey: .previewUrl)
         if unavailable { try values.encode(true, forKey: .unavailable) }
         if spoiler { try values.encode(true, forKey: .spoiler) }
+        if voice { try values.encode(true, forKey: .voice) }
+        try values.encodeIfPresent(waveform, forKey: .waveform)
+        try values.encodeIfPresent(transcript, forKey: .transcript)
     }
+
+    /// The decoded waveform bytes, when valid.
+    public var waveformBytes: [UInt8]? { VoiceWaveform.decode(waveform) }
 
     static func isWebURL(_ value: String) -> Bool {
         guard let scheme = URL(string: value)?.scheme?.lowercased() else { return false }
@@ -242,11 +264,17 @@ public struct AssetCreateInput: Encodable, Equatable, Sendable {
     public var height: Int?
     public var durationMs: Int?
     public var preview: Preview?
+    /// A recorded voice message (`durationMs` is then required, 1...600000).
+    public var voice: Bool?
+    /// Only with `voice`: base64 of the 64 normalised peaks.
+    public var waveform: String?
 
     public init(channelId: String, filename: String, contentType: String, byteSize: Int, sourceByteSize: Int? = nil,
-                width: Int? = nil, height: Int? = nil, durationMs: Int? = nil, preview: Preview? = nil) {
+                width: Int? = nil, height: Int? = nil, durationMs: Int? = nil, preview: Preview? = nil,
+                voice: Bool? = nil, waveform: String? = nil) {
         self.channelId = channelId; self.filename = filename; self.contentType = contentType; self.byteSize = byteSize
         self.sourceByteSize = sourceByteSize; self.width = width; self.height = height; self.durationMs = durationMs; self.preview = preview
+        self.voice = voice; self.waveform = waveform
     }
 }
 
