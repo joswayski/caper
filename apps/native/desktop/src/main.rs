@@ -39853,12 +39853,13 @@ mod tests {
                         && *stroke == egui::Stroke::new(1.0, super::BORDER))),
             "no divider sets voice apart from Pins and Members"
         );
-        // Independent values from the current web CSS: 54px fixed header.
+        // Independent values from the current web CSS: 54px fixed header,
+        // and the member list's tighter 44px heading row.
         // The history header moves down with a short, bottom-aligned history.
         for (label, center) in [
             ("Fixture Studio", 27.0),
             ("# general", 27.0),
-            ("Members", 27.0),
+            ("Members", 22.0),
         ] {
             let shape = text(label);
             assert!(
