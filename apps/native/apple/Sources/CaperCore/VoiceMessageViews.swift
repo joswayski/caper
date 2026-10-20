@@ -175,7 +175,7 @@ struct VoiceTranscriptView: View {
     let transcript: VoiceTranscript?
     @State private var expanded = false
     @State private var fullHeight: CGFloat = 0
-    @State private var shownHeight: CGFloat = 0
+    @State private var collapsedHeight: CGFloat = 0
 
     var body: some View {
         switch transcript?.display ?? .hidden {
@@ -194,7 +194,9 @@ struct VoiceTranscriptView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { shownHeight = $0 }
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                        if !expanded { collapsedHeight = $0 }
+                    }
                     .background {
                         // The unclamped height, to know whether three lines hide anything.
                         Text(text).font(CaperTheme.font(13)).lineLimit(nil)
@@ -203,8 +205,19 @@ struct VoiceTranscriptView: View {
                             .hidden().accessibilityHidden(true)
                             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
                     }
-                if expanded || fullHeight > shownHeight + 1 {
-                    Button(expanded ? VoiceTranscript.collapseLabel : VoiceTranscript.expandLabel) { expanded.toggle() }
+                    // Rebuild the selectable text when its line limit changes, so
+                    // its drawing and the stack's measured height change together.
+                    .id(expanded)
+                    .transition(.identity)
+                    .accessibilityIdentifier("voice-transcript-text")
+                if expanded || fullHeight > collapsedHeight + 1 {
+                    Button(expanded ? VoiceTranscript.collapseLabel : VoiceTranscript.expandLabel) {
+                        // Text, toggle and timeline must relayout in one step,
+                        // without crossfading the old and new text layouts.
+                        var transaction = Transaction(animation: nil)
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) { expanded.toggle() }
+                    }
                         .buttonStyle(.plain)
                         .font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.text)
                         .modifier(ControlPointer())
