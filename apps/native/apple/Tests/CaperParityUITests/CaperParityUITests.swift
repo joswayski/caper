@@ -805,6 +805,10 @@ final class CaperParityUITests: XCTestCase {
         let broadcast = try require(app.switches["Also send to #general"], timeout: 5, "Missing named broadcast option")
         XCTAssertLessThanOrEqual(broadcast.frame.maxY, composer.frame.minY,
                                 "The broadcast checkbox must stay above the input, away from Send")
+        broadcast.tap()
+        XCTAssertEqual(broadcast.value as? String, "1")
+        broadcast.tap()
+        XCTAssertEqual(broadcast.value as? String, "0")
         XCTAssertTrue(send.isHittable)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2,
@@ -827,10 +831,15 @@ final class CaperParityUITests: XCTestCase {
         let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.7))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 35, dy: 0)))
         XCTAssertTrue(back.isHittable, "A short right drag must not close the thread")
-        timeline.swipeRight()
+        // Start on selectable message text, not the empty part of the list:
+        // the old gesture excluded every UITextView, including read-only bodies.
+        let body = try XCTUnwrap(visible(app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "local sample data, not a live conversation"))), "Missing root body")
+        let textStart = body.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5))
+        textStart.press(forDuration: 0.05, thenDragTo: textStart.withOffset(CGVector(dx: 160, dy: 0)))
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: back)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed,
-                       "A right swipe must return to the channel")
+                       "A right swipe starting on message text must return to the channel")
         // Reopening the same root must retain the unsent draft.
         hold(row)
         let reopenActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,

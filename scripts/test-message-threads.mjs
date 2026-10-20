@@ -1073,6 +1073,15 @@ try {
         sessionId,
       );
     }
+    if (selector !== "#chat-thread-reply" && dx > 12 && dx > Math.abs(dy) * 1.5) {
+      const reduced = evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches");
+      const offset = evaluate('document.querySelector(".chat-thread-panel").getBoundingClientRect().x');
+      assert.ok(
+        Math.abs(offset - (reduced ? 0 : dx)) < 1,
+        "The thread follows the finger before release (unless motion is reduced)",
+      );
+      if (dx === 140 && !cancel && !reduced) screenshot("threads-mobile-dragging");
+    }
     await cdp("Input.dispatchTouchEvent", { type: cancel ? "touchCancel" : "touchEnd", touchPoints: [] }, sessionId);
   };
   const savedThreadDraft = evaluate('document.querySelector("#chat-thread-reply").value');
@@ -1088,6 +1097,7 @@ try {
       true,
       `Left, short, cancelled and vertical drags keep the thread: ${dx}, ${dy}, ${cancel}`,
     );
+    wait('Math.abs(document.querySelector(".chat-thread-panel").getBoundingClientRect().x) < 1');
   }
   await swipeThread("#chat-thread-reply", 90);
   assert.equal(evaluate('!!document.querySelector(".chat-thread-panel")'), true, "The composer keeps its own gestures");
@@ -1105,8 +1115,17 @@ try {
   await swipeThread(".chat-thread-heading", 140);
   wait('!document.querySelector(".chat-thread-panel") && !history.state?.caperThread');
   open(root.clientMessageId);
+  await cdp(
+    "Emulation.setEmulatedMedia",
+    { features: [{ name: "prefers-reduced-motion", value: "reduce" }] },
+    sessionId,
+  );
+  await swipeThread(".chat-thread-messages", 140);
+  wait('!document.querySelector(".chat-thread-panel") && !history.state?.caperThread');
+  await cdp("Emulation.setEmulatedMedia", { features: [] }, sessionId);
+  open(root.clientMessageId);
   console.log(
-    "PASS: thread right-swipes from timeline/header return to channel and preserve draft; left/short/cancelled/vertical/composer drags stay in thread.",
+    "PASS: thread swipes track the finger, settle back on cancellation, return to channel and preserve draft; reduced motion, left/short/vertical/composer guards pass.",
   );
   screenshot("threads-mobile");
   evaluate('document.querySelector(".chat-thread-heading span").textContent = "in #" + "long-channel-name-".repeat(3)');

@@ -1458,8 +1458,16 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     }
     if (narrow && state.thread != null) Dialog(onDismissRequest = viewModel::closeThread,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        val dialogView = LocalView.current
+        SideEffect {
+            (dialogView.parent as? androidx.compose.ui.window.DialogWindowProvider)?.window?.apply {
+                clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                setBackgroundDrawableResource(android.R.color.transparent)
+                setWindowAnimations(0)
+            }
+        }
         threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
-            // Filled before the insets, so the bar and keyboard areas aren't left showing the dimmed scrim.
+            // Fill before insets; the bars and keyboard area move with the thread surface.
             ThreadConversation(state, viewModel, pickFiles, Modifier.swipeCancelsPresses().entrance(MOTION_BASE, dx = 12.dp).fillMaxSize()
                 .background(SurfaceConversation).systemBarsPadding().imePadding(), swipeToClose = true)
         }
@@ -1492,12 +1500,52 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     return dragAndDropTarget({ attachable && FileDrop.carriesFiles(it.mimeTypes()) }, dropTarget)
 }
 
+/** The row owns checkbox semantics and input; this indicator has no delayed check/color tween. */
+@Composable private fun ThreadBroadcastIndicator(checked: Boolean, enabled: Boolean) {
+    val colors = MaterialTheme.colorScheme
+    val box = if (!enabled) colors.onSurface.copy(alpha = 0.38f) else if (checked) colors.primary else colors.onSurfaceVariant
+    val check = if (enabled) colors.onPrimary else colors.surface
+    androidx.compose.foundation.Canvas(Modifier.padding(12.dp).size(24.dp).padding(2.dp)) {
+        val corner = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx())
+        if (checked) {
+            drawRoundRect(box, cornerRadius = corner)
+            drawPath(Path().apply {
+                moveTo(size.width * 0.2f, size.height * 0.5f)
+                lineTo(size.width * 0.4f, size.height * 0.7f)
+                lineTo(size.width * 0.8f, size.height * 0.3f)
+            }, check, style = Stroke(2.dp.toPx(), cap = StrokeCap.Square))
+        } else {
+            val inset = 1.dp.toPx()
+            drawRoundRect(box, topLeft = Offset(inset, inset), size = Size(size.width - 2 * inset, size.height - 2 * inset),
+                cornerRadius = corner, style = Stroke(2.dp.toPx()))
+        }
+    }
+}
+
 @Composable private fun ThreadConversation(
     state: AppUiState, viewModel: CaperViewModel, pickFiles: (AttachmentDraftTarget, Boolean) -> Unit, modifier: Modifier,
     swipeToClose: Boolean = false,
 ) {
     val thread = state.thread ?: return
     val channel = state.selectedChannel ?: return
+    val still = reducedMotion()
+    val swipeScope = rememberCoroutineScope()
+    var swipeOffset by remember(channel.id, thread.rootId) { mutableFloatStateOf(0f) }
+    var swipeWidth by remember { mutableIntStateOf(0) }
+    var swipeAnimation by remember { mutableStateOf<Job?>(null) }
+    val dragThread: (Float) -> Unit = { offset ->
+        swipeAnimation?.cancel()
+        swipeOffset = offset
+    }
+    val settleThread: (Boolean) -> Unit = { dismiss ->
+        swipeAnimation?.cancel()
+        swipeAnimation = swipeScope.launch {
+            val destination = if (dismiss) maxOf(swipeWidth.toFloat(), swipeOffset) else 0f
+            if (still) swipeOffset = destination
+            else androidx.compose.animation.core.animate(swipeOffset, destination, animationSpec = tween(MOTION_FAST, easing = EaseOut)) { value, _ -> swipeOffset = value }
+            if (dismiss) viewModel.closeThread()
+        }
+    }
     val target = AttachmentDraftTarget(channel.id, thread.rootId)
     val files = state.attachmentDrafts[target].orEmpty()
     val canAttach = state.canParticipate && state.uploadsEnabled && state.chatAuthorId != null && !thread.loading && thread.error == null &&
@@ -1522,9 +1570,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 unchanged = { draft.text == sent && broadcast == sentBroadcast }, accepted = clear)) clear()
         }
     }
-    Box(modifier.attachmentDrop(canAttach, target, viewModel, dropping)) {
+    Box(Modifier.onSizeChanged { swipeWidth = it.width }
+        .graphicsLayer { translationX = if (swipeToClose) swipeOffset else 0f }
+        .then(modifier).attachmentDrop(canAttach, target, viewModel, dropping)) {
         Column(Modifier.fillMaxSize().background(SurfaceConversation).border(BorderStroke(1.dp, Border))) {
-            Column(Modifier.weight(1f).fillMaxWidth().threadBackSwipe(swipeToClose, viewModel::closeThread)) {
+            Column(Modifier.weight(1f).fillMaxWidth().threadBackSwipe(swipeToClose, dragThread, settleThread)) {
                 Row(Modifier.fillMaxWidth().height(53.dp).padding(start = 4.dp, end = 18.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(viewModel::closeThread, Modifier.size(48.dp)) {
                         Icon(painterResource(R.drawable.lucide_chevron_left), if (direct) "Back to conversation" else "Back to channel", Modifier.size(20.dp), tint = TextMuted)
@@ -1578,7 +1628,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     .toggleable(value = broadcastChecked, enabled = pending == null, role = Role.Checkbox, onValueChange = { broadcast = it }),
                     verticalAlignment = Alignment.CenterVertically) {
                     // Padded to the 48dp a checkbox with its own click handler would have.
-                    Checkbox(broadcastChecked, onCheckedChange = null, modifier = Modifier.padding(12.dp), enabled = pending == null)
+                    // Material Checkbox animates its stroke and colors; this reply option responds immediately.
+                    if (swipeToClose) ThreadBroadcastIndicator(broadcastChecked, enabled = pending == null)
+                    else Checkbox(broadcastChecked, onCheckedChange = null, modifier = Modifier.padding(12.dp), enabled = pending == null)
                     Text(buildAnnotatedString {
                         append("Also send to ")
                         withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(conversation) }

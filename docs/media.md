@@ -3655,6 +3655,26 @@ take over the conversation screen. The selected root has a slightly stronger
 pin-gold wash; other messages are not dimmed. No nested threads: replying from a
 broadcast opens its original root. The same contracts also apply to DMs.
 
+On phones, rightward drags over thread history/header move the thread over the
+channel beneath it. Releasing at 72px/points/dp returns to the channel; short or
+cancelled drags settle back. The release takes the shared 140ms fast timing.
+Vertical scrolling, selected text, and composer gestures remain separate; drafts
+survive returning. iPhone read-only message text can start a swipe too. Apple and
+Android phone broadcast checkboxes update without a checkmark/color tween.
+
+Thread-swipe validation (October 20, 2026): `npm run check`, all 737 Vitest tests,
+and `scripts/test-message-threads.mjs` pass. Chromium touch emulation checks
+finger tracking before release, snap-back, direction/cancellation/composer guards,
+draft retention, and reduced motion; rendered states and a recording are inspected
+separately. These are disposable fixtures, not physical-phone or Safari evidence.
+Apple's text-start swipe/checkbox UI regression needs Xcode and an iPhone simulator;
+neither is available in this Linux orb.
+Android's `testDebugUnitTest` passes 548 tests; `compileDebugAndroidTestKotlin` and
+`lintDebug` pass (lint retains warnings). The new instrumentation regression covers
+tracking across rendered frames and release/cancellation, but has not run: no
+Android device is connected. Native rendering, keyboard/insets and device smoothness
+remain unverified; Rust desktop's mouse-only navigation is unchanged.
+
 The unchecked **Also send to channel** option publishes one reply in both places,
 not a copied root message. IDs, content and reactions are shared. Drafts and the
 checkbox choice are per-root for the current channel session, and the checkbox
