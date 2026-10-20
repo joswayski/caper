@@ -515,6 +515,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires ffmpeg, installed by the Postgres CI job"]
     async fn speech_audio_is_flac_for_any_recorded_container() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("tone.webm");
