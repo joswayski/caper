@@ -2809,7 +2809,7 @@ internal fun pageBoundary(before: List<String>, now: List<String>): String? =
     }
 }
 
-private val quickReactions = listOf("👍", "❤️", "😂", "🎉", "👀")
+private val quickReactions = listOf("👍", "❤️", "😂")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun MessageActionsSheet(

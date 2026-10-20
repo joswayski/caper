@@ -5114,7 +5114,7 @@ enum ChatTimestamp {
 
 /// Web's quick reactions, first in message actions.
 private enum MessageQuickReactions {
-    static let emoji = ["👍", "❤️", "😂", "🎉", "👀"]
+    static let emoji = ["👍", "❤️", "😂"]
 }
 
 private struct MessageRow: View {
@@ -5155,9 +5155,10 @@ private struct MessageRow: View {
     #if os(macOS)
     /// Room for the unified hover bar: 24pt controls, 3pt insets and a gap.
     /// Read-only conversations leave out Reply.
-    private var actionsInset: CGFloat { (inThread ? 82 : 108) - (chat.canInteract ? 0 : 24) }
+    private var actionsInset: CGFloat { (inThread ? 82 : 108) - (chat.canInteract ? 0 : 24) + (chat.canInteract && !message.isDeleted ? 72 : 0) }
     @State private var controlsHovered = false
     @State private var actionsTop: CGFloat = 6
+    @FocusState private var quickReactionFocused: String?
     @FocusState private var replyFocused: Bool
     @FocusState private var replyMessageFocused: Bool
     @FocusState private var reactionFocused: Bool
@@ -5344,6 +5345,20 @@ private struct MessageRow: View {
         row
             .overlay(alignment: .topTrailing) {
                 HStack(spacing: 0) {
+                    if chat.canInteract && !message.isDeleted {
+                        ForEach(MessageQuickReactions.emoji, id: \.self) { emoji in
+                            Button { react(emoji, active: !reacted(emoji)) } label: {
+                                EmojiArtworkView(emoji: emoji, size: 18).frame(width: 24, height: 24)
+                                    .contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                                .focused($quickReactionFocused, equals: emoji)
+                                .background(reacted(emoji) ? CaperTheme.terracotta.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                                .modifier(ControlHover(isFocused: quickReactionFocused == emoji))
+                                .help("React with \(emoji)").accessibilityLabel("React with \(emoji)")
+                                .accessibilityAddTraits(reacted(emoji) ? .isSelected : [])
+                                .accessibilityIdentifier("quick-reaction-\(message.id)-\(emoji)")
+                        }
+                    }
                     if !inThread && (!message.isDeleted || hasThread) {
                         Button { Task { await chat.openThread(message.threadRootId ?? message.id) } } label: {
                             CaperIcon(name: "thread", size: 14).frame(width: 24, height: 24)
@@ -5384,8 +5399,8 @@ private struct MessageRow: View {
                     .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
                     .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(CaperTheme.border, lineWidth: 1).allowsHitTesting(false) }
                     .shadow(color: .black.opacity(0.2), radius: 6, y: 4)
-                    .opacity(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
-                    .allowsHitTesting(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused)
+                    .opacity(controlsHovered || quickReactionFocused != nil || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
+                    .allowsHitTesting(controlsHovered || quickReactionFocused != nil || replyFocused || replyMessageFocused || reactionFocused || actionsFocused)
                     .padding(.trailing, 15).padding(.top, message.replyTo == nil || message.isDeleted ? 3 : max(0, actionsTop - 3))
             }
             // Track the whole row, including its overlay. Entering a message
@@ -5417,18 +5432,13 @@ private struct MessageRow: View {
         } else { content() }
     }
     #if os(macOS)
-    /// Web's message actions, in the ⋯ menu and the context menu. A quick
-    /// reaction is checked when it is yours; choosing it again removes it.
+    /// Message actions in the ⋯ menu and context menu; quick reactions live in the hover bar.
     @ViewBuilder private var messageMenuItems: some View {
         if message.isDeleted {
             // Only the thread and the ID remain.
             if !inThread && hasThread { Button("View thread") { Task { await chat.openThread(message.threadRootId ?? message.id) } } }
             Button("Copy message ID") { copy(message.id) }
         } else {
-            ForEach(MessageQuickReactions.emoji, id: \.self) { emoji in
-                Toggle("React with \(emoji)", isOn: Binding(get: { reacted(emoji) }, set: { react(emoji, active: $0) }))
-                    .disabled(!chat.canInteract)
-            }
             // The full picker, as from the hover row's Add reaction.
             Button("Add reaction…", action: showReactionPicker).disabled(!chat.canInteract)
             Divider()

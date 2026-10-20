@@ -889,14 +889,17 @@
 /* Direct children only (article > header/p in Pins, article > div > header/p in
    the timeline): forwarded cards bring their own header and paragraphs.
    :where() keeps specificity at main's `.chat-message header` level. */
+.chat-message:has(> div > .chat-message-tools > .chat-quick-reaction) {
+  --quick-reaction-width: 72px;
+}
 .chat-message > header,
 .chat-message > :where(:not(.chat-forward-card)) > header {
-  padding-right: 108px;
+  padding-right: calc(108px + var(--quick-reaction-width, 0px));
 }
-/* Thread rows have three hover actions (no Reply in thread). */
+/* Thread rows omit Reply in thread. */
 .chat-message:where(.chat-thread-panel *) > header,
 .chat-message:where(.chat-thread-panel *) > :where(:not(.chat-forward-card)) > header {
-  padding-right: 82px;
+  padding-right: calc(82px + var(--quick-reaction-width, 0px));
 }
 .chat-message-tools {
   position: absolute;
@@ -928,6 +931,7 @@
   border-radius: 8px;
   background: var(--surface);
 }
+.chat-quick-reaction:focus-visible,
 .chat-reply-thread:focus-visible,
 .chat-reply-message:focus-visible {
   outline: 2px solid var(--terracotta);
@@ -961,12 +965,12 @@
   .chat-message-grouped > .chat-grouped-time + div::before {
     content: "";
     float: right;
-    width: 108px;
+    width: calc(108px + var(--quick-reaction-width, 0px));
     height: 28px;
   }
-  /* Thread rows have three actions (no Reply in thread). */
+  /* Thread rows omit Reply in thread. */
   .chat-thread-panel .chat-message-grouped > .chat-grouped-time + div::before {
-    width: 82px;
+    width: calc(82px + var(--quick-reaction-width, 0px));
   }
   /* Clear the 24px action target (top: 4px) and its focus ring with a gap,
      rather than squeezing media beside the first-line text float. */
@@ -978,6 +982,7 @@
   }
 }
 @media (hover: hover) {
+  .chat-quick-reaction:hover:not([aria-pressed="true"]),
   .chat-add-reaction:hover:not(:disabled),
   .chat-message-actions-trigger:hover,
   .chat-reply-thread:hover,
@@ -987,6 +992,7 @@
   }
 }
 /* An open picker or menu is a selection, so its trigger keeps the accent. */
+.chat-quick-reaction[aria-pressed="true"],
 .chat-add-reaction[aria-expanded="true"],
 .chat-message-actions-trigger[aria-expanded="true"] {
   color: var(--text);
@@ -1109,7 +1115,7 @@
 }
 .chat-quick-reactions {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 2px;
   padding-block: 4px;
 }
@@ -1398,6 +1404,10 @@
   }
 }
 @media (max-width: 760px), (pointer: coarse) {
+  .chat-message:has(> div > .chat-message-tools > .chat-quick-reaction) {
+    --quick-reaction-width: 0px;
+  }
+  .chat-message-tools > .chat-quick-reaction,
   .chat-message-tools > .chat-add-reaction {
     display: none;
   }
@@ -1545,8 +1555,8 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  /* Clear the four hover actions, matching the message header. */
-  padding-right: 108px;
+  /* Clear the hover actions, matching the message header. */
+  padding-right: calc(108px + var(--quick-reaction-width, 0px));
   color: var(--text-muted);
   font-size: 0.68rem;
   font-weight: 700;

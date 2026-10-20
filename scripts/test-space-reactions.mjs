@@ -89,7 +89,23 @@ function fixture() {
         : Response.json({ token: "fixture", author: { id: account.id, name: account.displayName, isGuest: false } });
     }
     if (path.endsWith("/media/status")) return Response.json({ enabled: false });
-    if (path.endsWith("/reactions") && options.method === "PUT") control.writes++;
+    if (path.endsWith("/reactions") && options.method === "PUT") {
+      control.writes++;
+      const { emoji, active } = JSON.parse(options.body);
+      const [, channelId, messageId] = path.match(/channels\/([^/]+)\/messages\/([^/]+)\/reactions/);
+      const first = messageId.endsWith("-1");
+      return Response.json({
+        type: "message.reactions",
+        schemaVersion: 1,
+        channelId,
+        messageId,
+        seq: String(2 + control.writes),
+        reactions: [
+          { emoji: first ? "🇩🇴" : "🚀", authorIds: first ? ["other", account.id] : ["other"] },
+          ...(active ? [{ emoji, authorIds: [account.id] }] : []),
+        ],
+      });
+    }
     const channel = channels.find((item) => path === `/api/chat/channels/${item.id}/messages`);
     if (channel)
       return Response.json({
@@ -116,9 +132,9 @@ function fixture() {
   };
   // Sample every rendered frame, including the initial preview/virtual-list handoff.
   const inspect = () => {
-    for (const chip of document.querySelectorAll(".chat-reaction")) {
+    for (const chip of document.querySelectorAll(".chat-reaction[aria-pressed]")) {
       control.frames++;
-      const expected = chip.querySelector("img").alt === "🇩🇴";
+      const expected = ["🇩🇴", "👍"].includes(chip.querySelector("img").alt);
       if (chip.getAttribute("aria-pressed") !== String(expected)) control.badFrames.push("wrong ownership");
       if (getComputedStyle(chip).opacity !== "1") control.badFrames.push("dimmed reaction");
     }
@@ -148,7 +164,7 @@ const screenshot = (name) => {
 const check = (disabled) => {
   assert.deepEqual(
     evaluate(`(() => {
-    const chips = [...document.querySelectorAll('.chat-reaction')];
+    const chips = [...document.querySelectorAll('.chat-reaction[aria-pressed]')];
     return chips.map(chip => [chip.getAttribute('aria-pressed'), chip.getAttribute('aria-disabled')]);
   })()`),
     [
@@ -160,10 +176,11 @@ const check = (disabled) => {
   assert.ok(evaluate("reactionFixture.frames") > 0);
   // Settle mouse/focus styles before asserting idle visibility, separately from
   // the frame-by-frame ownership check. Hover/focus is exercised below.
+  browser("mouse", "move", "5", "5");
   evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))");
   assert.equal(
     evaluate(
-      '[...document.querySelectorAll(".chat-add-reaction")].every(button => getComputedStyle(button).opacity === "0" || getComputedStyle(button).display === "none")',
+      '[...document.querySelectorAll(".chat-add-reaction")].every(button => !button.checkVisibility({ opacityProperty: true }))',
     ),
     true,
   );
@@ -208,14 +225,31 @@ try {
     screenshot("reactions-desktop-switch");
   }
   browser("hover", '[data-message-key="channel12341-1"] p');
-  wait('getComputedStyle(document.querySelector(".chat-add-reaction")).opacity === "1"');
-  assert.equal(evaluate('getComputedStyle(document.querySelector(".chat-add-reaction")).opacity'), "1");
+  wait('document.querySelector(".chat-add-reaction").checkVisibility({ opacityProperty: true })');
   screenshot("reactions-desktop-hover");
+  const toolbar = '[data-message-key="channel12341-1"] .chat-message-tools';
+  assert.deepEqual(
+    evaluate(
+      `[...document.querySelectorAll('${toolbar} .chat-quick-reaction')].map(button => button.getAttribute('aria-label'))`,
+    ),
+    ["React with 👍", "React with ❤️", "React with 😂"],
+  );
+  const quick = `${toolbar} [aria-label="React with 👍"]`;
+  browser("click", quick);
+  wait(`document.querySelector('${quick}').getAttribute('aria-pressed') === 'true' && reactionFixture.writes === 1`);
+  screenshot("reactions-desktop-selected");
+  browser("click", quick);
+  wait(`document.querySelector('${quick}').getAttribute('aria-pressed') === 'false' && reactionFixture.writes === 2`);
+  browser("click", `${toolbar} .chat-message-actions-trigger`);
+  wait('!!document.querySelector(".chat-message-actions")');
+  assert.equal(evaluate('document.querySelector(".chat-message-actions .chat-quick-reactions")'), null);
+  screenshot("reactions-desktop-menu");
+  browser("press", "Escape");
   browser("mouse", "move", "5", "5");
   browser("focus", ".chat-add-reaction");
   // Script focus after mouse use is not :focus-visible; a key press makes it keyboard focus.
   browser("press", "Shift");
-  wait('getComputedStyle(document.querySelector(".chat-add-reaction")).opacity === "1"');
+  wait('document.querySelector(".chat-add-reaction").checkVisibility({ opacityProperty: true })');
   browser("press", "Enter");
   wait('!!document.querySelector(".chat-reaction-picker")');
   browser("press", "Escape");
@@ -254,9 +288,15 @@ try {
     true,
   );
   assert.equal(evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
+  browser("click", '.channel-select[aria-current="page"]');
+  wait('!document.querySelector(".spaces-room")?.hasAttribute("data-browse-slide")');
   screenshot("reactions-narrow-switch");
+  browser("click", ".chat-message-actions-trigger");
+  wait('!!document.querySelector(".chat-message-actions-drawer")');
+  assert.equal(evaluate('document.querySelectorAll(".chat-quick-reactions [aria-pressed]").length'), 3);
+  screenshot("reactions-narrow-actions");
   console.log(
-    "PASS: first-frame own/other reactions, cold/cached space switches and a channel switch on one reused session, held/failed/retried sessions, no premature writes, desktop hover/focus/picker, narrow layout; no incorrect rendered frames.",
+    "PASS: three toolbar emojis, add/remove toggle, menu without duplicate reactions, three touch-sheet emojis; first-frame ownership, reused sessions, no premature writes, hover/focus/picker, narrow layout.",
   );
 } finally {
   browser("close");

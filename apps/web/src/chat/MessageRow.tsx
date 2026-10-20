@@ -2,7 +2,8 @@ import { memo, type PointerEvent as ReactPointerEvent } from "react";
 import { Ban, MoreHorizontal, Pin, SmilePlus } from "lucide-react";
 import { Reply, Thread } from "../../../../shared/message-icons.ts";
 import MessageReactions, { type ReactionSave } from "./MessageReactions.tsx";
-import { preloadReactionPicker } from "./MessageActions.tsx";
+import { preloadReactionPicker, quickReactions } from "./MessageActions.tsx";
+import { emojiAsset, emojiCode } from "./emoji.ts";
 import { ForwardCard } from "./Forwarding.tsx";
 import { ReplyContext } from "./Replies.tsx";
 import LinkedText from "./LinkedText.tsx";
@@ -514,6 +515,28 @@ function MessageRowView({
                   role="group"
                   aria-label={`Actions for ${message.author.name}'s message`}
                 >
+                  {!readOnly &&
+                    canAct &&
+                    viewerId &&
+                    !deleted &&
+                    quickReactions.map((emoji) => {
+                      const mine = !!message.reactions?.some(
+                        (reaction) => reaction.emoji === emoji && reaction.authorIds.includes(viewerId),
+                      );
+                      return (
+                        <button
+                          type="button"
+                          key={emoji}
+                          className="chat-quick-reaction"
+                          aria-label={`React with ${emoji}`}
+                          title={`React with ${emoji}`}
+                          aria-pressed={mine}
+                          onClick={() => void actions.react(message.id, emoji, !mine)}
+                        >
+                          <img src={emojiAsset(emojiCode(emoji))} width={18} height={18} alt="" />
+                        </button>
+                      );
+                    })}
                   {!inThread && (
                     <button
                       type="button"

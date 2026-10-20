@@ -900,6 +900,18 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(target.waitForExistence(timeout: 5))
         try hoverMessage(target)
         XCTAssertTrue(app.buttons["add-reaction-\(hoverTargetID)"].waitForExistence(timeout: 2), "Message controls appear on hover")
+        let quick = ["👍", "❤️", "😂"].map { app.buttons["quick-reaction-\(hoverTargetID)-\($0)"] }
+        for button in quick {
+            XCTAssertTrue(button.isHittable, "Quick reactions belong directly on the message toolbar")
+            XCTAssertEqual(button.frame.midY, quick[0].frame.midY, accuracy: 1)
+        }
+        XCTAssertTrue(quick[0].isSelected)
+        XCTAssertFalse(quick[1].isSelected)
+        XCTAssertLessThan(quick[2].frame.maxX, app.buttons["add-reaction-\(hoverTargetID)"].frame.minX)
+        target.descendants(matching: .any)["Message options"].tap()
+        XCTAssertTrue(app.menuItems["Copy message ID"].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.menuItems.matching(NSPredicate(format: "label BEGINSWITH %@", "React with")).firstMatch.exists)
+        app.typeKey(.escape, modifierFlags: [])
         #endif
         let rowShortcut = app.buttons["reaction-row-add-chan00000001m01"]
         XCTAssertTrue(rowShortcut.exists, "Messages with reactions offer an inline add-reaction shortcut")
