@@ -43793,6 +43793,9 @@ mod tests {
                         std::thread::sleep(Duration::from_millis(10));
                         continue;
                     };
+                    // Windows hands out accepted sockets non-blocking like the
+                    // listener; read the request with the timeout instead.
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(Duration::from_secs(10)))
                         .unwrap();
