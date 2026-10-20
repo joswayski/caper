@@ -214,3 +214,27 @@ extern "C" int CaperDenoisePipelineProcess(CaperDenoisePipeline *pipeline,
     }
     return 1;
 }
+extern "C" int CaperDenoisePipelineQueueLocal(CaperDenoisePipeline *pipeline, const int16_t *input,
+                                              unsigned frames, int gain) {
+    if (!pipeline || !input || pipeline->failed.load(std::memory_order_acquire)) return -1;
+    // Half the worker's 80 ms RNNoise threshold: queueing ahead never forces the fallback.
+    if (pipeline->incoming.count() + frames > pipeline->rate * .04) return 0;
+    const float scale = std::clamp(gain, 0, 200) / 100.f / 32768.f;
+    for (unsigned i = 0; i < frames; ++i) {
+        // One constant epoch: the worker resets once at the start, then keeps its state.
+        if (!pipeline->incoming.push(input[i] * scale, 1)) {
+            pipeline->failed.store(true, std::memory_order_release);
+            return -1;
+        }
+    }
+    return 1;
+}
+extern "C" int CaperDenoisePipelineTakeLocal(CaperDenoisePipeline *pipeline, int16_t *output, unsigned capacity) {
+    if (!pipeline || !output || pipeline->failed.load(std::memory_order_acquire)) return -1;
+    unsigned count = 0;
+    float sample = 0;
+    uint32_t epoch = 0;
+    while (count < capacity && pipeline->outgoing.pop(sample, epoch))
+        output[count++] = static_cast<int16_t>(std::lrint(std::clamp(sample, -1.f, .999969f) * 32767.f));
+    return static_cast<int>(count);
+}
