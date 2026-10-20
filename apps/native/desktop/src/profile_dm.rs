@@ -524,6 +524,7 @@ impl Send {
                 &spoiler_ids,
                 (None, false),
                 None,
+                None,
             )
             .map_err(|error| Failure {
                 // A definitive 4xx refuses the write. Transport/5xx responses

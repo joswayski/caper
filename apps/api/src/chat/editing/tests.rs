@@ -1648,3 +1648,133 @@ async fn replaced_files_stay_the_authors_alone_everywhere_they_were_shown() {
     server.abort();
     f.close().await;
 }
+
+#[tokio::test]
+#[ignore = "requires disposable loopback CHAT_TEST_DATABASE_URL"]
+async fn gifs_send_alone_retry_by_content_quote_as_gif_and_survive_caption_edits() {
+    let options =
+        PgConnectOptions::from_str(&std::env::var("CHAT_TEST_DATABASE_URL").unwrap()).unwrap();
+    assert!(matches!(options.get_host(), "127.0.0.1" | "localhost"));
+    let mut admin = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    let database = format!("gifs_test_{}", Uuid::new_v4().simple());
+    admin
+        .execute(format!("CREATE DATABASE {database}").as_str())
+        .await
+        .unwrap();
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect_with(options.database(&database))
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let token = "gif-author";
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO public.users(external_id,username,display_name) VALUES($1,$1,$1) RETURNING id",
+    )
+    .bind(token)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let hash = Sha256::digest(token.as_bytes()).to_vec();
+    sqlx::query("INSERT INTO public.account_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 day')")
+        .bind(&hash).bind(id).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.chat_sessions(external_id,token_hash,name,user_id,account_session_hash) VALUES($1,$2,$1,$3,$2)")
+        .bind(token).bind(&hash).bind(id).execute(&pool).await.unwrap();
+    let space: i64 = sqlx::query_scalar("INSERT INTO public.spaces(external_id,name,owner_id) VALUES('gif-space','GIFs',$1) RETURNING id")
+        .bind(id).fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO public.space_members(space_id,user_id) VALUES($1,$2)")
+        .bind(space)
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO public.channels(external_id,space_id,name) VALUES('gif-channel',$1,'gifs')",
+    )
+    .bind(space)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO public.channel_joins(channel_id,user_id) SELECT id,$1 FROM public.channels WHERE external_id='gif-channel'")
+        .bind(id).execute(&pool).await.unwrap();
+
+    let gif = |slug: &str| {
+        json!({"provider":"klipy","kind":"gif","slug":slug,"title":"Hello","width":498,"height":498,
+            "gif":"https://static.klipy.com/ii/a.gif","mp4":"https://static.klipy.com/ii/a.mp4"})
+    };
+    let send = |client: Uuid, gif: Option<Value>, files: Vec<String>, reply: Option<String>| {
+        let pool = pool.clone();
+        async move {
+            crate::chat::send_message_with_gif(
+                &pool,
+                "gif-channel",
+                token,
+                client,
+                "",
+                &files,
+                &[],
+                None,
+                false,
+                reply.as_deref(),
+                gif,
+            )
+            .await
+        }
+    };
+    let client = Uuid::new_v4();
+    let sent = send(client, Some(gif("hello-hi")), vec![], None)
+        .await
+        .unwrap();
+    assert_eq!(sent["content"]["gif"], gif("hello-hi"));
+    assert_eq!(sent["content"]["type"], "text");
+    assert_eq!(sent["content"]["text"], "");
+    assert_eq!(
+        send(client, Some(gif("hello-hi")), vec![], None)
+            .await
+            .unwrap(),
+        sent
+    );
+    assert_eq!(
+        send(client, Some(gif("other")), vec![], None)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        send(client, None, vec![], None).await.unwrap_err().status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        send(Uuid::new_v4(), Some(gif("x")), vec!["file".into()], None)
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let message = sent["id"].as_str().unwrap().to_owned();
+    let reply = send(
+        Uuid::new_v4(),
+        Some(gif("reply")),
+        vec![],
+        Some(message.clone()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply["replyTo"]["text"], "GIF");
+
+    let edited = persist_edit(&pool, "gif-channel", &message, token, "caption", 1)
+        .await
+        .unwrap();
+    assert_eq!(edited["content"]["text"], "caption");
+    assert_eq!(edited["content"]["gif"], gif("hello-hi"));
+    let cleared = persist_edit(&pool, "gif-channel", &message, token, "", 2)
+        .await
+        .unwrap();
+    assert_eq!(cleared["content"]["gif"], gif("hello-hi"));
+    pool.close().await;
+    admin
+        .execute(format!("DROP DATABASE {database}").as_str())
+        .await
+        .unwrap();
+}

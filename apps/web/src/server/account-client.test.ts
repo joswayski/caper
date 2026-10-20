@@ -7,6 +7,7 @@ import {
   getAvatarHistory,
   getRememberedAccount,
   logout,
+  regenerateAvatar,
   requestEmailCode,
   selectAvatar,
   subscribeAccount,
@@ -135,6 +136,40 @@ test("browsing pictures does not save; selecting sends target and expected curre
     (error: unknown) => error instanceof AccountApiError && error.status === 409,
   );
   assert.deepEqual(getRememberedAccount(), restored);
+});
+
+test("regenerating saves the returned mascot, preserves conflicts and cannot restore a signed-out account", async (t) => {
+  const original = { id: "regen", username: "me", displayName: "Me", avatarId: 799 };
+  const saved = { ...original, avatarId: 0 };
+  let conflict = false;
+  mockFetch(t, (path, init) => {
+    if (path.endsWith("/me")) return Response.json(original);
+    assert.equal(path, "/api/account/avatar/regenerate");
+    assert.equal(init?.method, "POST");
+    assert.equal(init?.body, undefined);
+    return conflict ? Response.json({ error: "custom picture present" }, { status: 409 }) : Response.json(saved);
+  });
+  await getAccount();
+  assert.deepEqual(await regenerateAvatar(), saved);
+  assert.deepEqual(withAccountProfile(original, getRememberedAccount()), saved);
+  conflict = true;
+  await assert.rejects(
+    regenerateAvatar(),
+    (error: unknown) => error instanceof AccountApiError && error.status === 409,
+  );
+  assert.deepEqual(getRememberedAccount(), saved);
+  let finish!: (response: Response) => void;
+  globalThis.fetch = async (path) =>
+    String(path).endsWith("/logout")
+      ? new Response(null, { status: 204 })
+      : new Promise<Response>((resolve) => {
+          finish = resolve;
+        });
+  const pending = regenerateAvatar();
+  await logout();
+  finish(Response.json(saved));
+  await pending;
+  assert.equal(getRememberedAccount(), undefined);
 });
 
 test("verification errors preserve the server's remaining-attempt count", async (t) => {

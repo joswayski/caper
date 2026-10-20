@@ -24,6 +24,7 @@ mod forwarding;
 mod gateway;
 mod grouping;
 mod invites;
+mod klipy;
 mod links;
 #[path = "../voice-spike/src/media.rs"]
 mod media;
@@ -111,7 +112,6 @@ const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 168, 107);
 const PIN_GOLD: Color32 = Color32::from_rgb(228, 199, 106);
 const ERROR: Color32 = Color32::from_rgb(255, 155, 130);
 const MESSAGE_TEXT: Color32 = Color32::from_rgb(222, 223, 224);
-const MEMBER_PAGE_SIZE: usize = 25;
 
 #[derive(Clone, Copy)]
 enum NavigationSlide {
@@ -416,6 +416,7 @@ impl EmojiTarget {
 
 #[derive(Clone, Copy)]
 enum NavIcon {
+    Search,
     Chevron,
     ArrowLeft,
     Close,
@@ -487,6 +488,10 @@ struct PendingSend {
     thread_root_id: Option<String>,
     broadcast: bool,
     reply_to: Option<model::MessageReply>,
+    /// A KLIPY GIF sent on its own (no text or files), and what to tell
+    /// KLIPY once the send is confirmed.
+    gif: Option<klipy::Gif>,
+    share: Option<klipy::Share>,
 }
 
 impl PendingSend {
@@ -503,6 +508,8 @@ impl PendingSend {
                 thread_root_id: None,
                 broadcast: false,
                 reply_to: None,
+                gif: None,
+                share: None,
             },
             |pending| Self {
                 id: pending.id.clone(),
@@ -515,6 +522,8 @@ impl PendingSend {
                 thread_root_id: pending.thread_root_id.clone(),
                 broadcast: pending.broadcast,
                 reply_to: pending.reply_to.clone(),
+                gif: pending.gif.clone(),
+                share: pending.share.clone(),
             },
         )
     }
@@ -1320,7 +1329,8 @@ struct CaperApp {
     typing_edited: Instant,
     typing_pulse: Instant,
     presence: BTreeMap<String, String>,
-    member_page: usize,
+    member_search: String,
+    member_search_open: bool,
     members_visible: bool,
     narrow_members_visible: bool,
     navigation_touch: Option<NavigationTouch>,
@@ -1422,6 +1432,11 @@ struct CaperApp {
     whats_new: whats_new::WhatsNew,
     /// Compression settings while uploads are configured; `None` disables Attach.
     uploads: Option<compress::Compression>,
+    /// KLIPY's key while the server has GIFs on; `None` hides the GIF button.
+    klipy: Option<klipy::Config>,
+    klipy_checked: Option<Instant>,
+    /// The open GIF picker and the composer it sends from.
+    gif_picker: Option<klipy::Picker>,
     /// Latest `attachment.progress` percent per processing attachment id.
     attachment_progress: BTreeMap<String, u8>,
     uploads_checked: Option<Instant>,
@@ -1672,7 +1687,8 @@ impl CaperApp {
             typing_edited: now,
             typing_pulse: now,
             presence: BTreeMap::new(),
-            member_page: 0,
+            member_search: String::new(),
+            member_search_open: false,
             members_visible: true,
             narrow_members_visible: false,
             navigation_touch: None,
@@ -1742,6 +1758,9 @@ impl CaperApp {
             updates: updates::Updates::start(context, fixture.is_none()),
             whats_new,
             uploads: None,
+            klipy: None,
+            klipy_checked: None,
+            gif_picker: None,
             attachment_progress: BTreeMap::new(),
             uploads_checked: None,
             uploads_pending: false,
@@ -3275,6 +3294,7 @@ impl CaperApp {
                     text: text.into(),
                     attachments: Vec::new(),
                     mentions: Vec::new(),
+                    gif: None,
                 },
                 reactions: Vec::new(),
                 reaction_seq: None,
@@ -4587,6 +4607,12 @@ impl CaperApp {
                     self.uploads = settings;
                     self.uploads_pending = false;
                 }
+                Event::Klipy { token, config } if self.token.as_ref() == Some(&token) => {
+                    self.klipy = config;
+                    if self.klipy.is_none() {
+                        self.gif_picker = None;
+                    }
+                }
                 Event::AttachmentUrls { token, ids, result }
                     if self.token.as_ref() == Some(&token) =>
                 {
@@ -4964,6 +4990,9 @@ impl CaperApp {
         self.uploads = None;
         self.uploads_checked = None;
         self.uploads_pending = false;
+        self.klipy = None;
+        self.klipy_checked = None;
+        self.gif_picker = None;
         self.check_uploads();
         self.username = account.username.clone().unwrap_or_default();
         self.display_name = account.display_name.clone().unwrap_or_default();
@@ -6511,6 +6540,17 @@ impl CaperApp {
         let Some(token) = self.token.clone() else {
             return;
         };
+        // GIFs follow the same rule: hidden until `GET /api/klipy` succeeds.
+        if self.klipy.is_none()
+            && self
+                .klipy_checked
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(60))
+        {
+            self.klipy_checked = Some(Instant::now());
+            self.worker.send(Command::Klipy {
+                token: token.clone(),
+            });
+        }
         if self.uploads.is_some()
             || self
                 .uploads_checked
@@ -6561,12 +6601,7 @@ impl CaperApp {
         let presence = if self.token.is_some() {
             self.detail
                 .as_ref()
-                .map(|detail| {
-                    let users =
-                        member_page_ids(detail, self.selected_channel.as_deref(), self.member_page);
-                    (detail.space.id.clone(), users)
-                })
-                .filter(|(_, users): &(String, Vec<String>)| !users.is_empty())
+                .map(|detail| (detail.space.id.clone(), Vec::new()))
         } else {
             None
         };
@@ -6882,7 +6917,8 @@ impl CaperApp {
                 if space_changed {
                     self.voice_join_request += 1;
                     self.presence.clear();
-                    self.member_page = 0;
+                    self.member_search.clear();
+                    self.member_search_open = false;
                 }
                 self.generation += 1;
                 if self.profile_navigation == Some(navigation) {
@@ -7332,6 +7368,7 @@ impl CaperApp {
                 self.live = if online { "Live".into() } else { detail };
                 if !online {
                     self.typers.clear();
+                    self.presence.clear();
                 }
             }
             GatewayEvent::Message {
@@ -7552,9 +7589,10 @@ impl CaperApp {
             } if generation == self.generation
                 && self.selected_space.as_deref() == Some(&space) =>
             {
-                for Presence { user_id, status } in members {
-                    self.presence.insert(user_id, status);
-                }
+                self.presence = members
+                    .into_iter()
+                    .map(|Presence { user_id, status }| (user_id, status))
+                    .collect();
             }
             GatewayEvent::Resync {
                 generation,
@@ -7596,7 +7634,10 @@ impl CaperApp {
                         })
                     });
                 if confirmed && self.timeline.merge_sent(message).is_ok() {
-                    self.pending = None;
+                    // Best effort, once KLIPY's GIF is really sent.
+                    if let Some(share) = self.pending.take().and_then(|pending| pending.share) {
+                        share.send();
+                    }
                     self.release_pending_files();
                     self.focused_message = None;
                     // A reply can answer a report.
@@ -7859,6 +7900,9 @@ impl CaperApp {
         self.uploads = None;
         self.uploads_checked = None;
         self.uploads_pending = false;
+        self.klipy = None;
+        self.klipy_checked = None;
+        self.gif_picker = None;
         self.media.clear();
         self.pictures.clear();
         self.local_pictures.clear();
@@ -8125,8 +8169,12 @@ impl CaperApp {
                 .collect()
         };
         let count = text.chars().count();
-        // Text may be empty only when files are attached.
-        if (text.trim().is_empty() && attachments.is_empty())
+        let gif = self
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.gif.clone());
+        // Text may be empty only when files or a GIF are attached.
+        if (text.trim().is_empty() && attachments.is_empty() && gif.is_none())
             || count > 4_000
             || text
                 .chars()
@@ -8209,7 +8257,147 @@ impl CaperApp {
             thread_root_id,
             broadcast,
             reply_to_id,
+            gif,
         });
+    }
+
+    /// Sends a GIF chosen in the picker as its own message, at once: into
+    /// `root`'s thread (with its "Also send to channel" choice) or the
+    /// channel, answering the composer's reply. The draft and its files stay.
+    fn send_gif(&mut self, root: Option<String>, choice: klipy::Choice) {
+        if self.pending.is_some() || self.upload_send_intent.is_some() {
+            self.error = Some("Wait for your last message to send first.".into());
+            return;
+        }
+        let (Some(chat_token), Some(channel)) = (
+            self.session.as_ref().map(|session| session.token.clone()),
+            self.selected_channel.clone(),
+        ) else {
+            return;
+        };
+        let mut pending = PendingSend::prepare(None, "", Vec::new());
+        pending.broadcast = root
+            .as_ref()
+            .is_some_and(|root| self.thread_drafts.get(root).is_some_and(|draft| draft.1));
+        pending.thread_root_id = root.clone();
+        pending.reply_to = self
+            .reply_targets
+            .remove(root.as_deref().unwrap_or("channel"));
+        pending.gif = Some(choice.gif.clone());
+        pending.share = Some(choice.share);
+        let (id, broadcast) = (pending.id.clone(), pending.broadcast);
+        let reply_to_id = pending.reply_to.as_ref().map(|reply| reply.id.clone());
+        self.pending = Some(pending);
+        self.pending_recovered = false;
+        self.pending_files.clear();
+        self.pending_needs_upload = false;
+        self.error = None;
+        self.worker.send(Command::Send {
+            generation: self.generation,
+            token: self.token.clone(),
+            chat_token,
+            channel,
+            client_id: id,
+            text: String::new(),
+            attachment_ids: Vec::new(),
+            spoiler_attachment_ids: Vec::new(),
+            thread_root_id: root,
+            broadcast,
+            reply_to_id,
+            gif: Some(choice.gif),
+        });
+    }
+
+    /// Whether this composer can send a GIF now: GIFs are on, the viewer can
+    /// write here and no other send is waiting.
+    fn can_send_gif(&self) -> bool {
+        self.klipy.is_some()
+            && self.token.is_some()
+            && self.session.is_some()
+            && self.selected_is_joined()
+            && !self.detail.as_ref().is_some_and(|detail| detail.space.demo)
+    }
+
+    /// The composer's GIF button toggles its picker, as Emoji does.
+    fn toggle_gif_picker(&mut self, context: &egui::Context, root: Option<String>) {
+        if self
+            .gif_picker
+            .as_ref()
+            .is_some_and(|picker| picker.root == root)
+        {
+            self.close_gif_picker(context);
+            return;
+        }
+        if self.composer_emoji.is_some() {
+            self.close_emoji_picker(context, false);
+        }
+        let anchor = context.input(|input| input.pointer.interact_pos());
+        let mut picker = klipy::Picker::new(root, anchor, context.cumulative_frame_nr());
+        picker.channel.clone_from(&self.selected_channel);
+        self.gif_picker = Some(picker);
+    }
+
+    /// Closes the GIF picker and returns focus to its composer.
+    fn close_gif_picker(&mut self, context: &egui::Context) {
+        if let Some(picker) = self.gif_picker.take() {
+            let id = picker.root.map_or_else(
+                || egui::Id::new("message-composer"),
+                |root| egui::Id::new(("thread-draft", root)),
+            );
+            context.memory_mut(|memory| memory.request_focus(id));
+        }
+    }
+
+    /// Draws the open GIF picker; a choice is sent at once and closes it.
+    fn gif_picker(&mut self, context: &egui::Context) {
+        let Some(picker) = &self.gif_picker else {
+            return;
+        };
+        let thread_open = picker.root.as_ref().is_none_or(|root| {
+            self.thread_view
+                .as_ref()
+                .is_some_and(|thread| thread.root == *root)
+        });
+        if !thread_open
+            || picker.channel != self.selected_channel
+            || !self.can_send_gif()
+            || self.conversation_covered()
+        {
+            self.gif_picker = None;
+            return;
+        }
+        let Some(picker) = &mut self.gif_picker else {
+            return;
+        };
+        match picker.show(context, self.klipy.as_ref(), &mut self.media) {
+            Ok(None) => {}
+            Ok(Some(choice)) => {
+                let root = picker.root.clone();
+                self.close_gif_picker(context);
+                self.send_gif(root, choice);
+            }
+            Err(()) => self.close_gif_picker(context),
+        }
+    }
+
+    /// A click outside the GIF picker closes it, except the opening click.
+    fn dismiss_gif_picker_outside(&mut self, context: &egui::Context) {
+        let Some((rect, opened)) = self.gif_picker.as_ref().and_then(klipy::Picker::bounds) else {
+            return;
+        };
+        if opened == context.cumulative_frame_nr() {
+            return;
+        }
+        let outside = context.input(|input| {
+            input.pointer.any_click()
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|position| !rect.contains(position))
+        });
+        if outside {
+            self.gif_picker = None;
+        }
     }
 
     /// A dialog or modal layer covers the conversation and its composer.
@@ -8663,6 +8851,7 @@ impl CaperApp {
             thread_root_id: pending.thread_root_id.clone(),
             broadcast: pending.broadcast,
             reply_to_id: pending.reply_to.as_ref().map(|reply| reply.id.clone()),
+            gif: pending.gif.clone(),
         });
     }
 
@@ -9759,6 +9948,7 @@ impl CaperApp {
                 self.avatar_gallery(context);
             }
             self.dismiss_emoji_picker_outside(context);
+            self.dismiss_gif_picker_outside(context);
         }
         if self.account.is_some() && !self.updates.has_available() {
             self.space_notice(context);
@@ -15219,11 +15409,9 @@ impl CaperApp {
             None => detail.members.iter().collect(),
         }
         .into_iter()
-        .skip(self.member_page * MEMBER_PAGE_SIZE)
-        .take(MEMBER_PAGE_SIZE)
         .cloned()
         .collect();
-        let groups = split.map(|(readers, others)| {
+        let groups = split.map(|(readers, _)| {
             let name = detail
                 .channels
                 .iter()
@@ -15235,8 +15423,6 @@ impl CaperApp {
                     .iter()
                     .map(|member| member.id.clone())
                     .collect::<std::collections::HashSet<_>>(),
-                readers.len(),
-                others.len(),
             )
         });
         let demo = detail.space.demo;
@@ -15255,7 +15441,7 @@ impl CaperApp {
                     .vline(bounds.left(), bounds.y_range(), Stroke::new(1.0, BORDER));
             }
             let (heading, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), 54.0),
+                egui::vec2(ui.available_width(), 44.0),
                 egui::Sense::hover(),
             );
             // Level with the rows' avatars below (16px in).
@@ -15280,11 +15466,11 @@ impl CaperApp {
                     self.members_visible = false;
                 }
             }
-            let count_end = close.left() - 8.0;
+            let count_end = heading.left() + 76.0;
             if !demo {
                 ui.painter().text(
                     egui::pos2(count_end, heading.center().y),
-                    egui::Align2::RIGHT_CENTER,
+                    egui::Align2::LEFT_CENTER,
                     member_count.to_string(),
                     egui::FontId::proportional(10.4),
                     MUTED,
@@ -15292,7 +15478,32 @@ impl CaperApp {
             }
             ui.painter()
                 .hline(heading.x_range(), heading.bottom(), Stroke::new(1.0, BORDER));
-            ui.add_space(8.0);
+            let mut focus_search = false;
+            if !demo && !self.member_search_open {
+                let search_rect = close.translate(egui::vec2(-32.0, 0.0));
+                let mut search_ui = ui.new_child(egui::UiBuilder::new().max_rect(search_rect));
+                if drawn_icon_button(&mut search_ui, NavIcon::Search, "Search members").clicked() {
+                    self.member_search_open = true;
+                    focus_search = true;
+                }
+            }
+            if self.member_search_open {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    let input = ui.add(egui::TextEdit::singleline(&mut self.member_search).id(egui::Id::new("member-search")).hint_text("Search members").desired_width((ui.available_width() - 56.0).max(0.0)));
+                    if focus_search { input.request_focus(); }
+                    if drawn_icon_button(ui, NavIcon::Close, "Clear and close member search").clicked() {
+                        self.member_search.clear();
+                        self.member_search_open = false;
+                    }
+                });
+                ui.add_space(4.0);
+                if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                    self.member_search.clear();
+                    self.member_search_open = false;
+                }
+            }
             if demo {
                 ui.label(
                     RichText::new(
@@ -15303,9 +15514,8 @@ impl CaperApp {
             );
             return;
         }
-        let page_count = member_count.div_ceil(MEMBER_PAGE_SIZE);
-        // Like web's `overflow-y: auto`: a full page of 25 rows and its pager
-        // stay reachable in short windows instead of painting past the panel.
+        let query = self.member_search.trim().to_lowercase();
+        let members: Vec<_> = members.into_iter().filter(|member| member.display_name.to_lowercase().contains(&query) || member.username.to_lowercase().contains(&query)).collect();
         egui::ScrollArea::vertical()
             .id_salt("member-list")
             .auto_shrink([false, false])
@@ -15315,11 +15525,41 @@ impl CaperApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.add_space(16.0);
-                ui.label(RichText::new("No members to show.").size(11.0).color(MUTED));
+                ui.label(RichText::new(if query.is_empty() { "No members to show." } else { "No members match your search." }).size(11.0).color(MUTED));
             });
         }
+        let label = |ui: &mut egui::Ui, title: &str, count: usize, primary: bool| {
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new(title).family(egui::FontFamily::Name("Satoshi Bold".into())).size(11.0).color(if primary { TEXT } else { MUTED }));
+                ui.label(RichText::new(count.to_string()).size(10.0).color(MUTED));
+            });
+            ui.add_space(4.0);
+        };
         let mut rows = |ui: &mut egui::Ui, members: Vec<model::Member>, quiet: bool, ring: Color32| {
+            // Split the entire filtered roster, after private reader grouping. Push
+            // in source order so each presence section remains stable.
+            let mut sections: [Vec<model::Member>; 3] = Default::default();
             for member in members {
+                let section = match self.presence.get(&member.id).map(String::as_str) {
+                    Some("online" | "idle") => 0,
+                    Some("offline") => 1,
+                    _ => 2,
+                };
+                sections[section].push(member);
+            }
+            for (index, (title, members)) in ["Online", "Offline", "Status unavailable"].into_iter().zip(sections).enumerate() {
+                if members.is_empty() {
+                    continue;
+                }
+                ui.add_space(8.0);
+                label(ui, title, members.len(), false);
+                for member in members {
+                if !ui.is_rect_visible(egui::Rect::from_min_size(ui.next_widget_position(), egui::vec2(ui.available_width(), 44.0))) {
+                    ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::hover());
+                    continue;
+                }
                 let tint = ui.painter().add(egui::Shape::Noop);
                 let row = ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.set_min_width(ui.available_width());
@@ -15330,7 +15570,7 @@ impl CaperApp {
                         .get(&member.id)
                         .map_or("unknown", String::as_str);
                     presence_avatar_on(ui, &member.display_name, member.avatar_id, member.picture(), 30.0, status, ring);
-                    if quiet {
+                    if quiet || index == 1 {
                         emoji::name_label(ui, RichText::new(&member.display_name).size(12.0).color(MUTED), egui::Sense::hover());
                     } else {
                         emoji::name_label(ui, bold(&member.display_name).size(12.0), egui::Sense::hover());
@@ -15346,23 +15586,15 @@ impl CaperApp {
                     self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, avatar_asset: member.avatar_asset, avatar_url: member.avatar_url, is_guest: false, admin: member.admin }, &response, true);
                 }
 
+                }
             }
         };
-        let label = |ui: &mut egui::Ui, title: &str, count: usize, primary: bool| {
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                ui.spacing_mut().item_spacing.x = 6.0;
-                ui.label(RichText::new(title).family(egui::FontFamily::Name("Satoshi Bold".into())).size(11.0).color(if primary { TEXT } else { MUTED }));
-                ui.label(RichText::new(count.to_string()).size(10.0).color(MUTED));
-            });
-            ui.add_space(4.0);
-        };
-        if let Some((name, readers, reader_count, other_count)) = &groups {
+        if let Some((name, readers)) = &groups {
             let (top, rest): (Vec<_>, Vec<_>) = members.into_iter().partition(|member| readers.contains(&member.id));
             if !top.is_empty() {
                 egui::Frame::new().fill(SIDEBAR_RAISED).corner_radius(8).inner_margin(egui::Margin::symmetric(0, 6)).outer_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    label(ui, &format!("In #{name}"), *reader_count, true);
+                    label(ui, &format!("In #{name}"), top.len(), true);
                     rows(ui, top, false, SIDEBAR_RAISED);
                 });
             }
@@ -15370,35 +15602,12 @@ impl CaperApp {
                 ui.add_space(12.0);
                 egui::Frame::new().outer_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    label(ui, "Others in this space", *other_count, false);
+                    label(ui, "Others in this space", rest.len(), false);
                     rows(ui, rest, true, SIDEBAR);
                 });
             }
         } else {
             rows(ui, members, false, SIDEBAR);
-        }
-        if page_count > 1 {
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(self.member_page > 0, egui::Button::new("Previous"))
-                    .clicked()
-                {
-                    self.member_page -= 1;
-                    self.connect_gateway();
-                }
-                ui.label(
-                    RichText::new(format!("{} / {page_count}", self.member_page + 1))
-                        .size(10.0)
-                        .color(MUTED),
-                );
-                if ui
-                    .add_enabled(self.member_page + 1 < page_count, egui::Button::new("Next"))
-                    .clicked()
-                {
-                    self.member_page += 1;
-                    self.connect_gateway();
-                }
-            });
         }
             });
             });
@@ -15672,6 +15881,8 @@ impl CaperApp {
             self.mention_card(ui.ctx());
             self.reactors_window(ui.ctx());
         }
+        // Closes itself while Pins or a dialog covers the composers.
+        self.gif_picker(ui.ctx());
         // Suggestions and the mention card consume Escape; dialogs and the
         // other windows draw after the conversation.
         if self.thread_view.is_some()
@@ -15831,10 +16042,14 @@ impl CaperApp {
             // Send sits beside the field; attachment and emoji stay inside it.
             let editor_width = (width - 44.0).max(1.0);
             // Narrow panels move the microphone up beside "Also send to", so the
-            // field keeps room for its placeholder.
-            let mic_in_field = editor_width - 22.0 - 108.0 >= 120.0;
+            // field keeps room for its placeholder. GIF sits in the field while the
+            // server has GIFs on.
+            let gif_shown = self.can_send_gif();
+            let gif_width = if gif_shown { 36.0 } else { 0.0 };
+            let mic_in_field = editor_width - 22.0 - 108.0 - gif_width >= 120.0;
             let text_width =
-                (editor_width - 22.0 - if mic_in_field { 108.0 } else { 72.0 }).max(1.0);
+                (editor_width - 22.0 - gif_width - if mic_in_field { 108.0 } else { 72.0 })
+                    .max(1.0);
             let draft_height = draft_layout(
                 ui,
                 &text,
@@ -15868,7 +16083,8 @@ impl CaperApp {
                     if let Some(error) = &pending.rejection {
                         ui.colored_label(ERROR, format!("Not sent. {error}"));
                         ui.horizontal(|ui| {
-                            if ui.add_enabled(self.thread_drafts.entry(root.clone()).or_default().0.is_empty(), egui::Button::new("Edit")).clicked()
+                            // A GIF has no caption to edit back into the draft.
+                            if pending.gif.is_none() && ui.add_enabled(self.thread_drafts.entry(root.clone()).or_default().0.is_empty(), egui::Button::new("Edit")).clicked()
                                 && let Some(rejected) = self.take_rejected() {
                                     self.thread_drafts.entry(root.clone()).or_default().0 = rejected.text;
                                     self.thread_drafts.entry(root.clone()).or_default().1 = rejected.broadcast;
@@ -15937,6 +16153,7 @@ impl CaperApp {
                 let attach_unavailable = self.attach_unavailable_reason();
                 let mut pick = None;
                 let mut choose_emoji = false;
+                let mut choose_gif = false;
                 let mut send = false;
                 let draft = self.thread_drafts.entry(root.clone()).or_default();
                 let editor = ui.horizontal_top(|ui| {
@@ -15969,6 +16186,9 @@ impl CaperApp {
                                             .return_key(Some(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))).show(ui)).inner
                                 }).inner
                             }).inner;
+                            if gif_shown {
+                                choose_gif = ui.add_enabled_ui(!loading && !blocked, |ui| klipy::button(ui, 28.0)).inner.clicked();
+                            }
                             choose_emoji = ui.add_enabled_ui(!loading, |ui| drawn_icon_button_sized(ui, NavIcon::Smile, "Insert emoji", 28.0)).inner.clicked();
                             if mic_in_field { record = mic_button(ui, mic && !loading, mic_unavailable, 28.0); }
                             output
@@ -15991,6 +16211,9 @@ impl CaperApp {
                 }
                 let enter = output.response.has_focus() && !self.ime_composing && !suggestions.ime && ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if !modifiers.shift)));
                 let draft = self.thread_drafts.get(&root).cloned().unwrap_or_default();
+                if choose_gif {
+                    self.toggle_gif_picker(ui.ctx(), Some(root.clone()));
+                }
                 if choose_emoji {
                     self.open_composer_emoji(EmojiTarget::Thread(root.clone()), &output, &draft.0);
                 }
@@ -16135,6 +16358,9 @@ impl CaperApp {
                             ui.label(&pending.text);
                         }
                         self.attachment_list(ui, &pending.attachments, true);
+                        if let Some(gif) = &pending.gif {
+                            self.message_gif(ui, gif, 62);
+                        }
                     });
                 }
                 if has_newer
@@ -16466,6 +16692,9 @@ impl CaperApp {
                         }
                         output
                     });
+                    // GIF sits beside Emoji while the server has GIFs on.
+                    let gif_shown = self.can_send_gif();
+                    let gif_enabled = self.pending.is_none();
                     let editor = egui::Frame::new()
                         .fill(COMPOSER)
                         .corner_radius(8)
@@ -16476,6 +16705,7 @@ impl CaperApp {
                             let mut record = false;
                             let mut pick = None;
                             let mut choose_emoji = false;
+                            let mut choose_gif = false;
                             let editor = ui.horizontal_top(|ui| {
                                 ui.vertical(|ui| {
                                     ui.add_space(7.0);
@@ -16490,14 +16720,20 @@ impl CaperApp {
                                         });
                                     pick = attach_drawer::popup(&button, attached, false);
                                 });
-                                // Leave room for Emoji and the microphone at the end of the field.
-                                let width = (ui.available_width() - 72.0).max(0.0);
+                                // Leave room for GIF, Emoji and the microphone at the end of the field.
+                                let width = (ui.available_width() - if gif_shown { 108.0 } else { 72.0 }).max(0.0);
                                 let editor = ui
                                     .allocate_ui_with_layout(egui::vec2(width, max_editor_height), egui::Layout::top_down(egui::Align::Min), |ui| {
                                         ui.set_width(width);
                                         editor_area(ui, &mut self.draft)
                                     })
                                     .inner;
+                                if gif_shown {
+                                    ui.vertical(|ui| {
+                                        ui.add_space(7.0);
+                                        choose_gif = ui.add_enabled_ui(gif_enabled, |ui| klipy::button(ui, 28.0)).inner.clicked();
+                                    });
+                                }
                                 ui.vertical(|ui| {
                                     ui.add_space(7.0);
                                     choose_emoji = drawn_icon_button(ui, NavIcon::Smile, "Insert emoji").clicked();
@@ -16514,9 +16750,12 @@ impl CaperApp {
                             if record {
                                 self.start_voice_recording(ui.ctx(), None);
                             }
-                            (editor, choose_emoji)
+                            (editor, choose_emoji, choose_gif)
                         });
-                    let (mut output, choose_emoji) = (editor.inner.0.inner, editor.inner.1);
+                    let (mut output, choose_emoji, choose_gif) = (editor.inner.0.inner, editor.inner.1, editor.inner.2);
+                    if choose_gif {
+                        self.toggle_gif_picker(ui.ctx(), None);
+                    }
                     if choose_emoji {
                         let draft = self.draft.clone();
                         self.open_composer_emoji(EmojiTarget::Channel, &output, &draft);
@@ -16774,12 +17013,15 @@ impl CaperApp {
                                 }
                             });
                             self.attachment_list(ui, &pending.attachments, true);
+                        if let Some(gif) = &pending.gif {
+                            self.message_gif(ui, gif, 62);
+                        }
                             if let Some(rejection) = &pending.rejection {
                                 egui::Frame::new().inner_margin(egui::Margin { left: 62, right: 18, top: 0, bottom: 8 }).show(ui, |ui| {
                                     ui.colored_label(ERROR, format!("Not sent. {rejection}"));
                                     ui.horizontal(|ui| {
                                         let button = |label| egui::Button::new(RichText::new(label).size(12.0)).min_size(egui::vec2(60.0, 32.0));
-                                        if toned(ui, QUIET_TONE, self.draft.is_empty(), button("Edit"))
+                                        if pending.gif.is_none() && toned(ui, QUIET_TONE, self.draft.is_empty(), button("Edit"))
                                             .on_disabled_hover_text("Clear your current draft to edit this message.").clicked()
                                             && let Some(rejected) = self.take_rejected() {
                                             self.draft = rejected.text;
@@ -17711,6 +17953,13 @@ impl CaperApp {
                     }
                 });
         }
+        // A GIF shows under the text; a message never has both it and files.
+        if let Some(gif) = message.content.gif.as_ref().filter(|_| !deleted) {
+            egui::Frame::new().fill(fill).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                self.message_gif(ui, gif, 62);
+            });
+        }
         // Files follow the forward context target so their own clicks (open
         // in the browser or player) stay on top of it.
         if !deleted && !message.content.attachments.is_empty() {
@@ -17743,6 +17992,9 @@ impl CaperApp {
                                     false,
                                     0,
                                 );
+                                if let Some(gif) = &original.content.gif {
+                                    self.message_gif(ui, gif, 0);
+                                }
                                 let count = original
                                     .thread
                                     .as_ref()
@@ -18657,6 +18909,18 @@ impl CaperApp {
     /// posters (opening the system browser or player), processing
     /// placeholders with the worker's progress, failures, and cards for audio
     /// and other files.
+    /// A message's KLIPY GIF or sticker, loaded straight from KLIPY.
+    fn message_gif(&mut self, ui: &mut egui::Ui, gif: &klipy::Gif, left: i8) {
+        egui::Frame::new()
+            .inner_margin(egui::Margin {
+                left,
+                right: 18,
+                top: 2,
+                bottom: 4,
+            })
+            .show(ui, |ui| klipy::message(ui, &mut self.media, gif));
+    }
+
     fn attachment_list(
         &mut self,
         ui: &mut egui::Ui,
@@ -19200,7 +19464,6 @@ impl CaperApp {
             })
             .collect();
         let failed = files.iter().filter(|file| file.error.is_some()).count();
-        let uploading = files.iter().filter(|file| file.uploading).count();
         if failed > 0 {
             let message = if failed == 1 {
                 "1 file failed to upload. Send will retry it, or you can remove it.".into()
@@ -19210,16 +19473,6 @@ impl CaperApp {
                 )
             };
             ui.label(RichText::new(message).size(12.0).color(ERROR));
-        }
-        if uploading > 0 {
-            ui.label(
-                RichText::new(format!(
-                    "Uploading {uploading} {}… Your message won’t send until every file is ready.",
-                    if uploading == 1 { "file" } else { "files" }
-                ))
-                .size(12.0)
-                .color(MUTED),
-            );
         }
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
@@ -20527,6 +20780,7 @@ impl CaperApp {
             .response
             .ctx
             .input(|input| input.pointer.interact_pos());
+        self.gif_picker = None;
         self.reaction_picker = None;
         self.reaction_search.clear();
         self.reaction_category = 0;
@@ -23668,17 +23922,55 @@ impl CaperApp {
             change = response.clicked();
         }
         ui.add_space(4.0);
+        if target == pictures::Target::Avatar
+            && self
+                .account
+                .as_ref()
+                .is_some_and(|account| account.avatar_asset.is_none())
+        {
+            let regenerate = ui.add_enabled(
+                idle && !self.loading,
+                egui::Button::image(
+                    egui::Image::new(egui::include_image!("../resources/icons/rotate-ccw.svg"))
+                        .tint(TEXT)
+                        .fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                )
+                .min_size(egui::vec2(32.0, 32.0))
+                .corner_radius(16.0),
+            );
+            regenerate.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    idle && !self.loading,
+                    "Regenerate avatar",
+                )
+            });
+            if regenerate.on_hover_text("Regenerate avatar").clicked()
+                && let Some(token) = self.token.clone()
+            {
+                self.picture_edit.error = None;
+                self.picture_edit.busy = Some((pictures::Target::Avatar, false));
+                self.worker.send(Command::RegenerateAvatar {
+                    epoch: self.account_epoch,
+                    token,
+                });
+            }
+        }
         if let Some(removing) = busy {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().size(12.0).color(MUTED));
                 ui.label(
-                    RichText::new(if self.picture_edit.gallery.is_some() {
-                        "Saving…"
-                    } else if removing {
-                        "Removing…"
-                    } else {
-                        "Uploading…"
-                    })
+                    RichText::new(
+                        if self.picture_edit.gallery.is_some()
+                            || (target == pictures::Target::Avatar && !custom && !removing)
+                        {
+                            "Saving…"
+                        } else if removing {
+                            "Removing…"
+                        } else {
+                            "Uploading…"
+                        },
+                    )
                     .size(12.0)
                     .color(MUTED),
                 );
@@ -26129,6 +26421,7 @@ fn carries_identities(event: &Event) -> bool {
             | Event::MediaStatus { .. }
             | Event::VoiceChecked { .. }
             | Event::AssetUsage { .. }
+            | Event::Klipy { .. }
             | Event::AttachmentUrls { .. }
             | Event::Upload { .. }
             | Event::Gateway(
@@ -26215,6 +26508,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Eye => egui::include_image!("../resources/icons/eye.svg"),
         NavIcon::EyeOff => egui::include_image!("../resources/icons/eye-off.svg"),
         NavIcon::Trash => egui::include_image!("../resources/icons/trash-2.svg"),
+        NavIcon::Search => egui::include_image!("../resources/icons/search.svg"),
     };
     let image = egui::Image::new(source).tint(color);
     if let Ok(egui::load::TexturePoll::Ready { texture }) =
@@ -27968,6 +28262,7 @@ impl CaperApp {
             thread_root_id,
             broadcast: false,
             reply_to_id,
+            gif: None,
         });
     }
 
@@ -30077,16 +30372,6 @@ fn normalize_channel(value: &str) -> String {
     output
 }
 
-fn member_page_ids(detail: &SpaceDetail, channel: Option<&str>, page: usize) -> Vec<String> {
-    detail
-        .member_order(channel)
-        .into_iter()
-        .skip(page * MEMBER_PAGE_SIZE)
-        .take(MEMBER_PAGE_SIZE)
-        .map(|member| member.id.clone())
-        .collect()
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct DisplayDate {
     key: String,
@@ -31295,9 +31580,9 @@ mod tests {
         AccountOperation, CaperApp, ComposerToken, ConnectionReport, DELETE_ACCOUNT_URL, Dialog,
         GatewayEvent, MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingReaction, PendingSend,
         Phase, RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT,
-        display_time, endpoint, media, member_page_ids, message_runs, normalize_channel,
-        permanent_send_rejection, pill_rects, projected_reactions, redundant_invitation,
-        resend_countdown, resend_wait, short_time, take_date_divider, timestamp_parts, voice,
+        display_time, endpoint, media, message_runs, normalize_channel, permanent_send_rejection,
+        pill_rects, projected_reactions, redundant_invitation, resend_countdown, resend_wait,
+        short_time, take_date_divider, timestamp_parts, voice,
     };
     use crate::{mentions, navigation, uploads, voice_note, whats_new, worker};
     use std::time::{Duration, Instant};
@@ -40654,6 +40939,78 @@ mod tests {
     }
 
     #[test]
+    fn gif_button_opens_the_klipy_picker_and_sends_a_gif_on_its_own() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-desktop"),
+        );
+        app.session = Some(session());
+        app.token.get_or_insert_with(|| "token".into());
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            labelled_center(&output, "Send a GIF").is_none(),
+            "hidden while the server has GIFs off"
+        );
+        app.klipy = Some(crate::klipy::Config {
+            app_key: "fixtureKlipyKey".into(),
+            customer_id: "0123456789abcdef0123456789abcdef".into(),
+        });
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let button = labelled_center(&output, "Send a GIF").expect("GIF button");
+        click(&mut app, &context, button);
+        assert!(
+            app.gif_picker
+                .as_ref()
+                .is_some_and(|picker| picker.root.is_none())
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Powered by KLIPY"));
+        assert!(shows(&output, "GIFs") && shows(&output, "Stickers"));
+        click(&mut app, &context, button);
+        assert!(app.gif_picker.is_none(), "a second click closes it");
+
+        // A choice sends at once as its own message; the draft stays.
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../shared/klipy/cases.json")).unwrap();
+        let gif = crate::klipy::Gif::from_value(&cases["messages"]["valid"][0]).unwrap();
+        app.draft = "still drafting".into();
+        app.send_gif(
+            None,
+            crate::klipy::Choice {
+                share: crate::klipy::Share {
+                    config: app.klipy.clone().unwrap(),
+                    kind: gif.kind,
+                    slug: gif.slug.clone(),
+                    query: String::new(),
+                },
+                gif: gif.clone(),
+            },
+        );
+        let pending = app.pending.clone().expect("GIF send pending");
+        assert_eq!(
+            (pending.text.as_str(), pending.gif.as_ref()),
+            ("", Some(&gif))
+        );
+        assert!(pending.attachments.is_empty() && pending.thread_root_id.is_none());
+        assert_eq!(app.draft, "still drafting");
+        let output = render(&mut app, &context, vec![]);
+        assert!(
+            labelled_center(&output, "Hello").is_some(),
+            "the pending row shows the GIF, labelled by its title"
+        );
+        // Retrying keeps the GIF even though the text is empty.
+        app.pending.as_mut().unwrap().sending = false;
+        app.send_message();
+        assert!(app.pending.as_ref().is_some_and(|pending| pending.sending));
+        assert!(app.error.is_none());
+    }
+
+    #[test]
     fn floating_panels_have_app_headers_and_close_on_an_outside_click() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
@@ -40735,7 +41092,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_member_page_scrolls_below_its_heading() {
+    fn a_full_member_roster_scrolls_below_its_heading() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -40759,11 +41116,7 @@ mod tests {
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let first = text_position(&output, "Member 0");
-        let pager = text_position(&output, "Next");
-        assert!(
-            pager.y > 900.0,
-            "a full page overflows the window: {pager:?}"
-        );
+        assert!(!shows(&output, "Next"));
         let mut events = vec![
             egui::Event::PointerMoved(first),
             egui::Event::MouseWheel {
@@ -40776,10 +41129,60 @@ mod tests {
             render(&mut app, &context, std::mem::take(&mut events));
         }
         let output = render(&mut app, &context, vec![]);
-        let pager = text_position(&output, "Next");
-        assert!(pager.y < 900.0, "the pager scrolls into view: {pager:?}");
+        assert!(
+            shows(&output, "Member 29"),
+            "the whole roster scrolls into view"
+        );
         let heading = text_position(&output, "Members");
         assert!(heading.y < 54.0, "the heading stays put: {heading:?}");
+
+        click_label(&mut app, &context, "Search members");
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Text("  MEMBER_29  ".into())],
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Member 29"));
+        assert!(!shows(&output, "Member 0"));
+        app.member_search = "  mEmBeR 29  ".into();
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Member 29"));
+        app.member_search = "no such member".into();
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "No members match your search."));
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(app.member_search.is_empty());
+        assert!(!app.member_search_open);
+        app.gateway(GatewayEvent::Presence {
+            generation: app.generation,
+            space: app.selected_space.clone().unwrap(),
+            members: vec![model::Presence {
+                user_id: "member-29".into(),
+                status: "online".into(),
+            }],
+        });
+        assert!(shows(&render(&mut app, &context, vec![]), "Online"));
+        app.gateway(GatewayEvent::Presence {
+            generation: app.generation,
+            space: app.selected_space.clone().unwrap(),
+            members: vec![],
+        });
+        assert!(
+            !shows(&render(&mut app, &context, vec![]), "Online"),
+            "snapshots replace stale presence"
+        );
     }
 
     #[test]
@@ -52173,7 +52576,7 @@ mod tests {
     }
 
     #[test]
-    fn member_presence_pages_use_current_web_page_size() {
+    fn member_roster_keeps_all_private_readers_first() {
         let members = (0..26)
             .map(|index| Member {
                 admin: false,
@@ -52201,18 +52604,20 @@ mod tests {
             channel_invitations: Vec::new(),
             channel_members: Default::default(),
         };
-        assert_eq!(member_page_ids(&detail, None, 0).len(), 25);
-        assert_eq!(member_page_ids(&detail, None, 1), ["member-25"]);
-        // A private channel's readers lead the pages, in the space's order.
+        assert_eq!(detail.member_order(None).len(), 26);
+        // A private channel's readers lead the roster, in the space's order.
         let mut private = detail.clone();
         private.channel_members.insert(
             "leads".into(),
             vec!["member-25".into(), "member-3".into(), "gone".into()],
         );
-        let first = member_page_ids(&private, Some("leads"), 0);
+        let first: Vec<_> = private
+            .member_order(Some("leads"))
+            .into_iter()
+            .map(|member| member.id.as_str())
+            .collect();
         assert_eq!(first[..3], ["member-3", "member-25", "member-0"]);
-        assert_eq!(member_page_ids(&private, Some("leads"), 1), ["member-24"]);
-        assert_eq!(member_page_ids(&private, Some("general"), 1), ["member-25"]);
+        assert_eq!(first.len(), 26);
     }
 
     #[test]
@@ -52240,6 +52645,7 @@ mod tests {
                 text: pending.text.clone(),
                 attachments: Vec::new(),
                 mentions: Vec::new(),
+                gif: None,
             },
             reactions: Vec::new(),
             reaction_seq: None,
@@ -52361,6 +52767,7 @@ mod tests {
                     text: "sent".into(),
                     attachments: Vec::new(),
                     mentions: Vec::new(),
+                    gif: None,
                 },
                 reactions: Vec::new(),
                 reaction_seq: None,

@@ -444,8 +444,8 @@ retains up to 20 channel/DM snapshots in account-scoped memory, rejects incomple
 context windows, and clears removed/revoked conversations and sign-out data;
 the authorized gateway replays from each retained cursor.
 Apple displays prepared history while its sending session opens and retains the
-same space's member page/presence subscription. Rust desktop retains member
-statuses and pagination, but reconnects its combined chat/presence gateway on
+same space's roster/presence subscription. Rust desktop retains member
+statuses, but reconnects its combined chat/presence gateway on
 channel changes. Web keeps its unchanged member subscription mounted.
 
 Web direct messages use page-scoped prepared histories like channels. Hover/focus
@@ -498,10 +498,12 @@ focus and can be implemented by future desktop/mobile clients.
   and heartbeat traffic do **not** reset activity. Native clients may report their
   own actual input activity. The browser exports `reportActivity()` for future
   local speech detection; merely sending audio packets is not treated as speech.
-- `subscribe {id,kind,channelId?,after?,token?,spaceId?,userIds?}` opens one logical
+- `subscribe {id,kind,channelId?,after?,token?,spaceId?,userIds?,allMembers?}` opens one logical
   stream. `event {id,event}` routes updates to it; `subscribed {id}` follows its
   initial snapshot/replay. `unsubscribe {id}` releases interest. There are at most
-  32 subscriptions per socket and 100 users per presence subscription. Credentials
+  32 subscriptions per socket and 100 explicit IDs per presence subscription.
+  A presence subscription with `allMembers: true` and no `userIds` instead derives
+  the roster from the authenticated space membership, using one slot. Credentials
   never appear in the URL. Sessions and memberships are checked again during use.
 - Account presence is **online** if any live session has recent input, **idle**
   otherwise, and **offline** only after every session lease expires. Default
@@ -512,9 +514,14 @@ focus and can be implemented by future desktop/mobile clients.
   Records represent connected sessions, not installed devices. Multiple browser
   tabs each have a connection. A suspended phone whose heartbeats stop loses its
   lease; native background/voice execution still needs platform-specific support.
-- The space member list watches only its current 25-member page. Pagination swaps
-  the subscription; collapsing releases it. Initial member *metadata* still comes
-  from the space detail endpoint, but presence never loads the entire population.
+- The space member list watches the complete space roster, with Online (including
+  idle), Offline and Status unavailable sections. Private-channel readers remain
+  separate from other space members. There is no UI pagination. The search icon
+  opens a local name/username filter; X or Escape clears it and restores the list
+  without changing the subscription. Section counts describe the filtered roster;
+  the Members count remains the space total. Initial member metadata still comes
+  from the space detail endpoint. Membership changes are repaired within the
+  existing ten-second authorization interval; removed requesters fail closed.
   Gateways batch expiration checks once per watched user per pod every two seconds,
   then push only changed snapshots. Heartbeats do not broadcast user lists. During
   an outage the UI shows unknown/updating rather than inventing offline status.
@@ -522,6 +529,50 @@ focus and can be implemented by future desktop/mobile clients.
   subscribes only where it has local interest, and releases unused subscriptions.
   Committed chat cursors repair missed messages; versioned room snapshots repair
   current mute/deafen/roster state. Typing expires and is intentionally not replayed.
+
+#### Member and channel list performance
+
+The [Discord mobile performance write-up](https://discord.com/blog/supercharging-discord-mobile-our-journey-to-a-faster-app)
+supports predictable row measurement, lazy/recycled views and testing low-end
+devices. It does not establish which list library is fastest for Caper. Our
+Android, Apple and Rust clients are native, not React Native; importing Discord's
+React Native list architecture would not apply directly.
+
+Current preparation: Android member rows are individually keyed `LazyColumn`
+items, Apple uses lazy stacks, Rust desktop skips offscreen member contents, and
+web uses `content-visibility` with a 44px row estimate. The web still retains all
+row DOM nodes; this is not full virtualization. Search does not fetch, subscribe,
+or reconnect. Full-roster presence is still proportional to space membership,
+with complete snapshots on changes, so this is not a large-community capacity claim.
+
+Before increasing the current 100-channel-per-space quota:
+
+1. Benchmark channel switching, fast scrolling, filtering and presence churn with
+   100 channels and 100/1,000/10,000-member fixtures. Include expanded voice rows,
+   avatars, private groups and a low-end Android device. Record p95 input-to-paint,
+   slow/blank frames, peak memory, rendered row count, and gateway bytes/queries.
+2. Keep stable channel/member IDs and explicit row-height variants; flatten group
+   headers and expanded voice rows into list items. Virtualize web channel/member
+   rows using the existing list tooling, and use native lazy/recycled rows, only
+   after these measurements show the bottleneck. Preserve keyboard focus, profile
+   anchors and scroll position during presence moves; overscan must survive fast
+   flings without blank rows. Keep thumbnails bounded and pause offscreen animation.
+3. If wire/DB work dominates, introduce server-maintained presence counts and
+   deltas plus an internally windowed roster/search API before raising capacity.
+   Counts must remain whole-space counts, and search must cover unloaded members.
+   Transport windows must stay invisible to users—no Previous/Next sidebar or
+   per-page count disclaimers. Add repeatable regression budgets from the baseline.
+
+Roster revision validation: web component/gateway tests cover 151 members; real
+Postgres/Valkey gateway tests cover 102 members, cross-space isolation, membership
+removal/restoration and requester revocation. `MEMBERS_ONLY=1` with
+`scripts/test-space-controls.mjs` covers public/private roster filtering and live
+status changes in desktop/narrow Chromium using mocked API/gateway data. Android
+build/JVM checks do not prove native runtime behavior. Rust desktop fixture
+rendering, search, no-match and Escape states were inspected under Xvfb. Apple
+requires Xcode; physical-device scrolling and large-roster capacity remain unverified.
+Deploy the gateway supporting `allMembers` before the updated clients; an older
+gateway rejects the new request instead of providing roster presence.
 
 Typing is best-effort: it is sent only over an already connected socket, never
 queued/replayed after reconnect, and never stored in the command ledger. Lost
@@ -2690,6 +2741,162 @@ Windows, and a live transcript round trip still need checking by hand.
   `ai_calls` rows.
 - Not covered by automated tests: a live OpenRouter request. Watch the first
   production voice messages in `ai_calls`.
+
+## GIFs and stickers (KLIPY)
+
+The composer's **GIF** button opens a KLIPY picker with **GIFs** and
+**Stickers** tabs, a "Search KLIPY" field (KLIPY requires that placeholder) and
+trending results until something is typed. Choosing one sends it at once as its
+own message; the composer draft stays. The button is hidden until the API has
+`KLIPY_APP_KEY`.
+
+KLIPY's [integration requirements](https://docs.klipy.com/integration-requirements)
+shape the design:
+
+- Search, trending, share and media requests go straight from each device to
+  `api.klipy.com` and `static*.klipy.com`. The API never proxies, caches or
+  re-hosts KLIPY media, so KLIPY sees the viewer's IP address and user agent,
+  like any linked image.
+- Results keep KLIPY's order and mix, ads included. Filtering happens only in
+  the Partner Panel; we request `content_filter=off` and filter nothing.
+- A sent GIF keeps KLIPY's media URLs exactly as returned.
+
+### API contract
+
+`GET /api/klipy` (signed in) returns `{"appKey","customerId"}`, or 404 when
+GIFs are off. The app key is KLIPY's client key and ships to devices by design.
+`customerId` is 32 hex characters, an HMAC of the account id keyed from
+`AUTH_SECRET`: stable per account and meaningless to KLIPY.
+
+Sending adds an optional `gif` to the usual message body. It never travels with
+`attachmentIds`, and text may then be empty:
+
+```json
+{"clientMessageId":"…","text":"","gif":{"provider":"klipy","kind":"gif",
+ "slug":"hello-hi-662","title":"Hello","width":498,"height":498,
+ "gif":"https://static.klipy.com/…/a.gif","webp":"https://static.klipy.com/…/a.webp",
+ "mp4":"https://static.klipy.com/…/a.mp4","still":"https://static.klipy.com/…/a.jpg"}}
+```
+
+The API stores it as `content.gif` (`content.type` stays `"text"`, so older
+clients show the message text alone). Rules, shared by the API
+(`apps/api/src/klipy.rs`) and every client through `shared/klipy/cases.json`:
+
+- `provider` is `klipy`; `kind` is `gif` or `sticker`.
+- `slug` is 1–200 letters, digits, `-` or `_`; `title` is at most 200
+  characters without control characters.
+- `width` and `height` are whole numbers from 1 to 4096.
+- At least one of `gif` and `webp` is present.
+- Every URL is at most 2048 characters: HTTPS on `klipy.com` or a subdomain,
+  with no credentials, port or fragment. A query string is fine.
+
+Clients render `content.gif` only when it passes these rules. Otherwise they
+show the text alone.
+
+Edits change only the caption; the GIF stays. Forwards copy it. Reply quotes
+and push notifications of a captionless GIF read `GIF` / `Sticker` and
+`Sent a GIF` / `Sent a sticker`. The retry hash covers the text and the GIF.
+
+### KLIPY requests (from the device)
+
+Base `https://api.klipy.com/api/v1/{appKey}/`, with `{kind}` either `gifs` or
+`stickers`:
+
+| Purpose | Request |
+| --- | --- |
+| Trending | `GET {kind}/trending?page=N&per_page=24&customer_id=…&content_filter=off&locale=xx` |
+| Search | `GET {kind}/search?q=…&page=N&per_page=24&customer_id=…&content_filter=off&locale=xx` |
+| Share (after a successful send, best effort) | `POST {kind}/share/{slug}` with JSON `{"customer_id","q"}` (`q` is the search text, empty for trending) |
+
+`locale` is the device region as ISO 3166 alpha-2. Searches wait 300 ms after
+typing stops, and pages load as the grid nears its end while `has_next` is true.
+
+Parsing (`parse` in `shared/klipy/cases.json`) keeps KLIPY's order:
+
+- **Ad items** (`type: "ad"`) need a non-empty `content` HTML string. They
+  become `{type:"ad", html, width, height}`; the size is null when absent or
+  not positive.
+- **Other items** need a valid slug.
+  - The sent GIF comes from the first of `file.md`, `file.hd`, `file.sm`.
+    `gif` and `webp` are taken from it, `mp4` too, and `still` is its `jpg`,
+    or `png` for stickers.
+  - URLs that break the rules are dropped. The width and height come from
+    the size's first valid `gif`, then its `webp`; without them the item is
+    skipped.
+  - `kind` is the tab that requested it. Control characters are stripped from
+    the title, which is then cut to 200 characters.
+  - The grid tile comes from the first of `sm`, `xs`, `md`, `hd`: its `webp`
+    or else `gif`, plus a `jpg`/`png` still when that size has one.
+
+### Ads
+
+Ads come on with the Ads API toggle in the Partner Panel, and KLIPY serves
+them only to mobile user agents.
+
+- **Who asks for them:** Android, iPhone and the touch-layout web picker add
+  `ad-min-width=50`, `ad-max-width=<grid width in CSS px or dp>`,
+  `ad-min-height=50` and `ad-max-height=250`.
+  - They also send the recommended device fields they can read without
+    permission prompts: `ad-os`, `ad-osv`, `ad-make`, `ad-model`,
+    `ad-device-w`, `ad-device-h`, `ad-pxratio` and `ad-language`.
+  - Native apps send their WebView's user agent: Android's
+    `WebSettings.getDefaultUserAgent`, iOS's `WKWebView` `navigator.userAgent`.
+  - Carrier fields, advertising IDs and location are never sent, and no
+    tracking prompt is shown.
+- **Where they don't appear:** desktop web, macOS, Windows and Linux omit the
+  ad parameters, so they never receive ads.
+- **How they show:** an ad fills a full-width grid row labelled
+  **Sponsored**, sized to the ad or else 100 px tall.
+  - The HTML renders in an isolated web view: a sandboxed `iframe srcdoc`
+    with scripts and popups but no same-origin access on the web, and a
+    non-persistent WebView on Android and iPhone.
+  - Taps open in the system browser, and an ad can never reach Caper's
+    session.
+
+### Rendering
+
+- **Size:** a GIF shows below any text at its aspect ratio, at most 300 px on
+  its longer edge (stickers 160 px). Stickers have no background.
+- **Format:**
+  - The web prefers a muted, looping, inline `mp4` for GIFs and the `webp`
+    for stickers (transparency).
+  - Native apps use the animated format their decoder supports (`webp` or
+    `gif`).
+- **Reduced motion:** reduced-motion settings show `still` (or the first
+  frame).
+- **Labels:** the accessible label is the title, or `GIF` / `Sticker`.
+- **Failures:** a GIF that fails to load leaves a quiet "GIF unavailable"
+  placeholder.
+
+### Configuration and rollout
+
+| Variable | Where | Meaning |
+| --- | --- | --- |
+| `KLIPY_APP_KEY` | API | KLIPY Partner Panel key (letters, digits, `-` or `_`). Unset or malformed hides the picker everywhere. Needs `AUTH_SECRET`. |
+
+Rollout:
+
+1. Create the key in the [Partner Panel](https://partner.klipy.com/api-keys)
+   with the Ads API on. A test key allows 100 requests an hour for the whole
+   app; request production access from the panel before real traffic.
+2. Add `KLIPY_APP_KEY` to `staging/apps/caper` and `production/apps/caper` in
+   AWS Secrets Manager.
+3. Roll the API so it reads the new key.
+4. Set the Partner Panel content filter to off, matching `content_filter=off`.
+
+### Platform status (October 20, 2026)
+
+| Client | Picker | Ads | Validation |
+| --- | --- | --- | --- |
+| API | — | — | Unit tests, shared cases and a Postgres send/retry/reply/edit test pass. |
+| Web | Channel, thread and profile-card composers; popover, or bottom drawer on touch layouts | Touch layouts | Vitest shared cases pass. Chromium was driven against the fixture with KLIPY mocked by route (labelled test mock): desktop, 390 px touch (ads row), reduced motion, paging, search, send and share. |
+| Android | Channel and thread composers; bottom sheet | Yes | Compiles; unit tests incl. shared cases pass. Not run on a device or emulator. |
+| iPhone / macOS | Channel, thread and profile-card composers; sheet / popover | iPhone only | Foundation core and shared cases checked with Swift on Linux. Not compiled with the Apple SDK, not run. |
+| Desktop (Rust) | Channel/DM and thread composers; popup | No (skipped) | fmt, clippy and tests incl. shared cases pass. Not checked on screen. The profile-card first-DM composer has no GIF button yet. |
+
+Not yet validated anywhere: live KLIPY responses (the shape of ad objects is
+undocumented beyond `type` and `content`), real ad delivery and taps, physical
+devices, and screen readers.
 
 ## Message reactions
 
@@ -9334,6 +9541,7 @@ uploads reserved before a selection or removal cannot overwrite it on completion
 | `POST /api/assets/{id}/complete` | Checks size and magic bytes as for attachments, then the real pixel size read from the first 64 KiB (GIF screen, PNG IHDR, WebP VP8/VP8L/VP8X, JPEG frame header behind EXIF), ≤ 1024 px (`422 picture_invalid`). The first successful completion **applies** the picture and returns `account` (avatar) or `space` (icon); a retry returns the current state without re-applying, so a late retry never undoes a newer picture. Pictures are ordered by reservation: one that completes after a later-reserved picture already completed is kept but not applied, and the response shows the newer one. |
 | `POST /api/assets/{id}/cancel` | Cancels a picture before completion; `409` afterwards. |
 | `DELETE /api/account/avatar` | Back to the saved mascot; returns the account. |
+| `POST /api/account/avatar/regenerate` | No body. Saves a randomly chosen different mascot ID and returns the account; broadcasts the profile change, including active voice participants. `409` if a custom picture is present. No upload/storage configuration required. |
 | `GET /api/account/avatar/history?cursor=<asset ID>` | Returns `{pictures:[{avatarAsset,avatarUrl}],nextCursor}` for your own retained, completed avatar uploads only. Stable newest-first pages of 40; `nextCursor: null` at the end. Includes the current picture. |
 | `POST /api/account/avatar/select` `{"avatarAsset":"chosen asset ID","expectedAvatarAsset":"current asset ID" \| null}` | Locks the account, compares the expected current image, and applies the chosen owned/completed/retained avatar. Returns the account and broadcasts its profile change. `409` if the current image changed; `404` for an invalid target (including another user's picture). |
 | `DELETE /api/spaces/{space}/icon` | Owner only; back to the initial; returns the space. |
@@ -9391,6 +9599,27 @@ Without a custom profile picture, the saved mascot holds
 up a "change me!" sign (`assets/avatars/change-me.svg`, one vector drawn over
 any mascot); a successful change updates the signed-in client everywhere through the
 existing own-profile refresh path.
+All clients also offer a circular-arrow **Regenerate avatar** action only when no
+custom picture is set. Each press immediately saves a different mascot; it does
+not require Save profile. Pending requests disable the picture controls, and
+failures remain inline. A custom picture set elsewhere wins over regeneration.
+
+### Mascot regeneration validation (October 20, 2026)
+
+- Web: `npm run check` and the Vitest suite pass. Chromium at desktop and 390px
+  widths exercised regeneration against the local API/Postgres and confirmed
+  persistence after reload. Injected delay/failure/custom-picture responses
+  covered disabled controls, inline errors, retry, and hiding the action.
+- API: workspace tests, formatting, Clippy and build pass. The disposable
+  PostgreSQL endpoint test checks authentication, changed/in-range persisted IDs,
+  preserved names, and refusal to replace a custom picture. Voice snapshot tests
+  cover the changed mascot ID; no live SFU call was used.
+- Rust desktop: the full test suite passes (existing ignored tests excluded), scoped formatting, Clippy
+  and build pass. The profile fixture was visually inspected under Linux Xvfb.
+- Android: `testDebugUnitTest compileDebugKotlin` passes after preparing the
+  pinned fonts; no device rendering. Apple implementation/tests are present but
+  were not compiled because this Linux orb has no Swift/Xcode toolchain. Physical
+  iOS, Android, macOS and Windows checks remain outstanding.
 
 ### Previous-picture gallery validation (October 19, 2026)
 

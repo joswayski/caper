@@ -690,18 +690,27 @@ test("presence subscriptions reject more than 100 users", (t) => {
   assert.equal(f.sockets.length, 0);
 });
 
-test("public watchPresence delivers scoped member states", (t) => {
+test.for([false, true])("watchPresence delivers explicit or whole-space member states (all=%s)", (all, t) => {
   const f = setup(t);
   setAppGatewayForTests(f.gateway);
   t.onTestFinished(() => setAppGatewayForTests(undefined));
   const received: unknown[] = [];
-  const stop = watchPresence("space", ["one"], (members) => received.push(members));
+  const stop = watchPresence("space", all ? "all" : ["one"], (members) => received.push(members));
   t.onTestFinished(stop);
   f.hello(0);
-  const id = f.subscribe(0).id;
-  f.sockets[0].frame({ type: "event", id, event: { type: "snapshot", members: [{ userId: "one", status: "idle" }] } });
+  const { id, ...request } = f.subscribe(0);
+  assert.deepEqual(request, {
+    type: "subscribe",
+    kind: "presence",
+    spaceId: "space",
+    ...(all ? { allMembers: true } : { userIds: ["one"] }),
+  });
+  const members = all
+    ? Array.from({ length: 151 }, (_, i) => ({ userId: String(i), status: "online" }))
+    : [{ userId: "one", status: "idle" }];
+  f.sockets[0].frame({ type: "event", id, event: { type: "snapshot", members } });
   f.sockets[0].frame({ type: "subscribed", id });
-  assert.deepEqual(received, [[{ userId: "one", status: "idle" }]]);
+  assert.deepEqual(received, [members]);
 });
 
 for (const type of ["message.created", "message.reactions", "message.pin", "message.forward", "message.edited"]) {

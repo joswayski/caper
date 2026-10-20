@@ -176,6 +176,16 @@ impl Api {
         Ok(account)
     }
 
+    pub fn regenerate_avatar(&self, token: &str) -> Result<Account, ApiError> {
+        self.request(
+            Method::POST,
+            "api/account/avatar/regenerate",
+            Some(token),
+            None,
+            None,
+        )
+    }
+
     pub fn avatar_history(
         &self,
         token: &str,
@@ -982,11 +992,16 @@ impl Api {
         spoiler_attachment_ids: &[String],
         thread: (Option<&str>, bool),
         reply_to_id: Option<&str>,
+        gif: Option<&crate::klipy::Gif>,
     ) -> Result<Message, ApiError> {
         let mut body = json!({"clientMessageId":client_id,"text":text});
         // Ids join the idempotency hash; the key is present only with files.
         if !attachment_ids.is_empty() {
             body["attachmentIds"] = json!(attachment_ids);
+        }
+        // A GIF travels alone (never with files) and joins the hash too.
+        if let Some(gif) = gif {
+            body["gif"] = gif.to_value();
         }
         if !spoiler_attachment_ids.is_empty() {
             body["spoilerAttachmentIds"] = json!(spoiler_attachment_ids);
@@ -1005,6 +1020,15 @@ impl Api {
             Some(chat_token),
             Some(body),
         )
+    }
+
+    /// `GET /api/klipy`: `None` (404) while GIFs are off on this server.
+    pub fn klipy(&self, token: &str) -> Result<Option<crate::klipy::Config>, ApiError> {
+        match self.request(Method::GET, "api/klipy", Some(token), None, None) {
+            Ok(config) => Ok(Some(config)),
+            Err(error) if error.status == Some(StatusCode::NOT_FOUND) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Uploads are optional server configuration (503 without storage). Any
@@ -1693,6 +1717,52 @@ mod tests {
     use super::{Api, friendly_error};
     use std::io::{BufRead, BufReader, Write};
 
+    #[test]
+    fn avatar_regeneration_posts_no_body_and_preserves_conflicts() {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
+        let worker = std::thread::spawn(move || {
+            for (status, body) in [
+                ("200 OK", r#"{"id":"self","avatarId":412}"#),
+                ("409 Conflict", r#"{"error":"custom avatar present"}"#),
+            ] {
+                let (stream, _) = server.accept().unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert_eq!(line, "POST /api/account/avatar/regenerate HTTP/1.1\r\n");
+                let mut authorized = false;
+                loop {
+                    line.clear();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let header = line.to_ascii_lowercase();
+                    authorized |= header == "authorization: bearer test-token\r\n";
+                    if let Some(length) = header.strip_prefix("content-length:") {
+                        assert_eq!(length.trim(), "0");
+                    }
+                    assert!(!header.starts_with("transfer-encoding:"));
+                }
+                assert!(authorized);
+                write!(reader.get_mut(), "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let account = api.regenerate_avatar("test-token").unwrap();
+        assert_eq!(account.avatar_id, Some(412));
+        assert!(account.avatar_asset.is_none());
+        assert_eq!(
+            api.regenerate_avatar("test-token")
+                .unwrap_err()
+                .status
+                .unwrap()
+                .as_u16(),
+            409,
+        );
+        worker.join().unwrap();
+    }
+
     /// Serves one GET: the head, then each chunk after its delay, then holds
     /// the connection open until the returned sender is dropped.
     fn trickle(
@@ -1822,6 +1892,7 @@ mod tests {
                     &["a".into(), "b".into()],
                     &spoilers,
                     (None, false),
+                    None,
                     None
                 )
                 .is_err()

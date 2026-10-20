@@ -141,6 +141,7 @@ struct PictureEditor<Preview: View>: View {
     let history: ((String?) async throws -> AvatarHistory)?
     let select: ((String, String?) async throws -> Void)?
     let currentAsset: String?
+    let regenerate: (() async throws -> Void)?
     @State private var showHistory = false
     @State private var historyExpected: String?
     private let preview: Preview
@@ -158,7 +159,7 @@ struct PictureEditor<Preview: View>: View {
     @State private var showAnimationChoice = false
     @State private var loadTask: Task<Void, Never>?
 
-    private enum Phase { case loading, uploading, removing }
+    private enum Phase { case loading, uploading, removing, regenerating }
 
     /// The frame's side, in points.
     static var side: CGFloat { 112 }
@@ -166,7 +167,8 @@ struct PictureEditor<Preview: View>: View {
     init(purpose: PicturePurpose, hasPicture: Bool, currentURL: URL? = nil, upload: @escaping (PreparedPicture) async throws -> Void,
          remove: @escaping () async throws -> Void, currentAsset: String? = nil,
          history: ((String?) async throws -> AvatarHistory)? = nil,
-         select: ((String, String?) async throws -> Void)? = nil, @ViewBuilder preview: () -> Preview) {
+         select: ((String, String?) async throws -> Void)? = nil,
+         regenerate: (() async throws -> Void)? = nil, @ViewBuilder preview: () -> Preview) {
         self.purpose = purpose
         self.hasPicture = hasPicture
         self.currentURL = currentURL
@@ -175,6 +177,7 @@ struct PictureEditor<Preview: View>: View {
         self.history = history
         self.select = select
         self.currentAsset = currentAsset
+        self.regenerate = regenerate
         self.preview = preview()
     }
 
@@ -185,6 +188,7 @@ struct PictureEditor<Preview: View>: View {
         case .loading: "Opening picture…"
         case .uploading: "Uploading…"
         case .removing: "Removing…"
+        case .regenerating: "Regenerating…"
         case nil: unavailable ? ProfilePicturePolicy.unavailableMessage : nil
         }
     }
@@ -239,6 +243,28 @@ struct PictureEditor<Preview: View>: View {
                 }
                 return true
             } isTargeted: { dropping = $0 && phase == nil && !unavailable }
+            if avatar, !hasPicture, let regenerate {
+                Button {
+                    guard phase == nil else { return }
+                    phase = .regenerating
+                    error = nil
+                    Task { @MainActor in
+                        defer { phase = nil }
+                        do { try await regenerate() }
+                        catch is CancellationError {}
+                        catch let failure as APIError where failure.status == 409 {
+                            error = "Your picture changed elsewhere. Remove your custom picture before regenerating."
+                        }
+                        catch { self.error = "Couldn’t regenerate avatar. Please retry." }
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .disabled(phase != nil)
+                .accessibilityLabel("Regenerate avatar")
+                .help("Regenerate avatar")
+            }
             if let error {
                 Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                     .fixedSize(horizontal: false, vertical: true)

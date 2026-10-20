@@ -575,6 +575,24 @@ public final class AppModel {
         refreshOwnIdentity(updated)
     }
 
+    public func regenerateAvatar() async throws {
+        guard let current = account, current.avatarAsset == nil else { throw CancellationError() }
+        let attempt = generation
+        let updated: Account
+        do { updated = try await api.regenerateAvatar() }
+        catch let failure as APIError where failure.status == 409 {
+            if let refreshed = try? await api.account(), generation == attempt,
+               account?.id == current.id, refreshed.id == current.id {
+                account = refreshed
+                refreshOwnIdentity(refreshed)
+            }
+            throw failure
+        }
+        guard generation == attempt, account?.id == current.id, updated.id == current.id else { throw CancellationError() }
+        account = updated
+        refreshOwnIdentity(updated)
+    }
+
     public func avatarHistory(cursor: String?) async throws -> AvatarHistory {
         let attempt = generation
         let result = try await api.avatarHistory(cursor: cursor)
@@ -880,6 +898,47 @@ public final class AppModel {
                 draft.error = "Send outcome is unknown. Retry Send safely resends the same message. \(FriendlyError.message(for: error))"
             } else { draft.error = FriendlyError.message(for: error) }
             if refusal?.code == "dm_blocked" { Task { await refreshBlocks(); await refreshDirectMessages() } }
+            return false
+        }
+    }
+
+    /// Sends a KLIPY GIF to `person` as its own message, like Send in their
+    /// card: the typed draft and files stay. Opens the conversation once confirmed.
+    func sendProfileGif(to person: MentionCardPerson, gif: ChatGif, query: String) async -> Bool {
+        let draft = profileMessageDraft(personID: person.id)
+        guard let account, let klipy = chat.klipy, gif.isValid, !person.isSelf, person.username != nil,
+              draft.editable else { return false }
+        guard !blockedIDs.contains(person.id) else {
+            draft.error = DirectMessageErrors.message(code: "dm_blocked")
+            return false
+        }
+        let attempt = generation
+        draft.sending = true; draft.error = nil
+        defer { draft.sending = false; draft.progress = nil }
+        do {
+            let conversation = try await profileDestination(person: person, draft: draft)
+            replaceDirectMessage(conversation)
+            let session = try await api.chatSession(name: account.displayName ?? "")
+            try draft.checkActive()
+            guard generation == attempt, session.author.id == account.id, !session.author.isGuest else { throw CancellationError() }
+            let command = PendingMessage(id: UUID().uuidString.lowercased(), text: "", gif: gif)
+            draft.progress = "Sending…"
+            let message = try await api.send(channelID: conversation.id, sessionToken: session.token, clientMessageID: command.id,
+                                             text: command.text, gif: gif)
+            try draft.checkActive()
+            guard generation == attempt else { throw CancellationError() }
+            guard MessageValidation.acceptsResponse(message, channelID: conversation.id, command: command, authorID: account.id) else {
+                throw APIError(status: 502, message: "The chat service returned an invalid message.")
+            }
+            KlipyShare.send(gif, query: query, configuration: klipy)
+            chat.receiveProfileMessage(message)
+            invalidateNavigation(channelID: conversation.id)
+            await select(directMessage: conversation)
+            return generation == attempt
+        } catch {
+            guard generation == attempt, !draft.discarded else { return false }
+            draft.error = FriendlyError.message(for: error)
+            if (error as? APIError)?.code == "dm_blocked" { Task { await refreshBlocks(); await refreshDirectMessages() } }
             return false
         }
     }
@@ -2739,6 +2798,10 @@ public final class ChatModel {
     public private(set) var uploadsChecked = false
     /// Client compression settings served with usage.
     public private(set) var attachmentCompression = AttachmentCompression()
+    /// `GET /api/klipy` for the signed-in account; nil hides the GIF button.
+    public private(set) var klipy: KlipyConfiguration?
+    /// Which account token `klipy` answers for, and when.
+    @ObservationIgnored private var klipyAnswer: (token: String, at: Date)?
     public var attachmentDrafts: [AttachmentDraft] { attachmentFiles() }
     public var threadAttachmentDrafts: [AttachmentDraft] { attachmentFiles(inThread: true) }
     public private(set) var sendUploadFailed = false
@@ -3482,17 +3545,20 @@ public final class ChatModel {
         if !inThread, let root { Task { await openThread(root) } }
     }
 
-    public func send(inThread: Bool = false, retryPending: Bool = false) async {
+    /// `gif` sends a KLIPY GIF as its own message: no text or files, and the
+    /// composer's draft and staged files stay. Retries resend the pending GIF.
+    public func send(inThread: Bool = false, retryPending: Bool = false, gif: ChatGif? = nil) async {
         guard !sending, uploadSubmission == nil, !delivery.rejected else { return }
         guard !retryPending || delivery.pending != nil else { return }
+        guard gif == nil || delivery.pending == nil else { return }
         guard let channelID, let session else { error = "Messaging session is unavailable."; return }
         let rootID = inThread ? (retryPending ? delivery.pending?.threadRootId : threadRootID) : nil
         guard !inThread || rootID != nil else { return }
         if let pending = delivery.pending, pending.threadRootId != rootID { return }
-        let text = inThread ? threadDraft : draft
+        let text = gif != nil ? "" : inThread ? threadDraft : draft
         let target = composerTarget(inThread: inThread)
-        var files = attachmentFiles(inThread: inThread)
-        if delivery.pending == nil {
+        var files = gif != nil ? [] : attachmentFiles(inThread: inThread)
+        if delivery.pending == nil, gif == nil {
             if let validation = MessageValidation.error(for: text, attachmentCount: files.count) { error = validation; return }
             if files.contains(where: { $0.attachment == nil }) {
                 let submission = UUID()
@@ -3530,17 +3596,23 @@ public final class ChatModel {
             attachment.spoiler = item.spoiler
             return attachment
         } : []
-        var command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast, replyTo: replyTargets[rootID ?? "channel"])
+        var command = delivery.begin(text: text, attachments: localAttachments, threadRootId: rootID, broadcast: inThread && threadBroadcast,
+                                     replyTo: replyTargets[rootID ?? "channel"], gif: gif)
         if newSubmission {
             replyTargets[rootID ?? "channel"] = nil
             pendingDrafts = files
             pendingNeedsUpload = files.contains { $0.needsUpload }
             // Pending and processing rows retain originals from either composer.
             for item in files { if let id = item.attachment?.id { localAttachmentCopies[id] = item.localURL } }
-            if let target { stagedFiles[target] = nil; attachmentNotices[target] = nil }
-            // "Also send to channel" applies to one reply, so it resets with the draft.
-            if inThread { threadDraft = ""; threadBroadcast = false } else {
-                draft = ""
+            if gif != nil {
+                // The draft and its files stay for the next message.
+                if inThread { threadBroadcast = false }
+            } else {
+                if let target { stagedFiles[target] = nil; attachmentNotices[target] = nil }
+                // "Also send to channel" applies to one reply, so it resets with the draft.
+                if inThread { threadDraft = ""; threadBroadcast = false } else {
+                    draft = ""
+                }
             }
         }
         let requestGeneration = generation
@@ -3580,7 +3652,8 @@ public final class ChatModel {
                 }
                 do {
                     message = try await api.send(channelID: channelID, sessionToken: session.token, clientMessageID: command.id, text: command.text,
-                                                 attachmentIDs: command.attachmentIDs, spoilerAttachmentIDs: command.attachments.filter(\.spoiler).map(\.id), threadRootId: command.threadRootId, broadcast: command.broadcast, replyToId: command.replyTo?.id)
+                                                 attachmentIDs: command.attachmentIDs, spoilerAttachmentIDs: command.attachments.filter(\.spoiler).map(\.id), threadRootId: command.threadRootId, broadcast: command.broadcast, replyToId: command.replyTo?.id,
+                                                 gif: command.gif)
                     break
                 } catch let refusal as APIError where refusal.status == 409 && refusal.code == "attachment_unavailable" {
                     guard self.channelID == channelID, delivery.pending?.id == command.id else { return }
@@ -4297,6 +4370,43 @@ public final class ChatModel {
         } catch {
             uploadsEnabled = false
         }
+    }
+
+    /// GIFs are optional server configuration (`KLIPY_APP_KEY`) and need an
+    /// account. An answer is kept per account token, rechecked after 15 minutes.
+    public func checkKlipyAvailability() async {
+        guard let token = await api.authorizationToken() else { klipy = nil; klipyAnswer = nil; return }
+        if let answer = klipyAnswer, answer.token == token, Date().timeIntervalSince(answer.at) < 15 * 60 { return }
+        do {
+            let configuration = try await api.klipyConfiguration()
+            guard !Task.isCancelled, await api.authorizationToken() == token else { return }
+            klipy = configuration.isValid ? configuration : nil
+            klipyAnswer = (token, Date())
+        } catch let refusal as APIError where [401, 403, 404].contains(refusal.status) {
+            klipy = nil
+            klipyAnswer = (token, Date())
+        } catch {
+            // Offline or a server error: keep what we knew and ask again next time.
+            if klipyAnswer?.token != token { klipy = nil }
+        }
+    }
+
+    /// Whether the GIF picker can send into this conversation now, as its composer could.
+    public func canSendGif(inThread: Bool = false) -> Bool {
+        klipy != nil && canInteract && session != nil && channelID != nil && !loadFailed
+            && !sending && uploadSubmission == nil && delivery.pending == nil && !delivery.rejected
+            && (!inThread || (threadRootID != nil && !threadLoading))
+    }
+
+    /// Sends `gif` at once into the open conversation (or thread), replying
+    /// to the composer's reply target, then tells KLIPY it was shared.
+    /// `query` is the picker's search text, empty for trending.
+    public func sendGif(_ gif: ChatGif, inThread: Bool = false, query: String) async {
+        guard canSendGif(inThread: inThread), gif.isValid, let klipy else { return }
+        let channel = channelID
+        await send(inThread: inThread, gif: gif)
+        guard channelID == channel, delivery.pending == nil, error == nil else { return }
+        KlipyShare.send(gif, query: query, configuration: klipy)
     }
 
     private func composerTarget(inThread: Bool = false) -> AttachmentTarget? {

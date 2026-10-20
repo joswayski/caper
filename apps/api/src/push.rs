@@ -314,6 +314,29 @@ impl Alert {
                 }
             };
         }
+        let gif = ["/content/gif", "/forward/message/content/gif"]
+            .into_iter()
+            .find_map(|path| message.pointer(path));
+        if let Some(gif) = gif
+            && message
+                .pointer("/content/text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            && message
+                .pointer("/forward/message/content/text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+        {
+            self.body = if gif["kind"] == "sticker" {
+                "Sent a sticker".into()
+            } else {
+                "Sent a GIF".into()
+            };
+        }
         if let Some(cdn) = cdn {
             self.attachment = files.into_iter().find_map(|file| {
                 if file["unavailable"] == true || file["spoiler"] == true {

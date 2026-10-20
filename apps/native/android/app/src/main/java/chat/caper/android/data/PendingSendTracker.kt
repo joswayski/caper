@@ -2,6 +2,7 @@ package chat.caper.android.data
 
 import chat.caper.android.model.ChatMessage
 import chat.caper.android.model.ChatAuthor
+import chat.caper.android.model.KlipyGif
 import chat.caper.android.model.MessageReply
 import java.util.UUID
 
@@ -17,6 +18,8 @@ internal data class PendingSend(
     val broadcast: Boolean = false,
     val replyTo: MessageReply? = null,
     val spoilerAttachmentIds: List<String> = emptyList(),
+    /** A KLIPY GIF, part of the idempotency hash like the text. */
+    val gif: KlipyGif? = null,
 )
 
 /** Retains an idempotency key only while the server outcome is unknown. */
@@ -26,10 +29,10 @@ internal class PendingSendTracker {
     fun begin(
         channel: String, author: ChatAuthor, text: String, attachmentIds: List<String> = emptyList(),
         threadRootId: String? = null, broadcast: Boolean = false, replyTo: MessageReply? = null,
-        spoilerAttachmentIds: List<String> = emptyList(), confirmed: () -> Unit,
+        spoilerAttachmentIds: List<String> = emptyList(), gif: KlipyGif? = null, confirmed: () -> Unit,
     ): PendingSend =
         retrying(channel, author)
-            ?: PendingSend(channel, author, text, UUID.randomUUID(), confirmed, attachmentIds, threadRootId, broadcast, replyTo, spoilerAttachmentIds).also { pending = it }
+            ?: PendingSend(channel, author, text, UUID.randomUUID(), confirmed, attachmentIds, threadRootId, broadcast, replyTo, spoilerAttachmentIds, gif).also { pending = it }
 
     /** The unknown-outcome send a new attempt must repeat, if any. */
     fun retrying(channel: String, author: ChatAuthor): PendingSend? =

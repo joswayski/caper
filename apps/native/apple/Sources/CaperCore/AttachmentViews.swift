@@ -2314,17 +2314,11 @@ struct AttachmentDraftsView: View {
     var body: some View {
         if !files.isEmpty {
             let failed = files.filter { $0.error != nil }.count
-            let uploading = files.filter { $0.attachment == nil && $0.error == nil }.count
             if failed > 0 {
                 Text(failed == 1 ? "1 file failed to upload. Send will retry it, or you can remove it." : "\(failed) files failed to upload. Send will retry them, or you can remove them.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.terracottaBright)
                     .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                     .background(CaperTheme.terracotta.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-            }
-            if uploading > 0 {
-                Text("Uploading \(uploading) \(uploading == 1 ? "file" : "files")… Your message won’t send until every file is ready.")
-                    .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                    .accessibilityAddTraits(.updatesFrequently)
             }
             StagedFileLayout() {
                 ForEach(files) { draft in

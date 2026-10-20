@@ -374,7 +374,13 @@ function fixture() {
           request.kind === "chat" || request.kind === "notifications"
             ? { type: "ready", cursor: "5" }
             : request.kind === "presence"
-              ? { type: "snapshot", members: request.userIds.map((userId) => ({ userId, status: "online" })) }
+              ? {
+                  type: "snapshot",
+                  members: (request.allMembers ? members().map((m) => m.id) : request.userIds).map((userId) => ({
+                    userId,
+                    status: "online",
+                  })),
+                }
               : {
                   type: "snapshot",
                   participants: [account, others[0], others[1]].map((person, index) => ({

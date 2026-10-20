@@ -1,0 +1,766 @@
+{
+  "comment": "Shared KLIPY contract. See docs/media.md#gifs-and-stickers-klipy. `parse` turns a KLIPY list response (requested for `kind`) into picker items in KLIPY's order; `messages` lists content.gif values clients must render (valid) or ignore, rendering the text alone (invalid); `urls` is the media host rule shared with the API.",
+  "parse": {
+    "kind": "gif",
+    "response": {
+      "result": true,
+      "data": {
+        "data": [
+          {
+            "id": 8041071659142944,
+            "slug": "hello-hi-662",
+            "title": "Hello",
+            "type": "gif",
+            "tags": [],
+            "blur_preview": "data:image/jpeg;base64,AAAA",
+            "file": {
+              "hd": {
+                "gif": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/hdgif.gif",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "webp": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/hdwebp.webp",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "jpg": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/hdjpg.jpg",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "mp4": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/hdmp4.mp4",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "webm": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/hdwebm.webm",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                }
+              },
+              "md": {
+                "gif": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "webp": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "jpg": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "mp4": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "webm": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/mdwebm.webm",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                }
+              },
+              "sm": {
+                "gif": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/smgif.gif",
+                  "width": 220,
+                  "height": 220,
+                  "size": 1000
+                },
+                "webp": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/smwebp.webp",
+                  "width": 220,
+                  "height": 220,
+                  "size": 1000
+                },
+                "jpg": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/smjpg.jpg",
+                  "width": 220,
+                  "height": 220,
+                  "size": 1000
+                },
+                "mp4": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/smmp4.mp4",
+                  "width": 320,
+                  "height": 320,
+                  "size": 1000
+                }
+              },
+              "xs": {
+                "gif": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/xsgif.gif",
+                  "width": 90,
+                  "height": 90,
+                  "size": 1000
+                },
+                "webp": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/xswebp.webp",
+                  "width": 90,
+                  "height": 90,
+                  "size": 1000
+                },
+                "jpg": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/xsjpg.jpg",
+                  "width": 90,
+                  "height": 90,
+                  "size": 1000
+                }
+              }
+            }
+          },
+          {
+            "type": "ad",
+            "content": "<div id=\"ad\">Ad</div><script>void 0</script>",
+            "width": 320,
+            "height": 100
+          },
+          {
+            "id": 6914457558367152,
+            "slug": "grrr-rawr-sticker",
+            "title": "Grrr\u0007 Rawr Sticker",
+            "type": "sticker",
+            "file": {
+              "md": {
+                "gif": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/stgif.gif",
+                  "width": 189,
+                  "height": 200,
+                  "size": 1000
+                },
+                "webp": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/stwebp.webp",
+                  "width": 189,
+                  "height": 200,
+                  "size": 1000
+                },
+                "webm": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/stwebm.webm",
+                  "width": 189,
+                  "height": 200,
+                  "size": 1000
+                },
+                "png": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/stpng.png",
+                  "width": 189,
+                  "height": 200,
+                  "size": 1000
+                }
+              },
+              "xs": {
+                "webp": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/stxs.webp",
+                  "width": 90,
+                  "height": 95,
+                  "size": 1000
+                }
+              }
+            }
+          },
+          {
+            "id": 3,
+            "slug": "only_hd",
+            "title": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "file": {
+              "hd": {
+                "webp": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/onlyhd.webp",
+                  "width": 320,
+                  "height": 240,
+                  "size": 1000
+                },
+                "mp4": {
+                  "url": "https://evil.example/x.mp4",
+                  "width": 320,
+                  "height": 240
+                }
+              }
+            }
+          },
+          {
+            "type": "ad",
+            "content": "<p>ad</p>"
+          },
+          {
+            "type": "ad",
+            "content": ""
+          },
+          {
+            "id": 4,
+            "slug": "no-file",
+            "title": "No file"
+          },
+          {
+            "id": 5,
+            "slug": "../etc",
+            "title": "bad",
+            "file": {
+              "hd": {
+                "gif": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/hdgif.gif",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "webp": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/hdwebp.webp",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "jpg": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/hdjpg.jpg",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "mp4": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/hdmp4.mp4",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "webm": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/hdwebm.webm",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                }
+              },
+              "md": {
+                "gif": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "webp": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "jpg": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "mp4": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                },
+                "webm": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/mdwebm.webm",
+                  "width": 498,
+                  "height": 498,
+                  "size": 1000
+                }
+              },
+              "sm": {
+                "gif": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/smgif.gif",
+                  "width": 220,
+                  "height": 220,
+                  "size": 1000
+                },
+                "webp": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/smwebp.webp",
+                  "width": 220,
+                  "height": 220,
+                  "size": 1000
+                },
+                "jpg": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/smjpg.jpg",
+                  "width": 220,
+                  "height": 220,
+                  "size": 1000
+                },
+                "mp4": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/smmp4.mp4",
+                  "width": 320,
+                  "height": 320,
+                  "size": 1000
+                }
+              },
+              "xs": {
+                "gif": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/xsgif.gif",
+                  "width": 90,
+                  "height": 90,
+                  "size": 1000
+                },
+                "webp": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/xswebp.webp",
+                  "width": 90,
+                  "height": 90,
+                  "size": 1000
+                },
+                "jpg": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/xsjpg.jpg",
+                  "width": 90,
+                  "height": 90,
+                  "size": 1000
+                }
+              }
+            }
+          },
+          {
+            "id": 6,
+            "slug": "off-host",
+            "title": "off",
+            "file": {
+              "md": {
+                "gif": {
+                  "url": "https://klipy.com.evil.example/a.gif",
+                  "width": 10,
+                  "height": 10
+                }
+              }
+            }
+          },
+          {
+            "id": 7,
+            "slug": "no-size",
+            "title": "no size",
+            "file": {
+              "md": {
+                "gif": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/ns.gif"
+                }
+              }
+            }
+          }
+        ],
+        "current_page": 1,
+        "per_page": 24,
+        "has_next": true
+      }
+    },
+    "items": [
+      {
+        "type": "item",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "tile": {
+          "url": "https://static.klipy.com/ii/935d/14/af/smwebp.webp",
+          "still": "https://static.klipy.com/ii/935d/14/af/smjpg.jpg",
+          "width": 220,
+          "height": 220
+        },
+        "gif": {
+          "provider": "klipy",
+          "kind": "gif",
+          "slug": "hello-hi-662",
+          "title": "Hello",
+          "width": 498,
+          "height": 498,
+          "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+          "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+          "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+          "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+        }
+      },
+      {
+        "type": "ad",
+        "html": "<div id=\"ad\">Ad</div><script>void 0</script>",
+        "width": 320,
+        "height": 100
+      },
+      {
+        "type": "item",
+        "slug": "grrr-rawr-sticker",
+        "title": "Grrr Rawr Sticker",
+        "tile": {
+          "url": "https://static.klipy.com/ii/935d/14/af/stxs.webp",
+          "width": 90,
+          "height": 95
+        },
+        "gif": {
+          "provider": "klipy",
+          "kind": "gif",
+          "slug": "grrr-rawr-sticker",
+          "title": "Grrr Rawr Sticker",
+          "width": 189,
+          "height": 200,
+          "gif": "https://static.klipy.com/ii/935d/14/af/stgif.gif",
+          "webp": "https://static.klipy.com/ii/935d/14/af/stwebp.webp",
+          "still": "https://static.klipy.com/ii/935d/14/af/stpng.png"
+        }
+      },
+      {
+        "type": "item",
+        "slug": "only_hd",
+        "title": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "tile": {
+          "url": "https://static.klipy.com/ii/935d/14/af/onlyhd.webp",
+          "width": 320,
+          "height": 240
+        },
+        "gif": {
+          "provider": "klipy",
+          "kind": "gif",
+          "slug": "only_hd",
+          "title": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "width": 320,
+          "height": 240,
+          "webp": "https://static.klipy.com/ii/935d/14/af/onlyhd.webp"
+        }
+      },
+      {
+        "type": "ad",
+        "html": "<p>ad</p>",
+        "width": null,
+        "height": null
+      }
+    ],
+    "hasNext": true
+  },
+  "parseSticker": {
+    "kind": "sticker",
+    "response": {
+      "result": true,
+      "data": {
+        "data": [
+          {
+            "id": 6914457558367152,
+            "slug": "grrr-rawr-sticker",
+            "title": "Grrr\u0007 Rawr Sticker",
+            "type": "sticker",
+            "file": {
+              "md": {
+                "gif": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/stgif.gif",
+                  "width": 189,
+                  "height": 200,
+                  "size": 1000
+                },
+                "webp": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/stwebp.webp",
+                  "width": 189,
+                  "height": 200,
+                  "size": 1000
+                },
+                "webm": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/stwebm.webm",
+                  "width": 189,
+                  "height": 200,
+                  "size": 1000
+                },
+                "png": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/stpng.png",
+                  "width": 189,
+                  "height": 200,
+                  "size": 1000
+                }
+              },
+              "xs": {
+                "webp": {
+                  "url": "https://static.klipy.com/ii/935d/14/af/stxs.webp",
+                  "width": 90,
+                  "height": 95,
+                  "size": 1000
+                }
+              }
+            }
+          }
+        ],
+        "current_page": 2,
+        "per_page": 24,
+        "has_next": false
+      }
+    },
+    "items": [
+      {
+        "type": "item",
+        "slug": "grrr-rawr-sticker",
+        "title": "Grrr Rawr Sticker",
+        "tile": {
+          "url": "https://static.klipy.com/ii/935d/14/af/stxs.webp",
+          "width": 90,
+          "height": 95
+        },
+        "gif": {
+          "provider": "klipy",
+          "kind": "sticker",
+          "slug": "grrr-rawr-sticker",
+          "title": "Grrr Rawr Sticker",
+          "width": 189,
+          "height": 200,
+          "gif": "https://static.klipy.com/ii/935d/14/af/stgif.gif",
+          "webp": "https://static.klipy.com/ii/935d/14/af/stwebp.webp",
+          "still": "https://static.klipy.com/ii/935d/14/af/stpng.png"
+        }
+      }
+    ],
+    "hasNext": false
+  },
+  "messages": {
+    "valid": [
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "width": 498,
+        "height": 498,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "sticker",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "width": 498,
+        "height": 498,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp"
+      },
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "width": 498,
+        "height": 498,
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "hello-hi-662",
+        "title": "",
+        "width": 498,
+        "height": 498,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif"
+      }
+    ],
+    "invalid": [
+      {
+        "provider": "giphy",
+        "kind": "gif",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "width": 498,
+        "height": 498,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "clip",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "width": 498,
+        "height": 498,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "",
+        "title": "Hello",
+        "width": 498,
+        "height": 498,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "a/b",
+        "title": "Hello",
+        "width": 498,
+        "height": 498,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "width": 0,
+        "height": 498,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "width": 498,
+        "height": 4097,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "width": 1.5,
+        "height": 498,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "width": 498,
+        "height": 498,
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "width": 498,
+        "height": 498,
+        "gif": "http://static.klipy.com/a.gif",
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "width": 498,
+        "height": 498,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+        "webp": "https://evil.example/a.webp",
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "width": 498,
+        "height": 498,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+        "mp4": "https://klipy.com.evil.example/a.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "hello-hi-662",
+        "title": 7,
+        "width": 498,
+        "height": 498,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "https://static.klipy.com/ii/935d/14/af/mdjpg.jpg"
+      },
+      {
+        "provider": "klipy",
+        "kind": "gif",
+        "slug": "hello-hi-662",
+        "title": "Hello",
+        "width": 498,
+        "height": 498,
+        "gif": "https://static.klipy.com/ii/935d/14/af/mdgif.gif",
+        "webp": "https://static.klipy.com/ii/935d/14/af/mdwebp.webp",
+        "mp4": "https://static.klipy.com/ii/935d/14/af/mdmp4.mp4",
+        "still": "javascript:alert(1)"
+      },
+      "not an object"
+    ]
+  },
+  "urls": [
+    {
+      "url": "https://static.klipy.com/ii/a.gif",
+      "valid": true
+    },
+    {
+      "url": "https://static2.klipy.com/ii/a.webp?x=1&y=2",
+      "valid": true
+    },
+    {
+      "url": "https://klipy.com/a.gif",
+      "valid": true
+    },
+    {
+      "url": "http://static.klipy.com/a.gif",
+      "valid": false
+    },
+    {
+      "url": "https://klipy.com.evil.example/a.gif",
+      "valid": false
+    },
+    {
+      "url": "https://evilklipy.com/a.gif",
+      "valid": false
+    },
+    {
+      "url": "https://user@static.klipy.com/a.gif",
+      "valid": false
+    },
+    {
+      "url": "https://static.klipy.com:8443/a.gif",
+      "valid": false
+    },
+    {
+      "url": "https://static.klipy.com/a.gif#frag",
+      "valid": false
+    },
+    {
+      "url": "javascript:alert(1)",
+      "valid": false
+    },
+    {
+      "url": "https://static.klipy.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "valid": false
+    }
+  ]
+}

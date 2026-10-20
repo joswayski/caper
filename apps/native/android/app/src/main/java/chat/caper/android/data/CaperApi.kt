@@ -101,6 +101,9 @@ class CaperApi(
         }.toString())
     }
     suspend fun pushConfig(token: String): PushConfig = get("/api/push/config", token)
+    /** KLIPY's client key and this account's customer id; 404 while GIFs are off. */
+    suspend fun klipyConfig(token: String): KlipyConfig =
+        get<KlipyConfig>("/api/klipy", token).also { require(it.valid) { "Invalid GIF configuration." } }
     /** Registers this FCM token for the calling sign-in session; [appId] is the application ID. */
     suspend fun registerPush(token: String, deviceToken: String, appId: String) { request<Unit>("/api/push/devices", "POST", token, pushDevice(deviceToken, appId)) }
     suspend fun unregisterPush(token: String, deviceToken: String, appId: String) { request<Unit>("/api/push/devices", "DELETE", token, pushDevice(deviceToken, appId)) }
@@ -191,8 +194,11 @@ class CaperApi(
         broadcast: Boolean = false,
         replyToId: String? = null,
         spoilerAttachmentIds: List<String> = emptyList(),
+        /** A KLIPY GIF, sent on its own: never with files, and the text may be empty. */
+        gif: KlipyGif? = null,
     ): ChatMessage {
         require(attachmentIds.size <= AttachmentPolicy.MAX_ATTACHMENTS) { "Attach up to 10 files." }
+        require(gif == null || attachmentIds.isEmpty()) { "A GIF is sent without files." }
         require(attachmentIds.containsAll(spoilerAttachmentIds)) { "Spoilers must be attached files." }
         val message: ChatMessage = post(
             "/api/chat/channels/${channel.pathId()}/messages",
@@ -203,6 +209,7 @@ class CaperApi(
                 if (spoilerAttachmentIds.isNotEmpty()) putJsonArray("spoilerAttachmentIds") { spoilerAttachmentIds.forEach { add(it.assetPathId()) } }
                 if (threadRootId != null) { put("threadRootId", threadRootId); put("broadcast", broadcast) }
                 if (replyToId != null) put("replyToId", replyToId)
+                if (gif != null) put("gif", gif.toJson())
             },
             token, mapOf("x-caper-chat-token" to chatToken),
         )
@@ -269,6 +276,8 @@ class CaperApi(
 
     /** Back to the saved mascot; returns the account without a picture. */
     suspend fun removeAvatar(token: String): Account = request("/api/account/avatar", "DELETE", token)
+
+    suspend fun regenerateAvatar(token: String): Account = request("/api/account/avatar/regenerate", "POST", token, body = "")
 
     suspend fun avatarHistory(token: String, cursor: String? = null): AvatarHistory =
         get("/api/account/avatar/history" + (cursor?.let { "?cursor=${it.assetPathId()}" } ?: ""), token)

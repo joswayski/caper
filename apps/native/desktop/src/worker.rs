@@ -18,6 +18,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub enum Command {
+    RegenerateAvatar {
+        epoch: u64,
+        token: String,
+    },
     AvatarHistory {
         epoch: u64,
         request: Instant,
@@ -259,9 +263,15 @@ pub enum Command {
         /// Resent unchanged on retry: ids join the idempotency hash.
         attachment_ids: Vec<String>,
         spoiler_attachment_ids: Vec<String>,
+        /// A KLIPY GIF sent on its own; resent unchanged on retry.
+        gif: Option<crate::klipy::Gif>,
     },
     /// Whether uploads are configured, and the compression settings.
     AssetUsage {
+        token: String,
+    },
+    /// `GET /api/klipy`: whether GIFs are on, with KLIPY's key.
+    Klipy {
         token: String,
     },
     RefreshAttachmentUrls {
@@ -837,6 +847,11 @@ pub enum Event {
     AssetUsage {
         token: String,
         settings: Option<crate::compress::Compression>,
+    },
+    /// Any failure, like a 404 (off), hides the GIF button.
+    Klipy {
+        token: String,
+        config: Option<crate::klipy::Config>,
     },
     AttachmentUrls {
         token: String,
@@ -1549,6 +1564,32 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 result,
             }
         }
+        Command::RegenerateAvatar { epoch, token } => {
+            let result = api
+                .regenerate_avatar(&token)
+                .map(|account| {
+                    api.reset_chat_session();
+                    crate::pictures::Changed {
+                        applied: crate::pictures::Applied::Account(account),
+                        local: None,
+                    }
+                })
+                .map_err(|error| {
+                    crate::pictures::Failure::new(
+                        if error.status.is_some_and(|status| status.as_u16() == 409) {
+                            "Your picture changed elsewhere. Remove your custom picture before regenerating your avatar."
+                        } else {
+                            "Could not regenerate your avatar. Try again."
+                        },
+                    )
+                });
+            let refreshed = result.is_err().then(|| api.me(&token).ok()).flatten();
+            Event::AvatarSelected {
+                epoch,
+                result,
+                refreshed,
+            }
+        }
         Command::AvatarHistory {
             epoch,
             request,
@@ -1623,6 +1664,14 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
         }
         Command::AssetUsage { token } => Event::AssetUsage {
             settings: api.asset_usage(&token).ok(),
+            token,
+        },
+        Command::Klipy { token } => Event::Klipy {
+            config: api
+                .klipy(&token)
+                .ok()
+                .flatten()
+                .filter(crate::klipy::Config::valid),
             token,
         },
         Command::RefreshAttachmentUrls { token, ids } => Event::AttachmentUrls {
@@ -2059,6 +2108,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
             thread_root_id,
             broadcast,
             reply_to_id,
+            gif,
         } => Event::Sent {
             generation,
             channel: channel.clone(),
@@ -2074,6 +2124,7 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                     &spoiler_attachment_ids,
                     (thread_root_id.as_deref(), broadcast),
                     reply_to_id.as_deref(),
+                    gif.as_ref(),
                 )
                 .map_err(|error| SendFailure {
                     status: error.status.map(|status| status.as_u16()),

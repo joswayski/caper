@@ -6,6 +6,8 @@ import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { readDraft, saveDraft } from "./drafts.ts";
 import EmojiButton from "./EmojiButton.tsx";
+import GifButton from "./GifButton.tsx";
+import type { ChatGif } from "./klipy.ts";
 import { insertEmoji } from "./emoji-autocomplete.ts";
 import MentionTextarea from "./MentionTextarea.tsx";
 import type { MentionCandidate } from "./mentions.ts";
@@ -58,6 +60,8 @@ interface ComposerProps {
   authorId?: string;
   mentionMembers?: MentionCandidate[];
   onSend: (text: string) => Promise<unknown> | undefined;
+  /** Sends a KLIPY GIF on its own; the draft stays. */
+  onSendGif?: (gif: ChatGif, query: string) => Promise<unknown> | undefined;
   onTyping: (active: boolean) => void;
   /** Wraps each resize, which reports whether the height changed, so the
    * conversation can measure its position first and stay on the newest message. */
@@ -84,6 +88,7 @@ export default function Composer({
   authorId,
   mentionMembers,
   onSend,
+  onSendGif,
   onTyping,
   onResize,
   onDraftPresence,
@@ -287,6 +292,18 @@ export default function Composer({
           }}
         />
         <div className="chat-composer-tools">
+          {onSendGif && (
+            <GifButton
+              disabled={disabled || !identityReady || sending || !!pendingSend}
+              onSelect={(gif, query) => {
+                setValidationError(undefined);
+                void Promise.resolve(onSendGif(gif, query)).catch((error: unknown) =>
+                  setValidationError(error instanceof Error ? error.message : "GIF could not be sent."),
+                );
+              }}
+              returnFocus={composerRef}
+            />
+          )}
           <EmojiButton disabled={disabled} onSelect={chooseEmoji} returnFocus={composerRef} />
           {voice.button}
           {/* Touch layouts get a visible send button, as in the native apps; a

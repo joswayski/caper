@@ -29,7 +29,7 @@ async fn calls_in_progress_take_a_changed_name_and_picture() {
         .await
         .insert("voice".into(), room);
 
-    refresh_calls(&state, 7, "New", Some("picture")).await;
+    refresh_calls(&state, 7, "New", 17, Some("picture")).await;
     let rooms = state.channel_registries.lock().await;
     let room = &rooms["voice"];
     assert_eq!(room.participants[&mine_id].name, "New");
@@ -49,14 +49,17 @@ async fn calls_in_progress_take_a_changed_name_and_picture() {
         .find(|p| p["id"] == json!(mine_id))
         .unwrap();
     assert_eq!(me["avatarAsset"], "picture");
+    assert_eq!(me["avatarId"], 17);
     assert_eq!(me["name"], "New");
     drop(rooms);
 
     // Removing the picture clears it; an unchanged call is not rewritten.
-    refresh_calls(&state, 7, "New", None).await;
-    refresh_calls(&state, 9, "Nobody", None).await;
+    refresh_calls(&state, 7, "New", 799, None).await;
+    refresh_calls(&state, 9, "Nobody", 0, None).await;
     let rooms = state.channel_registries.lock().await;
     assert!(rooms["voice"].participants[&mine_id].avatar_asset.is_none());
+    assert_eq!(rooms["voice"].participants[&mine_id].avatar_id, Some(799));
+    assert_eq!(rooms["voice"].participants[&other_id].avatar_id, Some(3));
     assert_eq!(rooms["voice"].revision, 2);
 }
 

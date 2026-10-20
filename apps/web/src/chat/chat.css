@@ -5725,3 +5725,249 @@ a.chat-draft-preview {
     animation: none;
   }
 }
+
+/* KLIPY GIFs and stickers. The GIF tool sits before the emoji tool, so
+   composers with it reserve one more tool's width. */
+.chat-gif-tool span {
+  display: grid;
+  place-items: center;
+  min-width: 24px;
+  height: 17px;
+  padding: 0 3px;
+  border: 1.5px solid currentcolor;
+  border-radius: 4px;
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+:is(.chat-composer, .chat-profile-composer) form:has(.chat-gif-tool) textarea {
+  padding-right: 82px;
+}
+.chat-composer form[data-voice]:has(.chat-gif-tool) textarea {
+  padding-right: 118px;
+}
+.chat-profile-composer form:has(.chat-gif-tool) textarea {
+  padding-right: 118px;
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-composer form:has(.chat-gif-tool) textarea {
+    padding-right: 118px;
+  }
+  .chat-composer form[data-voice]:has(.chat-gif-tool) textarea {
+    padding-right: 154px;
+  }
+}
+@media (pointer: coarse) {
+  :is(.chat-composer, .chat-profile-composer) form:has(.chat-gif-tool) textarea {
+    padding-right: 134px;
+  }
+  .chat-composer form[data-voice]:has(.chat-gif-tool) textarea {
+    padding-right: 178px;
+  }
+}
+.chat-thread-composer form:has(.chat-gif-tool) textarea {
+  padding-right: 92px;
+}
+.chat-thread-composer form[data-voice]:has(.chat-gif-tool) textarea {
+  padding-right: 136px;
+}
+@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  .chat-thread-composer form:has(.chat-gif-tool) textarea {
+    padding-right: 82px;
+  }
+  .chat-thread-composer form[data-voice]:has(.chat-gif-tool) textarea {
+    padding-right: 114px;
+  }
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-thread-composer form:has(.chat-gif-tool) textarea {
+    padding-right: 96px;
+  }
+  .chat-thread-composer form[data-voice]:has(.chat-gif-tool) textarea {
+    padding-right: 146px;
+  }
+}
+.chat-gif-picker:not(.chat-reaction-picker-drawer) {
+  width: min(420px, calc(100vw - 24px));
+  height: min(480px, calc(100dvh - 24px));
+}
+.chat-gif-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.chat-gif-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 0 12px;
+}
+.chat-gif-tabs button {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.chat-gif-tabs button[aria-selected="true"] {
+  border-color: var(--border);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+.chat-gif-tabs button:focus-visible,
+.chat-gif-tile:focus-visible,
+.chat-gif-error button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+}
+.chat-gif-panel .chat-emoji-search {
+  margin: 10px 12px;
+}
+.chat-gif-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: 104px;
+  align-content: start;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 12px 12px;
+}
+.chat-reaction-picker-drawer .chat-gif-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: 128px;
+}
+.chat-gif-tile {
+  position: relative;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-raised);
+  cursor: pointer;
+}
+.chat-gif-grid[data-kind="sticker"] .chat-gif-tile {
+  background: transparent;
+}
+.chat-gif-tile-media,
+.chat-gif-tile-media .chat-gif,
+.chat-gif-tile-media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.chat-gif-tile-media img,
+.chat-gif-tile-media .chat-gif canvas {
+  object-fit: cover;
+}
+.chat-gif-grid[data-kind="sticker"] :is(.chat-gif-tile-media img, .chat-gif-tile-media .chat-gif canvas) {
+  object-fit: contain;
+}
+.chat-gif-tile-media .chat-gif-tile-still {
+  display: none;
+  position: absolute;
+  inset: 0;
+}
+@media (hover: hover) {
+  .chat-gif-tile:hover {
+    outline: 2px solid var(--border);
+    outline-offset: -2px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-gif-tile-media[data-still] .chat-gif {
+    visibility: hidden;
+  }
+  .chat-gif-tile-media[data-still] .chat-gif-tile-still {
+    display: block;
+  }
+}
+.chat-gif-tile-failed {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+.chat-gif-ad {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-row: span 2;
+  align-content: start;
+  justify-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+.chat-gif-ad small {
+  justify-self: start;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+.chat-gif-ad iframe {
+  display: block;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-raised);
+}
+.chat-gif-end {
+  grid-column: 1 / -1;
+  height: 1px;
+}
+.chat-gif-grid > .chat-emoji-empty,
+.chat-gif-error {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.chat-gif-error {
+  padding: 16px;
+  text-align: center;
+  color: var(--error-text);
+  font-size: 0.85rem;
+}
+.chat-gif-error button {
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+.chat-gif-attribution {
+  flex: 0 0 auto;
+  padding: 6px 12px 10px;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  text-align: right;
+}
+.chat-message-gif {
+  max-width: 100%;
+  margin-top: 4px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--surface-raised);
+}
+.chat-message-gif[data-kind="sticker"] {
+  border-radius: 0;
+  background: transparent;
+}
+.chat-message-gif :is(img, video, .chat-gif, canvas) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.chat-message-gif-failed {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}

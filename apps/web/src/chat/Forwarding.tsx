@@ -15,6 +15,7 @@ import { apiError, ChatHistoryError } from "./client.ts";
 import { emojiAsset, emojiCode } from "./emoji.ts";
 import { attachmentsOf, isChatMessage, sequence, type ChatMessage } from "./types.ts";
 import { MessageAttachments } from "./Attachments.tsx";
+import MessageGif from "./MessageGif.tsx";
 import MediaViewer, { type ViewAttachment, type ViewerTarget } from "./MediaViewer.tsx";
 
 export interface ForwardTarget {
@@ -133,6 +134,7 @@ function OriginalMessage({ message, onView }: { message: ChatMessage; onView?: V
           <LinkedText text={message.content.text} />
         </p>
       )}
+      <MessageGif content={message.content} />
       <MessageAttachments attachments={attachmentsOf(message)} onView={onView} />
       {!!message.reactions?.length && (
         <div className="chat-forward-reactions" aria-label="Original reactions">

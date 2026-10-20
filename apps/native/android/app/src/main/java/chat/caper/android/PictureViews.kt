@@ -160,6 +160,11 @@ private val FrameSide = 112.dp
             ChangeMeMascot(name, account.avatarId, FrameSide)
         }
     }
+    if (!hasPicture) {
+        IconButton(onClick = { viewModel.regenerateAvatar() }, enabled = save?.busy != true) {
+            Icon(painterResource(R.drawable.lucide_rotate_ccw), "Regenerate avatar", Modifier.size(20.dp))
+        }
+    }
 }
 
 /** Edit profile's frame without a custom picture: the saved mascot holding up a "change me!" sign. */
@@ -273,6 +278,7 @@ private val FrameSide = 112.dp
             }
         }
         val status = when {
+            save?.regenerating == true -> "Regenerating…"
             save?.uploading == true -> "Uploading…"
             save?.removing == true -> "Removing…"
             unavailable -> "Picture uploads aren’t available right now."
