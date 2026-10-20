@@ -43,6 +43,7 @@ import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.LazyListState
@@ -130,6 +131,7 @@ import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -1222,24 +1224,40 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
     val members = state.selectedSpace?.members ?: return
     val detail = state.selectedSpace ?: return
     var profile by remember(detail.space.id) { mutableStateOf<MentionCard?>(null) }
-    val pages = ((members.size + 24) / 25).coerceAtLeast(1)
+    var query by remember(detail.space.id) { mutableStateOf("") }
+    var searching by remember(detail.space.id) { mutableStateOf(false) }
+    val searchFocus = remember { FocusRequester() }
+    LaunchedEffect(searching) { if (searching) searchFocus.requestFocus() }
     // A private channel's readers lead the list in their own group.
     val channel = state.selectedChannel
     val groups = detail.memberGroups(channel?.id)
-    val shown = detail.memberOrder(channel?.id).drop(state.presencePage * 25).take(25)
+    val shown = detail.memberOrder(channel?.id, query)
     Column(modifier.background(SurfaceSidebar).then(if (compact) Modifier else Modifier)) {
         // The heading starts where the rows' avatars do (list and row insets, 8dp each).
         Row(Modifier.fillMaxWidth().height(54.dp).padding(start = 16.dp, end = if (close != null) 4.dp else 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Members", Modifier.weight(1f), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text("Members", Modifier.padding(end = 6.dp), color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             if (!detail.space.demo) Text(members.size.toString(), color = TextMuted, fontSize = 10.sp, style = TabularNumbers)
+            Spacer(Modifier.weight(1f))
+            if (!detail.space.demo && !searching) IconButton({ searching = true }, Modifier.size(48.dp)) {
+                Icon(painterResource(R.drawable.lucide_search), "Search members", tint = TextMuted)
+            }
             if (close != null) IconButton(close, Modifier.size(48.dp)) {
                 Icon(painterResource(R.drawable.lucide_x), "Close member list", tint = TextMuted)
             }
         }
         HorizontalDivider(color = Border)
+        if (searching) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                BasicTextField(query, { query = it }, Modifier.weight(1f).focusRequester(searchFocus).onPreviewKeyEvent {
+                    if (it.key == Key.Escape) { query = ""; searching = false; true } else false
+                }, singleLine = true, textStyle = TextStyle(color = Text, fontSize = 12.sp), decorationBox = { inner ->
+                    if (query.isEmpty()) Text("Name or username", color = TextMuted, fontSize = 12.sp)
+                    inner()
+                })
+                IconButton({ query = ""; searching = false }, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_x), "Clear and close member search", tint = TextMuted) }
+        }
         if (detail.space.demo) Text("General is open to everyone. People in voice appear in the channel sidebar.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp, lineHeight = 16.sp)
         else if (members.isEmpty()) Text("No members to show.", Modifier.padding(16.dp), color = TextMuted, fontSize = 11.sp)
-        else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(8.dp)) {
+        else LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
             @Composable fun MemberRow(member: Member, quiet: Boolean, ring: Color) {
                 Row(Modifier.fillMaxWidth().heightIn(min = 44.dp).clip(MaterialTheme.shapes.small)
                     .clickable(role = Role.Button, onClickLabel = "Open profile for ${member.displayName}") { profile = mentionCard(member.id, member.username, state) }
@@ -1260,29 +1278,38 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
                     Text(count.toString(), color = TextMuted, fontSize = 10.sp, style = TabularNumbers)
                 }
             }
+            fun androidx.compose.foundation.lazy.LazyListScope.presenceSections(visible: List<Member>, quiet: Boolean, ring: Color) {
+                val sections = listOf(
+                    "Online" to visible.filter { state.presence[it.id] in listOf("online", "idle") },
+                    "Offline" to visible.filter { state.presence[it.id] == "offline" },
+                    "Status unavailable" to visible.filter { state.presence[it.id] !in listOf("online", "idle", "offline") },
+                )
+                sections.forEach { (title, rows) ->
+                    if (rows.isNotEmpty()) {
+                        item(key = "${quiet}-$title") { GroupLabel(title, rows.size, primary = false) }
+                        items(rows, key = { it.id }) { member ->
+                            MemberRow(member, quiet = quiet || state.presence[member.id] == "offline", ring = ring)
+                        }
+                    }
+                }
+            }
             if (groups != null) {
                 val readers = groups.first.map { it.id }.toSet()
                 val top = shown.filter { it.id in readers }
                 val rest = shown.filter { it.id !in readers }
-                // A private channel's readers lead on a slightly brighter neutral fill; the rest follow, quieter.
-                if (top.isNotEmpty()) item(key = "in-channel") {
-                    Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).background(SurfaceSidebarRaised).padding(vertical = 4.dp)) {
-                        GroupLabel("In #${channel?.name.orEmpty()}", groups.first.size, primary = true)
-                        top.forEach { MemberRow(it, quiet = false, ring = SurfaceSidebarRaised) }
-                    }
+                // Private readers lead; the rest of the space follows, quieter.
+                if (top.isNotEmpty()) {
+                    item(key = "in-channel") { GroupLabel("In #${channel?.name.orEmpty()}", top.size, primary = true) }
+                    presenceSections(top, quiet = false, ring = SurfaceSidebar)
                 }
-                if (rest.isNotEmpty()) item(key = "others") {
-                    Column(Modifier.fillMaxWidth().padding(top = if (top.isEmpty()) 0.dp else 12.dp)) {
-                        GroupLabel("Others in this space", groups.second.size, primary = false)
-                        rest.forEach { MemberRow(it, quiet = true, ring = SurfaceSidebar) }
-                    }
+                if (rest.isNotEmpty()) {
+                    item(key = "others") { GroupLabel("Others in this space", rest.size, primary = false) }
+                    presenceSections(rest, quiet = true, ring = SurfaceSidebar)
                 }
-            } else items(shown, key = { it.id }) { member -> MemberRow(member, quiet = false, ring = SurfaceSidebar) }
-        }
-        if (pages > 1) Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            TextButton({ viewModel.setPresencePage(state.presencePage - 1) }, enabled = state.presencePage > 0, shape = MaterialTheme.shapes.small) { Text("Previous", fontSize = 10.sp) }
-            Text("${state.presencePage + 1} / $pages", color = TextMuted, fontSize = 10.sp, style = TabularNumbers)
-            TextButton({ viewModel.setPresencePage(state.presencePage + 1) }, enabled = state.presencePage + 1 < pages, shape = MaterialTheme.shapes.small) { Text("Next", fontSize = 10.sp) }
+            } else {
+                presenceSections(shown, quiet = false, ring = SurfaceSidebar)
+            }
+            if (shown.isEmpty()) item { Text("No matching members.", color = TextMuted, fontSize = 11.sp) }
         }
     }
     profile?.let { card ->

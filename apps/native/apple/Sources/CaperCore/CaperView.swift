@@ -2934,14 +2934,20 @@ private struct MemberPresenceView: View {
     var close: (() -> Void)?
     @State private var profile: MentionCardTarget?
     @State private var pointer = MentionPointer()
+    @State private var searching = false
+    @FocusState private var searchFocused: Bool
     init(model: AppModel, close: (() -> Void)? = nil) { self.model = model; presence = model.presence; self.close = close }
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("Members").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
-                Spacer()
                 if model.detail?.space.demo != true {
                     Text("\(model.detail?.members.count ?? 0)").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                }
+                Spacer()
+                if model.detail?.space.demo != true && !searching {
+                    Button { searching = true } label: { Image(systemName: "magnifyingglass").font(.system(size: 16)) }
+                        .buttonStyle(SidebarIconButton()).accessibilityLabel("Search members")
                 }
                 if let close {
                     Button(action: SwipeTapGuard.unlessSwiping(close)) { CaperIcon(name: "x") }
@@ -2949,14 +2955,30 @@ private struct MemberPresenceView: View {
                 }
             }.padding(.horizontal, 12).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
+            if searching {
+            HStack {
+                    TextField("Name or username", text: $presence.query)
+                        .font(CaperTheme.font(12))
+                        .focused($searchFocused)
+                        .onAppear { searchFocused = true }
+                        #if os(macOS)
+                        .onExitCommand { presence.query = ""; searching = false }
+                        #endif
+                    Button { presence.query = ""; searching = false } label: { CaperIcon(name: "x") }
+                        .buttonStyle(SidebarIconButton()).accessibilityLabel("Clear and close member search")
+            }.padding(.horizontal, 12)
+            }
             ScrollView {
-            VStack(alignment: .leading, spacing: 8) {
+            LazyVStack(alignment: .leading, spacing: 0) {
             if model.detail?.space.demo == true {
                 Text("General is open to everyone. People in voice appear in the channel sidebar.")
                     .font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             } else if model.detail?.members.isEmpty != false {
                 Text("No members to show.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
             } else {
+                if presence.visibleMembers.isEmpty {
+                    Text("No matching members.").font(CaperTheme.font(11)).foregroundStyle(CaperTheme.muted)
+                }
                 if let groups = model.detail?.memberGroups(channelID: model.selectedChannelID) {
                     // A private channel's readers lead on a slightly brighter
                     // neutral fill; the rest of the space follows, quieter.
@@ -2964,29 +2986,22 @@ private struct MemberPresenceView: View {
                     let top = presence.visibleMembers.filter { ids.contains($0.id) }
                     let rest = presence.visibleMembers.filter { !ids.contains($0.id) }
                     if !top.isEmpty {
-                        VStack(alignment: .leading, spacing: 0) {
-                            groupLabel("In #\(channelName)", count: groups.inChannel.count, primary: true)
-                            ForEach(top) { memberRow($0, quiet: false, ring: CaperTheme.sidebarRaised) }
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            groupLabel("In #\(channelName)", count: top.count, primary: true)
+                            presenceSections(top, quiet: false, ring: CaperTheme.sidebarRaised)
                         }.padding(.horizontal, 6).padding(.vertical, 4)
                             .background(CaperTheme.sidebarRaised, in: RoundedRectangle(cornerRadius: 8))
                             .accessibilityElement(children: .contain).accessibilityLabel("In #\(channelName)")
                     }
                     if !rest.isEmpty {
-                        VStack(alignment: .leading, spacing: 0) {
-                            groupLabel("Others in this space", count: groups.others.count, primary: false)
-                            ForEach(rest) { memberRow($0, quiet: true, ring: CaperTheme.sidebar) }
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            groupLabel("Others in this space", count: rest.count, primary: false)
+                            presenceSections(rest, quiet: true, ring: CaperTheme.sidebar)
                         }.padding(.horizontal, 6).padding(.top, top.isEmpty ? 0 : 4)
                             .accessibilityElement(children: .contain).accessibilityLabel("Others in this space")
                     }
                 } else {
-                    ForEach(presence.visibleMembers) { memberRow($0, quiet: false, ring: CaperTheme.sidebar) }
-                }
-                if presence.pageCount > 1 {
-                    HStack {
-                        Button("Previous") { if !SwipeTapGuard.swiping { Task { await presence.showPage(presence.page - 1) } } }.disabled(presence.page == 0)
-                        Spacer(); Text("\(presence.page + 1) / \(presence.pageCount)")
-                        Spacer(); Button("Next") { if !SwipeTapGuard.swiping { Task { await presence.showPage(presence.page + 1) } } }.disabled(presence.page + 1 >= presence.pageCount)
-                    }.font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
+                    presenceSections(presence.visibleMembers, quiet: false, ring: CaperTheme.sidebar)
                 }
             }
             }.padding(.horizontal, 12)
@@ -2996,7 +3011,8 @@ private struct MemberPresenceView: View {
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
             .coordinateSpace(.named(MentionCard.timelineSpace))
             .modifier(MentionCardHost(target: $profile, model: model, viewerID: model.account?.id))
-            .onChange(of: model.detail?.space.id) { _, _ in profile = nil }
+            .onChange(of: model.detail?.space.id) { _, _ in profile = nil; searching = false }
+            .onDisappear { presence.query = ""; searching = false }
     }
     private var channelName: String {
         model.detail?.channels.first { $0.id == model.selectedChannelID }?.name ?? ""
@@ -3009,6 +3025,19 @@ private struct MemberPresenceView: View {
             .foregroundStyle(primary ? CaperTheme.text : CaperTheme.muted)
             .padding(.horizontal, 6).padding(.top, 6).padding(.bottom, 2)
             .accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
+    }
+    @ViewBuilder private func presenceSections(_ visible: [Member], quiet: Bool, ring: Color) -> some View {
+        // Preserve the roster's order within each section.
+        ForEach([PresenceStatus.online, .offline, .unknown], id: \.rawValue) { section in
+            let rows = visible.filter { member in
+                let status = presence.status(for: member)
+                return section == .online ? status == .online || status == .idle : status == section
+            }
+            if !rows.isEmpty {
+                groupLabel(section == .online ? "Online" : section == .offline ? "Offline" : "Status unavailable", count: rows.count, primary: false)
+                ForEach(rows) { memberRow($0, quiet: quiet || section == .offline, ring: ring) }
+            }
+        }
     }
     @ViewBuilder private func memberRow(_ listed: Member, quiet: Bool, ring: Color) -> some View {
         // Rows show live profile updates and your latest saved name and picture.

@@ -444,8 +444,8 @@ retains up to 20 channel/DM snapshots in account-scoped memory, rejects incomple
 context windows, and clears removed/revoked conversations and sign-out data;
 the authorized gateway replays from each retained cursor.
 Apple displays prepared history while its sending session opens and retains the
-same space's member page/presence subscription. Rust desktop retains member
-statuses and pagination, but reconnects its combined chat/presence gateway on
+same space's roster/presence subscription. Rust desktop retains member
+statuses, but reconnects its combined chat/presence gateway on
 channel changes. Web keeps its unchanged member subscription mounted.
 
 Web direct messages use page-scoped prepared histories like channels. Hover/focus
@@ -498,10 +498,12 @@ focus and can be implemented by future desktop/mobile clients.
   and heartbeat traffic do **not** reset activity. Native clients may report their
   own actual input activity. The browser exports `reportActivity()` for future
   local speech detection; merely sending audio packets is not treated as speech.
-- `subscribe {id,kind,channelId?,after?,token?,spaceId?,userIds?}` opens one logical
+- `subscribe {id,kind,channelId?,after?,token?,spaceId?,userIds?,allMembers?}` opens one logical
   stream. `event {id,event}` routes updates to it; `subscribed {id}` follows its
   initial snapshot/replay. `unsubscribe {id}` releases interest. There are at most
-  32 subscriptions per socket and 100 users per presence subscription. Credentials
+  32 subscriptions per socket and 100 explicit IDs per presence subscription.
+  A presence subscription with `allMembers: true` and no `userIds` instead derives
+  the roster from the authenticated space membership, using one slot. Credentials
   never appear in the URL. Sessions and memberships are checked again during use.
 - Account presence is **online** if any live session has recent input, **idle**
   otherwise, and **offline** only after every session lease expires. Default
@@ -512,9 +514,14 @@ focus and can be implemented by future desktop/mobile clients.
   Records represent connected sessions, not installed devices. Multiple browser
   tabs each have a connection. A suspended phone whose heartbeats stop loses its
   lease; native background/voice execution still needs platform-specific support.
-- The space member list watches only its current 25-member page. Pagination swaps
-  the subscription; collapsing releases it. Initial member *metadata* still comes
-  from the space detail endpoint, but presence never loads the entire population.
+- The space member list watches the complete space roster, with Online (including
+  idle), Offline and Status unavailable sections. Private-channel readers remain
+  separate from other space members. There is no UI pagination. The search icon
+  opens a local name/username filter; X or Escape clears it and restores the list
+  without changing the subscription. Section counts describe the filtered roster;
+  the Members count remains the space total. Initial member metadata still comes
+  from the space detail endpoint. Membership changes are repaired within the
+  existing ten-second authorization interval; removed requesters fail closed.
   Gateways batch expiration checks once per watched user per pod every two seconds,
   then push only changed snapshots. Heartbeats do not broadcast user lists. During
   an outage the UI shows unknown/updating rather than inventing offline status.
@@ -522,6 +529,50 @@ focus and can be implemented by future desktop/mobile clients.
   subscribes only where it has local interest, and releases unused subscriptions.
   Committed chat cursors repair missed messages; versioned room snapshots repair
   current mute/deafen/roster state. Typing expires and is intentionally not replayed.
+
+#### Member and channel list performance
+
+The [Discord mobile performance write-up](https://discord.com/blog/supercharging-discord-mobile-our-journey-to-a-faster-app)
+supports predictable row measurement, lazy/recycled views and testing low-end
+devices. It does not establish which list library is fastest for Caper. Our
+Android, Apple and Rust clients are native, not React Native; importing Discord's
+React Native list architecture would not apply directly.
+
+Current preparation: Android member rows are individually keyed `LazyColumn`
+items, Apple uses lazy stacks, Rust desktop skips offscreen member contents, and
+web uses `content-visibility` with a 44px row estimate. The web still retains all
+row DOM nodes; this is not full virtualization. Search does not fetch, subscribe,
+or reconnect. Full-roster presence is still proportional to space membership,
+with complete snapshots on changes, so this is not a large-community capacity claim.
+
+Before increasing the current 100-channel-per-space quota:
+
+1. Benchmark channel switching, fast scrolling, filtering and presence churn with
+   100 channels and 100/1,000/10,000-member fixtures. Include expanded voice rows,
+   avatars, private groups and a low-end Android device. Record p95 input-to-paint,
+   slow/blank frames, peak memory, rendered row count, and gateway bytes/queries.
+2. Keep stable channel/member IDs and explicit row-height variants; flatten group
+   headers and expanded voice rows into list items. Virtualize web channel/member
+   rows using the existing list tooling, and use native lazy/recycled rows, only
+   after these measurements show the bottleneck. Preserve keyboard focus, profile
+   anchors and scroll position during presence moves; overscan must survive fast
+   flings without blank rows. Keep thumbnails bounded and pause offscreen animation.
+3. If wire/DB work dominates, introduce server-maintained presence counts and
+   deltas plus an internally windowed roster/search API before raising capacity.
+   Counts must remain whole-space counts, and search must cover unloaded members.
+   Transport windows must stay invisible to users—no Previous/Next sidebar or
+   per-page count disclaimers. Add repeatable regression budgets from the baseline.
+
+Roster revision validation: web component/gateway tests cover 151 members; real
+Postgres/Valkey gateway tests cover 102 members, cross-space isolation, membership
+removal/restoration and requester revocation. `MEMBERS_ONLY=1` with
+`scripts/test-space-controls.mjs` covers public/private roster filtering and live
+status changes in desktop/narrow Chromium using mocked API/gateway data. Android
+build/JVM checks do not prove native runtime behavior. Rust desktop fixture
+rendering, search, no-match and Escape states were inspected under Xvfb. Apple
+requires Xcode; physical-device scrolling and large-roster capacity remain unverified.
+Deploy the gateway supporting `allMembers` before the updated clients; an older
+gateway rejects the new request instead of providing roster presence.
 
 Typing is best-effort: it is sent only over an already connected socket, never
 queued/replayed after reconnect, and never stored in the command ledger. Lost

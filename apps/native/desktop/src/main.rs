@@ -111,7 +111,6 @@ const VOICE_SESSION_GREEN: Color32 = Color32::from_rgb(74, 168, 107);
 const PIN_GOLD: Color32 = Color32::from_rgb(228, 199, 106);
 const ERROR: Color32 = Color32::from_rgb(255, 155, 130);
 const MESSAGE_TEXT: Color32 = Color32::from_rgb(222, 223, 224);
-const MEMBER_PAGE_SIZE: usize = 25;
 
 #[derive(Clone, Copy)]
 enum NavigationSlide {
@@ -416,6 +415,7 @@ impl EmojiTarget {
 
 #[derive(Clone, Copy)]
 enum NavIcon {
+    Search,
     Chevron,
     ArrowLeft,
     Close,
@@ -1309,7 +1309,8 @@ struct CaperApp {
     typing_edited: Instant,
     typing_pulse: Instant,
     presence: BTreeMap<String, String>,
-    member_page: usize,
+    member_search: String,
+    member_search_open: bool,
     members_visible: bool,
     narrow_members_visible: bool,
     navigation_touch: Option<NavigationTouch>,
@@ -1661,7 +1662,8 @@ impl CaperApp {
             typing_edited: now,
             typing_pulse: now,
             presence: BTreeMap::new(),
-            member_page: 0,
+            member_search: String::new(),
+            member_search_open: false,
             members_visible: true,
             narrow_members_visible: false,
             navigation_touch: None,
@@ -6485,12 +6487,7 @@ impl CaperApp {
         let presence = if self.token.is_some() {
             self.detail
                 .as_ref()
-                .map(|detail| {
-                    let users =
-                        member_page_ids(detail, self.selected_channel.as_deref(), self.member_page);
-                    (detail.space.id.clone(), users)
-                })
-                .filter(|(_, users): &(String, Vec<String>)| !users.is_empty())
+                .map(|detail| (detail.space.id.clone(), Vec::new()))
         } else {
             None
         };
@@ -6806,7 +6803,8 @@ impl CaperApp {
                 if space_changed {
                     self.voice_join_request += 1;
                     self.presence.clear();
-                    self.member_page = 0;
+                    self.member_search.clear();
+                    self.member_search_open = false;
                 }
                 self.generation += 1;
                 if self.profile_navigation == Some(navigation) {
@@ -7256,6 +7254,7 @@ impl CaperApp {
                 self.live = if online { "Live".into() } else { detail };
                 if !online {
                     self.typers.clear();
+                    self.presence.clear();
                 }
             }
             GatewayEvent::Message {
@@ -7476,9 +7475,10 @@ impl CaperApp {
             } if generation == self.generation
                 && self.selected_space.as_deref() == Some(&space) =>
             {
-                for Presence { user_id, status } in members {
-                    self.presence.insert(user_id, status);
-                }
+                self.presence = members
+                    .into_iter()
+                    .map(|Presence { user_id, status }| (user_id, status))
+                    .collect();
             }
             GatewayEvent::Resync {
                 generation,
@@ -15143,11 +15143,9 @@ impl CaperApp {
             None => detail.members.iter().collect(),
         }
         .into_iter()
-        .skip(self.member_page * MEMBER_PAGE_SIZE)
-        .take(MEMBER_PAGE_SIZE)
         .cloned()
         .collect();
-        let groups = split.map(|(readers, others)| {
+        let groups = split.map(|(readers, _)| {
             let name = detail
                 .channels
                 .iter()
@@ -15159,8 +15157,6 @@ impl CaperApp {
                     .iter()
                     .map(|member| member.id.clone())
                     .collect::<std::collections::HashSet<_>>(),
-                readers.len(),
-                others.len(),
             )
         });
         let demo = detail.space.demo;
@@ -15179,7 +15175,7 @@ impl CaperApp {
                     .vline(bounds.left(), bounds.y_range(), Stroke::new(1.0, BORDER));
             }
             let (heading, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), 54.0),
+                egui::vec2(ui.available_width(), 44.0),
                 egui::Sense::hover(),
             );
             // Level with the rows' avatars below (16px in).
@@ -15204,11 +15200,11 @@ impl CaperApp {
                     self.members_visible = false;
                 }
             }
-            let count_end = close.left() - 8.0;
+            let count_end = heading.left() + 76.0;
             if !demo {
                 ui.painter().text(
                     egui::pos2(count_end, heading.center().y),
-                    egui::Align2::RIGHT_CENTER,
+                    egui::Align2::LEFT_CENTER,
                     member_count.to_string(),
                     egui::FontId::proportional(10.4),
                     MUTED,
@@ -15216,7 +15212,32 @@ impl CaperApp {
             }
             ui.painter()
                 .hline(heading.x_range(), heading.bottom(), Stroke::new(1.0, BORDER));
-            ui.add_space(8.0);
+            let mut focus_search = false;
+            if !demo && !self.member_search_open {
+                let search_rect = close.translate(egui::vec2(-32.0, 0.0));
+                let mut search_ui = ui.new_child(egui::UiBuilder::new().max_rect(search_rect));
+                if drawn_icon_button(&mut search_ui, NavIcon::Search, "Search members").clicked() {
+                    self.member_search_open = true;
+                    focus_search = true;
+                }
+            }
+            if self.member_search_open {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    let input = ui.add(egui::TextEdit::singleline(&mut self.member_search).id(egui::Id::new("member-search")).hint_text("Search members").desired_width((ui.available_width() - 56.0).max(0.0)));
+                    if focus_search { input.request_focus(); }
+                    if drawn_icon_button(ui, NavIcon::Close, "Clear and close member search").clicked() {
+                        self.member_search.clear();
+                        self.member_search_open = false;
+                    }
+                });
+                ui.add_space(4.0);
+                if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                    self.member_search.clear();
+                    self.member_search_open = false;
+                }
+            }
             if demo {
                 ui.label(
                     RichText::new(
@@ -15227,9 +15248,8 @@ impl CaperApp {
             );
             return;
         }
-        let page_count = member_count.div_ceil(MEMBER_PAGE_SIZE);
-        // Like web's `overflow-y: auto`: a full page of 25 rows and its pager
-        // stay reachable in short windows instead of painting past the panel.
+        let query = self.member_search.trim().to_lowercase();
+        let members: Vec<_> = members.into_iter().filter(|member| member.display_name.to_lowercase().contains(&query) || member.username.to_lowercase().contains(&query)).collect();
         egui::ScrollArea::vertical()
             .id_salt("member-list")
             .auto_shrink([false, false])
@@ -15239,11 +15259,41 @@ impl CaperApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.add_space(16.0);
-                ui.label(RichText::new("No members to show.").size(11.0).color(MUTED));
+                ui.label(RichText::new(if query.is_empty() { "No members to show." } else { "No members match your search." }).size(11.0).color(MUTED));
             });
         }
+        let label = |ui: &mut egui::Ui, title: &str, count: usize, primary: bool| {
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new(title).family(egui::FontFamily::Name("Satoshi Bold".into())).size(11.0).color(if primary { TEXT } else { MUTED }));
+                ui.label(RichText::new(count.to_string()).size(10.0).color(MUTED));
+            });
+            ui.add_space(4.0);
+        };
         let mut rows = |ui: &mut egui::Ui, members: Vec<model::Member>, quiet: bool, ring: Color32| {
+            // Split the entire filtered roster, after private reader grouping. Push
+            // in source order so each presence section remains stable.
+            let mut sections: [Vec<model::Member>; 3] = Default::default();
             for member in members {
+                let section = match self.presence.get(&member.id).map(String::as_str) {
+                    Some("online" | "idle") => 0,
+                    Some("offline") => 1,
+                    _ => 2,
+                };
+                sections[section].push(member);
+            }
+            for (index, (title, members)) in ["Online", "Offline", "Status unavailable"].into_iter().zip(sections).enumerate() {
+                if members.is_empty() {
+                    continue;
+                }
+                ui.add_space(8.0);
+                label(ui, title, members.len(), false);
+                for member in members {
+                if !ui.is_rect_visible(egui::Rect::from_min_size(ui.next_widget_position(), egui::vec2(ui.available_width(), 44.0))) {
+                    ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::hover());
+                    continue;
+                }
                 let tint = ui.painter().add(egui::Shape::Noop);
                 let row = ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.set_min_width(ui.available_width());
@@ -15254,7 +15304,7 @@ impl CaperApp {
                         .get(&member.id)
                         .map_or("unknown", String::as_str);
                     presence_avatar_on(ui, &member.display_name, member.avatar_id, member.picture(), 30.0, status, ring);
-                    if quiet {
+                    if quiet || index == 1 {
                         emoji::name_label(ui, RichText::new(&member.display_name).size(12.0).color(MUTED), egui::Sense::hover());
                     } else {
                         emoji::name_label(ui, bold(&member.display_name).size(12.0), egui::Sense::hover());
@@ -15270,23 +15320,15 @@ impl CaperApp {
                     self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, avatar_asset: member.avatar_asset, avatar_url: member.avatar_url, is_guest: false, admin: member.admin }, &response, true);
                 }
 
+                }
             }
         };
-        let label = |ui: &mut egui::Ui, title: &str, count: usize, primary: bool| {
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                ui.spacing_mut().item_spacing.x = 6.0;
-                ui.label(RichText::new(title).family(egui::FontFamily::Name("Satoshi Bold".into())).size(11.0).color(if primary { TEXT } else { MUTED }));
-                ui.label(RichText::new(count.to_string()).size(10.0).color(MUTED));
-            });
-            ui.add_space(4.0);
-        };
-        if let Some((name, readers, reader_count, other_count)) = &groups {
+        if let Some((name, readers)) = &groups {
             let (top, rest): (Vec<_>, Vec<_>) = members.into_iter().partition(|member| readers.contains(&member.id));
             if !top.is_empty() {
                 egui::Frame::new().fill(SIDEBAR_RAISED).corner_radius(8).inner_margin(egui::Margin::symmetric(0, 6)).outer_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    label(ui, &format!("In #{name}"), *reader_count, true);
+                    label(ui, &format!("In #{name}"), top.len(), true);
                     rows(ui, top, false, SIDEBAR_RAISED);
                 });
             }
@@ -15294,35 +15336,12 @@ impl CaperApp {
                 ui.add_space(12.0);
                 egui::Frame::new().outer_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    label(ui, "Others in this space", *other_count, false);
+                    label(ui, "Others in this space", rest.len(), false);
                     rows(ui, rest, true, SIDEBAR);
                 });
             }
         } else {
             rows(ui, members, false, SIDEBAR);
-        }
-        if page_count > 1 {
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(self.member_page > 0, egui::Button::new("Previous"))
-                    .clicked()
-                {
-                    self.member_page -= 1;
-                    self.connect_gateway();
-                }
-                ui.label(
-                    RichText::new(format!("{} / {page_count}", self.member_page + 1))
-                        .size(10.0)
-                        .color(MUTED),
-                );
-                if ui
-                    .add_enabled(self.member_page + 1 < page_count, egui::Button::new("Next"))
-                    .clicked()
-                {
-                    self.member_page += 1;
-                    self.connect_gateway();
-                }
-            });
         }
             });
             });
@@ -26088,6 +26107,7 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: NavIcon, color: C
         NavIcon::Eye => egui::include_image!("../resources/icons/eye.svg"),
         NavIcon::EyeOff => egui::include_image!("../resources/icons/eye-off.svg"),
         NavIcon::Trash => egui::include_image!("../resources/icons/trash-2.svg"),
+        NavIcon::Search => egui::include_image!("../resources/icons/search.svg"),
     };
     let image = egui::Image::new(source).tint(color);
     if let Ok(egui::load::TexturePoll::Ready { texture }) =
@@ -29820,16 +29840,6 @@ fn normalize_channel(value: &str) -> String {
     output
 }
 
-fn member_page_ids(detail: &SpaceDetail, channel: Option<&str>, page: usize) -> Vec<String> {
-    detail
-        .member_order(channel)
-        .into_iter()
-        .skip(page * MEMBER_PAGE_SIZE)
-        .take(MEMBER_PAGE_SIZE)
-        .map(|member| member.id.clone())
-        .collect()
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct DisplayDate {
     key: String,
@@ -31038,9 +31048,9 @@ mod tests {
         AccountOperation, CaperApp, ComposerToken, ConnectionReport, DELETE_ACCOUNT_URL, Dialog,
         GatewayEvent, MAX_RESENDS, MESSAGE_TEXT, NavigationTarget, PendingReaction, PendingSend,
         Phase, RESEND_COOLDOWN, RESTORE_LIMIT, Run, SelfDirectTarget, Suggestion, TERRACOTTA, TEXT,
-        display_time, endpoint, media, member_page_ids, message_runs, normalize_channel,
-        permanent_send_rejection, pill_rects, projected_reactions, redundant_invitation,
-        resend_countdown, resend_wait, short_time, take_date_divider, timestamp_parts, voice,
+        display_time, endpoint, media, message_runs, normalize_channel, permanent_send_rejection,
+        pill_rects, projected_reactions, redundant_invitation, resend_countdown, resend_wait,
+        short_time, take_date_divider, timestamp_parts, voice,
     };
     use crate::{mentions, navigation, uploads, voice_note, whats_new, worker};
     use std::time::{Duration, Instant};
@@ -40478,7 +40488,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_member_page_scrolls_below_its_heading() {
+    fn a_full_member_roster_scrolls_below_its_heading() {
         let context = egui::Context::default();
         let mut app = CaperApp::new(
             &context,
@@ -40502,11 +40512,7 @@ mod tests {
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
         let first = text_position(&output, "Member 0");
-        let pager = text_position(&output, "Next");
-        assert!(
-            pager.y > 900.0,
-            "a full page overflows the window: {pager:?}"
-        );
+        assert!(!shows(&output, "Next"));
         let mut events = vec![
             egui::Event::PointerMoved(first),
             egui::Event::MouseWheel {
@@ -40519,10 +40525,60 @@ mod tests {
             render(&mut app, &context, std::mem::take(&mut events));
         }
         let output = render(&mut app, &context, vec![]);
-        let pager = text_position(&output, "Next");
-        assert!(pager.y < 900.0, "the pager scrolls into view: {pager:?}");
+        assert!(
+            shows(&output, "Member 29"),
+            "the whole roster scrolls into view"
+        );
         let heading = text_position(&output, "Members");
         assert!(heading.y < 54.0, "the heading stays put: {heading:?}");
+
+        click_label(&mut app, &context, "Search members");
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Text("  MEMBER_29  ".into())],
+        );
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Member 29"));
+        assert!(!shows(&output, "Member 0"));
+        app.member_search = "  mEmBeR 29  ".into();
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Member 29"));
+        app.member_search = "no such member".into();
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "No members match your search."));
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(app.member_search.is_empty());
+        assert!(!app.member_search_open);
+        app.gateway(GatewayEvent::Presence {
+            generation: app.generation,
+            space: app.selected_space.clone().unwrap(),
+            members: vec![model::Presence {
+                user_id: "member-29".into(),
+                status: "online".into(),
+            }],
+        });
+        assert!(shows(&render(&mut app, &context, vec![]), "Online"));
+        app.gateway(GatewayEvent::Presence {
+            generation: app.generation,
+            space: app.selected_space.clone().unwrap(),
+            members: vec![],
+        });
+        assert!(
+            !shows(&render(&mut app, &context, vec![]), "Online"),
+            "snapshots replace stale presence"
+        );
     }
 
     #[test]
@@ -51730,7 +51786,7 @@ mod tests {
     }
 
     #[test]
-    fn member_presence_pages_use_current_web_page_size() {
+    fn member_roster_keeps_all_private_readers_first() {
         let members = (0..26)
             .map(|index| Member {
                 admin: false,
@@ -51758,18 +51814,20 @@ mod tests {
             channel_invitations: Vec::new(),
             channel_members: Default::default(),
         };
-        assert_eq!(member_page_ids(&detail, None, 0).len(), 25);
-        assert_eq!(member_page_ids(&detail, None, 1), ["member-25"]);
-        // A private channel's readers lead the pages, in the space's order.
+        assert_eq!(detail.member_order(None).len(), 26);
+        // A private channel's readers lead the roster, in the space's order.
         let mut private = detail.clone();
         private.channel_members.insert(
             "leads".into(),
             vec!["member-25".into(), "member-3".into(), "gone".into()],
         );
-        let first = member_page_ids(&private, Some("leads"), 0);
+        let first: Vec<_> = private
+            .member_order(Some("leads"))
+            .into_iter()
+            .map(|member| member.id.as_str())
+            .collect();
         assert_eq!(first[..3], ["member-3", "member-25", "member-0"]);
-        assert_eq!(member_page_ids(&private, Some("leads"), 1), ["member-24"]);
-        assert_eq!(member_page_ids(&private, Some("general"), 1), ["member-25"]);
+        assert_eq!(first.len(), 26);
     }
 
     #[test]
