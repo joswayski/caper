@@ -3375,14 +3375,21 @@ private struct AccountBar: View {
                     Button("Log out", role: .destructive) { Task { await model.logout() } }
                 }
                 else { Button("Sign in") { sheet = .login } }
-            } label: { CaperIcon(name: "settings", size: 20) }.menuStyle(.borderlessButton).menuIndicator(.hidden)
-                #if os(iOS)
-                .frame(width: 44, height: 44)
-                #else
-                .frame(width: 28, height: 28)
-                #endif
+            } label: {
+                CaperIcon(name: "settings", size: 20).foregroundStyle(CaperTheme.muted)
+                    #if os(iOS)
+                    .frame(width: 44, height: 44)
+                    #else
+                    .frame(width: 28, height: 28)
+                    #endif
+                    .contentShape(Rectangle())
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Account settings")
+            }
+                // Native borderless-menu chrome has its own bounds. Use the label's
+                // rect for the hit target, hover wash and focus ring, as for Attach files.
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
                 .fixedSize()
-                .contentShape(Rectangle())
                 // The same hover and focus feedback as the microphone and deafen buttons beside it.
                 #if os(macOS)
                 .focused($settingsFocused)

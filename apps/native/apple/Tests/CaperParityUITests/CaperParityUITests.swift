@@ -2635,7 +2635,10 @@ final class CaperParityUITests: XCTestCase {
         #endif
         let settings = app.descendants(matching: .any)["account-settings-menu"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        XCTAssertEqual(settings.label, "Account settings")
         #if os(iOS)
+        XCTAssertEqual(settings.frame.width, 44, accuracy: 1)
+        XCTAssertEqual(settings.frame.height, 44, accuracy: 1)
         // SwiftUI's nested Menu Button is visible at the bottom of Browse,
         // but AX's scroll-to-visible can target an offscreen ancestor.
         let frame = settings.frame
@@ -2645,9 +2648,17 @@ final class CaperParityUITests: XCTestCase {
             dx: frame.midX / window.width, dy: frame.midY / window.height
         )).tap()
         #else
-        settings.tap()
+        XCTAssertEqual(settings.frame.width, 28, accuracy: 1)
+        XCTAssertEqual(settings.frame.height, 28, accuracy: 1)
+        XCTAssertEqual(settings.frame.midY, headphones.frame.midY, accuracy: 1)
+        settings.hover()
+        capture("account-settings-hover", app: app)
+        // The padded target, not only the gear image, must open the menu.
+        settings.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.15)).tap()
         #endif
         #if os(macOS)
+        XCTAssertTrue(app.descendants(matching: .any)["open-settings"].waitForExistence(timeout: 2))
+        capture("account-settings-open", app: app)
         XCTAssertFalse(app.descendants(matching: .any)["launch-at-login"].exists, "Startup must not appear in the quick menu")
         XCTAssertFalse(app.descendants(matching: .any)["sound-effects"].exists, "Persistent preferences belong in Settings")
         app.descendants(matching: .any)["open-settings"].tap()
@@ -2736,6 +2747,15 @@ final class CaperParityUITests: XCTestCase {
         }
         XCTAssertFalse(staticTexts("Connection statistics", in: app).firstMatch.exists)
         capture("audio-preferences", app: app)
+        #if os(macOS)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(hasKeyboardFocus(settings), "Closing Audio test returns focus to its menu trigger")
+        app.buttons["channel-chan00000001"].hover()
+        capture("account-settings-focus", app: app)
+        app.typeKey(" ", modifierFlags: [])
+        XCTAssertTrue(app.descendants(matching: .any)["open-settings"].waitForExistence(timeout: 2), "The focused trigger opens with Space")
+        app.typeKey(.escape, modifierFlags: [])
+        #endif
     }
 
     func testProfilePictureControlsStayAlignedDuringRegeneration() async throws {
