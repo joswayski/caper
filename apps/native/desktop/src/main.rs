@@ -18357,19 +18357,13 @@ impl CaperApp {
                     });
             });
         }
-        // The message body already ends with 10px padding. Keep its compact
-        // footer 4px below the text rather than stacking that padding and the
-        // timeline's default item gap above it.
+        // The message body already ends with 10px padding. Remove only the
+        // timeline's extra item gap: moving into the body's padding overlaps
+        // its background with the thread summary's hover/pressed feedback.
         if mentions::notifies_team(&message.content.mentions)
             || (!in_thread && message.thread_root_id.is_none() && message.thread.is_some())
         {
-            let body_padding =
-                if message.content.attachments.is_empty() && message.forward.is_none() {
-                    8.0
-                } else {
-                    0.0
-                };
-            ui.add_space(-ui.spacing().item_spacing.y - body_padding);
+            ui.add_space(-ui.spacing().item_spacing.y);
         }
         let controls = egui::Frame::new()
             .inner_margin(egui::Margin {
@@ -41794,6 +41788,87 @@ mod tests {
             Some(name),
         );
         (context, app)
+    }
+
+    #[test]
+    fn thread_summary_feedback_stays_below_the_parent_message() {
+        for grouped in [false, true] {
+            for multiline in [false, true] {
+                let (context, mut app) = fixture("parity-thread");
+                context.enable_accesskit();
+                let mut message = app.timeline.messages().next().unwrap().clone();
+                message.content.text = if multiline {
+                    "First line\nSecond line"
+                } else {
+                    "False"
+                }
+                .into();
+                let mut frame = |events| {
+                    context.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(700.0, 400.0),
+                            )),
+                            events,
+                            ..Default::default()
+                        },
+                        |context| {
+                            egui::CentralPanel::default().show(context, |ui| {
+                                app.message_in(ui, &message, false, false, grouped);
+                            });
+                        },
+                    )
+                };
+                frame(vec![]);
+                let output = frame(vec![]);
+                let parent = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.fill
+                                == egui::Color32::from_rgba_unmultiplied(182, 77, 50, 31) =>
+                        {
+                            Some(rect.rect)
+                        }
+                        _ => None,
+                    })
+                    .expect("selected parent message");
+                let link = node_bounds(&output, "1 reply · View thread").unwrap();
+                frame(vec![egui::Event::PointerMoved(link.center())]);
+                let output = frame(vec![]);
+                let hover = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if rect.fill == egui::Color32::from_white_alpha(15) =>
+                        {
+                            Some(rect.rect)
+                        }
+                        _ => None,
+                    })
+                    .expect("thread summary hover feedback");
+                assert!(
+                    hover.top() >= parent.bottom(),
+                    "summary {hover:?} overlaps parent {parent:?}"
+                );
+                let output = frame(vec![egui::Event::PointerButton {
+                    pos: link.center(),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }]);
+                assert!(
+                    output.shapes.iter().any(|shape| matches!(&shape.shape,
+                        egui::Shape::Rect(rect) if rect.fill == egui::Color32::from_white_alpha(20)
+                            && rect.rect.top() >= parent.bottom()
+                    )),
+                    "pressed feedback also stays below the parent"
+                );
+            }
+        }
     }
 
     #[test]
