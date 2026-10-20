@@ -3856,6 +3856,15 @@ private struct ChatView: View {
             }
             .modifier(Entrance.panel)
     }
+    /// Its own property: inline in `channelBody` it pushed that expression past
+    /// the Swift type checker's time limit.
+    @ViewBuilder private var channelGifButton: some View {
+        if let klipy = chat.klipy {
+            ComposerGifButton(configuration: klipy, enabled: chat.canSendGif(), controller: composerAutocomplete, send: { gif, query in
+                Task { await chat.sendGif(gif, query: query) }
+            }).frame(height: composerMinHeight)
+        }
+    }
     private var channelBody: some View {
         VStack(spacing: 0) {
             HStack(spacing: narrow ? 5 : 10) {
@@ -4213,11 +4222,7 @@ private struct ChatView: View {
                             #if os(iOS)
                             .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
                             #endif
-                            if let klipy = chat.klipy {
-                                ComposerGifButton(configuration: klipy, enabled: chat.canSendGif(), controller: composerAutocomplete, send: { gif, query in
-                                    Task { await chat.sendGif(gif, query: query) }
-                                }).frame(height: composerMinHeight)
-                            }
+                            channelGifButton
                             ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight)
                         }
                         #if os(iOS)
@@ -4783,12 +4788,7 @@ private struct NativeThreadView: View {
                                 #if os(iOS)
                                 .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
                                 #endif
-                            if let klipy = chat.klipy {
-                                ComposerGifButton(configuration: klipy, enabled: chat.canSendGif(inThread: true), controller: composerAutocomplete,
-                                                  accessibilityID: "thread-composer-gif", send: { gif, query in
-                                    Task { await chat.sendGif(gif, inThread: true, query: query) }
-                                })
-                            }
+                            threadGifButton
                             ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading)
                         }
                         #if os(iOS)
@@ -4876,6 +4876,16 @@ private struct NativeThreadView: View {
             // identifier onto every child and a query for the panel is ambiguous.
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("message-thread")
+    }
+
+    /// Kept out of `body`, like the channel's, for the Swift type checker.
+    @ViewBuilder private var threadGifButton: some View {
+        if let klipy = chat.klipy {
+            ComposerGifButton(configuration: klipy, enabled: chat.canSendGif(inThread: true), controller: composerAutocomplete,
+                              accessibilityID: "thread-composer-gif", send: { gif, query in
+                Task { await chat.sendGif(gif, inThread: true, query: query) }
+            })
+        }
     }
 
     private var threadComposer: NativeMessageComposer {
