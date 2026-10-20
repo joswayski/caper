@@ -22,6 +22,9 @@ data class PreparedAttachment(
     val durationMs: Long? = null,
     val preview: File? = null,
     val previewContentType: String? = null,
+    /** A recorded voice message, uploaded as recorded (never compressed) with its [waveform]. */
+    val voice: Boolean = false,
+    val waveform: String? = null,
 )
 
 /**
@@ -42,6 +45,7 @@ class AttachmentUploader(
             token, channelId, file.name, AttachmentPolicy.normalizedType(file.contentType), size,
             sourceByteSize = file.sourceSize.takeIf { it > 0 }, width = file.width, height = file.height, durationMs = file.durationMs,
             previewContentType = preview?.let { file.previewContentType }, previewByteSize = preview?.length(),
+            voice = file.voice, waveform = file.waveform.takeIf { file.voice },
         )
         try {
             currentCoroutineContext().ensureActive()

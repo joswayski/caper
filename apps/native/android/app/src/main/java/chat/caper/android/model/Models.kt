@@ -209,6 +209,15 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     /** The file was deleted: show a placeholder. */
     val unavailable: Boolean = false,
     val spoiler: Boolean = false,
+    /** A recorded voice message (always `audio`): the voice player and transcript instead of a file card. */
+    val voice: Boolean = false,
+    /** Standard base64 of 1–256 normalised peaks; absent draws a flat placeholder. */
+    val waveform: String? = null,
+    /**
+     * `{status, text?}` while or once the server transcribes a voice message. Kept as JSON so an
+     * unexpected shape never drops the file; read it through `transcriptState`.
+     */
+    val transcript: JsonElement? = null,
 ) {
     /** How to show the file. Unknown future states fall back on whether a URL was delivered. */
     val state: AttachmentState get() = when (status) {

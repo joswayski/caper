@@ -216,17 +216,21 @@ class CaperApi(
 
     /**
      * Reserves one upload of the bytes this device will store (after compression): their exact
-     * size, the picked file's size, measured dimensions/duration and an optional preview.
+     * size, the picked file's size, measured dimensions/duration and an optional preview. A
+     * [voice] recording adds its [waveform] (base64 peaks).
      */
     suspend fun createAsset(
         token: String, channel: String, filename: String, contentType: String, byteSize: Long,
         sourceByteSize: Long? = null, width: Int? = null, height: Int? = null, durationMs: Long? = null,
         previewContentType: String? = null, previewByteSize: Long? = null,
+        voice: Boolean = false, waveform: String? = null,
     ): AssetReservation {
         val reservation: AssetReservation = post("/api/assets", buildJsonObject {
             put("channelId", channel.pathId()); put("filename", filename); put("contentType", contentType); put("byteSize", byteSize)
             sourceByteSize?.let { put("sourceByteSize", it) }
             width?.let { put("width", it) }; height?.let { put("height", it) }; durationMs?.let { put("durationMs", it) }
+            // A recorded voice message (durationMs required); the server transcodes and transcribes it.
+            if (voice) { put("voice", true); waveform?.let { put("waveform", it) } }
             if (previewContentType != null && previewByteSize != null) putJsonObject("preview") {
                 put("contentType", previewContentType); put("byteSize", previewByteSize)
             }
