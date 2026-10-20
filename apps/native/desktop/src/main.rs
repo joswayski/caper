@@ -21858,6 +21858,7 @@ impl CaperApp {
             && self.token.is_some()
             && self.uploads.is_some()
             && self.voice_recording.is_none()
+            && self.gif_picker.is_none()
             && !self.is_blocked(person);
         let mut record = false;
         let mut pick = false;
@@ -21947,7 +21948,9 @@ impl CaperApp {
                             record = mic_button(
                                 ui,
                                 can_record,
-                                if editable {
+                                if self.gif_picker.is_some() {
+                                    "Close the GIF picker first"
+                                } else if editable {
                                     "Finish the current voice message first"
                                 } else {
                                     "Wait for this message to send"
@@ -27992,7 +27995,7 @@ impl CaperApp {
         let Some(channel) = self.selected_channel.clone() else {
             return;
         };
-        if !self.can_attach() || self.voice_recording.is_some() {
+        if !self.mic_state().0 {
             return;
         }
         self.error = None;
@@ -28008,7 +28011,7 @@ impl CaperApp {
         person: &str,
         username: &str,
     ) {
-        if self.voice_recording.is_some() {
+        if self.voice_recording.is_some() || self.gif_picker.is_some() {
             return;
         }
         if let Some(draft) = self.profile_drafts.get_mut(person) {
@@ -28460,6 +28463,8 @@ impl CaperApp {
             (false, self.attach_unavailable_reason())
         } else if self.voice_recording.is_some() {
             (false, "Finish the current voice message first")
+        } else if self.gif_picker.is_some() {
+            (false, "Close the GIF picker first")
         } else {
             (true, "")
         }
@@ -48992,6 +48997,24 @@ mod tests {
         let draft = &app.profile_drafts["fixture-alex"];
         assert!(!draft.sending && draft.error.is_none());
         assert_eq!(draft.text, typed);
+    }
+
+    #[test]
+    fn microphones_wait_while_the_gif_picker_is_open() {
+        let (context, mut app) = fixture("parity-voice-profile");
+        assert!(app.mic_state().0);
+        app.gif_picker = Some(crate::klipy::Picker::new(None, None, 0));
+        assert_eq!(app.mic_state(), (false, "Close the GIF picker first"));
+        app.start_voice_recording(&context, None);
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        assert!(
+            app.voice_recording.is_none(),
+            "no composer records meanwhile"
+        );
+        app.gif_picker = None;
+        assert!(app.mic_state().0);
+        app.start_profile_voice_recording(&context, "fixture-alex", "alex");
+        assert!(app.recording_for_profile("fixture-alex"));
     }
 
     #[test]
