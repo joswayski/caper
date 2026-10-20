@@ -26,37 +26,73 @@ pub const MIN_DURATION: Duration = Duration::from_secs(1);
 pub const SAMPLE_RATE: u32 = 48_000;
 /// The WAV fallback's rate: a third of the capture, plenty for speech.
 const FALLBACK_RATE: u32 = 16_000;
-/// The live meter: one bar every 80 ms, as the Audio test's input meter.
-pub const LIVE_INTERVAL: Duration = Duration::from_millis(80);
+/// The live meter: a new bar every 70 ms, scrolling left between them.
+pub const LIVE_INTERVAL: Duration = Duration::from_millis(70);
+/// How often the live level is read while recording (about 60 Hz).
+pub const LIVE_SAMPLE: Duration = Duration::from_millis(16);
+/// The quietest level drawn above the baseline, in dBFS.
+const FLOOR_DB: f32 = -50.0;
 
 pub const ACCESS_NEEDED: &str = "Microphone access is needed to record voice messages.";
 pub const NO_MICROPHONE: &str =
     "No microphone is available. Connect one or choose another input in Audio settings.";
 
-/// The peak of each of `bars` equal slices of `samples`, scaled linearly so
-/// the loudest slice is 255. Silence (or no audio) is all zeros.
-pub fn peaks(samples: &[i16], bars: usize) -> Vec<u8> {
+/// A level on the perceptual scale the waveforms use: dBFS in [-50, 0]
+/// mapped linearly to [0, 1]. `amplitude` is RMS as a fraction of full scale.
+pub fn perceptual(amplitude: f32) -> f32 {
+    if amplitude <= 0.0 || !amplitude.is_finite() {
+        return 0.0;
+    }
+    ((20.0 * amplitude.log10() - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0)
+}
+
+/// The uploaded waveform: the RMS of each of `bars` equal slices of the
+/// whole recording on the perceptual scale, smoothed by a 3-tap moving
+/// average, then normalised so the loudest slice is 255. Silence (or no
+/// audio) is all zeros.
+pub fn waveform(samples: &[i16], bars: usize) -> Vec<u8> {
     if samples.is_empty() || bars == 0 {
         return vec![0; bars];
     }
-    let raw: Vec<u32> = (0..bars)
+    let levels: Vec<f32> = (0..bars)
         .map(|bar| {
-            let start = bar * samples.len() / bars;
-            let end = ((bar + 1) * samples.len() / bars).max(start + 1);
-            samples[start.min(samples.len() - 1)..end.min(samples.len())]
+            let start = (bar * samples.len() / bars).min(samples.len() - 1);
+            let end = ((bar + 1) * samples.len() / bars).clamp(start + 1, samples.len());
+            let slice = &samples[start..end];
+            let power = slice
                 .iter()
-                .map(|sample| u32::from(sample.unsigned_abs()))
-                .max()
-                .unwrap_or(0)
+                .map(|sample| (f64::from(*sample) / 32_768.0).powi(2))
+                .sum::<f64>()
+                / slice.len() as f64;
+            perceptual(power.sqrt() as f32)
         })
         .collect();
-    let loudest = raw.iter().copied().max().unwrap_or(0);
-    if loudest == 0 {
+    let smoothed = smooth(&levels);
+    let loudest = smoothed.iter().copied().fold(0.0_f32, f32::max);
+    if loudest <= 0.0 {
         return vec![0; bars];
     }
-    raw.iter()
-        .map(|peak| ((peak * 255 + loudest / 2) / loudest) as u8)
+    smoothed
+        .iter()
+        .map(|level| (level / loudest * 255.0).round().clamp(0.0, 255.0) as u8)
         .collect()
+}
+
+/// A 3-tap moving average; the ends average the neighbours they have.
+pub fn smooth(levels: &[f32]) -> Vec<f32> {
+    (0..levels.len())
+        .map(|index| {
+            let window = &levels[index.saturating_sub(1)..(index + 2).min(levels.len())];
+            window.iter().sum::<f32>() / window.len() as f32
+        })
+        .collect()
+}
+
+/// Fast attack, slower release: the live meter follows speech without
+/// flickering between frames.
+pub fn envelope(previous: f32, level: f32) -> f32 {
+    let rate = if level > previous { 0.6 } else { 0.12 };
+    previous + (level - previous) * rate
 }
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -100,25 +136,27 @@ pub fn decode_base64(text: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// `count` bar heights (0–1) from any number of peaks: neighbouring peaks
-/// merge by their maximum, and fewer peaks than bars repeat.
-pub fn resample(peaks: &[u8], count: usize) -> Vec<f32> {
-    if peaks.is_empty() {
-        return vec![0.0; count];
+/// `count` bar heights (0–1) from any number of values, by linear
+/// interpolation across the whole waveform (first bar at the first value,
+/// last bar at the last).
+pub fn resample(values: &[u8], count: usize) -> Vec<f32> {
+    match values {
+        [] => vec![0.0; count],
+        [only] => vec![f32::from(*only) / 255.0; count],
+        _ => (0..count)
+            .map(|bar| {
+                let at = if count > 1 {
+                    bar as f32 * (values.len() - 1) as f32 / (count - 1) as f32
+                } else {
+                    (values.len() - 1) as f32 / 2.0
+                };
+                let low = at.floor() as usize;
+                let high = (low + 1).min(values.len() - 1);
+                let t = at - low as f32;
+                (f32::from(values[low]) * (1.0 - t) + f32::from(values[high]) * t) / 255.0
+            })
+            .collect(),
     }
-    (0..count)
-        .map(|bar| {
-            let start = bar * peaks.len() / count;
-            let end = ((bar + 1) * peaks.len() / count).max(start + 1);
-            f32::from(
-                peaks[start..end.min(peaks.len())]
-                    .iter()
-                    .copied()
-                    .max()
-                    .unwrap_or(0),
-            ) / 255.0
-        })
-        .collect()
 }
 
 /// A message's bars: its decoded waveform, or flat (all zero, drawn at the
@@ -134,11 +172,6 @@ pub fn bars(waveform: Option<&str>, count: usize) -> Vec<f32> {
 /// player read.
 pub fn duration_label(ms: u64) -> String {
     crate::player::time_label(ms)
-}
-
-/// The live meter's height for one RMS reading (the Audio test's scaling).
-pub fn live_level(rms: f32) -> f32 {
-    (rms.max(0.0).sqrt() * 2.5).min(1.0)
 }
 
 /// The input volume preference (0–200%) applied to the capture.
@@ -197,7 +230,7 @@ pub fn prepare(samples: &[i16], ffmpeg: Option<&Path>) -> Result<Prepared, Strin
     if samples.is_empty() {
         return Err("No microphone audio was recorded.".into());
     }
-    let waveform = encode_base64(&peaks(samples, WAVEFORM_BARS));
+    let waveform = encode_base64(&waveform(samples, WAVEFORM_BARS));
     let duration = duration_ms(samples.len());
     let (name, content_type, bytes) = match ffmpeg.map(|binary| encode_aac(binary, samples)) {
         Some(Ok(bytes)) => ("voice-message.m4a", "audio/mp4", bytes),
@@ -352,24 +385,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn peaks_are_slice_maxima_normalised_to_the_loudest() {
-        let mut samples = vec![0_i16; 6400];
-        samples[50] = 1000;
-        samples[150] = -2000;
-        samples[6399] = 4000;
-        let slices = peaks(&samples, WAVEFORM_BARS);
-        assert_eq!(slices.len(), 64);
-        assert_eq!(slices[0], 64, "1000 of 4000 is a quarter of 255");
-        assert_eq!(slices[1], 128, "negative peaks count by magnitude");
-        assert_eq!(slices[63], 255, "the loudest slice is 255");
-        assert!(slices[2..63].iter().all(|peak| *peak == 0));
-        assert_eq!(peaks(&[], 64), vec![0; 64]);
-        assert_eq!(peaks(&[0; 100], 64), vec![0; 64], "silence stays flat");
+    fn perceptual_levels_map_minus_fifty_to_zero_db_onto_zero_to_one() {
+        assert_eq!(perceptual(1.0), 1.0);
+        assert!((perceptual(0.01) - 0.2).abs() < 1e-5, "-40 dBFS");
+        assert!((perceptual(0.5) - 0.8796).abs() < 1e-3, "-6 dBFS");
+        assert_eq!(perceptual(0.001), 0.0, "-60 dBFS sits on the floor");
+        assert_eq!(perceptual(0.0), 0.0);
+        assert_eq!(perceptual(f32::NAN), 0.0);
+        assert_eq!(smooth(&[0.0, 3.0, 0.0]), vec![1.5, 1.0, 1.5]);
+        assert_eq!(smooth(&[3.0]), vec![3.0]);
+        assert!(smooth(&[]).is_empty());
+    }
+
+    #[test]
+    fn waveforms_are_smoothed_perceptual_rms_normalised_to_the_loudest() {
+        // 64 slices of 100 samples: loud, quiet, then silent thirds.
+        let samples: Vec<i16> = (0..6400)
+            .map(|index| {
+                let sign = if index % 2 == 0 { 1 } else { -1 };
+                sign * match index / 100 {
+                    0..=20 => 16_384,
+                    21..=41 => 328,
+                    _ => 0,
+                }
+            })
+            .collect();
+        let levels = waveform(&samples, WAVEFORM_BARS);
+        assert_eq!(levels.len(), 64);
+        assert_eq!(levels[0], 255, "the loudest slice is 255");
+        assert_eq!(levels[10], 255);
+        // -40 dBFS against -6 dBFS: 0.2 of 0.88 on the perceptual scale.
+        assert!((55..=60).contains(&levels[31]), "{}", levels[31]);
+        assert_eq!(levels[63], 0, "silence sits at the floor");
+        // The 3-tap average softens each step instead of a cliff.
+        assert!(levels[21] < levels[20] && levels[21] > levels[22]);
+        assert!(levels[42] > 0 && levels[42] < levels[41]);
+        // A lone click in a silent slice is far quieter than sustained sound.
+        let mut click = vec![0_i16; 6400];
+        click[50] = i16::MAX;
+        click[5000..].fill(8_000);
+        let levels = waveform(&click, WAVEFORM_BARS);
+        assert!(levels[0] < levels[60] / 2, "{levels:?}");
+        assert_eq!(waveform(&[], 64), vec![0; 64]);
+        assert_eq!(waveform(&[0; 100], 64), vec![0; 64], "silence stays flat");
+        assert_eq!(waveform(&[9_000; 6400], 64), vec![255; 64]);
         // Fewer samples than bars still fill every slice.
-        let short = peaks(&[i16::MIN, 10, i16::MAX], 64);
-        assert_eq!(short.len(), 64);
-        assert_eq!(short[0], 255);
-        assert_eq!(short[63], 255);
+        assert_eq!(waveform(&[i16::MIN, 10, i16::MAX], 64).len(), 64);
+    }
+
+    #[test]
+    fn the_live_envelope_rises_fast_and_falls_slowly() {
+        let up = envelope(0.0, 1.0);
+        let down = envelope(1.0, 0.0);
+        assert!(up >= 0.5, "attack: {up}");
+        assert!(down >= 0.8, "release: {down}");
+        let mut level = 1.0;
+        for _ in 0..40 {
+            level = envelope(level, 0.0);
+        }
+        assert!(level < 0.01, "settles to silence");
     }
 
     #[test]
@@ -401,18 +475,34 @@ mod tests {
 
     #[test]
     fn waveforms_resample_to_any_bar_count() {
-        let peaks = [0_u8, 255, 51, 102];
-        assert_eq!(resample(&peaks, 2), vec![1.0, 0.4]);
-        assert_eq!(resample(&peaks, 4), vec![0.0, 1.0, 0.2, 0.4]);
-        assert_eq!(
-            resample(&peaks, 8),
-            vec![0.0, 0.0, 1.0, 1.0, 0.2, 0.2, 0.4, 0.4]
-        );
+        let close = |a: Vec<f32>, b: &[f32]| {
+            assert_eq!(a.len(), b.len());
+            assert!(
+                a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5),
+                "{a:?} != {b:?}"
+            );
+        };
+        // Linear interpolation, ends pinned to the first and last values.
+        close(resample(&[0, 255], 5), &[0.0, 0.25, 0.5, 0.75, 1.0]);
+        close(resample(&[0, 255, 51], 3), &[0.0, 1.0, 0.2]);
+        close(resample(&[0, 255, 51], 5), &[0.0, 0.5, 1.0, 0.6, 0.2]);
+        // Fewer bars than values still follows the line between them.
+        close(resample(&[0, 100, 200, 255], 2), &[0.0, 1.0]);
+        close(resample(&[102], 3), &[0.4; 3]);
+        close(resample(&[0, 255], 1), &[0.5]);
         let many: Vec<u8> = (0..=255).collect();
         let rising = resample(&many, 40);
         assert_eq!(rising.len(), 40);
         assert_eq!(rising[39], 1.0);
         assert!(rising.windows(2).all(|pair| pair[0] <= pair[1]));
+        // No steps: neighbouring bars of a 64-value ramp at 150 bars differ
+        // by at most one source step.
+        let ramp: Vec<u8> = (0..64).map(|value| (value * 4) as u8).collect();
+        let fine = resample(&ramp, 150);
+        assert!(
+            fine.windows(2)
+                .all(|pair| pair[1] - pair[0] <= 4.0 / 255.0 + 1e-6)
+        );
         assert_eq!(resample(&[], 3), vec![0.0; 3]);
         // A message without (or with a broken) waveform draws flat bars.
         assert_eq!(bars(None, 5), vec![0.0; 5]);
@@ -431,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn gain_scales_and_clamps_and_live_levels_saturate() {
+    fn gain_scales_and_clamps() {
         let mut samples = [1000_i16, -1000, 30_000, -30_000];
         apply_gain(&mut samples, 100);
         assert_eq!(samples, [1000, -1000, 30_000, -30_000]);
@@ -439,9 +529,6 @@ mod tests {
         assert_eq!(samples, [2000, -2000, i16::MAX, i16::MIN]);
         apply_gain(&mut samples, 0);
         assert_eq!(samples, [0; 4]);
-        assert_eq!(live_level(0.0), 0.0);
-        assert_eq!(live_level(1.0), 1.0);
-        assert!((live_level(0.04) - 0.5).abs() < 1e-6);
     }
 
     #[test]

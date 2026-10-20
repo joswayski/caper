@@ -172,6 +172,20 @@ impl File {
         }
     }
 
+    /// The server's asset for this file, uploaded eagerly or on a send, so
+    /// removing a staged file can cancel it.
+    pub fn uploaded_id(&self) -> Option<String> {
+        self.attachment
+            .as_ref()
+            .map(|file| file.id.clone())
+            .or_else(
+                || match self.upload.as_ref().and_then(|upload| upload.result.get()) {
+                    Some(Ok((_, attachment, _))) => Some(attachment.id.clone()),
+                    _ => None,
+                },
+            )
+    }
+
     pub fn upload_status(&self) -> (&str, bool) {
         match self.upload.as_ref().and_then(|upload| upload.result.get()) {
             Some(Err(error)) => (error, true),
@@ -196,14 +210,12 @@ pub struct Draft {
     pub voice_retry: Option<Box<Send>>,
 }
 
-impl Send {
-    /// Sends only a recorded voice message to the person's DM.
-    pub fn is_voice(&self) -> bool {
+impl Draft {
+    /// One recorded voice message per message.
+    pub fn has_voice(&self) -> bool {
         self.files.iter().any(|file| file.voice.is_some())
     }
-}
 
-impl Draft {
     pub fn needs_upload(&self) -> bool {
         self.editable()
             && self
@@ -251,6 +263,7 @@ impl Draft {
                 cancel: cancel.clone(),
                 retrying: false,
                 open_only: false,
+                voice_only: false,
                 direct: None,
             };
             file.upload = Some(Arc::new(Upload {
@@ -331,6 +344,9 @@ pub struct Send {
     pub retrying: bool,
     /// Explicit navigation resolves the DM but never uploads or writes a message.
     pub open_only: bool,
+    /// A voice message sent alone as soon as recording stopped (the "send
+    /// at once" setting): it keeps the card's draft instead of clearing it.
+    pub voice_only: bool,
     pub direct: Option<model::DirectConversation>,
 }
 
@@ -676,6 +692,7 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             retrying: false,
             open_only: false,
+            voice_only: false,
             direct: None,
         }
     }
@@ -909,7 +926,7 @@ mod tests {
         let size = prepared.size;
         let mut operation = operation(vec![File::voice(Arc::new(prepared))]);
         operation.text = String::new();
-        assert!(operation.is_voice());
+        operation.voice_only = true;
         assert_eq!(operation.files[0].name(), "voice-message.wav");
         let client_id = operation.client_id.clone();
         let (api, requests) = server(move |base| {
