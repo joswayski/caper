@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { test } from "vitest";
@@ -160,4 +161,21 @@ test("players load each provider's own embed page", () => {
     playerUrl({ ...player, provider: "twitch", id: "channel:streamer" }, "caper.chat"),
     "https://player.twitch.tv/?channel=streamer&parent=caper.chat&autoplay=true",
   );
+});
+
+test("shared embed cases keep the same blocks on every client", () => {
+  const { cases } = JSON.parse(
+    readFileSync(new URL("../../../../shared/messages/embed-cases.json", import.meta.url), "utf8"),
+  ) as { cases: { note: string; embed: unknown; blocks: string[] | null; imageCounts?: number[] }[] };
+  assert.ok(cases.length >= 8);
+  for (const { note, embed, blocks, imageCounts } of cases) {
+    const parsed = embedOf(embed);
+    assert.deepEqual(parsed?.blocks.map((block) => block.type) ?? null, blocks, note);
+    if (imageCounts)
+      assert.deepEqual(
+        parsed!.blocks.flatMap((block) => (block.type === "images" ? [block.items.length] : [])),
+        imageCounts,
+        note,
+      );
+  }
 });

@@ -1,0 +1,143 @@
+{
+  "description": "Shared link preview (content.embeds) parsing cases. Every client must keep exactly the listed block types, in order, or drop the card (null). See docs/media.md#link-embeds and apps/web/src/chat/embeds.ts.",
+  "cases": [
+    {
+      "note": "X post with video",
+      "embed": {
+        "version": 1,
+        "url": "https://x.com/jack/status/20",
+        "site": { "name": "X", "domain": "x.com" },
+        "blocks": [
+          {
+            "type": "author",
+            "name": "jack",
+            "handle": "@jack",
+            "url": "https://x.com/jack",
+            "icon": "https://embed.caper.chat/m/sig/i?u=a"
+          },
+          { "type": "text", "text": "just setting up my twttr" },
+          {
+            "type": "video",
+            "url": "https://video.twimg.com/a.mp4",
+            "poster": "https://embed.caper.chat/m/sig/i?u=b",
+            "width": 1280,
+            "height": 720,
+            "durationMs": 29626
+          },
+          { "type": "footer", "text": "309K likes", "timestamp": "2006-03-21T20:50:14.000Z" }
+        ]
+      },
+      "blocks": ["author", "text", "video", "footer"]
+    },
+    {
+      "note": "YouTube player with a play page",
+      "embed": {
+        "version": 1,
+        "url": "https://youtu.be/dQw4w9WgXcQ",
+        "site": { "name": "YouTube", "domain": "youtu.be" },
+        "blocks": [
+          { "type": "author", "name": "Rick Astley", "url": "https://www.youtube.com/@RickAstleyYT" },
+          { "type": "title", "text": "Never Gonna Give You Up", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ" },
+          {
+            "type": "player",
+            "provider": "youtube",
+            "id": "dQw4w9WgXcQ",
+            "play": "https://embed.caper.chat/play/youtube/dQw4w9WgXcQ",
+            "poster": "https://embed.caper.chat/m/sig/i?u=c",
+            "width": 1280,
+            "height": 720
+          }
+        ]
+      },
+      "blocks": ["author", "title", "player"]
+    },
+    {
+      "note": "generic page with a thumbnail image and a GIF-style video",
+      "embed": {
+        "version": 1,
+        "url": "https://news.example/story",
+        "site": { "name": "Example News", "domain": "news.example" },
+        "blocks": [
+          { "type": "title", "text": "A headline" },
+          { "type": "text", "text": "What happened.\nIn two lines." },
+          {
+            "type": "images",
+            "items": [{ "url": "https://embed.caper.chat/m/sig/i?u=d", "alt": "lead" }],
+            "thumbnail": true
+          },
+          { "type": "video", "url": "https://media.example/a.mp4", "gif": true }
+        ]
+      },
+      "blocks": ["title", "text", "images", "video"]
+    },
+    {
+      "note": "unknown and malformed blocks are skipped, the rest kept",
+      "embed": {
+        "version": 1,
+        "url": "https://x.com/jack/status/21",
+        "site": { "name": "X", "domain": "x.com" },
+        "blocks": [
+          { "type": "hologram", "text": "from the future" },
+          { "type": "author", "name": "jack", "icon": "javascript:alert(1)" },
+          { "type": "author", "name": "" },
+          { "type": "title" },
+          { "type": "images", "items": [{ "url": "data:image/png;base64,AA" }] },
+          {
+            "type": "images",
+            "items": [
+              { "url": "https://embed.caper.chat/m/sig/i?u=e", "width": -4 },
+              { "url": "https://embed.caper.chat/m/sig/i?u=f", "width": 2, "height": 2 }
+            ]
+          },
+          { "type": "video", "url": "/tiktok/1/video" },
+          { "type": "player", "provider": "flash", "id": "x" },
+          { "type": "footer" },
+          "not a block",
+          { "type": "text", "text": "kept" }
+        ]
+      },
+      "blocks": ["images", "text"],
+      "imageCounts": [1]
+    },
+    {
+      "note": "a card whose blocks are all unusable is dropped",
+      "embed": {
+        "version": 1,
+        "url": "https://x.com/jack/status/22",
+        "site": { "name": "X", "domain": "x.com" },
+        "blocks": [{ "type": "hologram" }]
+      },
+      "blocks": null
+    },
+    {
+      "note": "unknown version is dropped",
+      "embed": {
+        "version": 2,
+        "url": "https://x.com/a",
+        "site": { "name": "X", "domain": "x.com" },
+        "blocks": [{ "type": "text", "text": "a" }]
+      },
+      "blocks": null
+    },
+    {
+      "note": "a card link that is not http(s) is dropped",
+      "embed": {
+        "version": 1,
+        "url": "javascript:alert(1)",
+        "site": { "name": "X", "domain": "x.com" },
+        "blocks": [{ "type": "text", "text": "a" }]
+      },
+      "blocks": null
+    },
+    {
+      "note": "a card without a site name is dropped",
+      "embed": {
+        "version": 1,
+        "url": "https://x.com/a",
+        "site": { "domain": "x.com" },
+        "blocks": [{ "type": "text", "text": "a" }]
+      },
+      "blocks": null
+    }
+  ]
+}
