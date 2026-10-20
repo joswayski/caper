@@ -48,8 +48,8 @@ test("voice replies use ready transcripts, retain text precedence, and conceal p
   for (const html of render(attachment, "", true)) expect(html).not.toContain("Meet me");
   expect(render(attachment, "", false, true)[0]).not.toContain("Meet me");
   const long = render({ ...attachment, transcript: { status: "ready", text: "A long transcript. ".repeat(20) } })[0];
-  expect(long).toContain("Show more");
-  expect(long).not.toContain("A long transcript. ".repeat(20));
+  // Keep all text for browser line measurement; SSR cannot determine overflow.
+  expect(long).toContain("A long transcript. ".repeat(20).trim());
 });
 
 test("reply previews stay bounded and never load concealed media or video originals", () => {

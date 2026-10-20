@@ -646,6 +646,13 @@ const checkLongQuotePreview = async (layout) => {
   const unblock = await fetch(`${api}/api/blocks/member000001`, { method: "DELETE", headers: own });
   assert.equal(unblock.status, 204);
   browser("open", `${web}/spaces`);
+  // Source navigation can restore a history anchor; bring the virtualized reply
+  // into view after hydration before checking its measured expansion control.
+  wait(
+    '!document.querySelector(".chat-initial-messages") && !!document.querySelector(".chat-panel .chat-scroller[aria-hidden=false]")',
+  );
+  browser("focus", ".chat-panel .chat-scroller[aria-hidden=false]");
+  browser("press", "End");
   wait(`!!document.querySelector('${selector} .chat-reply-expand')`);
   console.log(
     `PASS: ${layout}: short quotes over 100 characters need no expansion; four-line and long quotes have readable three-line previews, underlined text controls and full immutable expansion; attached sockets, URL containment, source jump and blocked-source privacy; independent springs settle within 700ms with static reduced motion.`,

@@ -8847,6 +8847,16 @@ unrendered without Swift/Xcode; Android device rendering is also unverified.
 No Docker daemon is available; the web application build was validated directly.
 This is a client-only correction with no API, migration or infrastructure change.
 
+The link-blue refinement uses each client's existing link color. After integrating
+newer `main`, web checks and all 738 unit tests pass, as do Android compilation/tests
+and the Linux build/Clippy. The focused quote checks pass on desktop and coarse-pointer
+Chromium; the full thread rerun stops at the newer, unrelated finger-follow swipe
+assertion. Quote reload checks now wait for hydration and bring the virtualized
+reply into view before checking its expansion control. Fresh blue collapsed/expanded
+web and Linux captures and a pointer recording were inspected. The new transcript
+SSR test retains the full transcript for browser line measurement rather than
+expecting the removed 100-character cutoff. Apple/device validation gaps remain.
+
 **Deployment order.**
 
 1. No infrastructure apply, new secrets/configuration, database migration or
