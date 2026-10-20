@@ -371,7 +371,7 @@ final class ComposerTextView: UITextView {
     }
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(paste(_:)), isEditable, pasteAttachments != nil,
-           UIPasteboard.general.hasImages || UIPasteboard.general.hasURLs { return true }
+           NativeAttachmentPaste.hasAttachments { return true }
         return super.canPerformAction(action, withSender: sender)
     }
     /// Once Browse has covered the conversation, UIKit gave the composer its

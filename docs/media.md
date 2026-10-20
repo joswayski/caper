@@ -1758,20 +1758,26 @@ A forward embeds a snapshot of
 its source message, including its attachments, whose URLs are signed with the
 forward; they refresh when the forward is reloaded, not through
 `POST /api/assets/urls`. Pinned messages and thread replies show their files.
-Thread replies may carry files through the API; the client composers attach
-files only in channels and DMs.
+Channel, DM, thread-reply and profile-message composers accept attachments.
 
-Pasting copied files or images into a channel/DM text box uses the same draft
+Pasting copied files or images into a composer uses the same draft
 attachments as the file picker: preparation/upload starts immediately, but no
 message is sent until Send/Enter. Existing text stays intact, and ordinary text
 and links still paste at the selection. The 10-file limit, upload errors, retry,
 removal and conversation permissions are unchanged. Web accepts the files the
 browser exposes in the paste event (not HTML images or URLs to download); Apple
-accepts native file URLs and image data; Android accepts clipboard content URIs
-through the text box's Paste menu or Ctrl+V; Rust desktop accepts native file
-lists and images with Ctrl+V. Android keeps its value-based composer and adds a
-file-aware text menu/keyboard handler rather than changing selection/mention
-editing. Rust's egui integration suppresses image-only paste key-downs, so its
+accepts native file URLs and file-like data (including GIF, PDF, audio, video and
+archives), preferring GIF bytes to a static image representation. Text, HTML and
+ordinary web URLs stay with the text view. Android accepts clipboard content
+URIs through the text box's Paste menu or Ctrl+V, and keyboard rich content via
+`commitContent` (including Gboard GIF/sticker and clipboard buttons). It advertises
+`*/*` rather than an image-only filter and retains the temporary URI permission
+until the asynchronous attachment job finishes, including cancellation. Rust
+desktop accepts native file lists and images with Ctrl+V. Copied GIF files keep
+their animation; a source app/browser that exposes only a bitmap has already
+discarded it, and pasting cannot reconstruct the original animation. Android
+keeps its value-based composer and selection/mention editing. Rust's egui
+integration suppresses image-only paste key-downs, so its
 key-up supplies the missing event without duplicating text-bearing pastes.
 
 No API, gateway, database, infrastructure or secret change is needed. Clients
@@ -1791,6 +1797,22 @@ Rust desktop fmt, Clippy, Linux build and 484 tests pass (12 existing ignored).
 Android's Gradle attempt stops at the missing SDK; Apple has no Swift/Apple
 toolchain in this orb. Native OS clipboard/device acceptance remains unverified.
 No Docker daemon is available; the web production build was checked directly.
+
+Keyboard/file paste follow-up (October 20, 2026): Android `compileDebugKotlin`,
+`testDebugUnitTest` (542 tests), `lintDebug`, and `compileDebugAndroidTestKotlin`
+pass. The instrumentation regression exercises the real composer's input
+connection with GIF, PDF, ZIP and custom MIME content, ordinary text and disabled
+uploads; it was compiled, not run. No connected Android device was available,
+and the full APK/native audio build was not run. `npm run check` passes.
+`npm test -- --maxWorkers=1`
+passes all 732 tests (an initial parallel run timed out in the existing GIF
+picture-shrinking test while Gradle was also running). The browser paste suite
+passes at 1280px and 390px, including synthetic animated-GIF/PDF/binary file
+pastes with retained MIME types and byte sizes, real Chromium clipboard
+PNG/text, channel/DM/thread delivery, retries, limits and disabled uploads.
+These use the disposable fixture, not live storage. Apple pasteboard regression
+tests require Apple SDKs; Gboard/OEM keyboard, iOS/macOS pasteboard and Windows/
+Linux desktop clipboard acceptance remain device/OS checks, not browser proof.
 
 ### Editing attachments before sending
 
@@ -8976,10 +8998,11 @@ same command and reuses completed uploads. Web's Edit action warns that the
 previous copy may have arrived before allowing changes.
 
 Clipboard files: web accepts files carried by a browser paste event; Apple uses
-its native Paste action for file URLs and image bytes. Android and Rust desktop
+its native Paste action for file URLs and file-like bytes. Android and Rust desktop
 put **Paste from clipboard** in the Attach menu (beside Photos/Files or Choose
-files): Android reads clipboard content URIs, and egui delivers no event for an
-image-only Ctrl+V. Native clipboard formats and provider permissions vary.
+files): Android reads clipboard content URIs and accepts keyboard `commitContent`
+for any MIME type. Rust repairs egui's missing image-only Ctrl+V event.
+Native clipboard formats and provider permissions vary.
 
 Emoji buttons: channel, thread and profile composers on every client have an
 Emoji button beside the existing `:name:` shortcut. It opens the reaction
