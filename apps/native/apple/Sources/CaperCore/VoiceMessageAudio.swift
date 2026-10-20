@@ -562,7 +562,7 @@ final class ProcessedVoiceCapture: @unchecked Sendable {
             let buffer = list.pointee.mBuffers
             guard let data = buffer.mData, frames > 0 else { return noErr }
             let available = Int(buffer.mDataByteSize) / (MemoryLayout<Float>.size * stride)
-            processor.capture(data.assumingMemoryBound(to: Float.self), frameCount: min(Int(frames), available), stride: stride)
+            processor.capture(data.assumingMemoryBound(to: Float.self), frameCount: UInt(min(Int(frames), available)), stride: UInt(stride))
             return noErr
         }
         engine.attach(sink)
@@ -644,7 +644,7 @@ final class ProcessedVoiceCapture: @unchecked Sendable {
     private func drain(final: Bool) {
         guard file != nil, let samples = chunk.int16ChannelData?[0] else { return }
         while true {
-            let count = processor.read(into: samples, maxFrames: Int(chunk.frameCapacity))
+            let count = Int(processor.read(into: samples, maxFrames: UInt(chunk.frameCapacity)))
             guard count > 0 else { break }
             chunk.frameLength = AVAudioFrameCount(count)
             measure(UnsafeBufferPointer(start: samples, count: count))
