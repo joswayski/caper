@@ -2699,6 +2699,60 @@ final class CaperParityUITests: XCTestCase {
         capture("audio-preferences", app: app)
     }
 
+    func testProfilePictureControlsStayAlignedDuringRegeneration() async throws {
+        try await Self.fixtureControl(["reset": true])
+        try await Self.fixtureControl(["holdAvatarRegeneration": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let app = launch()
+        let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
+                              "Missing your seeded message")
+        try require(row.buttons["Open profile for Fixture Owner"], timeout: 5, "Missing your profile button").tap()
+        try require(app.buttons["mention-card-edit-profile"], timeout: 5, "Missing Edit profile").tap()
+        let username = try require(app.textFields["Username"], timeout: 5, "Missing profile editor")
+        let regenerate = try require(app.buttons["regenerate-avatar"], timeout: 5, "Missing regenerate control")
+        let edit = app.descendants(matching: .any)["change-profile-picture"].firstMatch
+        let originalUsernameFrame = username.frame
+        let originalRegenerateFrame = regenerate.frame
+        let originalEditFrame = edit.frame
+        XCTAssertEqual(regenerate.label, "Regenerate avatar")
+        XCTAssertEqual(edit.label, "Change profile picture")
+        XCTAssertEqual(regenerate.frame.midY, edit.frame.midY, accuracy: 1)
+        XCTAssertLessThan(regenerate.frame.maxX, edit.frame.minX)
+        XCTAssertGreaterThanOrEqual(regenerate.frame.height, 44)
+        capture("profile-picture-idle", app: app)
+
+        regenerate.tap()
+        assertStaticText("Regenerating…", in: app)
+        XCTAssertFalse(regenerate.isEnabled)
+        XCTAssertFalse(edit.isEnabled)
+        XCTAssertEqual(username.frame, originalUsernameFrame, "Progress must not move the form or resize its sheet")
+        XCTAssertEqual(regenerate.frame, originalRegenerateFrame)
+        XCTAssertEqual(edit.frame, originalEditFrame)
+        capture("profile-picture-regenerating", app: app)
+
+        try await Self.fixtureControl(["holdAvatarRegeneration": false])
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: regenerate)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        XCTAssertFalse(app.staticTexts["Regenerating…"].exists)
+        XCTAssertEqual(username.frame, originalUsernameFrame, "Replacing the avatar must not move the form")
+        XCTAssertEqual(regenerate.frame, originalRegenerateFrame)
+        XCTAssertEqual(edit.frame, originalEditFrame)
+        capture("profile-picture-regenerated", app: app)
+
+        #if os(macOS)
+        regenerate.hover()
+        capture("profile-picture-regenerate-hover", app: app)
+        username.hover()
+        edit.hover()
+        capture("profile-picture-edit-hover", app: app)
+        #endif
+        edit.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["Choose image…"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["Photo library…"].firstMatch.exists)
+        XCTAssertFalse(app.descendants(matching: .any)["Files"].firstMatch.exists)
+        capture("profile-picture-menu", app: app)
+    }
+
     func testOwnMessageAuthorOpensProfileEditorRetainsRejectedValuesAndRetries() async throws {
         let app = launch()
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
