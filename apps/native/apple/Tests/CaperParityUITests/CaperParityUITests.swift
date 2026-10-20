@@ -651,10 +651,16 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
         capture("composer-single-line-keyboard", app: app)
 
-        timeline.swipeDown()
+        // A drag that never reaches the keyboard must not resign focus as soon
+        // as scrolling starts. Continue through the keyboard to dismiss it.
+        let dragStart = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        dragStart.press(forDuration: 0.05, thenDragTo: dragStart.withOffset(CGVector(dx: 0, dy: 40)))
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "A short history drag must keep the keyboard open")
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
+        dragStart.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
         let scrollDismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [scrollDismissed], timeout: 5), .completed,
-                       "Dragging message history must dismiss the keyboard")
+                       "Dragging message history through the keyboard must dismiss it")
         XCTAssertEqual(composer.value as? String, short, "Scrolling must keep the unsent draft")
         XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2)
         XCTAssertTrue(focus(composer))
@@ -741,6 +747,31 @@ final class CaperParityUITests: XCTestCase {
         return nil
     }
 
+    func testIPhoneComposerSharesEmojiGifAndStickerSheet() throws {
+        let app = launch()
+        let composer = try require(app.textViews.matching(NSPredicate(format: "label BEGINSWITH %@", "Message #general")).firstMatch,
+                                   timeout: 30, "Missing channel composer")
+        XCTAssertTrue(focus(composer))
+        composer.typeText("Keep this draft")
+        let picker = try XCTUnwrap(visible(app.buttons.matching(NSPredicate(format: "label == %@", "Emojis, GIFs and stickers"))))
+        XCTAssertFalse(app.buttons["composer-gif"].exists, "Mobile must not keep a second GIF control")
+        picker.tap()
+        try require(app.textFields["reaction-picker-search"], timeout: 5, "Emojis must be the default tab")
+        let tabs = app.segmentedControls.firstMatch
+        XCTAssertEqual(tabs.buttons.count, 3)
+        tabs.buttons["GIFs"].tap()
+        try require(app.textFields["gif-picker-search"], timeout: 5, "Missing GIF search")
+        tabs.buttons["Stickers"].tap()
+        try require(app.textFields["gif-picker-search"], timeout: 5, "Missing sticker search")
+        XCTAssertEqual(app.segmentedControls.count, 1, "Media tabs must not nest another picker")
+        tabs.buttons["Emojis"].tap()
+        let search = try require(app.textFields["reaction-picker-search"], timeout: 5, "Missing emoji search")
+        search.tap(); search.typeText("tomato")
+        try require(app.buttons["tomato"], timeout: 5, "Missing tomato emoji").tap()
+        XCTAssertEqual(composer.value as? String, "Keep this draft🍅", "Emoji selection inserts without sending")
+        XCTAssertFalse(app.textFields["reaction-picker-search"].exists, "Selection must dismiss the shared sheet")
+    }
+
     func testIPhoneThreadComposerDoesNotFillItsMaximumHeight() throws {
         let app = launch()
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
@@ -766,7 +797,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
         XCTAssertEqual(send.frame.midY, composer.frame.midY, accuracy: 2,
                        "Send must align with the single-line reply input")
-        for label in ["Attach files", "Insert emoji"] {
+        for label in ["Attach files", "Emojis, GIFs and stickers"] {
             let button = try XCTUnwrap(visible(app.buttons.matching(NSPredicate(format: "label == %@", label))), "Missing \(label)")
             XCTAssertEqual(button.frame.midY, composer.frame.midY, accuracy: 2,
                            "Thread tools must align with the single-line reply input")
@@ -774,6 +805,10 @@ final class CaperParityUITests: XCTestCase {
         let broadcast = try require(app.switches["Also send to #general"], timeout: 5, "Missing named broadcast option")
         XCTAssertLessThanOrEqual(broadcast.frame.maxY, composer.frame.minY,
                                 "The broadcast checkbox must stay above the input, away from Send")
+        broadcast.tap()
+        XCTAssertEqual(broadcast.value as? String, "1")
+        broadcast.tap()
+        XCTAssertEqual(broadcast.value as? String, "0")
         XCTAssertTrue(send.isHittable)
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 3))
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2,
@@ -781,10 +816,14 @@ final class CaperParityUITests: XCTestCase {
         capture("thread-composer-single-line-keyboard", app: app)
 
         let timeline = try XCTUnwrap(visible(app.scrollViews), "Missing the visible thread timeline")
-        timeline.swipeDown()
+        let dragStart = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        dragStart.press(forDuration: 0.05, thenDragTo: dragStart.withOffset(CGVector(dx: 0, dy: 40)))
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "A short thread drag must keep the keyboard open")
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
+        dragStart.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
         let scrollDismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [scrollDismissed], timeout: 5), .completed,
-                       "Dragging thread history must dismiss the keyboard, even without replies")
+                       "Dragging thread history through the keyboard must dismiss it, even without replies")
         XCTAssertEqual(composer.value as? String, "Short reply", "Scrolling must keep the reply draft")
         XCTAssertTrue(back.isHittable, "Vertical scrolling must not close the thread")
         timeline.swipeLeft()
@@ -792,10 +831,15 @@ final class CaperParityUITests: XCTestCase {
         let start = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.7))
         start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 35, dy: 0)))
         XCTAssertTrue(back.isHittable, "A short right drag must not close the thread")
-        timeline.swipeRight()
+        // Start on selectable message text, not the empty part of the list:
+        // the old gesture excluded every UITextView, including read-only bodies.
+        let body = try XCTUnwrap(visible(app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@", "local sample data, not a live conversation"))), "Missing root body")
+        let textStart = body.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5))
+        textStart.press(forDuration: 0.05, thenDragTo: textStart.withOffset(CGVector(dx: 160, dy: 0)))
         let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: back)
         XCTAssertEqual(XCTWaiter.wait(for: [closed], timeout: 5), .completed,
-                       "A right swipe must return to the channel")
+                       "A right swipe starting on message text must return to the channel")
         // Reopening the same root must retain the unsent draft.
         hold(row)
         let reopenActions = try require(app.descendants(matching: .any)["message-actions-sheet"], timeout: 5,

@@ -122,9 +122,12 @@ public enum VoiceMessage {
     /// How far the slide hint has travelled toward cancelling, 0...1.
     public static func slideProgress(translation: Double) -> Double { min(1, max(0, -translation / cancelDistance)) }
 
-    /// The quote line for a message without text: "Voice message" when it carries a voice note.
-    public static func excerptFallback(hasAttachments: Bool, hasVoice: Bool) -> String {
-        hasVoice ? label : hasAttachments ? "Attachment" : "Message"
+    /// Prefer a visible transcript for a quote without typed text.
+    public static func excerptFallback(hasAttachments: Bool, hasVoice: Bool, attachments: [ChatAttachment] = []) -> String {
+        for attachment in attachments where attachment.voice && attachment.kind == .audio && !attachment.spoiler && !attachment.unavailable {
+            if case .text(let text) = attachment.transcript?.display { return text }
+        }
+        return hasVoice ? label : hasAttachments ? "Attachment" : "Message"
     }
 }
 

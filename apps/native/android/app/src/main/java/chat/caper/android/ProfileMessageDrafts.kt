@@ -17,13 +17,16 @@ internal data class ProfileMessageDraft(
     val files: List<DraftAttachmentUi> = emptyList(),
     val sending: Boolean = false,
     val uncertain: Boolean = false,
+    /** An unconfirmed standalone GIF; Retry must preserve its exact payload. */
+    val pendingGif: KlipyGif? = null,
+    val pendingGifQuery: String = "",
     val error: String? = null,
     /** A voice message that didn't send (or isn't confirmed) and waits for Retry or Discard. */
     val voice: ProfileVoiceStatus? = null,
 ) {
     val editable: Boolean get() = !sending && !uncertain
-    val canSend: Boolean get() = !sending && (text.isNotBlank() || files.isNotEmpty()) &&
-        files.all { it.localUrl != null }
+    val canSend: Boolean get() = !sending && (pendingGif != null || ((text.isNotBlank() || files.isNotEmpty()) &&
+        files.all { it.localUrl != null }))
 }
 
 /** [uncertain]: a send may have reached the server, so Retry resends the same message. */
@@ -163,9 +166,13 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
         person: String, id: String?, username: String, token: String,
         session: suspend () -> Pair<String, ChatAuthor>,
         directs: () -> List<DirectConversation>, blocked: () -> Set<String>,
+        gif: KlipyGif? = null,
+        gifQuery: String = "",
     ): Pair<DirectConversation, ChatMessage>? {
         val draft = get(person)
-        if (!draft.canSend) return null
+        if ((gif != null && !draft.editable) || (gif == null && !draft.canSend)) return null
+        val media = draft.pendingGif ?: gif
+        val shareQuery = if (draft.pendingGif != null) draft.pendingGifQuery else gifQuery
         val request = epoch
         fun current() { if (request != epoch) throw CancellationException("Signed out.") }
         fun writable(conversation: DirectConversation? = null) {
@@ -180,23 +187,24 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
         update(person) { it.copy(sending = true, error = null) }
         try {
             writable()
-            check(draft.files.all { prepared[it.key] != null }) { "Remove files that could not be prepared first." }
+            check(media != null || draft.files.all { prepared[it.key] != null }) { "Remove files that could not be prepared first." }
             val (capability, author) = session()
             current()
-            uploading = draft.files.isNotEmpty()
-            val conversation = upload(person, id, username, token, directs, blocked)
+            uploading = media == null && draft.files.isNotEmpty()
+            val conversation = upload(person, id, username, token, directs, blocked, keys = if (media != null) emptySet() else draft.files.map { it.key }.toSet())
             uploading = false
             writable(conversation)
             if (draft.uncertain) check(tracker.retrying(conversation.id, author) != null) { "The conversation changed. The previous send is still unconfirmed." }
-            operation = tracker.begin(conversation.id, author, draft.text, get(person).files.map { requireNotNull(it.attachment).id },
-                spoilerAttachmentIds = get(person).files.filter { it.spoiler }.map { requireNotNull(it.attachment).id }) {}
+            operation = tracker.begin(conversation.id, author, if (media != null) "" else draft.text, if (media != null) emptyList() else get(person).files.map { requireNotNull(it.attachment).id },
+                spoilerAttachmentIds = if (media != null) emptyList() else get(person).files.filter { it.spoiler }.map { requireNotNull(it.attachment).id }, gif = media) {}
             val message = api.sendMessage(token, capability, conversation.id, author, operation.id, operation.text, operation.attachmentIds,
-                spoilerAttachmentIds = operation.spoilerAttachmentIds)
+                spoilerAttachmentIds = operation.spoilerAttachmentIds, gif = operation.gif)
             current()
             tracker.confirm(message)
-            draft.files.forEach { prepared.remove(it.key) }
+            if (media == null) draft.files.forEach { prepared.remove(it.key) }
             // A voice message waiting for Retry stays with the person.
-            mutable.update { drafts -> drafts[person]?.voice?.let { drafts + (person to ProfileMessageDraft(voice = it)) } ?: (drafts - person) }
+            if (media != null) update(person) { it.copy(sending = false, uncertain = false, pendingGif = null, pendingGifQuery = "", error = null) }
+            else mutable.update { drafts -> drafts[person]?.voice?.let { drafts + (person to ProfileMessageDraft(voice = it)) } ?: (drafts - person) }
             pending.remove(person)
             conversations.remove(person)
             return conversation to message
@@ -207,6 +215,8 @@ internal class ProfileMessageDrafts(private val api: CaperApi) {
             if (definitive) operation?.let { tracker.definitiveFailure(it.id) }
             update(person) { it.copy(
                 uncertain = if (operation == null) draft.uncertain else !definitive,
+                pendingGif = if (operation == null) draft.pendingGif else if (!definitive) media else null,
+                pendingGifQuery = if (operation == null) draft.pendingGifQuery else if (!definitive && media != null) shareQuery else "",
                 error = (error as? ApiException)?.code?.let(::directMessageError)
                     ?: if (uploading && error !is IllegalStateException) AttachmentPolicy.uploadErrorMessage(error) else friendlyError(error),
             ) }

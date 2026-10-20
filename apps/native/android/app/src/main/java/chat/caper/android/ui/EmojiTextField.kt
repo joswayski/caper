@@ -138,6 +138,7 @@ import kotlin.math.roundToInt
                     }
                 }, enabled = enabled, singleLine = false, visualTransformation = visualTransformation,
                 interactionSource = interaction, placeholder = placeholder, leadingIcon = leadingIcon, trailingIcon = trailingIcon,
+                contentPadding = OutlinedTextFieldDefaults.contentPadding(start = if (leadingIcon != null) 12.dp else 16.dp),
                 colors = colors, container = {
                     OutlinedTextFieldDefaults.Container(enabled, false, interaction, colors = colors, shape = MaterialTheme.shapes.small)
                 },

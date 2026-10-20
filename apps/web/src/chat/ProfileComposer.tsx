@@ -8,7 +8,7 @@ import { apiError, forgetAccountSession, sharedAccountSession } from "./client.t
 import { DraftAttachments, type DraftAttachment, type DraftEditing } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import EmojiButton from "./EmojiButton.tsx";
-import GifButton, { useKlipy } from "./GifButton.tsx";
+import { useKlipy } from "./GifButton.tsx";
 import { shareKlipy, type ChatGif } from "./klipy.ts";
 import { insertEmoji } from "./emoji-autocomplete.ts";
 import MentionTextarea from "./MentionTextarea.tsx";
@@ -649,10 +649,10 @@ export default function ProfileComposer({
           Enter to send. Shift+Enter for a new line. Your draft is kept if you close this card.
         </span>
         <div className="chat-composer-tools">
-          <EmojiButton disabled={locked} onSelect={chooseEmoji} onOpenChange={setEmojiOpen} returnFocus={input} />
-          <GifButton
+          <EmojiButton
             disabled={locked}
-            onSelect={(gif, query) => void submit({ gif, query })}
+            onSelect={chooseEmoji}
+            onSendGif={(gif, query) => void submit({ gif, query })}
             onOpenChange={setEmojiOpen}
             returnFocus={input}
           />

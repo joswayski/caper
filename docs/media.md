@@ -1773,12 +1773,17 @@ URIs through the text box's Paste menu or Ctrl+V, and keyboard rich content via
 `commitContent` (including Gboard GIF/sticker and clipboard buttons). It advertises
 `*/*` rather than an image-only filter and retains the temporary URI permission
 until the asynchronous attachment job finishes, including cancellation. Rust
-desktop accepts native file lists and images with Ctrl+V. Copied GIF files keep
-their animation; a source app/browser that exposes only a bitmap has already
-discarded it, and pasting cannot reconstruct the original animation. Android
-keeps its value-based composer and selection/mention editing. Rust's egui
-integration suppresses image-only paste key-downs, so its
-key-up supplies the missing event without duplicating text-bearing pastes.
+desktop accepts native file lists, encoded media/documents and images with Ctrl+V.
+Native file references remain first so copied documents of any type keep their
+names and bytes. The encoded fallback recognizes media, PDF, ZIP and generic
+binary data, preferring GIF bytes over a static PNG. Text/HTML and clipboard
+bookkeeping are not attachments. A source app/browser that exposes only a bitmap
+has already discarded the animation, and pasting cannot reconstruct it. Android
+keeps its value-based composer and selection/mention editing. Rust vendors a narrow
+`egui-winit` 0.33.3 patch to deliver paste intent on key-down even without text;
+the composer then reads its file formats. This replaces the old key-up fallback,
+which missed pastes when Ctrl was released before V. See the vendored `PATCHES.md`
+when upgrading egui.
 
 No API, gateway, database, infrastructure or secret change is needed. Clients
 can release independently against the existing upload API; rolling a client
@@ -1813,6 +1818,16 @@ PNG/text, channel/DM/thread delivery, retries, limits and disabled uploads.
 These use the disposable fixture, not live storage. Apple pasteboard regression
 tests require Apple SDKs; Gboard/OEM keyboard, iOS/macOS pasteboard and Windows/
 Linux desktop clipboard acceptance remain device/OS checks, not browser proof.
+
+Desktop encoded-file follow-up (October 20, 2026): the Linux build, Rust fmt and
+full desktop suite pass (725 tests, 20 ignored; two test threads to stay within
+orb memory limits). The separately run isolated-X11 clipboard test passes for
+original GIF/PNG bytes, PDF/ZIP/binary data, copied files and text/HTML controls.
+The inspected Linux UI recording shows GIF and binary paste adding one attachment
+each without losing draft text, including releasing Ctrl before V. Ordinary text
+paste and subsequent typing also work. Uploads were deliberately offline; these
+checks prove clipboard ingestion, not live storage. Windows/Wayland clipboard
+acceptance and physical-device keyboard behavior still need their own checks.
 
 ### Editing attachments before sending
 
@@ -2452,8 +2467,8 @@ npx wrangler deploy --env staging
 #### Attach drawer (October 19, 2026)
 
 Attach (the composer's `+`, in channel, thread and profile-DM composers) opens
-the attach drawer on phones and an attach menu on desktop. The drawer is the
-base for later tabs (emoji, GIFs, stickers); none are shown until they work.
+the attach drawer on phones and an attach menu on desktop. The smiley opens a
+separate, unified Emojis / GIFs / Stickers drawer on mobile; `+` stays for files.
 Phones keep a photo library apart from their files, so they offer both; desktop
 web, the Mac and Rust desktop offer one unfiltered "Upload a file", as Discord
 does.
@@ -2493,6 +2508,19 @@ does.
   Files. Each choice opens the browser's picker.
 - **Rust desktop** (`attach_drawer.rs`): a menu above `+` with "Upload a file"
   (the system dialog, no filter). Profile messages add Paste from clipboard.
+
+**Gallery previews (October 20, 2026):** iOS and Android animate local GIF
+originals in visible Photos tiles, with a GIF badge even when playback falls
+back to a still. At most six GIFs animate at once; leaving the viewport,
+backgrounding the app, or reduced motion stops them. Android decodes at 120dp;
+iOS caps each animation at 240px, 200 frames and 2 MiB decoded, downsampling
+to fit. iOS rejects encoded data above 16 MiB after PhotoKit supplies it and
+does not download cloud-only originals just for autoplay. Videos use a play
+icon plus duration rather than concurrent gallery video players. Selected
+uploads still use the original staging path, not these previews. The system
+photo picker opened by mobile web owns its previews; Caper cannot change them.
+Native gallery playback/lifecycle and rendered drawers still need device
+validation; browser checks do not establish it.
 
 Google Play: photo/video permissions need the Photo and Video Permissions
 declaration in Play Console (App content); the text is in
@@ -2786,11 +2814,14 @@ and a live transcript round trip still need checking by hand.
 
 ## GIFs and stickers (KLIPY)
 
-The composer's **GIF** button opens a KLIPY picker with **GIFs** and
-**Stickers** tabs, a "Search KLIPY" field (KLIPY requires that placeholder) and
-trending results until something is typed. Choosing one sends it at once as its
-own message; the composer draft stays. The button is hidden until the API has
-`KLIPY_APP_KEY`.
+Mobile web, iOS and Android composers have one **smiley** button opening
+**Emojis / GIFs / Stickers**, defaulting to Emojis. This covers channels, DMs,
+threads and profile-card composers. Emoji selection inserts at the caret;
+choosing a GIF or sticker sends it at once as its own message, keeping the typed
+draft and staged files. Media tabs show an unavailable message without KLIPY.
+Desktop keeps its separate emoji and **GIF** controls; the GIF control is hidden
+until the API has `KLIPY_APP_KEY`. Media tabs use "Search KLIPY" (KLIPY requires
+that placeholder) and trending results until something is typed.
 
 KLIPY's [integration requirements](https://docs.klipy.com/integration-requirements)
 shape the design:
@@ -2914,7 +2945,7 @@ them only to mobile user agents.
 
 | Variable | Where | Meaning |
 | --- | --- | --- |
-| `KLIPY_APP_KEY` | API | KLIPY Partner Panel key (letters, digits, `-` or `_`). Unset or malformed hides the picker everywhere. Needs `AUTH_SECRET`. |
+| `KLIPY_APP_KEY` | API | KLIPY Partner Panel key (letters, digits, `-` or `_`). Unset or malformed disables mobile media tabs and hides desktop GIF controls. Needs `AUTH_SECRET`. |
 
 Rollout:
 
@@ -2932,9 +2963,18 @@ Rollout:
 | --- | --- | --- | --- |
 | API | — | — | Unit tests, shared cases and a Postgres send/retry/reply/edit test pass. |
 | Web | Channel, thread and profile-card composers; popover, or bottom drawer on touch layouts | Touch layouts | Vitest shared cases pass. Chromium was driven against the fixture with KLIPY mocked by route (labelled test mock): desktop, 390 px touch (ads row), reduced motion, paging, search, send and share. |
-| Android | Channel and thread composers; bottom sheet | Yes | Compiles; unit tests incl. shared cases pass. Not run on a device or emulator. |
+| Android | Channel, thread and profile-card composers; unified bottom sheet | Yes | Kotlin and instrumentation tests compile; 550 JVM tests and lint pass for the unified picker change. Instrumentation tests and gallery animation have not run on a device. |
 | iPhone / macOS | Channel, thread and profile-card composers; sheet / popover | iPhone only | Foundation core and shared cases checked with Swift on Linux. Not compiled with the Apple SDK, not run. |
 | Desktop (Rust) | Channel/DM and thread composers; popup | No (skipped) | fmt, clippy and tests incl. shared cases pass. Not checked on screen. The profile-card first-DM composer has no GIF button yet. |
+
+Unified mobile-picker validation: web check/build and 738 web/shared tests pass.
+The extended `scripts/test-emoji-composer.mjs` exercises three tabs in one
+dialog, emoji insertion, GIF/sticker sends retaining the draft, keyboard tab
+navigation and Escape focus against the disposable fixture, with KLIPY mocked.
+Touch Chromium (390px, coarse pointer, 2x) covers results, empty/error/retry
+states and scroll/viewport bounds; desktop retains separate controls. iOS
+implementation and UI regression tests are not compiled or run in this Linux
+orb (no Apple toolchain or connected runner).
 
 Not yet validated anywhere: live KLIPY responses (the shape of ad objects is
 undocumented beyond `type` and `content`), real ad delivery and taps, physical
@@ -3614,6 +3654,26 @@ order). Desktop/wide clients use a right panel; narrow web, Android and iPhone
 take over the conversation screen. The selected root has a slightly stronger
 pin-gold wash; other messages are not dimmed. No nested threads: replying from a
 broadcast opens its original root. The same contracts also apply to DMs.
+
+On phones, rightward drags over thread history/header move the thread over the
+channel beneath it. Releasing at 72px/points/dp returns to the channel; short or
+cancelled drags settle back. The release takes the shared 140ms fast timing.
+Vertical scrolling, selected text, and composer gestures remain separate; drafts
+survive returning. iPhone read-only message text can start a swipe too. Apple and
+Android phone broadcast checkboxes update without a checkmark/color tween.
+
+Thread-swipe validation (October 20, 2026): `npm run check`, all 737 Vitest tests,
+and `scripts/test-message-threads.mjs` pass. Chromium touch emulation checks
+finger tracking before release, snap-back, direction/cancellation/composer guards,
+draft retention, and reduced motion; rendered states and a recording are inspected
+separately. These are disposable fixtures, not physical-phone or Safari evidence.
+Apple's text-start swipe/checkbox UI regression needs Xcode and an iPhone simulator;
+neither is available in this Linux orb.
+Android's `testDebugUnitTest` passes 548 tests; `compileDebugAndroidTestKotlin` and
+`lintDebug` pass (lint retains warnings). The new instrumentation regression covers
+tracking across rendered frames and release/cancellation, but has not run: no
+Android device is connected. Native rendering, keyboard/insets and device smoothness
+remain unverified; Rust desktop's mouse-only navigation is unchanged.
 
 The unchecked **Also send to channel** option publishes one reply in both places,
 not a copied root message. IDs, content and reactions are shared. Drafts and the

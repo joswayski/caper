@@ -4616,6 +4616,9 @@ a.chat-draft-preview {
   .chat-attach:focus-visible {
     outline-offset: -2px;
   }
+  :is(.chat-composer, .chat-profile-composer) form[data-attach] textarea {
+    padding-left: 42px;
+  }
   .chat-thread-send-row > .chat-thread-tools {
     margin: 5px 5px 5px 0;
   }
@@ -5861,6 +5864,19 @@ a.chat-draft-preview {
   height: 100%;
   min-height: 0;
 }
+.chat-composer-picker {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.chat-composer-picker-tabs {
+  margin-bottom: 8px;
+}
+.chat-composer-picker .chat-composer-picker-tabs button {
+  flex: 1;
+  min-height: 44px;
+}
 .chat-gif-tabs {
   display: flex;
   flex: 0 0 auto;
@@ -5917,6 +5933,10 @@ a.chat-draft-preview {
   border-radius: 8px;
   background: var(--surface-raised);
   cursor: pointer;
+}
+.chat-gif-tile:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .chat-gif-grid[data-kind="sticker"] .chat-gif-tile {
   background: transparent;

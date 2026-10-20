@@ -46,6 +46,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import chat.caper.android.data.KlipyAdRequest
 import chat.caper.android.data.KlipyItem
 import chat.caper.android.data.KlipyKind
@@ -104,22 +105,46 @@ private fun klipyRequest(context: Context, url: String, animate: Boolean): Image
     }
 }
 
-/** The composer's GIF control, beside the emoji button; it opens the KLIPY picker. */
-@Composable internal fun GifButton(
-    enabled: Boolean,
-    load: suspend (KlipyKind, String, Int, KlipyAdRequest?) -> KlipyPage,
-    /** Sends at once; false when nothing was sent. The query is KLIPY's share trigger `q`. */
+/** One sheet, with local emoji insertion and immediate KLIPY sending. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable internal fun ComposerMediaPicker(
+    load: (suspend (KlipyKind, String, Int, KlipyAdRequest?) -> KlipyPage)?,
+    available: Boolean,
+    onDismiss: () -> Unit,
     send: (KlipyGif, KlipyKind, String) -> Boolean,
+    insert: (String) -> Unit,
 ) {
-    var open by rememberSaveable { mutableStateOf(false) }
-    val tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f)
-    IconButton({ open = true }, Modifier.size(48.dp).semantics { contentDescription = "Send a GIF" }, enabled = enabled) {
-        Box(Modifier.border(1.5.dp, tint, RoundedCornerShape(4.dp)).padding(horizontal = 3.dp, vertical = 1.dp)) {
-            Text("GIF", color = tint, fontSize = 10.sp, lineHeight = 12.sp, fontWeight = FontWeight.Bold)
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    val focus = LocalFocusManager.current
+    val height = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.8f
+    ModalBottomSheet(onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Surface, contentColor = Text) {
+        Column(Modifier.fillMaxWidth().height(height).navigationBarsPadding()) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                listOf("Emojis", "GIFs", "Stickers").forEachIndexed { index, label ->
+                    val active = index == tab
+                    Box(Modifier.weight(1f).heightIn(min = 48.dp).clip(MaterialTheme.shapes.small)
+                        .background(if (active) SurfaceRaised else Color.Transparent)
+                        .clickable { focus.clearFocus(); tab = index }
+                        .semantics { selected = active; role = Role.Tab }, contentAlignment = Alignment.Center) {
+                        Text(label, color = if (active) Text else TextMuted, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
+                        if (active) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth(0.4f).height(2.dp).background(TerracottaBright))
+                    }
+                }
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                when {
+                    tab == 0 -> EmojiPickerContent(onDismiss, select = insert)
+                    !available || load == null -> Text("GIFs and stickers are unavailable right now.", Modifier.align(Alignment.Center).padding(24.dp), color = TextMuted)
+                    else -> key(tab) {
+                        GifPickerContent(load, if (tab == 1) KlipyKind.GIFS else KlipyKind.STICKERS) { gif, kind, query ->
+                            if (send(gif, kind, query)) onDismiss()
+                        }
+                    }
+                }
+            }
         }
-    }
-    if (open) GifPicker(load, onDismiss = { open = false }) { gif, kind, query ->
-        if (send(gif, kind, query)) open = false
     }
 }
 
@@ -138,15 +163,19 @@ private fun adRequest(context: Context, gridWidth: Int): KlipyAdRequest {
  * Results keep KLIPY's order and mix, ads included. Tapping one sends it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun GifPicker(
+@Composable private fun GifPickerContent(
     load: suspend (KlipyKind, String, Int, KlipyAdRequest?) -> KlipyPage,
-    onDismiss: () -> Unit,
+    kind: KlipyKind,
     select: (KlipyGif, KlipyKind, String) -> Unit,
 ) {
     val context = LocalContext.current
     val focus = LocalFocusManager.current
     val still = reducedMotion()
-    var kind by rememberSaveable { mutableStateOf(KlipyKind.GIFS) }
+    var resumed by remember { mutableStateOf(false) }
+    LifecycleResumeEffect(Unit) {
+        resumed = true
+        onPauseOrDispose { resumed = false }
+    }
     var query by rememberSaveable { mutableStateOf("") }
     var results by remember { mutableStateOf<List<KlipyItem>>(emptyList()) }
     // The tab and search text the shown results answer: the share trigger's `q`.
@@ -157,7 +186,6 @@ private fun adRequest(context: Context, gridWidth: Int): KlipyAdRequest {
     var retries by remember { mutableIntStateOf(0) }
     var gridWidth by remember { mutableIntStateOf(0) }
     val grid = rememberLazyStaggeredGridState()
-    val height = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() } * 0.8f
 
     // One loop per tab and search: the key change cancels it, which is also the debounce.
     LaunchedEffect(kind, query, gridWidth > 0) {
@@ -190,63 +218,45 @@ private fun adRequest(context: Context, gridWidth: Int): KlipyAdRequest {
         }
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = Surface, contentColor = Text,
-    ) {
-        Column(Modifier.fillMaxWidth().height(height).padding(horizontal = 12.dp).navigationBarsPadding(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("GIFs", Modifier.weight(1f).semantics { heading() }, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                Text("Powered by KLIPY", color = TextMuted, fontSize = 11.sp)
-            }
-            Row(Modifier.fillMaxWidth().border(1.dp, Border, MaterialTheme.shapes.small).padding(3.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                listOf(KlipyKind.GIFS to "GIFs", KlipyKind.STICKERS to "Stickers").forEach { (value, title) ->
-                    val active = kind == value
-                    Box(
-                        Modifier.weight(1f).heightIn(min = 40.dp).clip(RoundedCornerShape(6.dp))
-                            .background(if (active) SurfaceRaised else Color.Transparent)
-                            .clickable(onClickLabel = title) { kind = value }
-                            .semantics { selected = active; role = Role.Tab },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(title, color = if (active) Text else TextMuted, fontSize = 13.sp, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
-                        if (active) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth(0.4f).height(2.dp).background(TerracottaBright))
-                    }
-                }
-            }
-            OutlinedTextField(
-                query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Search KLIPY") }, singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
-                shape = MaterialTheme.shapes.small,
-            )
-            BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-                val width = maxWidth.value.toInt()
-                LaunchedEffect(width) { gridWidth = width }
-                LazyVerticalStaggeredGrid(
-                    StaggeredGridCells.Fixed(2), Modifier.fillMaxSize(), state = grid,
-                    contentPadding = PaddingValues(bottom = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp), verticalItemSpacing = 6.dp,
-                ) {
-                    // KLIPY may repeat an item across pages, so positions (not slugs) are the keys.
-                    items(results.size, span = { if (results[it] is KlipyItem.Ad) StaggeredGridItemSpan.FullLine else StaggeredGridItemSpan.SingleLane }) { index ->
-                        when (val item = results[index]) {
-                            is KlipyItem.Ad -> KlipyAdTile(item)
-                            is KlipyItem.Result -> GifTile(item, item.gif.sticker, still) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(if (kind == KlipyKind.GIFS) "GIFs" else "Stickers", Modifier.weight(1f).semantics { heading() }, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            Text("Powered by KLIPY", color = TextMuted, fontSize = 11.sp)
+        }
+        OutlinedTextField(
+            query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Search KLIPY") }, singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search), keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
+            shape = MaterialTheme.shapes.small,
+        )
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            val width = maxWidth.value.toInt()
+            LaunchedEffect(width) { gridWidth = width }
+            LazyVerticalStaggeredGrid(
+                StaggeredGridCells.Fixed(2), Modifier.fillMaxSize(), state = grid,
+                contentPadding = PaddingValues(bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp), verticalItemSpacing = 6.dp,
+            ) {
+                // KLIPY may repeat an item across pages, so positions (not slugs) are the keys.
+                items(results.size, span = { if (results[it] is KlipyItem.Ad) StaggeredGridItemSpan.FullLine else StaggeredGridItemSpan.SingleLane }) { index ->
+                    when (val item = results[index]) {
+                        is KlipyItem.Ad -> KlipyAdTile(item)
+                        is KlipyItem.Result -> {
+                            val visible by remember(index) { derivedStateOf { grid.layoutInfo.visibleItemsInfo.any { it.index == index } } }
+                            GifTile(item, item.gif.sticker, still || !resumed || !visible) {
                                 select(item.gif, shown?.first ?: kind, shown?.second.orEmpty())
                             }
                         }
                     }
-                    item(span = StaggeredGridItemSpan.FullLine) {
-                        Box(Modifier.fillMaxWidth().heightIn(min = 72.dp), contentAlignment = Alignment.Center) {
-                            when {
-                                failed -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("GIFs couldn’t load.", color = ErrorText, fontSize = 13.sp)
-                                    TextButton({ retries++ }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry") }
-                                }
-                                loading -> CircularProgressIndicator(Modifier.size(24.dp).semantics { contentDescription = "Loading GIFs" }, color = TextMuted, strokeWidth = 2.dp)
-                                results.isEmpty() -> Text("No results", color = TextMuted, fontSize = 13.sp)
+                }
+                item(span = StaggeredGridItemSpan.FullLine) {
+                    Box(Modifier.fillMaxWidth().heightIn(min = 72.dp), contentAlignment = Alignment.Center) {
+                        when {
+                            failed -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("GIFs couldn’t load.", color = ErrorText, fontSize = 13.sp)
+                                TextButton({ retries++ }, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry") }
                             }
+                            loading -> CircularProgressIndicator(Modifier.size(24.dp).semantics { contentDescription = "Loading GIFs" }, color = TextMuted, strokeWidth = 2.dp)
+                            results.isEmpty() -> Text("No results", color = TextMuted, fontSize = 13.sp)
                         }
                     }
                 }
@@ -330,4 +340,3 @@ private fun adWebView(context: Context): WebView = WebView(context).apply {
         )
     }
 }
-

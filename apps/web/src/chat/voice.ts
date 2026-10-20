@@ -211,6 +211,13 @@ export function attachmentLabel(attachment: Pick<ChatAttachment, "voice" | "kind
 
 /** The fallback excerpt for a message without text. */
 export function attachmentsExcerpt(attachments: readonly unknown[] | undefined) {
+  for (const value of attachments ?? []) {
+    if (!value || typeof value !== "object") continue;
+    const attachment = value as Partial<ChatAttachment>;
+    if (!isVoiceAttachment(attachment) || attachment.spoiler || attachment.unavailable) continue;
+    const transcript = transcriptView(attachment);
+    if (transcript.state === "ready") return transcript.text;
+  }
   return attachments?.length &&
     attachments.every(
       (attachment) =>

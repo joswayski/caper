@@ -2,8 +2,55 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 import { DraftAttachments, MessageAttachments, type DraftAttachment } from "./Attachments.tsx";
 import Composer from "./Composer.tsx";
-import { ReplyContext } from "./Replies.tsx";
+import { ReplyContext, ReplyDraft } from "./Replies.tsx";
 import type { ChatAttachment } from "./types.ts";
+
+test("voice replies use ready transcripts, retain text precedence, and conceal private excerpts", () => {
+  const attachment: ChatAttachment = {
+    id: "voice",
+    kind: "audio",
+    voice: true,
+    contentType: "audio/mp4",
+    name: "Voice message.m4a",
+    size: 10,
+    transcript: { status: "ready", text: "  Meet me at the north entrance.  " },
+  };
+  const render = (file = attachment, text = "", hidden = false, deleted = false) => {
+    const reference = {
+      id: "source",
+      author: { id: "me", name: "Me", isGuest: false },
+      text,
+      hasAttachments: true,
+      attachments: [file],
+      deleted,
+    };
+    return [
+      renderToStaticMarkup(<ReplyContext reference={reference} hidden={hidden} motionKey="reply" onOpen={() => {}} />),
+      renderToStaticMarkup(<ReplyDraft reference={reference} hidden={hidden} onCancel={() => {}} />),
+    ];
+  };
+  for (const html of render()) expect(html).toContain("Meet me at the north entrance.");
+  for (const html of render(attachment, "Typed caption")) {
+    expect(html).toContain("Typed caption");
+    expect(html).not.toContain("Meet me");
+  }
+  for (const file of [
+    { ...attachment, transcript: { status: "pending" as const } },
+    { ...attachment, transcript: { status: "failed" as const } },
+    { ...attachment, transcript: { status: "ready" as const, text: "  " } },
+    { ...attachment, spoiler: true },
+    { ...attachment, unavailable: true },
+  ])
+    for (const html of render(file)) {
+      expect(html).toContain("Voice message");
+      expect(html).not.toContain("Meet me");
+    }
+  for (const html of render(attachment, "", true)) expect(html).not.toContain("Meet me");
+  expect(render(attachment, "", false, true)[0]).not.toContain("Meet me");
+  const long = render({ ...attachment, transcript: { status: "ready", text: "A long transcript. ".repeat(20) } })[0];
+  expect(long).toContain("Show more");
+  expect(long).not.toContain("A long transcript. ".repeat(20));
+});
 
 test("reply previews stay bounded and never load concealed media or video originals", () => {
   const photo: ChatAttachment = {
