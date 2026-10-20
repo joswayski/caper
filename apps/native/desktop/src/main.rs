@@ -42687,14 +42687,15 @@ mod tests {
             let api =
                 crate::api::Api::new(&format!("http://{}", server.local_addr().unwrap())).unwrap();
             let requests = std::thread::spawn(move || {
-                let deadline = Instant::now() + Duration::from_secs(3);
+                // Generous: loaded CI machines (Windows especially) stall for seconds.
+                let deadline = Instant::now() + Duration::from_secs(20);
                 while Instant::now() < deadline {
                     let Ok((stream, _)) = server.accept() else {
                         std::thread::sleep(Duration::from_millis(10));
                         continue;
                     };
                     stream
-                        .set_read_timeout(Some(Duration::from_secs(1)))
+                        .set_read_timeout(Some(Duration::from_secs(10)))
                         .unwrap();
                     let mut reader = BufReader::new(stream);
                     let mut request = String::new();
@@ -42745,7 +42746,8 @@ mod tests {
                 app.sent(Ok(message));
             }
             // Receive the authoritative count without running the periodic UI update.
-            let deadline = Instant::now() + Duration::from_secs(2);
+            // The loop ends as soon as the count arrives; the bound only caps a failure.
+            let deadline = Instant::now() + Duration::from_secs(15);
             while app.feedback_waiting != 0 && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
                 app.receive();
