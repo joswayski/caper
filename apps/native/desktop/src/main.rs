@@ -1097,7 +1097,7 @@ struct FilePicker {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SelfDirectTarget {
-    Existing(model::DirectConversation),
+    Existing(Box<model::DirectConversation>),
     Create(String),
 }
 
@@ -6236,7 +6236,7 @@ impl CaperApp {
             return;
         };
         match target {
-            SelfDirectTarget::Existing(direct) => self.select_direct(direct),
+            SelfDirectTarget::Existing(direct) => self.select_direct(*direct),
             SelfDirectTarget::Create(username) => {
                 let Some(token) = self.token.clone() else {
                     return;
@@ -6266,7 +6266,7 @@ impl CaperApp {
             .iter()
             .find(|direct| direct.peer.id == account.id)
         {
-            return Some(SelfDirectTarget::Existing(direct.clone()));
+            return Some(SelfDirectTarget::Existing(Box::new(direct.clone())));
         }
         account.username.clone().map(SelfDirectTarget::Create)
     }
@@ -48341,7 +48341,7 @@ mod tests {
         app.directs = vec![self_direct.clone()];
         assert_eq!(
             app.self_direct_target(),
-            Some(SelfDirectTarget::Existing(self_direct.clone()))
+            Some(SelfDirectTarget::Existing(Box::new(self_direct.clone())))
         );
         app.select_or_create_self_direct();
         assert!(
