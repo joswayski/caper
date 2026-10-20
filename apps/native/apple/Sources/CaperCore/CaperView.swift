@@ -3794,7 +3794,8 @@ private struct ChatView: View {
         }
         #if os(iOS)
         .fullScreenCover(isPresented: Binding(get: { narrow && chat.threadRootID != nil }, set: { if !$0 { chat.closeThread() } })) {
-            threadContent
+            NativeThreadView(chat: chat, model: model, viewerID: viewerID, mentions: mentionSource, fullScreen: true)
+                .presentationBackground(.clear)
         }
         #else
         // Web: Escape closes the thread unless a picker or dialog is open. Sheets,
@@ -4459,12 +4460,17 @@ private struct ThreadBroadcastToggleStyle: ToggleStyle {
                     .font(.system(size: 18))
                     .foregroundStyle(configuration.isOn ? CaperTheme.terracottaBright : CaperTheme.muted)
                     .frame(width: 24, height: 24)
+                    .contentTransition(.identity)
+                    .symbolEffectsRemoved()
                 configuration.label.fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // A binary choice should acknowledge the tap immediately, not inherit
+        // a presentation animation or the system's symbol replacement effect.
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
         // Preserve the native toggle's label, value and action for VoiceOver.
         .accessibilityRepresentation {
             Toggle(isOn: configuration.$isOn) { configuration.label }.toggleStyle(.switch)
@@ -4473,12 +4479,15 @@ private struct ThreadBroadcastToggleStyle: ToggleStyle {
 }
 
 #if os(iOS)
-/// Deliberately not a drawer: only a completed rightward drag navigates.
-/// Gesture state resets on cancellation; vertical/left starts stay rejected.
+/// Follow a rightward drag over history, without borrowing the composer's gestures.
 private struct ThreadBackSwipe: ViewModifier {
     let enabled: Bool
-    let close: () -> Void
-    @GestureState private var direction = 0
+    let move: (CGFloat) -> Void
+    let release: (Bool) -> Void
+    // GestureState can reset before onEnded; the direction decision must survive
+    // until release. The separate active flag also handles system cancellation.
+    @State private var direction = 0
+    @GestureState private var active = false
 
     /// Leave text selection, controls and nested horizontal scrollers alone.
     private func reservedStart(_ point: CGPoint) -> Bool {
@@ -4486,7 +4495,11 @@ private struct ThreadBackSwipe: ViewModifier {
             .flatMap(\.windows).first(where: \.isKeyWindow)
         var view = window?.hitTest(point, with: nil)
         while let current = view {
-            if current is UIControl || current is UITextView { return true }
+            if current is UIControl { return true }
+            // Read-only message text can also be backed by UITextView; only
+            // editors and active text selections should reserve its gesture.
+            if let text = current as? UITextView,
+               text.isEditable || text.selectedRange.length > 0 { return true }
             if let scroll = current as? UIScrollView,
                scroll.contentSize.width > scroll.bounds.width + 1 { return true }
             view = current.superview
@@ -4495,25 +4508,39 @@ private struct ThreadBackSwipe: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        content.contentShape(Rectangle()).simultaneousGesture(
+        content.contentShape(Rectangle()).scrollDisabled(active && direction == 1).simultaneousGesture(
             DragGesture(minimumDistance: 16, coordinateSpace: .global)
-                .updating($direction) { value, direction, _ in
+                .updating($active) { _, active, _ in active = true }
+                .onChanged { value in
                     if direction == 0 {
                         direction = enabled && !reservedStart(value.startLocation) &&
                             value.translation.width > abs(value.translation.height) * 1.5 ? 1 : -1
                     }
-                }
-                .onChanged { _ in
-                    if direction == 1 { SwipeTapGuard.follow() }
+                    if direction == 1 {
+                        SwipeTapGuard.follow()
+                        move(max(0, value.translation.width))
+                    }
                 }
                 .onEnded { value in
-                    guard direction == 1 else { return }
+                    let followed = direction == 1
+                    // A child control can defer a fast drag's moves until lift.
+                    let unobserved = direction == 0 && !reservedStart(value.startLocation)
+                    direction = 0
+                    guard followed || unobserved else { return }
                     SwipeTapGuard.release()
-                    guard enabled, value.translation.width >= 72,
-                          value.translation.width > abs(value.translation.height) * 1.5 else { return }
-                    close()
+                    release(enabled && value.translation.width >= 72 &&
+                            value.translation.width > abs(value.translation.height) * 1.5)
                 }
         )
+        .onChange(of: active) { _, active in
+            guard !active else { return }
+            DispatchQueue.main.async {
+                guard !self.active, direction != 0 else { return }
+                let followed = direction == 1
+                direction = 0
+                if followed { SwipeTapGuard.release(); release(false) }
+            }
+        }
     }
 }
 #endif
@@ -4526,6 +4553,11 @@ private struct NativeThreadView: View {
     let viewerID: String?
     /// The conversation's `@` candidates, shared with the main composer.
     let mentions: MentionSource
+    var fullScreen = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var backOffset: CGFloat = 0
+    @State private var backWidth: CGFloat = 0
+    @State private var closingBack = false
     @StateObject private var composerAutocomplete = ComposerAutocompleteController()
     @State private var fileDropTargeted = false
     @State private var fileDropTarget: ChatModel.AttachmentTarget?
@@ -4537,9 +4569,11 @@ private struct NativeThreadView: View {
     @State private var mentionPointer = MentionPointer()
     private var mentionCards: MentionCardContext {
         MentionCardContext(pointer: mentionPointer, name: { model.mentionPerson($0, viewerID: viewerID).title }, open: { pill in
+            guard !SwipeTapGuard.swiping else { return }
             reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
             mentionCard = MentionCardTarget(pill: pill, pointer: mentionPointer.location)
         }, openAuthor: { author in
+            guard !SwipeTapGuard.swiping else { return }
             reactionMessage = nil; showingEmojiPicker = false; reactorsTarget = nil
             mentionCard = MentionCardTarget(author: author, pointer: mentionPointer.location)
         })
@@ -4634,8 +4668,27 @@ private struct NativeThreadView: View {
     }
     #if os(iOS)
     private var canSwipeBack: Bool {
-        reactionMessage == nil && !showingEmojiPicker && reactorsTarget == nil && mentionCard == nil &&
+        fullScreen && !closingBack && reactionMessage == nil && !showingEmojiPicker && reactorsTarget == nil && mentionCard == nil &&
         blockTarget == nil && forwardMessage == nil && !fileDropTargeted
+    }
+    private func moveBack(_ offset: CGFloat) {
+        guard !closingBack else { return }
+        backOffset = reduceMotion ? 0 : min(backWidth, offset)
+    }
+    private func releaseBack(_ commit: Bool) {
+        guard !closingBack else { return }
+        closingBack = commit
+        withAnimation(reduceMotion ? nil : CaperMotion.easeOut(CaperMotion.fast), completionCriteria: .removed) {
+            backOffset = commit && !reduceMotion ? backWidth : 0
+        } completion: {
+            if commit {
+                // The horizontal slide has already left the screen; don't run
+                // fullScreenCover's second, vertical dismissal animation.
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { chat.closeThread() }
+            }
+        }
     }
     #endif
     var body: some View {
@@ -4660,7 +4713,7 @@ private struct NativeThreadView: View {
             }.padding(.horizontal, 18).frame(height: 50)
                 .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1) }
                 #if os(iOS)
-                .modifier(ThreadBackSwipe(enabled: canSwipeBack, close: { chat.closeThread() }))
+                .modifier(ThreadBackSwipe(enabled: canSwipeBack, move: moveBack, release: releaseBack))
                 #endif
             ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
@@ -4720,7 +4773,7 @@ private struct NativeThreadView: View {
                 }
                 #if os(iOS)
                 .scrollDismissesKeyboard(.immediately)
-                .modifier(ThreadBackSwipe(enabled: canSwipeBack, close: { chat.closeThread() }))
+                .modifier(ThreadBackSwipe(enabled: canSwipeBack, move: moveBack, release: releaseBack))
                 #endif
                 #if os(macOS)
                 .accessibilityIdentifier("thread-timeline")
@@ -4827,6 +4880,9 @@ private struct NativeThreadView: View {
             }
         }.background { CaperTheme.conversation.ignoresSafeArea() }
             .overlay(alignment: .leading) { Rectangle().fill(CaperTheme.border).frame(width: 1) }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { backWidth = $0 }
+            .offset(x: backOffset)
+            .allowsHitTesting(!closingBack)
             .dropDestination(for: DroppedAttachment.self) { items, _ in
                 guard let target = fileDropTarget ?? chat.attachmentTarget(inThread: true), !items.isEmpty else {
                     items.forEach { AttachmentStaging.remove($0.file.url) }
