@@ -242,10 +242,16 @@ public struct Member: Codable, Equatable, Identifiable, Sendable {
     public var avatarUrl: String? = nil
 
     func withProfile(_ account: Account?) -> Member {
-        guard let account, id == account.id, let username = account.username, let name = account.displayName else { return self }
+        guard let account, id == account.id else { return self }
+        // A regenerated mascot shows on your own row even before your profile is complete.
+        let avatarId = account.avatarId ?? avatarId
+        guard let username = account.username, let name = account.displayName else {
+            return Member(admin: admin, id: id, username: username, displayName: displayName, owner: owner,
+                          avatarId: avatarId, avatarAsset: avatarAsset, avatarUrl: avatarUrl)
+        }
         let picture = account.ownPicture(asset: avatarAsset, url: avatarUrl)
-        return Member(admin: admin, id: id, username: username, displayName: name, owner: owner, avatarId: avatarId,
-                      avatarAsset: picture.asset, avatarUrl: picture.url)
+        return Member(admin: admin, id: id, username: username, displayName: name, owner: owner,
+                      avatarId: avatarId, avatarAsset: picture.asset, avatarUrl: picture.url)
     }
 }
 
