@@ -28475,6 +28475,7 @@ impl CaperApp {
             voice_note::Recorder::start(
                 self.voice.preferences.input.clone(),
                 self.voice.preferences.input_percent,
+                self.voice.preferences.processing_strength,
                 context.clone(),
             )
         })
@@ -29483,7 +29484,9 @@ impl CaperApp {
 }
 
 /// Slack-style transcript under a voice message: muted, behind a thin rule,
-/// three lines until "View transcript"; "Transcribing…" while pending.
+/// three lines until "View transcript"; "Transcribing…" while pending,
+/// breathing between full and 40% opacity every 2 s (still with reduced
+/// motion) until the transcript replaces it.
 fn voice_transcript(ui: &mut egui::Ui, attachment: &model::Attachment) {
     let text = match attachment.transcript_view() {
         model::TranscriptView::Hidden => return,
@@ -29507,7 +29510,12 @@ fn voice_transcript(ui: &mut egui::Ui, attachment: &model::Attachment) {
             ui.set_max_width(width);
             ui.spacing_mut().item_spacing.y = 4.0;
             let Some(text) = text else {
-                ui.label(RichText::new("Transcribing…").size(12.0).color(MUTED));
+                let alpha = motion::breathing(ui.ctx(), 2.0, 0.4);
+                ui.label(
+                    RichText::new("Transcribing…")
+                        .size(12.0)
+                        .color(MUTED.gamma_multiply(alpha)),
+                );
                 return;
             };
             let mut job = egui::text::LayoutJob::simple(

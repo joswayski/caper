@@ -102,6 +102,23 @@ pub fn ease_out(t: f32) -> f32 {
     egui::emath::easing::exponential_out(t.clamp(0.0, 1.0))
 }
 
+/// A slow breath for something that waits: opacity eases (a cosine, so in
+/// and out) from 1 down to `low` and back once every `period` seconds.
+pub fn breath(time: f64, period: f64, low: f32) -> f32 {
+    let phase = (time.rem_euclid(period) / period * std::f64::consts::TAU).cos() as f32;
+    low + (1.0 - low) * (0.5 + 0.5 * phase)
+}
+
+/// The opacity of a [`breath`] while it shows, repainting for the next
+/// step; still at 1 with reduced motion (and in headless tests).
+pub fn breathing(context: &Context, period: f64, low: f32) -> f32 {
+    if !enabled(context) {
+        return 1.0;
+    }
+    context.request_repaint_after(std::time::Duration::from_millis(33));
+    breath(context.input(|input| input.time), period, low)
+}
+
 fn enabled_id() -> Id {
     Id::new("caper-motion")
 }
@@ -502,8 +519,49 @@ impl Arrivals {
 
 #[cfg(test)]
 mod tests {
-    use super::{ARRIVAL, Arrivals, BASE, enable, entrance, kde_animations_off};
+    use super::{ARRIVAL, Arrivals, BASE, breath, breathing, enable, entrance, kde_animations_off};
     use eframe::egui;
+
+    #[test]
+    fn a_breath_eases_from_full_to_low_and_back_every_period() {
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(close(breath(0.0, 2.0, 0.4), 1.0));
+        assert!(close(breath(0.5, 2.0, 0.4), 0.7));
+        assert!(close(breath(1.0, 2.0, 0.4), 0.4));
+        assert!(close(breath(1.5, 2.0, 0.4), 0.7));
+        assert!(close(breath(2.0, 2.0, 0.4), 1.0));
+        assert!(close(breath(7.0, 2.0, 0.4), 0.4), "it loops");
+        // In-out: slow near either end, fastest halfway.
+        let step = |t: f64| (breath(t + 0.05, 2.0, 0.4) - breath(t, 2.0, 0.4)).abs();
+        assert!(step(0.0) < step(0.475) && step(0.95) < step(0.475));
+        let mut previous = 1.0;
+        for tenth in 1..=10 {
+            let value = breath(f64::from(tenth) / 10.0, 2.0, 0.4);
+            assert!(value < previous && value >= 0.4);
+            previous = value;
+        }
+    }
+
+    #[test]
+    fn breathing_is_still_without_motion() {
+        for (motion, expected) in [(false, 1.0), (true, 0.4)] {
+            let context = egui::Context::default();
+            let mut alpha = 0.0;
+            let _ = context.run(
+                egui::RawInput {
+                    time: Some(1.0),
+                    ..Default::default()
+                },
+                |context| {
+                    if motion {
+                        enable(context);
+                    }
+                    alpha = breathing(context, 2.0, 0.4);
+                },
+            );
+            assert!((alpha - expected).abs() < 1e-4);
+        }
+    }
 
     fn displaced_at(
         context: &egui::Context,

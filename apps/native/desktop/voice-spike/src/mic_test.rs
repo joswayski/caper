@@ -1,8 +1,6 @@
 //! Explicit, local-only microphone comparison. No HTTP, SFU or persistent PCM.
 
-#[cfg(test)]
-use super::input_processing::VoiceProcessor;
-use super::input_processing::{InputProcessing, ProcessedVoice};
+use super::input_processing::{InputProcessing, ProcessedVoice, VoiceProcessor};
 use super::select_device;
 use libwebrtc::audio_frame::AudioFrame;
 use libwebrtc::audio_source::{AudioSourceOptions, native::NativeAudioSource};
@@ -496,6 +494,34 @@ fn process_sample(
     Ok((clean, enhanced))
 }
 
+/// One captured voice-message frame through the call's chain: what a call
+/// publishes (`enhanced`), hop by hop, padding a short last hop.
+fn process_voice_message(
+    processor: &mut ProcessedVoice,
+    pcm: &[i16],
+    settings: InputProcessing,
+) -> Result<Vec<i16>, String> {
+    let mut processed = Vec::with_capacity(pcm.len());
+    for chunk in pcm.chunks(FRAME) {
+        let mut frame = [0; FRAME];
+        frame[..chunk.len()].copy_from_slice(chunk);
+        let (_, enhanced) = processor.process(&frame, settings)?;
+        processed.extend_from_slice(&enhanced[..chunk.len()]);
+    }
+    Ok(processed)
+}
+
+/// The fallback without processing: the input gain alone, as before.
+fn unprocessed_voice_message(pcm: &[i16], settings: InputProcessing) -> Vec<i16> {
+    VoiceProcessor::default().process(
+        pcm,
+        InputProcessing {
+            strength: 0,
+            ..settings
+        },
+    )
+}
+
 impl MicTest {
     pub(crate) async fn next_live_frame(&mut self) -> Option<AudioFrame<'static>> {
         self.stream.next_frame().await
@@ -706,19 +732,37 @@ impl MicTest {
         })
     }
 
-    /// A voice message: the raw 48 kHz mono capture, at most `limit` of
-    /// audio, until `finish_recording` ends it earlier. No processing, no
+    /// A voice message: the 48 kHz mono capture through the call's
+    /// microphone processing (input gain, DPDFNet-8 or RNNoise and the voice
+    /// contour at `strength`), so it sounds as the person does in a call. At
+    /// most `limit` of audio, until `finish_recording` ends it earlier; the
+    /// input level follows the processed audio. If the processing cannot
+    /// start or fails, the rest is recorded with the input gain only. No
     /// comparison playback; the caller stops the test afterwards. It opens
     /// its own private ADM, so an active call's capture is left as it is.
-    pub async fn record_voice_message(&mut self, limit: Duration) -> Result<Vec<i16>, String> {
+    pub async fn record_voice_message(
+        &mut self,
+        limit: Duration,
+        gain_percent: u16,
+        strength: u8,
+    ) -> Result<Vec<i16>, String> {
+        if gain_percent > 200 || strength > 100 {
+            return Err("input gain must be 0–200 and processing strength 0–100".into());
+        }
         if self.sample.is_some() || !self.raw.is_empty() {
             return Err("recording already completed".into());
         }
+        let settings = InputProcessing {
+            gain_percent,
+            strength,
+        };
         let limit = (limit.as_millis() as usize).saturating_mul(RATE as usize) / 1000;
         self.control.set_live_recording(true)?;
         let mut last_frame = Instant::now();
         let mut pcm = Vec::new();
         let mut recorded_epoch = None;
+        let mut processing = true;
+        let mut processor = None;
         while pcm.len() < limit {
             self.control.ensure_active()?;
             if self.control.finish_recording.load(Ordering::Acquire) {
@@ -727,12 +771,27 @@ impl MicTest {
             let epoch = self.control.live_epoch();
             if recorded_epoch != epoch {
                 self.reset_live_stream();
+                // Old recurrent state must not reach a reopened microphone.
+                processor = None;
                 recorded_epoch = epoch;
                 last_frame = Instant::now();
             }
             if epoch.is_none() {
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 continue;
+            }
+            if processing && processor.is_none() {
+                processor = tokio::task::spawn_blocking(ProcessedVoice::new).await.ok();
+                if processor.is_none() {
+                    processing = false;
+                    eprintln!(
+                        "Voice message: microphone processing could not start; recording without it"
+                    );
+                }
+                last_frame = Instant::now();
+                if self.control.live_epoch() != epoch {
+                    continue;
+                }
             }
             if last_frame.elapsed() >= Duration::from_secs(2) {
                 self.control.cancel();
@@ -747,9 +806,37 @@ impl MicTest {
                     if self.control.live_epoch() != epoch {
                         continue;
                     }
-                    let data: &[i16] = frame.data.as_ref();
+                    let captured: &[i16] = frame.data.as_ref();
+                    let data = match processor.take() {
+                        Some(mut engine) => {
+                            let input = captured.to_vec();
+                            let started = Instant::now();
+                            let result = tokio::task::spawn_blocking(move || {
+                                let processed =
+                                    process_voice_message(&mut engine, &input, settings);
+                                (engine, processed)
+                            })
+                            .await;
+                            match result {
+                                Ok((mut engine, Ok(data))) => {
+                                    // Like a call, sustained lag switches to RNNoise.
+                                    engine.observe_wall_time(started.elapsed());
+                                    processor = Some(engine);
+                                    data
+                                }
+                                _ => {
+                                    processing = false;
+                                    eprintln!(
+                                        "Voice message: microphone processing failed; recording the rest without it"
+                                    );
+                                    unprocessed_voice_message(captured, settings)
+                                }
+                            }
+                        }
+                        None => unprocessed_voice_message(captured, settings),
+                    };
                     pcm.extend_from_slice(&data[..data.len().min(limit - pcm.len())]);
-                    self.control.set_input_level(data);
+                    self.control.set_input_level(&data);
                     last_frame = Instant::now();
                 }
                 None => {
@@ -1518,6 +1605,56 @@ mod tests {
     }
 
     #[test]
+    fn voice_messages_record_what_a_call_publishes_or_fall_back_to_gain() {
+        let settings = InputProcessing {
+            gain_percent: 150,
+            strength: 25,
+        };
+        let speech: Vec<i16> = (0..FRAME * 12)
+            .map(|i| {
+                let t = i as f32 / RATE as f32;
+                let voice = (t * std::f32::consts::TAU * 180.0).sin()
+                    + (t * std::f32::consts::TAU * 1_100.0).sin() * 0.3;
+                (voice * 7_000.0) as i16
+            })
+            .collect();
+        // RNNoise stands in for DPDFNet-8: tests have no ONNX Runtime.
+        let mut call = ProcessedVoice::rnnoise();
+        let published: Vec<i16> = speech
+            .chunks(FRAME)
+            .flat_map(|frame| call.process(frame, settings).unwrap().1)
+            .collect();
+        let mut voice = ProcessedVoice::rnnoise();
+        let mut recorded = Vec::new();
+        // Frames of any length, padded to whole hops.
+        for frame in speech.chunks(FRAME) {
+            recorded.extend(process_voice_message(&mut voice, frame, settings).unwrap());
+        }
+        assert_eq!(recorded, published);
+        let short = process_voice_message(&mut ProcessedVoice::rnnoise(), &speech[..100], settings);
+        assert_eq!(short.unwrap().len(), 100);
+        assert!(
+            process_voice_message(
+                &mut ProcessedVoice::rnnoise(),
+                &speech[..FRAME],
+                InputProcessing {
+                    gain_percent: 201,
+                    strength: 25,
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(
+            unprocessed_voice_message(&[1_000, -1_000, 30_000, -30_000], settings),
+            [1_500, -1_500, i16::MAX, i16::MIN]
+        );
+        assert_eq!(
+            unprocessed_voice_message(&[1_000, -1_000], InputProcessing::default()),
+            [1_000, -1_000]
+        );
+    }
+
+    #[test]
     fn processing_zero_is_exact_and_enhanced_has_bounded_output() {
         let input = [0, 1_000, -5_000, 28_000, -32_000];
         let process = |gain_percent, strength| {
@@ -1617,7 +1754,7 @@ mod tests {
             .unwrap();
         let stop = voice_control.clone();
         let (recorded, during) = tokio::join!(
-            voice.record_voice_message(Duration::from_secs(600)),
+            voice.record_voice_message(Duration::from_secs(600), 100, 25),
             async {
                 let during = live_loud(&mut live, Duration::from_millis(1_500)).await;
                 stop.finish_recording();
@@ -1646,7 +1783,7 @@ mod tests {
             .await
             .unwrap();
         let pcm = limited
-            .record_voice_message(Duration::from_millis(250))
+            .record_voice_message(Duration::from_millis(250), 100, 25)
             .await
             .unwrap();
         assert_eq!(pcm.len(), RATE as usize / 4);

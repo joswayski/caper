@@ -142,7 +142,12 @@ just that player in the card.
   Capture opens its own private libwebrtc device module like the Audio test
   (the selected input and input volume apply) and does not change an active
   call's microphone or publication; sharing a physical microphone with a live
-  call is not yet device-verified. The bundled FFmpeg encodes AAC in MP4 (a
+  call is not yet device-verified. Each frame goes through the call's
+  microphone processing (DPDFNet-8, switching to RNNoise if it lags, and the
+  voice contour at the saved Voice enhancement strength) as it arrives, so
+  the file, live meter and waveform are what a call would send; if that
+  processing cannot start (say, without the ONNX Runtime library) or fails,
+  the rest records with the input volume alone and the app logs it. The bundled FFmpeg encodes AAC in MP4 (a
   16 kHz WAV without it), uploaded as is with `voice`, its duration and 64
   waveform values: per-slice RMS on a -50–0 dBFS scale, 3-tap smoothed and
   normalised to the loudest slice. Waveforms draw linearly resampled 3 px
@@ -154,7 +159,8 @@ just that player in the card.
   scrolling every frame (stepwise, and a still dot, with reduced motion). `voice: true` attachments
   show a player (play/pause, waveform, click or drag to seek, length or time
   left; one plays at a time) and a Slack-style transcript: three lines with
-  View/Hide transcript, "Transcribing…" while pending, nothing when failed or
+  View/Hide transcript, "Transcribing…" while pending (breathing between full
+  and 40% opacity every 2 s, still with reduced motion), nothing when failed or
   unavailable; `message.attachments` updates fill it in place. Quotes and
   forward previews read "Voice message".
 - Sending up to 10 files per message in channel, DM and thread composers,

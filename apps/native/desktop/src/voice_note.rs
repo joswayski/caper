@@ -2,7 +2,11 @@
 //!
 //! Recording opens its own private capture through the same libwebrtc
 //! device module the Audio test uses (`media::mic_test`), so an active
-//! call's microphone and publication are left exactly as they are. The raw
+//! call's microphone and publication are left exactly as they are. Each
+//! frame goes through the call's microphone processing (input gain,
+//! denoiser and the saved Voice enhancement strength) as it arrives, so the
+//! message, its live meter and its waveform are what a call would send;
+//! without that processing it records with the input gain alone. The
 //! 48 kHz mono capture never leaves memory until it is encoded to AAC in MP4
 //! by the bundled FFmpeg (16 kHz WAV without it) and uploaded as a voice
 //! attachment with its 64 normalised peaks; the server normalises the file
@@ -231,19 +235,6 @@ pub fn duration_label(ms: u64) -> String {
     crate::player::time_label(ms)
 }
 
-/// The input volume preference (0–200%) applied to the capture.
-pub fn apply_gain(samples: &mut [i16], percent: u16) {
-    if percent == 100 {
-        return;
-    }
-    let gain = f32::from(percent.min(200)) / 100.0;
-    for sample in samples {
-        *sample = (f32::from(*sample) * gain)
-            .round()
-            .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
-    }
-}
-
 /// A mono 16-bit PCM WAV file.
 pub fn wav(samples: &[i16], rate: u32) -> Vec<u8> {
     let data = (samples.len() * 2) as u32;
@@ -361,8 +352,14 @@ pub struct Recorder {
 
 impl Recorder {
     /// Opens `input` (`None`: the system default microphone). The input
-    /// volume preference (`gain_percent`) applies to what is sent.
-    pub fn start(input: Option<String>, gain_percent: u16, repaint: egui::Context) -> Self {
+    /// volume preference (`gain_percent`) and the Voice enhancement
+    /// `strength` apply to what is sent, as in a call.
+    pub fn start(
+        input: Option<String>,
+        gain_percent: u16,
+        strength: u8,
+        repaint: egui::Context,
+    ) -> Self {
         let control = MicTestControl::new();
         let (sender, events) = mpsc::channel();
         let worker = control.clone();
@@ -381,15 +378,18 @@ impl Recorder {
                     .block_on(MicTest::start(worker.clone(), input.as_deref(), None))
                     .map_err(|error| start_failure(&error).to_owned())?;
                 send(RecorderEvent::Started);
-                let recorded = runtime.block_on(test.record_voice_message(MAX_DURATION));
+                let recorded = runtime.block_on(test.record_voice_message(
+                    MAX_DURATION,
+                    gain_percent.min(200),
+                    strength.min(100),
+                ));
                 test.stop();
                 drop(test);
-                let mut samples = recorded?;
+                let samples = recorded?;
                 if samples.len() < (MIN_DURATION.as_millis() as usize) * SAMPLE_RATE as usize / 1000
                 {
                     return Ok(None);
                 }
-                apply_gain(&mut samples, gain_percent);
                 prepare(&samples, crate::ffmpeg::binary()).map(Some)
             })();
             // A discarded recording has dropped the receiver: nothing arrives.
@@ -407,7 +407,7 @@ impl Recorder {
         self.control.finish_recording();
     }
 
-    /// RMS (0–1) of the latest captured frame.
+    /// RMS (0–1) of the latest processed frame.
     pub fn level(&self) -> f32 {
         self.control.input_level()
     }
@@ -639,17 +639,6 @@ mod tests {
         assert_eq!(duration_label(MAX_DURATION.as_millis() as u64), "10:00");
         assert_eq!(duration_ms(48_000), 1000);
         assert_eq!(duration_ms(10), 1, "never zero");
-    }
-
-    #[test]
-    fn gain_scales_and_clamps() {
-        let mut samples = [1000_i16, -1000, 30_000, -30_000];
-        apply_gain(&mut samples, 100);
-        assert_eq!(samples, [1000, -1000, 30_000, -30_000]);
-        apply_gain(&mut samples, 200);
-        assert_eq!(samples, [2000, -2000, i16::MAX, i16::MIN]);
-        apply_gain(&mut samples, 0);
-        assert_eq!(samples, [0; 4]);
     }
 
     #[test]

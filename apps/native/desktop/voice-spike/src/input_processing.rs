@@ -54,6 +54,20 @@ impl ProcessedVoice {
         }
     }
 
+    /// RNNoise alone: unit tests run without the ONNX Runtime library.
+    #[cfg(test)]
+    pub(crate) fn rnnoise() -> Self {
+        Self {
+            denoiser: Denoiser::Rnnoise(nnnoiseless::DenoiseState::new()),
+            contour: VoiceProcessor::default(),
+            lag_debt_us: 0,
+            diagnostics: AudioProcessingDiagnostics {
+                engine: "RNNoise fallback",
+                ..AudioProcessingDiagnostics::default()
+            },
+        }
+    }
+
     pub fn diagnostics(&self) -> AudioProcessingDiagnostics {
         self.diagnostics
     }
@@ -235,15 +249,7 @@ mod tests {
 
     #[test]
     fn rnnoise_fallback_outputs_bounded_speech_and_zero_gain_is_silent() {
-        let mut engine = ProcessedVoice {
-            denoiser: Denoiser::Rnnoise(nnnoiseless::DenoiseState::new()),
-            contour: VoiceProcessor::default(),
-            lag_debt_us: 0,
-            diagnostics: AudioProcessingDiagnostics {
-                engine: "RNNoise fallback",
-                ..AudioProcessingDiagnostics::default()
-            },
-        };
+        let mut engine = ProcessedVoice::rnnoise();
         let mut speech_peak = 0;
         for hop in 0..45 {
             let frame: [i16; HOP] = std::array::from_fn(|i| {
