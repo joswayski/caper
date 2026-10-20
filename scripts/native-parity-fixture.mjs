@@ -857,6 +857,15 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           .sort((a, b) => a.username.localeCompare(b.username));
         return json(response, 200, { people });
       }
+      if (path === "/api/dms/lookup" && method === "POST") {
+        if (!user) return reject(response, 401, "Sign in required.");
+        const username = String(body.username).trim().replace(/^@/, "").toLowerCase();
+        const person =
+          username === "fixture_alex"
+            ? { id: ids.other, username, displayName: "TEST FIXTURE Alex", avatarId: 799 }
+            : [state.account, ...accounts.slice(1), stranger].find((person) => person.username === username);
+        return person ? json(response, 200, person) : reject(response, 404, "Account not found.");
+      }
       if (path === "/api/dms") {
         if (!user) return reject(response, 401, "Sign in required.");
         if (method === "POST") {

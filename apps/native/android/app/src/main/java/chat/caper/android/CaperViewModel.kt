@@ -687,6 +687,14 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         while (conversationHistories.size > 20) conversationHistories.remove(conversationHistories.keys.first())
     }
 
+    fun lookupDirectPerson(username: String, found: (Person) -> Unit, failed: (String) -> Unit) = launchAction { request ->
+        try {
+            val person = api.lookupDirectPerson(requireAccountToken(), username)
+            if (request == accountGeneration) found(person)
+        } catch (error: CancellationException) { throw error }
+        catch (error: Throwable) { if (request == accountGeneration) failed(message(error)) }
+    }
+
     fun startDirect(username: String, done: () -> Unit = {}, failed: ((String) -> Unit)? = null) = launchAction { request ->
         try { openDirectByUsername(username, request, done) }
         catch (error: CancellationException) { throw error }

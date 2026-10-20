@@ -444,7 +444,7 @@ internal data class VoiceJoinIntent(
             // Web opens a new private channel's settings so people can be added.
             viewModel.createChannel(name, private) { created -> overlay = if (created.private) Overlay.ManageChannel(created) else null }
         } }
-        Overlay.StartDirect -> StartDirectDialog(state.busy, directCandidates(state.people, state.account?.id ?: state.chatAuthorId), viewModel::refreshPeople, { overlay = null }) { username, failed ->
+        Overlay.StartDirect -> StartDirectDialog(state.busy, directCandidates(state.people, state.account?.id ?: state.chatAuthorId), viewModel::refreshPeople, { overlay = null }, viewModel::lookupDirectPerson) { username, failed ->
             viewModel.startDirect(username, done = { overlay = null }, failed = failed)
         }
         is Overlay.ManageChannel -> ManageChannelDialog(state, state.selectedSpace?.channels?.find { it.id == shown.channel.id } ?: shown.channel, viewModel) { overlay = null }
@@ -3668,31 +3668,39 @@ internal fun counterTone(count: Int): Color = when {
 
 /** [people] suggests usernames (`/api/people`, refreshed by [loadPeople] on open); the lookup stays exact. */
 @Composable private fun StartDirectDialog(
-    busy: Boolean, people: List<MentionCandidate>, loadPeople: () -> Unit, close: () -> Unit, start: (String, (String) -> Unit) -> Unit,
+    busy: Boolean, people: List<MentionCandidate>, loadPeople: () -> Unit, close: () -> Unit,
+    lookup: (String, (Person) -> Unit, (String) -> Unit) -> Unit, start: (String, (String) -> Unit) -> Unit,
 ) {
     var username by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var resolved by remember { mutableStateOf<Person?>(null) }
+    val recipientName = resolved?.displayName ?: people.firstOrNull { it.username == username }?.label
     LaunchedEffect(Unit) { loadPeople() }
     CaperDialog("New direct message", close, busy = busy) {
         val field = remember { FocusRequester() }
         LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
         Text("Enter an account’s exact username.", color = TextMuted, fontSize = 12.sp)
         // The field is read-only while the conversation opens, so suggestions wait too.
-        UsernameSuggestions(username, { username = it; error = null }, if (busy) emptyList() else people) { suggestions, imeAction ->
-            OutlinedTextField(username, { username = normalizeUsername(it); error = null }, label = { Text("Username") }, placeholder = { Text("username") }, readOnly = busy,
+        UsernameSuggestions(username, { username = it; error = null; resolved = null }, if (busy) emptyList() else people) { suggestions, imeAction ->
+            OutlinedTextField(username, { username = normalizeUsername(it); error = null; resolved = null }, label = { Text("Username") }, placeholder = { Text("username") }, readOnly = busy,
                 modifier = Modifier.fillMaxWidth().focusRequester(field).then(suggestions), singleLine = true,
                 keyboardActions = KeyboardActions(onDone = { imeAction { defaultKeyboardAction(ImeAction.Done) } }))
         }
         Box(Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
-            error?.let { Text(it, color = ErrorText, fontSize = 12.sp) }
+            if (error != null) Text(error!!, color = ErrorText, fontSize = 12.sp)
+            else recipientName?.let { Text("$it (@${resolved?.username ?: username})", color = TextMuted, fontSize = 12.sp) }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(close, enabled = !busy, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Cancel") }; Spacer(Modifier.width(8.dp))
             Button({
                 if (!Regex("^[a-z0-9_]{3,32}$").matches(username)) error = "Enter an exact valid username."
-                else { error = null; start(username) { error = it } }
+                else {
+                    error = null
+                    if (recipientName != null) start(resolved?.username ?: username) { error = it }
+                    else lookup(username, { resolved = it }, { error = it })
+                }
             }, enabled = !busy && Regex("^[a-z0-9_]{3,32}$").matches(username), shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) {
-                PendingLabel("Start conversation", "Opening…", busy)
+                PendingLabel(if (recipientName != null) "Open conversation" else "Find person", if (recipientName != null) "Opening…" else "Finding…", busy)
             }
         }
     }

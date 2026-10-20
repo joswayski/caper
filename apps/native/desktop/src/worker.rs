@@ -99,6 +99,13 @@ pub enum Command {
         generation: u64,
         token: String,
     },
+    LookupDirect {
+        generation: u64,
+        navigation: u64,
+        request: u64,
+        token: String,
+        username: String,
+    },
     /// Message requests, blocks, DM privacy and notification settings, fenced
     /// by the account epoch rather than the conversation generation.
     Account {
@@ -721,6 +728,13 @@ pub enum Event {
     PeopleLoaded {
         generation: u64,
         result: Result<Vec<Person>, String>,
+    },
+    DirectLookedUp {
+        generation: u64,
+        navigation: u64,
+        request: u64,
+        username: String,
+        result: Result<Person, String>,
     },
     Account {
         epoch: u64,
@@ -1705,6 +1719,21 @@ fn execute(api: &Api, command: Command, events: &Sender<Event>, context: &egui::
                 .people(&token)
                 .map(|value| value.people)
                 .map_err(|error| error.to_string()),
+        },
+        Command::LookupDirect {
+            generation,
+            navigation,
+            request,
+            token,
+            username,
+        } => Event::DirectLookedUp {
+            generation,
+            navigation,
+            request,
+            result: api
+                .lookup_direct(&token, &username)
+                .map_err(|error| error.to_string()),
+            username,
         },
         Command::Account {
             epoch,

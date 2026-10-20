@@ -751,6 +751,19 @@ public final class AppModel {
         } catch {}
     }
 
+    public func lookupDirectPerson(username: String) async throws -> Person? {
+        guard account != nil else { return nil }
+        let attempt = generation
+        do {
+            let person = try await api.lookupDirectPerson(username: username)
+            guard generation == attempt, account != nil else { return nil }
+            return person
+        } catch {
+            guard generation == attempt else { return nil }
+            throw error
+        }
+    }
+
     public func createDirectMessage(username: String) async throws -> Bool {
         let exact = username.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !exact.isEmpty, account != nil, !busy else { return false }

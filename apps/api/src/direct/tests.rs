@@ -1289,6 +1289,132 @@ async fn blocks_stop_reactions_pins_edits_and_typing_in_dms(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires disposable Postgres DATABASE_URL"]
+async fn recipient_lookup_confirms_without_creating_and_shares_the_lookup_budget(pool: PgPool) {
+    let mut ids = Vec::new();
+    for name in ["sender", "recipient"] {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO users (external_id,username,display_name) VALUES ($1,$2,$2) RETURNING id",
+        )
+        .bind(random_id(12))
+        .bind(name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO account_sessions (token_hash,user_id,expires_at) VALUES ($1,$2,now()+interval '1 day')")
+            .bind(Sha256::digest(name.as_bytes()).to_vec()).bind(id).execute(&pool).await.unwrap();
+        ids.push(id);
+    }
+    let mut config = Config::test(false);
+    config.auth_fixture = false;
+    let app = crate::app(AppState::with_database(
+        config,
+        Arc::new(Cloudflare::new()),
+        Some(pool.clone()),
+    ));
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/dms/lookup",
+            None,
+            None,
+            json!({"username":"recipient"})
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, person) = request(
+        &app,
+        "POST",
+        "/api/dms/lookup",
+        Some("sender"),
+        None,
+        json!({"username":" @RECIPIENT "}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(person["username"], "recipient");
+    assert_eq!(person["displayName"], "recipient");
+    assert!(person["id"].is_string());
+    assert!(conversations(&pool, ids[0]).await.unwrap().is_empty());
+    assert!(conversations(&pool, ids[1]).await.unwrap().is_empty());
+    for username in ["missing", "rec"] {
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                "/api/dms/lookup",
+                Some("sender"),
+                None,
+                json!({"username":username})
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    // An incoming request stays pending until the separate create/accept action.
+    let conversation = create_conversation(&pool, ids[1], "sender").await.unwrap();
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/dms/lookup",
+            Some("sender"),
+            None,
+            json!({"username":"recipient"})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        conversations(&pool, ids[0]).await.unwrap()[0]["status"],
+        "incoming"
+    );
+    assert_eq!(
+        create_conversation(&pool, ids[0], "recipient")
+            .await
+            .unwrap(),
+        conversation
+    );
+    assert_eq!(
+        conversations(&pool, ids[0]).await.unwrap()[0]["status"],
+        "accepted"
+    );
+    sqlx::query("UPDATE space_invite_limits SET direct_attempts=$2 WHERE user_id=$1")
+        .bind(ids[0])
+        .bind(LOOKUPS_PER_HOUR)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for username in ["recipient", "missing"] {
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                "/api/dms/lookup",
+                Some("sender"),
+                None,
+                json!({"username":username})
+            )
+            .await
+            .0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    assert_eq!(
+        create_conversation(&pool, ids[0], "recipient")
+            .await
+            .unwrap_err()
+            .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires disposable Postgres DATABASE_URL"]
 async fn username_lookups_are_rate_limited_before_revealing_accounts(pool: PgPool) {
     let mut users = Vec::new();
     for name in ["prober", "private", "other"] {

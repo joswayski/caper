@@ -8406,9 +8406,14 @@ private struct NewDirectMessageSheet: View {
     @State private var username = ""
     @State private var pending = false
     @State private var error: String?
+    @State private var resolved: Person?
     @FocusState private var usernameFocused: Bool
     @State private var suggestions = PeopleSuggestionState()
     private var candidates: [MentionCandidate] { PeopleSuggestions.directMessage(people: model.people, accountID: model.account?.id) }
+    private var recipientName: String? { resolved?.displayName ?? candidates.first(where: { $0.username == username })?.displayName }
+    private var validUsername: Bool { username.range(of: "^[a-z0-9_]{3,32}$", options: .regularExpression) != nil }
+    private var actionLabel: String { recipientName == nil ? "Find person" : "Open conversation" }
+    private var pendingLabel: String { recipientName == nil ? "Finding…" : "Opening…" }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             SheetHeader(title: "New direct message", detail: "Enter an account’s exact username.", closeDisabled: pending, close: close)
@@ -8419,8 +8424,9 @@ private struct NewDirectMessageSheet: View {
                     .textInputAutocapitalization(.never)
                     #endif
                     .autocorrectionDisabled()
+                    .disabled(pending)
                     .focused($usernameFocused)
-                    .onChange(of: username) { _, _ in error = nil }
+                    .onChange(of: username) { _, _ in error = nil; resolved = nil }
                     // Return only picks a suggestion; the button starts the conversation.
                     .onSubmit(pickHighlighted)
                     .modifier(PeopleSuggestionKeys(text: username, count: choices.count, state: $suggestions))
@@ -8436,18 +8442,21 @@ private struct NewDirectMessageSheet: View {
                     Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("dm-create-error")
+                } else if let recipientName {
+                    Text("\(recipientName) (@\(resolved?.username ?? username))")
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
             HStack {
                 Spacer()
                 Button(action: start) {
-                    Text("Start conversation").hidden().overlay { Text(pending ? "Opening…" : "Start conversation") }
+                    Text("Open conversation").hidden().overlay { Text(pending ? pendingLabel : actionLabel) }
                 }
                 // The primary action stays neutral until a valid username is entered.
                 .buttonStyle(CaperPrimaryButton()).frame(width: 180)
-                .disabled(pending || username.count < 3)
-                .accessibilityLabel(pending ? "Opening…" : "Start conversation")
+                .disabled(pending || !validUsername)
+                .accessibilityLabel(pending ? pendingLabel : actionLabel)
                 .accessibilityIdentifier("dm-create-submit")
             }
         }.padding(22).onAppear { usernameFocused = true }
@@ -8467,14 +8476,19 @@ private struct NewDirectMessageSheet: View {
         suggestions.close(for: username)
     }
     private func start() {
-        guard !pending, username.count >= 3 else { return }
-        let submitted = username
+        guard !pending, validUsername else { return }
+        let submitted = resolved?.username ?? username
+        let opening = recipientName != nil
         pending = true; error = nil
         Task {
             defer { pending = false }
             do {
-                if try await model.createDirectMessage(username: submitted) { close() }
-                else { error = "Couldn’t open that conversation." }
+                if opening {
+                    if try await model.createDirectMessage(username: submitted) { close() }
+                    else { error = "Couldn’t open that conversation." }
+                } else {
+                    resolved = try await model.lookupDirectPerson(username: submitted)
+                }
             } catch { self.error = FriendlyError.message(for: error) }
         }
     }

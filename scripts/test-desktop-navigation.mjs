@@ -112,7 +112,7 @@ function fixture() {
         cursor: null,
       });
     }
-    if (path === "/api/dms") {
+    if (path === "/api/dms" || path === "/api/dms/lookup") {
       if (options.method !== "POST") return Response.json({ conversations: [] });
       await new Promise((resolve) => control.directReleases.push(resolve));
       return Response.json({ error: "TEST FIXTURE refusal", code: control.directError }, { status: 403 });
@@ -835,7 +835,7 @@ try {
     ]) {
       evaluate(`navigationFixture.directError = ${JSON.stringify(code)}`);
       browser("click", ".start-direct-form .primary");
-      wait('document.querySelector(".start-direct-form .primary").textContent === "Opening…"');
+      wait('document.querySelector(".start-direct-form .primary").textContent === "Finding…"');
       assert.deepEqual(directBounds(), before, "Pending must not move the modal, field, button or sidebar");
       assert.equal(evaluate('document.querySelector(".start-direct-form input").readOnly'), true);
       assert.equal(evaluate('document.querySelector(".start-direct-error").textContent'), "");

@@ -974,10 +974,19 @@ username substring; at most six, nothing until you type). Rows match `@`
 suggestions: avatar, display name, and `@username` in small type beneath it, shown
 inline below the field. Choosing one fills in the exact username and never submits;
 Up/Down, Enter and Escape work from hardware keyboards, and Escape closes the list,
-not the dialog. Nothing is searched server-side: there is no account directory,
-and lookups, the shared invitation-attempt limit and block handling stay
-exact-username, so typing a username by hand still works. No API, migration or
-configuration change.
+not the dialog. Suggestions are local, not a global account directory.
+In **New direct message**, an exact known recipient enables **Open conversation**;
+other valid usernames offer **Find person**. `POST /api/dms/lookup` with
+`{"username":"…"}` returns a person without creating a conversation or accepting
+an incoming request. The user confirms the returned name/username before opening.
+Editing discards that confirmation. Lookup shares the existing per-account
+exact-username rate limit with DM creation; creation still enforces blocks and
+privacy. No migration or configuration change is required.
+`node scripts/test-direct-messages.mjs --lookup` checks this flow at desktop and
+narrow web widths against the labelled local parity fixture. API integration
+coverage checks no creation/acceptance during lookup and the shared lookup budget.
+Android API tests and Rust desktop tests cover the contract; Apple changes require
+macOS/Xcode validation, and native device presentation remains unverified in the orb.
 Non-owner members can leave a space themselves. Removing a space member also
 removes their private-channel grants. The owner cannot be removed. Removal is a
 soft delete: space memberships, private-channel grants and channel joins get
