@@ -47,6 +47,7 @@ import {
 } from "../audio/effects";
 import Chat, { type FocusTarget } from "../chat/Chat";
 import type { ChatAuthor, GeneralChatHistory } from "../chat/types";
+import { getVoiceSendOnStop, setVoiceSendOnStop, subscribeVoiceSendOnStop } from "../chat/voice.ts";
 import type { MentionCandidate } from "../chat/mentions";
 import type { Space } from "../spaces/client";
 import Slider from "../components/Slider";
@@ -538,6 +539,7 @@ export default function Call({
   onBlockAuthor,
 }: CallProps = {}) {
   const systemSounds = useSyncExternalStore(subscribeSystemSounds, getSystemSoundsEnabled, () => true);
+  const voiceSendOnStop = useSyncExternalStore(subscribeVoiceSendOnStop, getVoiceSendOnStop, () => false);
   const [state, setState] = useState(initialState);
   const [name, setName] = useState(initialAccount?.displayName ?? "");
   const [loadedAccount, setAccount] = useState<Account | null>(initialAccount ?? null);
@@ -2141,6 +2143,15 @@ export default function Call({
                       }}
                     />
                     <span>Caper sound effects</span>
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      checked={voiceSendOnStop}
+                      onChange={(event) => setVoiceSendOnStop(event.target.checked)}
+                    />
+                    <span>Send voice messages as soon as I stop recording</span>
                   </label>
                 </fieldset>
                 <button
