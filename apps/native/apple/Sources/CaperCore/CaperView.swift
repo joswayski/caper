@@ -3856,6 +3856,42 @@ private struct ChatView: View {
             }
             .modifier(Entrance.panel)
     }
+    /// The channel's text field box. A separate property keeps `channelBody`
+    /// within the Swift type checker's time limit.
+    private var channelComposerField: some View {
+        HStack(alignment: .bottom, spacing: 0) {
+            HStack(alignment: .bottom, spacing: 0) {
+                AttachmentPickerButton(chat: chat).frame(height: composerMinHeight).padding(.leading, 4)
+                ZStack(alignment: .topLeading) {
+                    if chat.draft.isEmpty {
+                        Text(composerPlaceholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
+                            .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                    messageComposer
+                }
+                .frame(minHeight: composerMinHeight, maxHeight: 174)
+                // Measure the text view instead of filling the 174-point maximum.
+                .fixedSize(horizontal: false, vertical: true)
+                .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
+                #if os(iOS)
+                .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
+                #endif
+                channelGifButton
+                ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight)
+            }
+            #if os(iOS)
+            // The held microphone stays put while the bar covers the field.
+            .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight))
+            #endif
+            VoiceRecordButton(chat: chat, inThread: false, height: composerMinHeight).padding(.trailing, 2)
+        }
+        .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+        #if os(macOS)
+        // The conversation draws suggestions above this box (see ComposerSuggestionsOverlay).
+        .anchorPreference(key: ChatComposerAnchorKey.self, value: .bounds) { $0 }
+        #endif
+    }
     /// Its own property: inline in `channelBody` it pushed that expression past
     /// the Swift type checker's time limit.
     @ViewBuilder private var channelGifButton: some View {
@@ -4205,38 +4241,7 @@ private struct ChatView: View {
                     #if os(iOS)
                     ComposerSuggestionsView(controller: composerAutocomplete)
                     #endif
-                    HStack(alignment: .bottom, spacing: 0) {
-                        HStack(alignment: .bottom, spacing: 0) {
-                            AttachmentPickerButton(chat: chat).frame(height: composerMinHeight).padding(.leading, 4)
-                            ZStack(alignment: .topLeading) {
-                                if chat.draft.isEmpty {
-                                    Text(composerPlaceholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
-                                        .padding(.leading, 11).padding(.top, 12).allowsHitTesting(false).accessibilityHidden(true)
-                                }
-                                messageComposer
-                            }
-                            .frame(minHeight: composerMinHeight, maxHeight: 174)
-                            // Measure the text view instead of filling the 174-point maximum.
-                            .fixedSize(horizontal: false, vertical: true)
-                            .onChange(of: chat.draft) { _, value in chat.draftChanged(value) }
-                            #if os(iOS)
-                            .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
-                            #endif
-                            channelGifButton
-                            ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight)
-                        }
-                        #if os(iOS)
-                        // The held microphone stays put while the bar covers the field.
-                        .modifier(VoiceComposerCover(chat: chat, inThread: false, height: composerMinHeight))
-                        #endif
-                        VoiceRecordButton(chat: chat, inThread: false, height: composerMinHeight).padding(.trailing, 2)
-                    }
-                    .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
-                    #if os(macOS)
-                    // The conversation draws suggestions above this box (see ComposerSuggestionsOverlay).
-                    .anchorPreference(key: ChatComposerAnchorKey.self, value: .bounds) { $0 }
-                    #endif
+                    channelComposerField
                 }
                 Button { Task { await chat.send() } } label: {
                     CaperIcon(name: "send", size: 16)
@@ -4270,10 +4275,12 @@ private struct ChatView: View {
             // ignores the safe area, so the controls still avoid the keyboard.
             CaperTheme.conversation.ignoresSafeArea()
         }
-            // Uploads are optional server configuration; recheck per conversation.
-            .task(id: model.selectedDirectMessageID ?? model.selectedChannelID ?? model.visit?.channelID) { await chat.checkUploadAvailability() }
-            // GIFs are optional server configuration too (KLIPY_APP_KEY).
-            .task(id: model.selectedDirectMessageID ?? model.selectedChannelID ?? model.visit?.channelID) { await chat.checkKlipyAvailability() }
+            // Uploads and GIFs (KLIPY_APP_KEY) are optional server configuration;
+            // recheck per conversation.
+            .task(id: model.selectedDirectMessageID ?? model.selectedChannelID ?? model.visit?.channelID) {
+                await chat.checkUploadAvailability()
+                await chat.checkKlipyAvailability()
+            }
             // Finder, Files, Photos and other apps (iPad split view and Slide Over).
             // addAttachments keeps the first files that fit and removes the rest.
             .dropDestination(for: DroppedAttachment.self) { items, _ in
