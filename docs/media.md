@@ -8645,7 +8645,7 @@ joined by one thin curved string in the gutter. Web and Rust desktop share the
 SVG artwork; Android and Apple draw matching vectors. Collapsed quotes wrap to
 at most three rendered lines, without a character cutoff or fade. **Show more**
 appears only when the saved quote exceeds those lines, including explicit line
-breaks. **Show more** and **Show less** are small, leading-aligned underlined text
+breaks. **Show more** and **Show less** are small, leading-aligned, link-blue underlined text
 actions below the content, with transparent touch targets of at least 44px on
 mobile. Neither covers the text. Expansion and collapse are immediate and reveal
 the complete saved text separately from source navigation. Scrolling flexes the string by a few pixels

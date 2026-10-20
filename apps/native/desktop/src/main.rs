@@ -17510,7 +17510,7 @@ impl CaperApp {
                                 let label = if expanded { "Show less" } else { "Show more" };
                                 let button = ui.add(
                                     egui::Button::new(
-                                        RichText::new(label).size(11.0).color(MUTED).underline(),
+                                        RichText::new(label).size(11.0).color(LINK).underline(),
                                     )
                                     .frame(false),
                                 );

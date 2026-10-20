@@ -7603,7 +7603,7 @@ private struct NativeReplyContext: View {
 private struct ReplyExpandButton: ButtonStyle {
     @Environment(\.isFocused) private var focused
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.font(CaperTheme.font(11)).underline().foregroundStyle(CaperTheme.muted)
+        configuration.label.font(CaperTheme.font(11)).underline().foregroundStyle(CaperTheme.link)
             #if os(iOS)
             .frame(minHeight: 44)
             #else

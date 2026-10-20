@@ -3077,7 +3077,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
                 if (canExpand) {
                     TextButton({ expanded = !expanded }, Modifier.heightIn(min = 48.dp),
                         contentPadding = PaddingValues(0.dp), colors = neutralTextButtonColors()) {
-                        Text(if (expanded) "Show less" else "Show more", color = TextMuted, fontSize = 11.sp, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)
+                        Text(if (expanded) "Show less" else "Show more", color = LinkBlue, fontSize = 11.sp, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)
                     }
                 }
             }

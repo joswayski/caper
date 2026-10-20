@@ -670,7 +670,7 @@
   border: 0;
   border-radius: var(--radius);
   background: transparent;
-  color: var(--text-muted);
+  color: var(--link);
   font: inherit;
   font-size: 0.68rem;
   text-decoration: underline;
@@ -679,11 +679,11 @@
 }
 @media (hover: hover) {
   .chat-reply-expand:hover {
-    color: var(--text);
+    color: var(--link-hover);
   }
 }
 .chat-reply-expand:active {
-  color: var(--text);
+  color: var(--link-hover);
 }
 .chat-reply-view {
   flex-shrink: 0;
