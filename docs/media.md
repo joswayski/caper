@@ -6750,12 +6750,18 @@ certificates and does not publish releases or submit to stores.
   Developer ID Application certificate/private key. A distributable app needs
   hardened-runtime signing, notarization with `notarytool`, and ticket stapling.
   Development/ad-hoc signing does not substitute for Developer ID notarization.
+  Ticket-service exit 68 retries up to nine attempts with capped exponential
+  backoff (about ten minutes of waits). Invalid/revoked tickets still fail
+  immediately; retries never bypass ticket validation or Gatekeeper assessment.
   See [Apple's distribution guidance](https://developer.apple.com/developer-id/).
 - **iPhone:** register the final bundle ID and App Store Connect app, then use
   the correct development/ad-hoc provisioning profile for registered devices,
   or an App Store distribution archive for TestFlight. An unsigned simulator
   `.app` cannot run on a phone, even with a paid developer membership. TestFlight
   also has review/distribution requirements; no automatic approval is promised.
+  After processing reports `VALID`, tester-group assignment can still return
+  HTTP 404. Distribution retries that relationship for up to ten minutes without
+  uploading a replacement binary; other errors retain their existing handling.
   See [Apple's preparation guide](https://developer.apple.com/documentation/xcode/preparing_your_app_for_distribution).
   Release CI archives with a local ad-hoc signature (`CODE_SIGN_IDENTITY=-`,
   `AD_HOC_CODE_SIGNING_ALLOWED=YES`) to retain push entitlements without creating
