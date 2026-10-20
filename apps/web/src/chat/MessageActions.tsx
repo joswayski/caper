@@ -27,7 +27,7 @@ export interface MessageActionTarget {
   inThread: boolean;
 }
 
-const quickReactions = ["👍", "❤️", "😂", "🎉", "👀"];
+export const quickReactions = ["👍", "❤️", "😂"];
 
 export function preloadReactionPicker() {
   void preloadEmojiImages();
@@ -151,7 +151,8 @@ export default function MessageActions({
         </div>
         {mode === "actions" ? (
           <div className="chat-message-actions-body">
-            {canReact && (
+            {/* Touch sheets and pinned cards have no quick-reaction toolbar. */}
+            {canReact && (target.drawer || target.anchor.closest(".chat-pinned-message")) && (
               <div className="chat-quick-reactions" aria-label="Quick reactions">
                 {quickReactions.map((emoji) => {
                   const mine =

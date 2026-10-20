@@ -17935,10 +17935,11 @@ impl CaperApp {
         // A deleted message's thread stays reachable once it has one.
         let thread_action = !in_thread
             && (!deleted || message.thread.is_some() || message.thread_root_id.is_some());
-        // Web's hover actions: Reply in thread (outside threads), Reply for
-        // members, then Add reaction (disabled in read-only previews) and ⋯.
-        let action_count =
-            1 + usize::from(thread_action) + usize::from(can_react) + usize::from(!deleted);
+        // Quick reactions lead the hover actions; previews keep them disabled.
+        let action_count = 1
+            + usize::from(thread_action)
+            + usize::from(can_react)
+            + usize::from(!deleted) * (1 + QUICK_REACTIONS.len());
         let action_width = action_count as f32 * 24.0 + 6.0;
         let mentioned = mentions::mentions_me(
             &message.content.mentions,
@@ -18347,6 +18348,23 @@ impl CaperApp {
             // than inheriting the app's 36px horizontal interaction height.
             actions_ui.spacing_mut().interact_size.y = 24.0;
             actions_ui.horizontal(|ui| {
+                let quick: Vec<_> = quick_reactions(&reactions, author.as_deref())
+                    .into_iter()
+                    .filter(|_| !deleted)
+                    .map(|(emoji, mine)| {
+                        let rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
+                        let response = ui.interact(
+                            rect,
+                            ui.id().with((&message.id, "quick-reaction", emoji)),
+                            if can_react {
+                                egui::Sense::click()
+                            } else {
+                                egui::Sense::hover()
+                            },
+                        );
+                        (emoji, mine, response)
+                    })
+                    .collect();
                 let reply = if !thread_action {
                     None
                 } else {
@@ -18399,6 +18417,7 @@ impl CaperApp {
                     || menu_open
                     || picker_open
                     || more.has_focus()
+                    || quick.iter().any(|(_, _, response)| response.has_focus())
                     || [&emoji, &reply_message, &reply]
                         .into_iter()
                         .flatten()
@@ -18412,6 +18431,35 @@ impl CaperApp {
                         Stroke::new(1.0, BORDER),
                         egui::StrokeKind::Inside,
                     );
+                    for (emoji, mine, response) in &quick {
+                        if *mine || response.has_focus() || (can_react && response.hovered()) {
+                            ui.painter().rect(
+                                response.rect,
+                                5.0,
+                                if *mine {
+                                    Color32::from_rgb(57, 35, 30)
+                                } else {
+                                    RAISED
+                                },
+                                if *mine || response.has_focus() {
+                                    Stroke::new(1.0, TERRACOTTA)
+                                } else {
+                                    Stroke::NONE
+                                },
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        if let Some(entry) = emoji::find(emoji) {
+                            self.reaction_textures
+                                .image(ui, entry, 18.0)
+                                .tint(if can_react {
+                                    Color32::WHITE
+                                } else {
+                                    Color32::WHITE.gamma_multiply(0.5)
+                                })
+                                .paint_at(ui, response.rect.shrink(3.0));
+                        }
+                    }
                     for (button, open) in [
                         (reply.as_ref(), false),
                         (reply_message.as_ref(), false),
@@ -18511,6 +18559,20 @@ impl CaperApp {
                         self.select_reply(ui.ctx(), message, in_thread);
                     }
                 }
+                for (emoji, mine, response) in quick {
+                    let label = format!("React with {emoji}");
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::Button,
+                            can_react,
+                            mine,
+                            &label,
+                        )
+                    });
+                    if response.on_hover_text(label).clicked() && can_react {
+                        self.set_reaction(&message.id, emoji, !mine);
+                    }
+                }
                 more.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Message actions")
                 });
@@ -18567,49 +18629,7 @@ impl CaperApp {
                                 );
                             },
                         );
-                        // Web's quick reactions toggle your own; then the full picker.
-                        // Like replying and pinning, they need membership: read-only
-                        // previews and requests get no controls that do nothing.
                         ui.add_space(4.0);
-                        if can_react {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 2.0;
-                                for (emoji, mine) in quick_reactions(&reactions, author.as_deref())
-                                {
-                                    let Some(entry) = emoji::find(emoji) else {
-                                        continue;
-                                    };
-                                    let image = self.reaction_textures.image(ui, entry, 20.0);
-                                    if quick_reaction(
-                                        ui,
-                                        image,
-                                        &format!("React with {emoji}"),
-                                        mine,
-                                    )
-                                    .clicked()
-                                    {
-                                        self.set_reaction(&message.id, emoji, !mine);
-                                        ui.close();
-                                    }
-                                }
-                                let add = drawn_icon_button_sized(
-                                    ui,
-                                    NavIcon::SmilePlus,
-                                    "Add reaction",
-                                    32.0,
-                                );
-                                if add.clicked() {
-                                    self.reaction_picker_anchor = Some(add.rect.left_bottom());
-                                    self.reaction_picker = Some(message.id.clone());
-                                    self.composer_emoji = None;
-                                    self.reaction_search.clear();
-                                    self.reaction_category = 0;
-                                    self.reaction_search_focus = true;
-                                    ui.close();
-                                }
-                            });
-                            ui.add_space(8.0);
-                        }
                         if can_react
                             && message_menu_item(
                                 ui,
@@ -30537,14 +30557,14 @@ fn redundant_invitation(error: &str) -> Option<&'static str> {
     }
 }
 
-/// Web's quick reactions in the message actions menu.
-const QUICK_REACTIONS: [&str; 5] = ["👍", "❤️", "😂", "🎉", "👀"];
+/// Quick reactions at the start of the message hover toolbar.
+const QUICK_REACTIONS: [&str; 3] = ["👍", "❤️", "😂"];
 
 /// Each quick reaction, and whether `author` already reacted with it.
 fn quick_reactions(
     reactions: &[model::Reaction],
     author: Option<&str>,
-) -> [(&'static str, bool); 5] {
+) -> [(&'static str, bool); 3] {
     QUICK_REACTIONS.map(|emoji| {
         let mine = author.is_some_and(|author| {
             reactions.iter().any(|reaction| {
@@ -30553,36 +30573,6 @@ fn quick_reactions(
         });
         (emoji, mine)
     })
-}
-
-/// A quick reaction button, pressed (terracotta) when it is yours.
-fn quick_reaction(
-    ui: &mut egui::Ui,
-    image: egui::Image<'static>,
-    label: &str,
-    mine: bool,
-) -> egui::Response {
-    let response = ui.add(
-        egui::Button::image(image)
-            .min_size(egui::vec2(32.0, 32.0))
-            .fill(if mine {
-                Color32::from_rgb(57, 35, 30)
-            } else {
-                Color32::TRANSPARENT
-            })
-            .stroke(Stroke::new(
-                1.0,
-                if mine {
-                    TERRACOTTA
-                } else {
-                    Color32::TRANSPARENT
-                },
-            ))
-            .corner_radius(8),
-    );
-    response
-        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, mine, label));
-    response
 }
 
 /// The web message-action list's compact icon rows, independent of the
@@ -33901,6 +33891,9 @@ mod tests {
             })
             .expect("hover actions surface");
         let aligned = [
+            "React with 👍",
+            "React with ❤️",
+            "React with 😂",
             "Reply in thread",
             "Reply",
             "Add reaction",
@@ -34260,8 +34253,7 @@ mod tests {
         for label in ["Reply", "Pin message", "Unpin message"] {
             assert!(!shown.contains(&label), "previews offer no {label}");
         }
-        assert!(node_bounds(&preview, "React with 👍").is_none());
-        // The hover bar keeps a disabled Add reaction, as on web; nothing can react.
+        // The hover bar keeps disabled reactions, as on web; nothing can react.
         let nodes = &preview
             .platform_output
             .accesskit_update
@@ -34269,10 +34261,11 @@ mod tests {
             .unwrap()
             .nodes;
         assert!(
-            !nodes
-                .iter()
-                .any(|(_, node)| node.label() == Some("Add reaction") && !node.is_disabled()),
-            "previews offer no Add reaction"
+            !nodes.iter().any(|(_, node)| matches!(
+                node.label(),
+                Some("Add reaction" | "React with 👍" | "React with ❤️" | "React with 😂")
+            ) && !node.is_disabled()),
+            "preview reaction controls must be disabled"
         );
     }
 
@@ -41756,13 +41749,7 @@ mod tests {
         ];
         assert_eq!(
             super::quick_reactions(&reactions, Some("me")),
-            [
-                ("👍", true),
-                ("❤️", false),
-                ("😂", false),
-                ("🎉", false),
-                ("👀", false)
-            ]
+            [("👍", true), ("❤️", false), ("😂", false)]
         );
         assert!(
             super::quick_reactions(&reactions, None)
@@ -41845,25 +41832,20 @@ mod tests {
         for item in ["View reactions", "Copy text", "Copy message ID"] {
             assert!(shows(&output, item), "{item}: {:?}", text_shapes(&output));
         }
-        // 👍 ❤️ 😂 🎉 👀, then Add reaction.
-        // 32px wide in a menu row of 36px controls.
-        let quick = buttons(&context, egui::Order::Foreground, |size| size.x == 32.0);
-        assert_eq!(quick.len(), 6, "{quick:?}");
-        click(&mut app, &context, quick[0]);
+        assert!(buttons(&context, egui::Order::Foreground, |size| size.x == 32.0).is_empty());
+        click(&mut app, &context, more);
+        render(&mut app, &context, vec![]);
+        // Three 24px quick reactions precede thread, reply, picker and More.
+        let quick = more - egui::vec2(6.0 * 24.0, 0.0);
+        click(&mut app, &context, quick);
         assert!(
             !app.pending_reactions[&(message.id.clone(), "👍".into())].desired,
             "your 👍 toggles off"
         );
         let output = render(&mut app, &context, vec![]);
-        assert!(!shows(&output, "Copy text"), "reacting closes the menu");
+        assert!(!shows(&output, "Copy text"), "quick reactions need no menu");
 
-        click(&mut app, &context, more);
-        render(&mut app, &context, vec![]);
-        click(
-            &mut app,
-            &context,
-            buttons(&context, egui::Order::Foreground, |size| size.x == 32.0)[1],
-        );
+        click(&mut app, &context, quick + egui::vec2(24.0, 0.0));
         assert!(app.pending_reactions[&(message.id.clone(), "❤️".into())].desired);
 
         click(&mut app, &context, more);
