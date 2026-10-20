@@ -18897,6 +18897,7 @@ impl CaperApp {
     fn draft_chips(&mut self, ui: &mut egui::Ui, root: Option<&str>) {
         let mut remove = None;
         let mut preview = None;
+        let mut media_preview = None;
         let mut view = None;
         let mut retry = None;
         let mut edit = None;
@@ -19100,10 +19101,16 @@ impl CaperApp {
                             .on_hover_text(label)
                             .clicked()
                         {
-                            // Files the editor can open preview in the app,
-                            // with its tools; others in the system viewer.
+                            // Keep editor tools for editable originals, but
+                            // uploaded animations also belong in the app viewer.
                             if editable {
                                 view = Some(draft.key);
+                            } else if let Some(attachment) = draft
+                                .attachment
+                                .as_ref()
+                                .filter(|item| viewer::viewable(item))
+                            {
+                                media_preview = Some(attachment.clone());
                             } else {
                                 preview = Some(url);
                             }
@@ -19178,6 +19185,10 @@ impl CaperApp {
         }
         if let Some(key) = view {
             self.preview_draft(ui.ctx(), key);
+        }
+        if let Some(attachment) = media_preview {
+            self.viewer = Some(viewer::Viewer::open(vec![attachment], 0));
+            ui.ctx().request_repaint();
         }
         if let Some(url) = preview {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
@@ -48314,6 +48325,43 @@ mod tests {
             egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
             egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
         )
+    }
+
+    #[test]
+    fn uploaded_noneditable_drafts_open_in_the_media_viewer() {
+        for (kind, content_type, name) in [
+            ("image", "image/gif", "reaction.gif"),
+            ("video", "video/mp4", "reaction.mp4"),
+        ] {
+            let (context, mut app) = fixture("parity-attachments");
+            let draft = &mut app.draft_files[1];
+            draft.editable = None;
+            draft.local_path = Some(std::env::temp_dir().join(name));
+            draft.attachment = Some(
+                crate::model::Attachment::parse(&serde_json::json!({
+                    "id": "uploaded-animation", "kind": kind,
+                    "contentType": content_type, "name": name, "size": 1234,
+                    "url": "https://fixture.invalid/original/uploaded-animation",
+                    "status": "ready"
+                }))
+                .unwrap(),
+            );
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let tile = bounds_starting(&output, "Preview TEST FIXTURE diagram.png\n");
+            assert_eq!(
+                click_opening(
+                    &mut app,
+                    &context,
+                    egui::pos2(tile.left() + 12.0, tile.center().y)
+                ),
+                None,
+                "uploaded {kind} must not launch a browser or default app"
+            );
+            let viewer = app.viewer.as_ref().expect("in-app media viewer opens");
+            assert_eq!((viewer.index(), viewer.len()), (0, 1));
+            assert_eq!(app.draft_files.len(), 3, "preview preserves the draft");
+        }
     }
 
     #[test]
