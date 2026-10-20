@@ -3254,6 +3254,7 @@ private struct AccountBar: View {
                     // Web: the account's name, else the guest chat identity, with its profile label.
                     .accessibilityLabel(model.account == nil ? "Sign in to edit your profile" : "Edit profile for \(identityName)")
                     .accessibilityIdentifier("account-profile")
+            #if os(macOS)
             Button { CaperEffects.shared.toggle(voice.muted); Task { await voice.setMuted(!voice.muted) } } label: {
                 CaperIcon(name: voice.muted ? "mic-off" : "mic", size: 20)
                     .foregroundStyle(voice.muted ? CaperTheme.voiceOff : CaperTheme.muted)
@@ -3289,6 +3290,7 @@ private struct AccountBar: View {
                     .contentShape(Rectangle())
             }.buttonStyle(.plain).modifier(ControlHover()).help("Output Options").accessibilityLabel("Output Options")
                 .popover(isPresented: $outputOptions, arrowEdge: .top) { AccountAudioMenu(voice: voice, input: false) }
+            #endif
             Menu {
                 #if os(macOS)
                 Button("Settings…") { openSettings() }

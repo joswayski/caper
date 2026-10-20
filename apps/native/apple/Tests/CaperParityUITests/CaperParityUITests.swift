@@ -1798,8 +1798,13 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(cardMute.value as? String, "On")
         cardMute.tap()
         XCTAssertEqual(cardMute.value as? String, "Muted")
+        #if os(macOS)
         XCTAssertEqual(accountMute.value as? String, "Muted", "The card and the account bar show the same microphone")
         accountMute.tap()
+        #else
+        XCTAssertFalse(accountMute.exists, "Mobile audio controls live on the call card, not the account bar")
+        cardMute.tap()
+        #endif
         XCTAssertEqual(cardMute.value as? String, "On")
         XCTAssertFalse(app.buttons["join-voice-chan00000001"].exists, "The connected channel's row has no join shortcut")
         let switchHere = app.buttons["live-join-chan00000002"]
@@ -2517,6 +2522,7 @@ final class CaperParityUITests: XCTestCase {
         capture("voice-ready", app: app)
         let microphone = app.buttons["microphone-toggle"]
         let headphones = app.buttons["deafen-toggle"]
+        #if os(macOS)
         XCTAssertTrue(microphone.waitForExistence(timeout: 5))
         XCTAssertTrue(headphones.exists)
         XCTAssertEqual(microphone.value as? String, "On")
@@ -2530,7 +2536,6 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(microphone.value as? String, "Muted", "Undeafen must preserve an explicitly muted microphone")
         microphone.tap()
         XCTAssertEqual(microphone.value as? String, "On")
-        #if os(macOS)
         app.buttons["Input Options"].tap()
         XCTAssertTrue(app.sliders["Input volume"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.sliders["Voice processing"].exists, "Web's input menu has only the device and input volume")
@@ -2540,6 +2545,11 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(app.sliders["Output volume"].waitForExistence(timeout: 2))
         capture("output-options", app: app)
         app.typeKey(.escape, modifierFlags: [])
+        #else
+        XCTAssertFalse(microphone.exists)
+        XCTAssertFalse(headphones.exists)
+        XCTAssertFalse(app.buttons["Input Options"].exists)
+        XCTAssertFalse(app.buttons["Output Options"].exists)
         #endif
         let settings = app.descendants(matching: .any)["account-settings-menu"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))

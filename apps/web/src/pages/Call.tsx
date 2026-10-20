@@ -581,6 +581,7 @@ export default function Call({
     const update = () => {
       setNarrow(media.matches);
       setMembersVisible(media.matches ? false : wideMembersVisible.current);
+      if (media.matches) setAudioMenu((menu) => (menu === "settings" ? menu : undefined));
     };
     update();
     media.addEventListener("change", update);
@@ -2005,94 +2006,107 @@ export default function Call({
                   {identityName || "Loading…"}
                 </strong>
               </button>
-              <div className={`voice-action-group${state.muted ? " active" : ""}`}>
-                <Tooltip content={state.monitoring ? "Stop mic test to change mute" : state.muted ? "Unmute" : "Mute"}>
-                  <button
-                    type="button"
-                    className={`voice-icon-button ${state.muted ? "active" : ""}`}
-                    aria-disabled={state.monitoring}
-                    aria-label={state.muted ? "Unmute microphone" : "Mute microphone"}
-                    aria-pressed={state.muted}
-                    onClick={toggleMute}
-                  >
-                    {state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}
-                  </button>
-                </Tooltip>
-                <AudioMenu
-                  label="Input Options"
-                  open={audioMenu === "input"}
-                  onOpenChange={(open) => setAudioMenu(open ? "input" : undefined)}
-                  menuRef={audioMenu === "input" ? audioMenuRef : undefined}
-                >
-                  <AudioDevicePicker
-                    title="Input device"
-                    input
-                    devices={devices}
-                    value={deviceId}
-                    disabled={controlsDisabled}
-                    onChange={(id) => {
-                      if (connected)
-                        void act(
-                          () => clientRef.current!.changeMicrophone(id),
-                          () => setDeviceId(id),
-                        );
-                      else setDeviceId(id);
-                    }}
-                  />
-                  <div className="volume-control output-volume">
-                    <span>
-                      Input volume <output>{state.inputVolume}%</output>
-                    </span>
-                    <Slider
-                      label="Input volume"
-                      value={state.inputVolume}
-                      max={200}
-                      defaultValue={100}
-                      onChange={(value) => clientRef.current?.setInputVolume(value)}
-                    />
+              {!narrow && (
+                <>
+                  <div className={`voice-action-group${state.muted ? " active" : ""}`}>
+                    <Tooltip
+                      content={state.monitoring ? "Stop mic test to change mute" : state.muted ? "Unmute" : "Mute"}
+                    >
+                      <button
+                        type="button"
+                        className={`voice-icon-button ${state.muted ? "active" : ""}`}
+                        aria-disabled={state.monitoring}
+                        aria-label={state.muted ? "Unmute microphone" : "Mute microphone"}
+                        aria-pressed={state.muted}
+                        onClick={toggleMute}
+                      >
+                        {state.muted ? <MicOff aria-hidden="true" /> : <Mic aria-hidden="true" />}
+                      </button>
+                    </Tooltip>
+                    <AudioMenu
+                      label="Input Options"
+                      open={audioMenu === "input"}
+                      onOpenChange={(open) => setAudioMenu(open ? "input" : undefined)}
+                      menuRef={audioMenu === "input" ? audioMenuRef : undefined}
+                    >
+                      <AudioDevicePicker
+                        title="Input device"
+                        input
+                        devices={devices}
+                        value={deviceId}
+                        disabled={controlsDisabled}
+                        onChange={(id) => {
+                          if (connected)
+                            void act(
+                              () => clientRef.current!.changeMicrophone(id),
+                              () => setDeviceId(id),
+                            );
+                          else setDeviceId(id);
+                        }}
+                      />
+                      <div className="volume-control output-volume">
+                        <span>
+                          Input volume <output>{state.inputVolume}%</output>
+                        </span>
+                        <Slider
+                          label="Input volume"
+                          value={state.inputVolume}
+                          max={200}
+                          defaultValue={100}
+                          onChange={(value) => clientRef.current?.setInputVolume(value)}
+                        />
+                      </div>
+                    </AudioMenu>
                   </div>
-                </AudioMenu>
-              </div>
-              <div className={`voice-action-group${state.deafened ? " active" : ""}`}>
-                <Tooltip
-                  content={state.monitoring ? "Stop mic test to change deafen" : state.deafened ? "Undeafen" : "Deafen"}
-                >
-                  <button
-                    type="button"
-                    className={`voice-icon-button ${state.deafened ? "active" : ""}`}
-                    aria-disabled={state.monitoring}
-                    aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"}
-                    aria-pressed={state.deafened}
-                    onClick={toggleDeafen}
-                  >
-                    {state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}
-                  </button>
-                </Tooltip>
-                <AudioMenu
-                  label="Output Options"
-                  open={audioMenu === "output"}
-                  onOpenChange={(open) => setAudioMenu(open ? "output" : undefined)}
-                  menuRef={audioMenu === "output" ? audioMenuRef : undefined}
-                >
-                  {outputSelectable ? (
-                    <AudioDevicePicker title="Output device" devices={devices} value={output} onChange={setOutput} />
-                  ) : (
-                    <p className="noise-status">Choose audio output in system settings.</p>
-                  )}
-                  <div className="volume-control output-volume">
-                    <span>
-                      Output volume <output>{outputVolume}%</output>
-                    </span>
-                    <Slider
-                      label="Output volume"
-                      value={outputVolume}
-                      max={200}
-                      defaultValue={100}
-                      onChange={setOutputVolume}
-                    />
+                  <div className={`voice-action-group${state.deafened ? " active" : ""}`}>
+                    <Tooltip
+                      content={
+                        state.monitoring ? "Stop mic test to change deafen" : state.deafened ? "Undeafen" : "Deafen"
+                      }
+                    >
+                      <button
+                        type="button"
+                        className={`voice-icon-button ${state.deafened ? "active" : ""}`}
+                        aria-disabled={state.monitoring}
+                        aria-label={state.deafened ? "Undeafen audio" : "Deafen audio"}
+                        aria-pressed={state.deafened}
+                        onClick={toggleDeafen}
+                      >
+                        {state.deafened ? <VolumeX aria-hidden="true" /> : <Headphones aria-hidden="true" />}
+                      </button>
+                    </Tooltip>
+                    <AudioMenu
+                      label="Output Options"
+                      open={audioMenu === "output"}
+                      onOpenChange={(open) => setAudioMenu(open ? "output" : undefined)}
+                      menuRef={audioMenu === "output" ? audioMenuRef : undefined}
+                    >
+                      {outputSelectable ? (
+                        <AudioDevicePicker
+                          title="Output device"
+                          devices={devices}
+                          value={output}
+                          onChange={setOutput}
+                        />
+                      ) : (
+                        <p className="noise-status">Choose audio output in system settings.</p>
+                      )}
+                      <div className="volume-control output-volume">
+                        <span>
+                          Output volume <output>{outputVolume}%</output>
+                        </span>
+                        <Slider
+                          label="Output volume"
+                          value={outputVolume}
+                          max={200}
+                          defaultValue={100}
+                          onChange={setOutputVolume}
+                        />
+                      </div>
+                    </AudioMenu>
                   </div>
-                </AudioMenu>
-              </div>
+                </>
+              )}
               <AudioMenu
                 label="User Settings"
                 settings

@@ -639,7 +639,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                         { voicePermissionError = null }, joinVoice, leaveVoice, showAccountBar = false) { setNavigationOpen(false) }
                                 }
                                 // The full width, below the rail too.
-                                AccountBar(state, voice, viewModel, show)
+                                AccountBar(state, voice, viewModel, show, narrow = true)
                             }
                             Box(Modifier.fillMaxSize().conversationLayer(drawer).background(Surface)
                                 .browseDrag(members, direction = -1f,
@@ -1320,7 +1320,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     if (status == null) "Status unavailable"
     else status.replaceFirstChar { it.uppercase() } + if (live) "" else " (last known; reconnecting)"
 
-@Composable private fun AccountBar(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit) {
+@Composable private fun AccountBar(state: AppUiState, voice: VoiceState, viewModel: CaperViewModel, show: (Overlay) -> Unit, narrow: Boolean = false) {
     val context = LocalContext.current
     // Match the one-line Material composer and its bottom inset, retaining touch targets.
     Surface(Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 16.dp), color = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
@@ -1340,8 +1340,8 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }
                 }
             }
-            // Web shows mute and deafen before joining too; the next join uses them.
-            if (BuildConfig.ENABLE_NATIVE_VOICE) {
+            // Phones use the call card's controls and Settings → Audio test for devices/volume.
+            if (!narrow && BuildConfig.ENABLE_NATIVE_VOICE) {
                 // Web: mute and deafen wait while the Audio test holds the microphone.
                 val monitoring = Modifier.semantics { if (voice.monitoring) stateDescription = "Stop mic test to change mute" }
                 IconButton({ CaperEffects.toggle(voice.muted); VoiceCallService.toggleMute(context) }, Modifier.size(40.dp).then(monitoring), enabled = !voice.monitoring) { Icon(if (voice.muted) painterResource(R.drawable.lucide_mic_off) else painterResource(R.drawable.lucide_mic), if (voice.muted) "Unmute microphone" else "Mute microphone", Modifier.size(18.dp), tint = if (voice.muted) TerracottaBright else TextMuted) }
