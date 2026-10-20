@@ -108,7 +108,7 @@ class MentionCardUiTest {
         }
         compose.onNodeWithContentDescription("Send to @Maya").assertIsNotEnabled()
         compose.onNodeWithText("Message @Maya").performTextInput("Keep this draft")
-        compose.onNodeWithContentDescription("Insert emoji").performClick()
+        compose.onNodeWithContentDescription("Emojis, GIFs and stickers").performClick()
         compose.onNodeWithText("Insert emoji").assertIsDisplayed()
         compose.runOnIdle { assertTrue(picking) }
         compose.onNodeWithText("Search emoji").performTextInput("grinning-face")

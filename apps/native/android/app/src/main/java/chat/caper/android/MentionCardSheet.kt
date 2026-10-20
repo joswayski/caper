@@ -180,6 +180,12 @@ import kotlinx.coroutines.launch
                         edit = { key, change, preview -> viewModel.editProfileAttachment(person, key, change, preview) },
                         retry = { viewModel.retryProfileAttachment(person, it) },
                         pickerInteraction = { picking = it },
+                        loadMedia = viewModel::klipyPage,
+                        mediaAvailable = state?.klipy != null,
+                        sendMedia = { gif, kind, query ->
+                            viewModel.accountEpoch == pickerEpoch && viewModel.sendProfileMessage(person, card.id, card.username,
+                                onMessageSent ?: onDismiss, gif, kind, query)
+                        },
                         recordVoice = { recording ->
                             if (viewModel.accountEpoch == pickerEpoch) viewModel.sendProfileVoice(person, card.id, card.username,
                                 recording.file, recording.durationMs, recording.waveform, onMessageSent ?: onDismiss)
@@ -274,6 +280,9 @@ import kotlinx.coroutines.launch
     retryVoice: () -> Unit = {},
     discardVoice: () -> Unit = {},
     keyboardAttachment: ((android.net.Uri) -> kotlinx.coroutines.Job?)? = null,
+    loadMedia: (suspend (chat.caper.android.data.KlipyKind, String, Int, chat.caper.android.data.KlipyAdRequest?) -> chat.caper.android.data.KlipyPage)? = null,
+    mediaAvailable: Boolean = false,
+    sendMedia: (chat.caper.android.model.KlipyGif, chat.caper.android.data.KlipyKind, String) -> Boolean = { _, _, _ -> false },
 ) {
     var field by remember { mutableStateOf(TextFieldValue(draft.text, TextRange(draft.text.length))) }
     val recorder = rememberVoiceRecorder(username, rememberVoiceStop(
@@ -317,7 +326,8 @@ import kotlinx.coroutines.launch
                 },
                 trailingIcon = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        EmojiInsertButton(editable, interaction = { emojiPicker = it; pickerInteraction(it || filePicker) }) { emoji ->
+                        EmojiInsertButton(editable, interaction = { emojiPicker = it; pickerInteraction(it || filePicker) },
+                            load = loadMedia, mediaAvailable = mediaAvailable, sendMedia = sendMedia) { emoji ->
                             if (editable) insertEmojiAtSelection(field, emoji)?.let { field = it; text(it.text) }
                         }
                         if (uploadsEnabled && recordVoice != null) VoiceRecordButton(recorder, editable, voiceBlocked)

@@ -152,15 +152,21 @@ export function GifPicker({
   config,
   ads,
   autoFocus,
+  kind: selectedKind,
+  disabled,
   onSelect,
 }: {
   config: KlipyConfig;
   /** Touch layouts ask KLIPY for ads; it serves them only to mobile browsers. */
   ads: boolean;
   autoFocus?: boolean;
+  /** A containing picker owns the tabs when this is set. */
+  kind?: KlipyKind;
+  disabled?: boolean;
   onSelect: (gif: ChatGif, query: string) => void;
 }) {
-  const [kind, setKind] = useState<KlipyKind>("gif");
+  const [localKind, setKind] = useState<KlipyKind>("gif");
+  const kind = selectedKind ?? localKind;
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -230,13 +236,20 @@ export function GifPicker({
   const items = current?.items ?? [];
   return (
     <div className="chat-gif-panel">
-      <div className="chat-gif-tabs" role="tablist" aria-label="Kind">
-        {(["gif", "sticker"] as const).map((item) => (
-          <button key={item} type="button" role="tab" aria-selected={kind === item} onClick={() => setKind(item)}>
-            {item === "gif" ? "GIFs" : "Stickers"}
-          </button>
-        ))}
-      </div>
+      {!selectedKind && (
+        <div className="chat-gif-tabs" role="tablist" aria-label="Kind">
+          {(["gif", "sticker"] as const).map((item) => (
+            <button key={item} type="button" role="tab" aria-selected={kind === item} onClick={() => setKind(item)}>
+              {item === "gif" ? "GIFs" : "Stickers"}
+            </button>
+          ))}
+        </div>
+      )}
+      {disabled && (
+        <p className="chat-emoji-empty" role="status">
+          Sending is unavailable right now.
+        </p>
+      )}
       <div className="chat-emoji-search">
         <Search size={18} aria-hidden="true" />
         <input
@@ -264,6 +277,7 @@ export function GifPicker({
               className="chat-gif-tile"
               title={item.title || undefined}
               aria-label={gifLabel(item.gif)}
+              disabled={disabled}
               onClick={() => onSelect(item.gif, search)}
             >
               <GifTile item={item} />

@@ -3880,7 +3880,9 @@ private struct ChatView: View {
                 .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
                 #endif
                 channelGifButton
+                #if os(macOS)
                 ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight)
+                #endif
             }
             #if os(iOS)
             // The held microphone stays put while the bar covers the field.
@@ -3898,11 +3900,17 @@ private struct ChatView: View {
     /// Its own property: inline in `channelBody` it pushed that expression past
     /// the Swift type checker's time limit.
     @ViewBuilder private var channelGifButton: some View {
+        #if os(iOS)
+        ComposerEmojiButton(controller: composerAutocomplete, configuration: chat.klipy, mediaEnabled: chat.canSendGif(), send: { gif, query in
+            Task { await chat.sendGif(gif, query: query) }
+        }).frame(height: composerMinHeight)
+        #else
         if let klipy = chat.klipy {
             ComposerGifButton(configuration: klipy, enabled: chat.canSendGif(), controller: composerAutocomplete, send: { gif, query in
                 Task { await chat.sendGif(gif, query: query) }
             }).frame(height: composerMinHeight)
         }
+        #endif
     }
     private var channelBody: some View {
         VStack(spacing: 0) {
@@ -4799,7 +4807,9 @@ private struct NativeThreadView: View {
                                 .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
                                 #endif
                             threadGifButton
+                            #if os(macOS)
                             ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading)
+                            #endif
                         }
                         #if os(iOS)
                         .modifier(VoiceComposerCover(chat: chat, inThread: true))
@@ -4890,12 +4900,19 @@ private struct NativeThreadView: View {
 
     /// Kept out of `body`, like the channel's, for the Swift type checker.
     @ViewBuilder private var threadGifButton: some View {
+        #if os(iOS)
+        ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading, configuration: chat.klipy,
+                            mediaEnabled: chat.canSendGif(inThread: true), send: { gif, query in
+            Task { await chat.sendGif(gif, inThread: true, query: query) }
+        })
+        #else
         if let klipy = chat.klipy {
             ComposerGifButton(configuration: klipy, enabled: chat.canSendGif(inThread: true), controller: composerAutocomplete,
                               accessibilityID: "thread-composer-gif", send: { gif, query in
                 Task { await chat.sendGif(gif, inThread: true, query: query) }
             })
         }
+        #endif
     }
 
     private var threadComposer: NativeMessageComposer {
@@ -6207,6 +6224,13 @@ private struct MentionCardView: View {
                                           highlightSource: MentionSource(members: person.username.map { [.member(id: person.id, username: $0, displayName: person.title)] } ?? [], specials: false))
                 }
                 .frame(minHeight: 42, maxHeight: 140).fixedSize(horizontal: false, vertical: true)
+                #if os(iOS)
+                ComposerEmojiButton(controller: autocomplete, enabled: draft.editable && pending == nil,
+                                    configuration: model.chat.klipy, presenting: { showingGifPicker = $0; updateDialogState() },
+                                    send: { gif, query in
+                    Task { if await model.sendProfileGif(to: person, gif: gif, query: query) { close() } }
+                })
+                #else
                 Button {
                     insertEmoji = autocomplete.insertAction
                     draft.presentingDialog = true; showingEmojiPicker = true
@@ -6225,6 +6249,7 @@ private struct MentionCardView: View {
                         Task { if await model.sendProfileGif(to: person, gif: gif, query: query) { close() } }
                     })
                 }
+                #endif
                 }
                 #if os(iOS)
                 // The held microphone stays put while the bar covers the field.
@@ -7291,6 +7316,10 @@ private struct CardIconButton: View {
 private struct ComposerEmojiButton: View {
     let controller: ComposerAutocompleteController
     var enabled = true
+    var configuration: KlipyConfiguration? = nil
+    var mediaEnabled = true
+    var presenting: ((Bool) -> Void)? = nil
+    var send: ((ChatGif, String) -> Void)? = nil
     @State private var showing = false
     @State private var insert: ((String) -> Void)?
 
@@ -7304,14 +7333,29 @@ private struct ComposerEmojiButton: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
+        #if os(iOS)
+        .help("Emojis, GIFs and stickers")
+        .accessibilityLabel("Emojis, GIFs and stickers")
+        #else
         .help("Insert emoji")
         .accessibilityLabel("Insert emoji")
+        #endif
         .accessibilityIdentifier("composer-emoji")
         #if os(macOS)
         .popover(isPresented: $showing) { picker.onDisappear(perform: finish) }
         #else
-        .sheet(isPresented: $showing, onDismiss: finish) { picker }
+        .sheet(isPresented: $showing, onDismiss: finish) {
+            ComposerExpressionPicker(configuration: configuration, mediaEnabled: mediaEnabled, select: { emoji in
+                insert?(emoji); showing = false
+            }, send: { gif, query in
+                showing = false; send?(gif, query)
+            })
+            .presentationDetents([.medium, .large])
+            .presentationBackground(CaperTheme.surface)
+            .preferredColorScheme(.dark)
+        }
         #endif
+        .onChange(of: showing) { _, value in presenting?(value) }
     }
 
     private var picker: some View {
@@ -7327,6 +7371,40 @@ private struct ComposerEmojiButton: View {
     }
 }
 
+#if os(iOS)
+private struct ComposerExpressionPicker: View {
+    let configuration: KlipyConfiguration?
+    let mediaEnabled: Bool
+    let select: (String) -> Void
+    let send: (ChatGif, String) -> Void
+    @State private var tab = "Emojis"
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                Picker("Expression type", selection: $tab) {
+                    Text("Emojis").tag("Emojis")
+                    Text("GIFs").tag("GIFs")
+                    Text("Stickers").tag("Stickers")
+                }.pickerStyle(.segmented).padding(12)
+                if tab == "Emojis" {
+                    ReactionPicker(embedded: true, select: select)
+                } else if let configuration, mediaEnabled {
+                    KlipyPicker(configuration: configuration, embeddedKind: tab == "GIFs" ? .gif : .sticker, select: send)
+                        .id(tab)
+                } else {
+                    ContentUnavailableView("\(tab) unavailable", systemImage: "photo", description: Text(configuration == nil ? "KLIPY is not configured." : "Media cannot be sent right now."))
+                }
+            }
+            .navigationTitle("Emojis, GIFs & Stickers")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }
+    }
+}
+#endif
+
 private struct ReactionPicker: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
@@ -7341,6 +7419,7 @@ private struct ReactionPicker: View {
     @FocusState private var focusedEmoji: String?
     #endif
     var title = "Add reaction"
+    var embedded = false
     let select: (String) -> Void
     private var choices: [EmojiCatalogEntry] {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -7367,18 +7446,22 @@ private struct ReactionPicker: View {
         .contentShape(.accessibility, Rectangle())
         .accessibilityIdentifier("reaction-picker")
         #else
-        NavigationStack {
+        if embedded {
             content
-                .navigationTitle(title)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { dismiss() }
+        } else {
+            NavigationStack {
+                content
+                    .navigationTitle(title)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { dismiss() }
+                        }
                     }
-                }
+            }
+            .frame(minWidth: 320, minHeight: 420)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("reaction-picker")
         }
-        .frame(minWidth: 320, minHeight: 420)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("reaction-picker")
         #endif
     }
     private var content: some View {

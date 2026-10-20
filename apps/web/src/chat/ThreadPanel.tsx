@@ -13,7 +13,6 @@ import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { readThreadDrafts, saveThreadDrafts, type ThreadDraft } from "./drafts.ts";
 import type { Arrivals } from "./arrivals.ts";
 import EmojiButton from "./EmojiButton.tsx";
-import GifButton from "./GifButton.tsx";
 import type { ChatGif } from "./klipy.ts";
 import { insertEmoji } from "./emoji-autocomplete.ts";
 import MentionTextarea from "./MentionTextarea.tsx";
@@ -792,29 +791,20 @@ export default function ThreadPanel({
                 suggestions. Enter to send. Shift+Enter for a new line.
               </span>
               <div className="chat-thread-tools">
-                {onSendGif && (
-                  <GifButton
-                    disabled={
-                      !client ||
-                      readOnly ||
-                      !!state.pendingSend ||
-                      state.sendRejected ||
-                      state.phase !== "ready" ||
-                      state.thread.loading
-                    }
-                    onSelect={(gif, query) => {
-                      setValidation(undefined);
-                      onSendGif(gif, query, draft.broadcast).catch((error: unknown) =>
-                        setValidation(error instanceof Error ? error.message : "GIF could not be sent."),
-                      );
-                    }}
-                    returnFocus={composer}
-                  />
-                )}
                 <EmojiButton
                   disabled={state.phase !== "ready" || state.thread.loading}
                   onSelect={chooseEmoji}
                   returnFocus={composer}
+                  gifDisabled={!client || readOnly || !!state.pendingSend || state.sendRejected}
+                  onSendGif={
+                    onSendGif &&
+                    ((gif, query) => {
+                      setValidation(undefined);
+                      onSendGif(gif, query, draft.broadcast).catch((error: unknown) =>
+                        setValidation(error instanceof Error ? error.message : "GIF could not be sent."),
+                      );
+                    })
+                  }
                 />
                 {voice.button}
               </div>

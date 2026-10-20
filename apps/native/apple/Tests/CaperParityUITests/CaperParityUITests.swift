@@ -747,6 +747,31 @@ final class CaperParityUITests: XCTestCase {
         return nil
     }
 
+    func testIPhoneComposerSharesEmojiGifAndStickerSheet() throws {
+        let app = launch()
+        let composer = try require(app.textViews.matching(NSPredicate(format: "label BEGINSWITH %@", "Message #general")).firstMatch,
+                                   timeout: 30, "Missing channel composer")
+        XCTAssertTrue(focus(composer))
+        composer.typeText("Keep this draft")
+        let picker = try XCTUnwrap(visible(app.buttons.matching(NSPredicate(format: "label == %@", "Emojis, GIFs and stickers"))))
+        XCTAssertFalse(app.buttons["composer-gif"].exists, "Mobile must not keep a second GIF control")
+        picker.tap()
+        try require(app.textFields["reaction-picker-search"], timeout: 5, "Emojis must be the default tab")
+        let tabs = app.segmentedControls.firstMatch
+        XCTAssertEqual(tabs.buttons.count, 3)
+        tabs.buttons["GIFs"].tap()
+        try require(app.textFields["gif-picker-search"], timeout: 5, "Missing GIF search")
+        tabs.buttons["Stickers"].tap()
+        try require(app.textFields["gif-picker-search"], timeout: 5, "Missing sticker search")
+        XCTAssertEqual(app.segmentedControls.count, 1, "Media tabs must not nest another picker")
+        tabs.buttons["Emojis"].tap()
+        let search = try require(app.textFields["reaction-picker-search"], timeout: 5, "Missing emoji search")
+        search.tap(); search.typeText("tomato")
+        try require(app.buttons["tomato"], timeout: 5, "Missing tomato emoji").tap()
+        XCTAssertEqual(composer.value as? String, "Keep this draft🍅", "Emoji selection inserts without sending")
+        XCTAssertFalse(app.textFields["reaction-picker-search"].exists, "Selection must dismiss the shared sheet")
+    }
+
     func testIPhoneThreadComposerDoesNotFillItsMaximumHeight() throws {
         let app = launch()
         let row = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30,
@@ -772,7 +797,7 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
         XCTAssertEqual(send.frame.midY, composer.frame.midY, accuracy: 2,
                        "Send must align with the single-line reply input")
-        for label in ["Attach files", "Insert emoji"] {
+        for label in ["Attach files", "Emojis, GIFs and stickers"] {
             let button = try XCTUnwrap(visible(app.buttons.matching(NSPredicate(format: "label == %@", label))), "Missing \(label)")
             XCTAssertEqual(button.frame.midY, composer.frame.midY, accuracy: 2,
                            "Thread tools must align with the single-line reply input")

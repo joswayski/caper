@@ -128,7 +128,10 @@ final class KlipyPickerModel {
     @ObservationIgnored private var task: Task<Void, Never>?
     private let client: KlipyClient
 
-    init(client: KlipyClient) { self.client = client }
+    init(client: KlipyClient, kind: ChatGif.Kind = .gif) {
+        self.client = client
+        self.kind = kind
+    }
 
     func start() {
         guard task == nil, !loaded else { return }
@@ -201,6 +204,7 @@ final class KlipyPickerModel {
 /// the search it came from.
 struct KlipyPicker: View {
     let select: (ChatGif, String) -> Void
+    var embeddedKind: ChatGif.Kind? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var model: KlipyPickerModel
     #if os(macOS)
@@ -209,9 +213,10 @@ struct KlipyPicker: View {
     private let columns = 2
     #endif
 
-    init(configuration: KlipyConfiguration, select: @escaping (ChatGif, String) -> Void) {
+    init(configuration: KlipyConfiguration, embeddedKind: ChatGif.Kind? = nil, select: @escaping (ChatGif, String) -> Void) {
         self.select = select
-        _model = State(initialValue: KlipyPickerModel(client: KlipyClient(configuration: configuration)))
+        self.embeddedKind = embeddedKind
+        _model = State(initialValue: KlipyPickerModel(client: KlipyClient(configuration: configuration), kind: embeddedKind ?? .gif))
     }
 
     var body: some View {
@@ -230,31 +235,39 @@ struct KlipyPicker: View {
         .contentShape(.accessibility, Rectangle())
         .accessibilityIdentifier("gif-picker")
         #else
-        NavigationStack {
+        if let embeddedKind {
             content
-                .navigationTitle("GIFs")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { dismiss() }
+                .onAppear { model.kind = embeddedKind }
+                .onChange(of: embeddedKind) { _, kind in model.kind = kind }
+        } else {
+            NavigationStack {
+                content
+                    .navigationTitle("GIFs")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { dismiss() }
+                        }
                     }
-                }
+            }
+            .frame(minWidth: 320, minHeight: 420)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("gif-picker")
         }
-        .frame(minWidth: 320, minHeight: 420)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("gif-picker")
         #endif
     }
 
     private var content: some View {
         VStack(spacing: 0) {
-            Picker("Type", selection: $model.kind) {
-                Text("GIFs").tag(ChatGif.Kind.gif)
-                Text("Stickers").tag(ChatGif.Kind.sticker)
+            if embeddedKind == nil {
+                Picker("Type", selection: $model.kind) {
+                    Text("GIFs").tag(ChatGif.Kind.gif)
+                    Text("Stickers").tag(ChatGif.Kind.sticker)
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                .padding(.horizontal, 12).padding(.top, 12)
+                .accessibilityIdentifier("gif-picker-kind")
             }
-            .pickerStyle(.segmented).labelsHidden()
-            .padding(.horizontal, 12).padding(.top, 12)
-            .accessibilityIdentifier("gif-picker-kind")
             // KLIPY requires this exact placeholder.
             TextField("Search KLIPY", text: $model.query)
                 .textFieldStyle(.roundedBorder)

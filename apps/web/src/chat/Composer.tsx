@@ -6,7 +6,6 @@ import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { COUNTER_START, counterTone } from "./counter.ts";
 import { readDraft, saveDraft } from "./drafts.ts";
 import EmojiButton from "./EmojiButton.tsx";
-import GifButton from "./GifButton.tsx";
 import type { ChatGif } from "./klipy.ts";
 import { insertEmoji } from "./emoji-autocomplete.ts";
 import MentionTextarea from "./MentionTextarea.tsx";
@@ -292,19 +291,21 @@ export default function Composer({
           }}
         />
         <div className="chat-composer-tools">
-          {onSendGif && (
-            <GifButton
-              disabled={disabled || !identityReady || sending || !!pendingSend}
-              onSelect={(gif, query) => {
+          <EmojiButton
+            disabled={disabled}
+            onSelect={chooseEmoji}
+            returnFocus={composerRef}
+            gifDisabled={!identityReady || sending || !!pendingSend}
+            onSendGif={
+              onSendGif &&
+              ((gif, query) => {
                 setValidationError(undefined);
                 void Promise.resolve(onSendGif(gif, query)).catch((error: unknown) =>
                   setValidationError(error instanceof Error ? error.message : "GIF could not be sent."),
                 );
-              }}
-              returnFocus={composerRef}
-            />
-          )}
-          <EmojiButton disabled={disabled} onSelect={chooseEmoji} returnFocus={composerRef} />
+              })
+            }
+          />
           {voice.button}
           {/* Touch layouts get a visible send button, as in the native apps; a
               keyboard's Enter still sends everywhere. */}
