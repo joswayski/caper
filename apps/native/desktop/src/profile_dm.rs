@@ -562,58 +562,82 @@ impl Send {
     }
 }
 
-/// egui-winit 0.33 consumes the paste key-down even when the clipboard has no
-/// text. Its key-up still arrives. Supply a paste event then, but never duplicate
-/// a text/file-list paste already delivered on key-down.
-#[derive(Default)]
-pub struct PasteShortcut {
-    delivered: bool,
+// Only actual attachment representations: never text/HTML, selection metadata,
+// or file-transfer protocols. Copied arbitrary files use arboard's file list.
+// GIF/PNG are Windows registered format names; request the offered spelling.
+fn attachment_format(format: &str) -> Option<(&'static str, u8)> {
+    Some(match format.to_ascii_lowercase().as_str() {
+        "image/gif" | "gif" => ("gif", 0),
+        "image/png" | "png" => ("png", 1),
+        "image/jpeg" => ("jpg", 2),
+        "image/webp" => ("webp", 2),
+        "image/avif" => ("avif", 2),
+        "image/heic" => ("heic", 2),
+        "image/bmp" => ("bmp", 2),
+        "image/tiff" => ("tiff", 2),
+        "video/mp4" => ("mp4", 2),
+        "video/webm" => ("webm", 2),
+        "video/quicktime" => ("mov", 2),
+        "audio/mpeg" => ("mp3", 2),
+        "audio/mp4" => ("m4a", 2),
+        "audio/ogg" => ("ogg", 2),
+        "audio/wav" | "audio/x-wav" => ("wav", 2),
+        "audio/flac" => ("flac", 2),
+        "application/pdf" => ("pdf", 2),
+        "application/zip" => ("zip", 2),
+        "application/octet-stream" => ("bin", 3),
+        _ => return None,
+    })
 }
 
-impl PasteShortcut {
-    pub fn update(&mut self, events: &mut Vec<egui::Event>) {
-        let mut paste = false;
-        for event in events.iter() {
-            match event {
-                egui::Event::Paste(_) => self.delivered = true,
-                egui::Event::Key {
-                    key,
-                    pressed: false,
-                    modifiers,
-                    ..
-                } if *key == egui::Key::V
-                    || *key == egui::Key::Paste
-                    || *key == egui::Key::Insert =>
-                {
-                    let shortcut = (*key == egui::Key::V && modifiers.command)
-                        || *key == egui::Key::Paste
-                        || (*key == egui::Key::Insert
-                            && modifiers.shift
-                            && cfg!(target_os = "windows"));
-                    paste |= shortcut && !self.delivered;
-                    self.delivered = false;
-                }
-                egui::Event::WindowFocused(false) => self.delivered = false,
-                _ => {}
-            }
-        }
-        if paste {
-            events.push(egui::Event::Paste(String::new()));
-        }
+fn encoded_attachment(
+    formats: Vec<String>,
+    mut read: impl FnMut(&str) -> Option<Vec<u8>>,
+) -> Result<Option<File>, String> {
+    let mut formats: Vec<_> = formats
+        .into_iter()
+        .filter_map(|format| attachment_format(&format).map(|kind| (format, kind)))
+        .collect();
+    formats.sort_by_key(|(_, (_, priority))| *priority);
+    for (format, (extension, _)) in formats {
+        let Some(bytes) = read(&format).filter(|bytes| !bytes.is_empty()) else {
+            continue;
+        };
+        let scratch = Arc::new(uploads::Scratch::new(extension));
+        std::fs::write(scratch.path(), bytes)
+            .map_err(|_| "Could not save the clipboard attachment.")?;
+        return Ok(Some(File::staged(scratch.path().to_owned(), Some(scratch))));
     }
+    Ok(None)
+}
+
+fn raw_clipboard_attachment() -> Result<Option<File>, String> {
+    use clipboard_rs::{Clipboard, ClipboardContext};
+    let Ok(clipboard) = ClipboardContext::new() else {
+        return Ok(None);
+    };
+    encoded_attachment(
+        clipboard.available_formats().unwrap_or_default(),
+        |format| clipboard.get_buffer(format).ok(),
+    )
 }
 
 /// Prefer copied files to an image (file managers may advertise both), and
 /// leave ordinary text pastes to egui. Unsupported clipboard formats are a no-op.
 pub fn paste_files() -> Result<Vec<File>, String> {
-    let Ok(mut clipboard) = arboard::Clipboard::new() else {
-        return Ok(Vec::new());
-    };
-    if let Ok(paths) = clipboard.get().file_list()
+    let mut clipboard = arboard::Clipboard::new().ok();
+    if let Some(clipboard) = clipboard.as_mut()
+        && let Ok(paths) = clipboard.get().file_list()
         && !paths.is_empty()
     {
         return Ok(paths.into_iter().map(File::picked).collect());
     }
+    if let Some(file) = raw_clipboard_attachment()? {
+        return Ok(vec![file]);
+    }
+    let Some(mut clipboard) = clipboard else {
+        return Ok(Vec::new());
+    };
     let Ok(image) = clipboard.get_image() else {
         return Ok(Vec::new());
     };
@@ -636,48 +660,145 @@ mod tests {
 
     const DIRECT: &str = r#"{"id":"dm0000000002","peer":{"id":"alex-id","username":"alex","displayName":"Alex"},"lastSeq":"0","readSeq":"0","status":"outgoing"}"#;
 
+    fn animated_clipboard_gif() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            for color in [[255, 0, 0, 255], [0, 255, 0, 255]] {
+                encoder
+                    .encode_frame(image::Frame::new(image::RgbaImage::from_pixel(
+                        2,
+                        2,
+                        image::Rgba(color),
+                    )))
+                    .unwrap();
+            }
+        }
+        bytes
+    }
+
     #[test]
-    fn image_only_paste_shortcuts_arrive_once_without_duplicating_text_paste() {
-        let release = |command| egui::Event::Key {
-            key: egui::Key::V,
-            physical_key: Some(egui::Key::V),
-            pressed: false,
-            repeat: false,
-            modifiers: egui::Modifiers {
-                command,
-                ctrl: command,
-                ..Default::default()
+    fn encoded_paste_preserves_gif_and_prefers_it_to_png() {
+        let gif = animated_clipboard_gif();
+        for formats in [["image/png", "image/gif"], ["PNG", "GIF"]] {
+            let file = encoded_attachment(formats.map(String::from).to_vec(), |format| {
+                Some(if format.to_ascii_lowercase().contains("gif") {
+                    gif.clone()
+                } else {
+                    b"flattened PNG".to_vec()
+                })
+            })
+            .unwrap()
+            .unwrap();
+            assert_eq!(file.path.extension().unwrap(), "gif");
+            assert_eq!(std::fs::read(&file.path).unwrap(), gif);
+            let path = file.path.clone();
+            drop(file);
+            assert!(!path.exists(), "draft owns and cleans up its encoded bytes");
+        }
+    }
+
+    #[test]
+    fn encoded_paste_skips_unreadable_and_empty_formats() {
+        let file = encoded_attachment(
+            ["image/png", "image/gif", "application/pdf"]
+                .map(String::from)
+                .to_vec(),
+            |format| match format {
+                "image/gif" => None,
+                "image/png" => Some(Vec::new()),
+                "application/pdf" => Some(b"%PDF-original".to_vec()),
+                _ => unreachable!(),
             },
-        };
-        let mut shortcut = PasteShortcut::default();
-        // The integration swallowed an image-only key-down. Its release must paste.
-        let mut events = vec![release(true)];
-        shortcut.update(&mut events);
-        assert_eq!(
-            events,
-            vec![release(true), egui::Event::Paste(String::new())]
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(file.path.extension().unwrap(), "pdf");
+        assert_eq!(std::fs::read(file.path.clone()).unwrap(), b"%PDF-original");
+    }
+
+    #[test]
+    fn encoded_paste_does_not_turn_text_metadata_or_file_protocols_into_files() {
+        let formats = [
+            "text/plain",
+            "text/html",
+            "HTML Format",
+            "text/uri-list",
+            "x-special/gnome-copied-files",
+            "application/x-kde-cutselection",
+            "TARGETS",
+            "TIMESTAMP",
+            "SAVE_TARGETS",
+            "FileGroupDescriptorW",
+            "FileContents",
+            "image/not-a-format",
+        ];
+        assert!(
+            encoded_attachment(formats.map(String::from).to_vec(), |_| Some(
+                b"metadata".to_vec()
+            ))
+            .unwrap()
+            .is_none()
         );
-        // A file manager may provide both files and text, delivering Paste on key-down.
-        let mut events = vec![egui::Event::Paste("file:///tmp/notes.txt".into())];
-        shortcut.update(&mut events);
-        assert_eq!(events.len(), 1);
-        let mut events = vec![release(true)];
-        shortcut.update(&mut events);
-        assert_eq!(events, vec![release(true)]);
-        // A subsequent image-only paste still works, including in one frame.
-        let mut events = vec![release(true)];
-        shortcut.update(&mut events);
-        assert_eq!(events.len(), 2);
-        let mut events = vec![egui::Event::Paste("normal text".into()), release(true)];
-        shortcut.update(&mut events);
-        assert_eq!(events.len(), 2);
-        let mut events = vec![release(false)];
-        shortcut.update(&mut events);
-        assert_eq!(
-            events,
-            vec![release(false)],
-            "typing v never reads the clipboard"
-        );
+    }
+
+    #[test]
+    #[ignore = "requires an isolated real desktop clipboard; replaces its contents"]
+    fn real_clipboard_encoded_paste_and_text() {
+        use clipboard_rs::{Clipboard, ClipboardContent, ClipboardContext};
+        let clipboard = ClipboardContext::new().unwrap();
+        let gif = animated_clipboard_gif();
+        clipboard
+            .set(vec![
+                ClipboardContent::Other("image/png".into(), b"png alternative".to_vec()),
+                ClipboardContent::Other("image/gif".into(), gif.clone()),
+            ])
+            .unwrap();
+        let files = paste_files().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path.extension().unwrap(), "gif");
+        assert_eq!(std::fs::read(&files[0].path).unwrap(), gif);
+        let png = uploads::Scratch::new("png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]))
+            .save_with_format(png.path(), image::ImageFormat::Png)
+            .unwrap();
+        let bytes = std::fs::read(png.path()).unwrap();
+        clipboard.set_buffer("image/png", bytes.clone()).unwrap();
+        let files = paste_files().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path.extension().unwrap(), "png");
+        assert_eq!(std::fs::read(&files[0].path).unwrap(), bytes);
+        for (format, extension) in [
+            ("application/pdf", "pdf"),
+            ("application/zip", "zip"),
+            ("application/octet-stream", "bin"),
+        ] {
+            let bytes = vec![0, 255, 19, 82, 0, 12];
+            clipboard.set_buffer(format, bytes.clone()).unwrap();
+            let files = paste_files().unwrap();
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].path.extension().unwrap(), extension);
+            assert_eq!(std::fs::read(&files[0].path).unwrap(), bytes);
+        }
+        let copied = uploads::Scratch::new("arbitrary");
+        std::fs::write(copied.path(), b"arbitrary copied file").unwrap();
+        clipboard
+            .set(vec![
+                ClipboardContent::Files(vec![copied.path().to_str().unwrap().into()]),
+                ClipboardContent::Other("image/gif".into(), gif),
+            ])
+            .unwrap();
+        let files = paste_files().unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, copied.path());
+        assert!(files[0].scratch.is_none());
+        clipboard.set_text("ordinary text".into()).unwrap();
+        assert!(paste_files().unwrap().is_empty());
+        assert_eq!(clipboard.get_text().unwrap(), "ordinary text");
+        clipboard
+            .set_html("<img src='https://example.invalid/a.gif'>".into())
+            .unwrap();
+        assert!(paste_files().unwrap().is_empty());
     }
 
     fn operation(files: Vec<File>) -> Send {

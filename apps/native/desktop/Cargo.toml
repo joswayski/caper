@@ -8,6 +8,11 @@ description = "Native Caper desktop client"
 
 [workspace]
 members = ["voice-spike/vendor/libwebrtc", "voice-spike/vendor/webrtc-sys", "voice-spike/vendor/webrtc-sys/build"]
+exclude = ["vendor/egui-winit"]
+
+[patch.crates-io]
+# Preserve the paste command even when only non-text clipboard formats exist.
+egui-winit = { path = "vendor/egui-winit" }
 
 [workspace.package]
 edition = "2021"
@@ -35,6 +40,8 @@ tokio-stream = "0.1"
 ab_glyph = "=0.2.32"
 # egui only pastes text; read native copied file lists and RGBA images too.
 arboard = { version = "=3.6.1", features = ["wayland-data-control"] }
+# Encoded clipboard attachments (including animated GIF), without image decoding.
+clipboard-rs = { version = "=0.3.5", default-features = false, features = ["wayland"] }
 # AVIF photos: rav1e (pure-Rust AV1, BSD-2-Clause) in an avif-serialize
 # (BSD-3-Clause) container; see src/avif.rs.
 avif-serialize = "=0.8.9"

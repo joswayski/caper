@@ -1317,7 +1317,6 @@ struct CaperApp {
     /// `:`/`@` suggestions by composer editor ID (channel and thread).
     composer_suggestions: egui::IdMap<SuggestionState>,
     ime_composing: bool,
-    paste_shortcut: profile_dm::PasteShortcut,
     pending: Option<PendingSend>,
     mention_card: Option<MentionCard>,
     profile_drafts: BTreeMap<String, profile_dm::Draft>,
@@ -1687,7 +1686,6 @@ impl CaperApp {
             staged_files: BTreeMap::new(),
             composer_suggestions: egui::IdMap::default(),
             ime_composing: false,
-            paste_shortcut: profile_dm::PasteShortcut::default(),
             pending: None,
             mention_card: None,
             profile_drafts: BTreeMap::new(),
@@ -9738,7 +9736,6 @@ impl eframe::App for CaperApp {
 
     fn raw_input_hook(&mut self, _: &egui::Context, raw_input: &mut egui::RawInput) {
         pointer_follows_touch_release(&mut raw_input.events);
-        self.paste_shortcut.update(&mut raw_input.events);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
