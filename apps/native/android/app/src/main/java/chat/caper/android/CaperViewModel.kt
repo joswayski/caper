@@ -2272,6 +2272,72 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             durationMs = durationMs, voice = true, waveform = waveform)
     }
 
+    /**
+     * Stages a finished recording in [target]'s composer (the default when stopping): a voice chip
+     * beside the staged files, uploading at once (so transcription starts before Send) and sent
+     * with the text and files by the normal Send. One per message; Remove cancels and deletes it.
+     */
+    fun stageVoice(recording: File, durationMs: Long, waveform: String?, target: AttachmentDraftTarget) {
+        val state = mutable.value
+        val files = state.attachmentDrafts[target].orEmpty()
+        if (accountToken == null || !state.uploadsEnabled || state.selectedChannel?.id != target.channelId || !state.canParticipate ||
+            durationMs !in 1..VoiceMessages.MAX_DURATION_MS || files.any { it.voice }) {
+            recording.delete(); return
+        }
+        if (files.size >= AttachmentPolicy.MAX_ATTACHMENTS) {
+            recording.delete()
+            return setAttachmentDrafts(target, files, "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files.")
+        }
+        val key = UUID.randomUUID().toString()
+        val prepared = adoptRecording(key, recording, durationMs, waveform)
+            ?: return voiceError(target, "Couldn’t save the voice message.")
+        preparedDrafts[key] = prepared
+        setAttachmentDrafts(target, files + voiceDraft(key, prepared))
+        retryDraft(key)
+    }
+
+    /** The composer chip for a staged recording. */
+    private fun voiceDraft(key: String, prepared: PreparedAttachment) = DraftAttachmentUi(
+        key, VoiceMessages.LABEL, "audio", sourceSize = prepared.file.length(), storedSize = prepared.file.length(),
+        localUrl = Uri.fromFile(prepared.file).toString(), compressing = false,
+        voice = true, durationMs = prepared.durationMs, waveform = prepared.waveform,
+    )
+
+    /**
+     * The profile card's staged recording: a voice chip among the card's files, uploaded to that
+     * person's DM at once like the card's other files and sent with the text by Send.
+     */
+    internal fun stageProfileVoice(person: String, id: String?, username: String, recording: File, durationMs: Long, waveform: String?) {
+        val token = accountToken
+        val draft = profileDrafts[person]
+        if (token == null || !mutable.value.uploadsEnabled || !draft.editable || draft.files.any { it.voice } ||
+            durationMs !in 1..VoiceMessages.MAX_DURATION_MS) {
+            recording.delete(); return
+        }
+        val key = UUID.randomUUID().toString()
+        val prepared = adoptRecording(key, recording, durationMs, waveform)
+            ?: return profileDrafts.error(person, "Couldn’t save the voice message.")
+        if (profileDrafts.add(person, listOf(voiceDraft(key, prepared))).isEmpty()) { discardDraftFiles(key); return }
+        profileDrafts.ready(person, key, prepared)
+        profileRecipients[person] = id to username
+        val request = accountGeneration
+        uploadJobs[key] = viewModelScope.launch {
+            try {
+                profileDrafts.upload(person, id, username, token,
+                    directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds }, keys = setOf(key))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                if (request != accountGeneration) return@launch
+                val message = (error as? ApiException)?.code?.let(::directMessageError)
+                    ?: if (error is IllegalStateException) friendlyError(error) else AttachmentPolicy.uploadErrorMessage(error)
+                updateDraft(key, person) { it.copy(error = message, compressing = false) }
+            } finally {
+                if (uploadJobs[key] === coroutineContext[Job]) uploadJobs.remove(key)
+            }
+        }
+    }
+
     private fun voiceError(target: AttachmentDraftTarget, message: String) {
         mutable.value = mutable.value.copy(attachmentErrors = mutable.value.attachmentErrors + (target to message))
     }
@@ -2513,7 +2579,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                 preparedDrafts[key] = it
             }
         }
-        updateDraft(key) { it.copy(name = prepared.name, kind = prepared.kind, storedSize = prepared.file.length(),
+        updateDraft(key) { it.copy(name = if (it.voice) it.name else prepared.name, kind = prepared.kind, storedSize = prepared.file.length(),
             compressing = false, progress = 0f, localUrl = Uri.fromFile(prepared.file).toString(),
             thumbnail = (prepared.preview ?: prepared.file.takeIf { prepared.kind == "image" })?.let { file -> Uri.fromFile(file).toString() } ?: it.thumbnail) }
         val attachment = uploader.upload(token, channel, prepared, progressReporter(key))

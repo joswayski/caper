@@ -74,6 +74,8 @@ internal enum class AudioPanel { Test, Connection, Diagnostics }
         Text("Caper sound effects", Modifier.weight(1f), fontSize = 13.sp)
         Switch(soundEffects, { soundEffects = it; CaperEffects.enabled = it; if (it) CaperEffects.play(CaperEffects.Effect.ToggleOn) }, colors = caperSwitchColors())
     }
+    // Off by default: stopping a recording stages it in the composer.
+    VoiceSendOnStopSetting()
     val testable = voice.phase == VoiceState.Phase.IDLE || voice.phase == VoiceState.Phase.FAILED || voice.phase == VoiceState.Phase.CONNECTED
     MenuButton("Audio test", testable) { open(AudioPanel.Test) }
     if (voice.phase == VoiceState.Phase.CONNECTED && voice.diagnostics != null) MenuButton("Connection details") { open(AudioPanel.Connection) }

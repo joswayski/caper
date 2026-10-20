@@ -1563,11 +1563,15 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
                 DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
                 // A voice reply goes on its own; the draft text stays, "Also send to" applies to it and resets.
-                val recorder = rememberVoiceRecorder(target) { recording ->
-                    viewModel.sendVoice(recording.file, recording.durationMs, recording.waveform, threadRootId = thread.rootId, broadcast = broadcast)
-                    broadcast = false
-                }
-                val voiceBlocked = voiceRecordBlocked(state.pendingMessage != null)
+                // Stopping stages the recording with the reply's files; with "send as soon as I stop" it goes on its own.
+                val recorder = rememberVoiceRecorder(target, rememberVoiceStop(
+                    stage = { viewModel.stageVoice(it.file, it.durationMs, it.waveform, target) },
+                    send = {
+                        viewModel.sendVoice(it.file, it.durationMs, it.waveform, threadRootId = thread.rootId, broadcast = broadcast)
+                        broadcast = false
+                    },
+                ))
+                val voiceBlocked = voiceRecordBlocked(state.pendingMessage != null, stagedVoice = files.any { it.voice })
                 val broadcastChecked = pending?.broadcast ?: broadcast
                 // The label toggles too, as one checkbox control.
                 Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
@@ -1582,7 +1586,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
                 VoiceRecordingNotice(recorder)
                 SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
-                    Box {
+                    Box(Modifier.voiceRecordingKeys(recorder)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                             EmojiTextField(draft, change, Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field), placeholder = { Text("Reply to thread…", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 5,
                                 visualTransformation = MentionVisualTransformation(mentionSource(state)),
@@ -1854,10 +1858,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
                 DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
                 // A voice message goes on its own: the draft text and files stay in the composer.
-                val recorder = rememberVoiceRecorder(target) { recording ->
-                    viewModel.sendVoice(recording.file, recording.durationMs, recording.waveform)
-                }
-                val voiceBlocked = voiceRecordBlocked(state.pendingMessage != null)
+                // Stopping stages the recording with the draft's files; with "send as soon as I stop" it goes on its own.
+                val recorder = rememberVoiceRecorder(target, rememberVoiceStop(
+                    stage = { viewModel.stageVoice(it.file, it.durationMs, it.waveform, target) },
+                    send = { viewModel.sendVoice(it.file, it.durationMs, it.waveform) },
+                ))
+                val voiceBlocked = voiceRecordBlocked(state.pendingMessage != null, stagedVoice = state.drafts.any { it.voice })
                 VoiceRecordingNotice(recorder)
                 val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
                 fun sendDraft() {
@@ -1882,7 +1888,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     updateDraft(it); viewModel.reportActivity()
                     if (edited) viewModel.setTyping(it.text.isNotBlank())
                 }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
-                    Box {
+                    Box(Modifier.voiceRecordingKeys(recorder)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                             EmojiTextField(
                                 draft, change, modifier = Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field),

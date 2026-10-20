@@ -29,6 +29,7 @@ class ProfileVoiceMessageTest {
     private val author = ChatAuthor("account00001", "Jose", false)
     private val asset = "VoIcEmSg12345678"
     private val key = "voice-key"
+    private val fileAsset = "FiLeAbCd12345678"
     private val composer by lazy { ProfileMessageDrafts(CaperApi(baseUrl = server.url("/").toString())) }
     /** Statuses for the next message sends; 200 echoes the request's idempotency key. */
     private val sends = ConcurrentLinkedQueue<Int>()
@@ -39,8 +40,14 @@ class ProfileVoiceMessageTest {
     private fun serve() {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when {
-                request.path == "/api/assets" -> MockResponse().setResponseCode(201).setBody("""{"id":"$asset","kind":"audio",
-                    "upload":{"method":"PUT","url":"${server.url("/r2/original/$asset?X-Amz-Signature=abc")}","headers":{"content-type":"audio/mp4"}}}""")
+                request.path == "/api/assets" -> {
+                    // The recording reserves as voice; any other file gets its own ID.
+                    val voice = Json.parseToJsonElement(request.body.clone().readUtf8()).jsonObject["voice"] != null
+                    val id = if (voice) asset else fileAsset
+                    MockResponse().setResponseCode(201).setBody("""{"id":"$id","kind":"${if (voice) "audio" else "file"}",
+                        "upload":{"method":"PUT","url":"${server.url("/r2/original/$id?X-Amz-Signature=abc")}","headers":{}}}""")
+                }
+                request.path == "/api/assets/$fileAsset/complete" -> MockResponse().setBody("""{"id":"$fileAsset","kind":"file","contentType":"text/plain","name":"note.txt","size":6}""")
                 request.method == "PUT" -> MockResponse().setResponseCode(putStatus)
                 request.path == "/api/assets/$asset/complete" -> MockResponse().setBody("""{"id":"$asset","kind":"audio","contentType":"audio/mp4",
                     "name":"Voice message.m4a","size":1900,"durationMs":4200,"voice":true,"transcript":{"status":"pending"}}""")
@@ -50,7 +57,7 @@ class ProfileVoiceMessageTest {
                         val sent = Json.parseToJsonElement(request.body.clone().readUtf8()).jsonObject
                         MockResponse().setBody("""{"id":"message00001","channelId":"${direct.id}","seq":"1",
                             "author":{"id":"${author.id}","name":"Jose","isGuest":false},
-                            "content":{"version":1,"type":"text","text":"","attachments":[{"id":"$asset","kind":"audio","contentType":"audio/mp4",
+                            "content":{"version":1,"type":"text","text":${sent.getValue("text")},"attachments":[{"id":"$asset","kind":"audio","contentType":"audio/mp4",
                                 "name":"Voice message.m4a","size":1900,"durationMs":4200,"voice":true,"url":"https://cdn.caper.chat/original/$asset?exp=1&sig=s"}]},
                             "createdAt":"2026-10-20T12:00:00Z","clientMessageId":${sent.getValue("clientMessageId")}}""")
                     }
@@ -197,6 +204,31 @@ class ProfileVoiceMessageTest {
         assertNull(composer[peer].voice)
         assertNull(composer.voiceKey(peer))
         assertTrue(composer[peer].editable)
+    }
+
+    @Test fun `a staged voice message goes with the text and files as one message`() = runBlocking {
+        serve()
+        stageText()
+        val voice = recording()
+        composer.add(peer, listOf(DraftAttachmentUi(key, VoiceMessages.LABEL, "audio", compressing = false,
+            localUrl = voice.file.toURI().toString(), voice = true, durationMs = 4_200, waveform = voice.waveform)))
+        composer.ready(peer, key, voice)
+        assertTrue(composer[peer].canSend)
+
+        val sent = composer.send(peer, peer, "maya", "account-token", session, { listOf(direct) }, { emptySet() })
+
+        assertNotNull(sent)
+        val all = requests()
+        val reservations = all.filter { it.path == "/api/assets" }.map { Json.parseToJsonElement(it.body.readUtf8()).jsonObject }
+        assertEquals(2, reservations.size)
+        val voiceReservation = reservations.single { it["voice"] != null }
+        assertEquals(4_200L, voiceReservation.getValue("durationMs").jsonPrimitive.long)
+        assertNotNull(voiceReservation["waveform"])
+        assertNull("the staged file is not a voice upload", reservations.single { it["voice"] == null }["waveform"])
+        val body = Json.parseToJsonElement(all.single { it.path!!.endsWith("/messages") }.body.readUtf8()).jsonObject
+        assertEquals("Keep this typed text", body.getValue("text").jsonPrimitive.content)
+        assertEquals(listOf(fileAsset, asset), body.getValue("attachmentIds").jsonArray.map { it.jsonPrimitive.content })
+        assertTrue("the draft is spent", composer.state.value.isEmpty())
     }
 
     @Test fun `only a voice recording is sent this way`() = runBlocking {

@@ -2,6 +2,7 @@ package chat.caper.android
 
 import android.Manifest
 import android.content.Context
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.media.MediaRecorder
 import android.os.Build
@@ -11,6 +12,11 @@ import android.view.View
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,6 +24,9 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.indication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,13 +40,19 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -45,11 +60,11 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -59,6 +74,14 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -68,6 +91,7 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.progressBarRangeInfo
@@ -77,6 +101,7 @@ import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -92,11 +117,14 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import chat.caper.android.data.LiveLevels
 import chat.caper.android.data.VoiceMessages
 import chat.caper.android.data.VoiceTranscript
 import chat.caper.android.data.seekPosition
 import chat.caper.android.data.transcriptState
+import chat.caper.android.data.voiceMicBlockedReason
 import chat.caper.android.model.ChatAttachment
+import chat.caper.android.model.DraftAttachmentUi
 import chat.caper.android.ui.*
 import chat.caper.android.voice.VoiceCallService
 import chat.caper.android.voice.VoiceState
@@ -106,12 +134,50 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
+// --- Preference -----------------------------------------------------------------------------------
+
+/**
+ * "Send voice messages as soon as I stop recording": a per-device setting stored with the other
+ * audio preferences, off by default (stopping stages the recording in the composer).
+ */
+internal object VoicePreferences {
+    private var preferences: SharedPreferences? = null
+    private var sendOnStop by mutableStateOf(VoiceMessages.SEND_ON_STOP_DEFAULT)
+
+    private fun load(context: Context) {
+        if (preferences != null) return
+        val loaded = context.applicationContext.getSharedPreferences("audio", Context.MODE_PRIVATE)
+        preferences = loaded
+        sendOnStop = loaded.getBoolean(VoiceMessages.SEND_ON_STOP_KEY, VoiceMessages.SEND_ON_STOP_DEFAULT)
+    }
+
+    fun sendOnStop(context: Context): Boolean { load(context); return sendOnStop }
+
+    fun setSendOnStop(context: Context, value: Boolean) {
+        load(context)
+        sendOnStop = value
+        preferences?.edit()?.putBoolean(VoiceMessages.SEND_ON_STOP_KEY, value)?.apply()
+    }
+}
+
+/** The settings row: the switch for [VoicePreferences.sendOnStop]. */
+@Composable internal fun VoiceSendOnStopSetting() {
+    val context = LocalContext.current
+    val on = VoicePreferences.sendOnStop(context)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(VoiceMessages.SEND_ON_STOP_LABEL, Modifier.weight(1f), fontSize = 13.sp)
+        androidx.compose.material3.Switch(on, { VoicePreferences.setSendOnStop(context, it); CaperEffects.toggle(it) },
+            Modifier.semantics { contentDescription = VoiceMessages.SEND_ON_STOP_LABEL }, colors = caperSwitchColors())
+    }
+}
+
 // --- Playback -----------------------------------------------------------------------------------
 
 /**
- * The one voice message playing anywhere in the app: starting another stops the first, and the
- * end resets to idle. A re-signed URL doesn't restart playback; only a failure reloads the newest
- * URL from the same spot, and a failure with nothing newer reports it (fresh signatures) once.
+ * The one voice message playing anywhere in the app (sent ones and staged ones): starting another
+ * stops the first, and the end resets to idle. A re-signed URL doesn't restart playback; only a
+ * failure reloads the newest URL from the same spot, and a failure with nothing newer reports it
+ * (fresh signatures) once.
  */
 @OptIn(UnstableApi::class)
 internal object VoicePlayback {
@@ -194,6 +260,64 @@ internal object VoicePlayback {
         source = null
         status = Status()
     }
+
+    /** Stops [id] if it is the one playing (a staged recording that is being removed). */
+    fun stop(id: String) { if (status.id == id) stop() }
+}
+
+/**
+ * Where [id] is in its playback (ms), refreshed every display frame while it plays so progress
+ * moves smoothly; 0 when it isn't the current voice message.
+ */
+@Composable private fun playbackPosition(id: String): Long {
+    val status = VoicePlayback.status
+    val active = status.id == id
+    val playing = active && status.playing
+    var position by remember(id) { mutableLongStateOf(0L) }
+    LaunchedEffect(id, active, playing) {
+        if (!active) { position = 0L; return@LaunchedEffect }
+        position = VoicePlayback.position(id) ?: 0L
+        while (playing && isActive) withFrameMillis { position = VoicePlayback.position(id) ?: position }
+    }
+    // Leaving the app stops the sound; it isn't background media.
+    if (playing) LifecycleEventEffect(Lifecycle.Event.ON_STOP) { VoicePlayback.pause() }
+    return position
+}
+
+// --- Waveform drawing ------------------------------------------------------------------------------
+
+private val BarWidth = 3.dp
+private val BarGap = 2.dp
+private val BarMinHeight = 3.dp
+
+/** One bar: fully rounded caps, vertically centred, at least [BarMinHeight] tall so silence is a neat line. */
+private fun DrawScope.waveformBar(x: Float, level: Float, color: Color) {
+    val width = BarWidth.toPx()
+    val height = maxOf(BarMinHeight.toPx(), level.coerceIn(0f, 1f) * size.height)
+    drawRoundRect(color, Offset(x, (size.height - height) / 2), Size(width, height), CornerRadius(width / 2))
+}
+
+/**
+ * The stored waveform as evenly spaced bars across the width (linear interpolation of the 64
+ * levels), the played part in the text colour and the rest muted; the bar at [progress] is
+ * partly filled.
+ */
+private fun Modifier.waveform(levels: FloatArray?, progress: () -> Float, unplayed: Color): Modifier = drawWithCache {
+    val bar = BarWidth.toPx()
+    val gap = BarGap.toPx()
+    val count = maxOf(1, ((size.width + gap) / (bar + gap)).toInt())
+    val heights = VoiceMessages.interpolate(levels, count)
+    // Centre the bar run in the width.
+    val inset = (size.width - (count * bar + (count - 1) * gap)) / 2
+    onDrawBehind {
+        val played = progress()
+        heights.forEachIndexed { index, level ->
+            val x = inset + index * (bar + gap)
+            val fill = VoiceMessages.playedFraction(x / size.width, (x + bar) / size.width, played)
+            if (fill < 1f) waveformBar(x, level, unplayed)
+            if (fill > 0f) clipRect(left = x, right = x + bar * fill) { waveformBar(x, level, Text) }
+        }
+    }
 }
 
 // --- Message: voice player and transcript ----------------------------------------------------------
@@ -206,6 +330,19 @@ internal object VoicePlayback {
     }
 }
 
+/** The eggshell circular play/pause button shared by the player and staged recordings. */
+@Composable private fun PlayPauseButton(playing: Boolean, enabled: Boolean, size: Dp, toggle: () -> Unit) {
+    val label = if (playing) "Pause voice message" else "Play voice message"
+    Box(
+        Modifier.size(size).clip(CircleShape).background(if (enabled) Action else SurfaceRaised)
+            .then(if (enabled) Modifier.clickable(role = Role.Button, onClickLabel = label, onClick = toggle) else Modifier)
+            .semantics { contentDescription = label },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(painterResource(if (playing) R.drawable.media_pause else R.drawable.media_play), null, Modifier.size(size * 0.55f), tint = if (enabled) OnAction else TextMuted)
+    }
+}
+
 @Composable private fun VoicePlayer(attachment: ChatAttachment, enabled: Boolean, onLoadFailed: (ChatAttachment, Int?) -> Unit) {
     val context = LocalContext.current
     val latest by rememberUpdatedState(attachment)
@@ -214,43 +351,26 @@ internal object VoicePlayback {
     val active = status.id == attachment.id
     val playing = active && status.playing
     val duration = attachment.durationMs ?: 0L
-    var position by remember(attachment.id) { mutableLongStateOf(0L) }
+    val position = playbackPosition(attachment.id)
     var dragging by remember(attachment.id) { mutableStateOf<Float?>(null) }
-    LaunchedEffect(active, playing) {
-        if (!active) { position = 0L; return@LaunchedEffect }
-        do {
-            position = VoicePlayback.position(attachment.id) ?: 0L
-            if (playing) delay(50)
-        } while (playing && isActive)
-    }
-    // Leaving the app stops the sound; it isn't background media.
-    if (playing) LifecycleEventEffect(Lifecycle.Event.ON_STOP) { VoicePlayback.pause() }
+    var seeked by remember(attachment.id) { mutableStateOf<Long?>(null) }
     val failure: (Int?) -> Unit = { status -> reportFailure(latest, status) }
     val urlOf = { latest.url }
-    val progress = dragging ?: if (active && duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
+    val shown = seeked?.takeIf { active } ?: position
+    LaunchedEffect(position) { seeked = null }
+    val progress = dragging ?: if (active && duration > 0) (shown.toFloat() / duration).coerceIn(0f, 1f) else 0f
     val seekTo: (Float) -> Unit = { fraction ->
         val target = seekPosition(fraction, duration)
-        position = target
+        seeked = target
         VoicePlayback.seek(context, attachment.id, urlOf, target, failure)
     }
-    val clock = VoiceMessages.playerClock(duration, (dragging?.let { seekPosition(it, duration) } ?: position), active || dragging != null)
+    val clock = VoiceMessages.playerClock(duration, (dragging?.let { seekPosition(it, duration) } ?: shown), active || dragging != null)
     Row(
         Modifier.fillMaxWidth().heightIn(min = 52.dp).background(Surface, MaterialTheme.shapes.small)
             .border(1.dp, Border, MaterialTheme.shapes.small).padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        val label = if (playing) "Pause voice message" else "Play voice message"
-        Box(
-            Modifier.size(36.dp).clip(CircleShape).background(if (enabled) Action else SurfaceRaised)
-                .then(if (enabled) Modifier.clickable(role = Role.Button, onClickLabel = label) {
-                    VoicePlayback.toggle(context, attachment.id, urlOf, failure)
-                } else Modifier)
-                .semantics { contentDescription = label },
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(painterResource(if (playing) R.drawable.media_pause else R.drawable.media_play), null, Modifier.size(20.dp), tint = if (enabled) OnAction else TextMuted)
-        }
-        val unplayed = TextMuted.copy(alpha = 0.42f)
+        PlayPauseButton(playing, enabled, 36.dp) { VoicePlayback.toggle(context, attachment.id, urlOf, failure) }
         val levels = remember(attachment.waveform) { VoiceMessages.decodeWaveform(attachment.waveform) }
         val currentProgress by rememberUpdatedState(progress)
         Spacer(
@@ -272,24 +392,7 @@ internal object VoicePlayback {
                             dragging = (change.position.x / size.width).coerceIn(0f, 1f)
                         }
                     } else Modifier)
-                .drawWithCache {
-                    val bar = 3.dp.toPx()
-                    val gap = 2.dp.toPx()
-                    val count = maxOf(1, ((size.width + gap) / (bar + gap)).toInt())
-                    val heights = VoiceMessages.resample(levels, count)
-                    onDrawBehind {
-                        val played = currentProgress
-                        heights.forEachIndexed { index, level ->
-                            val x = index * (bar + gap)
-                            val height = maxOf(bar, level * size.height)
-                            val center = (x + bar / 2) / size.width
-                            drawRoundRect(
-                                if (played > 0f && center <= played) Text else unplayed,
-                                Offset(x, (size.height - height) / 2), Size(bar, height), CornerRadius(bar / 2),
-                            )
-                        }
-                    }
-                },
+                .waveform(levels, { currentProgress }, TextMuted.copy(alpha = 0.42f)),
         )
         Text(
             if (active && status.failed) "Can’t play" else clock,
@@ -329,23 +432,74 @@ internal object VoicePlayback {
     }
 }
 
-// --- Composer: press-and-hold recording ------------------------------------------------------------
+// --- Composer: staged recording ---------------------------------------------------------------------
+
+/**
+ * A recording staged in the composer (sent with the message's text and files): play/pause of
+ * the local copy, its waveform and length, its upload status (Retry when it failed and the
+ * composer retries from the chip) and Remove, which cancels the upload and deletes it.
+ */
+@Composable internal fun StagedVoiceChip(
+    draft: DraftAttachmentUi, remove: (String) -> Unit, retry: ((String) -> Unit)?, enabled: Boolean, busy: Boolean,
+) {
+    val context = LocalContext.current
+    val id = "draft:${draft.key}"
+    val status = VoicePlayback.status
+    val playing = status.id == id && status.playing
+    val duration = draft.durationMs ?: 0L
+    val position = playbackPosition(id)
+    val progress = if (status.id == id && duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f
+    val currentProgress by rememberUpdatedState(progress)
+    val levels = remember(draft.waveform) { VoiceMessages.decodeWaveform(draft.waveform) }
+    DisposableEffect(id) { onDispose { VoicePlayback.stop(id) } }
+    Row(
+        Modifier.entrance(MOTION_BASE, scale = 0.94f).widthIn(max = 320.dp).fillMaxWidth().heightIn(min = 52.dp)
+            .background(Surface, MaterialTheme.shapes.small)
+            .border(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border, MaterialTheme.shapes.small)
+            .padding(start = 8.dp, top = 6.dp, bottom = 6.dp)
+            .semantics { contentDescription = "${VoiceMessages.LABEL}, ${VoiceMessages.clock(duration)}" },
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        PlayPauseButton(playing, draft.localUrl != null, 32.dp) {
+            VoicePlayback.toggle(context, id, { draft.localUrl }) {}
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Spacer(Modifier.fillMaxWidth().height(22.dp).waveform(levels, { currentProgress }, TextMuted.copy(alpha = 0.42f)))
+            val detail = when {
+                draft.error != null -> draft.error
+                busy && draft.attachment == null -> "Uploading ${(draft.progress * 100).toInt()}%"
+                else -> null
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(VoiceMessages.playerClock(duration, position, status.id == id), color = TextMuted, fontSize = 11.sp, style = TabularNumbers)
+                detail?.let { Text(it, Modifier.weight(1f, fill = false), color = if (draft.error != null) ErrorText else TextMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            }
+        }
+        if (draft.error != null && retry != null) TextButton({ retry(draft.key) }, enabled = enabled, shape = MaterialTheme.shapes.small,
+            contentPadding = PaddingValues(horizontal = 6.dp), colors = neutralTextButtonColors()) { Text("Retry", fontSize = 12.sp) }
+        IconButton({ VoicePlayback.stop(id); remove(draft.key) }, Modifier.size(44.dp), enabled = enabled) {
+            Icon(painterResource(R.drawable.lucide_x), "Remove voice message", Modifier.size(16.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
+        }
+    }
+}
+
+// --- Composer: recording ----------------------------------------------------------------------------
 
 /** A finished recording ready to upload: AAC in MP4, its length and its base64 waveform. */
 internal data class VoiceRecording(val file: File, val durationMs: Long, val waveform: String)
 
 /**
- * MediaRecorder to a cache file (AAC/MPEG-4, mono, 44.1 kHz, 64 kbps), sampling
- * `getMaxAmplitude()` for the live meter and the uploaded waveform. Main thread only.
+ * MediaRecorder to a cache file (AAC/MPEG-4, mono, 44.1 kHz, 64 kbps). Each `getMaxAmplitude()`
+ * reading (every [VoiceMessages.LIVE_SAMPLE_MS]) feeds the live meter and, as the input envelope,
+ * the uploaded waveform's per-slice RMS. Main thread only.
  */
 private class VoiceNoteRecorder(private val context: Context) {
     private var recorder: MediaRecorder? = null
     private var file: File? = null
     private var startedAt = 0L
-    private var samples = IntArray(256)
+    private var samples = IntArray(512)
     private var count = 0
 
-    val active get() = recorder != null
     val elapsedMs get() = if (recorder == null) 0L else SystemClock.elapsedRealtime() - startedAt
 
     fun start() {
@@ -374,21 +528,21 @@ private class VoiceNoteRecorder(private val context: Context) {
         count = 0
     }
 
-    /** The meter level now (0..1); the raw peak joins the waveform. */
-    fun sample(): Float {
+    /** The input amplitude now (0..32767); it also joins the waveform. */
+    fun sample(): Int {
         val amplitude = runCatching { recorder?.maxAmplitude ?: 0 }.getOrDefault(0)
         if (count == samples.size) samples = samples.copyOf(samples.size * 2)
         samples[count++] = amplitude
-        return VoiceMessages.meterLevel(amplitude)
+        return amplitude
     }
 
-    /** Stops and keeps the file, or null (deleted) when it was a tap or nothing was written. */
+    /** Stops and keeps the file, or null (deleted) when it was under a second or nothing was written. */
     fun finish(): VoiceRecording? {
         val elapsed = elapsedMs
         val current = recorder ?: return null
         val output = file
         recorder = null; file = null
-        // stop() throws when no audio arrived yet (a very short hold).
+        // stop() throws when no audio arrived yet (a very short recording).
         val stopped = runCatching { current.stop() }.isSuccess
         current.release()
         val duration = VoiceMessages.recordedDuration(elapsed)
@@ -406,22 +560,33 @@ private class VoiceNoteRecorder(private val context: Context) {
     }
 }
 
-/** The composer's recording: the hold in progress, its timer and meter, and the hint or error under the field. */
+/**
+ * The composer's recording: held (release stops, slide left cancels) or hands-free after a tap
+ * (Stop or discard in the bar), its timer and live meter, and the hint or error under the field.
+ * Stopping hands the recording to [onRecorded], which stages or sends it.
+ */
 @Stable internal class VoiceRecorderState(context: Context, private val view: View) {
     private val recorder = VoiceNoteRecorder(context)
+    private val live = LiveLevels()
     var recording by mutableStateOf(false)
+        private set
+    /** Started by a tap: the bar offers Stop and discard instead of release and slide. */
+    var handsFree by mutableStateOf(false)
         private set
     var elapsedMs by mutableLongStateOf(0L)
         private set
-    /** The newest meter levels, oldest first. */
-    val levels = mutableStateListOf<Float>()
-    /** How far the hold has slid left (negative px); the bar follows it. */
+    /** The live bars, oldest first, and when the newest arrived (`SystemClock.elapsedRealtime`). */
+    var bars by mutableStateOf(emptyList<Float>())
+        private set
+    var lastBarAt by mutableLongStateOf(0L)
+        private set
+    /** How far a hold has slid left (negative px); the bar follows it. */
     var slide by mutableFloatStateOf(0f)
     var notice by mutableStateOf<String?>(null)
         private set
     var noticeIsError by mutableStateOf(false)
         private set
-    /** Bumped by every start, so a release after an automatic 10:00 send does nothing. */
+    /** Bumped by every start, so a release after an automatic 10:00 stop does nothing. */
     var session = 0
         private set
     var onRecorded: (VoiceRecording) -> Unit = {}
@@ -437,9 +602,11 @@ private class VoiceNoteRecorder(private val context: Context) {
             recorder.start()
             session++
             recording = true
+            handsFree = false
             elapsedMs = 0L
             slide = 0f
-            levels.clear()
+            live.clear()
+            bars = emptyList()
             notice = null
             view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
             true
@@ -449,24 +616,29 @@ private class VoiceNoteRecorder(private val context: Context) {
         }
     }
 
+    /** A tap (not a hold) keeps recording hands-free until Stop or discard. */
+    fun keepRecordingHandsFree() { if (recording) { handsFree = true; slide = 0f } }
+
     fun tick() {
         if (!recording) return
-        val level = recorder.sample()
-        levels.add(level)
-        while (levels.size > LEVEL_HISTORY) levels.removeAt(0)
+        val now = SystemClock.elapsedRealtime()
+        if (live.sample(VoiceMessages.meterLevel(recorder.sample()), now)) {
+            bars = live.values
+            lastBarAt = live.lastBarAt ?: now
+        }
         elapsedMs = recorder.elapsedMs
-        if (elapsedMs >= VoiceMessages.MAX_DURATION_MS) release()
+        if (elapsedMs >= VoiceMessages.MAX_DURATION_MS) stop()
     }
 
-    /** Lifting the finger (or reaching 10:00) sends; under a second is a tap. */
-    fun release() {
+    /** Release, Stop or 10:00: the recording goes to [onRecorded]; under a second is discarded. */
+    fun stop() {
         if (!recording) return
         val finished = recorder.finish()
         reset()
-        if (finished == null) hint(VoiceMessages.HOLD_HINT) else onRecorded(finished)
+        if (finished == null) hint(VoiceMessages.TOO_SHORT) else onRecorded(finished)
     }
 
-    fun cancel(haptic: Boolean) {
+    fun discard(haptic: Boolean) {
         if (!recording) return
         recorder.cancel()
         reset()
@@ -475,12 +647,12 @@ private class VoiceNoteRecorder(private val context: Context) {
 
     private fun reset() {
         recording = false
+        handsFree = false
         slide = 0f
-        levels.clear()
+        live.clear()
+        bars = emptyList()
         elapsedMs = 0L
     }
-
-    companion object { const val LEVEL_HISTORY = 48 }
 }
 
 /**
@@ -493,82 +665,122 @@ private class VoiceNoteRecorder(private val context: Context) {
     val state = remember(key) { VoiceRecorderState(context, view) }
     state.onRecorded = onRecorded
     LaunchedEffect(state, state.recording) {
-        while (state.recording && isActive) { state.tick(); delay(50) }
+        while (state.recording && isActive) { state.tick(); delay(VoiceMessages.LIVE_SAMPLE_MS) }
     }
     LaunchedEffect(state.notice, state.noticeIsError) {
         if (state.notice != null && !state.noticeIsError) { delay(2_500); state.clearHint() }
     }
-    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { state.cancel(haptic = false) }
-    DisposableEffect(state) { onDispose { state.cancel(haptic = false) } }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { state.discard(haptic = false) }
+    DisposableEffect(state) { onDispose { state.discard(haptic = false) } }
     return state
 }
 
+/** Kept for the reason tests: no staged voice message, so a pending message or an old Android in a call. */
+internal fun voiceRecordBlockedReason(pendingMessage: Boolean, inVoiceCall: Boolean, sdk: Int = Build.VERSION.SDK_INT): String? =
+    voiceMicBlockedReason(stagedVoice = false, pendingMessage = pendingMessage, inVoiceCall = inVoiceCall, sdk = sdk)
+
 /**
- * Why the mic can't record right now, or null. Before Android 10 a second capture can't run
- * beside the call's microphone, so the mic says so instead of breaking the call.
+ * Why the mic can't record right now, or null, following the voice call as it starts and ends.
+ * [stagedVoice]: the composer already holds one; [pendingMessage]: only blocks when stopping
+ * would send at once.
  */
-internal fun voiceRecordBlockedReason(pendingMessage: Boolean, inVoiceCall: Boolean, sdk: Int = Build.VERSION.SDK_INT): String? = when {
-    pendingMessage -> "Wait for your last message to send, then record."
-    inVoiceCall && sdk < 29 -> "Leave the voice channel to record a voice message on this Android version."
-    else -> null
-}
-
-/** [voiceRecordBlockedReason] for this device, following the voice call as it starts and ends. */
-@Composable internal fun voiceRecordBlocked(pendingMessage: Boolean): String? {
+@Composable internal fun voiceRecordBlocked(pendingMessage: Boolean, stagedVoice: Boolean = false): String? {
     val call by VoiceCallService.state.collectAsStateWithLifecycle()
-    return voiceRecordBlockedReason(pendingMessage, call.phase != VoiceState.Phase.IDLE && call.phase != VoiceState.Phase.FAILED)
+    val sendOnStop = VoicePreferences.sendOnStop(LocalContext.current)
+    return voiceMicBlockedReason(stagedVoice, pendingMessage && sendOnStop,
+        call.phase != VoiceState.Phase.IDLE && call.phase != VoiceState.Phase.FAILED, Build.VERSION.SDK_INT)
 }
 
 /**
- * The composer's microphone: press and hold to record, release to send, slide left to cancel.
- * A tap (or a hold under a second) only shows "Hold to record". [blocked] explains why it can't
- * record now; the first press asks for the microphone permission.
+ * Stages (the default) or sends a finished recording, by the "send as soon as I stop" setting.
+ * [stage] and [send] take the recording over.
+ */
+@Composable internal fun rememberVoiceStop(stage: (VoiceRecording) -> Unit, send: (VoiceRecording) -> Unit): (VoiceRecording) -> Unit {
+    val context = LocalContext.current
+    val latestStage by rememberUpdatedState(stage)
+    val latestSend by rememberUpdatedState(send)
+    return remember(context) {
+        { recording ->
+            when (VoiceMessages.stopAction(VoicePreferences.sendOnStop(context))) {
+                VoiceMessages.StopAction.STAGE -> latestStage(recording)
+                VoiceMessages.StopAction.SEND -> latestSend(recording)
+            }
+        }
+    }
+}
+
+/**
+ * The composer's microphone, a tool button like Emoji: a tap starts hands-free recording (Stop
+ * in the bar ends it); a press and hold records until release, and sliding left cancels. The
+ * first press asks for the microphone. [blocked] explains why it can't record now.
  */
 @Composable internal fun VoiceRecordButton(state: VoiceRecorderState, enabled: Boolean, blocked: String?) {
     val context = LocalContext.current
     val cancelDistance = with(LocalDensity.current) { 96.dp.toPx() }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) state.hint(VoiceMessages.HOLD_HINT) else state.error(VoiceMessages.PERMISSION_ERROR)
+        if (granted) { if (state.start()) state.keepRecordingHandsFree() } else state.error(VoiceMessages.PERMISSION_ERROR)
     }
     val currentBlocked by rememberUpdatedState(blocked)
-    val tint = when { state.recording -> Terracotta; enabled -> TextMuted; else -> TextMuted.copy(alpha = 0.4f) }
+    val interactions = remember { MutableInteractionSource() }
+    val allowed = { ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED }
+    // Screen readers activate it with a tap: hands-free recording.
+    val activate = {
+        val reason = currentBlocked
+        when {
+            reason != null -> state.hint(reason)
+            !allowed() -> permission.launch(Manifest.permission.RECORD_AUDIO)
+            state.start() -> state.keepRecordingHandsFree()
+        }
+    }
+    val usable = enabled && blocked == null
+    val tint = when { state.recording -> Terracotta; usable -> TextMuted; else -> TextMuted.copy(alpha = 0.4f) }
     Box(
         Modifier.size(48.dp)
             .semantics {
                 contentDescription = "Record voice message"
                 role = Role.Button
-                stateDescription = if (state.recording) "Recording" else "Hold to record"
-                if (enabled) onClick("Hold to record") { state.hint(VoiceMessages.HOLD_HINT); true }
+                stateDescription = blocked ?: if (state.recording) "Recording" else "Tap to record, or press and hold"
+                if (!enabled) disabled()
+                if (enabled) onClick("Record voice message") { activate(); true }
             }
+            .indication(interactions, ripple(bounded = false, radius = 24.dp))
             .then(if (!enabled) Modifier else Modifier.pointerInput(state) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     down.consume()
+                    val press = PressInteraction.Press(down.position)
+                    interactions.tryEmit(press)
                     val reason = currentBlocked
-                    val allowed = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
                     val started = when {
                         reason != null -> { state.hint(reason); false }
-                        !allowed -> { permission.launch(Manifest.permission.RECORD_AUDIO); false }
+                        !allowed() -> { permission.launch(Manifest.permission.RECORD_AUDIO); false }
                         else -> state.start()
                     }
                     val session = state.session
                     var lifted = false
+                    var heldFor = 0L
                     try {
                         while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
                             change.consume()
+                            heldFor = change.uptimeMillis - down.uptimeMillis
                             if (!change.pressed) { lifted = true; break }
-                            if (started && state.recording && state.session == session) {
+                            if (started && state.recording && state.session == session && !state.handsFree) {
                                 val dx = (change.position.x - down.position.x).coerceAtMost(0f)
                                 state.slide = dx
-                                if (dx < -cancelDistance) state.cancel(haptic = true)
+                                if (dx < -cancelDistance) state.discard(haptic = true)
                             }
                         }
                     } finally {
-                        // A lifted finger sends; an interrupted gesture discards.
-                        if (started && state.recording && state.session == session) {
-                            if (lifted) state.release() else state.cancel(haptic = false)
+                        interactions.tryEmit(PressInteraction.Release(press))
+                        if (started && state.recording && state.session == session && !state.handsFree) {
+                            when {
+                                // A tap records hands-free; a hold stops on release.
+                                lifted && heldFor < VoiceMessages.TAP_MS && state.slide == 0f -> state.keepRecordingHandsFree()
+                                lifted -> state.stop()
+                                else -> state.discard(haptic = false)
+                            }
                         }
                     }
                 }
@@ -579,52 +791,100 @@ internal fun voiceRecordBlockedReason(pendingMessage: Boolean, inVoiceCall: Bool
     }
 }
 
+/** Hands-free recording from a hardware keyboard: Enter stops, Escape discards. */
+internal fun Modifier.voiceRecordingKeys(state: VoiceRecorderState): Modifier = onPreviewKeyEvent { event ->
+    if (!state.recording || !state.handsFree || event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+    when (event.key) {
+        Key.Enter, Key.NumPadEnter -> { state.stop(); true }
+        Key.Escape -> { state.discard(haptic = false); true }
+        else -> false
+    }
+}
+
 /**
- * Laid over the composer's row while holding: `● 0:07  ⋯live levels⋯  ‹ Slide to cancel`. The
- * mic underneath keeps the gesture, so lifting or sliding still reaches it.
+ * Laid over the composer's row while recording. Hands-free: `[trash] ● 0:07 ⋯live⋯ [Stop]`.
+ * Held: `● 0:07 ⋯live⋯ ‹ Slide to cancel (mic)`, while the mic underneath keeps the gesture.
  */
 @Composable internal fun VoiceRecordingBar(state: VoiceRecorderState, modifier: Modifier = Modifier) {
     val still = reducedMotion()
     val slideDp = with(LocalDensity.current) { state.slide.toDp() }
     Row(
         modifier.background(SurfaceComposer, MaterialTheme.shapes.small).border(1.dp, Border, MaterialTheme.shapes.small)
-            .padding(horizontal = 14.dp).semantics(mergeDescendants = true) {
-                contentDescription = "Recording voice message, ${VoiceMessages.clock(state.elapsedMs)}. Release to send, slide left to cancel."
-            },
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(start = if (state.handsFree) 2.dp else 14.dp, end = 6.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Box(Modifier.size(10.dp).background(Danger, CircleShape))
-        Text(VoiceMessages.clock(state.elapsedMs), color = Text, fontSize = 14.sp, fontWeight = FontWeight.Medium, style = TabularNumbers)
-        LevelBars(state.levels, Modifier.weight(1f).height(28.dp))
+        if (state.handsFree) IconButton({ state.discard(haptic = true) }, Modifier.size(44.dp)) {
+            Icon(painterResource(R.drawable.lucide_trash_2), "Discard voice message", Modifier.size(18.dp), tint = TextMuted)
+        }
+        RecordingDot(still)
         Text(
-            "‹ Slide to cancel", Modifier.offset { IntOffset(if (still) 0 else (slideDp.toPx() / 2).roundToInt(), 0) }
-                .alpha((1f + state.slide / 300f).coerceIn(0.3f, 1f)),
-            color = TextMuted, fontSize = 12.sp, maxLines = 1,
+            VoiceMessages.clock(state.elapsedMs), Modifier.semantics { contentDescription = "Recording, ${VoiceMessages.clock(state.elapsedMs)}" },
+            color = Text, fontSize = 14.sp, fontWeight = FontWeight.Medium, style = TabularNumbers,
         )
-        Box(Modifier.size(36.dp).background(Action, CircleShape), contentAlignment = Alignment.Center) {
-            Icon(painterResource(R.drawable.lucide_mic), null, Modifier.size(18.dp), tint = OnAction)
+        LiveBars(state, still, Modifier.weight(1f).height(28.dp))
+        if (state.handsFree) FilledIconButton(
+            { state.stop() }, Modifier.size(40.dp).semantics { contentDescription = "Stop recording" }, shape = MaterialTheme.shapes.small,
+            colors = IconButtonDefaults.filledIconButtonColors(containerColor = Action, contentColor = OnAction),
+        ) { Box(Modifier.size(12.dp).background(OnAction, RoundedCornerShape(2.dp))) }
+        else {
+            Text(
+                "‹ Slide to cancel", Modifier.offset { IntOffset(if (still) 0 else (slideDp.toPx() / 2).roundToInt(), 0) }
+                    .alpha((1f + state.slide / 300f).coerceIn(0.3f, 1f)),
+                color = TextMuted, fontSize = 12.sp, maxLines = 1,
+            )
+            Box(Modifier.size(36.dp).background(Action, CircleShape), contentAlignment = Alignment.Center) {
+                Icon(painterResource(R.drawable.lucide_mic), null, Modifier.size(18.dp), tint = OnAction)
+            }
         }
     }
 }
 
-/** Live input levels, newest at the right; bars scroll in from the right as you speak. */
-@Composable private fun LevelBars(levels: List<Float>, modifier: Modifier) {
+/** The recording dot: pulses gently, or stays still when animations are removed. */
+@Composable private fun RecordingDot(still: Boolean) {
+    val alpha = if (still) 1f else {
+        val pulse = rememberInfiniteTransition(label = "recording")
+        pulse.animateFloat(1f, 0.35f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "dot").value
+    }
+    Box(Modifier.size(10.dp).alpha(alpha).background(Danger, CircleShape))
+}
+
+/**
+ * The live meter: bars in the player's style, newest at the right, scrolling left at a constant
+ * rate (shifted per display frame between new bars; without animations they step).
+ */
+@Composable private fun LiveBars(state: VoiceRecorderState, still: Boolean, modifier: Modifier) {
+    var frame by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(still) { if (!still) while (isActive) withFrameMillis { frame = it } }
     Spacer(modifier.fillMaxHeight().drawBehind {
-        val bar = 3.dp.toPx()
-        val gap = 2.dp.toPx()
-        val count = maxOf(1, ((size.width + gap) / (bar + gap)).toInt())
-        val shown = levels.takeLast(count)
-        val start = size.width - shown.size * (bar + gap) + gap
-        shown.forEachIndexed { index, level ->
-            val height = maxOf(bar, level * size.height)
-            drawRoundRect(Text, Offset(start + index * (bar + gap), (size.height - height) / 2), Size(bar, height), CornerRadius(bar / 2))
+        // Read every frame, so the bars glide between new ones.
+        if (frame < 0L) return@drawBehind
+        val bar = BarWidth.toPx()
+        val step = bar + BarGap.toPx()
+        val bars = state.bars
+        val shift = if (still || bars.isEmpty()) 0f
+            else ((SystemClock.elapsedRealtime() - state.lastBarAt).toFloat() / VoiceMessages.LIVE_BAR_MS).coerceIn(0f, 1f) * step
+        val count = (size.width / step).toInt() + 2
+        val shown = bars.takeLast(count)
+        clipRect {
+            shown.forEachIndexed { index, level ->
+                val x = size.width - bar - (shown.size - 1 - index) * step - shift
+                if (x + bar > 0f) waveformBar(x, level, Text)
+            }
         }
     })
 }
 
-/** Above the composer: "Release to send" while holding, otherwise a short hint or the permission error. */
+/**
+ * Above the composer: while holding, what release does; otherwise a short hint or the
+ * permission error. Hands-free recording explains itself in the bar.
+ */
 @Composable internal fun VoiceRecordingNotice(state: VoiceRecorderState) {
-    val text = if (state.recording) "Release to send" else state.notice ?: return
+    val sendOnStop = VoicePreferences.sendOnStop(LocalContext.current)
+    val text = when {
+        state.recording && !state.handsFree -> if (sendOnStop) "Release to send" else "Release to add it to your message"
+        state.recording -> null
+        else -> state.notice
+    } ?: return
     Text(
         text, Modifier.fillMaxWidth().padding(bottom = 6.dp).semantics { liveRegion = LiveRegionMode.Polite },
         color = if (!state.recording && state.noticeIsError) ErrorText else TextMuted, fontSize = 12.sp,

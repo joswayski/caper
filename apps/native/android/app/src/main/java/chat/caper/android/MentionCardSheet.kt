@@ -181,6 +181,11 @@ import kotlinx.coroutines.launch
                                 recording.file, recording.durationMs, recording.waveform, onMessageSent ?: onDismiss)
                             else recording.file.delete()
                         },
+                        stageVoice = { recording ->
+                            if (viewModel.accountEpoch == pickerEpoch) viewModel.stageProfileVoice(person, card.id, card.username,
+                                recording.file, recording.durationMs, recording.waveform)
+                            else recording.file.delete()
+                        },
                         retryVoice = { viewModel.retryProfileVoice(person, card.id, card.username, onMessageSent ?: onDismiss) },
                         discardVoice = { viewModel.discardProfileVoice(person) },
                     )
@@ -258,15 +263,21 @@ import kotlinx.coroutines.launch
     toggleSpoiler: ((String) -> Unit)? = null,
     edit: ((String, AttachmentEdit?, Bitmap?) -> Unit)? = null,
     retry: ((String) -> Unit)? = null,
-    /** Sends a held-to-record voice message on its own (the typed text and files stay); null hides the mic. */
+    /** Sends a recording on its own (the typed text and files stay; "send as soon as I stop"); null hides the mic. */
     recordVoice: ((VoiceRecording) -> Unit)? = null,
+    /** Stages a recording among the card's files (the default), sent with the text by Send. */
+    stageVoice: ((VoiceRecording) -> Unit)? = null,
     retryVoice: () -> Unit = {},
     discardVoice: () -> Unit = {},
 ) {
     var field by remember { mutableStateOf(TextFieldValue(draft.text, TextRange(draft.text.length))) }
-    val recorder = rememberVoiceRecorder(username) { recording -> recordVoice?.invoke(recording) ?: recording.file.delete() }
-    // One voice message waits at a time.
-    val voiceBlocked = if (draft.voice != null) "Retry or discard the voice message that didn’t send first." else voiceRecordBlocked(pendingMessage = false)
+    val recorder = rememberVoiceRecorder(username, rememberVoiceStop(
+        stage = { stageVoice?.invoke(it) ?: it.file.delete() },
+        send = { recordVoice?.invoke(it) ?: it.file.delete() },
+    ))
+    // One staged recording per message, and one unsent voice message waits at a time.
+    val voiceBlocked = if (draft.voice != null) "Retry or discard the voice message that didn’t send first."
+        else voiceRecordBlocked(pendingMessage = false, stagedVoice = draft.files.any { it.voice })
     var emojiPicker by remember { mutableStateOf(false) }
     var filePicker by remember { mutableStateOf(false) }
     LaunchedEffect(draft.text) {
@@ -276,7 +287,7 @@ import kotlinx.coroutines.launch
     DraftAttachmentStrip(draft.files, remove, retry, enabled = editable, uploadOnSend = true, sending = draft.sending,
         edit = edit, toggleSpoiler = toggleSpoiler)
     VoiceRecordingNotice(recorder)
-    Box {
+    Box(Modifier.voiceRecordingKeys(recorder)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
             EmojiTextField(
                 field, { value ->
