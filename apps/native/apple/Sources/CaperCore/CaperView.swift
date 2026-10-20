@@ -4093,7 +4093,7 @@ private struct ChatView: View {
                     }
                 }
                 #if os(iOS)
-                .scrollDismissesKeyboard(.immediately)
+                .scrollDismissesKeyboard(.interactively)
                 #endif
                 .accessibilityIdentifier("chat-timeline")
                 // Pills report the pointer in this space; the popover anchors in it too.
@@ -4719,7 +4719,7 @@ private struct NativeThreadView: View {
                     }
                 }
                 #if os(iOS)
-                .scrollDismissesKeyboard(.immediately)
+                .scrollDismissesKeyboard(.interactively)
                 .modifier(ThreadBackSwipe(enabled: canSwipeBack, close: { chat.closeThread() }))
                 #endif
                 #if os(macOS)

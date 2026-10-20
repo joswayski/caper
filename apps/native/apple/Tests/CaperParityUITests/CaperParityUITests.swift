@@ -651,10 +651,16 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
         capture("composer-single-line-keyboard", app: app)
 
-        timeline.swipeDown()
+        // A drag that never reaches the keyboard must not resign focus as soon
+        // as scrolling starts. Continue through the keyboard to dismiss it.
+        let dragStart = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        dragStart.press(forDuration: 0.05, thenDragTo: dragStart.withOffset(CGVector(dx: 0, dy: 40)))
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "A short history drag must keep the keyboard open")
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
+        dragStart.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
         let scrollDismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [scrollDismissed], timeout: 5), .completed,
-                       "Dragging message history must dismiss the keyboard")
+                       "Dragging message history through the keyboard must dismiss it")
         XCTAssertEqual(composer.value as? String, short, "Scrolling must keep the unsent draft")
         XCTAssertEqual(send.frame.maxY, restingBottom, accuracy: 2)
         XCTAssertTrue(focus(composer))
@@ -781,10 +787,14 @@ final class CaperParityUITests: XCTestCase {
         capture("thread-composer-single-line-keyboard", app: app)
 
         let timeline = try XCTUnwrap(visible(app.scrollViews), "Missing the visible thread timeline")
-        timeline.swipeDown()
+        let dragStart = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
+        dragStart.press(forDuration: 0.05, thenDragTo: dragStart.withOffset(CGVector(dx: 0, dy: 40)))
+        XCTAssertTrue(app.keyboards.firstMatch.exists, "A short thread drag must keep the keyboard open")
+        XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
+        dragStart.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
         let scrollDismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [scrollDismissed], timeout: 5), .completed,
-                       "Dragging thread history must dismiss the keyboard, even without replies")
+                       "Dragging thread history through the keyboard must dismiss it, even without replies")
         XCTAssertEqual(composer.value as? String, "Short reply", "Scrolling must keep the reply draft")
         XCTAssertTrue(back.isHittable, "Vertical scrolling must not close the thread")
         timeline.swipeLeft()
