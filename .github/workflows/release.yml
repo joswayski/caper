@@ -30,6 +30,7 @@ on:
       - shared/design.css
       - shared/emoji/**
       - shared/fonts/**
+      - shared/messages/**
       - scripts/generate-favicons.mjs
       - scripts/native-emoji.mjs
       - scripts/native_fonts.py

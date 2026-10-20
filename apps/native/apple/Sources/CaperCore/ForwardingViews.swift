@@ -16,11 +16,11 @@ struct SharedOriginalView: View {
                 Text(MessageDeletion.placeholder).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
             } else if !message.content.text.isEmpty {
                 // Links open in the system browser; selection would take their clicks on macOS.
-                if let linked = MessageLinks.renderedText(message.content.text) {
-                    linked.font(CaperTheme.font(14)).tint(CaperTheme.link)
+                if MessageLinks.segments(in: message.content.text).contains(where: { $0.href != nil }) {
+                    MessageFormatting.renderedText(message.content.text).font(CaperTheme.font(14)).tint(CaperTheme.link)
                         .modifier(MessageLinkPills())
                 } else {
-                    Text(message.content.text).font(CaperTheme.font(14)).textSelection(.enabled)
+                    MessageFormatting.renderedText(message.content.text).font(CaperTheme.font(14)).textSelection(.enabled)
                 }
             }
             if !message.isDeleted, let attachments = message.content.attachments, !attachments.isEmpty {
@@ -70,6 +70,7 @@ struct ForwardPickerView: View {
     @State private var selected: Set<String> = []
     @State private var search = ""
     @State private var note = ""
+    @StateObject private var autocomplete = ComposerAutocompleteController()
     @State private var pending: [(destination: String, key: String)]?
     @State private var confirmed = 0
     @State private var sending = false
@@ -114,7 +115,12 @@ struct ForwardPickerView: View {
                     if destinations == nil && error == nil { ProgressView("Loading destinations…") }
                     if destinations?.isEmpty == true { Text("Join a channel or start a DM to forward here.") }
                     else if destinations != nil && visible.isEmpty { Text("No matching destinations.") }
-                    TextField("Add a note (optional)", text: $note, axis: .vertical).lineLimit(2...5).textFieldStyle(.roundedBorder).disabled(pending != nil)
+                    NativeMessageComposer(text: $note, placeholder: "Add a note (optional)", controller: autocomplete,
+                                          mentions: .empty, submit: {}, submitOnReturn: false, editable: pending == nil,
+                                          accessibilityID: "forward-note")
+                        .padding(6).background(CaperTheme.composer, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                    ComposerSuggestionsView(controller: autocomplete)
                     if let error {
                         Text(error).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
                         if destinations == nil { Button("Retry loading") { attempt += 1 } }

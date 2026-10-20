@@ -16,6 +16,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.*
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.focus.focusProperties
+import chat.caper.android.data.toggleFormat
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerType
@@ -41,7 +47,7 @@ import kotlin.math.roundToInt
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable internal fun EmojiTextField(
     value: TextFieldValue, onValueChange: (TextFieldValue) -> Unit, modifier: Modifier = Modifier,
-    enabled: Boolean = true, maxLines: Int = 6,
+    enabled: Boolean = true, maxLines: Int = 6, readOnly: Boolean = false,
     placeholder: (@Composable () -> Unit)? = null,
     visualTransformation: VisualTransformation = VisualTransformation.None,
     leadingIcon: (@Composable () -> Unit)? = null, trailingIcon: (@Composable () -> Unit)? = null,
@@ -74,6 +80,13 @@ import kotlin.math.roundToInt
     var pending by remember { mutableStateOf<Job?>(null) }
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
+    fun format(marker: String) {
+        if (!enabled || readOnly || value.composition != null) return
+        val result = toggleFormat(value.text, value.selection.min, value.selection.max, marker)
+        // Reject expansion rather than letting a caller truncate the selected content.
+        if (result.text.codePointCount(0, result.text.length) > 4000) return
+        onValueChange(TextFieldValue(result.text, TextRange(result.start, result.end)))
+    }
     LaunchedEffect(scroll.value, enabled) { pending?.cancel(); name = null }
     LaunchedEffect(focused) { if (!focused) { pending?.cancel(); name = null } }
     DisposableEffect(value.text) { onDispose { pending?.cancel() } }
@@ -84,8 +97,16 @@ import kotlin.math.roundToInt
         }
     }
     BasicTextField(
-        value, onValueChange, modifier.defaultMinSize(OutlinedTextFieldDefaults.MinWidth, OutlinedTextFieldDefaults.MinHeight),
-        enabled = enabled, textStyle = style, interactionSource = interaction,
+        value, onValueChange, modifier.onPreviewKeyEvent { event ->
+            if (enabled && !readOnly && event.type == KeyEventType.KeyDown && (event.isCtrlPressed || event.isMetaPressed) && !event.isAltPressed) {
+                when (event.key) {
+                    Key.B -> { format("**"); true }
+                    Key.I -> { format("_"); true }
+                    else -> false
+                }
+            } else false
+        }.defaultMinSize(OutlinedTextFieldDefaults.MinWidth, OutlinedTextFieldDefaults.MinHeight),
+        enabled = enabled, readOnly = readOnly, textStyle = style, interactionSource = interaction,
         cursorBrush = SolidColor(colors.cursorColor), visualTransformation = visualTransformation,
         keyboardOptions = keyboardOptions, keyboardActions = keyboardActions,
         // Scroll the inner text, keeping both icon sockets stationary. Pointer coordinates
@@ -126,7 +147,19 @@ import kotlin.math.roundToInt
                                 }
                             } finally { hide() }
                         }) {
-                            inner()
+                            Column {
+                                inner()
+                                if (enabled && !readOnly && focused && value.composition == null && !value.selection.collapsed) {
+                                    Row {
+                                        TextButton({ format("**") }, modifier = Modifier.focusProperties { canFocus = false }.semantics { contentDescription = "Bold selection" }) {
+                                            Text("B", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                                        }
+                                        TextButton({ format("_") }, modifier = Modifier.focusProperties { canFocus = false }.semantics { contentDescription = "Italic selection" }) {
+                                            Text("I", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                                        }
+                                    }
+                                }
+                            }
                             name?.let { label ->
                                 Popup(alignment = Alignment.TopStart, offset = IntOffset(anchor.x.roundToInt(), anchor.y.roundToInt() - with(density) { 42.dp.roundToPx() })) {
                                     Surface(Modifier.entrance(MOTION_FAST, dy = 4.dp), color = Blackout, contentColor = Text, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {

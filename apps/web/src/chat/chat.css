@@ -2352,7 +2352,7 @@ button.chat-mention-card-avatar {
   border-radius: 8px;
   background: var(--surface-composer);
 }
-:is(.chat-composer, .chat-profile-composer) .chat-mention-input > textarea {
+:is(.chat-composer, .chat-profile-composer, .chat-edit-dialog, .chat-forward-body) .chat-mention-input > textarea {
   position: relative;
   display: block;
   background: transparent;
@@ -2422,6 +2422,66 @@ button.chat-mention-card-avatar {
 }
 .chat-mention-input[data-disabled] .chat-mention-input-mirror {
   opacity: 0.55;
+}
+.chat-format-toolbar {
+  z-index: 100;
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 25%);
+  animation: chat-format-arrive var(--motion-fast) var(--ease-out);
+}
+.chat-format-toolbar button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.chat-format-toolbar button:is(:hover, :focus-visible) {
+  color: var(--text);
+  background: var(--border);
+}
+.chat-format-toolbar button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 1px;
+}
+.chat-format-toolbar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+@keyframes chat-format-arrive {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-format-toolbar {
+    animation: none;
+  }
+}
+@media (pointer: coarse) {
+  .chat-format-toolbar button {
+    width: 44px;
+    height: 44px;
+  }
+}
+/* The bundled Satoshi faces are upright; allow oblique synthesis only for message emphasis. */
+.chat-italic {
+  font-style: italic;
+  font-synthesis: style;
 }
 .chat-attach {
   grid-column: 1;
@@ -4992,6 +5052,10 @@ a.chat-draft-preview {
   resize: vertical;
   min-height: 140px;
   max-height: 45dvh;
+}
+.chat-edit-dialog .chat-mention-input,
+.chat-forward-body .chat-mention-input {
+  background: var(--blackout);
 }
 .chat-edit-dialog small {
   display: block;

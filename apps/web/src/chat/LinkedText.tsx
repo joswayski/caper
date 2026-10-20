@@ -1,8 +1,14 @@
 import { ExternalLink } from "lucide-react";
 import { linkSegments } from "./links.ts";
+import FormattedText from "./FormattedText.tsx";
+import { formattedRuns } from "./formatting.ts";
 
-/** Plain message text with http(s) and www. links; see links.ts for the shared rules. */
-export default function LinkedText({ text }: { text: string }) {
+/** Message emphasis and safe autolinks; mention-aware callers format their outer runs. */
+export default function LinkedText({ text, formatted = true }: { text: string; formatted?: boolean }) {
+  if (formatted)
+    return (
+      <FormattedText runs={formattedRuns(text)}>{(part) => <LinkedText text={part} formatted={false} />}</FormattedText>
+    );
   return (
     <>
       {linkSegments(text).map((segment, index) => {

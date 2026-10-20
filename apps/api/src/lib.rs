@@ -68,8 +68,12 @@ mod email;
 mod embeds;
 mod environment;
 mod feedback;
+#[path = "../../../shared/messages/formatting.rs"]
+mod formatting;
 pub mod gateway;
 mod klipy;
+#[path = "../../../shared/messages/links.rs"]
+mod links;
 mod media_store;
 mod mentions;
 mod names;

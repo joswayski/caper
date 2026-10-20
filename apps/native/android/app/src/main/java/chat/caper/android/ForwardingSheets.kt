@@ -16,6 +16,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -26,6 +27,7 @@ import chat.caper.android.data.linkRanges
 import chat.caper.android.model.*
 import chat.caper.android.ui.Border
 import chat.caper.android.ui.EmojiImage
+import chat.caper.android.ui.EmojiTextField
 import chat.caper.android.ui.ErrorText
 import chat.caper.android.ui.PinGold
 import chat.caper.android.ui.PinGoldWash
@@ -71,9 +73,8 @@ import java.util.UUID
 }
 
 /** The original's text with its `http(s)://` and `www.` links (`data/Links.kt`); like web, no mention pills here. */
-@Composable private fun LinkedText(text: String, fontSize: TextUnit) {
+@Composable internal fun LinkedText(text: String, fontSize: TextUnit = 14.sp) {
     val links = remember(text) { linkRanges(text) }
-    if (links.isEmpty()) return Text(text, fontSize = fontSize)
     val uriHandler = LocalUriHandler.current
     val annotated = remember(text, links, uriHandler) {
         messageText(text, emptyList(), links = links, openLink = { openExternalLink(uriHandler, it) })
@@ -104,7 +105,7 @@ import java.util.UUID
     var destinations by remember { mutableStateOf<List<ForwardDestination>?>(null) }
     var selected by remember { mutableStateOf(setOf<String>()) }
     var search by remember { mutableStateOf("") }
-    var note by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf(TextFieldValue()) }
     var pending by remember { mutableStateOf<List<Pair<ForwardDestination, UUID>>?>(null) }
     var confirmed by remember { mutableIntStateOf(0) }
     var sending by remember { mutableStateOf(false) }
@@ -134,14 +135,14 @@ import java.util.UUID
             }
             if (destinations == null && error == null) Text("Loading destinations…", color = TextMuted)
             if (visible?.isEmpty() == true) Text("No matching destinations. Join a channel or start a DM.", color = TextMuted)
-            OutlinedTextField(note, { note = it }, label = { Text("Add a note (optional)") }, enabled = pending == null, modifier = Modifier.fillMaxWidth(),
+            EmojiTextField(note, { note = it }, placeholder = { Text("Add a note (optional)") }, enabled = pending == null, modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences))
             error?.let { Text(it, color = ErrorText); if (destinations == null) TextButton({ attempt++ }, shape = MaterialTheme.shapes.small) { Text("Retry loading") } }
             Button({
                 if (sending || selected.isEmpty()) return@Button
                 val intent = pending ?: destinations.orEmpty().filter { it.id in selected }.map { it to UUID.randomUUID() }
                 pending = intent
-                val text = note.trim()
+                val text = note.text.trim()
                 sending = true; error = null
                 scope.launch {
                     try {
@@ -168,7 +169,7 @@ import java.util.UUID
                         error = "$done$status ${friendlyError(reason, "Try again.")}"
                     } finally { sending = false }
                 }
-            }, enabled = selected.isNotEmpty() && !sending && note.codePointCount(0, note.length) <= 4000, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(if (sending) "Forwarding…" else if (pending != null) "Retry forwards (${selected.size})" else "Forward (${selected.size})") }
+            }, enabled = selected.isNotEmpty() && !sending && note.text.codePointCount(0, note.text.length) <= 4000, shape = MaterialTheme.shapes.small, colors = primaryButtonColors()) { Text(if (sending) "Forwarding…" else if (pending != null) "Retry forwards (${selected.size})" else "Forward (${selected.size})") }
         }
     }
 }

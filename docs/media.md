@@ -4295,13 +4295,45 @@ client.
 No infrastructure, secret or configuration change is needed. The migration is
 additive and Ship rolls the API out before the gateway and web as usual.
 
-## Message text: links and grouping
+## Message text: emphasis, links and grouping
 
-Message content stays plain text on the wire
-(`content: {version: 1, type: "text", text, mentions}`); there is no server,
-database or API change. Clients find links at render time the same way they
-find mentions: split the text into mention segments, then run link detection
-on the plain segments only.
+Message content stays a string on the wire
+(`content: {version: 1, type: "text", text, mentions}`), with no schema change.
+Clients interpret emphasis before drawing mentions and links. The API resolves
+mentions against the displayed text too, so formatting `@user_name` does not
+change whom a message notifies. Stored text and edit-history diffs retain markers.
+
+**Bold and italic.** Select text in a message composer, edit dialog or forwarding
+note to use B/I, or press Ctrl/Cmd+B and Ctrl/Cmd+I. This is a Markdown-assisted
+textarea, not a WYSIWYG editor: `**bold**` and `_italic_` remain visible while
+editing and render as emphasis in sent messages. Different styles nest and can
+span lines. Surrounding selection whitespace stays outside the markers; formatting
+cannot expand a draft beyond 4,000 characters. Unmatched and backslash-escaped
+markers, underscores in identifiers, and URL contents stay literal. HTML, custom
+links, headings, lists, and other Markdown are not interpreted. Older clients
+show the readable source markers. Reply excerpts and history retain the source.
+All clients' parser tests share
+`shared/messages/formatting-cases.json`; the API and desktop share the Rust parser.
+
+Browser validation: `node scripts/test-message-formatting.mjs http://localhost:5173`
+mounts real components with explicitly labelled local-only delivery. It checks
+selection controls, shortcuts, toggling, undo, sending, nested emphasis, links,
+mentions, editing, dismissal, narrow layout and the character limit. This does
+not replace native-device or live delivery checks.
+
+Formatting validation (Linux orb): web check/build and 772 tests passed; API
+build, fmt, clippy and 218 tests passed (93 integration tests require external
+fixtures and remain ignored). Android compiled and all 571 unit tests passed,
+without a connected device. Linux desktop built, passed 755 tests (20 ignored)
+and application-only clippy; the final toolbar-position adjustment passed
+focused formatting and profile-composer tests and visual inspection at wide and
+narrow widths. Dependency-inclusive desktop clippy still reports existing
+vendored WebRTC documentation warnings. Apple changes and shared-fixture tests
+are authored but uncompiled here (no Swift/Xcode); Apple and Android device UI,
+Windows/macOS desktop and native sent-message rendering remain unverified.
+The browser interaction recording uses local simulated delivery. No production
+account writes or live delivery checks were performed. Docker has no running
+daemon here; the API binary was built directly instead of building its image.
 
 **Links.** `http://`, `https://` and `www.` URLs (case-insensitive) become
 links. The rules follow GitHub Flavored Markdown's autolink literals: a link
@@ -4316,17 +4348,18 @@ new tab with `rel="noopener noreferrer nofollow ugc"`. They apply to message
 bodies in the timeline, threads, Pins and forwarded-message cards, not to
 edit-history diffs or the composer.
 
-The algorithm lives in `apps/web/src/chat/links.ts` and each native client;
+The algorithm lives in `apps/web/src/chat/links.ts`, `shared/messages/links.rs`
+(API/desktop), and the Apple and Android clients;
 all four clients' unit tests assert the same segments for every case in
 `shared/messages/link-cases.json`. Change the rules and that file together.
 
-**Compatibility with rich messages.** Markdown and multi-part bot messages
+**Compatibility with richer messages.** Full Markdown and multi-part bot messages
 (titles, fields, embeds, buttons) should be added as optional fields on the
 same version-1 text content, for example a format flag or a structured
 `blocks`/`embeds` list, while `text` always carries a readable plain fallback.
 Every current client ignores unknown content fields but rejects unknown
 `version`/`type` values, so this keeps already-installed apps showing the
-fallback instead of dropping the message. A future Markdown renderer should
+fallback instead of dropping the message. An expanded Markdown renderer should
 call the same link detection for bare URLs (GFM autolink literals), so plain
 messages render identically before and after it ships; explicit
 `[label](url)` links and bot embed links should go through the same

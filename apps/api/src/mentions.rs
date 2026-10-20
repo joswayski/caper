@@ -41,6 +41,12 @@ pub(crate) enum Mention {
 /// Mentions in first-appearance order without duplicates. `everyone`/`here`
 /// are only special where `specials` is true (space channels).
 pub(crate) fn parse(text: &str, specials: bool) -> Vec<Mention> {
+    // Resolve the names readers see, including **@alice** and _@user_name_.
+    // Stored text remains unchanged so edits and old clients retain the source.
+    let text: String = crate::formatting::runs(text)
+        .into_iter()
+        .map(|run| run.text)
+        .collect();
     let mut found = Vec::new();
     let mut users = 0;
     let mut previous: Option<char> = None;
@@ -132,6 +138,20 @@ mod tests {
         assert_eq!(parse("@user_1.", true), [user("user_1")]);
         assert_eq!(parse("@alicé", true), [user("alic")]);
         assert_eq!(parse("🙂 @bob", true), [user("bob")]);
+    }
+
+    #[test]
+    fn emphasis_preserves_mentions_without_changing_identifier_or_url_contents() {
+        assert_eq!(
+            parse("**@alice** _@user_name_ **_@everyone_**", true),
+            [user("alice"), user("user_name"), Mention::Everyone]
+        );
+        assert_eq!(
+            parse("_hello @user_name_ and **@feedback**", false),
+            [user("user_name"), Mention::Feedback]
+        );
+        assert!(parse("https://example.com/_@alice_ name**@bob**", true).is_empty());
+        assert_eq!(parse("@plain_name_", true), [user("plain_name_")]);
     }
 
     #[test]

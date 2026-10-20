@@ -3301,9 +3301,9 @@ internal const val DELETED_REPLY = "Original message was deleted."
             // A file-only message has empty text: show just its files.
             if (deleted) Text(DELETED_MESSAGE, color = TextMuted, fontSize = 14.sp, lineHeight = 21.sp, fontStyle = FontStyle.Italic)
             else if (text.isNotEmpty() || inlineEdited) {
-                // Unsent text stays plain; sent text gets mention pills and links.
+                // Pending messages have emphasis but no mention or link actions.
                 val links = remember(text, mentions, pending) { if (pending) emptyList() else linkRanges(text, mentions.map { it.start until it.end }) }
-                if (mentions.isEmpty() && links.isEmpty() && !inlineEdited) Text(text, color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
+                if (mentions.isEmpty() && links.isEmpty() && !inlineEdited) Text(messageText(text, emptyList()), color = if (pending) TextMuted else MessageText, fontSize = 14.sp, lineHeight = 21.sp)
                 else {
                     // Pills and links are link annotations: their tap is consumed before the row's long-press handler sees it.
                     val open by rememberUpdatedState(openMention)
@@ -3494,14 +3494,18 @@ internal fun messageText(
     text: String, mentions: List<MentionSpan>, entries: List<MessageMention>? = null, links: List<LinkRange> = emptyList(),
     open: (MessageMention) -> Unit = {}, openLink: (String) -> Unit = {}, openHistory: (() -> Unit)? = null,
 ) = buildAnnotatedString {
+    val formatted = chat.caper.android.data.formattedMessage(text)
+    val rendered = formatted.text
+    val renderedLinks = links.map { it.copy(start = formatted.displayed(it.start), end = formatted.displayed(it.end)) }
     var cursor = 0
-    links.forEach { link ->
-        append(text.substring(cursor, link.end))
+    renderedLinks.forEach { link ->
+        append(rendered.substring(cursor, link.end))
         appendInlineContent(ExternalLinkInline)
         cursor = link.end
     }
-    append(text.substring(cursor))
-    fun displayed(offset: Int) = offset + links.count { it.end <= offset }
+    append(rendered.substring(cursor))
+    fun renderedOffset(offset: Int) = offset + renderedLinks.count { it.end <= offset }
+    fun displayed(offset: Int) = renderedOffset(formatted.displayed(offset))
     mentions.forEach { span ->
         // With [entries], a person's pill is a link (focusable, Enter-activatable; 32% while hovered, focused or pressed).
         val user = entries?.let { mentionedUser(span, it) }
@@ -3510,6 +3514,14 @@ internal fun messageText(
     }
     // Only http(s) URLs reach here, and they open outside the app.
     links.forEach { link -> addLink(LinkAnnotation.Url(link.href, MessageLink) { openLink(link.href) }, displayed(link.start), displayed(link.end)) }
+    var runOffset = 0
+    formatted.runs.forEach { run ->
+        addStyle(SpanStyle(
+            fontWeight = if (run.bold) FontWeight.Bold else null,
+            fontStyle = if (run.italic) androidx.compose.ui.text.font.FontStyle.Italic else null,
+        ), renderedOffset(runOffset), renderedOffset(runOffset + run.text.length))
+        runOffset += run.text.length
+    }
     openHistory?.let { history ->
         append(" ")
         withLink(LinkAnnotation.Clickable("edited", EditedMarker) { history() }) { append("(edited)") }
