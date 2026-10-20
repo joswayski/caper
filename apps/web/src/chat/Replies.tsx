@@ -148,9 +148,10 @@ export function ReplyContext({
       const endX = sourceX - dx;
       const endY = sourceY - dy;
       const span = startY - endY;
+      // Bend inward from the lower cup, even at maximum sway, away from the row edge.
       wire.current!.setAttribute(
         "d",
-        `M${startX} ${startY}C${startX - 7 + offset} ${startY - span * 0.3} ${endX - 30 + offset} ${endY + span * 0.3} ${endX} ${endY}`,
+        `M${startX} ${startY}C${startX + 8 + offset} ${startY - span * 0.3} ${endX - 30 + offset} ${endY + span * 0.3} ${endX} ${endY}`,
       );
       sourceCup.current!.setAttribute(
         "transform",

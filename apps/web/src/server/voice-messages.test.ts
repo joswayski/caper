@@ -278,8 +278,9 @@ test("voice attachments validate, keep their fields and render the voice player;
 test("excerpts call voice notes Voice message instead of their filename", () => {
   assert.equal(attachmentLabel(voiceFile()), "Voice message");
   assert.equal(attachmentLabel(voiceFile({ voice: undefined })), "Voice message.m4a");
-  assert.equal(attachmentsExcerpt([voiceFile()]), "Voice message");
-  assert.equal(attachmentsExcerpt([voiceFile(), voiceFile({ voice: false })]), "Attachment");
+  assert.equal(attachmentsExcerpt([voiceFile()]), "Transcribing…");
+  assert.equal(attachmentsExcerpt([voiceFile({ transcript: undefined })]), "Voice message");
+  assert.equal(attachmentsExcerpt([voiceFile({ transcript: undefined }), voiceFile({ voice: false })]), "Attachment");
   assert.equal(attachmentsExcerpt([null]), "Attachment");
   assert.equal(attachmentsExcerpt(undefined), "Attachment");
 });

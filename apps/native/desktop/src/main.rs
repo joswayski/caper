@@ -27710,7 +27710,8 @@ fn reply_connector(ui: &egui::Ui, source: egui::Pos2, avatar_top: f32, key: &str
         .add(egui::epaint::CubicBezierShape::from_points_stroke(
             [
                 start,
-                start + egui::vec2(-7.0 + motion.displacement, -span * 0.3),
+                // Keep the lower bend inward of the cup back throughout its sway.
+                start + egui::vec2(8.0 + motion.displacement, -span * 0.3),
                 end + egui::vec2(-30.0 + motion.displacement, span * 0.3),
                 end,
             ],
@@ -49903,7 +49904,7 @@ mod tests {
         app.reply_targets
             .insert("channel".into(), model::MessageReply::from_message(&voice));
         let output = render(&mut app, &context, vec![]);
-        assert!(texts(&output).contains(&"Voice message"));
+        assert!(texts(&output).contains(&"Transcribing…"));
     }
 
     #[test]

@@ -126,6 +126,7 @@ public enum VoiceMessage {
     public static func excerptFallback(hasAttachments: Bool, hasVoice: Bool, attachments: [ChatAttachment] = []) -> String {
         for attachment in attachments where attachment.voice && attachment.kind == .audio && !attachment.spoiler && !attachment.unavailable {
             if case .text(let text) = attachment.transcript?.display { return text }
+            if case .pending = attachment.transcript?.display { return VoiceTranscript.pendingLabel }
         }
         return hasVoice ? label : hasAttachments ? "Attachment" : "Message"
     }

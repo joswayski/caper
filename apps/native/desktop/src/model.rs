@@ -797,9 +797,12 @@ pub fn attachments_label(attachments: &[Attachment]) -> &str {
         if attachment.kind == AttachmentKind::Audio
             && !attachment.spoiler
             && !attachment.unavailable
-            && let TranscriptView::Text(text) = attachment.transcript_view()
         {
-            return text;
+            match attachment.transcript_view() {
+                TranscriptView::Text(text) => return text,
+                TranscriptView::Pending => return "Transcribing…",
+                TranscriptView::Hidden => {}
+            }
         }
     }
     if attachments.iter().any(|attachment| attachment.voice) {

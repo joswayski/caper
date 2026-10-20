@@ -30,12 +30,13 @@ test("voice replies use ready transcripts, retain text precedence, and conceal p
     ];
   };
   for (const html of render()) expect(html).toContain("Meet me at the north entrance.");
+  for (const html of render({ ...attachment, transcript: { status: "pending" } }))
+    expect(html).toContain("Transcribing…");
   for (const html of render(attachment, "Typed caption")) {
     expect(html).toContain("Typed caption");
     expect(html).not.toContain("Meet me");
   }
   for (const file of [
-    { ...attachment, transcript: { status: "pending" as const } },
     { ...attachment, transcript: { status: "failed" as const } },
     { ...attachment, transcript: { status: "ready" as const, text: "  " } },
     { ...attachment, spoiler: true },

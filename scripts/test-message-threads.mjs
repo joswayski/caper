@@ -510,6 +510,7 @@ const checkLongQuotePreview = async (layout) => {
       connection: Math.abs(line.bottom - avatar.top - avatar.height / 2), overflow: document.documentElement.scrollWidth > innerWidth,
       sourceConnection: Math.hypot(sourceMouth.x - source.left, sourceMouth.y - source.top - source.height / 2),
       replyConnection: Math.hypot(targetMouth.x - avatar.left, targetMouth.y - avatar.top - avatar.height / 2),
+      inward: beam.getBoundingClientRect().left >= targetBack.x - 0.1,
       wireConnection: Math.max(Math.hypot(end.x - sourceBack.x, end.y - sourceBack.y), Math.hypot(start.x - targetBack.x, start.y - targetBack.y)),
       separation: avatar.top - quote.querySelector('.chat-reply-body').getBoundingClientRect().bottom,
       quoteHeight: quote.getBoundingClientRect().height };
@@ -533,6 +534,7 @@ const checkLongQuotePreview = async (layout) => {
     "Both avatar attachments match their rendered boundaries",
   );
   assert.ok(collapsed.wireConnection < 0.1, "The string stays attached to both cup backs");
+  assert.ok(collapsed.inward, "The string stays inward of the lower cup instead of bowing into the row edge");
   assert.ok(collapsed.separation >= 8, "The quote card stays separate from the replying author");
   assert.equal(collapsed.overflow, false);
   screenshot(`reply-preview-${layout}-collapsed`);
@@ -547,6 +549,7 @@ const checkLongQuotePreview = async (layout) => {
   assert.ok(expanded.connection < 1, "Expansion does not detach the connector");
   assert.ok(expanded.sourceConnection < 1 && expanded.replyConnection < 1);
   assert.ok(expanded.wireConnection < 0.1);
+  assert.ok(expanded.inward, "Expanding the quote preserves the string's edge clearance");
   assert.ok(expanded.separation >= 8);
   assert.equal(expanded.overflow, false, "Long URLs wrap instead of overflowing");
   browser("scrollintoview", selector);
@@ -572,7 +575,7 @@ const checkLongQuotePreview = async (layout) => {
         const siblingRotation = Math.atan2(sibling.getCTM().b, sibling.getCTM().a);
         const back = new DOMPoint(-12, 0).matrixTransform(cup.getScreenCTM());
         const end = wire.getPointAtLength(0).matrixTransform(wire.getScreenCTM());
-        samples.push({ elapsed: performance.now() - start, rotation, siblingRotation, attached: Math.hypot(back.x - end.x, back.y - end.y), changed: wire.getAttribute('d') !== initial });
+        samples.push({ elapsed: performance.now() - start, rotation, siblingRotation, attached: Math.hypot(back.x - end.x, back.y - end.y), inward: wire.getBoundingClientRect().left >= back.x - 0.1, changed: wire.getAttribute('d') !== initial });
         if (performance.now() - start < 2000) requestAnimationFrame(sample);
         else resolve({ samples, initial, final: wire.getAttribute('d'), moved: Math.abs(scroller.scrollTop - top) });
       }; requestAnimationFrame(sample);
@@ -594,6 +597,10 @@ const checkLongQuotePreview = async (layout) => {
   assert.ok(
     motion.samples.every((sample) => sample.attached < 0.1),
     "The string remains attached throughout the spring",
+  );
+  assert.ok(
+    motion.samples.every((sample) => sample.inward),
+    "Sway never pushes the string toward the row edge",
   );
   assert.equal(motion.final, motion.initial, "The connection settles exactly back to rest");
   assert.ok(

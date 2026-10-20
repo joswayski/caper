@@ -137,7 +137,11 @@ object VoiceMessages {
 
     /** Reply previews and other excerpts of a message with no text. */
     fun excerptLabel(attachments: List<ChatAttachment>, hasAttachments: Boolean = attachments.isNotEmpty()): String = attachments.firstNotNullOfOrNull {
-        if (it.isVoiceMessage && !it.spoiler && !it.unavailable) (it.transcriptState as? VoiceTranscript.Ready)?.text else null
+        if (it.isVoiceMessage && !it.spoiler && !it.unavailable) when (val transcript = it.transcriptState) {
+            is VoiceTranscript.Ready -> transcript.text
+            VoiceTranscript.Pending -> "Transcribing…"
+            VoiceTranscript.None -> null
+        } else null
     } ?: when {
         attachments.any { it.isVoiceMessage } -> LABEL
         hasAttachments -> "Attachment"

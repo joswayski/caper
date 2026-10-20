@@ -7667,8 +7667,9 @@ private struct NativeReplyContext: View {
                             let span = start.y - end.y
                             let wire = Path { path in
                                 path.move(to: start)
+                                // Keep the lower bend inward of the cup back throughout its sway.
                                 path.addCurve(to: end,
-                                    control1: CGPoint(x: start.x - 7 + displacement, y: start.y - span * 0.3),
+                                    control1: CGPoint(x: start.x + 8 + displacement, y: start.y - span * 0.3),
                                     control2: CGPoint(x: end.x - 30 + displacement, y: end.y + span * 0.3))
                             }
                             var string = context

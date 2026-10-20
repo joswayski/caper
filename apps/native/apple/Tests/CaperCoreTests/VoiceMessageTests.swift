@@ -321,6 +321,8 @@ final class VoiceMessageTests: XCTestCase {
         XCTAssertFalse(reply([song]).hasVoice)
         XCTAssertFalse(reply([]).hasVoice)
         var transcribed = note
+        transcribed.transcript = .pending
+        XCTAssertEqual(VoiceMessage.excerptFallback(hasAttachments: true, hasVoice: true, attachments: [transcribed]), "Transcribing…")
         transcribed.transcript = .ready("  North entrance.  ")
         XCTAssertEqual(VoiceMessage.excerptFallback(hasAttachments: true, hasVoice: true, attachments: [transcribed]), "North entrance.")
         transcribed.spoiler = true

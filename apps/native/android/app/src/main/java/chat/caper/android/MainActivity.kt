@@ -3108,7 +3108,8 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
         val offset = displacement.dp.toPx()
         val path = Path().apply {
             moveTo(start.x, start.y)
-            cubicTo(start.x - 7.dp.toPx() + offset, start.y - span * 0.3f,
+            // Keep the lower bend inward of the cup back throughout its sway.
+            cubicTo(start.x + 8.dp.toPx() + offset, start.y - span * 0.3f,
                 end.x - 30.dp.toPx() + offset, end.y + span * 0.3f, end.x, end.y)
         }
         drawPath(path, TextMuted.copy(alpha = 0.75f), style = Stroke(1.1.dp.toPx(), cap = StrokeCap.Round))

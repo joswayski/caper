@@ -217,6 +217,7 @@ export function attachmentsExcerpt(attachments: readonly unknown[] | undefined) 
     if (!isVoiceAttachment(attachment) || attachment.spoiler || attachment.unavailable) continue;
     const transcript = transcriptView(attachment);
     if (transcript.state === "ready") return transcript.text;
+    if (transcript.state === "pending") return "Transcribing…";
   }
   return attachments?.length &&
     attachments.every(
