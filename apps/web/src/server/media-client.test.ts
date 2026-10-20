@@ -3,6 +3,7 @@ import { test, type TestContext, vi } from "vitest";
 import { AppGateway, setAppGatewayForTests } from "../gateway/client.ts";
 import { PublicCallClient, prepareVoiceJoin, waitFor } from "../media/client.ts";
 import { NoiseAssets } from "../media/noise-assets.ts";
+import { callAudio } from "../media/call-audio.ts";
 import { DpdfnetPreparation } from "../media/dpdfnet-preparation.ts";
 import { hasWarmVoice, keepVoiceWarm, setWarmRequestForTests, takeWarmVoice } from "../media/warm.ts";
 import type { CallViewState } from "../media/types.ts";
@@ -721,8 +722,11 @@ test("pre-join microphone selection is retained and can be supplied when testing
 
 test("voice processing defaults to 25%, clamps updates, and changes the live capture", async (t) => {
   const { client, track, states } = setup(t);
+  assert.equal(callAudio().voiceProcessingStrength, 25, "voice messages read the newest call's choices");
+  assert.equal(callAudio().live, false);
   await client.join();
   assert.equal(states.at(-1)?.voiceProcessingStrength, 25);
+  assert.equal(callAudio().live, true, "a call's own capture keeps the model to itself");
   const capture = (
     client as unknown as { captures: Map<Track, { setVoiceProcessingStrength(strength: number): void }> }
   ).captures.get(track)!;
@@ -730,6 +734,7 @@ test("voice processing defaults to 25%, clamps updates, and changes the live cap
   client.setVoiceProcessingStrength(125);
   assert.equal(states.at(-1)?.voiceProcessingStrength, 100);
   assert.deepEqual(update.mock.calls, [[100]]);
+  assert.equal(callAudio().voiceProcessingStrength, 100);
 });
 
 test("monitor capture replacement stays private and uses the replacement local stream", async (t) => {

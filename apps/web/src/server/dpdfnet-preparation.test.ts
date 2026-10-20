@@ -39,6 +39,7 @@ function setup(t: TestContext) {
 test("preparation shares one idle worker and only resolves after its warm-up acknowledgement", async (t) => {
   const { preparation, workers } = setup(t);
   let ready = false;
+  assert.equal(preparation.hasSpare(), false);
   const first = preparation.prepare().then(() => {
     ready = true;
   });
@@ -51,7 +52,9 @@ test("preparation shares one idle worker and only resolves after its warm-up ack
   await Promise.all([first, second]);
   await preparation.prepare();
   assert.equal(workers.length, 1);
+  assert.equal(preparation.hasSpare(), true);
   const owned = preparation.take();
+  assert.equal(preparation.hasSpare(), false, "a taken worker belongs to its capture");
   await owned.ready;
   assert.equal(owned.worker, workers[0]);
   preparation.stop();

@@ -5966,6 +5966,18 @@ a.chat-draft-preview {
 .chat-voice-transcribing {
   font-style: italic;
 }
+/* A pending transcript breathes (1 → 0.4 → 1 every 2 s) until its text arrives;
+   still under reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .chat-voice-transcribing {
+    animation: chat-voice-breathe 2s ease-in-out infinite;
+  }
+}
+@keyframes chat-voice-breathe {
+  50% {
+    opacity: 0.4;
+  }
+}
 .chat-voice-transcript button {
   padding: 0;
   border: 0;

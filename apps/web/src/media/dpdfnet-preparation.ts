@@ -24,6 +24,11 @@ export class DpdfnetPreparation {
     return this.prepared?.settled === true;
   }
 
+  /** Whether a worker is held for the next capture, ready or still initializing. */
+  hasSpare() {
+    return this.prepared !== undefined;
+  }
+
   take() {
     const prepared = this.get();
     this.prepared = undefined;

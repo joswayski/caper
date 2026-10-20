@@ -323,6 +323,8 @@ export function useVoiceRecorder({
   ) : null;
 
   const time = formatVoiceDuration(elapsed, "floor");
+  // For diagnostics: the call's processing status, or why the browser's is used.
+  const processing = recorder.current?.processing;
   const levelMeter = <canvas ref={meter} className="chat-voice-levels" aria-hidden="true" />;
   const dot = <span className="chat-voice-dot" data-live={phase === "recording" || undefined} aria-hidden="true" />;
   const timer = (
@@ -331,7 +333,13 @@ export function useVoiceRecorder({
     </span>
   );
   const bar = !active ? null : mode === "free" ? (
-    <div className="chat-voice-recorder" data-mode="free" role="group" aria-label="Recording voice message">
+    <div
+      className="chat-voice-recorder"
+      data-mode="free"
+      data-processing={processing}
+      role="group"
+      aria-label="Recording voice message"
+    >
       <button
         type="button"
         className="chat-voice-discard"
@@ -357,7 +365,13 @@ export function useVoiceRecorder({
       </button>
     </div>
   ) : (
-    <div className="chat-voice-recorder" data-mode="hold" role="group" aria-label="Recording voice message">
+    <div
+      className="chat-voice-recorder"
+      data-mode="hold"
+      data-processing={processing}
+      role="group"
+      aria-label="Recording voice message"
+    >
       <span className="chat-voice-release" aria-hidden="true">
         {releaseLabel}
       </span>

@@ -2796,11 +2796,25 @@ swells to full size over 36 px. Within 40 px of the left edge bars pinch to 30%
 of their height, and they fade out over the left 10% of the meter. It redraws
 every frame and scrolls continuously, stepping instead under reduced motion.
 
+On the web the recording runs through the call's microphone processing
+(`captureMicrophone`: DPDFNet-8 HR with its DPDFNet-2/RNNoise fallbacks, the
+call's "Voice enhancement" strength, default 25%, and its echo/gain choice), so
+the uploaded file, the live meter and the waveform are what listeners hear. It
+borrows the call client's noise assets and spare model worker, preparing the
+spare again afterwards; while the model compiles, browser suppression covers it
+as on Join. During a call, where a second model run could overload the call's,
+or when processing cannot start (no AudioWorklet, a model still compiling
+without browser suppression, an init error), it records with the browser's
+echo cancellation, suppression and gain instead. The recording bar's
+`data-processing` attribute names the path. A pending "Transcribing…" under a
+sent voice message breathes (opacity 1 to 0.4 and back every 2 s), still under
+reduced motion.
+
 ### Platform status
 
 | Platform | Record | Play + transcript | Verified |
 | --- | --- | --- | --- |
-| Web desktop and mobile layout | MediaRecorder; click/tap, plus hold on touch | Player, seek, one at a time, 3-line transcript | `npm run check`, Vitest, Playwright with a fake microphone against the fixture (no real API audio, iOS Safari or real phone) |
+| Web desktop and mobile layout | MediaRecorder of the call's processed microphone (browser processing during a call or as fallback); click/tap, plus hold on touch | Player, seek, one at a time, 3-line transcript | `npm run check`, Vitest, Playwright with a fake microphone against the fixture (no real API audio, iOS Safari or real phone) |
 | Android | MediaRecorder AAC/M4A; tap or hold | Media3 player, transcript | 547 JVM tests, compile, lint; no device run |
 | iOS / macOS | AVAudioRecorder AAC/M4A; tap/hold (iOS), click (macOS) | AVPlayer, transcript | Apple CI build and XCTests; logic also tested on Linux Swift; no device run of the v2 changes yet |
 | Desktop (Windows, Linux) | Bundled FFmpeg AAC/M4A (WAV fallback); click | Bundled FFmpeg audio-only player | `cargo test`, clippy, Xvfb screenshots, virtual-microphone recording beside a live call capture (Linux only) |

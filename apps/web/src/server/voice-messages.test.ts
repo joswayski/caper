@@ -28,12 +28,14 @@ import {
   barsFor,
   getVoiceSendOnStop,
   loudness,
+  microphoneError,
   resampleWaveform,
   setVoiceSendOnStop,
   spokenDuration,
   transcriptView,
   voiceContentType,
   voiceFilename,
+  voiceProcessingPlan,
   voiceRecordingType,
   waveformFromLevels,
   WAVEFORM_SLICES,
@@ -362,6 +364,42 @@ test("recording prefers WebM Opus, then MP4, then Ogg Opus, and uploads the cont
   assert.equal(voiceFilename("audio/mp4"), "voice-message.m4a");
   assert.equal(voiceFilename("audio/ogg"), "voice-message.ogg");
   assert.equal(voiceFilename("audio/webm"), "voice-message.webm");
+});
+
+test("voice messages record through the call's processing unless a call holds it or it can't start promptly", () => {
+  const ready = {
+    live: false,
+    mode: "dpdfnet8" as const,
+    modelReady: true,
+    browserSuppression: true,
+    audioWorklet: true,
+  };
+  assert.deepEqual(voiceProcessingPlan(ready), { processed: true });
+  // The model compiles behind the browser's suppression, as a call's join does.
+  assert.deepEqual(voiceProcessingPlan({ ...ready, modelReady: false }), { processed: true });
+  assert.deepEqual(voiceProcessingPlan({ ...ready, modelReady: false, browserSuppression: false }), {
+    processed: false,
+    reason: "the noise model is still loading",
+    prepare: true,
+  });
+  assert.deepEqual(voiceProcessingPlan({ ...ready, live: true }), {
+    processed: false,
+    reason: "a call is using the microphone",
+  });
+  assert.equal(voiceProcessingPlan({ ...ready, audioWorklet: false }).processed, false);
+  // The call's own choices without a model need no worklet.
+  assert.deepEqual(voiceProcessingPlan({ ...ready, mode: "browser", audioWorklet: false }), { processed: true });
+  assert.deepEqual(voiceProcessingPlan({ ...ready, mode: "rnnoise", browserSuppression: false, modelReady: false }), {
+    processed: true,
+  });
+});
+
+test("permission and missing-device errors surface; other processing failures fall back", () => {
+  const denied = microphoneError(new DOMException("denied", "NotAllowedError"));
+  assert.equal(denied?.denied, true);
+  assert.equal(microphoneError(new DOMException("none", "NotFoundError"))?.message, "No microphone was found.");
+  assert.equal(microphoneError(new Error("DPDFNet-8 HR could not start.")), undefined);
+  assert.equal(microphoneError(new DOMException("busy", "NotReadableError")), undefined);
 });
 
 test("a voice recording uploads as recorded with voice, duration and waveform, then sends the completed description", async () => {

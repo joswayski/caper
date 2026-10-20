@@ -1,4 +1,6 @@
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context.ts";
+import { callAudio, type CallAudio } from "../media/call-audio.ts";
+import { captureMicrophone, type Microphone, type NoiseSuppression } from "../media/microphone.ts";
 import type { ChatAttachment } from "./types.ts";
 
 /** Voice messages: recording, the uploaded waveform, playback and transcripts.
@@ -303,19 +305,143 @@ export class VoiceRecordingError extends Error {
 
 export interface VoiceRecorder {
   readonly startedAt: number;
+  /** How the microphone is processed: the call's status, or why the browser's own processing is used. */
+  readonly processing: string;
   /** Stops and returns the recording, or undefined when it was shorter than a second. */
   stop(): Promise<VoiceRecording | undefined>;
   cancel(): void;
 }
 
+export type VoiceProcessingPlan =
+  | { processed: true }
+  /** `prepare`: start the model now so the next recording can use it. */
+  | { processed: false; reason: string; prepare?: true };
+
+/** Whether a voice message records through the call's processing. During a call
+ * the call's own capture runs the model: a second one alongside it could push
+ * the call's worker past its hop budget, so the recording keeps the browser's
+ * processing. Without the model ready, the call path covers its compile with
+ * the browser's suppression; where that is unavailable it would hold the
+ * recording until the compile finishes, so this one uses the browser's
+ * processing (and the model prepares for the next). */
+export function voiceProcessingPlan({
+  live,
+  mode,
+  modelReady,
+  browserSuppression,
+  audioWorklet,
+}: {
+  live: boolean;
+  mode: NoiseSuppression;
+  modelReady: boolean;
+  browserSuppression: boolean;
+  audioWorklet: boolean;
+}): VoiceProcessingPlan {
+  if (live) return { processed: false, reason: "a call is using the microphone" };
+  if (mode === "off" || mode === "browser") return { processed: true };
+  if (!audioWorklet) return { processed: false, reason: "this browser can’t run the noise model" };
+  if (mode === "dpdfnet8" && !modelReady && !browserSuppression)
+    return { processed: false, reason: "the noise model is still loading", prepare: true };
+  return { processed: true };
+}
+
+/** The permission prompt's and device's own errors; any other failure of the
+ * call's processing falls back to the browser's. */
+export function microphoneError(error: unknown): VoiceRecordingError | undefined {
+  const name = error instanceof DOMException ? error.name : "";
+  if (name === "NotAllowedError" || name === "SecurityError") return new VoiceRecordingError(MICROPHONE_DENIED, true);
+  if (name === "NotFoundError" || name === "OverconstrainedError")
+    return new VoiceRecordingError("No microphone was found.");
+  return undefined;
+}
+
+interface VoiceInput {
+  stream: MediaStream;
+  readonly processing: string;
+  stop(): void;
+}
+
+/** The default microphone through the call's processing (its denoiser, voice
+ * enhancement strength and echo/gain choice), so the recording, its meter and
+ * its waveform are what listeners hear. Falls back to the browser's processing. */
+async function openVoiceInput(audio: CallAudio): Promise<VoiceInput> {
+  const plan = voiceProcessingPlan({
+    live: audio.live,
+    mode: audio.noiseSuppression,
+    modelReady: audio.dpdfnet.isReady(),
+    browserSuppression: navigator.mediaDevices.getSupportedConstraints?.().noiseSuppression === true,
+    audioWorklet: typeof AudioContext !== "undefined" && typeof AudioWorkletNode !== "undefined",
+  });
+  let reason = plan.processed ? "" : plan.reason;
+  if (plan.processed) {
+    // A spare model the call prepared is taken for this recording, and
+    // prepared again once the recording lets go of it (for the call the page
+    // shows by then: a channel switch replaces the client).
+    const spare = audio.dpdfnet.hasSpare();
+    const restore = () => {
+      if (spare) callAudio().prepare();
+    };
+    let microphone: Microphone | undefined;
+    try {
+      microphone = await captureMicrophone(
+        undefined,
+        audio.noiseSuppression,
+        new AbortController().signal,
+        () => undefined,
+        audio.audioSetup,
+        audio.assets,
+        audio.dpdfnet,
+        100,
+        audio.voiceProcessingStrength,
+      );
+    } catch (error) {
+      restore();
+      const known = microphoneError(error);
+      if (known) throw known;
+      reason = "the call’s processing couldn’t start";
+    }
+    if (microphone) {
+      const processed = microphone;
+      let stopped = false;
+      return {
+        stream: new MediaStream([processed.track]),
+        get processing() {
+          return processed.status;
+        },
+        stop() {
+          if (stopped) return;
+          stopped = true;
+          processed.stop();
+          restore();
+        },
+      };
+    }
+  } else if (plan.prepare) audio.prepare();
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (error) {
+    throw microphoneError(error) ?? new VoiceRecordingError("The microphone couldn’t be started.");
+  }
+  return {
+    stream,
+    processing: `Browser processing · ${reason}`,
+    stop() {
+      for (const track of stream.getTracks()) track.stop();
+    },
+  };
+}
+
 /** Asks for the default microphone (the browser prompts on first use) and starts
- * recording. The stream is our own: a voice channel's tracks are never touched. */
+ * recording. The capture is our own: a voice channel's tracks are never touched. */
 export async function startVoiceRecording({
   onLevel,
   onLimit,
   now = () => performance.now(),
 }: {
-  /** RMS input level of each ~20 ms sample. */
+  /** RMS level of each ~20 ms sample of the processed audio. */
   onLevel?: (rms: number) => void;
   /** Ten minutes passed; the caller stops and sends. */
   onLimit?: () => void;
@@ -323,24 +449,14 @@ export async function startVoiceRecording({
 } = {}): Promise<VoiceRecorder> {
   if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia)
     throw new VoiceRecordingError("Voice messages can’t be recorded in this browser.");
-  let stream: MediaStream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-  } catch (error) {
-    const name = error instanceof DOMException ? error.name : "";
-    if (name === "NotAllowedError" || name === "SecurityError") throw new VoiceRecordingError(MICROPHONE_DENIED, true);
-    if (name === "NotFoundError" || name === "OverconstrainedError")
-      throw new VoiceRecordingError("No microphone was found.");
-    throw new VoiceRecordingError("The microphone couldn’t be started.");
-  }
+  const input = await openVoiceInput(callAudio());
+  const { stream } = input;
   const mimeType = voiceRecordingType((type) => MediaRecorder.isTypeSupported(type));
   let recorder: MediaRecorder;
   try {
     recorder = new MediaRecorder(stream, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 32_000 });
   } catch {
-    for (const track of stream.getTracks()) track.stop();
+    input.stop();
     throw new VoiceRecordingError("Voice messages can’t be recorded in this browser.");
   }
   const chunks: Blob[] = [];
@@ -348,10 +464,22 @@ export async function startVoiceRecording({
   let context: AudioContext | undefined;
   let source: MediaStreamAudioSourceNode | undefined;
   let analyser: AnalyserNode | undefined;
+  let ownContext = false;
   try {
     context = acquireAudioContext();
     void context.resume().catch(() => undefined);
-    source = context.createMediaStreamSource(stream);
+    try {
+      source = context.createMediaStreamSource(stream);
+    } catch {
+      // Firefox connects a stream only at its own rate, and the call's
+      // processing runs at 48 kHz: meter it in a context of that rate.
+      releaseAudioContext(context);
+      context = undefined;
+      context = new AudioContext({ sampleRate: stream.getAudioTracks()[0]?.getSettings().sampleRate });
+      ownContext = true;
+      void context.resume().catch(() => undefined);
+      source = context.createMediaStreamSource(stream);
+    }
     analyser = context.createAnalyser();
     analyser.fftSize = 1024;
     source.connect(analyser);
@@ -378,13 +506,14 @@ export async function startVoiceRecording({
   const cleanup = () => {
     finished = true;
     clearInterval(timer);
-    for (const track of stream.getTracks()) track.stop();
+    input.stop();
     try {
       source?.disconnect();
     } catch {
       /* Already disconnected. */
     }
-    if (context) releaseAudioContext(context);
+    if (ownContext) void context?.close().catch(() => undefined);
+    else if (context) releaseAudioContext(context);
   };
   recorder.ondataavailable = ({ data }) => {
     if (data.size > 0) chunks.push(data);
@@ -398,6 +527,9 @@ export async function startVoiceRecording({
   let stopping: Promise<VoiceRecording | undefined> | undefined;
   return {
     startedAt,
+    get processing() {
+      return input.processing;
+    },
     stop() {
       stopping ??= new Promise((resolve, reject) => {
         const durationMs = Math.min(MAX_VOICE_MS, Math.round(now() - startedAt));
