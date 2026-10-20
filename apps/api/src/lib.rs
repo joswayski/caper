@@ -64,6 +64,7 @@ mod chat;
 mod db;
 mod direct;
 mod email;
+mod embeds;
 mod environment;
 mod feedback;
 pub mod gateway;
@@ -1126,6 +1127,7 @@ fn app_router(state: AppState, test_only_routes: Router<AppState>) -> Router {
         .merge(pictures::routes())
         .merge(direct::routes())
         .merge(feedback::routes())
+        .merge(embeds::routes())
         .merge(push::routes());
     let protected = protected.layer(axum::middleware::from_fn_with_state(
         state.clone(),

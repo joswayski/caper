@@ -3915,8 +3915,8 @@ fallback instead of dropping the message. A future Markdown renderer should
 call the same link detection for bare URLs (GFM autolink literals), so plain
 messages render identically before and after it ships; explicit
 `[label](url)` links and bot embed links should go through the same
-http/https-only, open-externally link handling. Link previews, if added, are
-separate server-generated attachments rather than text.
+http/https-only, open-externally link handling. Link previews are
+server-generated `content.embeds` (see "Link embeds"), never part of `text`.
 
 **Grouping.** A message is shown compactly, without avatar and name, when the
 previous visible row in the same list (timeline or a thread's replies) is by
@@ -3933,6 +3933,120 @@ Desktop UI and unit tests pass (stand-in fonts; no rendered screenshot in CI).
 Apple was not compiled in the implementing environment; its unit and parity UI
 tests, and link colour when a message also has mention pills, still need a
 macOS run. No physical device, TalkBack/VoiceOver or touch-hover checks yet.
+
+## Link embeds
+
+A message's links get preview cards after it is sent: the message posts and
+reaches everyone immediately, and the cards arrive a moment later (usually well
+under a second) for everyone in the channel, DMs and private channels included.
+The text is never rewritten and nothing is reposted, so nobody is pinged twice.
+Previews are built by Caper itself, not by fix sites such as vxtwitter.
+
+**Flow.**
+
+1. The outbox publisher publishes `message.created` (or `message.edited`).
+   For a live message with links it starts a background job (`apps/api/src/embeds.rs`);
+   sending and delivery never wait for it.
+2. The job picks the message's first five distinct links with the shared link
+   rules (`embeds/links.rs`, the same cases as every client). A link written
+   `<https://like.this>` stays clickable but gets no card.
+3. Each link goes to the embed Worker (`apps/embed`, `POST /v1/unfurl`, Bearer
+   `EMBED_API_SECRET`). The API checks the answer's shape and size again.
+4. In one transaction the API stores the cards as `content.embeds` on the
+   message, if it is still at the revision the job read (a newer edit runs its
+   own job; a deleted message gets none), and on the outbox event replays read
+   for that revision. Then it publishes an unsequenced `message.embeds` event:
+   `{type, schemaVersion: 1, channelId, messageId, revision, embeds}` on the
+   typing topic.
+5. Clients apply it to the message when the revision matches. History, replays
+   and pins read the stored copy, so a client that missed the event still shows
+   the cards after reconnecting.
+
+An edit keeps the cards for links it still contains and runs a new job, which
+adds cards for new links and removes cards for removed ones. Deleting a message
+removes its content, cards included.
+
+**Composer preview.** `POST /api/embeds/preview {url}` (signed-in accounts, 30
+a minute) returns `{embed}` for one link so the composer can show the card
+before sending. The Worker caches answers for 30 minutes, so the card after
+sending is instant.
+
+**Compatibility.** Released clients ignore `content.embeds`. Released desktop
+builds treat any unknown chat event as a broken stream and reconnect, so the
+gateway sends `message.embeds` only to subscriptions that ask for it with
+`embeds: true` in their `subscribe` frame; every client that draws cards sends
+it. Older gateways drop the event (it has no sequence) and older clients see
+cards after a reload.
+
+**Embed format (version 1).** `{version: 1, url, site: {name, domain}, blocks}`.
+`url` is the link as posted and is what the card opens. `site.domain` comes
+from that URL, never from the page, so a page cannot pass itself off as another
+site; clients always show it. Blocks are drawn in order; unknown block types are
+skipped:
+
+| Block | Fields | Drawn as |
+| --- | --- | --- |
+| `author` | `name`, `handle?`, `url?`, `icon?` | small avatar, name and handle; opens `url` |
+| `title` | `text`, `url?` | bold line; opens `url` |
+| `text` | `text` | body text, plain (no Markdown or HTML), line breaks kept |
+| `images` | `items: [{url, width?, height?, alt?}]` (1-4), `thumbnail?` | gallery; `thumbnail` means one small image beside the text |
+| `video` | `url`, `poster?`, `width?`, `height?`, `durationMs?`, `gif?` | the client's own player playing a direct MP4/WebM; `gif` loops muted without controls |
+| `player` | `provider` (`youtube`, `vimeo`, `twitch`), `id`, `poster?`, `width?`, `height?`, `start?` | poster with a play button; Play loads that site's player from `embed.caper.chat` in place |
+| `footer` | `text?`, `timestamp?` | small muted line (counts, date) |
+
+Every image, avatar and poster URL is a signed `embed.caper.chat/m/...` URL:
+the Worker fetches and caches the image, so sites never see who is reading.
+Direct videos stream from the site itself (X's `video.twimg.com`), or for TikTok
+through a Worker redirect to a fresh CDN address. Clients open every link in an
+embed with the same http(s)-only, open-externally handling as message links,
+and treat every string as plain text.
+
+**The Worker** (`apps/embed`, Cloudflare, `embed.caper.chat`):
+
+- Runs outside the AWS network, so fetching posted links cannot reach the
+  cluster, databases or the EC2 metadata service. It also refuses IP literals,
+  internal names (`.local`, `.internal`, `.svc.cluster.local`, ...), non-default
+  ports and credentials in URLs, and re-checks every redirect (at most five).
+- Reads at most 1 MiB of HTML and stops at `</head>`. Images are at most 20 MiB
+  and must be PNG, JPEG, GIF, WebP or AVIF; SVG is never served. Media
+  responses carry `nosniff` and a `sandbox` CSP.
+- Never renders anything from a page: tags become plain strings with length
+  limits. Iframe players from arbitrary pages are ignored; only the three
+  providers above get a `player` block.
+- Media URLs are signed with `EMBED_MEDIA_SECRET` (Worker only), so it is not
+  an open proxy.
+
+Site readers (`apps/embed/sites.mjs`):
+
+| Site | Source | Card |
+| --- | --- | --- |
+| X / Twitter (and links from fix sites) | the public endpoint behind X's embed widget (`cdn.syndication.twimg.com`), unofficial | author, text, photos or MP4 video/GIF, quote, likes and replies |
+| TikTok (including `vm.`/`vt.` share links) | the post page's own web-app data, unofficial | author, caption, video (re-resolved on each play) or photos, likes and comments |
+| YouTube, Vimeo | official oEmbed | channel, title, `player` |
+| Twitch | page tags | title, `player` (clip, VOD or channel) |
+| Instagram, Facebook, Threads | page tags as Meta's crawler | author, caption, image, counts. Video is not available |
+| everything else | OpenGraph / Twitter Card / `<title>` | site, title, description, image or direct video |
+
+X and TikTok use endpoints those sites do not document. They change without
+notice, so `node apps/embed/live-check.mjs` runs every reader against real
+posts (the `Embed live check` workflow runs it nightly). Instagram is reported
+but never fails the check; it blocks logged-out fetches often.
+
+**Configuration.** API only: `EMBED_ORIGIN` (`https://embed.caper.chat`) and
+`EMBED_API_SECRET` (at least 32 characters), together or not at all. Without
+them nothing is unfurled and the preview route answers 503. In production both
+go in the `production/apps/caper` secret, which the API loads through
+`caper-api-account`; the gateway needs neither. The Worker:
+
+```bash
+cd apps/embed
+npx wrangler secret put EMBED_API_SECRET --env production    # same value as the API
+npx wrangler secret put EMBED_MEDIA_SECRET --env production  # a different random value
+npx wrangler deploy --env production
+EMBED_ORIGIN=https://embed.caper.chat EMBED_API_SECRET=... node live-check.mjs
+```
+
+Staging uses `--env staging` and `embed.staging.caper.chat`.
 
 ## Shared call state and rolling deployments
 

@@ -234,7 +234,8 @@ async fn persist_edit_with(
     } else {
         found.retain(|mention| *mention != Mention::Feedback);
     }
-    let content = with_mentions(&mut tx, content, &found).await?;
+    let mut content = with_mentions(&mut tx, content, &found).await?;
+    crate::embeds::carry_over(&payload["content"], &mut content);
     let now = Utc::now();
     payload["content"] = content;
     payload["revision"] = json!(revision + 1);

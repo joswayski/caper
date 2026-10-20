@@ -17,6 +17,7 @@
     "test:watch": "vitest",
     "test:native": "vitest run --project native",
     "test:cdn": "vitest run --project cdn",
+    "test:embed": "vitest run --project embed",
     "typecheck": "npm run typecheck --workspace @caper/web",
     "lint": "oxlint --deny-warnings",
     "lint:fix": "npm run lint -- --fix",

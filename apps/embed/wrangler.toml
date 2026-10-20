@@ -1,0 +1,17 @@
+# Link previews for Caper. Deploy with `npx wrangler deploy --env <name>` from
+# this directory; see docs/media.md "Link embeds". Secrets (wrangler secret put):
+# EMBED_API_SECRET (shared with the API) and EMBED_MEDIA_SECRET (Worker only).
+name = "caper-embed"
+main = "worker.mjs"
+compatibility_date = "2026-09-01"
+workers_dev = false
+
+[env.staging]
+name = "caper-embed-staging"
+routes = [{ pattern = "embed.staging.caper.chat", custom_domain = true }]
+vars = { EMBED_ORIGIN = "https://embed.staging.caper.chat" }
+
+[env.production]
+name = "caper-embed-production"
+routes = [{ pattern = "embed.caper.chat", custom_domain = true }]
+vars = { EMBED_ORIGIN = "https://embed.caper.chat" }

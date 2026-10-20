@@ -1,0 +1,30 @@
+name: Embed live check
+
+# Link previews read X and TikTok through endpoints those sites do not
+# document. This runs every site reader against real public posts each night,
+# so a change on their side shows up here instead of as missing previews.
+# With EMBED_ORIGIN and EMBED_API_SECRET set it checks the deployed Worker
+# (fetching from Cloudflare, as production does); otherwise the readers run on
+# the runner. See docs/media.md "Link embeds".
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    name: Site readers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node apps/embed/live-check.mjs
+        env:
+          EMBED_ORIGIN: ${{ secrets.EMBED_ORIGIN }}
+          EMBED_API_SECRET: ${{ secrets.EMBED_API_SECRET }}

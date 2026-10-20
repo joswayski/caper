@@ -1,0 +1,81 @@
+{
+ "__typename": "Tweet",
+ "favorite_count": 62684,
+ "conversation_count": 78,
+ "created_at": "2025-03-18T18:07:30.000Z",
+ "display_text_range": [
+  0,
+  0
+ ],
+ "entities": {
+  "media": [
+   {
+    "display_url": "pic.x.com/a3WBT4HExM",
+    "expanded_url": "https://x.com/carrionkid/status/1902059299591090335/video/1",
+    "indices": [
+     0,
+     23
+    ],
+    "url": "https://t.co/a3WBT4HExM"
+   }
+  ]
+ },
+ "id_str": "1902059299591090335",
+ "text": "https://t.co/a3WBT4HExM",
+ "user": {
+  "name": "harlow",
+  "screen_name": "carrionkid",
+  "profile_image_url_https": "https://pbs.twimg.com/profile_images/1246997941409189888/rZzhMxv7_normal.jpg"
+ },
+ "mediaDetails": [
+  {
+   "media_url_https": "https://pbs.twimg.com/ext_tw_video_thumb/1902059279190052864/pu/img/DLoQFXU9gzkHQ2fh.jpg",
+   "original_info": {
+    "focus_rects": [],
+    "height": 1280,
+    "width": 576
+   },
+   "type": "video",
+   "video_info": {
+    "aspect_ratio": [
+     9,
+     20
+    ],
+    "duration_millis": 16394,
+    "variants": [
+     {
+      "content_type": "application/x-mpegURL",
+      "url": "https://video.twimg.com/ext_tw_video/1902059279190052864/pu/pl/897qARA__rNk63y5.m3u8?tag=12&v=54d"
+     },
+     {
+      "bitrate": 632000,
+      "content_type": "video/mp4",
+      "url": "https://video.twimg.com/ext_tw_video/1902059279190052864/pu/vid/avc1/320x710/g78J75WLanKsTSiJ.mp4?tag=12"
+     },
+     {
+      "bitrate": 950000,
+      "content_type": "video/mp4",
+      "url": "https://video.twimg.com/ext_tw_video/1902059279190052864/pu/vid/avc1/480x1066/U_pJyFAzyajaxcz8.mp4?tag=12"
+     },
+     {
+      "bitrate": 2176000,
+      "content_type": "video/mp4",
+      "url": "https://video.twimg.com/ext_tw_video/1902059279190052864/pu/vid/avc1/576x1280/yhSQqEJfEU8wapy2.mp4?tag=12"
+     }
+    ]
+   }
+  }
+ ],
+ "quoted_tweet": {
+  "text": "the funniest tik toks be the ones they dont let you save",
+  "display_text_range": [
+   0,
+   56
+  ],
+  "entities": {},
+  "user": {
+   "name": "🛸",
+   "screen_name": "itzt3z"
+  }
+ }
+}

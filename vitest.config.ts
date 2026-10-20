@@ -18,6 +18,13 @@ export default defineConfig({
           include: ["apps/cdn/**/*.test.mjs"],
         },
       },
+      {
+        test: {
+          name: "embed",
+          environment: "node",
+          include: ["apps/embed/**/*.test.mjs"],
+        },
+      },
     ],
   },
 });

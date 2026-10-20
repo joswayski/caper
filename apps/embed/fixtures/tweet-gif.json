@@ -1,0 +1,54 @@
+{
+ "__typename": "Tweet",
+ "favorite_count": 29256,
+ "conversation_count": 144,
+ "created_at": "2026-03-10T10:38:03.000Z",
+ "display_text_range": [
+  0,
+  109
+ ],
+ "entities": {
+  "media": [
+   {
+    "display_url": "pic.x.com/oxwrRQO2ed",
+    "expanded_url": "https://x.com/RoRoFli/status/2031318660011188567/photo/1",
+    "indices": [
+     110,
+     133
+    ],
+    "url": "https://t.co/oxwrRQO2ed"
+   }
+  ]
+ },
+ "id_str": "2031318660011188567",
+ "text": "On my way to HR again for nicknaming my coworker \"Motion Light\", because they only work when someone walks by https://t.co/oxwrRQO2ed",
+ "user": {
+  "name": "Roro ☃",
+  "screen_name": "RoRoFli",
+  "profile_image_url_https": "https://pbs.twimg.com/profile_images/2052512392408432640/IRprPKuS_normal.jpg"
+ },
+ "mediaDetails": [
+  {
+   "media_url_https": "https://pbs.twimg.com/tweet_video_thumb/HDCxjM_XYAAG6nY.jpg",
+   "original_info": {
+    "focus_rects": [],
+    "height": 206,
+    "width": 164
+   },
+   "type": "animated_gif",
+   "video_info": {
+    "aspect_ratio": [
+     82,
+     103
+    ],
+    "variants": [
+     {
+      "bitrate": 0,
+      "content_type": "video/mp4",
+      "url": "https://video.twimg.com/tweet_video/HDCxjM_XYAAG6nY.mp4"
+     }
+    ]
+   }
+  }
+ ]
+}

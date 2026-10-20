@@ -418,6 +418,10 @@ struct Subscribe {
     space_id: Option<String>,
     #[serde(default)]
     user_ids: Vec<String>,
+    /// The client draws link previews, so it wants `message.embeds`. Released
+    /// clients without it treat unknown chat events as a broken stream.
+    #[serde(default)]
+    embeds: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -805,7 +809,9 @@ async fn chat_subscription(
                         identity.check_channel(state, channel).await?;
                         checked = tokio::time::Instant::now();
                     }
-                    if ephemeral { event(out, &sub.id, payload).await?; }
+                    if ephemeral {
+                        if sub.embeds || payload["type"] != "message.embeds" { event(out, &sub.id, payload).await?; }
+                    }
                     else if let Some(seq) = payload["seq"].as_str().and_then(|s| s.parse::<i64>().ok()) {
                         if seq == after + 1 { event(out, &sub.id, crate::assets::sign_attachments(payload, state.chat.cdn.as_deref())).await?; after = seq; }
                         else if seq > after { replay(state, identity, sub, out, &mut after).await?; }

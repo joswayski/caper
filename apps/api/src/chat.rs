@@ -44,12 +44,12 @@ pub(crate) const PROFILE_TOPIC: &str = "caper:profiles:v1";
 const PAGE: i64 = 50;
 const BROKER_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Unsequenced broker events: typing and media processing progress. Gateways
-/// forward them without touching the durable delivery cursor.
+/// Unsequenced broker events: typing, media processing progress and link
+/// previews. Gateways forward them without touching the durable delivery cursor.
 pub(crate) fn ephemeral(event: &Value) -> bool {
     matches!(
         event["type"].as_str(),
-        Some("typing.updated" | "attachment.progress")
+        Some("typing.updated" | "attachment.progress" | "message.embeds")
     )
 }
 
@@ -60,6 +60,8 @@ pub(crate) struct Chat {
     pub wake: Arc<Notify>,
     /// Signs attachment delivery URLs; absent until the CDN is configured.
     pub cdn: Option<Arc<CdnSigner>>,
+    /// Link previews; absent until the embed Worker is configured.
+    pub embeds: Option<Arc<crate::embeds::Embeds>>,
     /// One multiplexed broker connection shared by outbox publishes and typing
     /// updates, instead of a new TCP/TLS handshake per message. A failed call
     /// drops it so the next caller reconnects.
@@ -94,6 +96,7 @@ impl Chat {
         let broker = redis::Client::open(url).map_err(|_| "invalid chat VALKEY_URL")?;
         let mut chat = Self::new(pool, broker);
         chat.cdn = CdnSigner::from_env(environment)?;
+        chat.embeds = crate::embeds::Embeds::from_env(environment)?;
         Ok(Some(chat))
     }
 
@@ -103,6 +106,7 @@ impl Chat {
             broker,
             wake: Arc::new(Notify::new()),
             cdn: None,
+            embeds: None,
             connection: Arc::new(Mutex::new(None)),
         }
     }
@@ -1683,6 +1687,10 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
     let mut publishes = redis::pipe();
     let (mut channels, mut seqs) = (Vec::with_capacity(count), Vec::with_capacity(count));
     let mut events = Vec::with_capacity(count);
+    let jobs: Vec<_> = rows
+        .iter()
+        .filter_map(|row| crate::embeds::Job::from_event(&row.2))
+        .collect();
     for (channel, seq, event, avatar_id, name) in rows {
         events.push(enrich_author(event, avatar_id, name.as_deref()));
         channels.push(channel);
@@ -1726,6 +1734,7 @@ async fn publish_pending(chat: &Chat) -> Result<bool, ()> {
         .map_err(|_| ())?;
     // A crash here re-publishes, deliberately. Receivers deduplicate by sequence.
     tx.commit().await.map_err(|_| ())?;
+    crate::embeds::spawn(chat, jobs);
     tracing::info!(
         event_name = "chat_published",
         count,

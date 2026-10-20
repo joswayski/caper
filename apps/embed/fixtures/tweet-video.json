@@ -1,0 +1,131 @@
+{
+ "__typename": "Tweet",
+ "favorite_count": 275,
+ "conversation_count": 2,
+ "created_at": "2024-10-01T19:59:18.000Z",
+ "display_text_range": [
+  0,
+  162
+ ],
+ "entities": {
+  "hashtags": [
+   {
+    "indices": [
+     80,
+     86
+    ],
+    "text": "birds"
+   },
+   {
+    "indices": [
+     87,
+     100
+    ],
+    "text": "birdwatching"
+   },
+   {
+    "indices": [
+     101,
+     109
+    ],
+    "text": "birding"
+   },
+   {
+    "indices": [
+     110,
+     117
+    ],
+    "text": "WildOz"
+   },
+   {
+    "indices": [
+     118,
+     134
+    ],
+    "text": "birdphotography"
+   },
+   {
+    "indices": [
+     135,
+     152
+    ],
+    "text": "birdsofaustralia"
+   },
+   {
+    "indices": [
+     153,
+     162
+    ],
+    "text": "cockatoo"
+   }
+  ],
+  "media": [
+   {
+    "display_url": "pic.x.com/RoMxHhAo9X",
+    "expanded_url": "https://x.com/DivineDropbear/status/1841206275088290279/video/1",
+    "indices": [
+     163,
+     186
+    ],
+    "url": "https://t.co/RoMxHhAo9X"
+   }
+  ],
+  "user_mentions": [
+   {
+    "id_str": "490232734",
+    "indices": [
+     65,
+     79
+    ],
+    "name": "Fred O'Donnell",
+    "screen_name": "fred_od_photo"
+   }
+  ]
+ },
+ "id_str": "1841206275088290279",
+ "text": "Sulphur-crested Cockatoo enjoying the warm Brisbane breeze...   \n@fred_od_photo #birds #birdwatching #birding #WildOz #birdphotography #birdsofaustralia #cockatoo https://t.co/RoMxHhAo9X",
+ "user": {
+  "name": "Tranquility Found",
+  "screen_name": "DivineDropbear",
+  "profile_image_url_https": "https://pbs.twimg.com/profile_images/1871316427581583360/AY58qda4_normal.jpg"
+ },
+ "mediaDetails": [
+  {
+   "media_url_https": "https://pbs.twimg.com/ext_tw_video_thumb/1841204388993646595/pu/img/KKN8tSQm60z2FmtE.jpg",
+   "original_info": {
+    "focus_rects": [],
+    "height": 1080,
+    "width": 1920
+   },
+   "type": "video",
+   "video_info": {
+    "aspect_ratio": [
+     16,
+     9
+    ],
+    "duration_millis": 29626,
+    "variants": [
+     {
+      "content_type": "application/x-mpegURL",
+      "url": "https://video.twimg.com/ext_tw_video/1841204388993646595/pu/pl/-kd3cWye2HXbiTju.m3u8?tag=12&v=cfc"
+     },
+     {
+      "bitrate": 256000,
+      "content_type": "video/mp4",
+      "url": "https://video.twimg.com/ext_tw_video/1841204388993646595/pu/vid/avc1/480x270/vxKqarkYhJW80NBu.mp4?tag=12"
+     },
+     {
+      "bitrate": 832000,
+      "content_type": "video/mp4",
+      "url": "https://video.twimg.com/ext_tw_video/1841204388993646595/pu/vid/avc1/640x360/gap6eNvJGCbYTOWH.mp4?tag=12"
+     },
+     {
+      "bitrate": 2176000,
+      "content_type": "video/mp4",
+      "url": "https://video.twimg.com/ext_tw_video/1841204388993646595/pu/vid/avc1/1280x720/NRpzIavCR5W-jWFh.mp4?tag=12"
+     }
+    ]
+   }
+  }
+ ]
+}
