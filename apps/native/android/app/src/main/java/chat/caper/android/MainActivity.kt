@@ -158,6 +158,7 @@ import androidx.compose.ui.platform.LocalView
 import chat.caper.android.data.WhatsNewSnapshot
 import chat.caper.android.data.AttachCapacity
 import chat.caper.android.data.AttachmentPolicy
+import chat.caper.android.data.VoiceMessages
 import chat.caper.android.data.FileDrop
 import chat.caper.android.data.LinkRange
 import chat.caper.android.data.MAX_CODE_RESENDS
@@ -1534,6 +1535,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 state.replyTargets[thread.rootId]?.let { ReplyDraft(it, state) { viewModel.cancelReply(thread.rootId) } }
                 state.attachmentErrors[target]?.let { Text(it, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
                 DraftAttachmentStrip(files, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
+                // A voice reply goes on its own; the draft text stays, "Also send to" applies to it and resets.
+                val recorder = rememberVoiceRecorder(target) { recording ->
+                    viewModel.sendVoice(recording.file, recording.durationMs, recording.waveform, threadRootId = thread.rootId, broadcast = broadcast)
+                    broadcast = false
+                }
+                val call by VoiceCallService.state.collectAsStateWithLifecycle()
+                val voiceBlocked = voiceRecordBlockedReason(state.pendingMessage != null, call.phase != VoiceState.Phase.IDLE && call.phase != VoiceState.Phase.FAILED)
                 val broadcastChecked = pending?.broadcast ?: broadcast
                 // The label toggles too, as one checkbox control.
                 Row(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
@@ -1546,27 +1554,36 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(conversation) }
                     }, Modifier.weight(1f), fontSize = 12.sp)
                 }
+                VoiceRecordingNotice(recorder)
                 SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                        EmojiTextField(draft, change, Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field), placeholder = { Text("Reply to thread…", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 5,
-                            visualTransformation = MentionVisualTransformation(mentionSource(state)),
-                            leadingIcon = {
-                                AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
-                                    drawer = AttachDrawerHost(files, viewModel::removeDraft,
-                                        canSend = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null, send = ::send))
-                            },
-                            trailingIcon = { EmojiInsertButton(!thread.loading) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } } },
-                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors())
-                        // Web's eggshell Send icon button, like the channel composer's; disabled, it steps back to neutral chrome.
-                        FilledIconButton(
-                            ::send, modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send reply" },
-                            enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && (draft.text.isNotBlank() || files.isNotEmpty()),
-                            shape = MaterialTheme.shapes.small,
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = Action, contentColor = OnAction,
-                                disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
-                            ),
-                        ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
+                    Box {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                            EmojiTextField(draft, change, Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field), placeholder = { Text("Reply to thread…", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 5,
+                                visualTransformation = MentionVisualTransformation(mentionSource(state)),
+                                leadingIcon = {
+                                    AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
+                                        drawer = AttachDrawerHost(files, viewModel::removeDraft,
+                                            canSend = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null, send = ::send))
+                                },
+                                trailingIcon = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        EmojiInsertButton(!thread.loading) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } }
+                                        if (state.uploadsEnabled) VoiceRecordButton(recorder, canAttach, voiceBlocked)
+                                    }
+                                },
+                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send), keyboardActions = actions, enabled = !thread.loading, colors = composerFieldColors())
+                            // Web's eggshell Send icon button, like the channel composer's; disabled, it steps back to neutral chrome.
+                            FilledIconButton(
+                                ::send, modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send reply" },
+                                enabled = !thread.loading && state.chatAuthorId != null && state.pendingMessage == null && (draft.text.isNotBlank() || files.isNotEmpty()),
+                                shape = MaterialTheme.shapes.small,
+                                colors = IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = Action, contentColor = OnAction,
+                                    disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
+                                ),
+                            ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
+                        }
+                        if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
                     }
                 }
                 DraftCounter(draft.text)
@@ -1806,6 +1823,13 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 }
                 state.attachmentError?.let { error -> Text(error, Modifier.padding(bottom = 6.dp), color = ErrorText, fontSize = 12.sp) }
                 DraftAttachmentStrip(state.drafts, viewModel::removeDraft, viewModel::retryDraft, edit = viewModel::editDraft, toggleSpoiler = viewModel::toggleDraftSpoiler)
+                // A voice message goes on its own: the draft text and files stay in the composer.
+                val recorder = rememberVoiceRecorder(target) { recording ->
+                    viewModel.sendVoice(recording.file, recording.durationMs, recording.waveform)
+                }
+                val call by VoiceCallService.state.collectAsStateWithLifecycle()
+                val voiceBlocked = voiceRecordBlockedReason(state.pendingMessage != null, call.phase != VoiceState.Phase.IDLE && call.phase != VoiceState.Phase.FAILED)
+                VoiceRecordingNotice(recorder)
                 val hasContent = draft.text.isNotBlank() || state.drafts.isNotEmpty()
                 fun sendDraft() {
                     if (hasContent && state.pendingMessage == null) {
@@ -1829,39 +1853,46 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     updateDraft(it); viewModel.reportActivity()
                     if (edited) viewModel.setTyping(it.text.isNotBlank())
                 }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-                        EmojiTextField(
-                            draft, change, modifier = Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field),
-                            // One line: a long channel or DM name would otherwise wrap and grow the empty field.
-                            placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
-                            visualTransformation = MentionVisualTransformation(mentionSource(state)),
-                            // Reserve the icon inside the field while uploads/session become ready.
-                            // Read-only previews and locked DMs have no composer.
-                            leadingIcon = {
-                                AttachButton(attachDisabledReason(state), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
-                                    drawer = AttachDrawerHost(state.drafts, viewModel::removeDraft,
-                                        canSend = hasContent && state.pendingMessage == null && state.chatAuthorId != null, send = ::sendDraft))
-                            },
-                            // The `:name:` shortcut still works; this is the visible way in.
-                            trailingIcon = {
-                                EmojiInsertButton(!state.messagesLoading && state.messagesError == null) { emoji ->
-                                    insertEmojiAtSelection(draft, emoji)?.let { updateDraft(it); viewModel.setTyping(true) }
-                                }
-                            },
-                            enabled = !state.messagesLoading && state.messagesError == null,
-                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send), keyboardActions = actions,
-                            colors = composerFieldColors(),
-                        )
-                        FilledIconButton(
-                            { sendDraft() },
-                            // Centred on a one-line field (56dp), and near the bottom as the field grows.
-                            modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage == null && state.chatAuthorId != null,
-                            shape = MaterialTheme.shapes.small,
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = Action, contentColor = OnAction,
-                                disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
-                            ),
-                        ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
+                    Box {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                            EmojiTextField(
+                                draft, change, modifier = Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field),
+                                // One line: a long channel or DM name would otherwise wrap and grow the empty field.
+                                placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
+                                visualTransformation = MentionVisualTransformation(mentionSource(state)),
+                                // Reserve the icon inside the field while uploads/session become ready.
+                                // Read-only previews and locked DMs have no composer.
+                                leadingIcon = {
+                                    AttachButton(attachDisabledReason(state), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
+                                        drawer = AttachDrawerHost(state.drafts, viewModel::removeDraft,
+                                            canSend = hasContent && state.pendingMessage == null && state.chatAuthorId != null, send = ::sendDraft))
+                                },
+                                // The `:name:` shortcut still works; this is the visible way in.
+                                trailingIcon = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        EmojiInsertButton(!state.messagesLoading && state.messagesError == null) { emoji ->
+                                            insertEmojiAtSelection(draft, emoji)?.let { updateDraft(it); viewModel.setTyping(true) }
+                                        }
+                                        // Wherever files can be sent: hidden when uploads are unavailable.
+                                        if (state.uploadsEnabled) VoiceRecordButton(recorder, canAttach, voiceBlocked)
+                                    }
+                                },
+                                enabled = !state.messagesLoading && state.messagesError == null,
+                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Send), keyboardActions = actions,
+                                colors = composerFieldColors(),
+                            )
+                            FilledIconButton(
+                                { sendDraft() },
+                                // Centred on a one-line field (56dp), and near the bottom as the field grows.
+                                modifier = Modifier.padding(bottom = 4.dp).size(48.dp).semantics { contentDescription = "Send" }, enabled = hasContent && state.pendingMessage == null && state.chatAuthorId != null,
+                                shape = MaterialTheme.shapes.small,
+                                colors = IconButtonDefaults.filledIconButtonColors(
+                                    containerColor = Action, contentColor = OnAction,
+                                    disabledContainerColor = SurfaceRaised, disabledContentColor = TextMuted,
+                                ),
+                            ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
+                        }
+                        if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
                     }
                 }
                 DraftCounter(draft.text)
@@ -2912,7 +2943,7 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
 }
 @Composable private fun ReplyContext(reference: MessageReply, state: AppUiState, motionKey: String, onOpen: (() -> Unit)? = null) {
     val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
-    val text = if (reference.deleted) DELETED_REPLY else (reference.fullText ?: reference.text).ifEmpty { if (reference.hasAttachments) "Attachment" else "Message" }
+    val text = if (reference.deleted) DELETED_REPLY else (reference.fullText ?: reference.text).ifEmpty { VoiceMessages.excerptLabel(reference.attachments, reference.hasAttachments) }
     val preview = remember(text) { text.substring(0, text.offsetByCodePoints(0, minOf(100, text.codePointCount(0, text.length)))) }
     val surface = MaterialTheme.colorScheme.surface
     var expanded by rememberSaveable(reference.id, hidden) { mutableStateOf(false) }
@@ -3054,7 +3085,7 @@ private fun DrawScope.replySocket(position: Offset, angle: Float) {
     }.padding(start = 10.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.Top) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text("Replying to ${if (hidden) "blocked message" else reference.author.name}", color = TextMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (!hidden) Text((reference.fullText ?: reference.text).ifEmpty { if (reference.hasAttachments) "Attachment" else "Message" },
+            if (!hidden) Text((reference.fullText ?: reference.text).ifEmpty { VoiceMessages.excerptLabel(reference.attachments, reference.hasAttachments) },
                 color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         IconButton(onCancel, Modifier.size(48.dp)) {

@@ -2014,15 +2014,18 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         return sendReady(text, confirmed, threadRootId, broadcast)
     }
 
-    /** Returns false when nothing was sent, so the composer keeps its text and files. */
-    private fun sendReady(text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean): Boolean {
+    /**
+     * Returns false when nothing was sent, so the composer keeps its text and files. A [voice]
+     * recording is sent on its own instead of the composer's files, which stay where they are.
+     */
+    private fun sendReady(text: String, confirmed: () -> Unit, threadRootId: String?, broadcast: Boolean, voice: VoiceSend? = null): Boolean {
         if (mutable.value.pendingMessage?.let { it.error == null || it.rejected } == true) return false
         if (mutable.value.pendingMessage?.let { it.threadRootId != threadRootId } == true) return false
         val channel = mutable.value.selectedChannel?.takeIf { it.joined } ?: return false
         val target = AttachmentDraftTarget(channel.id, threadRootId)
-        val drafts = mutable.value.attachmentDrafts[target].orEmpty()
+        val drafts = voice?.let { listOf(it.draft) } ?: mutable.value.attachmentDrafts[target].orEmpty()
         val author = chatAuthor ?: run {
-            if (text.isBlank() && drafts.isEmpty()) return false
+            if (voice != null || text.isBlank() && drafts.isEmpty()) return false
             // The session is still being created (or failed earlier): create
             // it now and send once it exists, instead of refusing the message.
             val request = generation
@@ -2037,7 +2040,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
         // An unknown outcome must be retried with the same ID, text and files.
         val retry = pendingSends.retrying(channel.id, author)
-        val files = if (retry != null) mutable.value.pendingMessage?.attachments.orEmpty() else {
+        if (voice != null && retry != null) return false
+        val files = if (retry != null) mutable.value.pendingMessage?.attachments.orEmpty() else if (voice != null) listOf(voice.placeholder) else {
             if (drafts.any { it.attachment == null }) {
                 return false
             }
@@ -2049,9 +2053,10 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         var operation = pendingSends.begin(channel.id, author, text, files.map { it.id }, threadRootId, broadcast, mutable.value.replyTargets[threadRootId ?: "channel"], files.filter { it.spoiler }.map { it.id }, confirmed)
         if (retry == null) {
             pendingDrafts = drafts
-            pendingNeedsUpload = drafts.any { uploadStale(it) }
+            // A recording uploads only once it is sending, before the message itself.
+            pendingNeedsUpload = voice != null || drafts.any { uploadStale(it) }
         }
-        if (retry == null) {
+        if (retry == null && voice == null) {
             // If a server ever reports these as processing, this device shows its own picked images
             // (the working copies are deleted once the send is confirmed; the picked URI is not).
             val local = drafts.mapNotNull { draft -> draft.attachment?.id?.let { id -> draft.pickedImage?.takeIf { draft.edit == null }?.let { id to it } } }
@@ -2129,6 +2134,71 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         return true
+    }
+
+    /** A recording on its way: its working copy (as a draft only the pending message holds) and how it shows meanwhile. */
+    private data class VoiceSend(val draft: DraftAttachmentUi, val placeholder: ChatAttachment)
+
+    private var voiceSend: Job? = null
+
+    /**
+     * Sends a recorded voice message ([recording], an AAC/MP4 file this takes over) on its own:
+     * the composer's text and files stay, the reply target is honoured. The pending message shows
+     * the local recording while it uploads (uncompressed, with `voice`, its duration and
+     * [waveform]) and sends; a failed upload offers Retry like any pending file.
+     */
+    fun sendVoice(recording: File, durationMs: Long, waveform: String?, threadRootId: String? = null, broadcast: Boolean = false) {
+        val state = mutable.value
+        val channel = state.selectedChannel?.takeIf { it.joined }
+        if (channel == null || accountToken == null || !state.canParticipate || !state.uploadsEnabled ||
+            (threadRootId != null && state.thread?.rootId != threadRootId) || durationMs !in 1..VoiceMessages.MAX_DURATION_MS) {
+            recording.delete(); return
+        }
+        val target = AttachmentDraftTarget(channel.id, threadRootId)
+        if (state.pendingMessage != null || uploadSend?.isActive == true || voiceSend?.isActive == true) {
+            recording.delete()
+            voiceError(target, "Wait for your last message to send, then record again.")
+            return
+        }
+        val key = UUID.randomUUID().toString()
+        val directory = File(uploadSession, key)
+        val file = File(directory, VoiceMessages.UPLOAD_NAME)
+        val moved = runCatching {
+            directory.mkdirs()
+            recording.renameTo(file) || run { recording.copyTo(file, overwrite = true); recording.delete(); true }
+        }.getOrDefault(false)
+        if (!moved || file.length() < 1) {
+            recording.delete(); directory.deleteRecursively()
+            voiceError(target, "Couldn’t save the voice message.")
+            return
+        }
+        draftDirectories[key] = directory
+        preparedDrafts[key] = PreparedAttachment(file, VoiceMessages.UPLOAD_NAME, VoiceMessages.UPLOAD_TYPE, "audio", file.length(),
+            durationMs = durationMs, voice = true, waveform = waveform)
+        val local = Uri.fromFile(file).toString()
+        val voice = VoiceSend(
+            DraftAttachmentUi(key, VoiceMessages.LABEL, "audio", sourceSize = file.length(), storedSize = file.length(), localUrl = local, compressing = false),
+            ChatAttachment(key, "audio", VoiceMessages.UPLOAD_TYPE, VoiceMessages.LABEL, file.length(), durationMs = durationMs,
+                status = "ready", url = local, voice = true, waveform = waveform),
+        )
+        mutable.value = mutable.value.copy(attachmentErrors = mutable.value.attachmentErrors - target)
+        val request = generation
+        val account = accountGeneration
+        val thread = threadRequest
+        voiceSend = viewModelScope.launch {
+            if (chatAuthor == null && createChatSession(account) == null) { discardDraftFiles(key); return@launch }
+            val current = mutable.value
+            val stale = request != generation || account != accountGeneration || current.selectedChannel?.id != channel.id ||
+                (threadRootId != null && (thread != threadRequest || current.thread?.rootId != threadRootId)) || !current.canParticipate
+            if (stale || !sendReady("", {}, threadRootId, broadcast, voice)) {
+                discardDraftFiles(key)
+                if (!stale) voiceError(target, "Wait for your last message to send, then record again.")
+            }
+        }
+    }
+
+    private fun voiceError(target: AttachmentDraftTarget, message: String) {
+        mutable.value = mutable.value.copy(attachmentErrors = mutable.value.attachmentErrors + (target to message))
     }
 
     /** Edit restores a rejected message's files to the composer; Dismiss drops them. */

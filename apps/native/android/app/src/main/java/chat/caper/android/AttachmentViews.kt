@@ -70,6 +70,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import chat.caper.android.data.AttachmentEdit
 import chat.caper.android.data.AttachmentPolicy
+import chat.caper.android.data.VoiceMessages
+import chat.caper.android.data.isVoiceMessage
 import chat.caper.android.model.AttachmentState
 import chat.caper.android.model.ChatAttachment
 import chat.caper.android.model.DraftAttachmentUi
@@ -229,6 +231,7 @@ internal fun durationLabel(durationMs: Long?): String? {
                     Text(it, Modifier.align(Alignment.BottomEnd).padding(6.dp).background(Blackout.copy(alpha = 0.72f), MaterialTheme.shapes.extraSmall).padding(horizontal = 5.dp, vertical = 2.dp), color = Text, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
             }
+            attachment.isVoiceMessage -> VoiceMessage(attachment, pending, onLoadFailed, modifier)
             attachment.kind == "audio" -> FileCard(attachment, if (pending) null else ({ playing = attachment.id }), R.drawable.lucide_play)
             else -> FileCard(attachment, if (pending) null else ({ open(url) }))
         }
@@ -248,8 +251,11 @@ internal fun durationLabel(durationMs: Long?): String? {
             }
         }
     }
-    val (visuals, files) = attachments.partition { it.kind == "image" || it.kind == "video" }
+    val (visuals, others) = attachments.partition { it.kind == "image" || it.kind == "video" }
+    // Voice messages take their own row (up to the player's width) above other files.
+    val (voices, files) = others.partition { it.isVoiceMessage }
     Column(Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        voices.forEach { attachment -> key(attachment.id) { RenderAttachment(attachment, Modifier, MaterialTheme.shapes.small) } }
         if (visuals.size == 1) RenderAttachment(visuals.single(), Modifier, MaterialTheme.shapes.small)
         else if (visuals.isNotEmpty()) BoxWithConstraints(Modifier.widthIn(max = 480.dp).fillMaxWidth()) {
             val cells = attachmentGalleryCells(visuals.size, maxWidth.value)
@@ -384,6 +390,7 @@ internal fun replyAttachmentPreviewUrl(attachment: ChatAttachment): String? = wh
             Box(Modifier.size(44.dp).clip(RoundedCornerShape(8.dp)).background(Surface)
                 .border(1.dp, Border, RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
                 if (source != null && !failed) AttachmentImage(attachment, source, "reply", Modifier.fillMaxSize(), ContentScale.Crop, { _, _ -> failed = true })
+                else if (attachment.isVoiceMessage) Icon(painterResource(R.drawable.lucide_mic), VoiceMessages.LABEL, Modifier.size(18.dp), tint = TextMuted)
                 else Icon(painterResource(R.drawable.lucide_file_text), if (attachment.spoiler) "Spoiler attachment" else "Attachment", Modifier.size(18.dp), tint = TextMuted)
             }
         }
