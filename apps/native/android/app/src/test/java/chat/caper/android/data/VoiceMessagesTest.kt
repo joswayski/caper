@@ -193,7 +193,7 @@ class VoiceMessagesTest {
         assertEquals(2, message.content.attachments.size)
         assertEquals(VoiceTranscript.None, message.content.attachments[0].transcriptState)
         assertEquals(VoiceTranscript.Ready("hi"), message.content.attachments[1].transcriptState)
-        assertEquals(VoiceMessages.LABEL, VoiceMessages.excerptLabel(message.content.attachments))
+        assertEquals("hi", VoiceMessages.excerptLabel(message.content.attachments))
     }
 
     @Test fun `a message attachments event moves a transcript from pending to ready and keeps the voice fields`() {
@@ -224,6 +224,9 @@ class VoiceMessagesTest {
         val voice = ChatAttachment(id, "audio", "audio/mp4", "Voice message.m4a", 10, voice = true)
         val song = ChatAttachment(id, "audio", "audio/mpeg", "song.mp3", 10)
         assertEquals("Voice message", VoiceMessages.excerptLabel(listOf(voice)))
+        val transcribed = voice.copy(transcript = Json.parseToJsonElement("""{"status":"ready","text":"  North entrance.  "}"""))
+        assertEquals("North entrance.", VoiceMessages.excerptLabel(listOf(transcribed)))
+        assertEquals("Voice message", VoiceMessages.excerptLabel(listOf(transcribed.copy(spoiler = true))))
         assertEquals("Attachment", VoiceMessages.excerptLabel(listOf(song)))
         assertEquals("Attachment", VoiceMessages.excerptLabel(emptyList(), hasAttachments = true))
         assertEquals("Message", VoiceMessages.excerptLabel(emptyList()))

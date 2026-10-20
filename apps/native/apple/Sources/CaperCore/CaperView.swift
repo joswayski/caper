@@ -7451,7 +7451,7 @@ private struct NativeReplyContext: View {
     private var excerpt: String {
         if reference.deleted == true { return MessageDeletion.quote }
         let text = reference.fullText ?? reference.text
-        return text.isEmpty ? VoiceMessage.excerptFallback(hasAttachments: reference.hasAttachments, hasVoice: reference.hasVoice) : text
+        return text.isEmpty ? VoiceMessage.excerptFallback(hasAttachments: reference.hasAttachments, hasVoice: reference.hasVoice, attachments: reference.attachments ?? []) : text
     }
     private var preview: String { String(String.UnicodeScalarView(excerpt.unicodeScalars.prefix(100))) }
     var body: some View {
@@ -7652,7 +7652,7 @@ private struct NativeReplyDraft: View {
                     .fontWeight(.bold).lineLimit(1)
                 if !hidden {
                     let text = reference.fullText ?? reference.text
-                    Text(text.isEmpty ? VoiceMessage.excerptFallback(hasAttachments: reference.hasAttachments, hasVoice: reference.hasVoice) : text)
+                    Text(text.isEmpty ? VoiceMessage.excerptFallback(hasAttachments: reference.hasAttachments, hasVoice: reference.hasVoice, attachments: reference.attachments ?? []) : text)
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)

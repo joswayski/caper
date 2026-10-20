@@ -49944,7 +49944,7 @@ mod tests {
     }
 
     #[test]
-    fn voice_quotes_and_excerpts_say_voice_message() {
+    fn voice_reply_drafts_prefer_transcripts_and_fall_back_while_pending() {
         let (context, mut app) = fixture("parity-voice-messages");
         let mut voice = app
             .timeline
@@ -49953,9 +49953,17 @@ mod tests {
             .unwrap()
             .clone();
         voice.content.text.clear();
+        voice.content.attachments[0].transcript = Some(model::Transcript::Ready {
+            text: "Meet me at the north entrance.".into(),
+        });
         let reply = model::MessageReply::from_message(&voice);
         app.reply_targets.insert("channel".into(), reply);
         render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(texts(&output).contains(&"Meet me at the north entrance."));
+        voice.content.attachments[0].transcript = Some(model::Transcript::Pending);
+        app.reply_targets
+            .insert("channel".into(), model::MessageReply::from_message(&voice));
         let output = render(&mut app, &context, vec![]);
         assert!(texts(&output).contains(&"Voice message"));
     }

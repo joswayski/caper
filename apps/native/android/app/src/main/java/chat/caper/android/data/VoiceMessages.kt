@@ -136,7 +136,9 @@ object VoiceMessages {
         if (elapsedMs < MIN_DURATION_MS) null else elapsedMs.coerceAtMost(MAX_DURATION_MS)
 
     /** Reply previews and other excerpts of a message with no text. */
-    fun excerptLabel(attachments: List<ChatAttachment>, hasAttachments: Boolean = attachments.isNotEmpty()): String = when {
+    fun excerptLabel(attachments: List<ChatAttachment>, hasAttachments: Boolean = attachments.isNotEmpty()): String = attachments.firstNotNullOfOrNull {
+        if (it.isVoiceMessage && !it.spoiler && !it.unavailable) (it.transcriptState as? VoiceTranscript.Ready)?.text else null
+    } ?: when {
         attachments.any { it.isVoiceMessage } -> LABEL
         hasAttachments -> "Attachment"
         else -> "Message"
