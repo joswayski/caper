@@ -1773,12 +1773,17 @@ URIs through the text box's Paste menu or Ctrl+V, and keyboard rich content via
 `commitContent` (including Gboard GIF/sticker and clipboard buttons). It advertises
 `*/*` rather than an image-only filter and retains the temporary URI permission
 until the asynchronous attachment job finishes, including cancellation. Rust
-desktop accepts native file lists and images with Ctrl+V. Copied GIF files keep
-their animation; a source app/browser that exposes only a bitmap has already
-discarded it, and pasting cannot reconstruct the original animation. Android
-keeps its value-based composer and selection/mention editing. Rust's egui
-integration suppresses image-only paste key-downs, so its
-key-up supplies the missing event without duplicating text-bearing pastes.
+desktop accepts native file lists, encoded media/documents and images with Ctrl+V.
+Native file references remain first so copied documents of any type keep their
+names and bytes. The encoded fallback recognizes media, PDF, ZIP and generic
+binary data, preferring GIF bytes over a static PNG. Text/HTML and clipboard
+bookkeeping are not attachments. A source app/browser that exposes only a bitmap
+has already discarded the animation, and pasting cannot reconstruct it. Android
+keeps its value-based composer and selection/mention editing. Rust vendors a narrow
+`egui-winit` 0.33.3 patch to deliver paste intent on key-down even without text;
+the composer then reads its file formats. This replaces the old key-up fallback,
+which missed pastes when Ctrl was released before V. See the vendored `PATCHES.md`
+when upgrading egui.
 
 No API, gateway, database, infrastructure or secret change is needed. Clients
 can release independently against the existing upload API; rolling a client
@@ -1813,6 +1818,16 @@ PNG/text, channel/DM/thread delivery, retries, limits and disabled uploads.
 These use the disposable fixture, not live storage. Apple pasteboard regression
 tests require Apple SDKs; Gboard/OEM keyboard, iOS/macOS pasteboard and Windows/
 Linux desktop clipboard acceptance remain device/OS checks, not browser proof.
+
+Desktop encoded-file follow-up (October 20, 2026): the Linux build, Rust fmt and
+full desktop suite pass (725 tests, 20 ignored; two test threads to stay within
+orb memory limits). The separately run isolated-X11 clipboard test passes for
+original GIF/PNG bytes, PDF/ZIP/binary data, copied files and text/HTML controls.
+The inspected Linux UI recording shows GIF and binary paste adding one attachment
+each without losing draft text, including releasing Ctrl before V. Ordinary text
+paste and subsequent typing also work. Uploads were deliberately offline; these
+checks prove clipboard ingestion, not live storage. Windows/Wayland clipboard
+acceptance and physical-device keyboard behavior still need their own checks.
 
 ### Editing attachments before sending
 
