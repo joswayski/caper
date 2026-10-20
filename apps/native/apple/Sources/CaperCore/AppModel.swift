@@ -884,6 +884,86 @@ public final class AppModel {
         }
     }
 
+    /// Sends a voice message recorded in a profile card to that person's DM,
+    /// on its own: the card's typed text and files stay in its draft. Like
+    /// `sendProfileMessage`, success opens the DM (the card then closes).
+    /// `recording` is nil to retry the voice message kept by a failed attempt,
+    /// which reuses its upload and, once a POST may have reached the server,
+    /// the same client message id.
+    func sendProfileVoice(_ recording: VoiceRecording?, to person: MentionCardPerson) async -> Bool {
+        let draft = profileMessageDraft(personID: person.id)
+        if let recording {
+            guard draft.canRecordVoice, let prepared = PreparedAttachment.voice(recording) else {
+                AttachmentStaging.remove(recording.fileURL)
+                return false
+            }
+            guard draft.stageVoice(prepared) else { return false }
+        }
+        guard let account, !person.isSelf, person.username != nil, draft.voice != nil, !draft.sending, !draft.discarded else { return false }
+        guard !blockedIDs.contains(person.id) else {
+            draft.error = DirectMessageErrors.message(code: "dm_blocked")
+            return false
+        }
+        let attempt = generation
+        draft.sending = true; draft.error = nil; draft.progress = "Sending voice message…"
+        var attemptedSend = false
+        defer { draft.sending = false; draft.progress = nil }
+        do {
+            let conversation = try await profileDestination(person: person, draft: draft)
+            replaceDirectMessage(conversation)
+            let session = try await api.chatSession(name: account.displayName ?? "")
+            try draft.checkActive()
+            guard generation == attempt, session.author.id == account.id, !session.author.isGuest, let voice = draft.voice else { throw CancellationError() }
+            if voice.command == nil {
+                var attachment = voice.attachment
+                // Renew an upload older than the unsent-asset cleanup, as text sends do.
+                if let old = attachment, voice.uploadedAt.map({ Date().timeIntervalSince($0) >= 23 * 60 * 60 }) ?? true {
+                    await api.cancelAsset(id: old.id)
+                    attachment = nil
+                }
+                if attachment == nil {
+                    let uploaded = try await AttachmentUploader.upload(voice.prepared, channelID: conversation.id, api: api) { _ in }
+                    guard !draft.discarded, draft.voice != nil else {
+                        await api.cancelAsset(id: uploaded.id)
+                        throw CancellationError()
+                    }
+                    draft.updateVoice({ $0.attachment = uploaded; $0.uploadedAt = Date() }, api: api)
+                    attachment = uploaded
+                }
+                try draft.checkActive()
+                guard let attachment else { throw CancellationError() }
+                draft.updateVoice({ $0.command = PendingMessage(id: UUID().uuidString.lowercased(), text: "", attachments: [attachment]) }, api: api)
+            }
+            guard let command = draft.voice?.command else { throw CancellationError() }
+            attemptedSend = true
+            let message = try await api.send(channelID: conversation.id, sessionToken: session.token, clientMessageID: command.id,
+                                             text: command.text, attachmentIDs: command.attachmentIDs)
+            try draft.checkActive()
+            guard generation == attempt else { throw CancellationError() }
+            guard MessageValidation.acceptsResponse(message, channelID: conversation.id, command: command, authorID: account.id),
+                  (message.content.attachments ?? []).map(\.id) == command.attachmentIDs else {
+                throw APIError(status: 502, message: "The chat service returned an invalid message.")
+            }
+            draft.finishVoice()
+            chat.receiveProfileMessage(message)
+            invalidateNavigation(channelID: conversation.id)
+            await select(directMessage: conversation)
+            return generation == attempt
+        } catch {
+            guard generation == attempt, !draft.discarded else { return false }
+            let refusal = error as? APIError
+            if VoiceMessage.keepsForRetry(attemptedSend: attemptedSend, status: refusal?.status) {
+                // Retry stays available: the card shows `VoiceMessage.retryNotice` with Retry and Discard.
+                draft.error = FriendlyError.message(for: error)
+            } else {
+                draft.discardVoice()
+                draft.error = FriendlyError.message(for: error)
+            }
+            if refusal?.code == "dm_blocked" { Task { await refreshBlocks(); await refreshDirectMessages() } }
+            return false
+        }
+    }
+
     /// Whether `sendUpdateReport` can post: signed in with a username.
     public var canSendUpdateReport: Bool { account?.username != nil }
 
@@ -3634,34 +3714,23 @@ public final class ChatModel {
     /// through the same pending-delivery path as a re-uploaded message, so
     /// upload failures offer Retry and the completed description is what is sent.
     public func sendVoice(_ recording: VoiceRecording, inThread: Bool = false) async {
-        let size = (try? recording.fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        guard canRecordVoice(inThread: inThread), let channelID, session != nil, size > 0,
-              (VoiceMessage.minimumDurationMs...VoiceMessage.maximumDurationMs).contains(recording.durationMs) else {
+        guard canRecordVoice(inThread: inThread), let channelID, session != nil,
+              let prepared = PreparedAttachment.voice(recording) else {
             AttachmentStaging.remove(recording.fileURL)
             return
         }
         let rootID = inThread ? threadRootID : nil
         let id = UUID().uuidString
-        let file = LocalAttachmentFile(url: recording.fileURL, name: VoiceMessage.uploadFilename,
-                                       contentType: VoiceMessage.uploadContentType, size: size)
-        var prepared = PreparedAttachment(original: file)
-        prepared.kind = .audio
-        prepared.durationMs = recording.durationMs
-        prepared.voice = true
-        prepared.waveform = VoiceWaveform.encode(recording.waveform)
-        var draft = AttachmentDraft(id: id, name: VoiceMessage.storedName, kind: .audio, localURL: recording.fileURL, sourceSize: size)
+        var draft = AttachmentDraft(id: id, name: VoiceMessage.storedName, kind: .audio, localURL: recording.fileURL, sourceSize: prepared.byteSize)
         draft.preparing = false
-        draft.storedSize = size
+        draft.storedSize = prepared.byteSize
         preparedUploads[id] = prepared
         draftChannels[id] = channelID
         pendingDrafts = [draft]
         pendingNeedsUpload = true
-        // Shown until the upload completes and replaces it with the server's description.
-        let local = ChatAttachment(id: id, kind: .audio, contentType: VoiceMessage.uploadContentType, name: VoiceMessage.storedName,
-                                   size: size, durationMs: recording.durationMs, url: recording.fileURL.absoluteString,
-                                   voice: true, waveform: prepared.waveform)
         let key = rootID ?? "channel"
-        _ = delivery.begin(text: "", attachments: [local], threadRootId: rootID, broadcast: false, replyTo: replyTargets[key])
+        _ = delivery.begin(text: "", attachments: [prepared.localVoiceAttachment(id: id)], threadRootId: rootID, broadcast: false,
+                           replyTo: replyTargets[key])
         replyTargets[key] = nil
         await send(inThread: inThread, retryPending: true)
     }

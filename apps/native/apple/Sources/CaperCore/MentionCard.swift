@@ -120,6 +120,16 @@ final class ProfileMessageDraft {
     /// Once a POST may have reached the server, freeze its entire payload,
     /// including asset ids, until a retry confirms it or it is definitively refused.
     var pending: PendingMessage?
+    /// A recorded voice message sent on its own to this person (the text and
+    /// files above stay). Kept after a failed attempt for Retry: its upload,
+    /// and once a POST may have reached the server, the frozen send.
+    struct Voice {
+        let prepared: PreparedAttachment
+        var attachment: ChatAttachment?
+        var uploadedAt: Date?
+        var command: PendingMessage?
+    }
+    private(set) var voice: Voice?
     private(set) var discarded = false
     var prepareUploads: (() async throws -> Void)?
     private var uploadTask: Task<Void, Error>?
@@ -164,6 +174,38 @@ final class ProfileMessageDraft {
     var preventsImplicitDismissal: Bool { sending || presentingDialog }
     var canSend: Bool {
         !discarded && !sending && (pending != nil || MessageValidation.error(for: text, attachmentCount: files.count) == nil)
+    }
+    /// The microphone starts only while nothing else is in flight or awaiting Retry.
+    var canRecordVoice: Bool { !discarded && !sending && pending == nil && voice == nil }
+
+    /// Holds a finished recording for `AppModel.sendProfileVoice`; false
+    /// (and the recording removed) when another voice message is still here.
+    func stageVoice(_ prepared: PreparedAttachment) -> Bool {
+        guard !discarded, voice == nil else { AttachmentStaging.remove(prepared.fileURL); return false }
+        voice = Voice(prepared: prepared)
+        return true
+    }
+
+    func updateVoice(_ change: (inout Voice) -> Void, api: APIClient) {
+        guard var value = voice else { return }
+        uploadAPI = api
+        change(&value)
+        voice = value
+    }
+
+    /// Drops the voice message: its upload is cancelled unless a send may
+    /// have used it, and the recording is removed.
+    func discardVoice() {
+        guard let voice else { return }
+        if voice.command == nil, let id = voice.attachment?.id, let api = uploadAPI { Task { await api.cancelAsset(id: id) } }
+        AttachmentStaging.remove(voice.prepared.fileURL)
+        self.voice = nil
+    }
+
+    /// After the server confirmed it: only the local recording goes.
+    func finishVoice() {
+        if let voice { AttachmentStaging.remove(voice.prepared.fileURL) }
+        voice = nil
     }
 
     func add(_ incoming: [LocalAttachmentFile]) {
@@ -318,6 +360,7 @@ final class ProfileMessageDraft {
     func discard() {
         discarded = true
         presentingDialog = false
+        discardVoice()
         clear()
     }
 }

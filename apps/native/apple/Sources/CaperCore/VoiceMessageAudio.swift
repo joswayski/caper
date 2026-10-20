@@ -9,19 +9,28 @@ import UIKit
 // in `VoiceMessages.swift`; the views are in `VoiceMessageViews.swift`.
 
 /// Which composer a recording belongs to: one conversation's channel
-/// composer or one thread's. Opening another conversation or thread changes
-/// it, which discards the recording.
+/// composer, one thread's, or a profile card's message to one person.
+/// Opening another conversation or thread changes it, which discards the
+/// recording.
 struct VoiceComposerID: Hashable {
-    let chat: ObjectIdentifier
+    let chat: ObjectIdentifier?
     let channelID: String?
     let threadRootID: String?
     let inThread: Bool
+    /// The person a profile card's composer messages.
+    let profilePersonID: String?
 
     @MainActor init(chat: ChatModel, inThread: Bool) {
         self.chat = ObjectIdentifier(chat)
         channelID = chat.channelID
         threadRootID = inThread ? chat.threadRootID : nil
         self.inThread = inThread
+        profilePersonID = nil
+    }
+
+    init(profilePersonID: String) {
+        chat = nil; channelID = nil; threadRootID = nil; inThread = false
+        self.profilePersonID = profilePersonID
     }
 }
 

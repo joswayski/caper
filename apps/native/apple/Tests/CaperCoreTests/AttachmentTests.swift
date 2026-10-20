@@ -2095,6 +2095,85 @@ final class AttachmentTests: XCTestCase {
     }
 
     @MainActor
+    func testProfileVoiceMessageSendsAloneKeepsTypedTextAndRetriesTheSameMessage() async throws {
+        let api = client()
+        let model = AppModel(api: api)
+        model.account = Account(id: "self", username: "owner", displayName: "Me")
+        model.selectedChannelID = channelID
+        let destination = DirectMessageConversation(id: "dm0000000002", peer: DirectMessagePeer(id: "peer00000001", username: "jordan", displayName: "Jordan"), lastSeq: "0", readSeq: "0")
+        let person = MentionCardPerson(id: destination.peer.id, username: "jordan", displayName: "Jordan", avatarId: nil, isSelf: false)
+        let ordinary = composerHandler()
+        var sends: [[String: Any]] = []
+        var reservations: [[String: Any]] = []
+        var sent: ChatMessage?
+        let voice = ChatAttachment(id: "Asset0000007", kind: .audio, contentType: "audio/mp4", name: "Voice message.m4a", size: 3000,
+                                   durationMs: 4200, voice: true, waveform: "/wCA", transcript: .pending)
+        AttachmentURLProtocol.handler = { request, body in
+            switch (request.httpMethod ?? "GET", request.url?.path ?? "") {
+            case ("GET", "/api/dms"): return (200, Data(#"{"conversations":[]}"#.utf8))
+            case ("POST", "/api/dms"): return (200, try JSONEncoder().encode(destination))
+            case ("POST", "/api/assets") where json(body)?["channelId"] as? String == destination.id:
+                reservations.append(try XCTUnwrap(json(body)))
+                return (201, Data(#"{"id":"Asset0000007","upload":{"method":"PUT","url":"https://r2.invalid/original/Asset0000007","headers":{"content-type":"audio/mp4"}}}"#.utf8))
+            case ("POST", "/api/assets/Asset0000007/complete"):
+                return (200, try JSONEncoder().encode(voice))
+            case ("POST", "/api/chat/channels/\(destination.id)/messages"):
+                let input = try XCTUnwrap(json(body))
+                sends.append(input)
+                if sends.count == 1 { return (503, Data(#"{"error":"unavailable"}"#.utf8)) }
+                sent = ChatMessage(id: "Message00000001", channelId: destination.id, seq: "1",
+                    author: ChatAuthor(id: "self", name: "Me", isGuest: false),
+                    content: ChatContent(version: 1, type: "text", text: "", attachments: [voice]),
+                    createdAt: "now", clientMessageId: try XCTUnwrap(input["clientMessageId"] as? String))
+                return (200, try JSONEncoder().encode(sent!))
+            case ("GET", "/api/chat/channels/\(destination.id)/messages"):
+                return (200, try JSONEncoder().encode(ChatHistory(space: HistoryIdentity(id: "", name: "Direct messages"),
+                    channel: HistoryIdentity(id: destination.id, name: "Jordan", direct: true), messages: [sent].compactMap { $0 }, cursor: "1", hasMore: false)))
+            case ("POST", "/api/auth/logout"), ("POST", "/api/dms/\(destination.id)/read"): return (204, Data())
+            default: return try ordinary(request, body)
+            }
+        }
+        await model.chat.open(channelID: channelID, displayName: "Me")
+        let draft = model.profileMessageDraft(person: person)
+        draft.text = "typed but not sent"
+        XCTAssertTrue(draft.canRecordVoice)
+
+        // Too short: nothing staged or uploaded.
+        let short = try AttachmentStaging.stage(data: Data(repeating: 1, count: 300), filename: VoiceMessage.uploadFilename)
+        let tooShort = await model.sendProfileVoice(VoiceRecording(fileURL: short.url, durationMs: 500, waveform: []), to: person)
+        XCTAssertFalse(tooShort)
+        XCTAssertNil(draft.voice)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: short.url.path))
+
+        let recording = try AttachmentStaging.stage(data: Data(repeating: 7, count: 3000), filename: VoiceMessage.uploadFilename)
+        let first = await model.sendProfileVoice(VoiceRecording(fileURL: recording.url, durationMs: 4200, waveform: [255, 0, 128]), to: person)
+        XCTAssertFalse(first, "an unknown outcome keeps the card open")
+        XCTAssertNotNil(draft.voice?.command, "Retry resends the frozen message")
+        XCTAssertFalse(draft.canRecordVoice, "one voice message at a time")
+        XCTAssertNotNil(draft.error)
+        XCTAssertEqual(draft.text, "typed but not sent")
+        XCTAssertEqual(model.selectedChannelID, channelID, "nothing navigates before the message is confirmed")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recording.url.path))
+
+        let retry = await model.sendProfileVoice(nil, to: person)
+        XCTAssertTrue(retry)
+        XCTAssertEqual(reservations.count, 1, "Retry reuses the upload")
+        XCTAssertEqual(reservations.first?["voice"] as? Bool, true)
+        XCTAssertEqual(reservations.first?["durationMs"] as? Int, 4200)
+        XCTAssertEqual(reservations.first?["waveform"] as? String, "/wCA")
+        XCTAssertEqual(sends.count, 2)
+        XCTAssertEqual(sends.first?["clientMessageId"] as? String, sends.last?["clientMessageId"] as? String)
+        XCTAssertEqual(sends.last?["attachmentIds"] as? [String], ["Asset0000007"], "only the voice message is sent")
+        XCTAssertEqual(sends.last?["text"] as? String, "")
+        XCTAssertNil(draft.voice)
+        XCTAssertNil(draft.error)
+        XCTAssertEqual(draft.text, "typed but not sent", "typed text stays in the card's draft")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recording.url.path))
+        XCTAssertEqual(model.selectedDirectMessageID, destination.id, "like Send, success opens the DM")
+        await model.logout()
+    }
+
+    @MainActor
     func testProfileEagerUploadsCoalesceAndRemovalDoesNotShiftResults() async throws {
         AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
         let api = client()

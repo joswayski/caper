@@ -39,6 +39,30 @@ public struct PreparedAttachment: Equatable, Sendable {
     }
 }
 
+extension PreparedAttachment {
+    /// A recorded voice message, uploaded exactly as recorded with `voice`,
+    /// `durationMs` and `waveform`; nil when it can't be sent (empty, under a
+    /// second or over ten minutes). Shared by every voice send.
+    public static func voice(_ recording: VoiceRecording) -> PreparedAttachment? {
+        let size = (try? recording.fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard VoiceMessage.sendable(durationMs: recording.durationMs, byteSize: size) else { return nil }
+        var prepared = PreparedAttachment(original: LocalAttachmentFile(url: recording.fileURL, name: VoiceMessage.uploadFilename,
+                                                                       contentType: VoiceMessage.uploadContentType, size: size))
+        prepared.kind = .audio
+        prepared.durationMs = recording.durationMs
+        prepared.voice = true
+        prepared.waveform = VoiceWaveform.encode(recording.waveform)
+        return prepared
+    }
+
+    /// What a pending row shows for a voice message until the upload
+    /// completes and the server's description replaces it.
+    public func localVoiceAttachment(id: String) -> ChatAttachment {
+        ChatAttachment(id: id, kind: .audio, contentType: contentType, name: VoiceMessage.storedName, size: byteSize,
+                       durationMs: durationMs, url: fileURL.absoluteString, voice: true, waveform: waveform)
+    }
+}
+
 /// Applies the server's compression settings before upload
 /// (`docs/media.md`, "Client compression and previews"). Every step is
 /// optional: when a rule cannot be met the original is uploaded instead of a
