@@ -147,9 +147,11 @@ just that player in the card.
   waveform values: per-slice RMS on a -50–0 dBFS scale, 3-tap smoothed and
   normalised to the loudest slice. Waveforms draw linearly resampled 3 px
   rounded bars with 2 px gaps and a minimum height, the played part (boundary
-  bar partly) in text colour and moving every frame; the live meter smooths
-  the input (fast attack, slow release) and scrolls a new bar in every 70 ms
-  (stepwise, and a still dot, with reduced motion). `voice: true` attachments
+  bar partly) in text colour and moving every frame; the live meter adds a
+  bar every 25 ms from the loudest level in that slice (falling to at most
+  35% of the bar before), drawn as pills that swell in flat from the right,
+  brighten toward eggshell when loud, and pinch and fade near the left edge,
+  scrolling every frame (stepwise, and a still dot, with reduced motion). `voice: true` attachments
   show a player (play/pause, waveform, click or drag to seek, length or time
   left; one plays at a time) and a Slack-style transcript: three lines with
   View/Hide transcript, "Transcribing…" while pending, nothing when failed or

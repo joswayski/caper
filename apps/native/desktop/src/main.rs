@@ -948,14 +948,8 @@ struct VoiceRecording {
     started: Option<Instant>,
     /// Stop was pressed (or 10:00 reached): waiting for the encoded file.
     sending: bool,
-    /// The live meter's bars, oldest first, one per `voice_note::LIVE_INTERVAL`.
-    levels: std::collections::VecDeque<f32>,
-    /// When the newest bar was added; the bars scroll left from there.
-    sampled: Option<Instant>,
-    /// The smoothed input level (fast attack, slow release).
-    envelope: f32,
-    /// The loudest smoothed level since the newest bar.
-    bar_peak: f32,
+    /// The live meter's bars, one per `voice_note::LIVE_INTERVAL`.
+    meter: voice_note::LiveMeter,
     /// The fixture's frozen timer.
     fixed_elapsed: Option<Duration>,
     /// Recorded in a profile card's quick-message composer: the person's ID
@@ -971,42 +965,25 @@ impl VoiceRecording {
             recorder,
             started: None,
             sending: false,
-            levels: std::collections::VecDeque::new(),
-            sampled: None,
-            envelope: 0.0,
-            bar_peak: 0.0,
+            meter: voice_note::LiveMeter::default(),
             fixed_elapsed: None,
             profile: None,
         }
     }
 
-    /// Reads the input level (about 60 times a second) and adds a bar every
+    /// Reads the input level (every frame) and adds a bar every
     /// `voice_note::LIVE_INTERVAL`.
     fn sample(&mut self, rms: f32, now: Instant) {
-        self.envelope = voice_note::envelope(self.envelope, voice_note::perceptual(rms));
-        self.bar_peak = self.bar_peak.max(self.envelope);
-        if self
-            .sampled
-            .is_none_or(|sampled| now.duration_since(sampled) >= voice_note::LIVE_INTERVAL)
-        {
-            self.sampled = Some(now);
-            self.levels.push_back(self.bar_peak);
-            self.bar_peak = self.envelope;
-            while self.levels.len() > 200 {
-                self.levels.pop_front();
-            }
-        }
+        self.meter.sample(voice_note::perceptual(rms), now);
     }
 
-    /// How far (0–1) the bars have scrolled toward the next one.
+    /// How far (0–1) the bars have scrolled toward the next one. Reduced
+    /// motion and the fixture rest at 1, so the bars step instead.
     fn scroll(&self, now: Instant) -> f32 {
         if self.fixed_elapsed.is_some() || motion::reduced() {
-            return 0.0;
+            return 1.0;
         }
-        self.sampled.map_or(0.0, |sampled| {
-            (now.duration_since(sampled).as_secs_f32() / voice_note::LIVE_INTERVAL.as_secs_f32())
-                .clamp(0.0, 1.0)
-        })
+        self.meter.scroll(now)
     }
 
     fn for_profile(person: &str, username: &str, recorder: Option<voice_note::Recorder>) -> Self {
@@ -28915,12 +28892,13 @@ impl CaperApp {
                 }
             }
             if recording.recorder.is_some() {
-                // About 60 Hz for a smooth meter; reduced motion steps per bar.
-                context.request_repaint_after(if motion::reduced() {
-                    voice_note::LIVE_INTERVAL
+                // Every display frame so the meter scrolls smoothly; reduced
+                // motion steps per bar.
+                if motion::reduced() {
+                    context.request_repaint_after(voice_note::LIVE_INTERVAL);
                 } else {
-                    voice_note::LIVE_SAMPLE
-                });
+                    context.request_repaint();
+                }
             }
         }
         self.send_voice_messages();
@@ -29186,7 +29164,7 @@ impl CaperApp {
         let started = recording.started.is_some() || recording.recorder.is_none();
         let sending = recording.sending;
         let elapsed = recording.elapsed();
-        let levels: Vec<f32> = recording.levels.iter().copied().collect();
+        let levels: Vec<f32> = recording.meter.bars.iter().copied().collect();
         let scroll = recording.scroll(Instant::now());
         let send_on_stop = self.voice_send_on_stop;
         let mut discard = false;
@@ -29585,7 +29563,7 @@ fn staged_voice_id(prepared: &std::sync::Arc<uploads::Prepared>) -> String {
 fn fixture_recording(mut bar: VoiceRecording) -> VoiceRecording {
     bar.started = Some(Instant::now());
     bar.fixed_elapsed = Some(Duration::from_secs(7));
-    bar.levels = (0..120)
+    bar.meter.bars = (0..120)
         .map(|index| {
             let x = index as f32 / 9.0;
             (0.15 + 0.8 * (x.sin() * (x * 0.37).cos()).abs()).min(1.0)
@@ -29604,24 +29582,64 @@ fn mic_button(ui: &mut egui::Ui, enabled: bool, unavailable: &str, size: f32) ->
     .clicked()
 }
 
-/// The recording bar's live input meter: newest level on the right, one
-/// rounded 3 px bar every 5 px, scrolling left as levels arrive.
+/// The recording bar's live input meter ("pinch bars"): newest level on the
+/// right, one 3 px pill every 6 px, scrolling left as levels arrive. New bars
+/// enter flat and swell; old ones pinch and fade over the left 40 px. Quiet
+/// bars are small grey dots and loud ones brighten toward eggshell.
 fn paint_live_levels(painter: &egui::Painter, rect: egui::Rect, levels: &[f32], scroll: f32) {
+    const BAR: f32 = 3.0;
+    const STEP: f32 = 6.0;
+    const MIN: f32 = 3.0;
+    const QUIET: Color32 = Color32::from_rgb(150, 156, 158);
+    let width = rect.width();
+    if width <= 0.0 {
+        return;
+    }
     let painter = painter.with_clip_rect(painter.clip_rect().intersect(rect));
-    // The newest bar enters at the right edge and glides left by one pitch
-    // until the next arrives; older bars follow at a constant rate.
-    let count = (rect.width() / WAVE_PITCH).ceil() as usize + 1;
-    for age in 0..count {
-        let level = levels.len().checked_sub(age + 1).map(|index| levels[index]);
-        let right = rect.right() - (age as f32 + scroll) * WAVE_PITCH;
-        paint_wave_bar(
-            &painter,
-            right - WAVE_BAR,
-            rect,
-            level.unwrap_or(0.0),
-            if level.is_some() { TEXT } else { BORDER },
+    for (age, level) in levels.iter().rev().enumerate() {
+        // Left edge of the bar, from the meter's left.
+        let x = width - scroll * STEP - age as f32 * STEP;
+        if x < -STEP {
+            break;
+        }
+        let center = x + BAR / 2.0;
+        let pinch = 1.0 - 0.70 * (1.0 - smoothstep(0.0, 40.0_f32.min(0.8 * width), center));
+        let fade = smoothstep(0.0, 0.10 * width, center);
+        let swell = egui::emath::easing::cubic_out(((width - center) / 36.0).clamp(0.0, 1.0));
+        let arrive = smoothstep(0.0, 10.0, width - center);
+        let scale = pinch * swell;
+        let alpha = fade * arrive;
+        if alpha < 0.02 {
+            continue;
+        }
+        let level = voice_note::live_shape(*level);
+        let height = (MIN * scale.max(0.6)).max(level * scale * rect.height() * 0.94);
+        let bar_width = BAR * (scale + 0.4).clamp(0.6, 1.0);
+        let tint = (0.25 + 0.9 * level).min(1.0);
+        let mix = |quiet: u8, loud: u8| {
+            (f32::from(quiet) + (f32::from(loud) - f32::from(quiet)) * tint).round() as u8
+        };
+        let color = Color32::from_rgb(
+            mix(QUIET.r(), ACTION.r()),
+            mix(QUIET.g(), ACTION.g()),
+            mix(QUIET.b(), ACTION.b()),
+        )
+        .gamma_multiply(alpha);
+        painter.rect_filled(
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + x + BAR / 2.0, rect.center().y),
+                egui::vec2(bar_width, height),
+            ),
+            bar_width.min(height) / 2.0,
+            color,
         );
     }
+}
+
+/// 0 at `edge0`, 1 at `edge1`, easing in and out between.
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Waveform bars: 3 px wide with fully rounded caps and a 2 px gap.
