@@ -771,7 +771,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
      */
     internal fun sendProfileVoice(person: String, id: String?, username: String, recording: File, durationMs: Long, waveform: String?, done: () -> Unit) {
         val token = accountToken
-        if (token == null || !mutable.value.uploadsEnabled || !profileDrafts[person].editable || durationMs !in 1..VoiceMessages.MAX_DURATION_MS) {
+        if (token == null || !mutable.value.uploadsEnabled || !profileDrafts[person].editable || profileDrafts.voiceKey(person) != null ||
+            durationMs !in 1..VoiceMessages.MAX_DURATION_MS) {
             recording.delete(); return
         }
         val key = UUID.randomUUID().toString()
@@ -780,17 +781,48 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         val request = accountGeneration
         val navigation = generation
         val directNavigation = conversationOpeningRevision
+        deliverProfileVoice(person, key, request, navigation, directNavigation, done) {
+            profileDrafts.sendVoice(person, id, username, token, key, prepared, session = profileChatSession(request),
+                directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
+        }
+    }
+
+    /** Retry on the card's waiting voice message: the same upload, and the same message once a send may have arrived. */
+    internal fun retryProfileVoice(person: String, id: String?, username: String, done: () -> Unit) {
+        val token = accountToken ?: return
+        val key = profileDrafts.voiceKey(person) ?: return
+        val request = accountGeneration
+        val navigation = generation
+        val directNavigation = conversationOpeningRevision
+        deliverProfileVoice(person, key, request, navigation, directNavigation, done) {
+            profileDrafts.retryVoice(person, id, username, token, session = profileChatSession(request),
+                directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
+        }
+    }
+
+    /** Discard on the card's waiting voice message: its upload is cancelled and the recording deleted. */
+    internal fun discardProfileVoice(person: String) {
+        val token = accountToken
+        viewModelScope.launch { profileDrafts.discardVoice(person, token)?.let(::discardDraftFiles) }
+    }
+
+    /** The recording's copy goes once it is sent or dropped; one that failed waits for Retry or Discard. */
+    private fun deliverProfileVoice(
+        person: String, key: String, request: Long, navigation: Long, directNavigation: Long, done: () -> Unit,
+        attempt: suspend () -> Pair<DirectConversation, ChatMessage>?,
+    ) {
         viewModelScope.launch {
             try {
-                val result = profileDrafts.sendVoice(person, id, username, token, prepared, session = profileChatSession(request),
-                    directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
+                val result = attempt()
                 if (request != accountGeneration) return@launch
                 if (result == null) {
                     if (profileDrafts[person].error == directMessageError(DM_BLOCKED)) { refreshBlocks(); refreshDirectConversations() }
                     return@launch
                 }
                 profileMessageSent(result.first, result.second, navigation, directNavigation, done)
-            } finally { discardDraftFiles(key) }
+            } finally {
+                if (profileDrafts.voiceKey(person) != key) discardDraftFiles(key)
+            }
         }
     }
 

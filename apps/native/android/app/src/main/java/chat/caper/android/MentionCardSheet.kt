@@ -181,6 +181,8 @@ import kotlinx.coroutines.launch
                                 recording.file, recording.durationMs, recording.waveform, onMessageSent ?: onDismiss)
                             else recording.file.delete()
                         },
+                        retryVoice = { viewModel.retryProfileVoice(person, card.id, card.username, onMessageSent ?: onDismiss) },
+                        discardVoice = { viewModel.discardProfileVoice(person) },
                     )
                 }
             }
@@ -258,10 +260,13 @@ import kotlinx.coroutines.launch
     retry: ((String) -> Unit)? = null,
     /** Sends a held-to-record voice message on its own (the typed text and files stay); null hides the mic. */
     recordVoice: ((VoiceRecording) -> Unit)? = null,
+    retryVoice: () -> Unit = {},
+    discardVoice: () -> Unit = {},
 ) {
     var field by remember { mutableStateOf(TextFieldValue(draft.text, TextRange(draft.text.length))) }
     val recorder = rememberVoiceRecorder(username) { recording -> recordVoice?.invoke(recording) ?: recording.file.delete() }
-    val voiceBlocked = voiceRecordBlocked(pendingMessage = false)
+    // One voice message waits at a time.
+    val voiceBlocked = if (draft.voice != null) "Retry or discard the voice message that didn’t send first." else voiceRecordBlocked(pendingMessage = false)
     var emojiPicker by remember { mutableStateOf(false) }
     var filePicker by remember { mutableStateOf(false) }
     LaunchedEffect(draft.text) {
@@ -315,6 +320,13 @@ import kotlinx.coroutines.launch
             ) { Icon(painterResource(R.drawable.lucide_send), null, Modifier.size(20.dp)) }
         }
         if (recorder.recording) VoiceRecordingBar(recorder, Modifier.matchParentSize())
+    }
+    draft.voice?.let { voice ->
+        Row(Modifier.semantics { liveRegion = LiveRegionMode.Polite }, verticalAlignment = Alignment.CenterVertically) {
+            Text(voice.message, Modifier.weight(1f), color = ErrorText, fontSize = 12.sp)
+            TextButton(retryVoice, enabled = writable && !draft.sending, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Retry") }
+            TextButton(discardVoice, enabled = !draft.sending, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Discard") }
+        }
     }
     if (draft.sending) Text("Sending…", Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp)
     draft.error?.let {
