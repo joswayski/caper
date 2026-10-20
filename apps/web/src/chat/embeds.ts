@@ -20,6 +20,8 @@ export type EmbedBlock =
       type: "player";
       provider: EmbedPlayerProvider;
       id: string;
+      /** The player page native apps open; web loads the provider directly. */
+      play?: string;
       poster?: string;
       width?: number;
       height?: number;

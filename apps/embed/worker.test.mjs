@@ -343,3 +343,34 @@ test("TikTok video redirects to the fresh CDN file; other hosts are refused", as
   });
   assert.equal((await worker.fetch(new Request(url), env)).status, 502);
 });
+
+test("player blocks link to a page that holds only the provider's player", async () => {
+  serve({ "https://www.youtube.com/oembed": jsonResponse(fixture("youtube-oembed.json")) });
+  const { body } = await unfurlRequest("https://youtu.be/dQw4w9WgXcQ?t=90");
+  const player = body.embed.blocks.find((block) => block.type === "player");
+  assert.equal(player.play, "https://embed.test/play/youtube/dQw4w9WgXcQ?start=90");
+
+  const page = await worker.fetch(new Request(player.play), env);
+  assert.equal(page.status, 200);
+  assert.match(
+    page.headers.get("content-security-policy"),
+    /frame-src https:\/\/www\.youtube-nocookie\.com .*frame-ancestors 'none'/,
+  );
+  assert.equal(page.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
+  const html = await page.text();
+  assert.ok(
+    html.includes('src="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?autoplay=1&#38;playsinline=1&#38;start=90"'),
+  );
+  assert.ok(!html.includes("<script"));
+
+  const twitch = await worker.fetch(new Request("https://embed.test/play/twitch/clip%3AFunny-1"), env);
+  assert.ok((await twitch.text()).includes("clip=Funny-1&#38;parent=embed.test"));
+  for (const bad of [
+    "https://embed.test/play/youtube/%22%3E%3Cscript%3E",
+    "https://embed.test/play/flash/abc",
+    "https://embed.test/play/twitch/channel%3A..%2F..",
+    "https://embed.test/play/youtube/dQw4w9WgXcQ?start=-1",
+  ]) {
+    assert.equal((await worker.fetch(new Request(bad), env)).status, 404, bad);
+  }
+});

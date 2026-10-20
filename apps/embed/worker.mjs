@@ -7,11 +7,14 @@
 //                                 the site never sees who is reading
 //   GET  /m/{sig}/tiktok/{id}/…   TikTok video, cover and photos, re-resolved on
 //                                 each view because their addresses expire
+//   GET  /play/{provider}/{id}    a page holding only that provider's player,
+//                                 for native apps' web views (see player.mjs)
 //
 // Media links are signed (HMAC-SHA256 with EMBED_MEDIA_SECRET over the path
 // after the signature) so this Worker only ever fetches media it handed out.
 
 import { contentType, discard, fetchableUrl, safeFetch } from "./safe-fetch.mjs";
+import { playerPage, playPath } from "./player.mjs";
 import { tiktokItem, tiktokPlayUrl, unfurl } from "./sites.mjs";
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif"]);
@@ -87,6 +90,7 @@ async function signMedia(embed, origin, secret) {
       if (block.poster) block.poster = await media(block.poster);
       if (block.type === "video" && block.url.startsWith("/")) block.url = await media(block.url);
     }
+    if (block.type === "player") block.play = `${origin}${playPath(block)}`;
   }
   return embed;
 }
@@ -231,6 +235,11 @@ export default {
     const origin = env.EMBED_ORIGIN ?? url.origin;
     if (url.pathname === "/v1/unfurl") {
       return request.method === "POST" ? handleUnfurl(request, env, ctx, origin) : respond(405, { error: "method" });
+    }
+    if (url.pathname.startsWith("/play/")) {
+      return request.method === "GET" || request.method === "HEAD"
+        ? playerPage(url)
+        : respond(405, { error: "method" });
     }
     const media = /^\/m\/([A-Za-z0-9_-]{43})(\/.*)$/.exec(url.pathname);
     if (!media || (request.method !== "GET" && request.method !== "HEAD")) return respond(404, { error: "not found" });

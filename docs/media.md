@@ -3985,6 +3985,15 @@ cross-origin iframe only after Play (YouTube through `youtube-nocookie.com`;
 Twitch with `parent` set to the page's host). The browser keeps it in its own
 origin and process, with no access to Caper.
 
+Native apps load `play` (`https://embed.caper.chat/play/{provider}/{id}`) in
+a web view instead: a page that holds only that provider's player. YouTube will
+not play without a real website as referrer and Twitch without a `parent`
+domain, so a bare web view cannot load them. The page runs no script of its
+own, its CSP allows only the three players' frames, and it cannot be framed.
+Apps load `play` only from `embed.caper.chat` (or `embed.staging.caper.chat`),
+in a web view with no bridge to app code, no persistent storage, and every
+navigation away from the player opened in the system browser.
+
 **Embed format (version 1).** `{version: 1, url, site: {name, domain}, blocks}`.
 `url` is the link as posted and is what the card opens. `site.domain` comes
 from that URL, never from the page, so a page cannot pass itself off as another
@@ -3998,7 +4007,7 @@ skipped:
 | `text` | `text` | body text, plain (no Markdown or HTML), line breaks kept |
 | `images` | `items: [{url, width?, height?, alt?}]` (1-4), `thumbnail?` | gallery; `thumbnail` means one small image beside the text |
 | `video` | `url`, `poster?`, `width?`, `height?`, `durationMs?`, `gif?` | the client's own player playing a direct MP4/WebM; `gif` loops muted without controls |
-| `player` | `provider` (`youtube`, `vimeo`, `twitch`), `id`, `poster?`, `width?`, `height?`, `start?` | poster with a play button; Play loads that site's player from `embed.caper.chat` in place |
+| `player` | `provider` (`youtube`, `vimeo`, `twitch`), `id`, `play`, `poster?`, `width?`, `height?`, `start?` | poster with a play button; Play loads that site's player in place |
 | `footer` | `text?`, `timestamp?` | small muted line (counts, date) |
 
 Every image, avatar and poster URL is a signed `embed.caper.chat/m/...` URL:
