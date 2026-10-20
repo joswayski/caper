@@ -2058,8 +2058,17 @@ final class CaperParityUITests: XCTestCase {
         }
         // Members would take the room the thread widens into; it opens again on relaunch.
         try hideMembers(in: app)
+        let timeline = app.descendants(matching: .any)["chat-timeline"]
+        let root = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30, "Missing thread root")
+        let channelFrame = timeline.frame
+        let rootFrame = root.frame
+        func assertChannelUnchanged() {
+            XCTAssertEqual(timeline.frame, channelFrame, "Thread overlays without resizing the channel")
+            XCTAssertEqual(root.frame, rootFrame, "Thread opening and resizing must not move or rewrap messages")
+        }
         try openThread(app)
         let handle = try require(app.descendants(matching: .any)["thread-panel-resize"], timeout: 5, "Missing resize handle")
+        assertChannelUnchanged()
         let panel = app.descendants(matching: .any)["message-thread"]
         // The Slider is a synthetic accessibilityRepresentation, not a visible
         // control. Xcode 16 can fail to compute its hit point: click the actual
@@ -2071,6 +2080,7 @@ final class CaperParityUITests: XCTestCase {
         let maximum = try XCTUnwrap(sidebarWidth(of: handle))
         XCTAssertLessThanOrEqual(maximum, 600)
         XCTAssertGreaterThanOrEqual(maximum, 350, "The window leaves room to widen the thread")
+        assertChannelUnchanged()
         handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleClick()
         XCTAssertEqual(sidebarWidth(of: handle), 340)
         let initialEdge = panel.frame.minX
@@ -2095,6 +2105,7 @@ final class CaperParityUITests: XCTestCase {
         handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleClick()
         handle.typeKey(.leftArrow, modifierFlags: [])
         app.buttons["Back to channel"].click()
+        assertChannelUnchanged()
         try openThread(app)
         XCTAssertEqual(sidebarWidth(of: handle), 350, "Closing does not discard the width")
         app.terminate()

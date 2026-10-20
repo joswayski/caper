@@ -3805,12 +3805,12 @@ private struct ChatView: View {
         Group {
         GeometryReader { geometry in
             let maximum = Double(min(600, geometry.size.width - min(300, geometry.size.width / 2)))
-            HStack(spacing: 0) {
-                #if os(iOS)
+            // Keep the channel's proposed size unchanged as the thread opens
+            // and resizes, so its messages never rewrap or shift underneath it.
+            ZStack(alignment: .trailing) {
                 channelBody
-                #else
-                if !narrow || chat.threadRootID == nil { channelBody }
-                #endif
+                    .allowsHitTesting(!narrow || chat.threadRootID == nil)
+                    .accessibilityHidden(narrow && chat.threadRootID != nil)
                 if chat.threadRootID != nil {
                     if narrow {
                         #if os(macOS)

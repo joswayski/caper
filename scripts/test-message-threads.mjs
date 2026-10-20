@@ -89,6 +89,11 @@ const assertReplyAction = (expected) => {
 };
 const actions = (selector, expected) => {
   browser("scrollintoview", selector);
+  // A freshly broadcast reply can still be arriving when its thread closes.
+  // Wait for the row and timeline motion before clicking a moving hit target.
+  evaluate(`Promise.all(document.querySelector(${JSON.stringify(selector)}).closest('.chat-panel, .chat-thread-panel')
+    .getAnimations({ subtree: true }).filter(animation => animation.effect.getComputedTiming().iterations !== Infinity)
+    .map(animation => animation.finished.catch(() => {})))`);
   browser("click", `${selector} .chat-message-actions-trigger`);
   assertReplyAction(expected);
 };
@@ -108,7 +113,7 @@ const open = (id) => {
   );
   if (trigger) {
     browser("focus", trigger);
-    browser("click", trigger);
+    browser("press", "Enter");
   } else {
     actions(channel(id), true);
     browser("find", "role", "button", "click", "--name", "Reply in thread", "--exact");
@@ -226,8 +231,10 @@ const checkThreadResize = (rootID) => {
   // This scenario needs room for a 600px thread plus the channel. Don't depend
   // on the default/remembered Members visibility to provide that space.
   if (evaluate('!!document.querySelector("#space-member-list")')) {
+    close();
     browser("find", "role", "button", "click", "--name", "Hide member list", "--exact");
     wait('!document.querySelector("#space-member-list")');
+    open(rootID);
   }
   const handle = ".chat-thread-resize";
   const width = () => evaluate('document.querySelector(".chat-thread-panel").getBoundingClientRect().width');
@@ -734,7 +741,25 @@ try {
   browser("find", "role", "button", "click", "--name", "Cancel reply", "--exact");
   actions(channel(root.clientMessageId), true);
   dismissActions();
+  const channelGeometry = () =>
+    evaluate(`(() => {
+    const panel = document.querySelector('.chat-panel');
+    const scroller = panel.querySelector('.chat-scroller');
+    const root = panel.querySelector('${row(root.clientMessageId)}');
+    return { panel: panel.getBoundingClientRect().toJSON(), root: root.getBoundingClientRect().toJSON(),
+      scrollTop: scroller.scrollTop, scrollHeight: scroller.scrollHeight };
+  })()`);
+  const beforeThread = channelGeometry();
   open(root.clientMessageId);
+  assert.deepEqual(channelGeometry(), beforeThread, "Opening a thread must not resize, rewrap or scroll the channel");
+  browser("focus", ".chat-thread-resize");
+  browser("press", "End");
+  assert.deepEqual(channelGeometry(), beforeThread, "Resizing a thread must leave the channel stationary");
+  close();
+  assert.deepEqual(channelGeometry(), beforeThread, "Closing a thread must leave the channel stationary");
+  open(root.clientMessageId);
+  browser("dblclick", ".chat-thread-resize");
+  browser("focus", "#chat-thread-reply");
   assert.equal(evaluate("document.activeElement.id"), "chat-thread-reply");
   assert.equal(evaluate('document.querySelector(".chat-thread-send-row input").checked'), false);
   assert.equal(
@@ -823,9 +848,12 @@ try {
   );
   assert.equal((await history()).messages.filter((message) => message.id === broadcast.id).length, 1);
   // The same reply keeps its action in the channel, but loses it inside the thread.
+  // Close the overlay before using the channel's covered trailing controls.
+  close();
   actions(channel(broadcast.clientMessageId), true);
   screenshot("thread-actions-desktop-channel");
   dismissActions();
+  open(root.clientMessageId);
   actions(thread(broadcast.clientMessageId), false);
   screenshot("thread-actions-desktop-reply");
   browser("find", "role", "button", "click", "--name", "React with 🎉", "--exact");
@@ -853,20 +881,24 @@ try {
   );
   assert.equal(evaluate('document.querySelector("#chat-thread-reply").value'), "Saved draft for Alex");
   if (process.env.MESSAGE_TEST_CHROME) {
+    close();
     browser("hover", `${channel(other.clientMessageId)} .chat-reply-thread`);
     wait(`window.threadRequests.some(url => url.includes('/${other.id}/thread'))`);
     assert.equal(
-      evaluate(`!!document.querySelector('${thread(root.clientMessageId)}')`),
-      true,
-      "hover does not change the open thread",
+      evaluate('!!document.querySelector(".chat-thread-panel")'),
+      false,
+      "hover prefetch does not open the thread",
     );
+    open(root.clientMessageId);
   }
   evaluate(`(() => {
     window.pinsChannel = document.querySelector('.chat-scroller');
     window.pinsThread = document.querySelector('.chat-thread-panel');
     window.pinsScrollTop = pinsChannel.scrollTop;
   })()`);
-  browser("click", ".chat-pins-toggle");
+  // The overlay covers the trailing header, but Pins remains keyboard accessible.
+  browser("focus", ".chat-pins-toggle");
+  browser("press", "Enter");
   wait('!!document.querySelector(".chat-pins-dialog")');
   evaluate(`(() => {
     window.threadPinFrames = [];

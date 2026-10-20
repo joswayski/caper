@@ -1415,11 +1415,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         val width = preferredWidth.coerceIn(minimum, maximum)
         fun saveWidth() { preferences.edit().putFloat("threadWidth", preferredWidth.coerceIn(300f, 600f)).apply() }
         fun resize(value: Float) { preferredWidth = value.coerceIn(minimum, maximum).coerceAtLeast(300f); saveWidth() }
-        Row(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize()) {
             ChannelConversation(state, voice, viewModel, show, narrow, membersVisible, toggleMembers, voicePermissionError, dismissVoiceError,
-                joinVoice, pendingVoiceJoin, pickFiles, browseChannels, Modifier.weight(1f), openNavigation)
-            // The thread opens beside the conversation (web's `.chat-thread-panel`).
-            if (!narrow && state.thread != null) Box(Modifier.entrance(MOTION_BASE, dx = 12.dp).width(width.dp).fillMaxHeight()) {
+                joinVoice, pendingVoiceJoin, pickFiles, browseChannels, Modifier.fillMaxSize(), openNavigation)
+            // Overlay without rewrapping messages or moving the channel's scroll position.
+            if (!narrow && state.thread != null) Box(Modifier.align(Alignment.CenterEnd).entrance(MOTION_BASE, dx = 12.dp).width(width.dp).fillMaxHeight()) {
                 threadDrafts.SaveableStateProvider("${state.selectedChannel?.id}:${state.thread.rootId}") {
                     ThreadConversation(state, viewModel, pickFiles, Modifier.fillMaxSize())
                 }

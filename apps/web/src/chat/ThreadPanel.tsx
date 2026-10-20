@@ -463,7 +463,7 @@ export default function ThreadPanel({
       ref={panel}
       className="chat-thread-panel"
       id="chat-thread-panel"
-      style={{ flexBasis: width }}
+      style={{ width: mobile ? undefined : width }}
       aria-labelledby="chat-thread-heading"
       role={mobile ? "dialog" : undefined}
       aria-modal={mobile || undefined}
