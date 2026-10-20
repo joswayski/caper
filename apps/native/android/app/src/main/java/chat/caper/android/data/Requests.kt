@@ -11,8 +11,9 @@ internal fun mainDirects(conversations: List<DirectConversation>): List<DirectCo
 /** Incoming message requests, in server order. */
 internal fun messageRequests(conversations: List<DirectConversation>): List<DirectConversation> = conversations.filter { it.incoming }
 
-/** The unread dot: requests never count, whatever their sequences say. */
-internal fun directUnread(conversation: DirectConversation): Boolean = !conversation.incoming &&
+/** Counts come from messages, not event sequence gaps; the cursor also gates local reads. */
+internal fun directUnread(conversation: DirectConversation): Boolean = !conversation.incoming && !conversation.blocked &&
+    (conversation.unreadCount == null || conversation.unreadCount > 0) &&
     runCatching { BigInteger(conversation.lastSeq) > BigInteger(conversation.readSeq) }.getOrDefault(false)
 
 /** Account ids whose messages collapse for you: never yourself or a guest. */

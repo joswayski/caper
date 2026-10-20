@@ -1423,10 +1423,12 @@ private struct ChannelSidebar: View {
                             HStack(spacing: 9) {
                                 Avatar(name: account.displayName ?? account.username ?? "You", size: 20, avatarID: account.avatarId, picture: account.avatarPicture).frame(width: 24, height: 20)
                                 Text(account.displayName ?? account.username ?? "You").lineLimit(1)
+                                    .font(CaperTheme.font(13, weight: selfConversation?.unread == true ? .bold : .medium))
+                                    .foregroundStyle(selfConversation?.unread == true ? CaperTheme.text : (selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.text : CaperTheme.muted))
                                 Text("you").font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.muted)
                                     .fixedSize(horizontal: true, vertical: false)
                                 Spacer()
-                                if selfConversation?.unread == true { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
+                                if selfConversation?.unread == true { DirectUnreadBadge(count: selfConversation?.unreadCount) }
                             }.font(CaperTheme.font(13, weight: .medium))
                                 .foregroundStyle(selfConversation.map { model.selectedDirectMessageID == $0.id } == true ? CaperTheme.text : CaperTheme.muted)
                                 .padding(.horizontal, 9).frame(height: directRowHeight)
@@ -1531,6 +1533,22 @@ private struct ChannelSidebar: View {
     }
 }
 
+private struct DirectUnreadBadge: View {
+    let count: Int?
+
+    var body: some View {
+        if let count, count > 0 {
+            Text(count > 99 ? "99+" : String(count))
+                .font(CaperTheme.font(10, weight: .bold)).foregroundStyle(CaperTheme.text)
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(CaperTheme.terracotta, in: Capsule())
+                .fixedSize().accessibilityLabel("\(count) unread messages")
+        } else {
+            Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread")
+        }
+    }
+}
+
 /// One DM in the sidebar, with its options menu: a context menu (press and
 /// hold on iPhone), plus a "…" on hover on macOS. Personal notes have none.
 private struct DirectMessageSidebarRow: View {
@@ -1546,7 +1564,7 @@ private struct DirectMessageSidebarRow: View {
     private var selected: Bool { model.selectedDirectMessageID == conversation.id }
     private var muted: Bool { model.notificationsMuted(.direct(conversation.id)) }
     /// A muted DM shows no unread dot.
-    private var showsUnread: Bool { conversation.unread && !muted }
+    private var showsUnread: Bool { conversation.unread && !muted && !model.chat.blockedAuthorIDs.contains(conversation.peer.id) }
     private var rowState: String {
         let base: String = selected ? "Selected" : showsUnread ? "Unread" : ""
         guard muted else { return base }
@@ -1581,9 +1599,11 @@ private struct DirectMessageSidebarRow: View {
         HStack(spacing: 9) {
             Avatar(name: conversation.peer.displayName, size: 20, avatarID: conversation.peer.avatarId, picture: conversation.peer.avatarPicture).frame(width: 24, height: 20)
             Text(conversation.peer.displayName).lineLimit(1)
+                .font(CaperTheme.font(13, weight: showsUnread ? .bold : .medium))
+                .foregroundStyle(selected || showsUnread ? CaperTheme.text : CaperTheme.muted)
             if muted { MutedBell() }
             Spacer()
-            if showsUnread { Circle().fill(CaperTheme.terracottaBright).frame(width: 8, height: 8).accessibilityLabel("Unread") }
+            if showsUnread { DirectUnreadBadge(count: conversation.unreadCount) }
         }
         .font(CaperTheme.font(13, weight: .medium))
         .foregroundStyle(selected ? CaperTheme.text : CaperTheme.muted)

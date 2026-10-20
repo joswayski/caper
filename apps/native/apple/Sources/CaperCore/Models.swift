@@ -176,15 +176,20 @@ public struct DirectMessageConversation: Codable, Equatable, Identifiable, Senda
     public let status: DirectMessageStatus
     /// You blocked the peer (they are never told). Missing means false.
     public let blocked: Bool
+    /// Incoming main-timeline messages; nil on older servers (never infer from event cursors).
+    public let unreadCount: Int?
 
-    /// Incoming requests never count as unread.
-    public var unread: Bool { status != .incoming && (try? Sequence.compare(lastSeq, readSeq)) == .orderedDescending }
+    /// Server message counts override event gaps; the cursor still clears local read acknowledgements.
+    public var unread: Bool {
+        status != .incoming && !blocked && (unreadCount.map { $0 > 0 } ?? true)
+            && (try? Sequence.compare(lastSeq, readSeq)) == .orderedDescending
+    }
 
-    private enum CodingKeys: String, CodingKey { case id, peer, lastSeq, readSeq, status, blocked }
+    private enum CodingKeys: String, CodingKey { case id, peer, lastSeq, readSeq, status, blocked, unreadCount }
     public init(id: String, peer: DirectMessagePeer, lastSeq: String, readSeq: String,
-                status: DirectMessageStatus = .accepted, blocked: Bool = false) {
+                status: DirectMessageStatus = .accepted, blocked: Bool = false, unreadCount: Int? = nil) {
         self.id = id; self.peer = peer; self.lastSeq = lastSeq; self.readSeq = readSeq
-        self.status = status; self.blocked = blocked
+        self.status = status; self.blocked = blocked; self.unreadCount = unreadCount
     }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -195,13 +200,14 @@ public struct DirectMessageConversation: Codable, Equatable, Identifiable, Senda
         // An unknown future status is treated like an older server's omission.
         status = (try? values.decodeIfPresent(DirectMessageStatus.self, forKey: .status)) ?? .accepted
         blocked = (try? values.decodeIfPresent(Bool.self, forKey: .blocked)) ?? false
+        unreadCount = try values.decodeIfPresent(Int.self, forKey: .unreadCount)
     }
 
     func with(readSeq: String) -> DirectMessageConversation {
-        DirectMessageConversation(id: id, peer: peer, lastSeq: lastSeq, readSeq: readSeq, status: status, blocked: blocked)
+        DirectMessageConversation(id: id, peer: peer, lastSeq: lastSeq, readSeq: readSeq, status: status, blocked: blocked, unreadCount: unreadCount)
     }
     func with(blocked: Bool) -> DirectMessageConversation {
-        DirectMessageConversation(id: id, peer: peer, lastSeq: lastSeq, readSeq: readSeq, status: status, blocked: blocked)
+        DirectMessageConversation(id: id, peer: peer, lastSeq: lastSeq, readSeq: readSeq, status: status, blocked: blocked, unreadCount: unreadCount)
     }
 }
 

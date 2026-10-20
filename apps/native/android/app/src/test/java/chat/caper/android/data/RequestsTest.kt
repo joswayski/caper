@@ -58,6 +58,22 @@ class RequestsTest {
         assertFalse(directUnread(direct("direct000006", "accepted", lastSeq = "bad", readSeq = "0")))
     }
 
+    @Test fun `message count overrides event gaps and survives local copies`() {
+        val known = json.decodeFromString<DirectConversation>("""{"id":"dm","peer":{"id":"a","username":"alex","displayName":"Alex"},"lastSeq":"1000","readSeq":"1","unreadCount":120}""")
+        assertEquals(120L, known.unreadCount)
+        assertTrue(directUnread(known))
+        assertFalse(directUnread(known.copy(unreadCount = 0)))
+        assertFalse(directUnread(known.copy(unreadCount = -1)))
+        assertFalse(directUnread(known.copy(readSeq = "1000")))
+        assertFalse(directUnread(known.copy(readSeq = "1001")))
+        assertFalse(directUnread(known.copy(lastSeq = "bad")))
+        assertFalse(directUnread(known.copy(blocked = true)))
+        assertFalse(directUnread(known.copy(status = "incoming")))
+        assertEquals(120L, known.copy(readSeq = "1000").unreadCount)
+        assertEquals(known, json.decodeFromString<DirectConversation>(json.encodeToString(DirectConversation.serializer(), known)))
+        assertTrue(directUnread(known.copy(unreadCount = null)))
+    }
+
     @Test fun `consecutive blocked messages collapse into runs`() {
         val messages = listOf(
             message("m1", "maya"), message("m2", "maya"), message("m3", "alex"),

@@ -1091,11 +1091,11 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         avatarAsset = state.account.avatarAsset, avatarUrl = state.account.avatarUrl)
                     Spacer(Modifier.width(9.dp))
                     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                        Text(state.account.displayName ?: state.account.username ?: "You", Modifier.weight(1f, fill = false), color = if (selfSelected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(state.account.displayName ?: state.account.username ?: "You", Modifier.weight(1f, fill = false), color = if (selfSelected || selfDirect?.let(::directUnread) == true) Text else TextMuted, fontSize = 13.sp, fontWeight = if (selfDirect?.let(::directUnread) == true) FontWeight.Bold else FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Spacer(Modifier.width(6.dp)); Text("you", color = TextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     }
                     if (selfDirect?.let(::directUnread) == true)
-                        Box(Modifier.size(8.dp).background(TerracottaBright, CircleShape).semantics { contentDescription = "Unread" })
+                        DirectUnreadBadge(selfDirect.unreadCount)
                 }
                 val blockedIds = state.blockedIds
                 mainDirects(state.directConversations).filter { it.peer.id != state.account.id }.forEach { direct ->
@@ -1103,7 +1103,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                         val selected = state.selectedDirectId == direct.id
                         val muted = settings?.directMuted(direct.id, now) == true
                         // A muted DM shows no unread dot.
-                        val unread = directUnread(direct) && !muted
+                        val unread = directUnread(direct) && !muted && direct.peer.id !in blockedIds
                         var optionsOpen by remember(direct.id) { mutableStateOf(false) }
                         val openOptions = { optionsOpen = true; viewModel.refreshNotificationSettings() }
                         // Options: the ⋯ button, or a long press like message actions.
@@ -1118,7 +1118,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                     avatarAsset = direct.peer.avatarAsset, avatarUrl = direct.peer.avatarUrl)
                                 Spacer(Modifier.width(9.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text(direct.peer.displayName, color = if (selected) Text else TextMuted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(direct.peer.displayName, color = if (selected || unread) Text else TextMuted, fontSize = 13.sp, fontWeight = if (unread) FontWeight.Bold else FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     // Web: a blocked person or an unanswered request says so in place of the username.
                                     Text(when {
                                         direct.blocked || direct.peer.id in blockedIds -> "Blocked"
@@ -1128,7 +1128,7 @@ private val LocalSettingsFocus = staticCompositionLocalOf<FocusRequester?> { nul
                                 }
                                 if (muted) MutedBell(Modifier.padding(start = 6.dp))
                             }
-                            if (unread) Box(Modifier.size(8.dp).background(TerracottaBright, CircleShape).semantics { contentDescription = "Unread" })
+                            if (unread) DirectUnreadBadge(direct.unreadCount)
                             Box {
                                 IconButton(openOptions, Modifier.size(48.dp)) { Icon(painterResource(R.drawable.lucide_ellipsis), "${direct.peer.displayName} options", Modifier.size(18.dp), tint = TextMuted) }
                                 DirectOptionsMenu(optionsOpen, { optionsOpen = false }, settings?.override(directKey(direct.id)), settings != null && directKey(direct.id) !in state.notificationSaving) {
@@ -4185,3 +4185,15 @@ private fun timeLabel(value: String, hour24: Boolean): String = runCatching {
 private fun shortTimeLabel(value: String, hour24: Boolean): String = runCatching {
     (if (hour24) clock24 else clock12Short).format(Instant.parse(value).atZone(ZoneId.systemDefault()))
 }.getOrDefault("")
+
+@Composable
+private fun DirectUnreadBadge(count: Long?) {
+    if (count != null && count > 0) {
+        Text(if (count > 99) "99+" else count.toString(),
+            Modifier.background(Terracotta, CircleShape).padding(horizontal = 6.dp, vertical = 2.dp)
+                .clearAndSetSemantics { contentDescription = "$count unread messages" },
+            color = Text, fontSize = 10.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+    } else {
+        Box(Modifier.size(8.dp).background(TerracottaBright, CircleShape).semantics { contentDescription = "Unread" })
+    }
+}

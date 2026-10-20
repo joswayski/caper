@@ -121,7 +121,7 @@ public struct ProfileDirectory: Equatable, Sendable {
     public func apply(_ conversation: DirectMessageConversation) -> DirectMessageConversation {
         guard let person = people[conversation.peer.id] else { return conversation }
         return DirectMessageConversation(id: conversation.id, peer: conversation.peer.applying(person), lastSeq: conversation.lastSeq,
-                                         readSeq: conversation.readSeq, status: conversation.status, blocked: conversation.blocked)
+                                         readSeq: conversation.readSeq, status: conversation.status, blocked: conversation.blocked, unreadCount: conversation.unreadCount)
     }
 
     public func apply(_ detail: SpaceDetail) -> SpaceDetail {

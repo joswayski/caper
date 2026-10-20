@@ -388,6 +388,9 @@ pub struct DirectConversation {
     pub peer: DirectPeer,
     pub last_seq: String,
     pub read_seq: String,
+    /// Authoritative incoming timeline message count; old servers omit it.
+    #[serde(default)]
+    pub unread_count: Option<u64>,
     #[serde(default, deserialize_with = "direct_status")]
     pub status: DirectStatus,
     /// You blocked the peer (they are never told). Old servers omit it.
@@ -4200,6 +4203,13 @@ mod tests {
         assert_eq!(direct.peer.display_name, "TEST FIXTURE Alex");
         assert_eq!(sequence(&direct.last_seq), Ok(12));
         assert_eq!(sequence(&direct.read_seq), Ok(9));
+        assert_eq!(direct.unread_count, None, "old servers omit the count");
+        for count in [0, 7, 120] {
+            let mut payload: serde_json::Value = serde_json::from_str(payload).unwrap();
+            payload["conversations"][0]["unreadCount"] = count.into();
+            let parsed: DirectConversations = serde_json::from_value(payload).unwrap();
+            assert_eq!(parsed.conversations[0].clone().unread_count, Some(count));
+        }
         assert_eq!(
             direct.status,
             DirectStatus::Accepted,

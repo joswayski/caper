@@ -324,6 +324,16 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     status: conversation.status ?? "accepted",
     blocked: state.blocks.includes(conversation.peer.id),
     lastSeq: channelHead(conversation.id),
+    unreadCount:
+      (conversation.status ?? "accepted") !== "accepted" || state.blocks.includes(conversation.peer.id)
+        ? 0
+        : (state.messages.get(conversation.id) ?? []).filter(
+            (message) =>
+              !message.deletedAt &&
+              message.author.id !== state.account.id &&
+              (!message.threadRootId || message.broadcast) &&
+              BigInt(message.seq) > BigInt(conversation.readSeq),
+          ).length,
   });
   const messageFor = (id) => [...state.messages.values()].flat().find((message) => message.id === id);
   const sharedMessage = (message) => {

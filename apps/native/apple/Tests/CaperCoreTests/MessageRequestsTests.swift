@@ -90,6 +90,26 @@ final class MessageRequestsTests: XCTestCase {
         XCTAssertEqual(list[1].with(readSeq: "2").status, .outgoing, "updating the read cursor keeps status")
     }
 
+    func testMessageCountsOverrideEventGapsAndSurviveCopies() throws {
+        let payload = #"{"id":"dm","peer":{"id":"a","username":"alex","displayName":"Alex"},"lastSeq":"1000","readSeq":"1","unreadCount":120}"#
+        let known = try JSONDecoder().decode(DirectMessageConversation.self, from: Data(payload.utf8))
+        XCTAssertEqual(known.unreadCount, 120)
+        XCTAssertTrue(known.unread)
+        for count in [0, -1] {
+            let zero = try JSONDecoder().decode(DirectMessageConversation.self, from: Data(payload.replacingOccurrences(of: "120", with: String(count)).utf8))
+            XCTAssertFalse(zero.unread)
+        }
+        XCTAssertFalse(known.with(readSeq: "1000").unread)
+        XCTAssertFalse(known.with(readSeq: "1001").unread)
+        XCTAssertFalse(known.with(readSeq: "bad").unread)
+        XCTAssertFalse(known.with(blocked: true).unread)
+        XCTAssertEqual(known.with(readSeq: "1000").unreadCount, 120)
+        XCTAssertEqual(known.with(blocked: true).unreadCount, 120)
+        XCTAssertEqual(try JSONDecoder().decode(DirectMessageConversation.self, from: JSONEncoder().encode(known)), known)
+        let incoming = DirectMessageConversation(id: known.id, peer: known.peer, lastSeq: "1000", readSeq: "1", status: .incoming, unreadCount: 120)
+        XCTAssertFalse(incoming.unread)
+    }
+
     func testBlockingDropsTheirRequestAndMarksConversations() {
         let list = [conversation("dm1", peer: "a"), conversation("dm2", peer: "b", status: .incoming), conversation("dm3", peer: "b", status: .outgoing)]
         let blocked = MessageRequests.applying(blocked: true, peerID: "b", to: list)

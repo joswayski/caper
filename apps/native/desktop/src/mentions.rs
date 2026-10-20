@@ -1157,6 +1157,7 @@ mod tests {
             },
             last_seq: "0".into(),
             read_seq: "0".into(),
+            unread_count: None,
             status: crate::model::DirectStatus::Accepted,
             blocked: false,
         };
@@ -1242,6 +1243,7 @@ mod tests {
             },
             last_seq: "0".into(),
             read_seq: "0".into(),
+            unread_count: None,
             status: crate::model::DirectStatus::Accepted,
             blocked: false,
         };
