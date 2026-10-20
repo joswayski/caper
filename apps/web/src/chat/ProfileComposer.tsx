@@ -15,7 +15,9 @@ import MentionTextarea from "./MentionTextarea.tsx";
 import type { AttachmentEdit } from "./edit.ts";
 import { editableKind, type CompressionSettings } from "./prepare.ts";
 import { isChatMessage, type ChatAttachment } from "./types.ts";
-import { AttachmentUpload, MAX_ATTACHMENTS, uploadSettings, type UploadState } from "./uploads.ts";
+import { AttachmentUpload, MAX_ATTACHMENTS, UploadError, uploadSettings, type UploadState } from "./uploads.ts";
+import type { VoiceRecording } from "./voice.ts";
+import { useVoiceRecorder } from "./VoiceRecorder.tsx";
 
 interface ProfileFile extends Partial<UploadState> {
   key: string;
@@ -31,18 +33,37 @@ interface ProfileFile extends Partial<UploadState> {
   /** A render of an edited video for its tile; revoked when the file leaves. */
   thumbnailUrl?: string;
 }
+type FilesCommand = {
+  clientMessageId: string;
+  text: string;
+  attachmentIds: string[];
+  spoilerAttachmentIds: string[];
+};
+type MessageCommand = FilesCommand | { clientMessageId: string; text: ""; gif: ChatGif; query: string };
+/** A voice message sends on its own: only its attachment, never the typed text. */
+export function voiceCommand(attachmentId: string, clientMessageId: string = crypto.randomUUID()): FilesCommand {
+  return { clientMessageId, text: "", attachmentIds: [attachmentId], spoilerAttachmentIds: [] };
+}
+/** A recorded voice message this card owns until the DM confirms it. */
+interface ProfileVoice {
+  recording: VoiceRecording;
+  upload?: AttachmentUpload;
+  channelId?: string;
+  /** Like a draft's command: retries resend exactly this until settled. */
+  command?: MessageCommand;
+  error?: string;
+}
 interface ProfileDraft {
   text: string;
   files: ProfileFile[];
   channelId?: string;
   /** Once POST starts, retries must send this exact command until settled. */
-  command?:
-    | { clientMessageId: string; text: string; attachmentIds: string[]; spoilerAttachmentIds: string[] }
-    | { clientMessageId: string; text: ""; gif: ChatGif; query: string };
+  command?: MessageCommand;
 }
 // Like conversation drafts, these live only in this signed-in page. Closing a
 // card never discards files or an uncertain send; signing out reloads the page.
 const drafts = new Map<string, ProfileDraft>();
+const voices = new Map<string, ProfileVoice>();
 const pending = new Set<string>();
 const emptyDraft: ProfileDraft = { text: "", files: [] };
 const listeners = new Set<() => void>();
@@ -75,6 +96,47 @@ function resolveConversation(personId: string, username: string) {
   return request;
 }
 
+/** POSTs a DM command and checks the confirmation. A definitive refusal is
+ * marked `final`: that command can never have committed, so it may be replaced. */
+async function postDirectMessage(
+  channelId: string,
+  account: { id: string },
+  session: { token: string },
+  command: MessageCommand,
+) {
+  const response = await fetch(`/api/chat/channels/${encodeURIComponent(channelId)}/messages`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
+    body: JSON.stringify("gif" in command ? { ...command, query: undefined } : command),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) {
+    const reason = await apiError(response, "Message could not be sent.");
+    const code = reason.code;
+    const final =
+      [400, 404, 409, 413, 422].includes(response.status) ||
+      (response.status === 403 && !!code && code in directMessageErrors);
+    if (response.status === 401) forgetAccountSession(session.token);
+    throw Object.assign(reason, { final });
+  }
+  const message: unknown = await response.json();
+  if (
+    !isChatMessage(message) ||
+    message.channelId !== channelId ||
+    message.clientMessageId !== command.clientMessageId ||
+    message.author.id !== account.id
+  )
+    throw new Error("The chat service returned an invalid confirmation.");
+}
+const isFinal = (reason: unknown) => !!(reason as { final?: unknown } | undefined)?.final;
+const failure = (reason: unknown) =>
+  reason instanceof TypeError
+    ? "Couldn’t confirm delivery. Check your connection."
+    : reason instanceof Error
+      ? reason.message
+      : "Couldn’t send this message.";
+
 export default function ProfileComposer({
   personId,
   username,
@@ -99,6 +161,11 @@ export default function ProfileComposer({
     () => pending.has(personId),
     () => false,
   );
+  const voice = useSyncExternalStore(
+    subscribe,
+    () => voices.get(personId),
+    () => undefined,
+  );
   const [error, setError] = useState<string>();
   const [status, setStatus] = useState<string>();
   const [settings, setSettings] = useState<CompressionSettings>();
@@ -107,6 +174,77 @@ export default function ProfileComposer({
   const klipy = useKlipy();
   const [choosingFile, setChoosingFile] = useState(false);
   const locked = sending || !!draft.command;
+  const saveVoice = (next: ProfileVoice | undefined) => {
+    if (next) voices.set(personId, next);
+    else voices.delete(personId);
+    notify();
+  };
+  /** Uploads the recording to the DM as recorded and sends it alone; typed text
+   * and files stay in the card. Without a recording, retries the kept one. */
+  const sendVoice = async (recording?: VoiceRecording) => {
+    if (pending.has(personId)) return;
+    if (recording) {
+      voices.get(personId)?.upload?.release(true);
+      saveVoice({ recording });
+    }
+    if (!voices.get(personId)) return;
+    pending.add(personId);
+    notify();
+    setError(undefined);
+    try {
+      const account = await getAccount();
+      if (!account?.username || !account.displayName) throw new Error("Sign in to send a direct message.");
+      const conversation = await resolveConversation(personId, username);
+      let entry = voices.get(personId);
+      if (!entry) return;
+      if (entry.channelId && entry.channelId !== conversation.id)
+        throw new Error("The conversation changed. Discard the voice message and record it again.");
+      const upload = entry.upload ?? AttachmentUpload.voice(conversation.id, entry.recording);
+      entry = { ...entry, upload, channelId: conversation.id, error: undefined };
+      saveVoice(entry);
+      const session = await sharedAccountSession(account.id, account.displayName);
+      const command = entry.command ?? voiceCommand((await upload.ensure()).id);
+      if (voices.get(personId)?.upload !== upload) return;
+      entry = { ...entry, command };
+      saveVoice(entry);
+      try {
+        await postDirectMessage(conversation.id, account, session, command);
+      } catch (reason) {
+        if (isFinal(reason)) entry = { ...entry, command: undefined };
+        saveVoice(entry);
+        throw reason;
+      }
+      upload.release();
+      saveVoice(undefined);
+      onSent();
+    } catch (reason) {
+      const latest = voices.get(personId);
+      const message = reason instanceof UploadError ? reason.message : failure(reason);
+      if (latest) saveVoice({ ...latest, error: message });
+      else setError(message);
+    } finally {
+      pending.delete(personId);
+      notify();
+    }
+  };
+  const recorder = useVoiceRecorder({
+    voice: {
+      onRecorded: (recording) => void sendVoice(recording),
+      sending: sending && !!voice && !voice.error,
+      error: voice?.error,
+      onRetry: () => void sendVoice(),
+      onDiscard: () => {
+        const discarded = voices.get(personId);
+        // An uncertain send may have arrived, so only an unsent upload is cancelled.
+        discarded?.upload?.release(!discarded.command);
+        saveVoice(undefined);
+        restoreFocus();
+      },
+    },
+    // One send at a time; a kept voice message waits for Retry or Discard.
+    disabled: locked || !settings || !!voice,
+    returnFocus: input,
+  });
 
   const save = (next: ProfileDraft) => {
     if (next.text || next.files.length || next.command) drafts.set(personId, next);
@@ -134,8 +272,9 @@ export default function ProfileComposer({
     };
   }, []);
   useEffect(() => {
-    onStateChange({ picking: emojiOpen || choosingFile, sending });
-  }, [emojiOpen, choosingFile, sending, onStateChange]);
+    // Recording keeps the card open like a picker: an outside press is not a dismissal.
+    onStateChange({ picking: emojiOpen || choosingFile || recorder.active, sending });
+  }, [emojiOpen, choosingFile, recorder.active, sending, onStateChange]);
 
   // Grow with the draft, like the channel composer, up to the CSS max-height.
   useLayoutEffect(() => {
@@ -304,33 +443,12 @@ export default function ProfileComposer({
             });
       save({ ...latest, channelId: conversation.id, command });
       setStatus("Sending…");
-      const response = await fetch(`/api/chat/channels/${encodeURIComponent(conversation.id)}/messages`, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-        body: JSON.stringify("gif" in command ? { ...command, query: undefined } : command),
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!response.ok) {
-        const reason = await apiError(response, "Message could not be sent.");
-        const code = reason.code;
-        if (
-          [400, 404, 409, 413, 422].includes(response.status) ||
-          (response.status === 403 && code && code in directMessageErrors)
-        ) {
-          save({ ...(drafts.get(personId) ?? latest), command: undefined });
-        }
-        if (response.status === 401) forgetAccountSession(session.token);
+      try {
+        await postDirectMessage(conversation.id, account, session, command);
+      } catch (reason) {
+        if (isFinal(reason)) save({ ...(drafts.get(personId) ?? latest), command: undefined });
         throw reason;
       }
-      const message: unknown = await response.json();
-      if (
-        !isChatMessage(message) ||
-        message.channelId !== conversation.id ||
-        message.clientMessageId !== command.clientMessageId ||
-        message.author.id !== account.id
-      )
-        throw new Error("The chat service returned an invalid confirmation.");
       if ("gif" in command) {
         // A GIF goes on its own; the typed draft and its files stay.
         save({ ...(drafts.get(personId) ?? latest), command: undefined });
@@ -353,11 +471,7 @@ export default function ProfileComposer({
       setError(
         drafts.get(personId)?.files.some((item) => item.error)
           ? undefined // The upload tray owns this failure and its retry guidance.
-          : reason instanceof TypeError
-            ? "Couldn’t confirm delivery. Check your connection."
-            : reason instanceof Error
-              ? reason.message
-              : "Couldn’t send this message.",
+          : failure(reason),
       );
     } finally {
       pending.delete(personId);
@@ -425,6 +539,7 @@ export default function ProfileComposer({
           </p>
         )
       )}
+      {recorder.notice}
       <DraftAttachments
         drafts={files}
         onRemove={locked ? undefined : removeFile}
@@ -442,6 +557,7 @@ export default function ProfileComposer({
       />
       <form
         data-attach
+        data-voice
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -504,6 +620,7 @@ export default function ProfileComposer({
             onOpenChange={setEmojiOpen}
             returnFocus={input}
           />
+          {recorder.button}
           <button
             type="submit"
             className="chat-composer-send"
@@ -514,6 +631,7 @@ export default function ProfileComposer({
             <Send size={16} aria-hidden="true" />
           </button>
         </div>
+        {recorder.bar}
       </form>
       {status && (
         <p className="chat-profile-status" role="status">

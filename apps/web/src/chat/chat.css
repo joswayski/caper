@@ -2320,6 +2320,15 @@ button.chat-mention-card-avatar {
   max-height: 160px;
   padding-right: 84px;
 }
+/* Emoji, microphone and send. */
+.chat-profile-composer form[data-voice] textarea {
+  padding-right: 120px;
+}
+@media (pointer: coarse) {
+  .chat-profile-composer form[data-voice] textarea {
+    padding-right: 134px;
+  }
+}
 .chat-composer-send-touch {
   display: none;
 }
@@ -5427,7 +5436,8 @@ a.chat-draft-preview {
   background: var(--surface-composer);
   animation: caper-fade-in var(--motion-fast) var(--ease-out);
 }
-.chat-composer form > .chat-voice-recorder {
+.chat-composer form > .chat-voice-recorder,
+.chat-profile-composer form > .chat-voice-recorder {
   grid-column: 1;
   grid-row: 1;
   align-self: stretch;
