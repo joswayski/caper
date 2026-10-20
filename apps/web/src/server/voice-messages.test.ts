@@ -3,6 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { test } from "vitest";
 import { MessageAttachments } from "../chat/Attachments.tsx";
+import ProfileComposer, { voiceCommand } from "../chat/ProfileComposer.tsx";
 import { ChatTimeline } from "../chat/timeline.ts";
 import {
   attachmentsOf,
@@ -285,4 +286,29 @@ test("a voice recording uploads as recorded with voice, duration and waveform, t
   assert.deepEqual(attachment, completed, "the server's audio/mp4 description is what gets sent");
   assert.equal(attachment.contentType, "audio/mp4");
   assert.equal(voicePreparedFile({ ...recording, waveform: "" }).waveform, undefined, "no empty waveform field");
+});
+
+test("the profile card's DM composer offers the microphone and sends a voice message on its own", () => {
+  assert.deepEqual(voiceCommand("asset1", "client-1"), {
+    clientMessageId: "client-1",
+    text: "",
+    attachmentIds: ["asset1"],
+    spoilerAttachmentIds: [],
+  });
+  assert.match(voiceCommand("asset1").clientMessageId, /^[0-9a-f-]{36}$/);
+  const html = renderToStaticMarkup(
+    createElement(ProfileComposer, {
+      personId: "p1",
+      username: "maya",
+      inputRef: { current: null },
+      onSent: () => {},
+      onStateChange: () => {},
+    }),
+  );
+  assert.match(html, /<form data-attach="true" data-voice="true"/);
+  assert.match(
+    html,
+    /aria-label="Record voice message"[^>]*disabled=""/,
+    "the microphone waits for upload settings, like the attach button",
+  );
 });
