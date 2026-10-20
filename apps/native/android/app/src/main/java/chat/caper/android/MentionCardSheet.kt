@@ -169,6 +169,10 @@ import kotlinx.coroutines.launch
                         card.username!!, profileDraft, writable && pending == null, state?.uploadsEnabled == true,
                         text = { viewModel.profileDrafts.text(person, it) },
                         add = { if (viewModel.accountEpoch == pickerEpoch) viewModel.addProfileAttachments(person, card.id, card.username, it) },
+                        keyboardAttachment = { uri ->
+                            if (viewModel.accountEpoch == pickerEpoch) viewModel.addProfileAttachments(person, card.id, card.username, listOf(uri)).singleOrNull()
+                            else null
+                        },
                         paste = { if (viewModel.accountEpoch == pickerEpoch) viewModel.pasteProfileAttachments(person, card.id, card.username) },
                         remove = { viewModel.removeProfileAttachment(person, it) },
                         toggleSpoiler = { viewModel.toggleProfileAttachmentSpoiler(person, it) },
@@ -269,6 +273,7 @@ import kotlinx.coroutines.launch
     stageVoice: ((VoiceRecording) -> Unit)? = null,
     retryVoice: () -> Unit = {},
     discardVoice: () -> Unit = {},
+    keyboardAttachment: ((android.net.Uri) -> kotlinx.coroutines.Job?)? = null,
 ) {
     var field by remember { mutableStateOf(TextFieldValue(draft.text, TextRange(draft.text.length))) }
     val recorder = rememberVoiceRecorder(username, rememberVoiceStop(
@@ -297,6 +302,7 @@ import kotlinx.coroutines.launch
                     }
                     field = limited; text(limited.text)
                 }, Modifier.weight(1f).attachmentPaste(editable && uploadsEnabled, add), placeholder = { Text("Message @$username", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
+                keyboardAttachment = keyboardAttachment.takeIf { editable && uploadsEnabled },
                 visualTransformation = MentionVisualTransformation(MentionSource(listOf(MentionCandidate(username, username)), specials = false, feedback = true)),
                 leadingIcon = {
                     AttachButton(

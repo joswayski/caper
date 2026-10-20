@@ -1,13 +1,20 @@
 package chat.caper.android
 
+import android.content.ClipDescription
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.Uri
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputContentInfo
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.platform.InterceptPlatformTextInput
+import androidx.compose.ui.platform.PlatformTextInputMethodRequest
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -21,16 +28,22 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.isDialog
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import chat.caper.android.model.ChatAttachment
 import chat.caper.android.ui.CaperTheme
+import chat.caper.android.ui.EmojiTextField
 import coil3.request.SuccessResult
 import java.io.File
 import java.util.UUID
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -40,6 +53,59 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class AttachmentUiTest {
     @get:Rule val compose = createComposeRule()
+
+    @OptIn(ExperimentalComposeUiApi::class)
+    @Test fun keyboardAcceptsGifAndDocumentsWithoutReplacingText() {
+        val draft = mutableStateOf(TextFieldValue("Keep suffix", TextRange(5)))
+        val available = mutableStateOf(true)
+        val received = mutableListOf<Uri>()
+        val jobs = mutableListOf<Job>()
+        var request: PlatformTextInputMethodRequest? = null
+        compose.setContent {
+            // Capture the real composer's request at the system boundary, after its interceptor.
+            InterceptPlatformTextInput(interceptor = { input, _ -> request = input; awaitCancellation() }) {
+                CaperTheme {
+                    EmojiTextField(draft.value, { draft.value = it }, Modifier.testTag("composer"),
+                        keyboardAttachment = if (available.value) { uri ->
+                            received.add(uri)
+                            Job().also { jobs.add(it) }
+                        } else null)
+                }
+            }
+        }
+        compose.onNodeWithTag("composer").performClick()
+        compose.waitUntil(5_000) { request != null }
+        compose.runOnIdle { draft.value = draft.value.copy(selection = TextRange(5)) }
+        try {
+            compose.runOnIdle {
+                val info = EditorInfo()
+                val connection = requireNotNull(request).createInputConnection(info)
+                assertTrue(ClipDescription("file", arrayOf("application/pdf")).hasMimeType(requireNotNull(info.contentMimeTypes).single()))
+                val types = listOf("image/gif", "application/pdf", "application/zip", "application/x-custom-file")
+                val expected = types.indices.map { Uri.parse("content://test.keyboard/file/$it") }
+                types.zip(expected).forEach { (type, uri) ->
+                    assertTrue(connection.commitContent(InputContentInfo(uri, ClipDescription("file", arrayOf(type)), null), 0, null))
+                }
+                assertEquals(expected, received)
+                assertEquals("Keep suffix", draft.value.text)
+                connection.commitText("text ", 1)
+            }
+            compose.runOnIdle {
+                assertEquals("Keep text suffix", draft.value.text)
+                available.value = false
+            }
+            compose.runOnIdle {
+                val info = EditorInfo()
+                val connection = requireNotNull(request).createInputConnection(info)
+                assertTrue(info.contentMimeTypes.isNullOrEmpty())
+                assertFalse(connection.commitContent(InputContentInfo(Uri.parse("content://test.keyboard/blocked"),
+                    ClipDescription("blocked", arrayOf("image/gif")), null), 0, null))
+                assertEquals(4, received.size)
+            }
+        } finally {
+            jobs.forEach { it.cancel() }
+        }
+    }
 
     @Test fun viewerHideClosesAndConcealsTheOriginatingAttachment() {
         val file = ChatAttachment("viewer-spoiler", "image", "image/png", "secret.png", 10,

@@ -2405,17 +2405,20 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         return sendReady("", shared, threadRootId, broadcast, gif = gif)
     }
 
-    /** Picked photos, videos or documents: compress on the device, upload, and hold as composer drafts. */
-    fun addAttachments(uris: List<Uri>, target: AttachmentDraftTarget, epoch: Long = accountGeneration) {
-        if (epoch != accountGeneration) return
-        addAttachments(uris, null, target)
+    /**
+     * Picked files: prepare, upload and hold as composer drafts. The jobs let keyboard
+     * input retain its temporary URI grants until asynchronous file access has finished.
+     */
+    fun addAttachments(uris: List<Uri>, target: AttachmentDraftTarget, epoch: Long = accountGeneration): List<Job> {
+        if (epoch != accountGeneration) return emptyList()
+        return addAttachments(uris, null, target)
     }
 
     private val profileRecipients = mutableMapOf<String, Pair<String?, String>>()
 
-    internal fun addProfileAttachments(person: String, id: String?, username: String, uris: List<Uri>) {
+    internal fun addProfileAttachments(person: String, id: String?, username: String, uris: List<Uri>): List<Job> {
         profileRecipients[person] = id to username
-        addAttachments(uris, person)
+        return addAttachments(uris, person)
     }
 
     /** Clipboard providers grant URI access; copy the bytes locally just like picked files. */
@@ -2428,22 +2431,23 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         else addProfileAttachments(person, id, username, uris)
     }
 
-    private fun addAttachments(uris: List<Uri>, person: String?, target: AttachmentDraftTarget? = null) {
+    private fun addAttachments(uris: List<Uri>, person: String?, target: AttachmentDraftTarget? = null): List<Job> {
         val current = mutable.value
-        if ((person == null && target == null) || accountToken == null) return
-        if (person == null && current.selectedChannel?.id == target?.channelId && !current.canParticipate) return
-        if (!current.uploadsEnabled || uris.isEmpty()) return
-        if (person != null && !profileDrafts[person].editable) return
+        if ((person == null && target == null) || accountToken == null) return emptyList()
+        if (person == null && current.selectedChannel?.id == target?.channelId && !current.canParticipate) return emptyList()
+        if (!current.uploadsEnabled || uris.isEmpty()) return emptyList()
+        if (person != null && !profileDrafts[person].editable) return emptyList()
         val files = if (person == null) current.attachmentDrafts[target].orEmpty() else profileDrafts[person].files
         val room = AttachmentPolicy.MAX_ATTACHMENTS - files.size
         if (room <= 0) {
             if (person == null) setAttachmentDrafts(requireNotNull(target), files, "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files.")
             else profileDrafts.error(person, "You can attach up to ${AttachmentPolicy.MAX_ATTACHMENTS} files.")
-            return
+            return emptyList()
         }
         val error = if (uris.size > room) "Only $room more file${if (room == 1) "" else "s"} can be attached." else null
         val settings = compression
         val request = accountGeneration
+        val jobs = mutableListOf<Job>()
         uris.take(room).forEach { uri ->
             val key = UUID.randomUUID().toString()
             val directory = File(uploadSession, key)
@@ -2452,13 +2456,16 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             if (person == null) {
                 setAttachmentDrafts(requireNotNull(target), mutable.value.attachmentDrafts[target].orEmpty() + draft, error)
                 retryDraft(key)
+                uploadJobs[key]?.let(jobs::add)
                 return@forEach
             }
             // Resolve a destination and upload without touching navigation or the chat composer.
             profileDrafts.add(person, listOf(draft))
             prepareProfileDraft(person, key, settings, request)
+            uploadJobs[key]?.let(jobs::add)
         }
         if (person != null && uris.size > room) profileDrafts.error(person, "Only $room more file${if (room == 1) "" else "s"} can be attached.")
+        return jobs
     }
 
     /** Copies a profile file (once), prepares its edit, and eagerly uploads it. */

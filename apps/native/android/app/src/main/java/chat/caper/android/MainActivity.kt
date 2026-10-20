@@ -1589,6 +1589,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     Box(Modifier.voiceRecordingKeys(recorder)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                             EmojiTextField(draft, change, Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field), placeholder = { Text("Reply to thread…", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 5,
+                                keyboardAttachment = if (canAttach) { uri -> viewModel.addAttachments(listOf(uri), target).singleOrNull() } else null,
                                 visualTransformation = MentionVisualTransformation(mentionSource(state)),
                                 leadingIcon = {
                                     AttachButton(attachDisabledReason(state, target), { viewModel.addAttachments(it, target) }, pick = { pickFiles(target, it) },
@@ -1892,6 +1893,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                             EmojiTextField(
                                 draft, change, modifier = Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field),
+                                keyboardAttachment = if (canAttach) { uri -> viewModel.addAttachments(listOf(uri), target).singleOrNull() } else null,
                                 // One line: a long channel or DM name would otherwise wrap and grow the empty field.
                                 placeholder = { Text(if (channel.direct) "Message ${channel.name}" else "Message #${channel.name}", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 6,
                                 visualTransformation = MentionVisualTransformation(mentionSource(state)),
