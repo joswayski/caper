@@ -45,7 +45,8 @@ class ProfileUiTest {
         }
         compose.onNodeWithText("1 file failed to upload. Send will retry it, or you can remove it.").assertExists()
         compose.onNodeWithText("Retry upload").performClick()
-        compose.onNodeWithText("Uploading 1 file… Your message won’t send until every file is ready.").assertExists()
+        compose.onNodeWithText("Uploading 1 file… Your message won’t send until every file is ready.").assertDoesNotExist()
+        compose.onNodeWithText("Uploading 20%").assertExists()
         compose.runOnIdle { sending.value = false }
         compose.onNodeWithText("Uploading 1 file… Your message won’t send until every file is ready.").assertDoesNotExist()
         compose.onNodeWithText("1 file failed to upload. Send will retry it, or you can remove it.").assertDoesNotExist()

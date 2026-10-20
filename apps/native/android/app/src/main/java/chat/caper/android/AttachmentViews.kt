@@ -590,15 +590,10 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
     }
     Column(Modifier.fillMaxWidth()) {
         val failed = drafts.count { it.error != null }
-        val active = drafts.count { it.attachment == null && it.error == null && (!uploadOnSend || sending || it.compressing) }
         if (failed > 0) Text(
             if (failed == 1) "1 file failed to upload. Send will retry it, or you can remove it."
             else "$failed files failed to upload. Send will retry them, or you can remove them.",
             Modifier.fillMaxWidth().padding(bottom = 8.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = ErrorText, fontSize = 12.sp,
-        )
-        if (active > 0) Text(
-            "Uploading $active file${if (active == 1) "" else "s"}… Your message won’t send until every file is ready.",
-            Modifier.fillMaxWidth().padding(bottom = 8.dp).semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp,
         )
         BoxWithConstraints(Modifier.fillMaxWidth().padding(bottom = 8.dp).semantics { contentDescription = "Files to send" }) {
             val columns = ((maxWidth.value + 8f) / 98f).toInt().coerceIn(1, 4)

@@ -292,8 +292,10 @@ test("draft files can be previewed before uploading finishes, with removal separ
 
   const retrying = drafts.map((draft) => ({ ...draft, error: undefined }));
   const uploading = renderToStaticMarkup(<DraftAttachments drafts={retrying} />);
-  expect(uploading).toContain('role="status"');
-  expect(uploading).toContain("Uploading 5 files… Your message won’t send until every file is ready.");
+  expect(uploading).not.toContain('role="status"');
+  expect(uploading).not.toContain("Your message won’t send until every file is ready.");
+  expect(uploading).toContain("Uploading 40%");
+  expect(uploading).toContain("Preparing…");
   expect(uploading).not.toContain("failed to upload");
   const staged = renderToStaticMarkup(
     <DraftAttachments drafts={retrying.map((draft) => ({ ...draft, staged: true }))} />,
