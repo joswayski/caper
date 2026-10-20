@@ -30,6 +30,23 @@ class CaperApiTest {
 
     @After fun close() { server.close() }
 
+    @Test fun `direct recipient lookup returns a person without creating a conversation`() = runTest {
+        val api = CaperApi(baseUrl = server.url("/").toString())
+        server.enqueue(MockResponse().setBody("""{"id":"account00002","username":"mira","displayName":"Mira","avatarId":2}"""))
+        val person = api.lookupDirectPerson("account-secret", "mira")
+        assertEquals("Mira", person.displayName)
+        assertEquals("mira", person.username)
+        assertEquals(2, person.avatarId)
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/dms/lookup", request.path)
+        assertEquals("Bearer account-secret", request.headers["Authorization"])
+        assertEquals("{\"username\":\"mira\"}", request.body.readUtf8())
+        assertEquals(1, server.requestCount)
+        server.enqueue(MockResponse().setResponseCode(404).setBody("""{"error":"Account not found."}"""))
+        assertTrue(runCatching { api.lookupDirectPerson("account-secret", "missing") }.exceptionOrNull() is ApiException)
+    }
+
     @Test fun `space voice activity is an authenticated lightweight snapshot`() = runTest {
         val api = CaperApi(baseUrl = server.url("/").toString())
         server.enqueue(MockResponse().setBody("""{"spaceIds":["space0000001","space0000002"]}"""))

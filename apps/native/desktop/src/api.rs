@@ -4,7 +4,7 @@ use crate::invites::{InviteLink, InviteLinks, InvitePreview, JoinedInvite};
 use crate::model::{
     Account, Blocks, Channel, ChatSession, DirectConversation, DirectConversations, History,
     Member, Members, Message, NotificationLevel, NotificationOverride, NotificationSettings,
-    People, Privacy, ReactionUpdate, Reactors, Space, SpaceDetail, Spaces,
+    People, Person, Privacy, ReactionUpdate, Reactors, Space, SpaceDetail, Spaces,
 };
 use crate::notifications::{Change, Scope};
 use crate::uploads::UploadError;
@@ -286,6 +286,16 @@ impl Api {
 
     pub fn people(&self, token: &str) -> Result<People, ApiError> {
         self.request(Method::GET, "api/people", Some(token), None, None)
+    }
+
+    pub fn lookup_direct(&self, token: &str, username: &str) -> Result<Person, ApiError> {
+        self.request(
+            Method::POST,
+            "api/dms/lookup",
+            Some(token),
+            None,
+            Some(json!({"username": username})),
+        )
     }
 
     pub fn create_direct(
@@ -2293,6 +2303,16 @@ mod tests {
                 "200 OK",
                 r#"{"directMessages":"nobody"}"#,
             ),
+            (
+                "POST /api/dms/lookup",
+                "200 OK",
+                r#"{"id":"stranger0001","username":"jordan","displayName":"Jordan","avatarId":412}"#,
+            ),
+            (
+                "POST /api/dms/lookup",
+                "404 Not Found",
+                r#"{"error":"Person not found"}"#,
+            ),
         ];
         let worker = std::thread::spawn(move || {
             let mut bodies = Vec::new();
@@ -2349,7 +2369,14 @@ mod tests {
                 .direct_messages,
             "nobody"
         );
+        let person = api.lookup_direct("account", "jordan").unwrap();
+        assert_eq!(person.username, "jordan");
+        assert_eq!(person.display_name, "Jordan");
+        assert_eq!(person.avatar_id, Some(412));
+        assert!(api.lookup_direct("account", "unknown").is_err());
         let bodies = worker.join().unwrap();
+        assert_eq!(bodies[9], r#"{"username":"jordan"}"#);
+        assert_eq!(bodies[10], r#"{"username":"unknown"}"#);
         assert_eq!(bodies[0], r#"{"username":"jordan"}"#);
         assert_eq!(bodies[8], r#"{"directMessages":"nobody"}"#);
     }

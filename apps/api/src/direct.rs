@@ -21,6 +21,7 @@ use sqlx::PgPool;
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/dms", get(list).post(create))
+        .route("/api/dms/lookup", post(lookup))
         .route("/api/dms/{conversation}/read", post(read))
         .route("/api/people", get(list_people))
         .route("/api/dms/{conversation}/accept", post(accept))
@@ -117,6 +118,28 @@ struct CreateInput {
     username: String,
 }
 
+/// Confirm an exact recipient without creating a conversation or message request.
+async fn lookup(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Json(input): Json<CreateInput>,
+) -> Result<Json<Value>, ApiError> {
+    if !principal.user.onboarded() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "complete profile required",
+        ));
+    }
+    let pool = pool(&state)?;
+    let (peer, _) = resolve_recipient(pool, principal.user.id, &input.username).await?;
+    let person = sqlx::query_scalar(
+        "SELECT jsonb_build_object('id',u.external_id,'username',u.username,'displayName',u.display_name,'avatarId',u.avatar_id,'avatarAsset',u.avatar_asset,'admin',EXISTS(SELECT 1 FROM public.feedback_team f WHERE f.user_id=u.id AND f.deleted_at IS NULL))
+         FROM public.users u WHERE u.id=$1 AND u.deleted_at IS NULL",
+    ).bind(peer).fetch_optional(pool).await.map_err(|_| chat::unavailable())?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "account not found"))?;
+    Ok(Json(person))
+}
+
 async fn create(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -133,7 +156,11 @@ async fn create(
     conversation(pool(&state)?, principal.user.id, &id).await
 }
 
-async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result<String, ApiError> {
+async fn resolve_recipient(
+    pool: &PgPool,
+    user: i64,
+    username: &str,
+) -> Result<(i64, bool), ApiError> {
     let username = username.trim().trim_start_matches('@').to_ascii_lowercase();
     if username.is_empty()
         || username.len() > 32
@@ -154,6 +181,11 @@ async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result
     let peer: i64 = sqlx::query_scalar("SELECT id FROM public.users WHERE (CASE WHEN $2 THEN team_account ELSE username=$1 END) AND display_name IS NOT NULL AND deleted_at IS NULL")
         .bind(&username).bind(team).fetch_optional(pool).await.map_err(|_|chat::unavailable())?
         .ok_or_else(||ApiError::new(StatusCode::NOT_FOUND,"account not found"))?;
+    Ok((peer, team))
+}
+
+async fn create_conversation(pool: &PgPool, user: i64, username: &str) -> Result<String, ApiError> {
+    let (peer, team) = resolve_recipient(pool, user, username).await?;
     let low = user.min(peer);
     let high = user.max(peer);
     let mut tx = pool.begin().await.map_err(|_| chat::unavailable())?;

@@ -203,6 +203,9 @@ public actor APIClient {
     public func createDirectMessage(username: String) async throws -> DirectMessageConversation {
         try await request("api/dms", method: "POST", body: UsernameInput(username: username))
     }
+    public func lookupDirectPerson(username: String) async throws -> Person {
+        try await request("api/dms/lookup", method: "POST", body: UsernameInput(username: username))
+    }
     /// Accepts an incoming request (idempotent); the conversation comes back `accepted`.
     public func acceptDirectMessage(id: String) async throws -> DirectMessageConversation {
         let conversation: DirectMessageConversation = try await request("api/dms/\(try pathID(id))/accept", method: "POST")

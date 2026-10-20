@@ -93,6 +93,16 @@ export function listDirectConversations() {
   );
 }
 
+export function lookupDirectPerson(username: string) {
+  return withPeople(
+    request<Person>("/api/dms/lookup", {
+      method: "POST",
+      body: JSON.stringify({ username: username.trim() }),
+    }),
+    (person) => [person],
+  );
+}
+
 export function createDirectConversation(username: string) {
   return request<DirectConversation>("/api/dms", {
     method: "POST",

@@ -1317,6 +1317,10 @@ struct CaperApp {
     member_username: String,
     /// People suggested below the username fields, which share `member_username`.
     people_suggestions: PeopleSuggestions,
+    direct_lookup_request: u64,
+    direct_lookup_pending: Option<(u64, u64)>,
+    direct_lookup_scope: Option<(u64, u64)>,
+    direct_recipient: Option<model::Person>,
     member_error: Option<&'static str>,
     /// Refocus the username field once an add or invite finishes.
     member_refocus: bool,
@@ -1633,6 +1637,10 @@ impl CaperApp {
             form_private: false,
             member_username: String::new(),
             people_suggestions: PeopleSuggestions::default(),
+            direct_lookup_request: 0,
+            direct_lookup_pending: None,
+            direct_lookup_scope: None,
+            direct_recipient: None,
             member_error: None,
             member_refocus: false,
             member_status: None,
@@ -3983,6 +3991,25 @@ impl CaperApp {
                 } if generation == self.generation => {
                     self.people = Some(people);
                 }
+                Event::DirectLookedUp {
+                    generation,
+                    navigation,
+                    request,
+                    username,
+                    result,
+                } if generation == self.generation
+                    && navigation == self.navigation
+                    && request == self.direct_lookup_request
+                    && self.direct_lookup_pending == Some((generation, navigation))
+                    && matches!(self.dialog, Some(Dialog::StartDirect))
+                    && username == self.member_username =>
+                {
+                    self.direct_lookup_pending = None;
+                    match result {
+                        Ok(person) => self.direct_recipient = Some(person),
+                        Err(error) => self.error = Some(error),
+                    }
+                }
                 Event::DirectCreated {
                     generation,
                     navigation,
@@ -4792,6 +4819,7 @@ impl CaperApp {
     }
 
     fn reset_account_state(&mut self) {
+        self.reset_direct_lookup();
         self.worker.showing(None);
         self.worker.send(Command::StopNotifications);
         self.account_epoch += 1;
@@ -5901,7 +5929,15 @@ impl CaperApp {
         self.dialog = Some(Dialog::JoinInvite);
     }
 
+    fn reset_direct_lookup(&mut self) {
+        self.direct_lookup_request += 1;
+        self.direct_lookup_pending = None;
+        self.direct_lookup_scope = None;
+        self.direct_recipient = None;
+    }
+
     fn open_start_direct(&mut self) {
+        self.reset_direct_lookup();
         self.member_username.clear();
         self.error = None;
         self.load_people();
@@ -21632,9 +21668,17 @@ impl CaperApp {
             return;
         }
         let Some(dialog) = self.dialog.clone() else {
+            self.reset_direct_lookup();
             self.dialog_shown = None;
             return;
         };
+        if !matches!(dialog, Dialog::StartDirect)
+            || self
+                .direct_lookup_scope
+                .is_some_and(|scope| scope != (self.generation, self.navigation))
+        {
+            self.reset_direct_lookup();
+        }
         // A dialog's first field takes focus once, in the frame it opens.
         let kind = std::mem::discriminant(&dialog);
         self.focus_dialog_field = self.dialog_shown.replace(kind) != Some(kind);
@@ -21762,6 +21806,8 @@ impl CaperApp {
         let join_dialog = matches!(dialog, Dialog::JoinInvite);
         // These requests navigate when they finish, so their dialogs stay open
         // (Cancel, close, Escape and backdrop do nothing) until then.
+        let lookup_pending =
+            matches!(dialog, Dialog::StartDirect) && self.direct_lookup_pending.is_some();
         let hold_while_loading = return_to.is_some()
             || matches!(
                 dialog,
@@ -22009,8 +22055,10 @@ impl CaperApp {
                                                 ui.label("Enter an exact username.");
                                                 ui.add_space(12.0);
                                                 let id = egui::Id::new("direct-username");
-                                                let people: Vec<_> = self.people.iter().flatten().map(mentions::Person::from).collect();
-                                                let username = people_field(ui, id, &mut self.people_suggestions, &mut self.member_username, &people, |ui, value| {
+                                                let pending = self.loading || lookup_pending;
+                                                let people: Vec<_> = self.people.iter().flatten().filter(|_| !pending).map(mentions::Person::from).collect();
+                                                let before = self.member_username.clone();
+                                                let username = ui.add_enabled_ui(!pending, |ui| people_field(ui, id, &mut self.people_suggestions, &mut self.member_username, &people, |ui, value| {
                                                     let field = ui.add_sized(
                                                         [ui.available_width(), 42.0],
                                                         egui::TextEdit::singleline(value)
@@ -22022,27 +22070,42 @@ impl CaperApp {
                                                     *value = normalize_username(value);
                                                     focus_frame(ui, &field);
                                                     field
-                                                });
+                                                })).inner;
                                                 if self.focus_dialog_field {
                                                     username.request_focus();
                                                 }
-                                                if username.changed() {
+                                                if before != self.member_username {
+                                                    self.reset_direct_lookup();
                                                     self.error = None;
                                                 }
+                                                let recipient = self.direct_recipient.as_ref()
+                                                    .or_else(|| self.people.iter().flatten().find(|person| person.username == self.member_username));
+                                                let confirmed = recipient.is_some();
+                                                if let Some(person) = recipient {
+                                                    ui.label(format!("{} · @{}", person.display_name, person.username));
+                                                }
+                                                let recipient_username = recipient.map(|person| person.username.clone());
                                                 let (cancel, open) = dialog_buttons(
                                                     ui,
                                                     "Cancel",
-                                                    if self.loading { "Opening…" } else { "Open conversation" },
+                                                    if self.loading { "Opening…" } else if lookup_pending { "Finding…" } else if confirmed { "Open conversation" } else { "Find person" },
                                                     PRIMARY_TONE,
-                                                    !self.loading,
-                                                    !self.loading && self.member_username.len() >= 3,
+                                                    !pending,
+                                                    !pending && self.member_username.len() >= 3,
                                                 );
                                                 if cancel.clicked() { close = true; }
                                                 if open.clicked()
                                                     && let Some(token) = self.token.clone() {
-                                                    self.loading = true;
                                                     self.error = None;
-                                                    self.worker.send(Command::CreateDirect { generation: self.generation, navigation: self.navigation, token, username: self.member_username.trim().to_owned() });
+                                                    if let Some(username) = recipient_username {
+                                                        self.loading = true;
+                                                        self.worker.send(Command::CreateDirect { generation: self.generation, navigation: self.navigation, token, username });
+                                                    } else {
+                                                        self.direct_lookup_request += 1;
+                                                        self.direct_lookup_pending = Some((self.generation, self.navigation));
+                                                        self.direct_lookup_scope = self.direct_lookup_pending;
+                                                        self.worker.send(Command::LookupDirect { generation: self.generation, navigation: self.navigation, request: self.direct_lookup_request, token, username: self.member_username.clone() });
+                                                    }
                                                 }
                                             }
                                         }
@@ -22121,11 +22184,16 @@ impl CaperApp {
         }
         // A join navigates when it finishes, so its dialog stays until then.
         let joining = join_dialog && self.invite_join.joining;
-        if close && !(self.loading && hold_while_loading) && !joining {
+        if close
+            && !(self.loading && hold_while_loading)
+            && !joining
+            && self.direct_lookup_pending.is_none()
+        {
             if whats_new {
                 self.whats_new.dismiss();
             }
             self.dialog = return_to;
+            self.reset_direct_lookup();
             self.error = None;
         }
     }
@@ -34081,6 +34149,33 @@ mod tests {
                 "pending content resized or recentered modal"
             );
         }
+    }
+
+    #[test]
+    fn direct_recipient_requires_lookup_confirmation_and_forgets_it_on_navigation() {
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-direct-new"),
+        );
+        let mut person = app.people.as_ref().unwrap()[0].clone();
+        app.member_username = person.username.clone();
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Open conversation"));
+        person.username = "unknown_person".into();
+        app.member_username = person.username.clone();
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Find person"));
+        assert!(!shows(&output, "Open conversation"));
+        app.direct_recipient = Some(person);
+        app.direct_lookup_scope = Some((app.generation, app.navigation));
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Open conversation"));
+        app.navigation += 1;
+        let output = render(&mut app, &context, vec![]);
+        assert!(shows(&output, "Find person"));
+        assert!(app.direct_recipient.is_none());
     }
 
     #[test]
