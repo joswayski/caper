@@ -51,6 +51,58 @@ class ProfileMessageDraftsTest {
             "createdAt":"2026-10-11T12:00:00Z","clientMessageId":${body.getValue("clientMessageId")}}""")
     }
 
+    @Test fun `picker media sends alone and preserves the profile draft`() = runTest {
+        val gif = KlipyGif(kind = "sticker", slug = "wave", width = 100, height = 100, gif = "https://media.klipy.com/wave.gif")
+        composer.text(peer, "Keep my text")
+        file()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = sent(request)
+        }
+        val result = composer.send(peer, peer, "maya", "account-token", { "chat-token" to author }, { listOf(direct) }, { emptySet() }, gif)
+        assertNotNull(result)
+        val payload = Json.parseToJsonElement(request().body.readUtf8()).jsonObject
+        assertEquals(JsonPrimitive(""), payload["text"])
+        assertEquals(gif.toJson(), payload["gif"])
+        assertNull(payload["attachmentIds"])
+        assertEquals(1, server.requestCount)
+        assertEquals("Keep my text", composer[peer].text)
+        assertEquals("file-1", composer[peer].files.single().key)
+        assertTrue(composer[peer].editable)
+    }
+
+    @Test fun `unconfirmed picker media retries the same payload even with an unprepared draft file`() = runTest {
+        val gif = KlipyGif(kind = "gif", slug = "wave", width = 100, height = 100, gif = "https://media.klipy.com/wave.gif")
+        composer.add(peer, listOf(DraftAttachmentUi("unprepared", "photo.jpg", "image")))
+        var attempts = 0
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                if (++attempts == 1) MockResponse().setResponseCode(503) else sent(request)
+        }
+        assertNull(composer.send(peer, peer, "maya", "account-token", { "chat-token" to author }, { listOf(direct) }, { emptySet() }, gif, "hello"))
+        val original = request().body.readUtf8()
+        assertTrue(composer[peer].uncertain)
+        assertTrue(composer[peer].canSend)
+        assertEquals("hello", composer[peer].pendingGifQuery)
+        assertNull(send(listOf(direct), blocked = setOf(peer)))
+        assertEquals(gif, composer[peer].pendingGif)
+        assertEquals("hello", composer[peer].pendingGifQuery)
+        assertNull(composer.send(peer, peer, "maya", "account-token", { "chat-token" to author }, { listOf(direct) }, { emptySet() }, gif.copy(slug = "other")))
+        assertNotNull(send(listOf(direct)))
+        assertEquals(original, request().body.readUtf8())
+        assertEquals("unprepared", composer[peer].files.single().key)
+        assertTrue(composer[peer].editable)
+        assertNull(composer[peer].pendingGif)
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test fun `picker media refuses blocked peers and incoming requests without sending`() = runTest {
+        val gif = KlipyGif(kind = "gif", slug = "wave", width = 100, height = 100, gif = "https://media.klipy.com/wave.gif")
+        assertNull(composer.send(peer, peer, "maya", "account-token", { "chat-token" to author }, { listOf(direct) }, { setOf(peer) }, gif))
+        assertNull(composer.send(peer, peer, "maya", "account-token", { "chat-token" to author }, { listOf(direct.copy(status = "incoming")) }, { emptySet() }, gif))
+        assertEquals(0, server.requestCount)
+        assertTrue(composer[peer].editable)
+    }
+
     @Test fun `typing and local preparation keep separate drafts without creating a DM`() {
         composer.text(peer, "Maya draft 🙂")
         file()

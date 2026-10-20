@@ -2467,8 +2467,8 @@ npx wrangler deploy --env staging
 #### Attach drawer (October 19, 2026)
 
 Attach (the composer's `+`, in channel, thread and profile-DM composers) opens
-the attach drawer on phones and an attach menu on desktop. The drawer is the
-base for later tabs (emoji, GIFs, stickers); none are shown until they work.
+the attach drawer on phones and an attach menu on desktop. The smiley opens a
+separate, unified Emojis / GIFs / Stickers drawer on mobile; `+` stays for files.
 Phones keep a photo library apart from their files, so they offer both; desktop
 web, the Mac and Rust desktop offer one unfiltered "Upload a file", as Discord
 does.
@@ -2508,6 +2508,19 @@ does.
   Files. Each choice opens the browser's picker.
 - **Rust desktop** (`attach_drawer.rs`): a menu above `+` with "Upload a file"
   (the system dialog, no filter). Profile messages add Paste from clipboard.
+
+**Gallery previews (October 20, 2026):** iOS and Android animate local GIF
+originals in visible Photos tiles, with a GIF badge even when playback falls
+back to a still. At most six GIFs animate at once; leaving the viewport,
+backgrounding the app, or reduced motion stops them. Android decodes at 120dp;
+iOS caps each animation at 240px, 200 frames and 2 MiB decoded, downsampling
+to fit. iOS rejects encoded data above 16 MiB after PhotoKit supplies it and
+does not download cloud-only originals just for autoplay. Videos use a play
+icon plus duration rather than concurrent gallery video players. Selected
+uploads still use the original staging path, not these previews. The system
+photo picker opened by mobile web owns its previews; Caper cannot change them.
+Native gallery playback/lifecycle and rendered drawers still need device
+validation; browser checks do not establish it.
 
 Google Play: photo/video permissions need the Photo and Video Permissions
 declaration in Play Console (App content); the text is in
@@ -2801,11 +2814,14 @@ and a live transcript round trip still need checking by hand.
 
 ## GIFs and stickers (KLIPY)
 
-The composer's **GIF** button opens a KLIPY picker with **GIFs** and
-**Stickers** tabs, a "Search KLIPY" field (KLIPY requires that placeholder) and
-trending results until something is typed. Choosing one sends it at once as its
-own message; the composer draft stays. The button is hidden until the API has
-`KLIPY_APP_KEY`.
+Mobile web, iOS and Android composers have one **smiley** button opening
+**Emojis / GIFs / Stickers**, defaulting to Emojis. This covers channels, DMs,
+threads and profile-card composers. Emoji selection inserts at the caret;
+choosing a GIF or sticker sends it at once as its own message, keeping the typed
+draft and staged files. Media tabs show an unavailable message without KLIPY.
+Desktop keeps its separate emoji and **GIF** controls; the GIF control is hidden
+until the API has `KLIPY_APP_KEY`. Media tabs use "Search KLIPY" (KLIPY requires
+that placeholder) and trending results until something is typed.
 
 KLIPY's [integration requirements](https://docs.klipy.com/integration-requirements)
 shape the design:
@@ -2929,7 +2945,7 @@ them only to mobile user agents.
 
 | Variable | Where | Meaning |
 | --- | --- | --- |
-| `KLIPY_APP_KEY` | API | KLIPY Partner Panel key (letters, digits, `-` or `_`). Unset or malformed hides the picker everywhere. Needs `AUTH_SECRET`. |
+| `KLIPY_APP_KEY` | API | KLIPY Partner Panel key (letters, digits, `-` or `_`). Unset or malformed disables mobile media tabs and hides desktop GIF controls. Needs `AUTH_SECRET`. |
 
 Rollout:
 
@@ -2947,9 +2963,18 @@ Rollout:
 | --- | --- | --- | --- |
 | API | — | — | Unit tests, shared cases and a Postgres send/retry/reply/edit test pass. |
 | Web | Channel, thread and profile-card composers; popover, or bottom drawer on touch layouts | Touch layouts | Vitest shared cases pass. Chromium was driven against the fixture with KLIPY mocked by route (labelled test mock): desktop, 390 px touch (ads row), reduced motion, paging, search, send and share. |
-| Android | Channel and thread composers; bottom sheet | Yes | Compiles; unit tests incl. shared cases pass. Not run on a device or emulator. |
+| Android | Channel, thread and profile-card composers; unified bottom sheet | Yes | Kotlin and instrumentation tests compile; 550 JVM tests and lint pass for the unified picker change. Instrumentation tests and gallery animation have not run on a device. |
 | iPhone / macOS | Channel, thread and profile-card composers; sheet / popover | iPhone only | Foundation core and shared cases checked with Swift on Linux. Not compiled with the Apple SDK, not run. |
 | Desktop (Rust) | Channel/DM and thread composers; popup | No (skipped) | fmt, clippy and tests incl. shared cases pass. Not checked on screen. The profile-card first-DM composer has no GIF button yet. |
+
+Unified mobile-picker validation: web check/build and 738 web/shared tests pass.
+The extended `scripts/test-emoji-composer.mjs` exercises three tabs in one
+dialog, emoji insertion, GIF/sticker sends retaining the draft, keyboard tab
+navigation and Escape focus against the disposable fixture, with KLIPY mocked.
+Touch Chromium (390px, coarse pointer, 2x) covers results, empty/error/retry
+states and scroll/viewport bounds; desktop retains separate controls. iOS
+implementation and UI regression tests are not compiled or run in this Linux
+orb (no Apple toolchain or connected runner).
 
 Not yet validated anywhere: live KLIPY responses (the shape of ad objects is
 undocumented beyond `type` and `content`), real ad delivery and taps, physical

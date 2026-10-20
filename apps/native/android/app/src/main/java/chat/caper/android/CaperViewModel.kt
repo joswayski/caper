@@ -745,24 +745,34 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Only Send posts a profile message; opening happens after a confirmed message. */
-    internal fun sendProfileMessage(person: String, id: String?, username: String, done: () -> Unit) {
-        val token = accountToken ?: return
+    /** Send posts the draft; picker media posts alone. Open the DM only after confirmation. */
+    internal fun sendProfileMessage(person: String, id: String?, username: String, done: () -> Unit,
+        gif: KlipyGif? = null, kind: KlipyKind? = null, query: String = ""): Boolean {
+        val token = accountToken ?: return false
+        if (gif != null && (!profileDrafts[person].editable || mutable.value.klipy == null)) return false
+        if (gif == null && !profileDrafts[person].canSend) return false
         val request = accountGeneration
         val navigation = generation
         val directNavigation = conversationOpeningRevision
-        val files = profileDrafts[person].files
+        val media = gif ?: profileDrafts[person].pendingGif
+        val shareQuery = if (profileDrafts[person].pendingGif != null) profileDrafts[person].pendingGifQuery else query
+        val files = if (media == null) profileDrafts[person].files else emptyList()
+        val config = mutable.value.klipy
         viewModelScope.launch {
             val result = profileDrafts.send(person, id, username, token, session = profileChatSession(request),
-                directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds })
+                directs = { mutable.value.directConversations }, blocked = { mutable.value.blockedIds }, gif = gif, gifQuery = query)
             if (request != accountGeneration) return@launch
             if (result == null) {
                 if (profileDrafts[person].error == directMessageError(DM_BLOCKED)) { refreshBlocks(); refreshDirectConversations() }
                 return@launch
             }
             files.forEach { discardDraftFiles(it.key) }
+            if (media != null && config != null) viewModelScope.launch {
+                klipy.share(config, kind ?: if (media.sticker) KlipyKind.STICKERS else KlipyKind.GIFS, media.slug, shareQuery, klipyUserAgent)
+            }
             profileMessageSent(result.first, result.second, navigation, directNavigation, done)
         }
+        return true
     }
 
     /**

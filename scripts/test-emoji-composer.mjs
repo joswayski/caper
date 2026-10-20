@@ -1,5 +1,6 @@
 // Real composer against the disposable native-parity fixture, never live accounts.
 // Start scripts/native-parity-fixture.mjs and Vite, then run with Vite's loopback URL.
+// Owns/resets that fixture: do not share it with another running UI test.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -9,6 +10,13 @@ const origin = new URL(process.argv[2] ?? "http://localhost:5173");
 assert.ok(["localhost", "127.0.0.1"].includes(origin.hostname), "Loopback preview only");
 const health = await fetch("http://127.0.0.1:3001/health").then((response) => response.json());
 assert.equal(health.fixture, true, "The API must be the disposable fixture");
+// Repeated runs must not push rows out of the virtualized message viewport.
+const reset = await fetch("http://127.0.0.1:3001/__fixture/control", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ reset: true }),
+});
+assert.ok(reset.ok, "The disposable fixture must reset before testing");
 const session = `emoji-${process.pid}`;
 const artifacts = process.env.EMOJI_TEST_ARTIFACTS && resolve(process.env.EMOJI_TEST_ARTIFACTS);
 if (artifacts) mkdirSync(artifacts, { recursive: true });
@@ -202,6 +210,75 @@ try {
       `PASS: ${layout} colon/search, arrows/Tab, pointer/caret/Unicode, Escape, URL/time boundaries, insertion then send, artwork and viewport bounds`,
     );
   }
+
+  // The mobile drawer is one dialog, not three pickers layered on one another.
+  // Only KLIPY is mocked; GIF/sticker sends still round-trip through the fixture API.
+  const openPicker = () => browser("click", 'button[aria-label="Emojis, GIFs and stickers"]');
+  browser("fill", "#chat-message", "Keep this draft");
+  const beforePicker = messages();
+  openPicker();
+  wait('!!document.querySelector("[role=tabpanel]")');
+  assert.equal(evaluate('return document.querySelectorAll(".chat-gif-tool").length;'), 0);
+  assert.deepEqual(evaluate('return [...document.querySelectorAll("[role=tab]")].map(tab => tab.textContent);'), [
+    "Emojis",
+    "GIFs",
+    "Stickers",
+  ]);
+  assert.equal(evaluate('return document.querySelectorAll("[role=dialog]").length;'), 1);
+  browser("fill", 'input[aria-label="Search emoji"]', "tomato");
+  wait(`!!document.querySelector('[data-unified="1f345"]')`);
+  browser("click", '[data-unified="1f345"]');
+  assert.equal(value(), "Keep this draft🍅");
+  assert.equal(messages(), beforePicker, "Choosing an emoji inserts without sending");
+  wait('!document.querySelector("[role=dialog]")');
+  assert.equal(evaluate("return document.activeElement.id;"), "chat-message");
+
+  for (const [path, kind, label] of [
+    ["gifs", "gif", "GIFs"],
+    ["stickers", "sticker", "Stickers"],
+  ]) {
+    const title = `TEST FIXTURE ${kind}`;
+    const format = { url: `https://static.klipy.com/caper-fixture-${kind}.gif`, width: 120, height: 80 };
+    evaluate(`
+      const fetch = window.fetch.bind(window);
+      window.fetch = (input, options) => String(input).includes('/fixtureKlipyKey/${path}/')
+        ? Promise.resolve(Response.json(${JSON.stringify({
+          data: {
+            data: [{ slug: `fixture-${kind}`, title, file: { sm: { gif: format }, md: { gif: format } } }],
+            has_next: false,
+          },
+        })})) : fetch(input, options);
+    `);
+    browser("network", "route", format.url, "--abort");
+    openPicker();
+    browser("find", "role", "tab", "click", "--name", label, "--exact");
+    wait(`!!document.querySelector('.chat-gif-grid[data-kind="${kind}"] .chat-gif-tile')`);
+    assert.equal(
+      evaluate('return document.querySelectorAll("[role=tab]").length;'),
+      3,
+      "No nested GIF/sticker tab bar",
+    );
+    assert.equal(evaluate('return document.querySelectorAll("[role=dialog]").length;'), 1);
+    browser("click", ".chat-gif-tile");
+    wait(`!!document.querySelector('.chat-message-gif[data-kind="${kind}"][title="${title}"]')`);
+    assert.equal(value(), "Keep this draft🍅", "Sending media must not clear the text draft");
+    assert.equal(evaluate('return document.querySelectorAll("[role=dialog]").length;'), 0);
+  }
+  openPicker();
+  browser("find", "role", "tab", "click", "--name", "Emojis", "--exact");
+  browser("press", "End");
+  assert.equal(evaluate("return document.activeElement.textContent;"), "Stickers");
+  browser("press", "ArrowRight");
+  assert.equal(evaluate("return document.activeElement.textContent;"), "Emojis");
+  browser("press", "Escape");
+  wait('!document.querySelector("[role=dialog]")');
+  assert.equal(value(), "Keep this draft🍅");
+  assert.equal(evaluate("return document.activeElement.id;"), "chat-message");
+  browser("network", "unroute");
+  console.log(
+    "PASS: mobile single drawer, three tabs, emoji insertion, GIF/sticker send with draft preserved, tab keyboard navigation and Escape focus",
+  );
+
   browser("network", "route", "**/emoji/twemoji-15/autocomplete-v3.json", "--abort");
   browser("reload");
   wait('!!document.querySelector("#chat-message:not(:disabled)")');
@@ -214,6 +291,10 @@ try {
   browser("fill", "#chat-message", ":tomato");
   wait('!!document.querySelector("#chat-emoji-1f345")');
   console.log("PASS: controlled loading, simulated DOM composition, failed catalog recovery and draft preservation");
+} catch (error) {
+  console.error(browser("snapshot"));
+  console.error(browser("errors"));
+  throw error;
 } finally {
   browser("close");
 }

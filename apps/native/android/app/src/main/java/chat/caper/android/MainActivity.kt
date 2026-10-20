@@ -1599,10 +1599,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 trailingIcon = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         // Sent at once as its own reply; the draft stays, and "Also send to" applies like a reply's.
-                                        if (state.klipy != null) GifButton(!thread.loading && state.chatAuthorId != null && state.pendingMessage == null, viewModel::klipyPage) { gif, kind, query ->
-                                            viewModel.sendGif(gif, kind, query, thread.rootId, broadcast).also { if (it) broadcast = false }
-                                        }
-                                        EmojiInsertButton(!thread.loading) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } }
+                                        EmojiInsertButton(!thread.loading, load = viewModel::klipyPage, mediaAvailable = state.klipy != null,
+                                            sendMedia = { gif, kind, query ->
+                                                !thread.loading && state.chatAuthorId != null && state.pendingMessage == null &&
+                                                    viewModel.sendGif(gif, kind, query, thread.rootId, broadcast).also { if (it) broadcast = false }
+                                            }) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } }
                                         if (state.uploadsEnabled) VoiceRecordButton(recorder, canAttach, voiceBlocked)
                                     }
                                 },
@@ -1908,11 +1909,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 trailingIcon = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         // Sent at once as its own message; the draft stays.
-                                        if (state.klipy != null) GifButton(
-                                            !state.messagesLoading && state.messagesError == null && state.pendingMessage == null && state.chatAuthorId != null,
-                                            viewModel::klipyPage,
-                                        ) { gif, kind, query -> viewModel.sendGif(gif, kind, query) }
-                                        EmojiInsertButton(!state.messagesLoading && state.messagesError == null) { emoji ->
+                                        EmojiInsertButton(!state.messagesLoading && state.messagesError == null,
+                                            load = viewModel::klipyPage, mediaAvailable = state.klipy != null,
+                                            sendMedia = { gif, kind, query ->
+                                                !state.messagesLoading && state.messagesError == null && state.pendingMessage == null && state.chatAuthorId != null && viewModel.sendGif(gif, kind, query)
+                                            }) { emoji ->
                                             insertEmojiAtSelection(draft, emoji)?.let { updateDraft(it); viewModel.setTyping(true) }
                                         }
                                         // Wherever files can be sent: hidden when uploads are unavailable.
@@ -2944,6 +2945,14 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
 )
 
 @Composable internal fun EmojiPicker(onDismiss: () -> Unit, title: String = "Add reaction", select: (String) -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = MaterialTheme.shapes.medium, color = SurfaceRaised, border = BorderStroke(1.dp, Border), modifier = Modifier.swipeCancelsPresses().fillMaxWidth().heightIn(min = 420.dp, max = 520.dp)) {
+            EmojiPickerContent(onDismiss, title, select)
+        }
+    }
+}
+
+@Composable internal fun EmojiPickerContent(onDismiss: () -> Unit, title: String = "Insert emoji", select: (String) -> Unit) {
     val context = LocalContext.current
     // Picker order, as on web: smileys and people first, flags last.
     val catalog = remember { EmojiArtwork.catalog(context).filter { it.selectable }.sortedWith(emojiPickerOrder) }
@@ -2956,29 +2965,25 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
         if (needle.isEmpty()) catalog.filter { it.category == category }
         else catalog.filter { it.name.lowercase(Locale.ROOT).contains(needle) || it.keywords.lowercase(Locale.ROOT).contains(needle) || it.category.replace('_', ' ').contains(needle) }
     }
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(shape = MaterialTheme.shapes.medium, color = SurfaceRaised, border = BorderStroke(1.dp, Border), modifier = Modifier.swipeCancelsPresses().fillMaxWidth().heightIn(min = 420.dp, max = 520.dp)) {
-            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontWeight = FontWeight.Bold); TextButton(onDismiss, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Close") } }
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-                    emojiPickerCategories.forEach { (id, name, icon) ->
-                        val active = query.isBlank() && category == id
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            IconButton({ category = id; query = "" }, Modifier.size(48.dp).semantics { contentDescription = name; selected = active }) {
-                                EmojiImage(icon, null, Modifier.size(22.dp))
-                            }
-                            Box(Modifier.width(44.dp).height(2.dp).background(if (active) TerracottaBright else Color.Transparent))
-                        }
+    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontWeight = FontWeight.Bold); TextButton(onDismiss, shape = MaterialTheme.shapes.small, colors = neutralTextButtonColors()) { Text("Close") } }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+            emojiPickerCategories.forEach { (id, name, icon) ->
+                val active = query.isBlank() && category == id
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    IconButton({ category = id; query = "" }, Modifier.size(48.dp).semantics { contentDescription = name; selected = active }) {
+                        EmojiImage(icon, null, Modifier.size(22.dp))
                     }
+                    Box(Modifier.width(44.dp).height(2.dp).background(if (active) TerracottaBright else Color.Transparent))
                 }
-                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Search emoji") }, singleLine = true)
-                Text(if (query.isBlank()) emojiPickerCategories.first { it.first == category }.second else "Search results", color = TextMuted, fontWeight = FontWeight.Bold)
-                if (shown.isEmpty()) Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { Text("No emoji found.", color = TextMuted) }
-                else LazyVerticalGrid(GridCells.Adaptive(48.dp), state = grid, modifier = Modifier.weight(1f)) {
-                    gridItems(shown, key = { it.id }) { entry ->
-                        IconButton({ select(entry.emoji) }, Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics { contentDescription = entry.name }) { EmojiImage(entry.emoji, null, Modifier.size(30.dp)) }
-                    }
-                }
+            }
+        }
+        OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), placeholder = { Text("Search emoji") }, singleLine = true)
+        Text(if (query.isBlank()) emojiPickerCategories.first { it.first == category }.second else "Search results", color = TextMuted, fontWeight = FontWeight.Bold)
+        if (shown.isEmpty()) Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) { Text("No emoji found.", color = TextMuted) }
+        else LazyVerticalGrid(GridCells.Adaptive(48.dp), state = grid, modifier = Modifier.weight(1f)) {
+            gridItems(shown, key = { it.id }) { entry ->
+                IconButton({ select(entry.emoji) }, Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).semantics { contentDescription = entry.name }) { EmojiImage(entry.emoji, null, Modifier.size(30.dp)) }
             }
         }
     }
@@ -3284,14 +3289,20 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
     insertEmoji(value, EmojiToken(value.selection.min, value.selection.max, ""), emoji)
 
 /** A composer's emoji control: the emoji picker, inserting at the field's selection. */
-@Composable internal fun EmojiInsertButton(enabled: Boolean, interaction: (Boolean) -> Unit = {}, insert: (String) -> Unit) {
+@Composable internal fun EmojiInsertButton(
+    enabled: Boolean, interaction: (Boolean) -> Unit = {},
+    load: (suspend (chat.caper.android.data.KlipyKind, String, Int, chat.caper.android.data.KlipyAdRequest?) -> chat.caper.android.data.KlipyPage)? = null,
+    mediaAvailable: Boolean = false,
+    sendMedia: (chat.caper.android.model.KlipyGif, chat.caper.android.data.KlipyKind, String) -> Boolean = { _, _, _ -> false },
+    insert: (String) -> Unit,
+) {
     var open by remember { mutableStateOf(false) }
-    IconButton({ open = true; interaction(true) }, Modifier.size(48.dp).semantics { contentDescription = "Insert emoji" }, enabled = enabled) {
+    IconButton({ open = true; interaction(true) }, Modifier.size(48.dp).semantics { contentDescription = "Emojis, GIFs and stickers" }, enabled = enabled) {
         Icon(painterResource(R.drawable.lucide_smile), null, Modifier.size(20.dp), tint = if (enabled) TextMuted else TextMuted.copy(alpha = 0.4f))
     }
-    if (open) EmojiPicker({ open = false; interaction(false) }, title = "Insert emoji") { emoji ->
+    if (open) ComposerMediaPicker(load, mediaAvailable, { open = false; interaction(false) }, { gif, kind, query -> enabled && sendMedia(gif, kind, query) }) { emoji ->
         open = false; interaction(false)
-        insert(emoji)
+        if (enabled) insert(emoji)
     }
 }
 
