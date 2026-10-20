@@ -2868,6 +2868,7 @@ a.chat-draft-preview {
 }
 .chat-attachment-files {
   display: grid;
+  align-items: start;
   grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   gap: 6px;
   width: min(480px, 100%);
@@ -5448,7 +5449,7 @@ a.chat-draft-preview {
   align-self: stretch;
 }
 .chat-voice-recorder .chat-voice-discard,
-.chat-voice-recorder .chat-voice-send {
+.chat-voice-recorder .chat-voice-stop {
   display: grid;
   flex: none;
   place-items: center;
@@ -5463,7 +5464,7 @@ a.chat-draft-preview {
   color: var(--text-muted);
   background: transparent;
 }
-.chat-voice-recorder .chat-voice-send {
+.chat-voice-recorder .chat-voice-stop {
   margin-left: auto;
   color: var(--on-action);
   background: var(--action);
@@ -5473,14 +5474,14 @@ a.chat-draft-preview {
     color: var(--text);
     background: var(--surface-hover);
   }
-  .chat-voice-recorder .chat-voice-send:hover:not(:disabled) {
+  .chat-voice-recorder .chat-voice-stop:hover:not(:disabled) {
     background: var(--action-hover);
   }
 }
-.chat-voice-recorder .chat-voice-send:active:not(:disabled) {
+.chat-voice-recorder .chat-voice-stop:active:not(:disabled) {
   background: var(--action-press);
 }
-.chat-voice-recorder .chat-voice-send:disabled {
+.chat-voice-recorder .chat-voice-stop:disabled {
   color: var(--text-muted);
   background: var(--surface-raised);
   cursor: not-allowed;
@@ -5491,7 +5492,7 @@ a.chat-draft-preview {
 }
 @media (pointer: coarse) {
   .chat-voice-recorder .chat-voice-discard,
-  .chat-voice-recorder .chat-voice-send {
+  .chat-voice-recorder .chat-voice-stop {
     width: 40px;
     height: 40px;
   }
@@ -5519,21 +5520,30 @@ a.chat-draft-preview {
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
 }
+/* The live meter scrolls right to left at a constant rate: a new bar every
+   70 ms, slid in by --shift between additions (static with reduced motion). */
 .chat-voice-levels {
   display: flex;
   flex: 1 1 auto;
-  align-items: center;
   justify-content: flex-end;
-  gap: 2px;
   min-width: 0;
   height: 24px;
   overflow: hidden;
 }
 .chat-voice-levels > span {
+  display: flex;
   flex: none;
-  width: 2px;
-  min-height: 2px;
-  border-radius: 1px;
+  align-items: center;
+  gap: 2px;
+  height: 100%;
+  margin-right: -5px;
+  translate: var(--shift, 0) 0;
+}
+.chat-voice-levels > span > span {
+  flex: none;
+  width: 3px;
+  min-height: 3px;
+  border-radius: 999px;
   background: var(--text-muted);
 }
 .chat-voice-recorder[data-mode="hold"] {
@@ -5648,23 +5658,80 @@ a.chat-draft-preview {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1px;
+  gap: 2px;
   height: 28px;
+  overflow: hidden;
   min-width: 0;
   border-radius: 4px;
   cursor: pointer;
   touch-action: none;
 }
+/* Evenly spaced, fully rounded 3px bars; silence is a neat 3px line. The
+   bar at the playhead fills partially. */
 .chat-voice-wave > span {
-  flex: 0 1 3px;
-  min-width: 1px;
+  --unplayed: color-mix(in srgb, var(--text-muted) 42%, transparent);
+  flex: none;
+  width: 3px;
   min-height: 3px;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--text-muted) 42%, transparent);
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--text) var(--fill, 0%), var(--unplayed) var(--fill, 0%));
   pointer-events: none;
 }
 .chat-voice-wave > span[data-played] {
   background: var(--text);
+}
+/* The staged chip: a compact player beside the composer's files. */
+.chat-voice[data-compact] {
+  gap: 8px;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+}
+.chat-voice[data-compact] .chat-voice-play {
+  width: 28px;
+  height: 28px;
+}
+.chat-voice[data-compact] .chat-voice-wave {
+  height: 22px;
+}
+.chat-voice[data-compact] .chat-voice-time {
+  font-size: 0.7rem;
+}
+.chat-drafts li[data-voice] {
+  display: flex;
+  align-items: center;
+  grid-column: span 2;
+  align-self: start;
+  max-width: 232px;
+  min-height: 48px;
+  aspect-ratio: auto;
+  padding-right: 36px;
+}
+.chat-drafts li[data-voice] > .chat-voice {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.chat-drafts li[data-voice] .chat-draft-actions {
+  top: 50%;
+  right: 4px;
+  left: auto;
+  translate: 0 -50%;
+  border-width: 1px;
+  border-radius: 6px;
+}
+.chat-drafts li[data-voice] .chat-draft-actions > button {
+  flex: none;
+  width: 28px;
+  height: 28px;
+}
+@media (pointer: coarse) {
+  .chat-drafts li[data-voice] {
+    padding-right: 48px;
+  }
+  .chat-drafts li[data-voice] .chat-draft-actions > button {
+    width: 40px;
+    height: 40px;
+  }
 }
 .chat-voice-time {
   min-width: 2.6em;

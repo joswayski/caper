@@ -2,6 +2,8 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Poin
 import { Pause, Play } from "lucide-react";
 import type { ChatAttachment } from "./types.ts";
 import {
+  barFill,
+  barsFor,
   claimVoicePlayback,
   decodeWaveform,
   formatVoiceDuration,
@@ -11,11 +13,9 @@ import {
   transcriptView,
 } from "./voice.ts";
 
-/** Bars drawn for any waveform length; the card keeps one width on desktop and phones. */
+/** Bars drawn before the waveform's width is measured (server render, first paint). */
 export const VOICE_BARS = 40;
 const SEEK_STEP_MS = 5_000;
-/** Without a waveform, a flat placeholder row. */
-const FLAT_BAR = 0.12;
 
 /** A sent voice message: play/pause, a seekable waveform and its time, then the
  * transcript. Only one voice message plays at a time across the app. */
@@ -28,7 +28,16 @@ export function VoiceMessage({ attachment, onError }: { attachment: ChatAttachme
   );
 }
 
-function VoicePlayer({ attachment, onError }: { attachment: ChatAttachment; onError?: () => void }) {
+/** The player alone; `compact` is the staged chip's smaller version. */
+export function VoicePlayer({
+  attachment,
+  onError,
+  compact = false,
+}: {
+  attachment: Pick<ChatAttachment, "url" | "durationMs" | "waveform">;
+  onError?: () => void;
+  compact?: boolean;
+}) {
   const audio = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
@@ -36,10 +45,21 @@ function VoicePlayer({ attachment, onError }: { attachment: ChatAttachment; onEr
   const pendingSeek = useRef<number>(undefined);
   const duration = attachment.durationMs || mediaDuration || 0;
   const waveform = useMemo(() => decodeWaveform(attachment.waveform), [attachment.waveform]);
-  const bars = useMemo(
-    () => (waveform ? resampleWaveform(waveform, VOICE_BARS) : Array<number>(VOICE_BARS).fill(FLAT_BAR)),
-    [waveform],
-  );
+  // As many evenly spaced bars as fit the waveform's width.
+  const wave = useRef<HTMLDivElement>(null);
+  const [count, setCount] = useState(VOICE_BARS);
+  useLayoutEffect(() => {
+    const element = wave.current;
+    if (!element) return;
+    const measure = () => {
+      if (element.clientWidth) setCount(barsFor(element.clientWidth));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  const bars = useMemo(() => resampleWaveform(waveform, count), [waveform, count]);
   const progress = duration ? Math.min(1, position / duration) : 0;
   const started = playing || position > 0;
 
@@ -90,7 +110,7 @@ function VoicePlayer({ attachment, onError }: { attachment: ChatAttachment; onEr
   const total = formatVoiceDuration(duration);
   const time = started ? formatVoiceDuration(Math.max(0, duration - position), "ceil") : total;
   return (
-    <div className="chat-voice" data-playing={playing || undefined}>
+    <div className="chat-voice" data-playing={playing || undefined} data-compact={compact || undefined}>
       <button
         type="button"
         className="chat-voice-play"
@@ -105,6 +125,7 @@ function VoicePlayer({ attachment, onError }: { attachment: ChatAttachment; onEr
         )}
       </button>
       <div
+        ref={wave}
         className="chat-voice-wave"
         role="slider"
         tabIndex={0}
@@ -137,13 +158,19 @@ function VoicePlayer({ attachment, onError }: { attachment: ChatAttachment; onEr
           event.preventDefault();
         }}
       >
-        {bars.map((height, index) => (
-          <span
-            key={index}
-            data-played={(index + 0.5) / bars.length <= progress || undefined}
-            style={{ height: `${Math.max(FLAT_BAR, height) * 100}%` }}
-          />
-        ))}
+        {bars.map((height, index) => {
+          const fill = barFill(index, bars.length, progress);
+          return (
+            <span
+              key={index}
+              data-played={fill >= 1 || undefined}
+              style={{
+                height: `${height * 100}%`,
+                ...(fill > 0 && fill < 1 ? { "--fill": `${fill * 100}%` } : {}),
+              }}
+            />
+          );
+        })}
       </div>
       <span className="chat-voice-time" aria-hidden="true">
         {time}

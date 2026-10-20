@@ -16,7 +16,13 @@ import type { AttachmentEdit } from "./edit.ts";
 import { editableKind, type CompressionSettings } from "./prepare.ts";
 import { isChatMessage, type ChatAttachment } from "./types.ts";
 import { AttachmentUpload, MAX_ATTACHMENTS, UploadError, uploadSettings, type UploadState } from "./uploads.ts";
-import type { VoiceRecording } from "./voice.ts";
+import {
+  getVoiceSendOnStop,
+  subscribeVoiceSendOnStop,
+  VOICE_LABEL,
+  voiceFilename,
+  type VoiceRecording,
+} from "./voice.ts";
 import { useVoiceRecorder } from "./VoiceRecorder.tsx";
 
 interface ProfileFile extends Partial<UploadState> {
@@ -32,6 +38,8 @@ interface ProfileFile extends Partial<UploadState> {
   edit?: AttachmentEdit;
   /** A render of an edited video for its tile; revoked when the file leaves. */
   thumbnailUrl?: string;
+  /** A staged voice message: uploaded as recorded, played from `localUrl`. */
+  voice?: VoiceRecording;
 }
 type FilesCommand = {
   clientMessageId: string;
@@ -227,9 +235,18 @@ export default function ProfileComposer({
       notify();
     }
   };
+  const sendOnStop = useSyncExternalStore(subscribeVoiceSendOnStop, getVoiceSendOnStop, () => false);
   const recorder = useVoiceRecorder({
     voice: {
-      onRecorded: (recording) => void sendVoice(recording),
+      // By default a recording is staged with the card's text and files; the
+      // preference sends it on its own as soon as recording stops.
+      onRecorded: (recording) => (getVoiceSendOnStop() ? void sendVoice(recording) : stageVoice(recording)),
+      sendOnStop,
+      blockedReason: draft.files.some((item) => item.voice)
+        ? "Remove the voice message to record another"
+        : draft.files.length >= MAX_ATTACHMENTS
+          ? `You can attach up to ${MAX_ATTACHMENTS} files.`
+          : undefined,
       sending: sending && !!voice && !voice.error,
       error: voice?.error,
       onRetry: () => void sendVoice(),
@@ -304,7 +321,9 @@ export default function ProfileComposer({
         if (latest.channelId && latest.channelId !== conversation.id)
           throw new Error("The conversation changed. Remove the files and try again.");
         save({ ...latest, channelId: conversation.id });
-        const upload = new AttachmentUpload(conversation.id, file.file, settings, (state) => updateFile(key, state));
+        const upload = file.voice
+          ? AttachmentUpload.voice(conversation.id, file.voice, (state) => updateFile(key, state))
+          : new AttachmentUpload(conversation.id, file.file, settings, (state) => updateFile(key, state));
         updateFile(key, { upload });
         // Upload owns its errors; an aborted, superseded edit must not overwrite
         // the replacement upload's state through this resolution error handler.
@@ -353,6 +372,22 @@ export default function ProfileComposer({
       });
     }
     restoreFocus();
+  };
+  const stageVoice = (recording: VoiceRecording) => {
+    const latest = drafts.get(personId) ?? emptyDraft;
+    if (pending.has(personId) || latest.command || latest.files.some((item) => item.voice)) return;
+    if (latest.files.length >= MAX_ATTACHMENTS) {
+      setError(`You can attach up to ${MAX_ATTACHMENTS} files.`);
+      return;
+    }
+    const item: ProfileFile = {
+      key: crypto.randomUUID(),
+      file: new File([recording.blob], voiceFilename(recording.contentType), { type: recording.contentType }),
+      localUrl: URL.createObjectURL(recording.blob),
+      voice: recording,
+    };
+    save({ ...latest, files: [...latest.files, item] });
+    void ensureFile(item.key).catch(() => {});
   };
   const removeFile = (key: string) => {
     const removed = draft.files.find((item) => item.key === key);
@@ -481,9 +516,10 @@ export default function ProfileComposer({
 
   const files: DraftAttachment[] = draft.files.map((item) => ({
     key: item.key,
-    name: item.name ?? item.file.name,
+    name: item.voice ? VOICE_LABEL : (item.name ?? item.file.name),
     localUrl: item.localUrl,
-    localKind: item.localUrl ? (item.file.type.startsWith("video/") ? "video" : "image") : undefined,
+    localKind: item.localUrl && !item.voice ? (item.file.type.startsWith("video/") ? "video" : "image") : undefined,
+    voice: item.voice && { durationMs: item.voice.durationMs, waveform: item.voice.waveform },
     editable: item.editable,
     edit: item.edit,
     thumbnailUrl: item.thumbnailUrl,

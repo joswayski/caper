@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { test } from "vitest";
-import { MessageAttachments } from "../chat/Attachments.tsx";
+import { test, vi } from "vitest";
+import { DraftAttachments, MessageAttachments } from "../chat/Attachments.tsx";
 import ProfileComposer, { voiceCommand } from "../chat/ProfileComposer.tsx";
 import { ChatTimeline } from "../chat/timeline.ts";
 import {
@@ -21,14 +21,19 @@ import {
   encodeWaveform,
   formatVoiceDuration,
   isVoiceAttachment,
-  levelHeight,
+  barFill,
+  barsFor,
+  getVoiceSendOnStop,
+  loudness,
   resampleWaveform,
+  setVoiceSendOnStop,
+  smoothLevel,
   spokenDuration,
   transcriptView,
   voiceContentType,
   voiceFilename,
   voiceRecordingType,
-  waveformFromPeaks,
+  waveformFromLevels,
   WAVEFORM_SLICES,
   type VoiceRecording,
 } from "../chat/voice.ts";
@@ -47,19 +52,31 @@ const voiceFile = (overrides: Partial<ChatAttachment> = {}): ChatAttachment => (
   ...overrides,
 });
 
-test("the waveform is 64 slice peaks scaled so the loudest slice is 255", () => {
-  const peaks = Array.from({ length: 640 }, (_, index) => (index < 320 ? 0.1 : 0.4) * (index % 2 ? 1 : -1));
-  const bytes = waveformFromPeaks(peaks);
+test("the waveform is 64 slices of RMS loudness, smoothed and scaled so the loudest is 255", () => {
+  // Half quiet (−40 dB RMS), half loud (−6 dB RMS), sampled at a steady rate.
+  const levels = Array.from({ length: 640 }, (_, index) => (index < 320 ? 0.01 : 0.5));
+  const bytes = waveformFromLevels(levels);
   assert.equal(bytes.length, WAVEFORM_SLICES);
   assert.equal(Math.max(...bytes), 255, "normalised to this recording");
-  assert.deepEqual(Array.from(bytes.slice(0, 32)), Array(32).fill(64), "quiet half scales linearly (0.1 / 0.4)");
-  assert.deepEqual(Array.from(bytes.slice(32)), Array(32).fill(255));
-  assert.deepEqual([...waveformFromPeaks(Array(100).fill(0))], Array(64).fill(0), "silence stays flat");
-  assert.deepEqual([...waveformFromPeaks([])], Array(64).fill(0));
+  // Perceptual scale: −40 dB is 0.2 and −6 dB about 0.88, so quiet sits low but visible.
+  assert.equal(bytes[0], Math.round((0.2 / loudness(0.5)) * 255));
+  assert.ok(bytes[0] > 40 && bytes[0] < 70);
+  assert.equal(bytes[63], 255);
+  // The 3-tap average softens the step instead of jumping in one slice.
+  assert.ok(bytes[31] > bytes[30] && bytes[31] < bytes[32] && bytes[32] < bytes[33]);
+  // RMS of the slice, not its peak: a 100-sample slice with one full-scale click
+  // is −20 dB (0.6), where a peak would have read 0 dB.
+  const click = Array.from({ length: 6_400 }, (_, index) => (index === 5 ? 1 : 0));
+  assert.equal(waveformFromLevels(click, 64)[0], 255);
+  assert.ok(Math.abs(loudness(Math.sqrt(1 / 100)) - 0.6) < 1e-9);
+  assert.deepEqual(Array.from(waveformFromLevels(Array(100).fill(0))), Array(64).fill(0), "silence stays flat");
+  assert.deepEqual(Array.from(waveformFromLevels([])), Array(64).fill(0));
   // Fewer samples than slices still fill every slice.
-  const short = waveformFromPeaks([0.5, 1]);
-  assert.deepEqual(Array.from(short.slice(0, 32)), Array(32).fill(128));
-  assert.deepEqual(Array.from(short.slice(32)), Array(32).fill(255));
+  assert.equal(waveformFromLevels([0.1, 0.5]).length, 64);
+  assert.equal(loudness(0), 0);
+  assert.equal(loudness(1), 1);
+  assert.equal(loudness(0.001), 0, "−60 dB is below the −50 dB floor");
+  assert.ok(Math.abs(loudness(10 ** (-25 / 20)) - 0.5) < 1e-9, "−25 dB is halfway");
 });
 
 test("waveforms travel as standard base64 and decode only within the server's 1–256 bytes", () => {
@@ -76,14 +93,104 @@ test("waveforms travel as standard base64 and decode only within the server's 1�
   assert.equal(decodeWaveform(42), undefined);
 });
 
-test("any waveform length resamples to the drawn bar count", () => {
-  const bytes = Uint8Array.from([0, 255, 51, 102]);
-  assert.deepEqual(resampleWaveform(bytes, 2), [1, 0.4], "shrinking keeps each span's peak");
-  assert.deepEqual(resampleWaveform(bytes, 8), [0, 0, 1, 1, 0.2, 0.2, 0.4, 0.4], "stretching repeats");
-  assert.deepEqual(resampleWaveform(bytes, 4), [0, 1, 0.2, 0.4]);
-  assert.equal(resampleWaveform(new Uint8Array(256).fill(255), VOICE_BARS).length, VOICE_BARS);
+test("any waveform length resamples by linear interpolation to the bars that fit", () => {
+  const bytes = Uint8Array.from([0, 255, 51]);
+  assert.deepEqual(resampleWaveform(bytes, 3), [0, 1, 0.2]);
+  assert.deepEqual(resampleWaveform(bytes, 5), [0, 0.5, 1, 0.6, 0.2], "stretching interpolates, never steps");
+  assert.deepEqual(resampleWaveform(Uint8Array.from([0, 255]), 2), [0, 1]);
+  assert.deepEqual(resampleWaveform(Uint8Array.from([255]), 3), [1, 1, 1]);
+  assert.equal(resampleWaveform(new Uint8Array(64).fill(255), VOICE_BARS).length, VOICE_BARS);
   assert.deepEqual(resampleWaveform(undefined, 3), [0, 0, 0], "a missing waveform is flat");
   assert.deepEqual(resampleWaveform(bytes, 0), []);
+  // 3px bars with 2px gaps.
+  assert.equal(barsFor(198), 40);
+  assert.equal(barsFor(10), 8, "never fewer than eight");
+  // The boundary bar fills partially as playback moves.
+  assert.deepEqual(
+    [0, 1, 2, 3].map((index) => barFill(index, 4, 0.6)),
+    [1, 1, 0.3999999999999999, 0],
+  );
+  assert.equal(barFill(3, 4, 1), 1);
+});
+
+test("the live meter rises fast and falls slowly", () => {
+  let level = 0;
+  level = smoothLevel(level, 1);
+  assert.equal(level, 0.6, "attack");
+  const before = level;
+  level = smoothLevel(level, 0);
+  assert.ok(level < before && level > 0.5, "release is slower");
+  assert.equal(smoothLevel(0.2, Number.NaN), 0.2 * 0.88);
+});
+
+test("sending as soon as recording stops is off unless the person turns it on", (t) => {
+  const stored = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => stored.set(key, value),
+  });
+  const events: string[] = [];
+  vi.stubGlobal("window", { dispatchEvent: (event: Event) => events.push(event.type) });
+  t.onTestFinished(() => {
+    vi.unstubAllGlobals();
+  });
+  assert.equal(getVoiceSendOnStop(), false, "default: stage in the composer");
+  setVoiceSendOnStop(true);
+  assert.equal(getVoiceSendOnStop(), true);
+  assert.equal(stored.get("caper:voice-send-on-stop"), "on");
+  setVoiceSendOnStop(false);
+  assert.equal(getVoiceSendOnStop(), false);
+  assert.deepEqual(events, ["caper:voice-send-on-stop", "caper:voice-send-on-stop"], "open composers follow");
+});
+
+test("a staged voice message is a compact chip beside staged files, removable", () => {
+  const html = renderToStaticMarkup(
+    createElement(DraftAttachments, {
+      drafts: [
+        { key: "p", name: "shot.png", sourceSize: 10, progress: 1, localUrl: "blob:p", localKind: "image" },
+        {
+          key: "v",
+          name: "Voice message",
+          sourceSize: 2_000,
+          progress: 0.5,
+          localUrl: "blob:v",
+          voice: { durationMs: 4_200, waveform: encodeWaveform(new Uint8Array(64).fill(128)) },
+        },
+      ],
+      onRemove: () => {},
+    }),
+  );
+  assert.match(html, /<li [^>]*data-voice="true"/);
+  assert.match(html, /data-compact="true"/);
+  assert.match(html, /aria-label="Play voice message"/);
+  assert.match(html, />0:04</);
+  assert.match(html, /aria-label="Remove voice message"/);
+  assert.match(html, /aria-label="Remove shot\.png"/, "files keep their own tiles");
+  assert.doesNotMatch(html, /aria-label="Spoiler attachment: Voice message"/, "no spoiler or edit for a voice chip");
+});
+
+test("removing a staged voice message cancels its upload", async () => {
+  const calls: string[] = [];
+  const transport: UploadTransport = {
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push(`${init?.method} ${String(input)}`);
+      if (String(input) === "/api/assets")
+        return Response.json({ id: "a9", upload: { method: "PUT", url: "https://r2.test/a9", headers: {} } });
+      if (String(input).endsWith("/cancel")) return new Response(null, { status: 204 });
+      return Response.json(voiceFile({ id: "a9" }));
+    }) as typeof fetch,
+    put: async (_url, _headers, _body, report) => report(1),
+  };
+  const upload = AttachmentUpload.voice(
+    "chan1",
+    { blob: new Blob([new Uint8Array(10)]), contentType: "audio/webm", durationMs: 1_500, waveform: "" },
+    () => {},
+    transport,
+  );
+  await upload.ensure();
+  upload.release(true);
+  assert.deepEqual(calls, ["POST /api/assets", "POST /api/assets/a9/complete", "POST /api/assets/a9/cancel"]);
+  assert.equal(upload.source, undefined, "the local recording is dropped");
 });
 
 test("durations format as m:ss, rounding totals, flooring the timer and ceiling countdowns", () => {
@@ -155,7 +262,7 @@ test("voice attachments validate, keep their fields and render the voice player;
   const html = renderToStaticMarkup(createElement(MessageAttachments, { attachments: [voice, song] }));
   assert.match(html, /aria-label="Play voice message"/);
   assert.match(html, /role="slider"/);
-  assert.equal(html.match(/<span (data-played="true" )?style="height:/g)?.length, VOICE_BARS);
+  assert.equal(html.match(/<span style="height:/g)?.length, VOICE_BARS, "every bar before measuring");
   assert.match(html, />0:04</, "idle shows the total duration");
   assert.match(html, /Transcribing…/);
   assert.doesNotMatch(html, /Voice message\.m4a/, "the filename is not shown");
@@ -232,9 +339,6 @@ test("recording prefers WebM Opus, then MP4, then Ogg Opus, and uploads the cont
   assert.equal(voiceFilename("audio/mp4"), "voice-message.m4a");
   assert.equal(voiceFilename("audio/ogg"), "voice-message.ogg");
   assert.equal(voiceFilename("audio/webm"), "voice-message.webm");
-  assert.equal(levelHeight(0), 0);
-  assert.equal(levelHeight(1), 1);
-  assert.ok(levelHeight(0.05) > 0.4 && levelHeight(0.05) < 0.6, "quiet speech still moves the meter");
 });
 
 test("a voice recording uploads as recorded with voice, duration and waveform, then sends the completed description", async () => {

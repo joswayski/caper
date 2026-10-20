@@ -1,8 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { ChevronLeft, Mic, Send, Trash2 } from "lucide-react";
+import { ChevronLeft, Mic, Square, Trash2 } from "lucide-react";
 import {
+  BAR_GAP,
+  BAR_WIDTH,
   HOLD_TAP_MS,
-  levelHeight,
+  LIVE_BAR_MS,
+  loudness,
+  smoothLevel,
   startVoiceRecording,
   stopVoicePlayback,
   formatVoiceDuration,
@@ -13,9 +17,14 @@ import {
 
 /** What a conversation offers a composer for voice messages. */
 export interface VoiceComposer {
-  /** A finished recording; the conversation uploads and sends it on its own. */
+  /** A finished recording: staged in the composer, or sent on its own when the
+   * "send as soon as I stop recording" preference is on. */
   onRecorded: (recording: VoiceRecording, options?: { broadcast?: boolean }) => void;
-  /** A recording is uploading or being handed to the send. */
+  /** Whether stopping sends (the preference), for the bar's wording. */
+  sendOnStop?: boolean;
+  /** Why the microphone can't record right now, such as a staged voice message. */
+  blockedReason?: string;
+  /** A send-on-stop recording is uploading or being handed to the send. */
   sending?: boolean;
   /** Its upload failed; Retry sends the same recording again. */
   error?: string;
@@ -29,8 +38,10 @@ const LIVE_BARS = 120;
 const SLIDE_CANCEL_PX = 96;
 const DRAG_OFF_PX = 140;
 const HINT_MS = 2_500;
+const STEP_PX = BAR_WIDTH + BAR_GAP;
 
 const touchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
+const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const haptic = () => {
   try {
     navigator.vibrate?.(15);
@@ -40,13 +51,15 @@ const haptic = () => {
 };
 
 type Phase = "idle" | "starting" | "recording";
-type Mode = "click" | "hold";
+/** Hands-free (tap or click, then Stop) or press-and-hold (release stops). */
+type Mode = "free" | "hold";
 
 /**
- * The composer's microphone. Desktop layouts click to record (the input row
- * becomes the recording bar: discard, timer, live level and send; Escape
- * discards and Enter sends). Touch layouts press and hold, release to send and
- * slide left to cancel. Keyboard activation always uses the click flow.
+ * The composer's microphone. A tap or click records hands-free: the input row
+ * becomes the recording bar (discard, timer, live level and Stop; Enter stops
+ * and Escape discards). Touch layouts can also press and hold, release to stop
+ * and slide left to cancel. Stopping stages the recording in the composer, or
+ * sends it when the person chose "Send voice messages as soon as I stop recording".
  */
 export function useVoiceRecorder({
   voice,
@@ -58,7 +71,7 @@ export function useVoiceRecorder({
   returnFocus?: RefObject<HTMLTextAreaElement | null>;
 }): { button: ReactNode; bar: ReactNode; notice: ReactNode; active: boolean } {
   const [phase, setPhase] = useState<Phase>("idle");
-  const [mode, setMode] = useState<Mode>("click");
+  const [mode, setMode] = useState<Mode>("free");
   const [levels, setLevels] = useState<number[]>([]);
   const [elapsed, setElapsed] = useState(0);
   const [slide, setSlide] = useState(0);
@@ -67,9 +80,11 @@ export function useVoiceRecorder({
   const recorder = useRef<VoiceRecorder>(undefined);
   const session = useRef(0);
   const hold = useRef<{ id: number; x: number; y: number; downAt: number; released: boolean }>(undefined);
-  const button = useRef<HTMLButtonElement>(null);
-  const send = useRef<HTMLButtonElement>(null);
-  /** The press that ends in this click was a hold, so the click is not a toggle. */
+  const stop = useRef<HTMLButtonElement>(null);
+  const meter = useRef<HTMLSpanElement>(null);
+  const level = useRef(0);
+  const lastBar = useRef(0);
+  /** The press that ends in this click was handled by the pointer, so the click is not a toggle. */
   const pressed = useRef(false);
   const onRecorded = useRef(voice?.onRecorded);
   onRecorded.current = voice?.onRecorded;
@@ -100,13 +115,13 @@ export function useVoiceRecorder({
   );
 
   const finish = useCallback(
-    async (held: boolean) => {
+    async (focus: boolean) => {
       const current = recorder.current;
       if (!current) return;
-      reset(!held);
+      reset(focus);
       try {
         const recording = await current.stop();
-        if (!recording) setHint(held ? "Hold to record" : "Too short to send");
+        if (!recording) setHint("Too short to keep. Record for at least a second.");
         else onRecorded.current?.(recording);
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : "Recording failed. Try again.");
@@ -116,7 +131,7 @@ export function useVoiceRecorder({
   );
 
   const start = async (next: Mode) => {
-    if (phase !== "idle" || disabled || !voice) return;
+    if (phase !== "idle" || disabled || !voice || voice.blockedReason) return;
     stopVoicePlayback();
     setError(undefined);
     setHint(undefined);
@@ -125,27 +140,37 @@ export function useVoiceRecorder({
     setPhase("starting");
     setLevels([]);
     setElapsed(0);
+    level.current = 0;
     try {
       const started = await startVoiceRecording({
-        onLevel: (peak) => {
+        onLevel: (rms) => {
           if (session.current !== id) return;
-          setLevels((current) => [...current.slice(1 - LIVE_BARS), levelHeight(peak)]);
-          setElapsed(performance.now() - started.startedAt);
+          level.current = smoothLevel(level.current, rms);
+          const now = performance.now();
+          // One bar per LIVE_BAR_MS at a constant rate; the meter scrolls between them.
+          if (now - lastBar.current < LIVE_BAR_MS) return;
+          lastBar.current = now - lastBar.current > LIVE_BAR_MS * 3 ? now : lastBar.current + LIVE_BAR_MS;
+          setLevels((current) => [...current.slice(1 - LIVE_BARS), loudness(level.current)]);
+          setElapsed(now - started.startedAt);
         },
         onLimit: () => {
-          if (session.current === id) void finish(next === "hold");
+          if (session.current === id) void finish(false);
         },
       });
-      // Released, discarded or unmounted while the microphone was starting
-      // (for example during the permission prompt): record nothing.
-      if (session.current !== id || (next === "hold" && (!hold.current || hold.current.released))) {
+      // Discarded or unmounted while the microphone was starting (for example
+      // during the permission prompt): record nothing.
+      if (session.current !== id) {
         started.cancel();
-        if (session.current === id) reset(false);
         return;
       }
       recorder.current = started;
+      lastBar.current = performance.now();
+      // A hold released before the microphone started was a tap: keep recording hands-free.
+      const held = next === "hold" && !!hold.current && !hold.current.released;
+      if (next === "hold" && !held) setMode("free");
       setPhase("recording");
-      if (next === "click") requestAnimationFrame(() => send.current?.focus());
+      // Pointer layouts focus Stop for Enter; touch leaves focus (and the keyboard) alone.
+      if (!held && next === "free") requestAnimationFrame(() => stop.current?.focus());
     } catch (cause) {
       if (session.current !== id) return;
       reset(false);
@@ -155,12 +180,25 @@ export function useVoiceRecorder({
     }
   };
 
-  // The desktop bar's keys: Escape discards and Enter sends, wherever focus is.
+  // Scroll the live bars smoothly between additions; reduced motion steps instead.
   useEffect(() => {
-    if (phase === "idle" || mode !== "click") return;
+    if (phase !== "recording" || reducedMotion()) return;
+    let frame = 0;
+    const tick = () => {
+      const shift = Math.min(1, (performance.now() - lastBar.current) / LIVE_BAR_MS) * STEP_PX;
+      meter.current?.style.setProperty("--shift", `${-shift}px`);
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [phase]);
+
+  // The hands-free bar's keys: Escape discards and Enter stops, wherever focus is.
+  useEffect(() => {
+    if (phase === "idle" || mode !== "free") return;
     const keydown = (event: KeyboardEvent) => {
       if (event.key === "Escape") discard();
-      else if (event.key === "Enter" && !event.isComposing) void finish(false);
+      else if (event.key === "Enter" && !event.isComposing) void finish(true);
       else return;
       event.preventDefault();
       event.stopPropagation();
@@ -182,14 +220,14 @@ export function useVoiceRecorder({
   }, [disabled]);
 
   const active = phase !== "idle";
-  const blocked = disabled || !!voice?.sending;
+  const blocked = disabled || !!voice?.sending || !!voice?.blockedReason;
+  const releaseLabel = voice?.sendOnStop ? "Release to send" : "Release to stop";
   const micButton = voice ? (
     <button
-      ref={button}
       type="button"
       className="chat-composer-tool chat-voice-mic"
       aria-label="Record voice message"
-      title="Record voice message"
+      title={voice.blockedReason ?? "Record voice message"}
       data-recording={active || undefined}
       disabled={blocked}
       onPointerDown={(event) => {
@@ -210,40 +248,38 @@ export function useVoiceRecorder({
         void start("hold");
       }}
       onPointerMove={(event) => {
-        const pressed = hold.current;
-        if (!pressed || pressed.id !== event.pointerId || pressed.released) return;
-        const dx = event.clientX - pressed.x;
-        const dy = event.clientY - pressed.y;
+        const current = hold.current;
+        if (!current || current.id !== event.pointerId || current.released) return;
+        const dx = event.clientX - current.x;
+        const dy = event.clientY - current.y;
         setSlide(Math.min(0, dx));
         if (dx < -SLIDE_CANCEL_PX || Math.hypot(dx, dy) > DRAG_OFF_PX) {
-          pressed.released = true;
+          current.released = true;
           haptic();
           discard(false);
         }
       }}
       onPointerUp={(event) => {
-        const pressed = hold.current;
-        if (!pressed || pressed.id !== event.pointerId || pressed.released) return;
-        pressed.released = true;
-        // A tap, or a release before the microphone started (such as during the
-        // permission prompt), records nothing.
-        if (performance.now() - pressed.downAt >= HOLD_TAP_MS && recorder.current) void finish(true);
-        else {
-          discard(false);
-          setHint("Hold to record");
-        }
+        const current = hold.current;
+        if (!current || current.id !== event.pointerId || current.released) return;
+        current.released = true;
+        setSlide(0);
+        // A tap (or a release before the microphone started) keeps recording
+        // hands-free until Stop; releasing a real hold stops.
+        if (performance.now() - current.downAt < HOLD_TAP_MS || !recorder.current) {
+          setMode("free");
+        } else void finish(false);
       }}
       onPointerCancel={() => {
         if (hold.current && !hold.current.released) discard(false);
       }}
       onContextMenu={(event) => event.preventDefault()}
       onClick={() => {
-        // Touch layouts record while held; a keyboard press still uses the click flow.
         if (pressed.current) {
           pressed.current = false;
           return;
         }
-        if (phase === "idle") void start("click");
+        if (phase === "idle") void start("free");
       }}
     >
       <Mic size={16} aria-hidden="true" />
@@ -251,16 +287,24 @@ export function useVoiceRecorder({
   ) : null;
 
   const time = formatVoiceDuration(elapsed, "floor");
-  const meter = (
+  const levelMeter = (
     <span className="chat-voice-levels" aria-hidden="true">
-      {Array.from({ length: LIVE_BARS }, (_, index) => {
-        const level = levels[index - (LIVE_BARS - levels.length)];
-        return <span key={index} style={{ height: `${Math.max(0.08, level ?? 0) * 100}%` }} />;
-      })}
+      <span ref={meter}>
+        {Array.from({ length: LIVE_BARS }, (_, index) => {
+          const value = levels[index - (LIVE_BARS - levels.length)];
+          return <span key={index} style={{ height: `${(value ?? 0) * 100}%` }} />;
+        })}
+      </span>
     </span>
   );
-  const bar = !active ? null : mode === "click" ? (
-    <div className="chat-voice-recorder" data-mode="click" role="group" aria-label="Recording voice message">
+  const dot = <span className="chat-voice-dot" data-live={phase === "recording" || undefined} aria-hidden="true" />;
+  const timer = (
+    <span className="chat-voice-elapsed" role="timer" aria-label={`Recording ${time}`}>
+      {phase === "starting" ? "Starting…" : time}
+    </span>
+  );
+  const bar = !active ? null : mode === "free" ? (
+    <div className="chat-voice-recorder" data-mode="free" role="group" aria-label="Recording voice message">
       <button
         type="button"
         className="chat-voice-discard"
@@ -270,33 +314,29 @@ export function useVoiceRecorder({
       >
         <Trash2 size={16} aria-hidden="true" />
       </button>
-      <span className="chat-voice-dot" data-live={phase === "recording" || undefined} aria-hidden="true" />
-      <span className="chat-voice-elapsed" role="timer" aria-label={`Recording ${time}`}>
-        {phase === "starting" ? "Starting…" : time}
-      </span>
-      {meter}
+      {dot}
+      {timer}
+      {levelMeter}
       <button
-        ref={send}
+        ref={stop}
         type="button"
-        className="chat-voice-send"
-        aria-label="Send voice message"
-        title="Send (Enter)"
+        className="chat-voice-stop"
+        aria-label="Stop recording"
+        title={voice?.sendOnStop ? "Stop and send (Enter)" : "Stop (Enter)"}
         disabled={phase !== "recording"}
-        onClick={() => void finish(false)}
+        onClick={() => void finish(!touchLayout())}
       >
-        <Send size={16} aria-hidden="true" />
+        <Square size={12} fill="currentColor" aria-hidden="true" />
       </button>
     </div>
   ) : (
     <div className="chat-voice-recorder" data-mode="hold" role="group" aria-label="Recording voice message">
       <span className="chat-voice-release" aria-hidden="true">
-        Release to send
+        {releaseLabel}
       </span>
-      <span className="chat-voice-dot" data-live={phase === "recording" || undefined} aria-hidden="true" />
-      <span className="chat-voice-elapsed" role="timer" aria-label={`Recording ${time}`}>
-        {phase === "starting" ? "Starting…" : time}
-      </span>
-      {meter}
+      {dot}
+      {timer}
+      {levelMeter}
       <span
         className="chat-voice-slide"
         style={{

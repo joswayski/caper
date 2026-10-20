@@ -1,19 +1,56 @@
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context.ts";
 import type { ChatAttachment } from "./types.ts";
 
-/** Voice messages: recording, the uploaded peak waveform, playback and transcripts.
- * The wire contract (64 normalised peaks, base64; `transcript` states) is shared
- * with the API and every native client. */
+/** Voice messages: recording, the uploaded waveform, playback and transcripts.
+ * The wire contract (64 normalised loudness bytes, base64; `transcript` states)
+ * is shared with the API and every native client. */
 
 /** Recording stops and sends itself at ten minutes, the server's limit. */
 export const MAX_VOICE_MS = 600_000;
 /** Shorter recordings are treated as a tap and never uploaded. */
 export const MIN_VOICE_MS = 1_000;
-/** A press shorter than this on a touch layout is a tap, which records nothing. */
+/** On touch layouts a press held at least this long is press-and-hold (release
+ * stops); a shorter tap keeps recording hands-free until Stop. */
 export const HOLD_TAP_MS = 300;
 export const WAVEFORM_SLICES = 64;
-/** How often the live input level is sampled while recording. */
-export const LEVEL_INTERVAL_MS = 50;
+/** How often the input level is sampled while recording (50 Hz). */
+export const LEVEL_INTERVAL_MS = 20;
+/** The live meter adds one bar this often and scrolls between them. */
+export const LIVE_BAR_MS = 70;
+/** Waveform bars: width and gap in CSS pixels, shared by the player, chip and meter. */
+export const BAR_WIDTH = 3;
+export const BAR_GAP = 2;
+/** Loudness below this is drawn as silence. */
+const FLOOR_DB = -50;
+
+/** Per-device preference: send as soon as recording stops, instead of staging
+ * the voice message in the composer. Off by default. */
+const SEND_ON_STOP = "caper:voice-send-on-stop";
+let sendOnStop = false;
+export function getVoiceSendOnStop(): boolean {
+  try {
+    return localStorage.getItem(SEND_ON_STOP) === "on";
+  } catch {
+    return sendOnStop;
+  }
+}
+export function setVoiceSendOnStop(enabled: boolean) {
+  sendOnStop = enabled;
+  try {
+    localStorage.setItem(SEND_ON_STOP, enabled ? "on" : "off");
+  } catch {
+    /* The in-memory preference still works. */
+  }
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(SEND_ON_STOP));
+}
+export function subscribeVoiceSendOnStop(changed: () => void) {
+  window.addEventListener(SEND_ON_STOP, changed);
+  window.addEventListener("storage", changed);
+  return () => {
+    window.removeEventListener(SEND_ON_STOP, changed);
+    window.removeEventListener("storage", changed);
+  };
+}
 
 /** MediaRecorder types in order of preference. */
 export const VOICE_TYPES = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus"] as const;
@@ -26,7 +63,7 @@ export interface VoiceRecording {
   /** The recorder's type without codec parameters, as uploaded. */
   contentType: string;
   durationMs: number;
-  /** Base64 of the 64 normalised slice peaks. */
+  /** Base64 of the 64 normalised slice loudness bytes. */
   waveform: string;
 }
 
@@ -51,27 +88,38 @@ export function voiceFilename(contentType: string): string {
   return `voice-message.${extension}`;
 }
 
-/** Peak amplitude of each of `slices` equal time slices of `peaks` (sampled at a
- * steady rate), scaled linearly so the loudest slice is 255. Silence stays 0. */
-export function waveformFromPeaks(peaks: ArrayLike<number>, slices = WAVEFORM_SLICES): Uint8Array {
+/** Perceptual loudness 0–1 of an RMS amplitude: −50 dB (and below) to 0 dB. */
+export function loudness(rms: number): number {
+  if (!(rms > 0)) return 0;
+  return Math.max(0, Math.min(1, (20 * Math.log10(Math.min(1, rms)) - FLOOR_DB) / -FLOOR_DB));
+}
+
+/** The uploaded waveform: the RMS of each of `slices` equal time slices of the
+ * RMS samples (taken at a steady rate), on the perceptual scale, smoothed with a
+ * 3-tap moving average, then scaled so the loudest slice is 255. */
+export function waveformFromLevels(levels: ArrayLike<number>, slices = WAVEFORM_SLICES): Uint8Array {
   const output = new Uint8Array(slices);
-  const count = peaks.length;
+  const count = levels.length;
   if (!count || slices <= 0) return output;
-  const sliced = new Float64Array(slices);
-  for (let slice = 0; slice < slices; slice++) {
+  const scaled = Array.from({ length: slices }, (_, slice) => {
     const start = Math.floor((slice * count) / slices);
     const end = Math.max(start + 1, Math.floor(((slice + 1) * count) / slices));
-    let peak = 0;
+    let energy = 0;
+    let samples = 0;
     for (let index = start; index < end && index < count; index++) {
-      const value = Math.abs(Number(peaks[index]) || 0);
-      if (value > peak) peak = value;
+      const value = Number(levels[index]) || 0;
+      energy += value * value;
+      samples++;
     }
-    sliced[slice] = peak;
-  }
-  let loudest = 0;
-  for (const value of sliced) if (value > loudest) loudest = value;
+    return loudness(Math.sqrt(energy / Math.max(1, samples)));
+  });
+  const smoothed = scaled.map((_, index) => {
+    const window = scaled.slice(Math.max(0, index - 1), index + 2);
+    return window.reduce((sum, value) => sum + value, 0) / window.length;
+  });
+  const loudest = Math.max(...smoothed);
   if (loudest <= 0) return output;
-  for (let slice = 0; slice < slices; slice++) output[slice] = Math.round((sliced[slice] / loudest) * 255);
+  for (let slice = 0; slice < slices; slice++) output[slice] = Math.round((smoothed[slice] / loudest) * 255);
   return output;
 }
 
@@ -93,19 +141,30 @@ export function decodeWaveform(value: unknown): Uint8Array | undefined {
   }
 }
 
-/** Heights 0–1 for `bars` bars from a waveform of any length: the loudest byte
- * of each bar's span when shrinking, the nearest byte when stretching. */
+/** Heights 0–1 for `bars` evenly spaced bars from a waveform of any length,
+ * linearly interpolated so stretched and squeezed waveforms stay smooth. */
 export function resampleWaveform(bytes: Uint8Array | undefined, bars: number): number[] {
   if (bars <= 0) return [];
   if (!bytes?.length) return Array<number>(bars).fill(0);
-  const length = bytes.length;
+  const last = bytes.length - 1;
   return Array.from({ length: bars }, (_, bar) => {
-    const start = Math.floor((bar * length) / bars);
-    const end = Math.max(start + 1, Math.floor(((bar + 1) * length) / bars));
-    let peak = 0;
-    for (let index = start; index < end && index < length; index++) peak = Math.max(peak, bytes[index]);
-    return peak / 255;
+    const position = bars === 1 ? last / 2 : (bar * last) / (bars - 1);
+    const below = Math.floor(position);
+    const above = Math.min(last, below + 1);
+    const mix = position - below;
+    return (bytes[below] * (1 - mix) + bytes[above] * mix) / 255;
   });
+}
+
+/** How many bars of the shared width and gap fit `width` pixels. */
+export function barsFor(width: number, minimum = 8): number {
+  return Math.max(minimum, Math.floor((width + BAR_GAP) / (BAR_WIDTH + BAR_GAP)));
+}
+
+/** How much of bar `index` of `bars` is played at `progress` (0–1): the
+ * boundary bar fills partially. */
+export function barFill(index: number, bars: number, progress: number): number {
+  return Math.max(0, Math.min(1, progress * bars - index));
 }
 
 /** `m:ss` (or `h:mm:ss`). Totals round, the elapsed timer floors and a countdown
@@ -161,11 +220,10 @@ export function attachmentsExcerpt(attachments: readonly unknown[] | undefined) 
     : "Attachment";
 }
 
-/** Live input level 0–1 on a loudness scale (−54 dB to 0 dB), for the recording bar. */
-export function levelHeight(peak: number): number {
-  if (!(peak > 0)) return 0;
-  const decibels = 20 * Math.log10(Math.min(1, peak));
-  return Math.max(0, Math.min(1, (decibels + 54) / 54));
+/** The live meter's level: fast attack, slower release, per 20 ms sample. */
+export function smoothLevel(previous: number, rms: number): number {
+  const next = Math.max(0, rms || 0);
+  return previous + (next - previous) * (next > previous ? 0.6 : 0.12);
 }
 
 // One voice message plays at a time across the app; recording stops playback.
@@ -204,7 +262,8 @@ export async function startVoiceRecording({
   onLimit,
   now = () => performance.now(),
 }: {
-  onLevel?: (peak: number) => void;
+  /** RMS input level of each ~20 ms sample. */
+  onLevel?: (rms: number) => void;
   /** Ten minutes passed; the caller stops and sends. */
   onLimit?: () => void;
   now?: () => number;
@@ -232,7 +291,7 @@ export async function startVoiceRecording({
     throw new VoiceRecordingError("Voice messages can’t be recorded in this browser.");
   }
   const chunks: Blob[] = [];
-  const peaks: number[] = [];
+  const levels: number[] = [];
   let context: AudioContext | undefined;
   let source: MediaStreamAudioSourceNode | undefined;
   let analyser: AnalyserNode | undefined;
@@ -241,7 +300,7 @@ export async function startVoiceRecording({
     void context.resume().catch(() => undefined);
     source = context.createMediaStreamSource(stream);
     analyser = context.createAnalyser();
-    analyser.fftSize = 2048;
+    analyser.fftSize = 1024;
     source.connect(analyser);
   } catch {
     // Without Web Audio the recording still works; it just has a flat waveform.
@@ -251,13 +310,15 @@ export async function startVoiceRecording({
   let finished = false;
   const sample = () => {
     if (finished) return;
-    let peak = 0;
+    let rms = 0;
     if (analyser && samples) {
       analyser.getFloatTimeDomainData(samples);
-      for (const value of samples) peak = Math.max(peak, Math.abs(value));
+      let energy = 0;
+      for (const value of samples) energy += value * value;
+      rms = Math.sqrt(energy / samples.length);
     }
-    peaks.push(peak);
-    onLevel?.(peak);
+    levels.push(rms);
+    onLevel?.(rms);
     if (now() - startedAt >= MAX_VOICE_MS) onLimit?.();
   };
   const timer = setInterval(sample, LEVEL_INTERVAL_MS);
@@ -298,7 +359,7 @@ export async function startVoiceRecording({
             blob: new Blob(chunks, { type: contentType }),
             contentType,
             durationMs,
-            waveform: encodeWaveform(waveformFromPeaks(peaks)),
+            waveform: encodeWaveform(waveformFromLevels(levels)),
           });
         };
         recorder.onstop = done;

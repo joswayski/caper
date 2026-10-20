@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { ArrowRight, ChevronDown, MoreHorizontal, Pin, X } from "lucide-react";
 import {
   FloatingFocusManager,
@@ -51,7 +60,13 @@ import { MediaPreviewContext } from "./MediaPreviewContext.ts";
 import DropOverlay from "./DropOverlay.tsx";
 import { carriesFiles } from "./drop.ts";
 import { MAX_ATTACHMENTS, AttachmentUpload, refreshAttachmentUrls, uploadSettings, UploadError } from "./uploads.ts";
-import { isVoiceAttachment, type VoiceRecording } from "./voice.ts";
+import {
+  getVoiceSendOnStop,
+  isVoiceAttachment,
+  subscribeVoiceSendOnStop,
+  VOICE_LABEL,
+  type VoiceRecording,
+} from "./voice.ts";
 import type { VoiceComposer } from "./VoiceRecorder.tsx";
 import { editableKind, type CompressionSettings } from "./prepare.ts";
 import { appGateway, type PresenceStatus } from "../gateway/client.ts";
@@ -1028,6 +1043,37 @@ export default function Chat({
     }
   };
 
+  /** Stages a recorded voice message with the conversation's files: it uploads
+   * now (so transcription starts) and goes with the next Send. One per message. */
+  const stageVoice = (recording: VoiceRecording, threadRootId?: string) => {
+    const channel = state.channelId;
+    if (!signedIn || !channel) return;
+    const staged = drafts.filter((draft) => draft.threadRootId === threadRootId);
+    if (staged.length >= MAX_ATTACHMENTS) {
+      setAttachError(`You can attach up to ${MAX_ATTACHMENTS} files.`, threadRootId);
+      return;
+    }
+    if (staged.some((draft) => draft.voice)) return;
+    const key = crypto.randomUUID();
+    const localUrl = URL.createObjectURL(recording.blob);
+    objectUrls.current.add(localUrl);
+    const upload = AttachmentUpload.voice(channel, recording, (next) => stagedFileChanged(key, next));
+    uploads.current.set(key, upload);
+    setDrafts((current) => [
+      ...current,
+      {
+        key,
+        threadRootId,
+        name: VOICE_LABEL,
+        localUrl,
+        sourceSize: recording.blob.size,
+        progress: 0,
+        voice: { durationMs: recording.durationMs, waveform: recording.waveform },
+      },
+    ]);
+    void upload.ensure().catch(() => {});
+  };
+
   /** Revokes a draft's local copy once nothing can show it. */
   const forgetLocalUrl = (url: string | undefined) => {
     if (!url) return;
@@ -1379,12 +1425,24 @@ export default function Chat({
     },
     [channelId],
   );
+  const sendOnStop = useSyncExternalStore(subscribeVoiceSendOnStop, getVoiceSendOnStop, () => false);
   const voiceFor = (threadRootId?: string): VoiceComposer | undefined => {
     if (!signedIn || readOnly) return;
     const key = threadRootId ?? "channel";
     const status = voiceSends[key];
+    const staged = drafts.filter((draft) => draft.threadRootId === threadRootId);
     return {
-      onRecorded: (recording, options) => recordVoice(recording, threadRootId, options?.broadcast),
+      // Read at the moment recording stops, so a changed preference applies at once.
+      onRecorded: (recording, options) =>
+        getVoiceSendOnStop()
+          ? recordVoice(recording, threadRootId, options?.broadcast)
+          : stageVoice(recording, threadRootId),
+      sendOnStop,
+      blockedReason: staged.some((draft) => draft.voice)
+        ? "Remove the voice message to record another"
+        : staged.length >= MAX_ATTACHMENTS
+          ? `You can attach up to ${MAX_ATTACHMENTS} files.`
+          : undefined,
       sending: !!status && !status.error,
       error: status?.error,
       onRetry: () => void sendVoice(key),

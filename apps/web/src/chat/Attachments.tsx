@@ -30,7 +30,7 @@ import type { AttachmentEdit, EditTool } from "./edit.ts";
 import { attachmentView, type ChatAttachment } from "./types.ts";
 import { formatBytes, type UploadState } from "./uploads.ts";
 import { attachmentLabel, isVoiceAttachment } from "./voice.ts";
-import { VoiceMessage } from "./VoiceMessage.tsx";
+import { VoiceMessage, VoicePlayer } from "./VoiceMessage.tsx";
 
 const AttachmentEditor = lazy(() => import("./AttachmentEditor.tsx"));
 
@@ -532,6 +532,8 @@ export function MessageAttachments({
 
 export interface DraftAttachment extends UploadState {
   key: string;
+  /** A recorded voice message staged with the files: shown as a voice chip. */
+  voice?: { durationMs: number; waveform?: string };
   spoiler?: boolean;
   /** A thread's files stay separate from the channel and other thread drafts. */
   threadRootId?: string;
@@ -650,13 +652,14 @@ function DraftAttachmentTile({
         ref={refs.setReference}
         data-error={draft.error ? true : undefined}
         data-spoiler={draft.spoiler || undefined}
+        data-voice={draft.voice ? true : undefined}
         title={draft.error ?? draft.name}
         onPointerDown={(event) => {
           cancelPress();
           suppressClick.current = false;
           if (!onRemove || !event.isPrimary || event.button !== 0) return;
           const target = event.target as HTMLElement;
-          if (target.closest(".chat-draft-actions, .chat-draft-retry")) return;
+          if (target.closest(".chat-draft-actions, .chat-draft-retry, .chat-voice")) return;
           returnFocus.current = event.currentTarget.querySelector<HTMLElement>(".chat-draft-preview");
           press.current = {
             x: event.clientX,
@@ -830,6 +833,44 @@ export function DraftAttachments({
             </>
           );
           const viewable = media.some((attachment) => attachment.id === draft.key);
+          if (draft.voice)
+            return (
+              <DraftAttachmentTile key={draft.key} draft={draft} onRemove={onRemove}>
+                <VoicePlayer
+                  compact
+                  attachment={{
+                    url: draft.localUrl ?? draft.attachment?.url,
+                    durationMs: draft.voice.durationMs,
+                    waveform: draft.voice.waveform,
+                  }}
+                />
+                {busy && <progress max={1} value={draft.progress} aria-label={`Uploading ${draft.name}`} />}
+                {draft.error && onRetry && (
+                  <button
+                    type="button"
+                    className="chat-draft-retry"
+                    aria-label={`Retry uploading ${draft.name}`}
+                    title={draft.error}
+                    onClick={() => onRetry(draft.key)}
+                  >
+                    Retry upload
+                  </button>
+                )}
+                {onRemove && (
+                  <div className="chat-draft-actions">
+                    <button
+                      type="button"
+                      className="chat-draft-remove"
+                      aria-label="Remove voice message"
+                      title="Remove"
+                      onClick={() => onRemove(draft.key)}
+                    >
+                      <X size={14} aria-hidden="true" />
+                    </button>
+                  </div>
+                )}
+              </DraftAttachmentTile>
+            );
           return (
             <DraftAttachmentTile key={draft.key} draft={draft} onRemove={onRemove}>
               {viewable ? (
