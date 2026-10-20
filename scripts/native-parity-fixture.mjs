@@ -226,6 +226,8 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
   const heldSends = new Set();
   let holdUploads = false;
   const heldUploads = new Set();
+  let holdAvatarRegeneration = false;
+  const heldAvatarRegenerations = new Set();
   const identity = (request) =>
     request.headers.authorization === "Bearer fixture-owner-token" ||
     /(?:^|;\s*)caper_fixture=owner(?:;|$)/.test(request.headers.cookie ?? "")
@@ -534,6 +536,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           holdUploads = !body.reset && body.holdUploads;
           if (!holdUploads) for (const release of heldUploads) release();
         }
+        if (body.reset || typeof body.holdAvatarRegeneration === "boolean") {
+          holdAvatarRegeneration = !body.reset && body.holdAvatarRegeneration;
+          if (!holdAvatarRegeneration) for (const release of heldAvatarRegenerations) release();
+        }
         if (body.pushPlatforms !== undefined) {
           if (
             !Array.isArray(body.pushPlatforms) ||
@@ -710,7 +716,11 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               }
           }
         }
-        return json(response, 200, { fixture: true, heldSends: heldSends.size });
+        return json(response, 200, {
+          fixture: true,
+          heldSends: heldSends.size,
+          heldAvatarRegenerations: heldAvatarRegenerations.size,
+        });
       }
       if (path === "/api/assets" && method === "POST" && holdUploads) {
         await new Promise((resolve) => {
@@ -1044,6 +1054,25 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
       }
       if (path === "/api/account/me")
         return user ? json(response, 200, user) : reject(response, 401, "Sign in required.");
+      if (path === "/api/account/avatar/regenerate" && method === "POST") {
+        if (!user) return reject(response, 401, "Sign in required.");
+        const before = state;
+        if (holdAvatarRegeneration)
+          await new Promise((resolve) => {
+            const release = () => {
+              heldAvatarRegenerations.delete(release);
+              response.off("close", release);
+              resolve();
+            };
+            heldAvatarRegenerations.add(release);
+            response.once("close", release);
+          });
+        if (response.destroyed) return;
+        if (state !== before) return reject(response, 409, "TEST FIXTURE: reset during regeneration.");
+        // Deterministic, visibly different artwork for UI checks, not random production selection.
+        state.account = { ...state.account, avatarId: state.account.avatarId === 0 ? 31 : 0 };
+        return json(response, 200, state.account);
+      }
       if (path === "/api/whats-new" && method === "GET") {
         if (state.releaseHighlightsDelay)
           await new Promise((resolve) => setTimeout(resolve, state.releaseHighlightsDelay));
@@ -1983,6 +2012,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
     async close() {
       for (const client of sockets) client.socket.destroy();
       for (const release of heldSends) release();
+      for (const release of heldAvatarRegenerations) release();
       await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
     },
   };
