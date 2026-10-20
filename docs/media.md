@@ -3629,6 +3629,11 @@ draft retention, and reduced motion; rendered states and a recording are inspect
 separately. These are disposable fixtures, not physical-phone or Safari evidence.
 Apple's text-start swipe/checkbox UI regression needs Xcode and an iPhone simulator;
 neither is available in this Linux orb.
+Android's `testDebugUnitTest` passes 548 tests; `compileDebugAndroidTestKotlin` and
+`lintDebug` pass (lint retains warnings). The new instrumentation regression covers
+tracking across rendered frames and release/cancellation, but has not run: no
+Android device is connected. Native rendering, keyboard/insets and device smoothness
+remain unverified; Rust desktop's mouse-only navigation is unchanged.
 
 The unchecked **Also send to channel** option publishes one reply in both places,
 not a copied root message. IDs, content and reactions are shared. Drafts and the

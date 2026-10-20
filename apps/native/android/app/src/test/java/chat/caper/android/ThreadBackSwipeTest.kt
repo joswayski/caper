@@ -16,6 +16,15 @@ class ThreadBackSwipeTest {
         assertFalse(swipe.released(-80f))
     }
 
+    @Test fun crossingThresholdThenDraggingBackDoesNotClose() {
+        val swipe = swipe()
+        assertTrue(swipe.move(90f, 0f, false))
+        assertTrue(swipe.move(40f, 0f, false))
+        assertFalse(swipe.released(40f))
+        assertTrue(swipe.move(-10f, 0f, false))
+        assertFalse(swipe.released(-10f))
+    }
+
     @Test fun verticalLeftAndAmbiguousStartsCannotTurnIntoBack() {
         for ((dx, dy) in listOf(2f to 15f, -20f to 0f, 15f to 12f)) {
             val swipe = swipe()
