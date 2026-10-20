@@ -159,8 +159,8 @@ struct VoiceWaveformBars: View {
 }
 
 /// Slack-style transcript under the player: three lines then "View
-/// transcript"; "Transcribing…" while pending; nothing when failed, absent,
-/// unknown or empty. The text is selectable.
+/// transcript"; "Transcribing…" (breathing) while pending; nothing when
+/// failed, absent, unknown or empty. The text is selectable.
 struct VoiceTranscriptView: View {
     let transcript: VoiceTranscript?
     @State private var expanded = false
@@ -172,10 +172,7 @@ struct VoiceTranscriptView: View {
         case .hidden:
             EmptyView()
         case .pending:
-            Text(VoiceTranscript.pendingLabel)
-                .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
-                .modifier(VoiceTranscriptRule())
-                .accessibilityIdentifier("voice-transcript-pending")
+            VoiceTranscriptPending()
         case .text(let text):
             VStack(alignment: .leading, spacing: 4) {
                 Text(text)
@@ -220,6 +217,39 @@ struct VoiceTranscriptView: View {
             .modifier(VoiceTranscriptRule())
             .accessibilityIdentifier("voice-transcript")
         }
+    }
+}
+
+/// "Transcribing…" breathes until the transcript replaces it: its opacity
+/// eases in and out between 1 and 0.4, one cycle every 2 seconds. Reduce
+/// Motion keeps it still. Only the label fades, not the rule beside it.
+private struct VoiceTranscriptPending: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dimmed = false
+
+    var body: some View {
+        Text(VoiceTranscript.pendingLabel)
+            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)
+            .opacity(dimmed && !reduceMotion ? VoiceTranscript.pendingBreathOpacity : 1)
+            .modifier(VoiceTranscriptRule())
+            .onAppear(perform: breathe)
+            // A lazy timeline row that scrolls away drops its animation; start over when it returns.
+            .onDisappear(perform: rest)
+            .onChange(of: reduceMotion) { reduceMotion ? rest() : breathe() }
+            .accessibilityIdentifier("voice-transcript-pending")
+    }
+
+    private func breathe() {
+        guard !reduceMotion, !dimmed else { return }
+        withAnimation(.easeInOut(duration: VoiceTranscript.pendingBreathSeconds / 2).repeatForever(autoreverses: true)) {
+            dimmed = true
+        }
+    }
+
+    private func rest() {
+        var still = Transaction(animation: nil)
+        still.disablesAnimations = true
+        withTransaction(still) { dimmed = false }
     }
 }
 

@@ -2807,17 +2807,30 @@ or when processing cannot start (no AudioWorklet, a model still compiling
 without browser suppression, an init error), it records with the browser's
 echo cancellation, suppression and gain instead. The recording bar's
 `data-processing` attribute names the path. A pending "Transcribing…" under a
-sent voice message breathes (opacity 1 to 0.4 and back every 2 s), still under
-reduced motion.
+sent voice message breathes (opacity 1 to 0.4 and back every 2 s) on every
+client, and stays still under reduced motion.
+
+The native clients record through their call chains too, at the saved "Voice
+enhancement" strength with input gain 100%. Android uses AudioRecord
+(VOICE_COMMUNICATION, 48 kHz, device AEC/NS where present) through local-only
+denoise entry points that never touch publication epochs and refuse input past
+a 40 ms backlog, then MediaCodec AAC into MPEG-4. Apple feeds an AVAudioEngine
+sink node through `CaperVoiceNoteProcessor` (DPDFNet-8 HR or RNNoise, then
+`CaperProcessVoice`) into AAC; on iOS outside a call the session uses
+`.voiceChat` with voice processing like a call, and during a call it shares the
+call's session unchanged. Desktop runs each frame through the call's
+`ProcessedVoice`. Each falls back to its previous recorder (Android
+MediaRecorder, Apple AVAudioRecorder, desktop gain only) when processing can't
+start, logging one line without audio.
 
 ### Platform status
 
 | Platform | Record | Play + transcript | Verified |
 | --- | --- | --- | --- |
 | Web desktop and mobile layout | MediaRecorder of the call's processed microphone (browser processing during a call or as fallback); click/tap, plus hold on touch | Player, seek, one at a time, 3-line transcript | `npm run check`, Vitest, Playwright with a fake microphone against the fixture (no real API audio, iOS Safari or real phone) |
-| Android | MediaRecorder AAC/M4A; tap or hold | Media3 player, transcript | 547 JVM tests, compile, lint; no device run |
-| iOS / macOS | AVAudioRecorder AAC/M4A; tap/hold (iOS), click (macOS) | AVPlayer, transcript | Apple CI build and XCTests; logic also tested on Linux Swift; no device run of the v2 changes yet |
-| Desktop (Windows, Linux) | Bundled FFmpeg AAC/M4A (WAV fallback); click | Bundled FFmpeg audio-only player | `cargo test`, clippy, Xvfb screenshots, virtual-microphone recording beside a live call capture (Linux only) |
+| Android | Processed AudioRecord to AAC/M4A (MediaRecorder fallback); tap or hold | Media3 player, transcript | JVM tests; processed recorder not yet compiled in CI or run on a device |
+| iOS / macOS | Processed AVAudioEngine to AAC/M4A (AVAudioRecorder fallback); tap/hold (iOS), click (macOS) | AVPlayer, transcript | Apple CI build and XCTests; logic also tested on Linux Swift; processed recorder not yet compiled or run on a device |
+| Desktop (Windows, Linux) | Call-processed audio to bundled FFmpeg AAC/M4A (WAV fallback); click | Bundled FFmpeg audio-only player | `cargo test`, clippy, Xvfb screenshots, virtual-microphone recording beside a live call capture (Linux only) |
 
 Physical microphones, recording during a real call on phones and Windows,
 and a live transcript round trip still need checking by hand.

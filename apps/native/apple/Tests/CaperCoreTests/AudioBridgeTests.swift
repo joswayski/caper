@@ -36,6 +36,13 @@ final class AudioBridgeTests: XCTestCase {
         XCTAssertTrue(CaperNativeDenoiseWorkersRunWithoutHardware(), "Native DPDFNet at 44.1 kHz and RNNoise fallback at 48 kHz must process actual hops without I/O")
     }
 
+    func testVoiceMessageProcessorRunsTheCallChainWithoutHardware() {
+        XCTAssertTrue(CaperVoiceNoteProcessorWorksWithoutHardware(),
+                      "Voice messages' denoiser and contour at 48 and 44.1 kHz: no raw capture while priming, every frame in order, none dropped")
+        XCTAssertNil(CaperVoiceNoteProcessor(sampleRate: 4_000, strength: 25), "rates the call worker rejects fall back to the plain recorder")
+        XCTAssertEqual(CaperVoiceNoteProcessor(sampleRate: 48_000, strength: 140)?.strength, 100)
+    }
+
     func testSyntheticDelegateMovesExactPCMWithoutHardware() {
         XCTAssertTrue(CaperSyntheticAudioCallbacksWork(), "The M153 delegate contract must exchange signed mono PCM in both directions")
     }

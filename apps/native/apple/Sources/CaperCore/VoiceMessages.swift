@@ -54,10 +54,43 @@ public enum VoiceMessage {
         sendsOnStop ? "Release to send" : "Release to add to your message"
     }
 
-    /// AVAudioRecorder settings: AAC in MP4, mono, 48 kHz, about 64 kbps.
+    /// The uploaded file: AAC in MP4, mono, 48 kHz, about 64 kbps.
     public static let sampleRate = 48_000.0
     public static let bitRate = 64_000
-    /// The recorder's meters are read at 50 Hz for the live bars and the waveform,
+
+    /// The 10:00 limit in frames of the uploaded file (at `sampleRate`).
+    public static var maximumFrames: Int { Int(sampleRate) * maximumDurationMs / 1000 }
+
+    /// Recordings use the call's microphone processing at the call's saved
+    /// "Voice enhancement" strength: this per-device key, 25% by default.
+    public static let processingStrengthKey = "caper.voice.processingStrength"
+    public static let defaultProcessingStrength = 25
+
+    /// The stored strength clamped to 0...100. A stored number (or a launch
+    /// argument's numeric text) counts; anything else is the default.
+    public static func processingStrength(stored value: Any?) -> Int {
+        let number = (value as? Int) ?? (value as? String).flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        guard let number else { return defaultProcessingStrength }
+        return min(100, max(0, number))
+    }
+
+    /// How a recording captures the microphone.
+    public enum Capture: Equatable, Sendable {
+        /// Through the call's denoiser (DPDFNet-8, RNNoise if it can't run) and
+        /// voice contour. `voiceProcessing` adds the echo cancellation and gain
+        /// control of the voice-processing I/O that iPhone calls use; a call
+        /// already running keeps its own (its session is shared unchanged), and
+        /// Mac calls capture without it.
+        case processed(voiceProcessing: Bool)
+        /// The unprocessed recorder: only when the processed chain can't start.
+        case plain
+    }
+
+    public static func capture(iOS: Bool, sharesCallSession: Bool, processedFailed: Bool = false) -> Capture {
+        processedFailed ? .plain : .processed(voiceProcessing: iOS && !sharesCallSession)
+    }
+
+    /// The recording's level is read at 50 Hz for the live bars and the waveform,
     /// so at least one reading lands in every live bar despite the sleep's slack.
     public static let meterInterval: TimeInterval = 0.02
     /// A new live bar enters at the right this often, scrolling at a constant rate.
@@ -441,6 +474,11 @@ public enum VoiceTranscript: Codable, Equatable, Sendable {
     }
 
     public static let pendingLabel = "Transcribing…"
+    /// A sent note's pending label breathes until the transcript arrives:
+    /// opacity eases (in and out) from 1 to this and back, one cycle per
+    /// `pendingBreathSeconds`; it stays still under Reduce Motion.
+    public static let pendingBreathOpacity = 0.4
+    public static let pendingBreathSeconds = 2.0
     public static let expandLabel = "View transcript"
     public static let collapseLabel = "Hide transcript"
     /// Lines shown before "View transcript".

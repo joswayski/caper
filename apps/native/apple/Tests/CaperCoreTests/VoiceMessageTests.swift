@@ -254,6 +254,37 @@ final class VoiceMessageTests: XCTestCase {
         XCTAssertEqual(VoiceMessage.slideProgress(translation: 30), 0)
     }
 
+    func testRecordingsUseTheCallsSavedVoiceEnhancementStrength() {
+        XCTAssertEqual(VoiceMessage.processingStrengthKey, "caper.voice.processingStrength", "the call's own setting")
+        XCTAssertEqual(VoiceMessage.processingStrength(stored: nil), 25, "25% until the person changes it")
+        XCTAssertEqual(VoiceMessage.processingStrength(stored: 0), 0, "0% is a choice, not absent")
+        XCTAssertEqual(VoiceMessage.processingStrength(stored: 60), 60)
+        XCTAssertEqual(VoiceMessage.processingStrength(stored: 150), 100)
+        XCTAssertEqual(VoiceMessage.processingStrength(stored: -5), 0)
+        XCTAssertEqual(VoiceMessage.processingStrength(stored: "40"), 40, "a launch argument's text")
+        XCTAssertEqual(VoiceMessage.processingStrength(stored: "loud"), 25)
+        XCTAssertEqual(VoiceMessage.processingStrength(stored: true), 25)
+    }
+
+    func testRecordingsTakeTheCallsProcessingAndFallBackToThePlainRecorder() {
+        XCTAssertEqual(VoiceMessage.capture(iOS: true, sharesCallSession: false), .processed(voiceProcessing: true),
+                       "iPhone outside a call: the call's voice-processing I/O (echo cancellation, gain control)")
+        XCTAssertEqual(VoiceMessage.capture(iOS: true, sharesCallSession: true), .processed(voiceProcessing: false),
+                       "beside a call: its session and voice processing stay the call's")
+        XCTAssertEqual(VoiceMessage.capture(iOS: false, sharesCallSession: false), .processed(voiceProcessing: false),
+                       "Mac calls capture without Apple's voice processing")
+        XCTAssertEqual(VoiceMessage.capture(iOS: true, sharesCallSession: false, processedFailed: true), .plain,
+                       "recording never breaks when the processed chain can't start")
+        XCTAssertEqual(VoiceMessage.capture(iOS: false, sharesCallSession: false, processedFailed: true), .plain)
+        XCTAssertEqual(VoiceMessage.maximumFrames, 28_800_000, "10:00 of the 48 kHz file")
+    }
+
+    func testPendingTranscriptBreathesOnceEveryTwoSeconds() {
+        XCTAssertEqual(VoiceTranscript.pendingLabel, "Transcribing…")
+        XCTAssertEqual(VoiceTranscript.pendingBreathOpacity, 0.4)
+        XCTAssertEqual(VoiceTranscript.pendingBreathSeconds, 2)
+    }
+
     func testPlaybackPositions() {
         XCTAssertEqual(VoicePlaybackPosition.fraction(x: 50, width: 200), 0.25)
         XCTAssertEqual(VoicePlaybackPosition.fraction(x: -10, width: 200), 0)
