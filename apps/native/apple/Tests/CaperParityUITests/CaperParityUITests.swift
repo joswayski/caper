@@ -484,6 +484,44 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["mention-suggestion-maya"].exists)
     }
 
+    #if os(macOS)
+    func testMessageTextSelectionIncludesLinksAndMentions() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let app = launch()
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
+                                   "Missing message composer")
+        try hideMembers(in: app)
+        for message in [
+            "Selectable plain message",
+            "https://example.com/Selection tail",
+            "Mentioned @maya with selectable words",
+            "https://example.com/MixedCase @maya tail",
+        ] {
+            type(message, into: composer)
+            app.buttons["send-message-button"].click()
+            let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == ''"), object: composer)
+            XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 5), .completed)
+            let text = try require(app.staticTexts.matching(NSPredicate(format: "value BEGINSWITH %@", message.components(separatedBy: " ").first!)).firstMatch,
+                                   timeout: 10, "Missing delivered message text")
+            // Drag from the beginning of actual glyphs, including directly on
+            // a URL. Copy must return a substring, not the row's Copy text action.
+            let start = text.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+                .withOffset(CGVector(dx: 1, dy: 8))
+            NSPasteboard.general.clearContents()
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 60, dy: 0)))
+            app.typeKey("c", modifierFlags: .command)
+            let copied = try XCTUnwrap(NSPasteboard.general.string(forType: .string), "Dragging must select text for ⌘C")
+            XCTAssertGreaterThanOrEqual(copied.count, 4)
+            XCTAssertLessThan(copied.count, message.count, "Copy the selected range, not the entire message")
+            XCTAssertTrue(message.hasPrefix(copied), "Copied text must preserve the selected source characters: \(copied)")
+            XCTAssertFalse(app.descendants(matching: .any)["mention-card"].exists, "Dragging must not open a profile")
+            XCTAssertEqual(app.state, .runningForeground, "Dragging a URL must not open the browser")
+        }
+        capture("message-text-selection", app: app)
+    }
+    #endif
+
     func testOwnMentionPillOpensCardWithoutMessageButton() throws {
         let app = launch()
         // The fixture's seeded message from Alex mentions @fixture_owner (you).
