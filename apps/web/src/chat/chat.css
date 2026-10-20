@@ -2323,6 +2323,9 @@ button.chat-mention-card-avatar {
 .chat-composer-send-touch {
   display: none;
 }
+.chat-composer form[data-voice] textarea {
+  padding-right: 84px;
+}
 @media (max-width: 760px), (pointer: coarse) {
   .chat-composer-send-touch {
     display: grid;
@@ -2330,10 +2333,16 @@ button.chat-mention-card-avatar {
   .chat-composer form textarea {
     padding-right: 84px;
   }
+  .chat-composer form[data-voice] textarea {
+    padding-right: 120px;
+  }
 }
 @media (pointer: coarse) {
   .chat-composer form textarea {
     padding-right: 92px;
+  }
+  .chat-composer form[data-voice] textarea {
+    padding-right: 136px;
   }
 }
 .chat-mention-input {
@@ -2857,6 +2866,11 @@ a.chat-draft-preview {
 .chat-attachment-files > .chat-file,
 .chat-attachment-files > .chat-audio {
   width: 100%;
+  min-width: 0;
+}
+.chat-attachment-files > .chat-voice-message {
+  justify-self: start;
+  width: min(320px, 100%);
   min-width: 0;
 }
 .chat-gallery {
@@ -4573,19 +4587,28 @@ a.chat-draft-preview {
 }
 .chat-thread-composer .chat-mention-input,
 .chat-thread-composer .chat-attach,
-.chat-thread-send-row > .chat-composer-tool {
+.chat-thread-send-row > .chat-thread-tools {
   grid-column: 1;
   grid-row: 2;
 }
 .chat-thread-composer form textarea {
   padding-right: 48px;
 }
-.chat-thread-send-row > .chat-composer-tool {
+.chat-thread-composer form[data-voice] textarea {
+  padding-right: 92px;
+}
+.chat-thread-send-row > .chat-thread-tools {
   justify-self: end;
+  align-self: end;
   z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 1px 4px 1px 0;
+}
+.chat-thread-tools > .chat-composer-tool {
   width: 40px;
   height: 40px;
-  margin: 1px 4px 1px 0;
 }
 /* Match the main composer's inset hover targets without shrinking touch controls. */
 @media (min-width: 761px) and (hover: hover) and (pointer: fine) {
@@ -4597,10 +4620,15 @@ a.chat-draft-preview {
   .chat-attach:focus-visible {
     outline-offset: -2px;
   }
-  .chat-thread-send-row > .chat-composer-tool {
+  .chat-thread-send-row > .chat-thread-tools {
+    margin: 5px 5px 5px 0;
+  }
+  .chat-thread-tools > .chat-composer-tool {
     width: 32px;
     height: 32px;
-    margin: 5px 5px 5px 0;
+  }
+  .chat-thread-composer form[data-voice] textarea {
+    padding-right: 80px;
   }
 }
 .chat-thread-send-row button[type="submit"] {
@@ -5211,9 +5239,12 @@ a.chat-draft-preview {
     min-height: 46px;
   }
   .chat-thread-composer .chat-attach,
-  .chat-thread-send-row > .chat-composer-tool {
+  .chat-thread-tools > .chat-composer-tool {
     width: 44px;
     height: 44px;
+  }
+  .chat-thread-composer form[data-voice] textarea {
+    padding-right: 100px;
   }
   .chat-thread-send-row button[type="submit"] {
     margin-bottom: 1px;
@@ -5368,4 +5399,329 @@ a.chat-draft-preview {
 .chat-channel-space {
   color: var(--text-muted);
   font-weight: 500;
+}
+
+/* Voice messages. The composer's microphone records; the recording bar takes
+   the input row's place; sent ones play inline with their transcript. */
+.chat-voice-mic {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.chat-voice-mic[data-recording] {
+  color: var(--terracotta-bright);
+}
+.chat-voice-recorder {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 4px 5px 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-composer);
+  animation: caper-fade-in var(--motion-fast) var(--ease-out);
+}
+.chat-composer form > .chat-voice-recorder {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: stretch;
+}
+.chat-thread-composer .chat-thread-send-row > .chat-voice-recorder {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  align-self: stretch;
+}
+.chat-voice-recorder .chat-voice-discard,
+.chat-voice-recorder .chat-voice-send {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.chat-voice-recorder .chat-voice-discard {
+  color: var(--text-muted);
+  background: transparent;
+}
+.chat-voice-recorder .chat-voice-send {
+  margin-left: auto;
+  color: var(--on-action);
+  background: var(--action);
+}
+@media (hover: hover) {
+  .chat-voice-recorder .chat-voice-discard:hover {
+    color: var(--text);
+    background: var(--surface-hover);
+  }
+  .chat-voice-recorder .chat-voice-send:hover:not(:disabled) {
+    background: var(--action-hover);
+  }
+}
+.chat-voice-recorder .chat-voice-send:active:not(:disabled) {
+  background: var(--action-press);
+}
+.chat-voice-recorder .chat-voice-send:disabled {
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  cursor: not-allowed;
+}
+.chat-voice-recorder button:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: -2px;
+}
+@media (pointer: coarse) {
+  .chat-voice-recorder .chat-voice-discard,
+  .chat-voice-recorder .chat-voice-send {
+    width: 40px;
+    height: 40px;
+  }
+}
+.chat-voice-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.chat-voice-dot[data-live] {
+  background: var(--terracotta-bright);
+  animation: chat-voice-pulse 1.6s ease-in-out infinite;
+}
+@keyframes chat-voice-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.chat-voice-elapsed {
+  flex: none;
+  min-width: 3.4em;
+  color: var(--text);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+.chat-voice-levels {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  min-width: 0;
+  height: 24px;
+  overflow: hidden;
+}
+.chat-voice-levels > span {
+  flex: none;
+  width: 2px;
+  min-height: 2px;
+  border-radius: 1px;
+  background: var(--text-muted);
+}
+.chat-voice-recorder[data-mode="hold"] {
+  padding-right: 52px;
+}
+.chat-voice-recorder[data-mode="hold"] .chat-voice-levels {
+  flex: 1 1 0;
+  margin-right: 20px;
+}
+.chat-voice-release {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  translate: -50% 0;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface-raised);
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.chat-voice-slide {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.chat-voice-held {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  translate: 0 -50%;
+  border-radius: 50%;
+  color: var(--on-action);
+  background: var(--action);
+}
+.chat-voice-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+/* The player: an eggshell play button, the waveform and the time. */
+.chat-voice-message {
+  display: grid;
+  gap: 6px;
+  width: min(320px, 100%);
+  min-width: 0;
+}
+.chat-voice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+}
+.chat-voice-play {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--on-action);
+  background: var(--action);
+  cursor: pointer;
+}
+.chat-voice-play svg {
+  translate: 1px 0;
+}
+.chat-voice[data-playing] .chat-voice-play svg {
+  translate: none;
+}
+@media (hover: hover) {
+  .chat-voice-play:hover:not(:disabled) {
+    background: var(--action-hover);
+  }
+}
+.chat-voice-play:active:not(:disabled) {
+  background: var(--action-press);
+}
+.chat-voice-play:disabled {
+  color: var(--text-muted);
+  background: var(--border);
+  cursor: not-allowed;
+}
+.chat-voice-play:focus-visible,
+.chat-voice-wave:focus-visible {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+.chat-voice-wave {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1px;
+  height: 28px;
+  min-width: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  touch-action: none;
+}
+.chat-voice-wave > span {
+  flex: 0 1 3px;
+  min-width: 1px;
+  min-height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text-muted) 42%, transparent);
+  pointer-events: none;
+}
+.chat-voice-wave > span[data-played] {
+  background: var(--text);
+}
+.chat-voice-time {
+  min-width: 2.6em;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.chat-voice audio {
+  display: none;
+}
+
+/* Transcripts, Slack style: indented under the player, three lines until expanded. */
+.chat-voice-transcript {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+  margin-left: 2px;
+  padding: 1px 0 1px 10px;
+  border-left: 2px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+.chat-voice-transcript[data-arrive] {
+  animation: caper-fade-in var(--motion-base) var(--ease-out);
+}
+.chat-voice-transcript p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+}
+.chat-voice-transcript p:not([data-expanded]):not(.chat-voice-transcribing) {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+}
+.chat-voice-transcribing {
+  font-style: italic;
+}
+.chat-voice-transcript button {
+  padding: 0;
+  border: 0;
+  color: var(--text);
+  background: none;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .chat-voice-transcript button:hover {
+    text-decoration: underline;
+  }
+}
+.chat-voice-transcript button:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--terracotta);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-voice-recorder,
+  .chat-voice-transcript[data-arrive],
+  .chat-voice-dot[data-live] {
+    animation: none;
+  }
 }

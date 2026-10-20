@@ -29,6 +29,8 @@ import { MediaPreviewContext } from "./MediaPreviewContext.ts";
 import type { AttachmentEdit, EditTool } from "./edit.ts";
 import { attachmentView, type ChatAttachment } from "./types.ts";
 import { formatBytes, type UploadState } from "./uploads.ts";
+import { attachmentLabel, isVoiceAttachment } from "./voice.ts";
+import { VoiceMessage } from "./VoiceMessage.tsx";
 
 const AttachmentEditor = lazy(() => import("./AttachmentEditor.tsx"));
 
@@ -126,7 +128,7 @@ function FileCard({ attachment }: { attachment: ChatAttachment }) {
     <>
       <FileText aria-hidden="true" size={18} />
       <span>
-        <strong>{attachment.name}</strong>
+        <strong>{attachmentLabel(attachment)}</strong>
         <small>{attachment.unavailable ? "File removed" : formatBytes(attachment.size)}</small>
       </span>
     </>
@@ -162,11 +164,11 @@ function Processing({
         className="chat-file"
         data-processing
         role="status"
-        aria-label={`${attachment.name}: ${processingLabel(percent)}`}
+        aria-label={`${attachmentLabel(attachment)}: ${processingLabel(percent)}`}
       >
         <span className="chat-spinner" aria-hidden="true" />
         <span>
-          <strong>{attachment.name}</strong>
+          <strong>{attachmentLabel(attachment)}</strong>
           <small>{processingLabel(percent)}</small>
         </span>
       </div>
@@ -333,7 +335,7 @@ export function MessageAttachments({
         <div key={attachment.id} className="chat-file" data-failed>
           <FileWarning aria-hidden="true" size={18} />
           <span>
-            <strong>{attachment.name}</strong>
+            <strong>{attachmentLabel(attachment)}</strong>
             <small>
               {visuals.length > 1 && (attachment.kind === "image" || attachment.kind === "video")
                 ? "Processing failed"
@@ -444,6 +446,8 @@ export function MessageAttachments({
         </div>
       );
     }
+    if (view === "audio" && isVoiceAttachment(attachment))
+      return <VoiceMessage key={attachment.id} attachment={attachment} onError={() => expired(attachment)} />;
     if (view === "audio") {
       return (
         <figure key={attachment.id} className="chat-audio">

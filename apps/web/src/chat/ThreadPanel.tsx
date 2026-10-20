@@ -19,6 +19,7 @@ import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage, type ChatReplyReference } from "./types.ts";
 import { ReplyDraft } from "./Replies.tsx";
 import { useTimelineKeyboardDismiss } from "./useTimelineKeyboardDismiss.ts";
+import { useVoiceRecorder } from "./VoiceRecorder.tsx";
 
 const DEFAULT_WIDTH = 340;
 const MIN_WIDTH = 300;
@@ -382,6 +383,17 @@ export default function ThreadPanel({
     // Replies group with the reply above them; the root never groups.
     return rows.map((message, index) => renderMessage(index + 1, message, true, rows[index - 1], rows[index + 1]));
   }, [replies, pending, pendingInline, renderMessage]);
+  const threadVoice = attachments?.voice;
+  const voice = useVoiceRecorder({
+    voice: threadVoice && {
+      ...threadVoice,
+      // A voice reply follows the "Also send to" choice like a typed one.
+      onRecorded: (recording) => threadVoice.onRecorded(recording, { broadcast: draft.broadcast }),
+    },
+    disabled:
+      !canAttach || readOnly || state.phase !== "ready" || !!state.thread?.loading || !!state.pendingSend || !client,
+    returnFocus: composer,
+  });
   if (!state.thread) return null;
   const count = Array.from(draft.text).length;
   const sending = !!state.pendingSend && !state.sendError;
@@ -691,6 +703,7 @@ export default function ThreadPanel({
             {blocked && state.sendError && (
               <p className="chat-inline-error">Confirm or dismiss the pending message before sending a reply.</p>
             )}
+            {voice.notice}
             {attachments && (
               <DraftAttachments
                 drafts={attachments.drafts}
@@ -703,6 +716,7 @@ export default function ThreadPanel({
             <form
               className="chat-thread-send-row"
               data-attach={!!attachments || undefined}
+              data-voice={!!attachments?.voice || undefined}
               onSubmit={(event) => {
                 event.preventDefault();
                 void submit();
@@ -772,11 +786,15 @@ export default function ThreadPanel({
                 Type : to find emoji or @ to mention someone. Up and Down choose; Enter or Tab inserts; Escape closes
                 suggestions. Enter to send. Shift+Enter for a new line.
               </span>
-              <EmojiButton
-                disabled={state.phase !== "ready" || state.thread.loading}
-                onSelect={chooseEmoji}
-                returnFocus={composer}
-              />
+              <div className="chat-thread-tools">
+                <EmojiButton
+                  disabled={state.phase !== "ready" || state.thread.loading}
+                  onSelect={chooseEmoji}
+                  returnFocus={composer}
+                />
+                {voice.button}
+              </div>
+              {voice.bar}
               <button
                 type="submit"
                 disabled={

@@ -1,6 +1,13 @@
 import type { ChatAttachment } from "./types.ts";
 import { EditFailed, type AttachmentEdit } from "./edit.ts";
-import { compressionSettings, prepareFile, type CompressionSettings, type PreparedFile } from "./prepare.ts";
+import {
+  compressionSettings,
+  DEFAULT_COMPRESSION,
+  prepareFile,
+  type CompressionSettings,
+  type PreparedFile,
+} from "./prepare.ts";
+import { voiceFilename, type VoiceRecording } from "./voice.ts";
 
 export const MAX_ATTACHMENTS = 10;
 /** Allow a queued batch of ten files (two minutes per original/preview) to finish cleaning. */
@@ -78,6 +85,22 @@ export class AttachmentUpload {
   ) {
     this.file = file;
     this.state = { name: file.name, sourceSize: file.size, progress: 0 };
+  }
+
+  /** A recorded voice message: uploaded exactly as recorded, with its duration
+   * and waveform, and no preparation or compression. */
+  static voice(
+    channelId: string,
+    recording: VoiceRecording,
+    changed: (state: UploadState) => void = () => {},
+    transport: UploadTransport = browserTransport,
+    now: () => number = Date.now,
+  ) {
+    const name = voiceFilename(recording.contentType);
+    const file = new File([recording.blob], name, { type: recording.contentType });
+    const upload = new AttachmentUpload(channelId, file, DEFAULT_COMPRESSION, changed, transport, now);
+    upload.prepared = voicePreparedFile(recording);
+    return upload;
   }
 
   get stale() {
@@ -186,6 +209,19 @@ export class AttachmentUpload {
       throw error;
     }
   }
+}
+
+export function voicePreparedFile(recording: VoiceRecording): PreparedFile {
+  return {
+    blob: recording.blob,
+    name: voiceFilename(recording.contentType),
+    contentType: recording.contentType,
+    kind: "audio",
+    sourceSize: recording.blob.size,
+    durationMs: recording.durationMs,
+    voice: true,
+    waveform: recording.waveform || undefined,
+  };
 }
 
 interface PresignedPut {
@@ -350,6 +386,7 @@ export async function uploadPrepared(
     // cancel its ID rather than silently abandoning a successful reservation.
     signal: AbortSignal.timeout(15_000),
     body: JSON.stringify({
+      ...(file.voice ? { purpose: "attachment" } : {}),
       channelId,
       filename: file.name,
       contentType: file.contentType || "application/octet-stream",
@@ -359,6 +396,7 @@ export async function uploadPrepared(
       height: file.height,
       durationMs: file.durationMs,
       preview: file.preview ? { contentType: file.preview.type, byteSize: file.preview.size } : undefined,
+      ...(file.voice ? { voice: true, waveform: file.waveform } : {}),
       multipart: true,
     }),
   });
