@@ -8,6 +8,8 @@ import { apiError, forgetAccountSession, sharedAccountSession } from "./client.t
 import { DraftAttachments, type DraftAttachment, type DraftEditing } from "./Attachments.tsx";
 import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import EmojiButton from "./EmojiButton.tsx";
+import GifButton, { useKlipy } from "./GifButton.tsx";
+import { shareKlipy, type ChatGif } from "./klipy.ts";
 import { insertEmoji } from "./emoji-autocomplete.ts";
 import MentionTextarea from "./MentionTextarea.tsx";
 import type { AttachmentEdit } from "./edit.ts";
@@ -34,7 +36,9 @@ interface ProfileDraft {
   files: ProfileFile[];
   channelId?: string;
   /** Once POST starts, retries must send this exact command until settled. */
-  command?: { clientMessageId: string; text: string; attachmentIds: string[]; spoilerAttachmentIds: string[] };
+  command?:
+    | { clientMessageId: string; text: string; attachmentIds: string[]; spoilerAttachmentIds: string[] }
+    | { clientMessageId: string; text: ""; gif: ChatGif; query: string };
 }
 // Like conversation drafts, these live only in this signed-in page. Closing a
 // card never discards files or an uncertain send; signing out reloads the page.
@@ -100,6 +104,7 @@ export default function ProfileComposer({
   const [settings, setSettings] = useState<CompressionSettings>();
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const klipy = useKlipy();
   const [choosingFile, setChoosingFile] = useState(false);
   const locked = sending || !!draft.command;
 
@@ -258,9 +263,14 @@ export default function ProfileComposer({
       element?.setSelectionRange(result.caret, result.caret);
     });
   };
-  const submit = async () => {
+  /** Sends the draft, or `gif` on its own, keeping the draft. */
+  const submit = async (gif?: { gif: ChatGif; query: string }) => {
     if (pending.has(personId)) return;
-    if ((!draft.text.trim() && !draft.files.length) || Array.from(draft.text).length > 4_000) {
+    if (gif && draft.command) {
+      setError("Retry or edit the unsent message first.");
+      return;
+    }
+    if (!gif && ((!draft.text.trim() && !draft.files.length) || Array.from(draft.text).length > 4_000)) {
       setError(
         Array.from(draft.text).length > 4_000
           ? "Messages must be 4,000 characters or fewer."
@@ -280,21 +290,25 @@ export default function ProfileComposer({
         throw new Error("The conversation changed. Remove the files and try again.");
       const session = await sharedAccountSession(account.id, account.displayName);
       // An uncertain POST must retry its exact asset IDs, even after expiry.
-      if (!draft.command) await Promise.all(draft.files.map((item) => ensureFile(item.key)));
+      if (!draft.command && !gif) await Promise.all(draft.files.map((item) => ensureFile(item.key)));
       const latest = drafts.get(personId) ?? draft;
-      const command = draft.command ?? {
-        clientMessageId: crypto.randomUUID(),
-        text: draft.text,
-        attachmentIds: latest.files.map((item) => item.attachment!.id),
-        spoilerAttachmentIds: latest.files.filter((item) => item.spoiler).map((item) => item.attachment!.id),
-      };
+      const command =
+        draft.command ??
+        (gif
+          ? { clientMessageId: crypto.randomUUID(), text: "" as const, ...gif }
+          : {
+              clientMessageId: crypto.randomUUID(),
+              text: draft.text,
+              attachmentIds: latest.files.map((item) => item.attachment!.id),
+              spoilerAttachmentIds: latest.files.filter((item) => item.spoiler).map((item) => item.attachment!.id),
+            });
       save({ ...latest, channelId: conversation.id, command });
       setStatus("Sending…");
       const response = await fetch(`/api/chat/channels/${encodeURIComponent(conversation.id)}/messages`, {
         method: "POST",
         credentials: "same-origin",
         headers: { "content-type": "application/json", "x-caper-chat-token": session.token },
-        body: JSON.stringify(command),
+        body: JSON.stringify("gif" in command ? { ...command, query: undefined } : command),
         signal: AbortSignal.timeout(10_000),
       });
       if (!response.ok) {
@@ -317,6 +331,14 @@ export default function ProfileComposer({
         message.author.id !== account.id
       )
         throw new Error("The chat service returned an invalid confirmation.");
+      if ("gif" in command) {
+        // A GIF goes on its own; the typed draft and its files stay.
+        save({ ...(drafts.get(personId) ?? latest), command: undefined });
+        if (klipy) shareKlipy(klipy, command.gif, command.query);
+        setStatus(undefined);
+        onSent();
+        return;
+      }
       for (const item of latest.files) {
         item.upload?.release();
         if (item.localUrl) URL.revokeObjectURL(item.localUrl);
@@ -476,6 +498,12 @@ export default function ProfileComposer({
         </span>
         <div className="chat-composer-tools">
           <EmojiButton disabled={locked} onSelect={chooseEmoji} onOpenChange={setEmojiOpen} returnFocus={input} />
+          <GifButton
+            disabled={locked}
+            onSelect={(gif, query) => void submit({ gif, query })}
+            onOpenChange={setEmojiOpen}
+            returnFocus={input}
+          />
           <button
             type="submit"
             className="chat-composer-send"

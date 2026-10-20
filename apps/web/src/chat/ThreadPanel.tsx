@@ -13,6 +13,8 @@ import { useComposerSuggestions } from "./ComposerSuggestions.tsx";
 import { readThreadDrafts, saveThreadDrafts, type ThreadDraft } from "./drafts.ts";
 import type { Arrivals } from "./arrivals.ts";
 import EmojiButton from "./EmojiButton.tsx";
+import GifButton from "./GifButton.tsx";
+import type { ChatGif } from "./klipy.ts";
 import { insertEmoji } from "./emoji-autocomplete.ts";
 import MentionTextarea from "./MentionTextarea.tsx";
 import type { MentionCandidate } from "./mentions.ts";
@@ -40,6 +42,7 @@ export default function ThreadPanel({
   replyTo,
   attachments,
   onSend,
+  onSendGif,
   onReplyChange,
   blockedIds,
   renderMessage,
@@ -58,6 +61,8 @@ export default function ThreadPanel({
   replyTo?: ChatReplyReference;
   attachments?: ComposerAttachments;
   onSend: (text: string, broadcast: boolean) => Promise<unknown>;
+  /** Sends a KLIPY GIF as its own reply; the draft stays. */
+  onSendGif?: (gif: ChatGif, query: string, broadcast: boolean) => Promise<unknown>;
   onReplyChange: (reference?: ChatReplyReference) => void;
   blockedIds: ReadonlySet<string>;
   /** Renders confirmed replies and the viewer's pending one alike. */
@@ -787,6 +792,25 @@ export default function ThreadPanel({
                 suggestions. Enter to send. Shift+Enter for a new line.
               </span>
               <div className="chat-thread-tools">
+                {onSendGif && (
+                  <GifButton
+                    disabled={
+                      !client ||
+                      readOnly ||
+                      !!state.pendingSend ||
+                      state.sendRejected ||
+                      state.phase !== "ready" ||
+                      state.thread.loading
+                    }
+                    onSelect={(gif, query) => {
+                      setValidation(undefined);
+                      onSendGif(gif, query, draft.broadcast).catch((error: unknown) =>
+                        setValidation(error instanceof Error ? error.message : "GIF could not be sent."),
+                      );
+                    }}
+                    returnFocus={composer}
+                  />
+                )}
                 <EmojiButton
                   disabled={state.phase !== "ready" || state.thread.loading}
                   onSelect={chooseEmoji}

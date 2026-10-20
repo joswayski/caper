@@ -4213,6 +4213,11 @@ private struct ChatView: View {
                             #if os(iOS)
                             .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
                             #endif
+                            if let klipy = chat.klipy {
+                                ComposerGifButton(configuration: klipy, enabled: chat.canSendGif(), controller: composerAutocomplete, send: { gif, query in
+                                    Task { await chat.sendGif(gif, query: query) }
+                                }).frame(height: composerMinHeight)
+                            }
                             ComposerEmojiButton(controller: composerAutocomplete).frame(height: composerMinHeight)
                         }
                         #if os(iOS)
@@ -4262,6 +4267,8 @@ private struct ChatView: View {
         }
             // Uploads are optional server configuration; recheck per conversation.
             .task(id: model.selectedDirectMessageID ?? model.selectedChannelID ?? model.visit?.channelID) { await chat.checkUploadAvailability() }
+            // GIFs are optional server configuration too (KLIPY_APP_KEY).
+            .task(id: model.selectedDirectMessageID ?? model.selectedChannelID ?? model.visit?.channelID) { await chat.checkKlipyAvailability() }
             // Finder, Files, Photos and other apps (iPad split view and Slide Over).
             // addAttachments keeps the first files that fit and removes the rest.
             .dropDestination(for: DroppedAttachment.self) { items, _ in
@@ -4776,6 +4783,12 @@ private struct NativeThreadView: View {
                                 #if os(iOS)
                                 .overlay(alignment: .topLeading) { ParityKeyboardProbe() }
                                 #endif
+                            if let klipy = chat.klipy {
+                                ComposerGifButton(configuration: klipy, enabled: chat.canSendGif(inThread: true), controller: composerAutocomplete,
+                                                  accessibilityID: "thread-composer-gif", send: { gif, query in
+                                    Task { await chat.sendGif(gif, inThread: true, query: query) }
+                                })
+                            }
                             ComposerEmojiButton(controller: composerAutocomplete, enabled: !chat.threadLoading)
                         }
                         #if os(iOS)
@@ -5087,7 +5100,7 @@ private struct MessageRow: View {
                     .padding(.trailing, grouped ? actionsInset : 0)
                     // The 24pt targets start 6pt from the row top. A short caption
                     // needs their full height before the attachment's 4pt gap.
-                    .frame(minHeight: grouped && !(message.content.attachments?.isEmpty ?? true) ? 28 : nil, alignment: .topLeading)
+                    .frame(minHeight: grouped && (!(message.content.attachments?.isEmpty ?? true) || message.content.gif != nil) ? 28 : nil, alignment: .topLeading)
                     #endif
                     }
                     if let attachments = message.content.attachments, !attachments.isEmpty {
@@ -5095,6 +5108,13 @@ private struct MessageRow: View {
                             #if os(macOS)
                             // File-only follow-ups need the same action strip, even
                             // without a caption or edited marker to reserve it.
+                            .padding(.top, grouped && message.content.text.isEmpty && !edited ? 32 : 0)
+                            #endif
+                    }
+                    if let gif = message.content.gif {
+                        MessageGifView(gif: gif)
+                            #if os(macOS)
+                            // Like files: a captionless follow-up keeps room for the action strip.
                             .padding(.top, grouped && message.content.text.isEmpty && !edited ? 32 : 0)
                             #endif
                     }
@@ -5768,6 +5788,7 @@ private struct MentionCardView: View {
     @StateObject private var autocomplete = ComposerAutocompleteController()
     @State private var showingEmojiPicker = false
     @State private var insertEmoji: ((String) -> Void)?
+    @State private var showingGifPicker = false
     @State private var showingFiles = false
     @State private var showingPhotos = false
     /// The attach drawer (iPhone and iPad).
@@ -6190,6 +6211,14 @@ private struct MentionCardView: View {
                 .buttonStyle(.plain).disabled(!draft.editable || pending != nil)
                 .help("Insert emoji").accessibilityLabel("Insert emoji")
                 .accessibilityIdentifier("mention-card-emoji")
+                if let klipy = model.chat.klipy {
+                    // Sends the GIF on its own at once; the typed draft stays.
+                    ComposerGifButton(configuration: klipy, enabled: draft.editable && pending == nil, controller: autocomplete,
+                                      accessibilityID: "mention-card-gif", presenting: { showingGifPicker = $0; updateDialogState() },
+                                      send: { gif, query in
+                        Task { if await model.sendProfileGif(to: person, gif: gif, query: query) { close() } }
+                    })
+                }
                 Button { send() } label: {
                     CaperIcon(name: "send", size: 15)
                         .frame(width: 32, height: 32).contentShape(Rectangle())
@@ -6215,6 +6244,7 @@ private struct MentionCardView: View {
                     .accessibilityIdentifier("mention-card-error")
             }
         }
+        .task { await model.chat.checkKlipyAvailability() }
         .task {
             do {
                 _ = try await model.api.assetUsage()
@@ -6242,7 +6272,7 @@ private struct MentionCardView: View {
     }
 
     private func updateDialogState() {
-        draft.presentingDialog = showingFiles || showingPhotos || photoLoading != nil || showingEmojiPicker || previewFile != nil
+        draft.presentingDialog = showingFiles || showingPhotos || photoLoading != nil || showingEmojiPicker || showingGifPicker || previewFile != nil
             || editingFile != nil || previewingFile != nil || showingDrawer
     }
 
@@ -7579,13 +7609,17 @@ private struct PendingMessageRow: View {
                     // Local copies until the server's signed URLs arrive.
                     MessageAttachmentsView(attachments: pending.attachments, chat: nil).opacity(0.7)
                 }
+                if let gif = pending.gif { MessageGifView(gif: gif).opacity(0.7) }
                 if let error {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(uploadFailed ? error : "\(rejected ? "Not sent." : "Not confirmed yet.") \(error)")
                         HStack(spacing: 12) {
                             if rejected {
-                                Button("Edit", action: edit).disabled(!canEdit)
-                                    .help(canEdit ? "" : "Clear your current draft to edit this message.")
+                                // A GIF has no draft to return to.
+                                if pending.gif == nil {
+                                    Button("Edit", action: edit).disabled(!canEdit)
+                                        .help(canEdit ? "" : "Clear your current draft to edit this message.")
+                                }
                                 Button("Dismiss", action: dismiss)
                             } else { Button(uploadFailed ? "Retry" : "Retry send", action: retry) }
                         }
@@ -9973,7 +10007,7 @@ private struct ProfileButtonStyle: ButtonStyle {
 
 /// Web's control feedback: a --surface-hover (white 6%) wash under the pointer
 /// and a 2pt terracotta ring for keyboard focus, in place of the system's.
-private struct ControlHover: ViewModifier {
+struct ControlHover: ViewModifier {
     @Environment(\.isEnabled) private var enabled
     @Environment(\.isFocused) private var focused
     @State private var hovered = false

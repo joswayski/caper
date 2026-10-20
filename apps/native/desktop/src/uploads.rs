@@ -1558,6 +1558,7 @@ mod tests {
                 &[],
                 (None, false),
                 None,
+                None,
             )
             .unwrap();
         assert_eq!(sent.content.attachments.len(), 1);
@@ -1570,6 +1571,7 @@ mod tests {
             &[],
             &[],
             (None, false),
+            None,
             None,
         )
         .unwrap();

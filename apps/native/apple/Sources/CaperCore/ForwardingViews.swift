@@ -28,6 +28,7 @@ struct SharedOriginalView: View {
                 // this timeline's URL refresh or upload progress.
                 MessageAttachmentsView(attachments: attachments, chat: nil, isAvailable: isAvailable)
             }
+            if !message.isDeleted, let gif = message.content.gif { MessageGifView(gif: gif) }
             ReactionFlowLayout(spacing: 8) {
                 ForEach((message.isDeleted ? nil : message.reactions) ?? []) { reaction in
                     HStack(spacing: 4) {

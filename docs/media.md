@@ -2742,6 +2742,162 @@ Windows, and a live transcript round trip still need checking by hand.
 - Not covered by automated tests: a live OpenRouter request. Watch the first
   production voice messages in `ai_calls`.
 
+## GIFs and stickers (KLIPY)
+
+The composer's **GIF** button opens a KLIPY picker with **GIFs** and
+**Stickers** tabs, a "Search KLIPY" field (KLIPY requires that placeholder) and
+trending results until something is typed. Choosing one sends it at once as its
+own message; the composer draft stays. The button is hidden until the API has
+`KLIPY_APP_KEY`.
+
+KLIPY's [integration requirements](https://docs.klipy.com/integration-requirements)
+shape the design:
+
+- Search, trending, share and media requests go straight from each device to
+  `api.klipy.com` and `static*.klipy.com`. The API never proxies, caches or
+  re-hosts KLIPY media, so KLIPY sees the viewer's IP address and user agent,
+  like any linked image.
+- Results keep KLIPY's order and mix, ads included. Filtering happens only in
+  the Partner Panel; we request `content_filter=off` and filter nothing.
+- A sent GIF keeps KLIPY's media URLs exactly as returned.
+
+### API contract
+
+`GET /api/klipy` (signed in) returns `{"appKey","customerId"}`, or 404 when
+GIFs are off. The app key is KLIPY's client key and ships to devices by design.
+`customerId` is 32 hex characters, an HMAC of the account id keyed from
+`AUTH_SECRET`: stable per account and meaningless to KLIPY.
+
+Sending adds an optional `gif` to the usual message body. It never travels with
+`attachmentIds`, and text may then be empty:
+
+```json
+{"clientMessageId":"…","text":"","gif":{"provider":"klipy","kind":"gif",
+ "slug":"hello-hi-662","title":"Hello","width":498,"height":498,
+ "gif":"https://static.klipy.com/…/a.gif","webp":"https://static.klipy.com/…/a.webp",
+ "mp4":"https://static.klipy.com/…/a.mp4","still":"https://static.klipy.com/…/a.jpg"}}
+```
+
+The API stores it as `content.gif` (`content.type` stays `"text"`, so older
+clients show the message text alone). Rules, shared by the API
+(`apps/api/src/klipy.rs`) and every client through `shared/klipy/cases.json`:
+
+- `provider` is `klipy`; `kind` is `gif` or `sticker`.
+- `slug` is 1–200 letters, digits, `-` or `_`; `title` is at most 200
+  characters without control characters.
+- `width` and `height` are whole numbers from 1 to 4096.
+- At least one of `gif` and `webp` is present.
+- Every URL is at most 2048 characters: HTTPS on `klipy.com` or a subdomain,
+  with no credentials, port or fragment. A query string is fine.
+
+Clients render `content.gif` only when it passes these rules. Otherwise they
+show the text alone.
+
+Edits change only the caption; the GIF stays. Forwards copy it. Reply quotes
+and push notifications of a captionless GIF read `GIF` / `Sticker` and
+`Sent a GIF` / `Sent a sticker`. The retry hash covers the text and the GIF.
+
+### KLIPY requests (from the device)
+
+Base `https://api.klipy.com/api/v1/{appKey}/`, with `{kind}` either `gifs` or
+`stickers`:
+
+| Purpose | Request |
+| --- | --- |
+| Trending | `GET {kind}/trending?page=N&per_page=24&customer_id=…&content_filter=off&locale=xx` |
+| Search | `GET {kind}/search?q=…&page=N&per_page=24&customer_id=…&content_filter=off&locale=xx` |
+| Share (after a successful send, best effort) | `POST {kind}/share/{slug}` with JSON `{"customer_id","q"}` (`q` is the search text, empty for trending) |
+
+`locale` is the device region as ISO 3166 alpha-2. Searches wait 300 ms after
+typing stops, and pages load as the grid nears its end while `has_next` is true.
+
+Parsing (`parse` in `shared/klipy/cases.json`) keeps KLIPY's order:
+
+- **Ad items** (`type: "ad"`) need a non-empty `content` HTML string. They
+  become `{type:"ad", html, width, height}`; the size is null when absent or
+  not positive.
+- **Other items** need a valid slug.
+  - The sent GIF comes from the first of `file.md`, `file.hd`, `file.sm`.
+    `gif` and `webp` are taken from it, `mp4` too, and `still` is its `jpg`,
+    or `png` for stickers.
+  - URLs that break the rules are dropped. The width and height come from
+    the size's first valid `gif`, then its `webp`; without them the item is
+    skipped.
+  - `kind` is the tab that requested it. Control characters are stripped from
+    the title, which is then cut to 200 characters.
+  - The grid tile comes from the first of `sm`, `xs`, `md`, `hd`: its `webp`
+    or else `gif`, plus a `jpg`/`png` still when that size has one.
+
+### Ads
+
+Ads come on with the Ads API toggle in the Partner Panel, and KLIPY serves
+them only to mobile user agents.
+
+- **Who asks for them:** Android, iPhone and the touch-layout web picker add
+  `ad-min-width=50`, `ad-max-width=<grid width in CSS px or dp>`,
+  `ad-min-height=50` and `ad-max-height=250`.
+  - They also send the recommended device fields they can read without
+    permission prompts: `ad-os`, `ad-osv`, `ad-make`, `ad-model`,
+    `ad-device-w`, `ad-device-h`, `ad-pxratio` and `ad-language`.
+  - Native apps send their WebView's user agent: Android's
+    `WebSettings.getDefaultUserAgent`, iOS's `WKWebView` `navigator.userAgent`.
+  - Carrier fields, advertising IDs and location are never sent, and no
+    tracking prompt is shown.
+- **Where they don't appear:** desktop web, macOS, Windows and Linux omit the
+  ad parameters, so they never receive ads.
+- **How they show:** an ad fills a full-width grid row labelled
+  **Sponsored**, sized to the ad or else 100 px tall.
+  - The HTML renders in an isolated web view: a sandboxed `iframe srcdoc`
+    with scripts and popups but no same-origin access on the web, and a
+    non-persistent WebView on Android and iPhone.
+  - Taps open in the system browser, and an ad can never reach Caper's
+    session.
+
+### Rendering
+
+- **Size:** a GIF shows below any text at its aspect ratio, at most 300 px on
+  its longer edge (stickers 160 px). Stickers have no background.
+- **Format:**
+  - The web prefers a muted, looping, inline `mp4` for GIFs and the `webp`
+    for stickers (transparency).
+  - Native apps use the animated format their decoder supports (`webp` or
+    `gif`).
+- **Reduced motion:** reduced-motion settings show `still` (or the first
+  frame).
+- **Labels:** the accessible label is the title, or `GIF` / `Sticker`.
+- **Failures:** a GIF that fails to load leaves a quiet "GIF unavailable"
+  placeholder.
+
+### Configuration and rollout
+
+| Variable | Where | Meaning |
+| --- | --- | --- |
+| `KLIPY_APP_KEY` | API | KLIPY Partner Panel key (letters, digits, `-` or `_`). Unset or malformed hides the picker everywhere. Needs `AUTH_SECRET`. |
+
+Rollout:
+
+1. Create the key in the [Partner Panel](https://partner.klipy.com/api-keys)
+   with the Ads API on. A test key allows 100 requests an hour for the whole
+   app; request production access from the panel before real traffic.
+2. Add `KLIPY_APP_KEY` to `staging/apps/caper` and `production/apps/caper` in
+   AWS Secrets Manager.
+3. Roll the API so it reads the new key.
+4. Set the Partner Panel content filter to off, matching `content_filter=off`.
+
+### Platform status (October 20, 2026)
+
+| Client | Picker | Ads | Validation |
+| --- | --- | --- | --- |
+| API | — | — | Unit tests, shared cases and a Postgres send/retry/reply/edit test pass. |
+| Web | Channel, thread and profile-card composers; popover, or bottom drawer on touch layouts | Touch layouts | Vitest shared cases pass. Chromium was driven against the fixture with KLIPY mocked by route (labelled test mock): desktop, 390 px touch (ads row), reduced motion, paging, search, send and share. |
+| Android | Channel and thread composers; bottom sheet | Yes | Compiles; unit tests incl. shared cases pass. Not run on a device or emulator. |
+| iPhone / macOS | Channel, thread and profile-card composers; sheet / popover | iPhone only | Foundation core and shared cases checked with Swift on Linux. Not compiled with the Apple SDK, not run. |
+| Desktop (Rust) | Channel/DM and thread composers; popup | No (skipped) | fmt, clippy and tests incl. shared cases pass. Not checked on screen. The profile-card first-DM composer has no GIF button yet. |
+
+Not yet validated anywhere: live KLIPY responses (the shape of ad objects is
+undocumented beyond `type` and `content`), real ad delivery and taps, physical
+devices, and screen readers.
+
 ## Message reactions
 
 Desktop web exposes **Add reaction** on message hover or keyboard focus; clicking

@@ -62,6 +62,7 @@ const SECRET_KEYS: &[&str] = &[
     "OPENROUTER_API_KEY",
     "AI_BASE_URL",
     "AI_TRANSCRIBE_MODELS",
+    "KLIPY_APP_KEY",
     "AXIOM_TOKEN",
     "AXIOM_DATASET",
     "AXIOM_ENDPOINT",

@@ -154,10 +154,15 @@ async fn persist_edit_with(
         row.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "message not found"))?;
     // A text-only edit keeps the message's files as they are. Files can be
     // replaced or spoilered, never removed, so whether there are any holds.
+    // A GIF stays too: editing changes only its caption.
     let shown = payload["content"].get("attachments").cloned();
-    let mut content = prepare_content(text, shown.is_some())?;
+    let gif = payload["content"].get("gif").cloned();
+    let mut content = prepare_content(text, shown.is_some() || gif.is_some())?;
     if let Some(attachments) = &shown {
         content["attachments"] = attachments.clone();
+    }
+    if let Some(gif) = gif {
+        content["gif"] = gif;
     }
     let Some(owner) = user.filter(|user| Some(*user) == author) else {
         return Err(ApiError::new(

@@ -1594,6 +1594,10 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 },
                                 trailingIcon = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
+                                        // Sent at once as its own reply; the draft stays, and "Also send to" applies like a reply's.
+                                        if (state.klipy != null) GifButton(!thread.loading && state.chatAuthorId != null && state.pendingMessage == null, viewModel::klipyPage) { gif, kind, query ->
+                                            viewModel.sendGif(gif, kind, query, thread.rootId, broadcast).also { if (it) broadcast = false }
+                                        }
                                         EmojiInsertButton(!thread.loading) { emoji -> insertEmojiAtSelection(draft, emoji)?.let { draft = it } }
                                         if (state.uploadsEnabled) VoiceRecordButton(recorder, canAttach, voiceBlocked)
                                     }
@@ -1897,6 +1901,11 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                                 // The `:name:` shortcut still works; this is the visible way in.
                                 trailingIcon = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
+                                        // Sent at once as its own message; the draft stays.
+                                        if (state.klipy != null) GifButton(
+                                            !state.messagesLoading && state.messagesError == null && state.pendingMessage == null && state.chatAuthorId != null,
+                                            viewModel::klipyPage,
+                                        ) { gif, kind, query -> viewModel.sendGif(gif, kind, query) }
                                         EmojiInsertButton(!state.messagesLoading && state.messagesError == null) { emoji ->
                                             insertEmojiAtSelection(draft, emoji)?.let { updateDraft(it); viewModel.setTyping(true) }
                                         }
@@ -2335,7 +2344,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                 Column(Modifier.arrival(arrivals, pending.clientMessageId)) {
                     pending.replyTo?.let { ReplyContext(it, state, pending.clientMessageId) }
                     MessageRow(pending.author?.name ?: "You", pending.author?.isGuest == true, pending.createdAt, pending.text, true, pending.author?.avatarId, pending.attachments, grouped = grouped,
-                        avatarAsset = pending.author?.avatarAsset, avatarUrl = pending.author?.avatarUrl)
+                        avatarAsset = pending.author?.avatarAsset, avatarUrl = pending.author?.avatarUrl, gif = pending.gif)
                     Box(Modifier.padding(start = 62.dp, end = 18.dp)) { Column { pendingStatus() } }
                 }
             }
@@ -3141,6 +3150,7 @@ internal const val DELETED_REPLY = "Original message was deleted."
     admin = message.author.admin,
     avatarAsset = message.author.avatarAsset, avatarUrl = message.author.avatarUrl,
     deleted = message.deletedAt != null,
+    gif = message.content.gif,
 )
 @Composable private fun MessageRow(
     author: String, guest: Boolean, createdAt: String, text: String, pending: Boolean, avatarId: Int? = null,
@@ -3157,6 +3167,8 @@ internal const val DELETED_REPLY = "Original message was deleted."
     avatarAsset: String? = null, avatarUrl: String? = null,
     /** The author deleted it: a muted note in place of its text and files. */
     deleted: Boolean = false,
+    /** A KLIPY GIF or sticker, under the text. */
+    gif: KlipyGif? = null,
 ) {
     val hover = remember { MutableInteractionSource() }
     val hovered by hover.collectIsHoveredAsState()
@@ -3222,6 +3234,7 @@ internal const val DELETED_REPLY = "Original message was deleted."
                     )
                 }
             }
+            if (!deleted) gif?.let { MessageGif(it) }
             if (!deleted) MessageAttachments(
                 attachments, pending, onAttachmentFailed, attachmentProgress, localAttachmentPreviews,
                 caption = listOf(author, timeLabel(createdAt, hour24)).filter { it.isNotEmpty() }.joinToString(" · "),

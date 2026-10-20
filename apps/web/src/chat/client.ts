@@ -3,6 +3,7 @@ import { unreadChanged } from "../account/app-badge";
 import { getProfiles, withAuthorProfile, withMessageAuthors } from "../account/profiles.ts";
 import { ChatConnection } from "./connection.ts";
 import { cancelUpload, type AttachmentUpload } from "./uploads.ts";
+import type { ChatGif } from "./klipy.ts";
 import { playSound } from "../audio/effects.ts";
 import { directMessageErrors } from "../spaces/direct-errors.ts";
 import { appGateway } from "../gateway/client.ts";
@@ -34,6 +35,8 @@ export interface PendingChatMessage {
   text: string;
   /** Uploaded files; URLs may be local object URLs until the server confirms. */
   attachments?: ChatAttachment[];
+  /** A KLIPY GIF or sticker, sent on its own. */
+  gif?: ChatGif;
   author?: ChatAuthor;
   createdAt: string;
   threadRootId?: string;
@@ -1017,11 +1020,12 @@ export class ChatClient {
       attachments?: ChatAttachment[];
       replyTo?: ChatReplyReference;
       uploads?: AttachmentUpload[];
+      gif?: ChatGif;
     } = {},
   ): Promise<boolean> {
     if (this.controller.signal.aborted || this.sending || this.state.sendRejected) return false;
     if (this.state.pendingSend && this.state.pendingSend.threadRootId !== options.threadRootId) return false;
-    const { attachments = [], uploads = [], ...thread } = options;
+    const { attachments = [], uploads = [], gif, ...thread } = options;
     if (!this.state.pendingSend) this.pendingUploads = uploads;
     // A timeout is an unknown outcome. Enter/Send must retry the same command,
     // just like the explicit retry button, before allowing a new command.
@@ -1030,13 +1034,14 @@ export class ChatClient {
         clientMessageId: crypto.randomUUID(),
         text,
         attachments: attachments.length ? attachments : undefined,
+        gif,
         createdAt: new Date().toISOString(),
         ...thread,
       }),
       author: this.session?.author,
     };
     const count = Array.from(pending.text).length;
-    if ((!pending.text.trim() && !pending.attachments?.length) || count > 4_000)
+    if ((!pending.text.trim() && !pending.attachments?.length && !pending.gif) || count > 4_000)
       throw new Error(count > 4_000 ? "Messages can be at most 4,000 characters." : "Write a message first.");
     // oxlint-disable-next-line no-control-regex -- Validate message text while allowing tabs and newlines.
     if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(pending.text))
@@ -1097,6 +1102,7 @@ export class ChatClient {
               text: pending.text,
               ...(attachmentIds.length ? { attachmentIds } : {}),
               ...(spoilerAttachmentIds.length ? { spoilerAttachmentIds } : {}),
+              ...(pending.gif ? { gif: pending.gif } : {}),
               ...(pending.replyTo ? { replyToId: pending.replyTo.id } : {}),
               ...(pending.threadRootId
                 ? {

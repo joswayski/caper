@@ -189,6 +189,8 @@ import kotlinx.serialization.json.JsonTransformingSerializer
     @Serializable(with = TolerantAttachmentsSerializer::class) val attachments: List<ChatAttachment> = emptyList(),
     /** Absent on older messages and servers. */
     @Serializable(with = MentionListSerializer::class) val mentions: List<MessageMention> = emptyList(),
+    /** A KLIPY GIF or sticker shown under the text; null when absent or invalid (the text shows alone). */
+    @Serializable(with = TolerantGifSerializer::class) val gif: KlipyGif? = null,
 )
 
 /** A file on a message. URLs are signed per response and expire in 1–2 hours. */
@@ -643,6 +645,8 @@ data class AppUiState(
     val uploadsEnabled: Boolean = false,
     /** A usage check has answered, so a disabled attach control is unavailable rather than still checking. */
     val uploadsChecked: Boolean = false,
+    /** `GET /api/klipy`: the GIF button shows only while this is known. */
+    val klipy: KlipyConfig? = null,
     /** Files stay with their channel/DM and, for replies, their thread, even while closed. */
     val attachmentDrafts: Map<AttachmentDraftTarget, List<DraftAttachmentUi>> = emptyMap(),
     val attachmentErrors: Map<AttachmentDraftTarget, String> = emptyMap(),
@@ -778,6 +782,8 @@ data class PendingMessageUi(
     /** Uploaded files with local `file://` copies until the server confirms. */
     val attachments: List<ChatAttachment> = emptyList(),
     val replyTo: MessageReply? = null,
+    /** A GIF sent on its own (never with files), shown straight from KLIPY until confirmed. */
+    val gif: KlipyGif? = null,
 )
 
 /** A regular composer and each of its threads own independent files and upload errors. */

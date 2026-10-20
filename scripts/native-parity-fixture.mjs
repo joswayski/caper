@@ -817,6 +817,10 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             };
         return json(response, 200, asset.attachment);
       }
+      if (path === "/api/klipy")
+        return user
+          ? json(response, 200, { appKey: "fixtureKlipyKey", customerId: "0123456789abcdef0123456789abcdef" })
+          : reject(response, 401, "Sign in required.");
       if (path === "/api/push/config")
         return user
           ? json(response, 200, { platforms: [...state.pushPlatforms] })
@@ -1376,11 +1380,25 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             })
           )
             return reject(response, 400, "Invalid attachments.");
+          // The API validates every field; the fixture checks the shape clients send.
+          const gif = body.gif ?? undefined;
+          if (
+            gif !== undefined &&
+            (attachmentIds.length ||
+              !gif ||
+              gif.provider !== "klipy" ||
+              !["gif", "sticker"].includes(gif.kind) ||
+              typeof gif.slug !== "string" ||
+              !Number.isInteger(gif.width) ||
+              !Number.isInteger(gif.height) ||
+              (typeof gif.gif !== "string" && typeof gif.webp !== "string"))
+          )
+            return reject(response, 400, "invalid gif");
           if (
             typeof body.clientMessageId !== "string" ||
             !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.clientMessageId) ||
             typeof body.text !== "string" ||
-            (!body.text.trim() && !attachmentIds.length) ||
+            (!body.text.trim() && !attachmentIds.length && !gif) ||
             [...body.text].length > 4000 ||
             /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/u.test(body.text)
           )
@@ -1392,6 +1410,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
           if (previous)
             return previous.token === request.headers["x-caper-chat-token"] &&
               previous.text === body.text &&
+              JSON.stringify(previous.message.content.gif ?? null) === JSON.stringify(gif ?? null) &&
               JSON.stringify(previous.message.content.attachments?.map((attachment) => attachment.id) ?? []) ===
                 JSON.stringify(attachmentIds) &&
               previous.message.threadRootId === body.threadRootId &&
@@ -1426,6 +1445,7 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
               type: "text",
               text: body.text,
               ...(mentions.length ? { mentions } : {}),
+              ...(gif ? { gif: clone(gif) } : {}),
               ...(attachmentIds.length
                 ? {
                     attachments: attachmentIds.map((id) => ({
@@ -1439,7 +1459,15 @@ export async function startFixture({ port = 3001, gatewayPort = 3002 } = {}) {
             clientMessageId,
           };
           if (target) {
-            const text = target.content.text || (target.forward ? "Forwarded message" : "");
+            const text =
+              target.content.text ||
+              (target.forward
+                ? "Forwarded message"
+                : target.content.gif
+                  ? target.content.gif.kind === "sticker"
+                    ? "Sticker"
+                    : "GIF"
+                  : "");
             const characters = Array.from(text);
             message.replyTo = {
               id: target.id,
