@@ -19124,7 +19124,6 @@ impl CaperApp {
             })
             .collect();
         let failed = files.iter().filter(|file| file.error.is_some()).count();
-        let uploading = files.iter().filter(|file| file.uploading).count();
         if failed > 0 {
             let message = if failed == 1 {
                 "1 file failed to upload. Send will retry it, or you can remove it.".into()
@@ -19134,16 +19133,6 @@ impl CaperApp {
                 )
             };
             ui.label(RichText::new(message).size(12.0).color(ERROR));
-        }
-        if uploading > 0 {
-            ui.label(
-                RichText::new(format!(
-                    "Uploading {uploading} {}… Your message won’t send until every file is ready.",
-                    if uploading == 1 { "file" } else { "files" }
-                ))
-                .size(12.0)
-                .color(MUTED),
-            );
         }
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
