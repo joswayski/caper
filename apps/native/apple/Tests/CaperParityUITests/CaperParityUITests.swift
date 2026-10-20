@@ -1102,6 +1102,45 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
     }
 
+    func testVoiceTranscriptExpansionKeepsToggleBelowText() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let messageID = "chan00000001m04"
+        // Explicit line breaks exercise the reported multiline transcript,
+        // without depending on a particular device's font wrapping.
+        let transcript = "TEST FIXTURE transcript.\nFirst line of the recording.\nSecond line.\nThird line.\nFourth line.\nEnd of the recording."
+        try await Self.fixtureControl(["incomingEdit": [
+            "channelId": "chan00000001", "messageId": messageID, "text": "",
+            "attachments": [["id": "fixturevoice001", "kind": "audio", "status": "ready",
+                             "name": "TEST FIXTURE voice.m4a", "contentType": "audio/mp4",
+                             "size": 1024, "durationMs": 14000, "voice": true,
+                             "transcript": ["status": "ready", "text": transcript]]],
+        ]])
+        let app = launch()
+        let row = try require(app.descendants(matching: .any)["message-row-\(messageID)"], timeout: 30,
+                              "Missing voice message")
+        let text = row.descendants(matching: .any)["voice-transcript-text"].firstMatch
+        let expand = try require(row.buttons["View transcript"], timeout: 10, "Missing transcript toggle")
+        XCTAssertTrue(text.exists)
+        let collapsedHeight = text.frame.height
+        XCTAssertGreaterThan(collapsedHeight, 0)
+        XCTAssertGreaterThanOrEqual(expand.frame.minY, text.frame.maxY)
+        capture("voice-transcript-collapsed", app: app)
+        // Repeated expansion must not leave stale text sizing or lose the toggle.
+        for index in 0..<3 {
+            expand.tap()
+            let collapse = try require(row.buttons["Hide transcript"], timeout: 5, "Missing collapse toggle")
+            XCTAssertGreaterThan(text.frame.height, collapsedHeight + 10)
+            XCTAssertGreaterThanOrEqual(collapse.frame.minY, text.frame.maxY,
+                                       "The toggle must never occupy the transcript's text bounds")
+            if index == 0 { capture("voice-transcript-expanded", app: app) }
+            collapse.tap()
+            XCTAssertTrue(expand.waitForExistence(timeout: 5))
+            XCTAssertEqual(text.frame.height, collapsedHeight, accuracy: 1)
+            XCTAssertGreaterThanOrEqual(expand.frame.minY, text.frame.maxY)
+        }
+    }
+
     #if os(iOS)
     /// The attach drawer asks for photo access the first time, then shows the
     /// simulator's sample library; taps attach in order, numbered, and the
