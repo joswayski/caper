@@ -201,7 +201,10 @@ export function useVoiceRecorder({
       context.clearRect(0, 0, width, height);
       const { values, lastBarAt } = bars.current;
       const progress = still || lastBarAt === undefined ? 1 : (performance.now() - lastBarAt) / LIVE_BAR_MS;
-      const shift = Math.min(1, Math.max(0, progress)) * LIVE_STEP_PX;
+      // Readings land every 20 ms but bars are due every 25 ms, so a bar can be
+      // late: keep sliding past one step rather than pausing, and the new bar
+      // lands exactly where the slide has got to (a stall restarts at 3 steps).
+      const shift = Math.min(3, Math.max(0, progress)) * LIVE_STEP_PX;
       for (let back = 0; back < values.length; back++) {
         const x = width - shift - back * LIVE_STEP_PX;
         if (x < -LIVE_STEP_PX) break;

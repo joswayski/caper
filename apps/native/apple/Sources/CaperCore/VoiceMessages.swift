@@ -278,11 +278,14 @@ public enum VoiceWaveform {
         return min(1, max(0, (decibels - floor) / -floor))
     }
 
-    /// How far (0...1 of one bar step) the live bars have scrolled left since
-    /// the newest bar entered, for a constant right-to-left motion.
+    /// How far (in bar steps) the live bars have scrolled left since the
+    /// newest bar entered, for a constant right-to-left motion. Readings can
+    /// land after a bar is due, so it keeps sliding past one step instead of
+    /// pausing (the late bar lands where the slide has got to), up to the
+    /// three steps after which the meter restarts its cadence.
     public static func scrollFraction(sinceLastBar elapsed: TimeInterval, interval: TimeInterval = VoiceMessage.liveBarInterval) -> Double {
         guard interval > 0, elapsed.isFinite else { return 0 }
-        return min(1, max(0, elapsed / interval))
+        return min(3, max(0, elapsed / interval))
     }
 
     /// How many bars of `width` and `gap` fit in `available` points (at least one).

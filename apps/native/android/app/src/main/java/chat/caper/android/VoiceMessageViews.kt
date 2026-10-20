@@ -619,8 +619,9 @@ private class VoiceNoteRecorder(private val context: Context) {
     /** A tap (not a hold) keeps recording hands-free until Stop or discard. */
     fun keepRecordingHandsFree() { if (recording) { handsFree = true; slide = 0f } }
 
-    fun tick() {
-        if (!recording) return
+    /** Samples the input and the clock; returns how long to wait before the next sample (ms). */
+    fun tick(): Long {
+        if (!recording) return VoiceMessages.LIVE_SAMPLE_MS
         val now = SystemClock.elapsedRealtime()
         if (live.sample(VoiceMessages.meterLevel(recorder.sample()), now)) {
             bars = live.values
@@ -628,6 +629,7 @@ private class VoiceNoteRecorder(private val context: Context) {
         }
         elapsedMs = recorder.elapsedMs
         if (elapsedMs >= VoiceMessages.MAX_DURATION_MS) stop()
+        return live.nextSampleIn(now)
     }
 
     /** Release, Stop or 10:00: the recording goes to [onRecorded]; under a second is discarded. */
@@ -665,7 +667,7 @@ private class VoiceNoteRecorder(private val context: Context) {
     val state = remember(key) { VoiceRecorderState(context, view) }
     state.onRecorded = onRecorded
     LaunchedEffect(state, state.recording) {
-        while (state.recording && isActive) { state.tick(); delay(VoiceMessages.LIVE_SAMPLE_MS) }
+        while (state.recording && isActive) delay(state.tick())
     }
     LaunchedEffect(state.notice, state.noticeIsError) {
         if (state.notice != null && !state.noticeIsError) { delay(2_500); state.clearHint() }
@@ -849,8 +851,10 @@ internal fun Modifier.voiceRecordingKeys(state: VoiceRecorderState): Modifier = 
 }
 
 /**
- * The live meter: bars in the player's style, newest at the right, scrolling left at a constant
- * rate (shifted per display frame between new bars; without animations they step).
+ * The live meter ("pinch bars"): a pill per bar, newest at the right, scrolling left at a
+ * constant rate (shifted per display frame between new bars; without animations they step).
+ * Bars arrive flat and swell in from the right edge, brighten toward eggshell as they get louder,
+ * and shrink and fade over the last [LivePinchReach] on the left. Silence shows small dots.
  */
 @Composable private fun LiveBars(state: VoiceRecorderState, still: Boolean, modifier: Modifier) {
     var frame by remember { mutableLongStateOf(0L) }
@@ -858,21 +862,70 @@ internal fun Modifier.voiceRecordingKeys(state: VoiceRecorderState): Modifier = 
     Spacer(modifier.fillMaxHeight().drawBehind {
         // Read every frame, so the bars glide between new ones.
         if (frame < 0L) return@drawBehind
-        val bar = BarWidth.toPx()
-        val step = bar + BarGap.toPx()
         val bars = state.bars
-        val shift = if (still || bars.isEmpty()) 0f
-            else ((SystemClock.elapsedRealtime() - state.lastBarAt).toFloat() / VoiceMessages.LIVE_BAR_MS).coerceIn(0f, 1f) * step
-        val count = (size.width / step).toInt() + 2
-        val shown = bars.takeLast(count)
+        if (bars.isEmpty() || size.width <= 0f) return@drawBehind
+        val w = size.width
+        val h = size.height
+        val bar = LiveBarWidth.toPx()
+        val step = LiveBarStep.toPx()
+        val minHeight = LiveBarMinHeight.toPx()
+        val reach = minOf(LivePinchReach.toPx(), 0.8f * w)
+        val entry = LiveEntry.toPx()
+        val arrival = LiveArrival.toPx()
+        // Keeps sliding past one step while a bar is late instead of pausing; the
+        // late bar lands where the slide has got to (the cadence restarts at 3).
+        val frac = if (still) 1f
+            else ((SystemClock.elapsedRealtime() - state.lastBarAt).toFloat() / VoiceMessages.LIVE_BAR_MS).coerceIn(0f, 3f)
         clipRect {
-            shown.forEachIndexed { index, level ->
-                val x = size.width - bar - (shown.size - 1 - index) * step - shift
-                if (x + bar > 0f) waveformBar(x, level, Text)
+            for (k in 0 until bars.size) {
+                val x = w - frac * step - k * step
+                if (x < -step) break
+                val cx = x + bar / 2
+                val pinch = 1 - LivePinch * (1 - smoothstep(0f, reach, cx))
+                val swell = easeOutCubic((w - cx) / entry)
+                val alpha = smoothstep(0f, 0.1f * w, cx) * smoothstep(0f, arrival, w - cx)
+                if (alpha < 0.02f) continue
+                val scale = pinch * swell
+                val level = VoiceMessages.liveShape(bars[bars.size - 1 - k])
+                val height = maxOf(minHeight * maxOf(0.6f, scale), level * scale * h * 0.94f)
+                val width = bar * (scale + 0.4f).coerceIn(0.6f, 1f)
+                drawRoundRect(
+                    mixRgb(LiveQuiet, Action, minOf(1f, 0.25f + 0.9f * level), alpha),
+                    Offset(x + (bar - width) / 2, (h - height) / 2), Size(width, height),
+                    CornerRadius(minOf(width, height) / 2),
+                )
             }
         }
     })
 }
+
+private val LiveBarWidth = 3.dp
+/** A 3 dp bar and a 3 dp gap. */
+private val LiveBarStep = 6.dp
+private val LiveBarMinHeight = 3.dp
+/** How small bars get at the left edge (70% smaller), over this distance (at most 80% of the meter). */
+private const val LivePinch = 0.7f
+private val LivePinchReach = 40.dp
+/** New bars enter flat and reach full size this far in, fading in over the last [LiveArrival]. */
+private val LiveEntry = 36.dp
+private val LiveArrival = 10.dp
+/** Quiet bars' colour; loud ones brighten toward eggshell ([Action]). */
+private val LiveQuiet = Color(0xFF969C9E)
+
+private fun smoothstep(from: Float, to: Float, t: Float): Float {
+    val u = ((t - from) / (to - from)).coerceIn(0f, 1f)
+    return u * u * (3 - 2 * u)
+}
+
+private fun easeOutCubic(t: Float): Float {
+    val u = 1 - t.coerceIn(0f, 1f)
+    return 1 - u * u * u
+}
+
+/** A straight sRGB mix, as the web meter draws it, at [alpha]. */
+private fun mixRgb(from: Color, to: Color, t: Float, alpha: Float) = Color(
+    from.red + (to.red - from.red) * t, from.green + (to.green - from.green) * t, from.blue + (to.blue - from.blue) * t, alpha,
+)
 
 /**
  * Above the composer: while holding, what release does; otherwise a short hint or the
