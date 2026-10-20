@@ -129,7 +129,7 @@ struct SpaceIconTile: View {
 
 /// Edit profile's picture and Manage space's icon. Only the corner controls
 /// are buttons, so opening a menu or saving never dims the picture itself.
-/// Progress has a reserved line beneath the picture to keep the form still.
+/// Regeneration progress stays inside its button without moving the form.
 struct PictureEditor<Preview: View>: View {
     let purpose: PicturePurpose
     /// A custom picture is set (Remove is offered).
@@ -158,11 +158,21 @@ struct PictureEditor<Preview: View>: View {
     @State private var animationData: Data?
     @State private var showAnimationChoice = false
     @State private var loadTask: Task<Void, Never>?
+    @State private var hoveredAction: Action?
 
     private enum Phase { case loading, uploading, removing, regenerating }
+    private enum Action { case edit, regenerate }
 
     /// The frame's side, in points.
     static var side: CGFloat { 112 }
+
+    #if os(macOS)
+    private var actionSide: CGFloat { 28 }
+    private var fileSourceLabel: String { "From your Mac…" }
+    #else
+    private var actionSide: CGFloat { 44 }
+    private var fileSourceLabel: String { "From Files…" }
+    #endif
 
     init(purpose: PicturePurpose, hasPicture: Bool, currentURL: URL? = nil, upload: @escaping (PreparedPicture) async throws -> Void,
          remove: @escaping () async throws -> Void, currentAsset: String? = nil,
@@ -189,8 +199,7 @@ struct PictureEditor<Preview: View>: View {
         case .loading: "Opening picture…"
         case .uploading: "Uploading…"
         case .removing: "Removing…"
-        case .regenerating: "Regenerating…"
-        case nil: unavailable ? ProfilePicturePolicy.unavailableMessage : nil
+        case .regenerating, nil: unavailable ? ProfilePicturePolicy.unavailableMessage : nil
         }
     }
 
@@ -213,11 +222,29 @@ struct PictureEditor<Preview: View>: View {
                     }
                     return true
                 } isTargeted: { dropping = $0 && phase == nil && !unavailable }
-            Text(error ?? status ?? " ").font(CaperTheme.font(12))
-                .foregroundStyle(error == nil ? CaperTheme.muted : CaperTheme.error)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityHidden(error == nil && status == nil)
+                .overlay(alignment: .bottomLeading) {
+                    #if os(macOS)
+                    if let hoveredAction {
+                        Text(hoveredAction == .regenerate ? "Generate a new random avatar" : avatar ? "Change profile picture" : "Change space icon")
+                            .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.text)
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(CaperTheme.raised, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+                            .fixedSize()
+                            .alignmentGuide(.bottom) { $0[.top] - 8 }
+                            .modifier(Entrance.anchored)
+                            .allowsHitTesting(false)
+                            .accessibilityIdentifier("picture-action-tooltip")
+                    }
+                    #endif
+                }
+            if let notice = error ?? status {
+                Text(notice).font(CaperTheme.font(12))
+                    .foregroundStyle(error == nil ? CaperTheme.muted : CaperTheme.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+        .zIndex(1)
         .sheet(isPresented: $showHistory) {
             if let history, let select {
                 AvatarHistoryChooser(expected: historyExpected, history: history, select: select)
@@ -270,73 +297,86 @@ struct PictureEditor<Preview: View>: View {
     }
 
     private var pictureMenu: some View {
-        Menu {
-            if hasPicture, let currentURL {
-                Button("Edit current \(noun)") {
-                    start {
-                        let configuration = URLSessionConfiguration.ephemeral
-                        configuration.httpCookieAcceptPolicy = .never
-                        configuration.httpShouldSetCookies = false
-                        let session = URLSession(configuration: configuration)
-                        defer { session.invalidateAndCancel() }
-                        return try await ProfilePictureDecoder.fetch(currentURL, session: session)
+        ZStack {
+            Menu {
+                if hasPicture, let currentURL {
+                    Button("Edit current \(noun)") {
+                        start {
+                            let configuration = URLSessionConfiguration.ephemeral
+                            configuration.httpCookieAcceptPolicy = .never
+                            configuration.httpShouldSetCookies = false
+                            let session = URLSession(configuration: configuration)
+                            defer { session.invalidateAndCancel() }
+                            return try await ProfilePictureDecoder.fetch(currentURL, session: session)
+                        }
                     }
+                    .disabled(unavailable)
                 }
-                .disabled(unavailable)
+                Button { showPhotos = true } label: { Label("From Photos…", systemImage: "photo.on.rectangle") }
+                    .disabled(unavailable)
+                Button { showFiles = true } label: { Label(fileSourceLabel, systemImage: "folder") }
+                    .disabled(unavailable)
+                if history != nil {
+                    Button("Previous pictures") { historyExpected = currentAsset; showHistory = true }
+                }
+                if hasPicture {
+                    Divider()
+                    Button(role: .destructive, action: { removePicture() }) { Label("Remove \(noun)", systemImage: "trash") }
+                }
+            } label: {
+                CaperIcon(name: "pencil", size: 15).frame(width: actionSide, height: actionSide)
             }
-            Button { showPhotos = true } label: { Label("Photo library…", systemImage: "photo.on.rectangle") }
-                .disabled(unavailable)
-            Button { showFiles = true } label: { Label("Choose image…", systemImage: "photo") }
-                .disabled(unavailable)
-            if history != nil {
-                Button("Previous pictures") { historyExpected = currentAsset; showHistory = true }
-            }
-            if hasPicture {
-                Divider()
-                Button(role: .destructive, action: { removePicture() }) { Label("Remove \(noun)", systemImage: "trash") }
-            }
-        } label: {
-            CaperIcon(name: "pencil", size: 17).frame(width: 44, height: 44)
+            .menuStyle(.button)
+            .buttonStyle(PrimaryIconButton())
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(phase != nil || (unavailable && !hasPicture && history == nil))
+            .accessibilityLabel(avatar ? "Change profile picture" : "Change space icon")
+            .accessibilityIdentifier(avatar ? "change-profile-picture" : "change-space-icon")
         }
-        .menuStyle(.button)
-        .buttonStyle(PrimaryIconButton())
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .padding(4)
-        .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
-        .disabled(phase != nil || (unavailable && !hasPicture && history == nil))
-        .accessibilityLabel(avatar ? "Change profile picture" : "Change space icon")
-        .help(avatar ? "Change profile picture" : "Change space icon")
-        .accessibilityIdentifier(avatar ? "change-profile-picture" : "change-space-icon")
+        .padding(3)
+        .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 10))
+        .onHover { hoveredAction = $0 ? .edit : nil }
     }
 
     @ViewBuilder private var regenerateButton: some View {
         if avatar, !hasPicture, let regenerate {
-            Button {
-                guard phase == nil else { return }
-                phase = .regenerating
-                error = nil
-                Task { @MainActor in
-                    defer { phase = nil }
-                    do { try await regenerate() }
-                    catch is CancellationError {}
-                    catch let failure as APIError where failure.status == 409 {
-                        error = "Your picture changed elsewhere. Remove your custom picture before regenerating."
+            // Hover belongs to this enabled wrapper, not the disabled button:
+            // the action's tooltip remains available while a request is pending.
+            ZStack {
+                Button {
+                    guard phase == nil else { return }
+                    phase = .regenerating
+                    error = nil
+                    Task { @MainActor in
+                        defer { phase = nil }
+                        do { try await regenerate() }
+                        catch is CancellationError {}
+                        catch let failure as APIError where failure.status == 409 {
+                            error = "Your picture changed elsewhere. Remove your custom picture before regenerating."
+                        }
+                        catch { self.error = "Couldn’t regenerate avatar. Please retry." }
                     }
-                    catch { self.error = "Couldn’t regenerate avatar. Please retry." }
+                } label: {
+                    ZStack {
+                        if phase == .regenerating {
+                            ProgressView().controlSize(.mini).tint(CaperTheme.muted)
+                        } else {
+                            Image(systemName: "arrow.clockwise").font(.system(size: 15, weight: .medium))
+                        }
+                    }
+                    .frame(width: actionSide, height: actionSide)
                 }
-            } label: {
-                Image(systemName: "arrow.clockwise").font(.system(size: 17, weight: .medium))
-                    .frame(width: 44, height: 44)
+                .buttonStyle(PrimaryIconButton())
+                .disabled(phase != nil)
+                .accessibilityLabel("Regenerate avatar")
+                .accessibilityValue(phase == .regenerating ? "Regenerating" : "")
+                .accessibilityHint("Generate a new random avatar")
+                .accessibilityIdentifier("regenerate-avatar")
             }
-            .buttonStyle(PrimaryIconButton())
-            .padding(4)
-            .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 12))
-            .disabled(phase != nil)
-            .accessibilityLabel("Regenerate avatar")
-            .accessibilityValue(phase == .regenerating ? "Regenerating" : "")
-            .help("Generate a new random avatar")
-            .accessibilityIdentifier("regenerate-avatar")
+            .padding(3)
+            .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 10))
+            .onHover { hoveredAction = $0 ? .regenerate : nil }
         }
     }
 
