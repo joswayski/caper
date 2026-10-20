@@ -61,14 +61,14 @@ fn login_email(code: &str) -> LoginEmail {
 fn welcome_email() -> LoginEmail {
     LoginEmail {
         subject: "Welcome to Caper Chat".into(),
-        text: "Hey, I'm Jose. I'm building Caper, and I wanted to say thanks for signing up.\n\nCaper is early, so if something breaks, feels off, or you have an idea, I'd love to hear it. You can reply to this email any time, it comes straight to me. In the app, you can message @feedback any time to reach me. You can also find me in the Caper chat space, on X or on GitHub:\n\nCaper chat: https://caper.chat/invite/uz3HFpD8jV\nX: https://x.com/josevalerio\nGitHub: https://github.com/joswayski/caper\n\nThanks for trying it out q:^]".into(),
+        text: "Hey, I'm Jose. I'm building Caper, and I wanted to say thanks for signing up.\n\nCaper is early, so if something breaks, feels off, or you have an idea, I'd love to hear it. You can reply to this email any time, it comes straight to me. In the app, you can message @feedback any time to reach me. You can also find me in the official Caper Chat space, on X or on GitHub:\n\nCaper Chat: https://caper.chat/invite/uz3HFpD8jV\nX: https://x.com/josevalerio\nGitHub: https://github.com/joswayski/caper\n\nThanks for trying it out q:^]".into(),
         html: r#"<!doctype html>
 <html lang="en">
   <body style="margin:0;padding:24px 16px;color:#0c0d0f;font-family:Arial,sans-serif;font-size:16px;line-height:1.5;">
     <div style="max-width:560px;">
       <p style="margin:0 0 16px;">Hey, I'm Jose. I'm building Caper, and I wanted to say thanks for signing up.</p>
       <p style="margin:0 0 16px;">Caper is early, so if something breaks, feels off, or you have an idea, I'd love to hear it. You can reply to this email any time, it comes straight to me.</p>
-      <p style="margin:0 0 16px;">In the app, you can message <strong>@feedback</strong> any time to reach me. You can also find me in the <a href="https://caper.chat/invite/uz3HFpD8jV" style="color:#b64d32;">Caper chat space</a>, on <a href="https://x.com/josevalerio" style="color:#b64d32;">X</a> or on <a href="https://github.com/joswayski/caper" style="color:#b64d32;">GitHub</a>.</p>
+      <p style="margin:0 0 16px;">In the app, you can message <strong>@feedback</strong> any time to reach me. You can also find me in the <a href="https://caper.chat/invite/uz3HFpD8jV" style="color:#b64d32;">official Caper Chat space</a>, on <a href="https://x.com/josevalerio" style="color:#b64d32;">X</a> or on <a href="https://github.com/joswayski/caper" style="color:#b64d32;">GitHub</a>.</p>
       <p style="margin:0;">Thanks for trying it out q:^]</p>
     </div>
   </body>
