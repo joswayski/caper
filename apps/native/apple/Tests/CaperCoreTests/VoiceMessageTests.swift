@@ -88,6 +88,26 @@ final class VoiceMessageTests: XCTestCase {
         XCTAssertEqual(VoiceDuration.playerLabel(durationMs: nil, elapsedMs: 2_000), "0:02")
     }
 
+    func testSendabilityAndProfileRetryRules() {
+        XCTAssertTrue(VoiceMessage.sendable(durationMs: 1_000, byteSize: 1))
+        XCTAssertTrue(VoiceMessage.sendable(durationMs: 600_000, byteSize: 9_000))
+        XCTAssertFalse(VoiceMessage.sendable(durationMs: 999, byteSize: 9_000), "under a second never uploads")
+        XCTAssertFalse(VoiceMessage.sendable(durationMs: 600_001, byteSize: 9_000), "over the server's limit")
+        XCTAssertFalse(VoiceMessage.sendable(durationMs: 4_000, byteSize: 0), "an empty file never uploads")
+        // Failures before the POST (destination, session, upload) always keep the recording.
+        XCTAssertTrue(VoiceMessage.keepsForRetry(attemptedSend: false, status: 403))
+        XCTAssertTrue(VoiceMessage.keepsForRetry(attemptedSend: false, status: nil))
+        // After the POST: unknown outcomes keep it (Retry resends the same id); refusals drop it.
+        XCTAssertTrue(VoiceMessage.keepsForRetry(attemptedSend: true, status: nil), "a network error is an unknown outcome")
+        XCTAssertTrue(VoiceMessage.keepsForRetry(attemptedSend: true, status: 503))
+        XCTAssertTrue(VoiceMessage.keepsForRetry(attemptedSend: true, status: 502))
+        for status in [400, 401, 403, 404, 409, 413, 422] {
+            XCTAssertFalse(VoiceMessage.keepsForRetry(attemptedSend: true, status: status), "\(status) is a definitive refusal")
+        }
+        XCTAssertEqual(VoiceMessage.retryNotice(unconfirmed: false), "Voice message didn’t send.")
+        XCTAssertEqual(VoiceMessage.retryNotice(unconfirmed: true), "Voice message delivery isn’t confirmed. Retry resends the same message.")
+    }
+
     func testRecordingRules() {
         XCTAssertFalse(VoiceMessage.keeps(durationMs: 999), "under a second is discarded")
         XCTAssertTrue(VoiceMessage.keeps(durationMs: 1_000))
@@ -195,6 +215,30 @@ final class VoiceMessageTests: XCTestCase {
     }
 
     // MARK: Upload and excerpts
+
+    func testPreparedVoiceUploadsTheRecordingAsIsOrNothing() throws {
+        let file = try AttachmentStaging.stage(data: Data(repeating: 3, count: 4_096), filename: "recording.m4a")
+        defer { AttachmentStaging.remove(file.url) }
+        let waveform: [UInt8] = [0, 128, 255]
+        let prepared = try XCTUnwrap(PreparedAttachment.voice(VoiceRecording(fileURL: file.url, durationMs: 4_200, waveform: waveform)))
+        XCTAssertTrue(prepared.voice)
+        XCTAssertEqual(prepared.fileURL, file.url, "never compressed or copied")
+        XCTAssertEqual(prepared.name, VoiceMessage.uploadFilename)
+        XCTAssertEqual(prepared.contentType, "audio/mp4")
+        XCTAssertEqual(prepared.kind, .audio)
+        XCTAssertEqual(prepared.byteSize, 4_096)
+        XCTAssertEqual(prepared.durationMs, 4_200)
+        XCTAssertEqual(prepared.waveform, VoiceWaveform.encode(waveform))
+        XCTAssertNil(prepared.preview)
+        let local = prepared.localVoiceAttachment(id: "local")
+        XCTAssertTrue(local.voice)
+        XCTAssertEqual(local.name, VoiceMessage.storedName)
+        XCTAssertEqual(local.url, file.url.absoluteString)
+        XCTAssertEqual(local.waveformBytes, waveform)
+        XCTAssertNil(PreparedAttachment.voice(VoiceRecording(fileURL: file.url, durationMs: 400, waveform: waveform)))
+        let missing = file.url.deletingLastPathComponent().appendingPathComponent("missing.m4a")
+        XCTAssertNil(PreparedAttachment.voice(VoiceRecording(fileURL: missing, durationMs: 4_200, waveform: waveform)))
+    }
 
     func testVoiceUploadDeclaresVoiceDurationAndWaveformOnlyForVoice() throws {
         let voice = AssetCreateInput(channelId: "Chan12345678", filename: VoiceMessage.uploadFilename, contentType: "audio/mp4",

@@ -43,6 +43,27 @@ public enum VoiceMessage {
     /// A recording long enough to send (and within the server's limit once clamped).
     public static func keeps(durationMs: Int) -> Bool { durationMs >= minimumDurationMs }
 
+    /// A finished recording that may be uploaded: some bytes, 1 s to 10 min.
+    public static func sendable(durationMs: Int, byteSize: Int) -> Bool {
+        byteSize > 0 && (minimumDurationMs...maximumDurationMs).contains(durationMs)
+    }
+
+    /// Statuses that definitively refuse a message send (as the text path treats them).
+    public static let refusalStatuses: Set<Int> = [400, 401, 403, 404, 409, 413, 422]
+
+    /// After a failed profile-card send, the recording (and any uploaded file
+    /// and frozen send) stays for Retry unless the server definitively refused it.
+    public static func keepsForRetry(attemptedSend: Bool, status: Int?) -> Bool {
+        guard attemptedSend, let status else { return true }
+        return !refusalStatuses.contains(status)
+    }
+
+    /// The profile card's line for a voice message that didn't go:
+    /// `unconfirmed` once the send may have reached the server.
+    public static func retryNotice(unconfirmed: Bool) -> String {
+        unconfirmed ? "Voice message delivery isn’t confirmed. Retry resends the same message." : "Voice message didn’t send."
+    }
+
     /// The declared duration: the measured file length, else the clock, within the server's range.
     public static func uploadDuration(measuredMs: Int?, elapsedMs: Int) -> Int {
         let value = measuredMs.flatMap { $0 > 0 ? $0 : nil } ?? elapsedMs

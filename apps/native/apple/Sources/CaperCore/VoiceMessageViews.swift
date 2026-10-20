@@ -180,25 +180,57 @@ private struct VoiceTranscriptRule: ViewModifier {
 
 // MARK: Composer
 
+/// Where a composer's voice message goes: the open conversation's channel or
+/// thread composer (`ChatModel.sendVoice`), or a profile card's DM
+/// (`AppModel.sendProfileVoice`). Every microphone, bar and notice is
+/// built from one of these.
+struct VoiceTarget {
+    let owner: VoiceComposerID
+    /// The microphone can start a recording now.
+    let enabled: Bool
+    /// Why it can't (the Mac's tooltip).
+    let unavailableReason: String
+    /// Prefix for the accessibility identifiers ("composer-voice-record", …).
+    let identifier: String
+    let send: @MainActor (VoiceRecording) async -> Void
+
+    @MainActor static func chat(_ chat: ChatModel, inThread: Bool) -> VoiceTarget {
+        VoiceTarget(owner: VoiceComposerID(chat: chat, inThread: inThread),
+                    enabled: chat.canRecordVoice(inThread: inThread),
+                    unavailableReason: chat.canAttach ? "Send or dismiss the pending message first." : chat.attachUnavailableReason,
+                    identifier: inThread ? "thread-voice" : "composer-voice") { recording in
+            await chat.sendVoice(recording, inThread: inThread)
+        }
+    }
+}
+
 /// The composer's microphone ("Record voice message"), next to Emoji. On the
 /// Mac a click replaces the composer row with the recording bar. On iPhone
 /// and iPad press and hold to record, release to send, slide left to cancel;
 /// a quick tap shows "Hold to record". VoiceOver activates it to start and
 /// again to send.
 struct VoiceRecordButton: View {
-    let chat: ChatModel
-    let inThread: Bool
+    let target: VoiceTarget
     var height: CGFloat = 42
     private var recorder: VoiceMessageRecorder { .shared }
-    private var owner: VoiceComposerID { VoiceComposerID(chat: chat, inThread: inThread) }
+    private var owner: VoiceComposerID { target.owner }
     #if os(iOS)
     @State private var pressStart: Date?
     @State private var cancelled = false
     @GestureState private var pressing = false
     #endif
 
+    init(target: VoiceTarget, height: CGFloat = 42) {
+        self.target = target
+        self.height = height
+    }
+
+    init(chat: ChatModel, inThread: Bool, height: CGFloat = 42) {
+        self.init(target: .chat(chat, inThread: inThread), height: height)
+    }
+
     var body: some View {
-        let enabled = chat.canRecordVoice(inThread: inThread)
+        let enabled = target.enabled
         let active = recorder.isActive(owner)
         #if os(iOS)
         icon(active: active)
@@ -219,16 +251,16 @@ struct VoiceRecordButton: View {
             .accessibilityHint(active ? "" : "Hold to record, release to send, slide left to cancel.")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { active ? send() : begin() }
-            .accessibilityIdentifier(inThread ? "thread-voice-record" : "composer-voice-record")
+            .accessibilityIdentifier("\(target.identifier)-record")
             .disabled(!enabled && !active)
             .modifier(VoiceRecordingLifetime(owner: owner))
         #else
         Button(action: begin) { icon(active: active) }
             .buttonStyle(.plain)
             .disabled(!enabled)
-            .help(enabled ? "Record voice message" : chat.canAttach ? "Send or dismiss the pending message first." : chat.attachUnavailableReason)
+            .help(enabled ? "Record voice message" : target.unavailableReason)
             .accessibilityLabel("Record voice message")
-            .accessibilityIdentifier(inThread ? "thread-voice-record" : "composer-voice-record")
+            .accessibilityIdentifier("\(target.identifier)-record")
             .modifier(ControlPointer())
             .modifier(VoiceRecordingLifetime(owner: owner))
         #endif
@@ -244,32 +276,31 @@ struct VoiceRecordButton: View {
     }
 
     private func begin() {
-        guard chat.canRecordVoice(inThread: inThread) else { return }
-        let chat = chat, inThread = inThread
+        guard target.enabled else { return }
+        let target = target
         Task {
-            await recorder.start(for: owner) {
+            await recorder.start(for: target.owner) {
                 // 10:00: stop and send, on every platform.
-                Task { @MainActor in await VoiceRecordButton.finishAndSend(chat: chat, inThread: inThread) }
+                Task { @MainActor in await VoiceRecordButton.finishAndSend(target) }
             }
         }
     }
 
     private func send() {
-        let chat = chat, inThread = inThread
-        Task { await VoiceRecordButton.finishAndSend(chat: chat, inThread: inThread) }
+        let target = target
+        Task { await VoiceRecordButton.finishAndSend(target) }
     }
 
-    @MainActor static func finishAndSend(chat: ChatModel, inThread: Bool) async {
+    @MainActor static func finishAndSend(_ target: VoiceTarget) async {
         let recorder = VoiceMessageRecorder.shared
-        let owner = VoiceComposerID(chat: chat, inThread: inThread)
-        guard recorder.isRecording(owner) else { return }
+        guard recorder.isRecording(target.owner) else { return }
         guard let recording = await recorder.finish() else {
             #if os(iOS)
-            recorder.show(VoiceMessage.holdHint, for: owner, seconds: 2)
+            recorder.show(VoiceMessage.holdHint, for: target.owner, seconds: 2)
             #endif
             return
         }
-        await chat.sendVoice(recording, inThread: inThread)
+        await target.send(recording)
     }
 
     #if os(iOS)
@@ -330,15 +361,22 @@ private struct VoiceRecordingLifetime: ViewModifier {
 /// by the recording bar. On the Mac it is also disabled, so typing and
 /// Return can't reach the message field.
 struct VoiceComposerCover: ViewModifier {
-    let chat: ChatModel
-    let inThread: Bool
+    let target: VoiceTarget
     var height: CGFloat = 42
     /// Returns the keyboard to the message field once the bar closes (macOS).
     var restoreFocus: (() -> Void)? = nil
     private var recorder: VoiceMessageRecorder { .shared }
 
+    init(target: VoiceTarget, height: CGFloat = 42, restoreFocus: (() -> Void)? = nil) {
+        self.target = target; self.height = height; self.restoreFocus = restoreFocus
+    }
+
+    init(chat: ChatModel, inThread: Bool, height: CGFloat = 42, restoreFocus: (() -> Void)? = nil) {
+        self.init(target: .chat(chat, inThread: inThread), height: height, restoreFocus: restoreFocus)
+    }
+
     func body(content: Content) -> some View {
-        let recording = recorder.isRecording(VoiceComposerID(chat: chat, inThread: inThread))
+        let recording = recorder.isRecording(target.owner)
         content
             .opacity(recording ? 0 : 1)
             .allowsHitTesting(!recording)
@@ -350,7 +388,7 @@ struct VoiceComposerCover: ViewModifier {
             .accessibilityHidden(recording)
             .overlay(alignment: .bottom) {
                 if recording {
-                    VoiceRecordingBar(chat: chat, inThread: inThread, height: height)
+                    VoiceRecordingBar(target: target, height: height)
                         .modifier(Entrance.anchored)
                 }
             }
@@ -364,8 +402,7 @@ struct VoiceComposerCover: ViewModifier {
 /// sends); on touch devices the timer, live bars and "Slide to cancel", with
 /// "Release to send" above (`VoiceComposerNotice`).
 struct VoiceRecordingBar: View {
-    let chat: ChatModel
-    let inThread: Bool
+    let target: VoiceTarget
     var height: CGFloat = 42
     private var recorder: VoiceMessageRecorder { .shared }
 
@@ -407,8 +444,8 @@ struct VoiceRecordingBar: View {
                 .frame(height: 22)
                 .frame(maxWidth: .infinity)
             Button {
-                let chat = chat, inThread = inThread
-                Task { await VoiceRecordButton.finishAndSend(chat: chat, inThread: inThread) }
+                let target = target
+                Task { await VoiceRecordButton.finishAndSend(target) }
             } label: {
                 CaperIcon(name: "send", size: 16)
                     .frame(width: 42, height: height)
@@ -426,7 +463,7 @@ struct VoiceRecordingBar: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Recording voice message")
-        .accessibilityIdentifier(inThread ? "thread-voice-recording" : "composer-voice-recording")
+        .accessibilityIdentifier("\(target.identifier)-recording")
         #endif
     }
 
@@ -446,12 +483,19 @@ struct VoiceRecordingBar: View {
 /// "Hold to record", a failed recording), and on touch devices "Release to
 /// send" above a held recording.
 struct VoiceComposerNotice: View {
-    let chat: ChatModel
-    let inThread: Bool
+    let owner: VoiceComposerID
+    let identifier: String
     private var recorder: VoiceMessageRecorder { .shared }
 
+    init(owner: VoiceComposerID, identifier: String) {
+        self.owner = owner; self.identifier = identifier
+    }
+
+    init(chat: ChatModel, inThread: Bool) {
+        self.init(owner: VoiceComposerID(chat: chat, inThread: inThread), identifier: inThread ? "thread-voice" : "composer-voice")
+    }
+
     var body: some View {
-        let owner = VoiceComposerID(chat: chat, inThread: inThread)
         #if os(iOS)
         if recorder.isRecording(owner) {
             Text(VoiceMessage.releaseHint)
@@ -465,7 +509,7 @@ struct VoiceComposerNotice: View {
                 .font(CaperTheme.font(11))
                 .foregroundStyle(text == VoiceMessage.holdHint ? CaperTheme.muted : CaperTheme.error)
                 .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier(inThread ? "thread-voice-notice" : "composer-voice-notice")
+                .accessibilityIdentifier("\(identifier)-notice")
         }
     }
 }

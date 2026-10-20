@@ -6154,7 +6154,9 @@ private struct MentionCardView: View {
                 }.accessibilityLabel("Files to send")
             }
             ComposerSuggestionsView(controller: autocomplete).disabled(!draft.editable || pending != nil)
+            VoiceComposerNotice(owner: voiceTarget.owner, identifier: voiceTarget.identifier)
             HStack(alignment: .bottom, spacing: 0) {
+                HStack(alignment: .bottom, spacing: 0) {
                 Group {
                 #if os(iOS)
                 Button { showingDrawer = true; updateDialogState() } label: {
@@ -6219,6 +6221,12 @@ private struct MentionCardView: View {
                         Task { if await model.sendProfileGif(to: person, gif: gif, query: query) { close() } }
                     })
                 }
+                }
+                #if os(iOS)
+                // The held microphone stays put while the bar covers the field.
+                .modifier(VoiceComposerCover(target: voiceTarget))
+                #endif
+                VoiceRecordButton(target: voiceTarget)
                 Button { send() } label: {
                     CaperIcon(name: "send", size: 15)
                         .frame(width: 32, height: 32).contentShape(Rectangle())
@@ -6232,6 +6240,29 @@ private struct MentionCardView: View {
             }
             .background(CaperTheme.composer).clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(CaperTheme.border))
+            #if os(macOS)
+            // Clicking the microphone replaces the box with the recording bar.
+            .modifier(VoiceComposerCover(target: voiceTarget, restoreFocus: { autocomplete.restoreFocus() }))
+            #endif
+            if let voice = draft.voice, !draft.sending {
+                // A voice message that didn't go stays for Retry; typed text is untouched.
+                HStack(spacing: 10) {
+                    CaperIcon(name: "mic", size: 14).foregroundStyle(CaperTheme.muted)
+                    Text(VoiceMessage.retryNotice(unconfirmed: voice.command != nil))
+                        .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button("Retry") { retryVoice() }
+                        .buttonStyle(.plain).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.text)
+                        .disabled(pending != nil || draft.presentingDialog)
+                        .accessibilityLabel("Retry voice message")
+                        .accessibilityIdentifier("mention-card-voice-retry")
+                    Button("Discard") { draft.discardVoice() }
+                        .buttonStyle(.plain).font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)
+                        .accessibilityLabel("Discard voice message")
+                        .accessibilityIdentifier("mention-card-voice-discard")
+                }
+            }
             if draft.pending != nil, !draft.sending {
                 Text("Delivery isn’t confirmed. Send retries the same message.")
                     .font(CaperTheme.font(12)).foregroundStyle(CaperTheme.error)
@@ -6257,6 +6288,24 @@ private struct MentionCardView: View {
     private func send() {
         guard draft.canSend, pending == nil, !draft.presentingDialog else { return }
         Task { if await model.sendProfileMessage(to: person) { close() } }
+    }
+
+    /// The card's microphone: a voice message goes to this person's DM on
+    /// its own, and success closes the card into the DM as Send does.
+    private var voiceTarget: VoiceTarget {
+        let model = model, person = person, close = close
+        let incoming = model.directMessages.contains { $0.peer.id == person.id && $0.status == .incoming }
+        return VoiceTarget(owner: VoiceComposerID(profilePersonID: person.id),
+                           enabled: uploadsAvailable && canMessage && !incoming && draft.canRecordVoice && pending == nil && !draft.presentingDialog,
+                           unavailableReason: uploadsAvailable ? "Send or retry the current message first." : "File uploads are unavailable",
+                           identifier: "mention-card-voice") { recording in
+            if await model.sendProfileVoice(recording, to: person) { close() }
+        }
+    }
+
+    private func retryVoice() {
+        guard draft.voice != nil, !draft.sending, pending == nil, !draft.presentingDialog else { return }
+        Task { if await model.sendProfileVoice(nil, to: person) { close() } }
     }
 
     private var emojiPicker: some View {
