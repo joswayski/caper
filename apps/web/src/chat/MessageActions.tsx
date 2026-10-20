@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   autoUpdate,
   flip,
@@ -83,6 +84,12 @@ export default function MessageActions({
   const [mode, setMode] = useState(target.mode);
   const [copyError, setCopyError] = useState<string>();
   const returnFocus = useRef(target.anchor);
+  const [restoreFocus, setRestoreFocus] = useState(true);
+  const reply = (action: () => void) => {
+    // Reply hands focus to the composer. Menu cleanup must not take it back.
+    flushSync(() => setRestoreFocus(false));
+    action();
+  };
   const { refs, floatingStyles, context } = useFloating({
     open: true,
     onOpenChange: (open) => {
@@ -126,7 +133,7 @@ export default function MessageActions({
   };
 
   const panel = (
-    <FloatingFocusManager context={context} returnFocus={returnFocus}>
+    <FloatingFocusManager context={context} returnFocus={restoreFocus ? returnFocus : false}>
       <div
         className={
           mode === "actions"
@@ -184,13 +191,13 @@ export default function MessageActions({
             )}
             <div className="chat-copy-actions">
               {onReplyMessage && (
-                <button type="button" onClick={onReplyMessage}>
+                <button type="button" onClick={() => reply(onReplyMessage)}>
                   <Reply size={16} aria-hidden="true" />
                   Reply
                 </button>
               )}
               {onReply && (
-                <button type="button" onClick={onReply}>
+                <button type="button" onClick={() => reply(onReply)}>
                   <Thread size={16} aria-hidden="true" />
                   Reply in thread
                 </button>

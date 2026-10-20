@@ -557,6 +557,9 @@ fun voiceJoinUnavailableLabel(available: Boolean?): String? = when (available) {
     null -> "Checking voice availability…"
 }
 
+/** One-shot intent, independent of reply metadata so selecting the same reply refocuses. */
+data class ComposerFocusRequest(val channelId: String, val rootId: String?, val id: String)
+
 data class AppUiState(
     val screen: SessionScreen = SessionScreen.Loading,
     /**
@@ -639,6 +642,7 @@ data class AppUiState(
     val inviteLinks: List<InviteLink> = emptyList(),
     val pendingMessage: PendingMessageUi? = null,
     val replyTargets: Map<String, MessageReply> = emptyMap(),
+    val composerFocusRequest: ComposerFocusRequest? = null,
     val gateway: GatewayStatus = GatewayStatus.DISCONNECTED,
     val reactionSaves: Map<String, ReactionSaveUi> = emptyMap(),
     val pinnedMessages: List<ChatMessage> = emptyList(),

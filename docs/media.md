@@ -10245,3 +10245,38 @@ a labeled API mock. Apple code and tests are implemented but require Xcode to
 compile/run. No physical mobile device, live SFU call, real push-provider delivery
 or Windows/macOS notification activation was exercised. Docker is unavailable in
 the orb; build stages are validated directly rather than as images.
+
+## Reply composer focus (October 20, 2026)
+
+Explicit **Reply** and **Reply in thread** actions select/open the destination
+and focus its composer without a second tap, including repeated replies and
+actions from Pins. They preserve drafts and never send automatically. Ordinary
+thread browsing does not request the mobile keyboard.
+
+Web focus stays inside the initiating click, after mounting the destination and
+dismissing the menu's focus trap, so iOS can accept the keyboard request. Web and
+Rust desktop allow typing during thread-history loading but still block sending.
+Android and Apple carry a one-shot destination-specific focus request until the
+composer can take focus after covering sheets dismiss; Android explicitly asks
+the input method to show, and Apple activates the native first responder.
+
+Validation:
+
+- Web: `npm run check`, 775 Vitest tests, and the loopback
+  `scripts/test-message-threads.mjs` desktop/narrow/touch suite pass. Focus
+  regressions check the click itself, menu cleanup, repeated targets and cold
+  thread loading. Real browser keystrokes reached both composers without an
+  intervening input click. The API is a labelled local mock, not production.
+- Android: Kotlin application/instrumentation-test compilation and lint pass; all
+  575 JVM tests pass. The new Compose focus test compiles but was not run: no
+  Android device is connected to the orb.
+- Rust desktop: the headless egui reply-action regression passes, including
+  typing while history loads and preventing premature sends. Formatting and
+  application Clippy pass. The full suite had 756 passes, 20 ignored tests and
+  one failure in the unchanged media-proxy
+  connection-limit test (`UnexpectedMessage`); that test passed when rerun alone.
+- Apple: iOS/macOS responder handling and iPhone keyboard-focus assertions are
+  implemented, but compilation and tests require Xcode and were not run here.
+- No physical iPhone/Android keyboard, real Safari, Windows or macOS runtime
+  acceptance was performed. Browser layout/focus checks do not prove native
+  software-keyboard presentation.

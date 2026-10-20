@@ -4379,7 +4379,7 @@ private struct ChatView: View {
                                         reactionMessage = nil
                                         Task { await chat.setPin(messageID: message.id, active: message.pin == nil) }
                                     },
-                                    reply: { reactionMessage = nil; Task { await chat.openThread(message.threadRootId ?? message.id) } },
+                                    reply: { reactionMessage = nil; chat.replyInThread(to: message) },
                                     canForward: chat.canForward,
                                     forward: { reactionMessage = nil; chat.forwardTarget = message },
                                     quickReaction: { emoji in
@@ -4445,7 +4445,7 @@ private struct ChatView: View {
     private var composerMinHeight: CGFloat { narrow ? 42 : CaperTheme.accountBarHeight }
     // Type-check the native editor and its optional callback separately from
     // channelBody's large SwiftUI builder; keep the editor at the same position.
-    private var messageComposer: NativeMessageComposer {
+    private var messageComposer: some View {
         let pasteAttachments: (() -> Bool)?
         if chat.canAttach {
             pasteAttachments = { chat.pasteAttachments() }
@@ -4456,6 +4456,7 @@ private struct ChatView: View {
                                      controller: composerAutocomplete, mentions: mentionSource,
                                      submit: { Task { await chat.send() } },
                                      pasteAttachments: pasteAttachments)
+            .modifier(ReplyComposerFocus(chat: chat, controller: composerAutocomplete, inThread: false))
     }
     /// `@` suggestions: the open space's members as `GET /api/spaces/{space}`
     /// returned them (only the specials until loaded), or in a DM everyone from
@@ -5001,10 +5002,30 @@ private struct NativeThreadView: View {
         #endif
     }
 
-    private var threadComposer: NativeMessageComposer {
+    private var threadComposer: some View {
         let paste: (() -> Bool)? = chat.canAttach ? { chat.pasteAttachments(inThread: true) } : nil
         return NativeMessageComposer(text: $chat.threadDraft, placeholder: "Reply to thread…", controller: composerAutocomplete,
                                      mentions: mentions, submit: { Task { await chat.send(inThread: true) } }, pasteAttachments: paste)
+            .modifier(ReplyComposerFocus(chat: chat, controller: composerAutocomplete, inThread: true))
+    }
+}
+
+/// Keep the intent until the destination is mounted and covering sheets have finished dismissing.
+private struct ReplyComposerFocus: ViewModifier {
+    @Bindable var chat: ChatModel
+    let controller: ComposerAutocompleteController
+    let inThread: Bool
+    func body(content: Content) -> some View {
+        content.task(id: chat.composerFocusRequest(inThread: inThread)) { @MainActor in
+            guard let request = chat.composerFocusRequest(inThread: inThread) else { return }
+            while !Task.isCancelled, chat.composerFocusRequest(inThread: inThread) == request {
+                if controller.requestFocusAction?() == true {
+                    chat.consumeComposerFocus(request)
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            }
+        }
     }
 }
 
@@ -5338,7 +5359,7 @@ private struct MessageRow: View {
             .overlay(alignment: .topTrailing) {
                 HStack(spacing: 0) {
                     if !inThread && (!message.isDeleted || hasThread) {
-                        Button { Task { await chat.openThread(message.threadRootId ?? message.id) } } label: {
+                        Button { chat.replyInThread(to: message) } label: {
                             CaperIcon(name: "thread", size: 14).frame(width: 24, height: 24)
                         }.buttonStyle(.plain).focused($replyFocused).help("Reply in thread").accessibilityLabel("Reply in thread")
                             .modifier(ControlHover(isFocused: replyFocused))
@@ -5426,7 +5447,7 @@ private struct MessageRow: View {
             Button("Add reaction…", action: showReactionPicker).disabled(!chat.canInteract)
             Divider()
             Button("Reply") { chat.reply(to: message, inThread: inThread && !inPins) }.disabled(!chat.canInteract || chat.pendingMessage != nil)
-            if !inThread { Button("Reply in thread") { Task { await chat.openThread(message.threadRootId ?? message.id) } } }
+            if !inThread { Button("Reply in thread") { chat.replyInThread(to: message) } }
             if chat.canForward { Button("Forward message") { chat.forwardTarget = message } }
             if chat.canEdit(message) { Button("Edit message") { editing = true } }
             if message.forward == nil && (message.revision ?? 1) > 1 { Button("Message history") { history = true } }
@@ -7358,7 +7379,7 @@ private struct PinnedMessagesView: View {
                     canReact: chat.canInteract,
                     canPin: chat.canInteract && !chat.pendingPins.contains(message.id),
                     togglePin: { actionTarget = nil; Task { await chat.setPin(messageID: message.id, active: message.pin == nil) } },
-                    reply: { actionTarget = nil; close(); Task { await chat.openThread(message.threadRootId ?? message.id) } },
+                    reply: { actionTarget = nil; close(); chat.replyInThread(to: message) },
                     canForward: chat.canForward, forward: { actionTarget = nil; close(); chat.forwardTarget = message },
                     quickReaction: { emoji in
                         let active = !(message.reactions?.first(where: { $0.emoji == emoji })?.authorIds.contains(chat.currentAuthor?.id ?? "") ?? false)
@@ -7371,6 +7392,7 @@ private struct PinnedMessagesView: View {
             #endif
             .onChange(of: chat.editingContext) { _, _ in actionTarget = nil; reactorsTarget = nil; close() }
             .onChange(of: chat.replyTargets) { _, _ in actionTarget = nil; close() }
+            .onChange(of: chat.composerFocusRequest) { _, request in if request != nil { actionTarget = nil; close() } }
             .onChange(of: chat.focusRevision) { _, _ in close() }
             #if os(iOS)
             .modifier(MediaViewerHost())

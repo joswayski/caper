@@ -8,6 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import { flushSync } from "react-dom";
 import { ArrowRight, ChevronDown, MoreHorizontal, Pin, X } from "lucide-react";
 import {
   FloatingFocusManager,
@@ -468,11 +469,22 @@ export default function Chat({
       drawer: isTouchLayout(),
       inThread,
     });
-  const openThread = (rootId: string) => {
-    setActionTarget(undefined);
-    setReactorsTarget(undefined);
-    clientRef.current?.setTyping(false);
-    void clientRef.current?.openThread(rootId);
+  const openThread = (rootId: string, replying = false) => {
+    const open = () => {
+      setActionTarget(undefined);
+      setReactorsTarget(undefined);
+      clientRef.current?.setTyping(false);
+      void clientRef.current?.openThread(rootId);
+    };
+    if (replying) {
+      // Mount the editor and dismiss any focus trap within the tap. iOS
+      // won't open its keyboard for focus deferred to a frame or a fetch.
+      flushSync(() => {
+        setShowPins(false);
+        open();
+      });
+      document.getElementById("chat-thread-reply")?.focus();
+    } else open();
   };
   const prefetchThread = (rootId: string) => void clientRef.current?.prefetchThread(rootId);
   const closeThread = useCallback(() => clientRef.current?.closeThread(), []);
@@ -1531,14 +1543,15 @@ export default function Chat({
         ? message.threadRootId
         : "channel";
     if (!root) return;
-    setReplyTarget(root, replyReference(message));
-    setActionTarget(undefined);
-    setShowPins(false);
-    if (root !== "channel" && !inThread) openThread(root);
-    requestAnimationFrame(() => {
-      if (root !== "channel") document.getElementById("chat-thread-reply")?.focus();
-      else composerRef.current?.focus();
+    flushSync(() => {
+      setReplyTarget(root, replyReference(message));
+      setActionTarget(undefined);
+      setShowPins(false);
+      if (root === "channel") closeThread();
+      else if (!inThread) openThread(root);
     });
+    if (root !== "channel") document.getElementById("chat-thread-reply")?.focus();
+    else composerRef.current?.focus();
   };
   const renderMessage = (
     index: number,
@@ -2187,7 +2200,7 @@ export default function Chat({
             onClose={() => setActionTarget(undefined)}
             onCopied={setActionStatus}
             onReply={
-              actionTarget.inThread ? undefined : () => openThread(actionMessage.threadRootId ?? actionMessage.id)
+              actionTarget.inThread ? undefined : () => openThread(actionMessage.threadRootId ?? actionMessage.id, true)
             }
             onReplyMessage={
               !readOnly && state.author && !state.pendingSend

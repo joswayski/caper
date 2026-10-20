@@ -8228,6 +8228,12 @@ impl CaperApp {
         self.load_thread(false);
     }
 
+    fn reply_in_thread(&mut self, context: &egui::Context, root: String) {
+        self.showing_pins = false;
+        self.open_thread(root.clone());
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new(("thread-draft", root))));
+    }
+
     fn close_thread(&mut self) {
         self.upload_send_intent = None;
         if matches!(self.composer_emoji, Some((EmojiTarget::Thread(_), _))) {
@@ -16452,7 +16458,8 @@ impl CaperApp {
                             pick = attach_drawer::popup(&button, files, false);
                             let output = ui.allocate_ui_with_layout(egui::vec2(text_width, editor_height - 20.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                                 ui.set_width(text_width);
-                                ui.add_enabled_ui(!loading, |ui| {
+                                // Let Reply focus and accept typing while history loads; sending still waits.
+                                ui.scope(|ui| {
                                     egui::ScrollArea::vertical()
                                         .id_salt(("thread-composer-scroll", &root))
                                         .max_height(editor_height - 20.0)
@@ -17848,6 +17855,8 @@ impl CaperApp {
         self.showing_pins = false;
         if let Some(root) = &root {
             self.open_thread(root.clone());
+        } else {
+            self.close_thread();
         }
         let id = root.map_or_else(
             || egui::Id::new("message-composer"),
@@ -18491,7 +18500,8 @@ impl CaperApp {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Reply in thread")
                     });
                     if reply.on_hover_text("Reply in thread").clicked() {
-                        self.open_thread(
+                        self.reply_in_thread(
+                            ui.ctx(),
                             message
                                 .thread_root_id
                                 .clone()
@@ -18627,7 +18637,8 @@ impl CaperApp {
                             && message_menu_item(ui, NavIcon::Thread, "Reply in thread", true)
                                 .clicked()
                         {
-                            self.open_thread(
+                            self.reply_in_thread(
+                                ui.ctx(),
                                 message
                                     .thread_root_id
                                     .clone()
@@ -41603,6 +41614,55 @@ mod tests {
             thread.retry_older && thread.window.is_some() && thread.has_newer,
             "the older page again, keeping the jump window rather than reloading the latest"
         );
+    }
+
+    #[test]
+    fn reply_actions_accept_typing_without_clicking_the_composer() {
+        for threaded in [false, true] {
+            let (context, mut app) = fixture("parity-desktop");
+            context.enable_accesskit();
+            app.session = Some(session());
+            let message = app.timeline.messages().next().unwrap().clone();
+            let root = message.id.clone();
+            app.timeline
+                .reset(vec![message.clone()], &message.seq)
+                .unwrap();
+            app.draft = "Channel draft".into();
+            app.thread_drafts
+                .insert(root.clone(), ("Thread draft".into(), false));
+            render(&mut app, &context, vec![]);
+            let output = render(&mut app, &context, vec![]);
+            let action =
+                node_bounds(&output, if threaded { "Reply in thread" } else { "Reply" }).unwrap();
+            render(
+                &mut app,
+                &context,
+                vec![egui::Event::PointerMoved(action.center())],
+            );
+            click(&mut app, &context, action.center());
+            render(&mut app, &context, vec![]);
+            render(&mut app, &context, vec![egui::Event::Text("!".into())]);
+            if threaded {
+                assert!(app.thread_view.as_ref().unwrap().loading);
+                assert!(
+                    app.thread_drafts[&root].0.contains('!'),
+                    "Reply in thread accepts typing even during loading"
+                );
+                assert_eq!(app.draft, "Channel draft");
+                render(&mut app, &context, press(egui::Key::Enter));
+                assert!(
+                    app.pending.is_none(),
+                    "Loading history still blocks sending"
+                );
+            } else {
+                assert!(
+                    app.draft.contains('!'),
+                    "Reply accepts typing without a second click"
+                );
+                assert_eq!(app.reply_targets["channel"].id, root);
+                assert_eq!(app.thread_drafts[&root].0, "Thread draft");
+            }
+        }
     }
 
     #[test]

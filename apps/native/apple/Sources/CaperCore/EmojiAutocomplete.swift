@@ -148,6 +148,7 @@ enum ComposerAutocomplete {
     var acceptAction: ((Int) -> Void)?
     var insertAction: ((String) -> Void)?
     var restoreFocusAction: (() -> Void)?
+    var requestFocusAction: (() -> Bool)?
     func update(_ match: ComposerAutocompleteMatch?) {
         if self.match != match { self.match = match; selected = 0 }
     }
@@ -496,6 +497,16 @@ struct NativeMessageComposer: UIViewRepresentable {
                 (self.view as? ComposerTextView)?.touched()
                 self.view?.becomeFirstResponder()
             }
+            parent.controller.requestFocusAction = { [weak self] in
+                guard let self, self.parent.editable, self.parent.isEnabled, !self.parent.covered,
+                      let view = self.view, let window = view.window, !window.isHidden else { return false }
+                var top = window.rootViewController
+                while let presented = top?.presentedViewController { top = presented }
+                guard let top, !top.isBeingDismissed, !top.isBeingPresented,
+                      view.isDescendant(of: top.view) else { return false }
+                (view as? ComposerTextView)?.touched()
+                return view.becomeFirstResponder()
+            }
         }
         func highlight(_ view: UITextView) {
             guard !highlighting, view.markedTextRange == nil else { return }
@@ -651,6 +662,12 @@ struct NativeMessageComposer: NSViewRepresentable {
             parent.controller.restoreFocusAction = { [weak self] in
                 guard let self, self.parent.editable, let view = self.view else { return }
                 view.window?.makeFirstResponder(view)
+            }
+            parent.controller.requestFocusAction = { [weak self] in
+                guard let self, self.parent.editable, self.parent.isEnabled,
+                      let view = self.view, let window = view.window,
+                      window.isKeyWindow, window.attachedSheet == nil else { return false }
+                return window.makeFirstResponder(view)
             }
         }
         @MainActor func highlight(_ view: ComposerTextView) {

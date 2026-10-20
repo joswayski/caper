@@ -54,7 +54,7 @@ export interface RowActions {
   /** A second click on the open menu's own trigger closes it, like a toggle. */
   toggleActions(messageId: string, anchor: HTMLElement, inThread: boolean): void;
   toggleReactionPicker(messageId: string, anchor: HTMLElement, inThread: boolean): void;
-  openThread(rootId: string): void;
+  openThread(rootId: string, replying?: boolean): void;
   prefetchThread(rootId: string): void;
   openHistory(messageId: string): void;
   openReply(reference: ChatReplyReference): void;
@@ -522,7 +522,7 @@ function MessageRowView({
                       title="Reply in thread"
                       onMouseEnter={() => actions.prefetchThread(message.threadRootId ?? message.id)}
                       onFocus={() => actions.prefetchThread(message.threadRootId ?? message.id)}
-                      onClick={() => actions.openThread(message.threadRootId ?? message.id)}
+                      onClick={() => actions.openThread(message.threadRootId ?? message.id, true)}
                     >
                       <Thread size={14} aria-hidden="true" />
                     </button>
