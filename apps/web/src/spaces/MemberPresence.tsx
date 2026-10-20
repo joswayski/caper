@@ -65,6 +65,7 @@ export default function MemberPresence({
 
   useEffect(() => {
     setLive(false);
+    setStatuses({});
     if (!ids) return;
     return watchPresence(
       spaceId,
@@ -82,7 +83,7 @@ export default function MemberPresence({
   const row = (member: Member) => {
     const status = statuses[member.id];
     return (
-      <li key={member.id}>
+      <li key={member.id} className={status === "offline" ? "member-offline" : undefined}>
         <button
           type="button"
           className="member-profile-trigger"
@@ -105,6 +106,29 @@ export default function MemberPresence({
       </li>
     );
   };
+
+  const PresenceHeading = inChannel ? "h4" : "h3";
+  const presenceGroups = (members: Member[]) =>
+    (["Online", "Offline", "Status unavailable"] as const).map((label) => {
+      const grouped = members.filter((member) => {
+        const status = statuses[member.id];
+        return label === "Online"
+          ? status === "online" || status === "idle"
+          : label === "Offline"
+            ? status === "offline"
+            : !status;
+      });
+      if (!grouped.length) return null;
+      return (
+        <section className="member-presence-group" aria-label={label} key={label}>
+          <PresenceHeading className="member-group-label">
+            <span>{label}</span>
+            <span className="section-count">{grouped.length}</span>
+          </PresenceHeading>
+          <ul>{grouped.map(row)}</ul>
+        </section>
+      );
+    });
 
   return (
     <aside id="space-member-list" className="space-member-presence" aria-label="Space members">
@@ -131,7 +155,7 @@ export default function MemberPresence({
                   <span>In #{channel!.name}</span>
                   <span className="section-count">{inChannel.length}</span>
                 </h3>
-                <ul>{visible.slice(0, split).map(row)}</ul>
+                {presenceGroups(visible.slice(0, split))}
               </section>
             )}
             {split < visible.length && (
@@ -140,13 +164,14 @@ export default function MemberPresence({
                   <span>Others in this space</span>
                   <span className="section-count">{others.length}</span>
                 </h3>
-                <ul>{visible.slice(split).map(row)}</ul>
+                {presenceGroups(visible.slice(split))}
               </section>
             )}
           </>
         ) : (
-          <ul>{visible.map(row)}</ul>
+          presenceGroups(visible)
         )}
+        {lastPage > 0 && <p className="member-presence-connecting">Presence counts are for this page.</p>}
         {lastPage > 0 && (
           <div className="member-presence-pages">
             <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>

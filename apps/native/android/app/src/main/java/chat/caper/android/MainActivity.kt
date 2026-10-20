@@ -1259,6 +1259,22 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
                     Text(count.toString(), color = TextMuted, fontSize = 10.sp, style = TabularNumbers)
                 }
             }
+            @Composable fun PresenceSections(visible: List<Member>, quiet: Boolean, ring: Color) {
+                // Split only this page, preserving the server's order within each section.
+                val sections = listOf(
+                    "Online" to visible.filter { state.presence[it.id] in listOf("online", "idle") },
+                    "Offline" to visible.filter { state.presence[it.id] == "offline" },
+                    "Status unavailable" to visible.filter { state.presence[it.id] !in listOf("online", "idle", "offline") },
+                )
+                sections.forEach { (title, rows) ->
+                    if (rows.isNotEmpty()) {
+                        GroupLabel(title, rows.size, primary = false)
+                        rows.forEach { member -> key(member.id) {
+                            MemberRow(member, quiet = quiet || state.presence[member.id] == "offline", ring = ring)
+                        } }
+                    }
+                }
+            }
             if (groups != null) {
                 val readers = groups.first.map { it.id }.toSet()
                 val top = shown.filter { it.id in readers }
@@ -1267,17 +1283,20 @@ internal fun headerSubtitle(members: Int?, inVoice: Int): String = listOfNotNull
                 if (top.isNotEmpty()) item(key = "in-channel") {
                     Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).background(SurfaceSidebarRaised).padding(vertical = 4.dp)) {
                         GroupLabel("In #${channel?.name.orEmpty()}", groups.first.size, primary = true)
-                        top.forEach { MemberRow(it, quiet = false, ring = SurfaceSidebarRaised) }
+                        PresenceSections(top, quiet = false, ring = SurfaceSidebarRaised)
                     }
                 }
                 if (rest.isNotEmpty()) item(key = "others") {
                     Column(Modifier.fillMaxWidth().padding(top = if (top.isEmpty()) 0.dp else 12.dp)) {
                         GroupLabel("Others in this space", groups.second.size, primary = false)
-                        rest.forEach { MemberRow(it, quiet = true, ring = SurfaceSidebar) }
+                        PresenceSections(rest, quiet = true, ring = SurfaceSidebar)
                     }
                 }
-            } else items(shown, key = { it.id }) { member -> MemberRow(member, quiet = false, ring = SurfaceSidebar) }
+            } else item(key = "presence-sections") {
+                PresenceSections(shown, quiet = false, ring = SurfaceSidebar)
+            }
         }
+        if (pages > 1) Text("Presence counts are for this page.", Modifier.padding(horizontal = 16.dp, vertical = 4.dp), color = TextMuted, fontSize = 10.sp)
         if (pages > 1) Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             TextButton({ viewModel.setPresencePage(state.presencePage - 1) }, enabled = state.presencePage > 0, shape = MaterialTheme.shapes.small) { Text("Previous", fontSize = 10.sp) }
             Text("${state.presencePage + 1} / $pages", color = TextMuted, fontSize = 10.sp, style = TabularNumbers)

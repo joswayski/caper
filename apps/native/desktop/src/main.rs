@@ -15042,8 +15042,34 @@ impl CaperApp {
                 ui.label(RichText::new("No members to show.").size(11.0).color(MUTED));
             });
         }
+        let label = |ui: &mut egui::Ui, title: &str, count: usize, primary: bool| {
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new(title).family(egui::FontFamily::Name("Satoshi Bold".into())).size(11.0).color(if primary { TEXT } else { MUTED }));
+                ui.label(RichText::new(count.to_string()).size(10.0).color(MUTED));
+            });
+            ui.add_space(4.0);
+        };
         let mut rows = |ui: &mut egui::Ui, members: Vec<model::Member>, quiet: bool, ring: Color32| {
+            // Split only the visible page, after private reader grouping. Push
+            // in source order so each presence section remains stable.
+            let mut sections: [Vec<model::Member>; 3] = Default::default();
             for member in members {
+                let section = match self.presence.get(&member.id).map(String::as_str) {
+                    Some("online" | "idle") => 0,
+                    Some("offline") => 1,
+                    _ => 2,
+                };
+                sections[section].push(member);
+            }
+            for (index, (title, members)) in ["Online", "Offline", "Status unavailable"].into_iter().zip(sections).enumerate() {
+                if members.is_empty() {
+                    continue;
+                }
+                ui.add_space(8.0);
+                label(ui, title, members.len(), false);
+                for member in members {
                 let tint = ui.painter().add(egui::Shape::Noop);
                 let row = ui.allocate_ui_with_layout(egui::vec2(ui.available_width(),44.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.set_min_width(ui.available_width());
@@ -15054,7 +15080,7 @@ impl CaperApp {
                         .get(&member.id)
                         .map_or("unknown", String::as_str);
                     presence_avatar_on(ui, &member.display_name, member.avatar_id, member.picture(), 30.0, status, ring);
-                    if quiet {
+                    if quiet || index == 1 {
                         emoji::name_label(ui, RichText::new(&member.display_name).size(12.0).color(MUTED), egui::Sense::hover());
                     } else {
                         emoji::name_label(ui, bold(&member.display_name).size(12.0), egui::Sense::hover());
@@ -15070,16 +15096,8 @@ impl CaperApp {
                     self.open_author_card(&model::Author { id: member.id, name: member.display_name, avatar_id: member.avatar_id, avatar_asset: member.avatar_asset, avatar_url: member.avatar_url, is_guest: false, admin: member.admin }, &response, true);
                 }
 
+                }
             }
-        };
-        let label = |ui: &mut egui::Ui, title: &str, count: usize, primary: bool| {
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                ui.spacing_mut().item_spacing.x = 6.0;
-                ui.label(RichText::new(title).family(egui::FontFamily::Name("Satoshi Bold".into())).size(11.0).color(if primary { TEXT } else { MUTED }));
-                ui.label(RichText::new(count.to_string()).size(10.0).color(MUTED));
-            });
-            ui.add_space(4.0);
         };
         if let Some((name, readers, reader_count, other_count)) = &groups {
             let (top, rest): (Vec<_>, Vec<_>) = members.into_iter().partition(|member| readers.contains(&member.id));
@@ -15102,6 +15120,7 @@ impl CaperApp {
             rows(ui, members, false, SIDEBAR);
         }
         if page_count > 1 {
+            ui.label(RichText::new("Presence counts are for this page.").size(10.0).color(MUTED));
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(self.member_page > 0, egui::Button::new("Previous"))

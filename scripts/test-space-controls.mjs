@@ -172,7 +172,12 @@ function fixture() {
       });
     if (path.endsWith("/members")) return Response.json({ members: [{ ...account, owner: true }] });
     if (path === `/api/spaces/${space.id}`)
-      return Response.json({ space, channels: deletedChannel ? [] : [channel], members });
+      return Response.json({
+        space,
+        channels: deletedChannel ? [] : [channel],
+        members,
+        channelMembers: channel.private ? { [channel.id]: [account.id] } : {},
+      });
     if (path.endsWith("/messages")) return Response.json({ space, channel, messages: [], cursor: "0", hasMore: false });
     return Response.json({ error: "Disabled in UI fixture" }, { status: 503 });
   };
@@ -622,7 +627,18 @@ try {
     assert.equal(evaluate('document.querySelector(".member-list-toggle").getAttribute("aria-expanded")'), "true");
     assert.equal(evaluate('!!document.querySelector(".space-member-presence")'), true);
     wait(
-      'document.querySelectorAll(".space-member-presence li").length === 25 && !document.querySelector(".member-presence-connecting")',
+      'document.querySelectorAll(".space-member-presence li").length === 25 && !document.querySelector(".space-member-presence [data-status=unknown]")',
+    );
+    assert.deepEqual(
+      evaluate(
+        '[...document.querySelectorAll(".member-presence-group")].map(section => [section.getAttribute("aria-label"), section.querySelectorAll("li").length])',
+      ),
+      [
+        ["Online", 1],
+        ["Online", 16],
+        ["Offline", 8],
+      ],
+      "Private readers stay separate, with idle included online and per-page counts",
     );
     assert.ok(
       evaluate(
@@ -670,7 +686,7 @@ try {
     }
     browser("click", ".member-presence-pages button:last-child");
     wait(
-      'document.querySelectorAll(".space-member-presence li").length === 5 && !document.querySelector(".member-presence-connecting")',
+      'document.querySelectorAll(".space-member-presence li").length === 5 && !document.querySelector(".space-member-presence [data-status=unknown]")',
     );
     assert.equal(
       evaluate('Object.values(spaceControlFixture.subscriptions).filter(s => s.kind === "presence").length'),

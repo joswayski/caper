@@ -2966,7 +2966,7 @@ private struct MemberPresenceView: View {
                     if !top.isEmpty {
                         VStack(alignment: .leading, spacing: 0) {
                             groupLabel("In #\(channelName)", count: groups.inChannel.count, primary: true)
-                            ForEach(top) { memberRow($0, quiet: false, ring: CaperTheme.sidebarRaised) }
+                            presenceSections(top, quiet: false, ring: CaperTheme.sidebarRaised)
                         }.padding(.horizontal, 6).padding(.vertical, 4)
                             .background(CaperTheme.sidebarRaised, in: RoundedRectangle(cornerRadius: 8))
                             .accessibilityElement(children: .contain).accessibilityLabel("In #\(channelName)")
@@ -2974,14 +2974,16 @@ private struct MemberPresenceView: View {
                     if !rest.isEmpty {
                         VStack(alignment: .leading, spacing: 0) {
                             groupLabel("Others in this space", count: groups.others.count, primary: false)
-                            ForEach(rest) { memberRow($0, quiet: true, ring: CaperTheme.sidebar) }
+                            presenceSections(rest, quiet: true, ring: CaperTheme.sidebar)
                         }.padding(.horizontal, 6).padding(.top, top.isEmpty ? 0 : 4)
                             .accessibilityElement(children: .contain).accessibilityLabel("Others in this space")
                     }
                 } else {
-                    ForEach(presence.visibleMembers) { memberRow($0, quiet: false, ring: CaperTheme.sidebar) }
+                    presenceSections(presence.visibleMembers, quiet: false, ring: CaperTheme.sidebar)
                 }
                 if presence.pageCount > 1 {
+                    Text("Presence counts are for this page.")
+                        .font(CaperTheme.font(10)).foregroundStyle(CaperTheme.muted)
                     HStack {
                         Button("Previous") { if !SwipeTapGuard.swiping { Task { await presence.showPage(presence.page - 1) } } }.disabled(presence.page == 0)
                         Spacer(); Text("\(presence.page + 1) / \(presence.pageCount)")
@@ -3009,6 +3011,19 @@ private struct MemberPresenceView: View {
             .foregroundStyle(primary ? CaperTheme.text : CaperTheme.muted)
             .padding(.horizontal, 6).padding(.top, 6).padding(.bottom, 2)
             .accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
+    }
+    @ViewBuilder private func presenceSections(_ visible: [Member], quiet: Bool, ring: Color) -> some View {
+        // Split only this page, preserving the server's order within each section.
+        ForEach([PresenceStatus.online, .offline, .unknown], id: \.rawValue) { section in
+            let rows = visible.filter { member in
+                let status = presence.status(for: member)
+                return section == .online ? status == .online || status == .idle : status == section
+            }
+            if !rows.isEmpty {
+                groupLabel(section == .online ? "Online" : section == .offline ? "Offline" : "Status unavailable", count: rows.count, primary: false)
+                ForEach(rows) { memberRow($0, quiet: quiet || section == .offline, ring: ring) }
+            }
+        }
     }
     @ViewBuilder private func memberRow(_ listed: Member, quiet: Bool, ring: Color) -> some View {
         // Rows show live profile updates and your latest saved name and picture.
