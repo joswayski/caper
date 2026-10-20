@@ -15,9 +15,13 @@ final class MessageArrivalsTests: XCTestCase {
 
     func testRowsAppendedAtTheLiveEndAnimate() {
         arrivals.observe("channel", key: "a", ids: ["1", "2"], live: true)
+        XCTAssertEqual(arrivals.revision("channel"), 0)
         arrivals.observe("channel", key: "a", ids: ["1", "2", "3"], live: true)
         XCTAssertTrue(arrivals.has("3"))
         XCTAssertFalse(arrivals.has("2"))
+        XCTAssertEqual(arrivals.revision("channel"), 1)
+        arrivals.observe("channel", key: "a", ids: ["0", "1", "2", "3"], live: true)
+        XCTAssertEqual(arrivals.revision("channel"), 1)
     }
 
     func testEmptyListsFirstMessagesDoNotAnimate() {
@@ -64,5 +68,6 @@ final class MessageArrivalsTests: XCTestCase {
         arrivals.observe("channel", key: "a", ids: ["1", "sent"], live: true)
         XCTAssertFalse(arrivals.claim("sent"))
         XCTAssertTrue(arrivals.has("sent"))
+        XCTAssertEqual(arrivals.revision("channel"), 1)
     }
 }

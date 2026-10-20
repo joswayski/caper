@@ -20,6 +20,7 @@ import type { MentionCandidate } from "./mentions.ts";
 import { sequence, type ChatMessage, type ChatReplyReference } from "./types.ts";
 import { ReplyDraft } from "./Replies.tsx";
 import { useTimelineKeyboardDismiss } from "./useTimelineKeyboardDismiss.ts";
+import { useTimelineMotion } from "./useTimelineMotion.ts";
 import { useVoiceRecorder } from "./VoiceRecorder.tsx";
 
 const DEFAULT_WIDTH = 340;
@@ -334,6 +335,7 @@ export default function ThreadPanel({
   }, [state.thread?.focusMessageId]);
   // Reactions grow an existing reply (or the root) without changing its ID.
   const root = useMemo(() => state.messages.find((message) => message.id === rootId), [state.messages, rootId]);
+  useTimelineMotion(scroll, rootId, !!state.thread && !state.thread.loading && !state.thread.hasNewer);
   // Runs before the follow effect so a focused reply is not first scrolled past.
   // The focus stays through paging, so scrolling back to the bottom (or
   // sending) is what resumes following.
@@ -629,65 +631,67 @@ export default function ThreadPanel({
           follow.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
         }}
       >
-        {root && <div className="chat-thread-parent">{renderedRoot}</div>}
-        {!!root?.thread?.replyCount && (
-          <div className="chat-thread-divider">
-            {root.thread.replyCount} {root.thread.replyCount === 1 ? "reply" : "replies"}
-          </div>
-        )}
-        {state.thread.loading && !replies.length && (
-          <MessageSkeleton
-            label="Loading thread replies"
-            rows={Math.min(3, Math.max(1, root?.thread?.replyCount ?? 2))}
-          />
-        )}
-        {state.thread.error && (
-          <p className="chat-thread-status chat-inline-error" role="alert">
-            {state.thread.error}{" "}
+        <div className="chat-motion-clip">
+          {root && <div className="chat-thread-parent">{renderedRoot}</div>}
+          {!!root?.thread?.replyCount && (
+            <div className="chat-thread-divider">
+              {root.thread.replyCount} {root.thread.replyCount === 1 ? "reply" : "replies"}
+            </div>
+          )}
+          {state.thread.loading && !replies.length && (
+            <MessageSkeleton
+              label="Loading thread replies"
+              rows={Math.min(3, Math.max(1, root?.thread?.replyCount ?? 2))}
+            />
+          )}
+          {state.thread.error && (
+            <p className="chat-thread-status chat-inline-error" role="alert">
+              {state.thread.error}{" "}
+              <button
+                type="button"
+                onClick={() =>
+                  void (state.thread?.failedPage === "older"
+                    ? client?.loadOlderThread()
+                    : state.thread?.failedPage === "newer"
+                      ? client?.loadNewerThread()
+                      : client?.retryThread(state.thread?.focusMessageId))
+                }
+              >
+                Retry
+              </button>
+            </p>
+          )}
+          {state.thread.hasMore && (
             <button
               type="button"
-              onClick={() =>
-                void (state.thread?.failedPage === "older"
-                  ? client?.loadOlderThread()
-                  : state.thread?.failedPage === "newer"
-                    ? client?.loadNewerThread()
-                    : client?.retryThread(state.thread?.focusMessageId))
-              }
+              className="chat-thread-older"
+              disabled={state.thread.loadingOlder}
+              onClick={() => {
+                follow.current = false;
+                if (scroll.current)
+                  olderAnchor.current = { height: scroll.current.scrollHeight, top: scroll.current.scrollTop };
+                void client?.loadOlderThread();
+              }}
             >
-              Retry
+              {state.thread.loadingOlder ? "Loading…" : "Load older replies"}
             </button>
-          </p>
-        )}
-        {state.thread.hasMore && (
-          <button
-            type="button"
-            className="chat-thread-older"
-            disabled={state.thread.loadingOlder}
-            onClick={() => {
-              follow.current = false;
-              if (scroll.current)
-                olderAnchor.current = { height: scroll.current.scrollHeight, top: scroll.current.scrollTop };
-              void client?.loadOlderThread();
-            }}
-          >
-            {state.thread.loadingOlder ? "Loading…" : "Load older replies"}
-          </button>
-        )}
-        {!state.thread.loading && !state.thread.error && !replies.length && (
-          <p className="chat-thread-status">{readOnly ? "No replies yet." : "No replies yet. Start the thread."}</p>
-        )}
-        {renderedReplies}
-        {state.thread.hasNewer && (
-          <button
-            type="button"
-            className="chat-thread-older"
-            disabled={state.thread.loadingNewer}
-            onClick={() => void client?.loadNewerThread()}
-          >
-            {state.thread.loadingNewer ? "Loading…" : "Load newer replies"}
-          </button>
-        )}
-        {pending && !pendingInline && renderMessage(replies.length + 1, pending, true, replies.at(-1))}
+          )}
+          {!state.thread.loading && !state.thread.error && !replies.length && (
+            <p className="chat-thread-status">{readOnly ? "No replies yet." : "No replies yet. Start the thread."}</p>
+          )}
+          {renderedReplies}
+          {state.thread.hasNewer && (
+            <button
+              type="button"
+              className="chat-thread-older"
+              disabled={state.thread.loadingNewer}
+              onClick={() => void client?.loadNewerThread()}
+            >
+              {state.thread.loadingNewer ? "Loading…" : "Load newer replies"}
+            </button>
+          )}
+          {pending && !pendingInline && renderMessage(replies.length + 1, pending, true, replies.at(-1))}
+        </div>
       </div>
       <div className="chat-composer chat-thread-composer">
         {readOnly ? (

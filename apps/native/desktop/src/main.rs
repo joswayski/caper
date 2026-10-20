@@ -16547,146 +16547,170 @@ impl CaperApp {
                 Stroke::new(1.0, BORDER),
             );
         }
-        egui::ScrollArea::vertical()
+        let displacement_id = ui.id().with(("thread-displacement", &root));
+        let pinned = ui
+            .ctx()
+            .data(|data| data.get_temp::<bool>(displacement_id.with("pinned")))
+            .unwrap_or(false);
+        motion::begin_displacement(
+            ui.ctx(),
+            displacement_id,
+            self.arrivals.latest("thread"),
+            pinned,
+            !loading && !has_newer && window.is_none(),
+        );
+        let thread_history = egui::ScrollArea::vertical()
             .id_salt(("thread-history", &root))
             .stick_to_bottom(true)
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.add_space(8.0);
-                let rows: Vec<_> = self
-                    .timeline
-                    .messages()
-                    .filter(|message| {
-                        message.id == root
-                            || (message.thread_root_id.as_deref() == Some(&root)
-                                && window.is_none_or(|window| window.contains(message)))
-                    })
-                    .cloned()
-                    .collect();
-                if let Some(parent) = rows.iter().find(|message| message.id == root) {
-                    self.messages_or_blocked(ui, &[parent]);
-                    ui.add_space(8.0);
-                    if let Some(summary) = &parent.thread
-                        && summary.reply_count > 0
-                    {
-                        egui::Frame::new()
-                            .inner_margin(egui::Margin {
-                                left: 18,
-                                right: 18,
-                                bottom: 12,
-                                top: 0,
-                            })
-                            .show(ui, |ui| {
-                                ui.spacing_mut().interact_size.y = 0.0;
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 12.0;
-                                    let label = ui.label(
-                                        RichText::new(format!(
-                                            "{} {}",
-                                            summary.reply_count,
-                                            if summary.reply_count == 1 {
-                                                "reply"
-                                            } else {
-                                                "replies"
-                                            }
-                                        ))
-                                        .size(11.52)
-                                        .color(MUTED),
-                                    );
-                                    ui.painter().hline(
-                                        ui.available_rect_before_wrap().x_range(),
-                                        label.rect.center().y,
-                                        Stroke::new(1.0, BORDER),
-                                    );
-                                });
-                            });
-                    }
-                }
-                if let Some(error) = &error {
-                    ui.colored_label(ERROR, error);
-                    // The page that failed, as on web: an older page again,
-                    // not a reload of the latest replies.
-                    if ui.button("Retry").clicked() {
-                        self.load_thread(retry_older);
-                    }
-                }
-                // The channel's "Load older messages" style, as on web.
-                if has_more
-                    && history_row(ui, |ui| {
-                        centered_history_button(ui, "Load older replies", !loading)
-                    })
-                    .clicked()
-                {
-                    self.load_thread(true);
-                }
-                let replies: Vec<_> = rows
-                    .iter()
-                    .filter(|message| message.thread_root_id.is_some())
-                    .collect();
-                if loading && replies.is_empty() {
-                    ui.allocate_ui(egui::vec2(ui.available_width(), 196.0), message_skeleton);
-                }
-                if replies.is_empty() && !loading && error.is_none() {
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin::symmetric(18, 12))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(if read_only {
-                                    "No replies yet."
-                                } else {
-                                    "No replies yet. Start the thread."
+                motion::displaced(ui, "timeline", |ui| {
+                    let rows: Vec<_> = self
+                        .timeline
+                        .messages()
+                        .filter(|message| {
+                            message.id == root
+                                || (message.thread_root_id.as_deref() == Some(&root)
+                                    && window.is_none_or(|window| window.contains(message)))
+                        })
+                        .cloned()
+                        .collect();
+                    if let Some(parent) = rows.iter().find(|message| message.id == root) {
+                        self.messages_or_blocked(ui, &[parent]);
+                        ui.add_space(8.0);
+                        if let Some(summary) = &parent.thread
+                            && summary.reply_count > 0
+                        {
+                            egui::Frame::new()
+                                .inner_margin(egui::Margin {
+                                    left: 18,
+                                    right: 18,
+                                    bottom: 12,
+                                    top: 0,
                                 })
-                                .size(12.0)
-                                .color(MUTED),
-                            );
-                        });
-                }
-                self.messages_or_blocked(ui, &replies);
-                // Pending replies belong in the scrolling history, not above
-                // the editor where a long send can push all controls offscreen.
-                if let Some(pending) = self
-                    .pending
-                    .clone()
-                    .filter(|pending| pending.thread_root_id.as_deref() == Some(&root))
-                {
-                    let arrival = self.arrival(ui.ctx(), &pending.id);
-                    motion::arrive(ui, arrival, ARRIVE_OFFSET, |ui| {
-                        if let Some(reference) = &pending.reply_to {
-                            self.reply_context(ui, reference, &pending.id);
+                                .show(ui, |ui| {
+                                    ui.spacing_mut().interact_size.y = 0.0;
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 12.0;
+                                        let label = ui.label(
+                                            RichText::new(format!(
+                                                "{} {}",
+                                                summary.reply_count,
+                                                if summary.reply_count == 1 {
+                                                    "reply"
+                                                } else {
+                                                    "replies"
+                                                }
+                                            ))
+                                            .size(11.52)
+                                            .color(MUTED),
+                                        );
+                                        ui.painter().hline(
+                                            ui.available_rect_before_wrap().x_range(),
+                                            label.rect.center().y,
+                                            Stroke::new(1.0, BORDER),
+                                        );
+                                    });
+                                });
                         }
-                        if let Some(session) = &self.session {
-                            message_row(ui, &session.author, "Now", None, false, 0.0, |ui| {
-                                if !pending.text.is_empty() {
-                                    ui.label(RichText::new(&pending.text).size(14.0).color(MUTED));
-                                }
+                    }
+                    if let Some(error) = &error {
+                        ui.colored_label(ERROR, error);
+                        // The page that failed, as on web: an older page again,
+                        // not a reload of the latest replies.
+                        if ui.button("Retry").clicked() {
+                            self.load_thread(retry_older);
+                        }
+                    }
+                    // The channel's "Load older messages" style, as on web.
+                    if has_more
+                        && history_row(ui, |ui| {
+                            centered_history_button(ui, "Load older replies", !loading)
+                        })
+                        .clicked()
+                    {
+                        self.load_thread(true);
+                    }
+                    let replies: Vec<_> = rows
+                        .iter()
+                        .filter(|message| message.thread_root_id.is_some())
+                        .collect();
+                    if loading && replies.is_empty() {
+                        ui.allocate_ui(egui::vec2(ui.available_width(), 196.0), message_skeleton);
+                    }
+                    if replies.is_empty() && !loading && error.is_none() {
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin::symmetric(18, 12))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(if read_only {
+                                        "No replies yet."
+                                    } else {
+                                        "No replies yet. Start the thread."
+                                    })
+                                    .size(12.0)
+                                    .color(MUTED),
+                                );
                             });
-                        } else if !pending.text.is_empty() {
-                            ui.label(&pending.text);
-                        }
-                        self.attachment_list(ui, &pending.attachments, true);
-                        if let Some(gif) = &pending.gif {
-                            self.message_gif(ui, gif, 62);
-                        }
-                    });
-                }
-                if has_newer
-                    && history_row(ui, |ui| {
-                        centered_history_button(ui, "Load newer replies", !self.context_loading)
-                    })
-                    .clicked()
-                {
-                    self.load_newer_context(Some(root.clone()));
-                }
-                if window.is_some()
-                    && history_row(ui, |ui| {
-                        centered_history_button(ui, "Back to latest replies", true)
-                    })
-                    .clicked()
-                {
-                    self.open_thread(root.clone());
-                }
+                    }
+                    self.messages_or_blocked(ui, &replies);
+                    // Pending replies belong in the scrolling history, not above
+                    // the editor where a long send can push all controls offscreen.
+                    if let Some(pending) = self
+                        .pending
+                        .clone()
+                        .filter(|pending| pending.thread_root_id.as_deref() == Some(&root))
+                    {
+                        let arrival = self.arrival(ui.ctx(), &pending.id);
+                        motion::arrive(ui, arrival, ARRIVE_OFFSET, |ui| {
+                            if let Some(reference) = &pending.reply_to {
+                                self.reply_context(ui, reference, &pending.id);
+                            }
+                            if let Some(session) = &self.session {
+                                message_row(ui, &session.author, "Now", None, false, 0.0, |ui| {
+                                    if !pending.text.is_empty() {
+                                        ui.label(
+                                            RichText::new(&pending.text).size(14.0).color(MUTED),
+                                        );
+                                    }
+                                });
+                            } else if !pending.text.is_empty() {
+                                ui.label(&pending.text);
+                            }
+                            self.attachment_list(ui, &pending.attachments, true);
+                            if let Some(gif) = &pending.gif {
+                                self.message_gif(ui, gif, 62);
+                            }
+                        });
+                    }
+                    if has_newer
+                        && history_row(ui, |ui| {
+                            centered_history_button(ui, "Load newer replies", !self.context_loading)
+                        })
+                        .clicked()
+                    {
+                        self.load_newer_context(Some(root.clone()));
+                    }
+                    if window.is_some()
+                        && history_row(ui, |ui| {
+                            centered_history_button(ui, "Back to latest replies", true)
+                        })
+                        .clicked()
+                    {
+                        self.open_thread(root.clone());
+                    }
+                });
             });
+        motion::end_displacement(ui.ctx());
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(
+                displacement_id.with("pinned"),
+                thread_history.state.offset.y + thread_history.inner_rect.height()
+                    >= thread_history.content_size.y - 1.0,
+            )
+        });
         self.file_drop_overlay(ui.ctx(), drop_area, Some(&root));
     }
 
@@ -17195,6 +17219,7 @@ impl CaperApp {
             };
             let scope = self.selected_direct.as_deref().or(self.selected_channel.as_deref()).unwrap_or_default().to_owned();
             let HistoryPlan { items, rows, mut previous, mut last_date } = plan;
+            let displace_live = !frozen && jump.is_none() && !self.history_list.jumping() && !self.loading && !self.context_loading && !self.has_newer && self.context_window.is_none();
             let (layout, anchored) = self.history_list.begin(&scope, rows, jump, frame);
             let mut history = egui::ScrollArea::vertical()
                 // The conversation stays mounted behind the separate Pins modal.
@@ -17223,10 +17248,12 @@ impl CaperApp {
             let height_id = ui.id().with(("history-natural-height", &scope));
             let natural_height = ui.ctx().data_mut(|data| data.get_temp::<f32>(height_id)).unwrap_or(0.0);
             let top_space = if empty { 0.0 } else { (history_clip.height() - natural_height).max(0.0) };
+            motion::begin_displacement(ui.ctx(), ui.id().with(("channel-displacement", &scope)), self.arrivals.latest("channel"), frame.at_end, displace_live);
             let history = history.show_viewport(ui, |ui, viewport| {
                     let origin = ui.max_rect().top();
                     ui.set_clip_rect(ui.clip_rect().intersect(history_clip));
                     ui.add_space(top_space);
+                    motion::displaced(ui, "timeline", |ui| {
                     if let Some(error) = self.load_error.clone().filter(|_| empty) {
                         chat_state(ui, 2, |ui| {
                             ui.label(RichText::new(error).color(MUTED));
@@ -17379,7 +17406,9 @@ impl CaperApp {
                         });
                     }
                     Some((plan, drawn, start))
+                    })
                 });
+            motion::end_displacement(ui.ctx());
             let measured_height = history.content_size.y - top_space;
             ui.ctx().data_mut(|data| data.insert_temp(height_id, measured_height));
             let measured_space = if empty { 0.0 } else { (history.inner_rect.height() - measured_height).max(0.0) };

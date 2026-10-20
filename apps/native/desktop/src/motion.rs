@@ -310,6 +310,112 @@ pub fn modal(context: &Context, layer: LayerId) {
 /// enough that a row drawn again later never replays it.
 pub const ARRIVAL: f64 = 1.0;
 
+#[derive(Clone, Default)]
+struct Displacement {
+    event: Option<f64>,
+    until: f64,
+    shift: f32,
+    rows: HashMap<String, (f32, f32, f64, u64, f32)>,
+}
+
+/// Paint-only FLIP compensation. Scroll offsets and virtual-list measurements
+/// remain physical and immediate. Keep the window open across measuring passes.
+pub fn begin_displacement(
+    context: &Context,
+    id: Id,
+    event: Option<f64>,
+    watching: bool,
+    live: bool,
+) {
+    let now = context.input(|input| input.time);
+    let pass = context.cumulative_pass_nr();
+    let allowed = live
+        && enabled(context)
+        && !context.input(|input| {
+            input.raw_scroll_delta != Vec2::ZERO
+                || input.pointer.is_decidedly_dragging()
+                || [
+                    egui::Key::PageUp,
+                    egui::Key::PageDown,
+                    egui::Key::Home,
+                    egui::Key::End,
+                ]
+                .iter()
+                .any(|key| input.key_pressed(*key))
+        });
+    context.data_mut(|data| {
+        let state = data.get_temp_mut_or_default::<Displacement>(id);
+        state.shift = 0.0;
+        state.rows.retain(|_, row| row.3 + 1 >= pass);
+        if !allowed {
+            state.rows.clear();
+            state.until = 0.0;
+        } else if watching
+            && event != state.event
+            && event.is_some_and(|at| now - at < f64::from(SLOW))
+        {
+            state.until = now + f64::from(SLOW);
+        }
+        state.event = event;
+        data.insert_temp(Id::new("displacement-active"), (id, allowed));
+    });
+}
+
+pub fn end_displacement(context: &Context) {
+    context.data_mut(|data| data.remove::<(Id, bool)>(Id::new("displacement-active")));
+}
+
+/// Carry the whole timeline, including dividers, from its last painted position.
+/// A single transform keeps newly inserted content clear of the retained rows.
+pub fn displaced<R>(ui: &mut egui::Ui, key: &str, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let top = ui.cursor().top();
+    let from = mark(ui);
+    let inner = content(ui);
+    let now = ui.input(|input| input.time);
+    let pass = ui.ctx().cumulative_pass_nr();
+    let active = ui
+        .ctx()
+        .data(|data| data.get_temp::<(Id, bool)>(Id::new("displacement-active")));
+    if let Some((id, true)) = active {
+        let offset = ui.ctx().data_mut(|data| {
+            let state = data.get_temp_mut_or_default::<Displacement>(id);
+            let row = state.rows.entry(key.to_owned()).or_insert((
+                top,
+                state.shift,
+                now,
+                pass,
+                state.shift,
+            ));
+            if now <= state.until && (top - row.0).abs() > 0.1 {
+                // Retarget from the last actually painted pose, not an imagined
+                // intermediate frame toward a provisional layout measurement.
+                let from = row.4 + row.0 - top;
+                *row = (top, from, now, pass, from);
+            } else {
+                if (top - row.0).abs() > 0.1 {
+                    row.1 = 0.0;
+                }
+                row.0 = top;
+            }
+            row.3 = pass;
+            row.4 = row.1 * (1.0 - ease_out(((now - row.2) / f64::from(SLOW)) as f32));
+            state.shift = row.4;
+            state.shift
+        });
+        if offset.abs() > 0.01 {
+            ui.ctx().request_repaint();
+            settle(
+                ui.ctx(),
+                ui.layer_id(),
+                from,
+                1.0,
+                TSTransform::from_translation(egui::vec2(0.0, offset)),
+            );
+        }
+    }
+    inner
+}
+
 struct List {
     key: String,
     ids: Vec<String>,
@@ -328,6 +434,15 @@ pub struct Arrivals {
 }
 
 impl Arrivals {
+    pub fn latest(&self, scope: &'static str) -> Option<f64> {
+        self.lists
+            .get(scope)?
+            .ids
+            .iter()
+            .filter_map(|id| self.arrived.get(id).copied())
+            .max_by(f64::total_cmp)
+    }
+
     /// Call on every pass with the list's client message IDs, oldest first.
     /// `live` is true when the list ends at the newest message. Both this and
     /// the previous pass must be live, so a newer page loaded on the way back
@@ -389,6 +504,131 @@ impl Arrivals {
 mod tests {
     use super::{ARRIVAL, Arrivals, BASE, enable, entrance, kde_animations_off};
     use eframe::egui;
+
+    fn displaced_at(
+        context: &egui::Context,
+        time: f64,
+        top: f32,
+        event: Option<f64>,
+        live: bool,
+        motion: bool,
+    ) -> f32 {
+        let mut painted = 0.0;
+        let _ = context.run(
+            egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            },
+            |context| {
+                if motion {
+                    enable(context);
+                }
+                // ScrollArea can temporarily report not-at-end while it measures
+                // the append. That must not cancel an already-started animation.
+                let watching = live && event.is_none_or(|at| time <= at);
+                super::begin_displacement(context, egui::Id::new("list"), event, watching, live);
+                egui::CentralPanel::default().show(context, |ui| {
+                    ui.add_space(top);
+                    let from = super::mark(ui);
+                    super::displaced(ui, "timeline", |ui| {
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(ui.cursor().min, egui::vec2(20.0, 20.0)),
+                            0.0,
+                            egui::Color32::WHITE,
+                        );
+                    });
+                    painted = context.graphics(|graphics| {
+                        graphics
+                            .get(ui.layer_id())
+                            .unwrap()
+                            .all_entries()
+                            .nth(from)
+                            .unwrap()
+                            .shape
+                            .visual_bounding_rect()
+                            .top()
+                    });
+                });
+                super::end_displacement(context);
+            },
+        );
+        painted
+    }
+
+    #[test]
+    fn live_displacement_preserves_pose_then_eases_to_physical_position() {
+        let context = egui::Context::default();
+        let before = displaced_at(&context, 1.0, 100.0, None, true, true);
+        let first = displaced_at(&context, 1.1, 40.0, Some(1.1), true, true);
+        assert!((first - before).abs() < 0.01);
+        let middle = displaced_at(&context, 1.23, 40.0, Some(1.1), true, true);
+        assert!(middle < before - 30.0 && middle > before - 60.0);
+        let landed = displaced_at(&context, 1.4, 40.0, Some(1.1), true, true);
+        assert!((landed - (before - 60.0)).abs() < 0.01);
+        // Confirmation keeps the same event and does not restart displacement.
+        assert_eq!(
+            displaced_at(&context, 1.5, 40.0, Some(1.1), true, true),
+            landed
+        );
+    }
+
+    #[test]
+    fn history_and_disabled_motion_move_immediately() {
+        for (live, motion) in [(false, true), (true, false)] {
+            let context = egui::Context::default();
+            let before = displaced_at(&context, 1.0, 100.0, None, live, motion);
+            let after = displaced_at(&context, 1.1, 40.0, Some(1.1), live, motion);
+            assert!((after - (before - 60.0)).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn measurement_passes_and_burst_arrivals_keep_the_current_painted_pose() {
+        let context = egui::Context::default();
+        let before = displaced_at(&context, 1.0, 100.0, None, true, true);
+        displaced_at(&context, 1.1, 70.0, Some(1.1), true, true);
+        // A second measuring pass at the same time changes the physical pose.
+        assert_eq!(
+            displaced_at(&context, 1.1, 40.0, Some(1.1), true, true),
+            before
+        );
+        let painted = displaced_at(&context, 1.2, 40.0, Some(1.1), true, true);
+        assert_eq!(
+            displaced_at(&context, 1.2, 10.0, Some(1.2), true, true),
+            painted
+        );
+        // Leaving the live end cancels even an in-flight compensation.
+        let immediate = displaced_at(&context, 1.21, 10.0, Some(1.2), false, true);
+        assert!((immediate - (before - 90.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn corrected_short_list_measurement_does_not_overshoot_then_reverse() {
+        let context = egui::Context::default();
+        let before = displaced_at(&context, 1.0, 200.0, None, true, true);
+        // The first pass temporarily includes both bottom padding and a stale
+        // scroll offset. The next frame clamps the offset back to zero.
+        assert_eq!(
+            displaced_at(&context, 1.1, 6.0, Some(1.1), true, true),
+            before
+        );
+        assert_eq!(
+            displaced_at(&context, 1.15, 103.0, Some(1.1), true, true),
+            before
+        );
+        let middle = displaced_at(&context, 1.2, 103.0, Some(1.1), true, true);
+        assert!(middle < before && middle > before - 97.0);
+        let final_position = displaced_at(&context, 1.5, 103.0, Some(1.1), true, true);
+        assert!((final_position - (before - 97.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn layout_changes_without_a_live_append_are_immediate() {
+        let context = egui::Context::default();
+        let before = displaced_at(&context, 1.0, 100.0, None, true, true);
+        let after = displaced_at(&context, 1.1, 40.0, None, true, true);
+        assert!((after - (before - 60.0)).abs() < 0.01);
+    }
 
     #[test]
     fn kde_instant_animations_reduce_motion() {

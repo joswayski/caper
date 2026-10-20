@@ -94,6 +94,8 @@ function fixture() {
     },
     append(text = "Fixture live arrival", id, sender) {
       const next = message(messages.length + 1, text, id, sender);
+      // Live server acknowledgements use today's date, like the pending send.
+      next.createdAt = new Date().toISOString();
       next.seq = String(base + BigInt(messages.length + 1 + control.reactionRevision));
       messages.push(next);
       control.latestKey = next.clientMessageId;
@@ -300,7 +302,7 @@ function quietTimeline(layout) {
   };
   composerSpacing();
   evaluate("chatHistoryFixture.typing(true)");
-  wait('document.querySelector(".chat-typing-content").getAttribute("data-visible") === "true"');
+  wait('document.querySelector(".chat-typing").getAttribute("data-visible") === "true"');
   settle();
   composerSpacing();
   assert.ok(
@@ -541,6 +543,43 @@ function reactionTimeline(layout) {
   console.log(`PASS: ${layout}: first/wrapped reactions visible, local toggle, removal and preserved history anchor.`);
 }
 
+function arrivalMotion(layout, reduced = false) {
+  const frames = evaluate(`new Promise(resolve => {
+    const scroller = document.querySelector('.chat-scroller');
+    const row = [...scroller.querySelectorAll('.chat-message')].at(-1);
+    const frames = [];
+    const start = performance.now();
+    const sample = () => {
+      frames.push({ top: row.getBoundingClientRect().top, height: scroller.scrollHeight });
+      if (performance.now() - start < 900) requestAnimationFrame(sample);
+      else resolve(frames);
+    };
+    sample();
+    chatHistoryFixture.append('TEST FIXTURE smooth arrival\\nSecond line\\nThird line');
+  })`);
+  const first = frames[0].top;
+  const last = frames.at(-1).top;
+  assert.ok(first - last > 40, `${layout}: new multiline message must move the preceding row upward`);
+  const intermediate = frames.filter(({ top }) => top < first - 1 && top > last + 1);
+  if (reduced) assert.equal(intermediate.length, 0, `${layout}: reduced motion must move immediately`);
+  else
+    assert.ok(
+      intermediate.length >= 3,
+      `${layout}: existing rows must ease upward, not jump: ${JSON.stringify(frames)}`,
+    );
+  for (let index = 1; index < frames.length; index++)
+    assert.ok(frames[index].top <= frames[index - 1].top + 1, `${layout}: arrival must not snap back downward`);
+  // Transformed content must not extend scroll overflow during the entrance.
+  assert.ok(
+    frames.every(({ height }) => height <= frames.at(-1).height + 1),
+    `${layout}: motion grew scrollHeight`,
+  );
+  assert.ok(latestVisible(), `${layout}: newest message must settle above the composer`);
+  console.log(
+    `PASS: ${layout}: ${intermediate.length} intermediate positions, stable scroll extent and newest message visible.`,
+  );
+}
+
 try {
   browser("open", "about:blank");
   // A handful of messages must stay beside the composer even in a maximized
@@ -571,6 +610,7 @@ try {
     }
     screenshot(`chat-short-bottom-${layout}`);
     console.log(`PASS: ${layout}: short history stays against composer before/after resizing and End.`);
+    arrivalMotion(`${layout} short history`);
   }
   for (const [layout, width, height] of [
     ["desktop", 1280, 800],
@@ -598,6 +638,12 @@ try {
   evaluate("document.fonts.ready.then(() => true)");
   initialPosition("desktop paginated history");
   wait(latestVisibleExpression);
+  arrivalMotion("desktop overflowing history");
+  browser("set", "media", "dark", "reduced-motion");
+  assert.equal(evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"), true);
+  arrivalMotion("desktop reduced motion", true);
+  browser("set", "media", "dark");
+  assert.equal(evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"), false);
   settle();
   assert.ok(metrics().rows < 35);
   assert.ok(
@@ -751,6 +797,7 @@ try {
   settle();
   pinsRoundTrip("pins-short-conversation", { atBottom: true });
 } catch (error) {
+  console.error(error);
   console.error(
     "History fixture failure state:",
     evaluate(`(() => {

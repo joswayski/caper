@@ -354,7 +354,7 @@ function MessageRowView({
   }
   const emojiOpen = actionMode === "emoji";
   return (
-    <div>
+    <div data-motion-key={message.clientMessageId}>
       {divider && (!run || run.first === message.clientMessageId) && (
         <div className="chat-date-divider">
           <time dateTime={message.createdAt}>{divider}</time>

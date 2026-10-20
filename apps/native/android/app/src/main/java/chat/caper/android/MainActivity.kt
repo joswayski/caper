@@ -2198,10 +2198,12 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
 @Composable private fun MessageTimeline(state: AppUiState, viewModel: CaperViewModel, modifier: Modifier, inThread: Boolean = false, listState: LazyListState = rememberLazyListState(), follow: TimelineFollow = remember { TimelineFollow() }, pendingStatus: @Composable () -> Unit = {}) {
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
+    val displacement = remember(listState, state.selectedChannel?.id, if (inThread) state.thread?.rootId else null) { TimelineDisplacement() }
     // Drag interactions exclude automatic following, paging and viewport changes.
-    LaunchedEffect(listState, focus, keyboard) {
+    LaunchedEffect(listState, focus, keyboard, displacement) {
         listState.interactionSource.interactions.collect { interaction ->
             if (interaction is DragInteraction.Start) {
+                displacement.clear()
                 focus.clearFocus()
                 keyboard?.hide()
             }
@@ -2284,7 +2286,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     HostedMediaViewer(viewerHost, state, viewModel::reportAttachmentFailure)
     // Web's chat phases: loading, failed first load, then the conversation.
     if (state.messagesLoading) {
-        SideEffect { follow.settled = false }
+        SideEffect { follow.settled = false; displacement.clear() }
         return MessageSkeleton(modifier.clipToBounds())
     }
     state.messagesError?.let { error -> return Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -2301,13 +2303,14 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
     val keys = remember(rows) { rows.map { it.key } }
     val threadPaging = state.thread?.loading == true && !skeleton
     FollowLatest(listState, follow, FollowFrame(keys, listedPending?.clientMessageId,
+        clientIds = messages.map { it.clientMessageId } + listOfNotNull(listedPending?.clientMessageId),
         loadingOlder = if (inThread) threadPaging else state.loadingOlder,
         historical = if (inThread) state.thread?.hasNewer == true else state.hasNewerMessages,
         loadingNewer = if (inThread) threadPaging && state.thread?.hasNewer == true else state.loadingNewer,
         reactions = messages.takeLast(FOLLOW_REACTION_ROWS).map { it.reactions },
         jump = state.focusRevision.takeIf { state.focusedMessageId?.let { id -> messages.any { it.id == id } } == true }),
-        firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton)
-    CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth(), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
+        firstRow, firstRow + rows.size + listOf(skeleton, listedPending != null, empty, newer).count { it } - 1, ready = !skeleton, displacement = displacement)
+    CompositionLocalProvider(LocalMediaViewerHost provides viewerHost) { LazyColumn(modifier.fillMaxWidth().displacementViewport(displacement), state = listState, reverseLayout = false, contentPadding = PaddingValues(vertical = 8.dp)) {
         if (!inThread) item {
             HistoryRow {
                 when {
@@ -2325,7 +2328,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             val revealed = if (row is TimelineRow.Blocked) row.run.revealed else collapsesFor(message, blocked, selfId)
             // The initial date stays outside the group; later dates stay within it.
             if (divider && row is TimelineRow.Blocked) DateDivider(message.createdAt)
-            Column(Modifier.fillMaxWidth().drawBehind {
+            Column(Modifier.fillMaxWidth().displacement(displacement, listState, row.key).drawBehind {
                 if (revealed) {
                     drawRect(chat.caper.android.ui.Surface)
                     drawRect(Border, size = Size(2.dp.toPx(), size.height))
@@ -2396,7 +2399,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             MessageSkeleton(rows = 2, label = "Loading thread replies")
         }
         listedPending?.let { pending -> item("pending:${pending.clientMessageId}") {
-            Column {
+            Column(Modifier.displacement(displacement, listState, "pending:${pending.clientMessageId}")) {
                 if (messages.lastOrNull()?.createdAt?.let { sameLocalDay(it, pending.createdAt) } != true) {
                     DateDivider(pending.createdAt)
                 }
@@ -2551,7 +2554,18 @@ internal data class FollowFrame(
     val keys: List<String>, val pendingId: String? = null, val loadingOlder: Boolean = false,
     val historical: Boolean = false, val loadingNewer: Boolean = false, val jump: Long? = null,
     val reactions: List<List<MessageReaction>> = emptyList(),
+    val clientIds: List<String> = emptyList(),
 )
+
+/** Only a genuine live append, never a pending confirmation, page or focus jump. */
+internal fun liveAppend(before: FollowFrame?, now: FollowFrame): Boolean {
+    if (before == null || before.historical || now.historical || before.loadingOlder || now.loadingOlder ||
+        before.loadingNewer || now.loadingNewer || before.jump != now.jump || before.clientIds.isEmpty()) return false
+    // A remote row may arrive just before the pending row; confirmation retains its client ID.
+    val previousRows = before.clientIds.filterNot { it == before.pendingId }
+    val currentRows = now.clientIds.filterNot { it == now.pendingId }
+    return currentRows.take(previousRows.size) == previousRows && now.clientIds.any { it !in before.clientIds }
+}
 
 /** Recent rows whose reaction chips can grow the bottom of the list: more than a screen of short messages. */
 internal const val FOLLOW_REACTION_ROWS = 20
@@ -2585,24 +2599,52 @@ internal fun followScroll(follow: TimelineFollow, ready: Boolean, now: FollowFra
 }
 
 /** Applies [followScroll] before the next measure, so nothing flashes at the old position, and keeps a reader at the bottom when the viewport shrinks (the keyboard opening). */
-@Composable private fun FollowLatest(list: LazyListState, follow: TimelineFollow, now: FollowFrame, firstRow: Int, lastIndex: Int, ready: Boolean) {
+@Composable private fun FollowLatest(list: LazyListState, follow: TimelineFollow, now: FollowFrame, firstRow: Int, lastIndex: Int, ready: Boolean, displacement: TimelineDisplacement) {
     val threshold = with(LocalDensity.current) { 80.dp.roundToPx() }
+    val still = reducedMotion()
+    LaunchedEffect(list, displacement) {
+        snapshotFlow { list.isScrollInProgress }.collect { scrolling ->
+            if (scrolling) displacement.clear()
+        }
+    }
+    LaunchedEffect(displacement, displacement.revision, still) {
+        if (still) displacement.clear()
+        else if (displacement.remaining > 0f) {
+            val start = withFrameNanos { it }
+            do {
+                val elapsed = withFrameNanos { it } - start
+                if (displacement.remaining == 0f) break
+                displacement.remaining = 1f - EaseOut.transform((elapsed / (MOTION_SLOW * 1_000_000f)).coerceIn(0f, 1f))
+            } while (displacement.remaining > 0f)
+        }
+    }
     SideEffect {
         // The layout still shows the previous rows here.
+        val animate = !still && ready && follow.settled && !list.isScrollInProgress &&
+            list.layoutInfo.nearBottom(threshold) && liveAppend(follow.last, now)
+        val jumped = now.jump != follow.last?.jump
+        val confirmation = follow.last?.clientIds == now.clientIds
         val before = follow.last?.keys
         followScroll(follow, ready, now, lastIndex, { list.layoutInfo.nearBottom(threshold) }) {
             olderPageAnchor(list.layoutInfo.visibleItemsInfo.map { Triple(it.key, it.index, it.offset) }, before?.let { pageBoundary(it, now.keys) }) { key ->
                 (key as? String)?.let(now.keys::indexOf)?.takeIf { it >= 0 }?.plus(firstRow)
             }
-        }?.let { (index, offset) -> list.requestScrollToItem(index, offset) }
+        }?.let { (index, offset) ->
+            if (animate) displacement.capture(list) else if (!confirmation) displacement.clear()
+            list.requestScrollToItem(index, offset)
+        }
+        if (still || jumped || !ready || now.historical || now.loadingOlder || now.loadingNewer) displacement.clear()
     }
-    LaunchedEffect(list, follow) {
+    LaunchedEffect(list, follow, displacement) {
         var height = 0
         var near = true
         snapshotFlow { list.layoutInfo }.collect { info ->
             val shrank = info.viewportSize.height < height
             height = info.viewportSize.height
-            if (shrank && near && follow.settled && follow.last?.historical == false && info.totalItemsCount > 0) list.requestScrollToItem(info.totalItemsCount - 1, PAST_END)
+            if (shrank && near && follow.settled && follow.last?.historical == false && info.totalItemsCount > 0) {
+                displacement.clear()
+                list.requestScrollToItem(info.totalItemsCount - 1, PAST_END)
+            }
             else near = info.nearBottom(threshold)
         }
     }

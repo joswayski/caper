@@ -379,6 +379,10 @@
 .chat-scroller {
   overflow-anchor: none;
 }
+/* Drawing offsets must not grow scrollHeight and feed back into live follow. */
+.chat-motion-clip {
+  overflow: clip;
+}
 /* Live follow must not flash the platform's overlay scrollbar on every post.
    Keep overflow scrolling and the timeline's keyboard controls available. */
 .chat-scroller,
