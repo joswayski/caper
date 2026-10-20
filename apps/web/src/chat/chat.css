@@ -657,10 +657,6 @@
   white-space: pre-wrap;
   line-height: 18px;
 }
-.chat-reply-context[data-clipped="true"][data-expanded="false"] .chat-reply-excerpt {
-  min-height: 36px;
-  mask-image: linear-gradient(to bottom, #000 40%, transparent);
-}
 .chat-reply-context[data-expanded="true"] .chat-reply-excerpt {
   display: block;
   overflow: visible;
@@ -668,33 +664,26 @@
 }
 .chat-reply-expand {
   display: block;
-  min-height: 32px;
-  margin: 6px auto 0;
-  padding: 6px 14px;
-  border: 1px solid transparent;
+  min-height: 24px;
+  margin: 3px 0 0;
+  padding: 0;
+  border: 0;
   border-radius: var(--radius);
-  background: var(--action);
-  color: var(--on-action);
+  background: transparent;
+  color: var(--link);
   font: inherit;
   font-size: 0.68rem;
-  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
   cursor: pointer;
-  transition: background-color var(--motion-fast) var(--ease-out);
-}
-.chat-reply-context[data-expanded="false"] .chat-reply-expand {
-  position: absolute;
-  top: var(--reply-expand-top);
-  left: 50%;
-  margin: 0;
-  translate: -50% -50%;
 }
 @media (hover: hover) {
   .chat-reply-expand:hover {
-    background: var(--action-hover);
+    color: var(--link-hover);
   }
 }
 .chat-reply-expand:active {
-  background: var(--action-press);
+  color: var(--link-hover);
 }
 .chat-reply-view {
   flex-shrink: 0;
@@ -765,9 +754,6 @@
   .chat-reply-source,
   .chat-reply-expand {
     min-height: 44px;
-  }
-  .chat-reply-context[data-clipped="true"][data-expanded="false"] .chat-reply-excerpt {
-    min-height: 54px;
   }
   .chat-reply-draft button {
     width: 44px;

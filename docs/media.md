@@ -8708,26 +8708,22 @@ The quoted original sits in a separate neutral card, with clear spacing before
 the current reply and a visible **View original** affordance. Small shaded
 pewter cup sockets touch the left edges of the original and replying avatars,
 joined by one thin curved string in the gutter. Web and Rust desktop share the
-SVG artwork; Android and Apple draw matching vectors. Collapsed quotes show the first 100
-Unicode scalars, wrap to at most three lines and fade into the dark card.
-The fade spans the lower 60% of the preview. **Show more** floats
-at the midpoint of that fade, without a separate button row; clipped previews
-retain enough height to keep it clear of the author heading. **Show less** stays
-below expanded text so nothing is covered. Both controls are centered white
-pills with black text, hover and pressed feedback, and at least 44px touch targets
-on mobile. Expansion reveals the complete saved text separately from source
-navigation. Short quotes have
-neither a fade nor an expansion control unless
-line breaks overflow the preview. Scrolling flexes the string by a few pixels
+SVG artwork; Android and Apple draw matching vectors. Collapsed quotes wrap to
+at most three rendered lines, without a character cutoff or fade. **Show more**
+appears only when the saved quote exceeds those lines, including explicit line
+breaks. **Show more** and **Show less** are small, leading-aligned, link-blue underlined text
+actions below the content, with transparent touch targets of at least 44px on
+mobile. Neither covers the text. Expansion and collapse are immediate and reveal
+the complete saved text separately from source navigation. Scrolling flexes the string by a few pixels
 and slightly rotates the cups around their fixed avatar attachment points.
 A damped spring settles back to rest; there is no repeating glow or idle jiggling.
 Each reply derives its spring tension, damping, scroll response and travel limit
 from its own client message ID, not the quoted original. Replies to the same
 source therefore move and settle differently, with stable settings on remount
 and across pending/delivered rows. All clients use the same UTF-8 FNV-1a seed
-and tuning ranges: stiffness 140–240, damping 11–18, scroll impulse 1.0–1.4,
-travel 5–7 logical pixels and speed capped at 16 times that travel. This is a
-modest increase over the previous uniform 0.8 impulse and 4px travel. Web uses
+and tuning ranges: stiffness 560–960, damping 28–42, scroll impulse 1.0–1.4,
+travel 5–7 logical pixels and speed capped at 16 times that travel. The faster,
+more damped spring avoids a lingering wobble. Web uses
 actual scroll events, including touch/inertial scrolling; native clients track
 the row's position as their scroll view moves, without intercepting swipes.
 Both string ends follow the rotating cup backs. Animation work stops at rest
@@ -8837,6 +8833,35 @@ cancellation retaining the draft. Android compilation cannot configure without
 an Android SDK; Apple has no Swift/Xcode toolchain here. These are local fixture
 checks, not physical-device or live-account acceptance. No Docker daemon is
 available; the web image's application build stages were checked directly.
+
+**Compact quote controls (October 20, 2026).** `npm run check` and all 737 web/shared
+unit tests pass. The full `scripts/test-message-threads.mjs` suite passes on
+desktop and 390px Chromium with coarse pointer verified: the reported short
+question stays fully visible despite exceeding 100 characters; explicit four-line
+and longer quotes expand independently of source navigation; underlined controls
+do not obscure text; connections settle within 700ms and remain static with
+reduced motion. Desktop/narrow short, collapsed and expanded screenshots were
+inspected, along with a pointer interaction recording; Space/Enter also toggle
+the control. These are disposable local fixtures, not iPhone acceptance.
+Linux desktop formatting, compile, linked build and application Clippy pass;
+722 tests passed, 19 were ignored and one unrelated media-proxy test failed with
+an HTTP `UnexpectedMessage` error, then passed alone. Its actual reply fixture
+was rendered and expanded/collapsed with pointer input and inspected. Android
+Kotlin compilation and unit tests pass after preparing fonts; lint still reports
+two unchanged `SuspiciousIndentation` errors. Apple remains uncompiled and
+unrendered without Swift/Xcode; Android device rendering is also unverified.
+No Docker daemon is available; the web application build was validated directly.
+This is a client-only correction with no API, migration or infrastructure change.
+
+The link-blue refinement uses each client's existing link color. After integrating
+newer `main`, web checks and all 738 unit tests pass, as do Android compilation/tests
+and the Linux build/Clippy. The focused quote checks pass on desktop and coarse-pointer
+Chromium; the full thread rerun stops at the newer, unrelated finger-follow swipe
+assertion. Quote reload checks now wait for hydration and bring the virtualized
+reply into view before checking its expansion control. Fresh blue collapsed/expanded
+web and Linux captures and a pointer recording were inspected. The new transcript
+SSR test retains the full transcript for browser line measurement rather than
+expecting the removed 100-character cutoff. Apple/device validation gaps remain.
 
 **Deployment order.**
 

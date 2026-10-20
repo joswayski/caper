@@ -82,8 +82,7 @@ export function ReplyContext({
     (reference.fullText ?? reference.text) ||
     (reference.hasAttachments ? attachmentsExcerpt(reference.attachments) : "Message");
   const files = hidden || reference.deleted ? [] : (reference.attachments ?? []).filter(isChatAttachment);
-  const preview = [...text].slice(0, 100).join("");
-  const canExpand = preview !== text || clipped;
+  const canExpand = !reference.deleted && clipped;
   useLayoutEffect(() => {
     const element = root.current!;
     const update = () => {
@@ -109,14 +108,6 @@ export function ReplyContext({
       );
       const content = excerpt.current;
       setClipped(!!content && content.scrollHeight > parseFloat(getComputedStyle(content).lineHeight) * 3 + 1);
-      if (content) {
-        const body = element.querySelector<HTMLElement>(".chat-reply-body")!;
-        const previewBounds = content.getBoundingClientRect();
-        element.style.setProperty(
-          "--reply-expand-top",
-          `${previewBounds.top - body.getBoundingClientRect().top - body.clientTop + previewBounds.height * 0.7}px`,
-        );
-      }
     };
     update();
     const observer = new ResizeObserver(update);
@@ -137,8 +128,8 @@ export function ReplyContext({
     // same original have their own weight, tension and settling time on remount.
     let seed = 2166136261;
     for (const byte of new TextEncoder().encode(motionKey)) seed = Math.imul(seed ^ byte, 16777619) >>> 0;
-    const stiffness = 140 + ((seed & 255) / 255) * 100;
-    const damping = 11 + (((seed >>> 8) & 255) / 255) * 7;
+    const stiffness = 560 + ((seed & 255) / 255) * 400;
+    const damping = 28 + (((seed >>> 8) & 255) / 255) * 14;
     const impulse = 1 + (((seed >>> 16) & 255) / 255) * 0.4;
     const limit = 5 + ((seed >>> 24) / 255) * 2;
     const speedLimit = limit * 16;
@@ -262,8 +253,7 @@ export function ReplyContext({
               id={excerptId}
               className={`chat-reply-excerpt${reference.deleted ? " chat-reply-excerpt-deleted" : ""}`}
             >
-              {reference.deleted ? "Original message was deleted." : expanded ? text : preview}
-              {!expanded && preview !== text && "…"}
+              {reference.deleted ? "Original message was deleted." : text}
             </span>
           )}
           {!!files.length && (

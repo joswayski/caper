@@ -3043,10 +3043,8 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
 @Composable private fun ReplyContext(reference: MessageReply, state: AppUiState, motionKey: String, onOpen: (() -> Unit)? = null) {
     val hidden = reference.author.id in state.blockedIds && reference.author.id != (state.chatAuthorId ?: state.account?.id)
     val text = if (reference.deleted) DELETED_REPLY else (reference.fullText ?: reference.text).ifEmpty { VoiceMessages.excerptLabel(reference.attachments, reference.hasAttachments) }
-    val preview = remember(text) { text.substring(0, text.offsetByCodePoints(0, minOf(100, text.codePointCount(0, text.length)))) }
-    val surface = MaterialTheme.colorScheme.surface
     var expanded by rememberSaveable(reference.id, hidden) { mutableStateOf(false) }
-    var clipped by remember(reference.id, hidden) { mutableStateOf(false) }
+    var clipped by remember(reference.id, hidden, text) { mutableStateOf(false) }
     val context = LocalContext.current
     val still by produceState(false, context) {
         val resolver = context.contentResolver
@@ -3061,16 +3059,12 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
     }
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current.density
-    val canExpand = !hidden && (preview != text || clipped)
-    // The collapsed expansion pill stays over the excerpt, above the 44dp tiles and 3dp gap.
-    val attachmentOffset = if (!hidden && !reference.deleted && reference.attachments.isNotEmpty()) 47 * density else 0f
-    var excerptHeight by remember(reference.id) { mutableIntStateOf((54 * density).toInt()) }
-    var buttonHeight by remember(reference.id) { mutableIntStateOf((48 * density).toInt()) }
+    val canExpand = !hidden && (expanded || clipped)
     // Match the other clients: each replying message has stable spring settings,
     // including when several messages quote the same original.
     val seed = remember(motionKey) { motionKey.toByteArray(Charsets.UTF_8).fold(2166136261u) { hash, byte -> (hash xor byte.toUByte().toUInt()) * 16777619u } }
-    val stiffness = 140f + (seed and 255u).toFloat() / 255f * 100f
-    val damping = 11f + ((seed shr 8) and 255u).toFloat() / 255f * 7f
+    val stiffness = 560f + (seed and 255u).toFloat() / 255f * 400f
+    val damping = 28f + ((seed shr 8) and 255u).toFloat() / 255f * 14f
     val impulse = 1f + ((seed shr 16) and 255u).toFloat() / 255f * 0.4f
     val limit = 5f + (seed shr 24).toFloat() / 255f * 2f
     val speedLimit = limit * 16f
@@ -3122,9 +3116,8 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
         replySocket(Offset(targetX, bottom), -angle * 180f / kotlin.math.PI.toFloat())
     }.padding(start = 62.dp, end = 18.dp, top = 4.dp, bottom = 8.dp)) {
         Surface(color = MaterialTheme.colorScheme.surface, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border.copy(alpha = 0.7f))) {
-            Box(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                Column(Modifier.padding(bottom = if (expanded && canExpand) (buttonHeight / density).dp + 6.dp else 0.dp)
-                    .fillMaxWidth().then(action).heightIn(min = 44.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                Column(Modifier.fillMaxWidth().then(action).heightIn(min = 44.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Row(Modifier.heightIn(min = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                         if (!hidden) {
                             Avatar(reference.author.name, 16.dp, avatarId = reference.author.avatarId, avatarAsset = reference.author.avatarAsset, avatarUrl = reference.author.avatarUrl)
@@ -3133,28 +3126,15 @@ internal val emojiPickerOrder: Comparator<EmojiEntry> = compareBy<EmojiEntry>(
                         Text(if (hidden) "Blocked message" else reference.author.name, Modifier.weight(1f), color = TextMuted, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (onOpen != null) { Spacer(Modifier.width(8.dp)); Text("View original", color = TextMuted, fontSize = 11.sp) }
                     }
-                    if (!hidden) Text(if (expanded) text else preview + if (preview != text) "…" else "", Modifier
-                        .heightIn(min = if (!expanded && canExpand) 54.dp else 0.dp)
-                        .onSizeChanged { if (!expanded) excerptHeight = it.height }.drawWithContent {
-                        drawContent()
-                        if (!expanded && (preview != text || clipped)) drawRect(Brush.verticalGradient(
-                            listOf(surface.copy(alpha = 0f), surface), startY = size.height * 0.4f, endY = size.height,
-                        ))
-                    }, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp, fontStyle = if (reference.deleted) FontStyle.Italic else null,
+                    if (!hidden) Text(text, color = TextMuted, fontSize = 12.sp, lineHeight = 18.sp, fontStyle = if (reference.deleted) FontStyle.Italic else null,
                         maxLines = if (expanded) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
                         onTextLayout = { if (!expanded) clipped = it.hasVisualOverflow })
                     if (!hidden && !reference.deleted && reference.attachments.isNotEmpty()) ReplyAttachmentPreviews(reference.attachments)
                 }
                 if (canExpand) {
-                    val interaction = remember { MutableInteractionSource() }
-                    val hovered by interaction.collectIsHoveredAsState()
-                    Button({ expanded = !expanded }, Modifier.align(Alignment.BottomCenter)
-                        .offset { IntOffset(0, if (expanded) 0 else (buttonHeight / 2f - excerptHeight * 0.3f - attachmentOffset).toInt()) }
-                        .heightIn(min = 44.dp).onSizeChanged { buttonHeight = it.height },
-                        shape = RoundedCornerShape(percent = 50), interactionSource = interaction,
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = if (hovered) Color.White else chat.caper.android.ui.Text, contentColor = Blackout)) {
-                        Text(if (expanded) "Show less" else "Show more", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                    TextButton({ expanded = !expanded }, Modifier.heightIn(min = 48.dp),
+                        contentPadding = PaddingValues(0.dp), colors = neutralTextButtonColors()) {
+                        Text(if (expanded) "Show less" else "Show more", color = LinkBlue, fontSize = 11.sp, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)
                     }
                 }
             }
