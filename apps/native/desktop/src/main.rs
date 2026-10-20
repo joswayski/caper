@@ -1353,6 +1353,8 @@ struct CaperApp {
     media: attachments::Media,
     /// The full-screen image and video viewer, while open.
     viewer: Option<viewer::Viewer>,
+    /// Message players, last visible frame, and whether playback was automatic.
+    inline_videos: BTreeMap<String, (viewer::Viewer, u64, bool)>,
     /// Editing a draft's file before it is sent, while open.
     attachment_editor: Option<attachment_editor::Editor>,
     /// A draft's file the editor can open, previewed with its tools, while open.
@@ -1415,7 +1417,8 @@ impl CaperApp {
         configure(context);
         let voice = Voice::new(api.base().clone(), context.clone());
         let api_base = api.base().clone();
-        // Fixtures never fetch attachment media or pictures.
+        // Static fixtures never fetch media; the playback fixture enables
+        // loopback attachment media explicitly below.
         let media = attachments::Media::new(fixture.is_none().then(|| api.clone()));
         let pictures = pictures::Shared::of(context);
         pictures.install(fixture.is_none().then(|| api.clone()));
@@ -1657,6 +1660,7 @@ impl CaperApp {
             draft_keys: 0,
             media,
             viewer: None,
+            inline_videos: BTreeMap::new(),
             attachment_editor: None,
             draft_preview: None,
             opened_files: Vec::new(),
@@ -1851,6 +1855,27 @@ impl CaperApp {
                 } else if name.starts_with("parity-attachment-editor") {
                     app.install_attachments_fixture();
                     app.install_attachment_editor_fixture(context, name);
+                } else if name == "parity-inline-videos" {
+                    app.install_attachments_fixture();
+                    let base = app.api_base.clone();
+                    app.media =
+                        attachments::Media::new(Some(api::Api::new(base.as_str()).unwrap()));
+                    let mut messages: Vec<_> = app.timeline.messages().cloned().collect();
+                    let mut video = messages[2].content.attachments[2].clone();
+                    video.name = "TEST FIXTURE inline video.mp4".into();
+                    video.animated = false;
+                    video.url = Some(base.join("fixture-video.mp4").unwrap().to_string());
+                    video.preview_url = Some(base.join("fixture-poster.png").unwrap().to_string());
+                    messages[2].content.attachments = vec![video.clone()];
+                    video.id = "fixture-loop".into();
+                    video.name = "TEST FIXTURE looping GIF.mp4".into();
+                    video.animated = true;
+                    messages[3].content.attachments = vec![video];
+                    messages[1].content.attachments.clear();
+                    app.timeline
+                        .reset(messages, "4")
+                        .expect("valid video fixture");
+                    app.draft_files.clear();
                 } else if name == "parity-attachments" || name == "parity-attachments-spoilers" {
                     app.install_attachments_fixture();
                     if name == "parity-attachments-spoilers" {
@@ -9241,6 +9266,13 @@ impl eframe::App for CaperApp {
         self.update_notice(context);
         self.poll_whats_new(context);
         self.page(context);
+        self.inline_videos.retain(|_, (player, seen, _)| {
+            let keep = *seen == context.cumulative_frame_nr() && self.viewer.is_none();
+            if !keep {
+                player.stop_video(self.media_proxy.as_ref());
+            }
+            keep
+        });
         // Includes Escape, backdrop, close/Done, logout and navigation that
         // replaces a dialog. Pending/error views have no shown sequence.
         if !matches!(self.dialog, Some(Dialog::WhatsNew))
@@ -18665,7 +18697,7 @@ impl CaperApp {
             );
         }
         if !processing && !removed && !failed && video && attachment.animated {
-            // Looping MP4s from GIFs: the browser autoplays them.
+            // Reduced-motion or inactive-window poster for looping MP4s.
             let badge =
                 egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(34.0, 20.0));
             painter.rect_filled(badge, 6.0, Color32::from_black_alpha(190));
@@ -18726,6 +18758,67 @@ impl CaperApp {
         if !clickable {
             return false;
         }
+        if video && ui.is_rect_visible(rect) && self.viewer.is_none() {
+            let autoplay = attachment.animated && reply_motion_enabled() && pictures::playing(ui);
+            if !autoplay
+                && self
+                    .inline_videos
+                    .get(&attachment.id)
+                    .is_some_and(|(_, _, automatic)| *automatic)
+                && let Some((mut player, _, _)) = self.inline_videos.remove(&attachment.id)
+            {
+                player.stop_video(self.media_proxy.as_ref());
+            }
+            if (autoplay || response.clicked()) && !self.inline_videos.contains_key(&attachment.id)
+            {
+                self.inline_videos.insert(
+                    attachment.id.clone(),
+                    (
+                        viewer::Viewer::open(vec![attachment.clone()], 0),
+                        0,
+                        autoplay,
+                    ),
+                );
+            }
+            if let Some((player, seen, _)) = self.inline_videos.get_mut(&attachment.id) {
+                *seen = ui.ctx().cumulative_frame_nr();
+                painter.rect_filled(rect, radius, SURFACE);
+                player.show_inline(ui, rect, attachment, &mut self.media, &mut self.media_proxy);
+            }
+            // Register after the player so this button wins hit testing.
+            let expand_rect = egui::Rect::from_min_size(
+                rect.right_top() + egui::vec2(-36.0, 4.0),
+                egui::vec2(32.0, 32.0),
+            );
+            let expand = ui.interact(
+                expand_rect,
+                ui.id().with(("expand-video", &attachment.id)),
+                egui::Sense::click(),
+            );
+            painter.circle_filled(expand_rect.center(), 16.0, Color32::from_black_alpha(170));
+            paint_icon(
+                &painter,
+                expand_rect.shrink(8.0),
+                NavIcon::ExternalLink,
+                TEXT,
+            );
+            expand.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    true,
+                    format!("Open {} in viewer", attachment.name),
+                )
+            });
+            let expand = expand
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Open in viewer");
+            if expand.clicked() {
+                if let Some((mut player, _, _)) = self.inline_videos.remove(&attachment.id) {
+                    player.stop_video(self.media_proxy.as_ref());
+                }
+                return true;
+            }
+        }
         let response = response
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text(label);
@@ -18760,7 +18853,7 @@ impl CaperApp {
                 }
             });
         }
-        response.clicked()
+        response.clicked() && !video
     }
 
     /// Compact square previews wrap at the composer's available edge.
@@ -46632,7 +46725,15 @@ mod tests {
                         assert!(!rect.intersects(*other));
                     }
                 }
-                let position = bounds[count - 1].center();
+                let position = if files[count - 1].kind == model::AttachmentKind::Video {
+                    accessible_bounds(
+                        &output,
+                        &format!("Open {} in viewer", files[count - 1].name),
+                    )
+                    .center()
+                } else {
+                    bounds[count - 1].center()
+                };
                 for pressed in [true, false] {
                     draw(
                         &mut app,
@@ -46791,8 +46892,13 @@ mod tests {
                     );
                 }
             };
-            if let Some(rect) = visible_before {
-                click(&mut app, rect.center());
+            if visible_before.is_some() {
+                let expand = node_bounds(
+                    &output,
+                    &format!("Open {} in viewer", files[visual + 1].name),
+                )
+                .unwrap();
+                click(&mut app, expand.center());
                 assert_eq!(app.viewer.take().unwrap().len(), 1);
             }
             click(&mut app, cover.center());
@@ -46932,6 +47038,26 @@ mod tests {
     }
 
     #[test]
+    fn video_play_stays_inline_and_expand_opens_viewer() {
+        let (context, mut app) = fixture("parity-inline-videos");
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let tile = node_bounds(&output, "Play TEST FIXTURE inline video.mp4").unwrap();
+        assert_eq!(click_opening(&mut app, &context, tile.center()), None);
+        assert!(app.viewer.is_none(), "Play must not open the modal viewer");
+        click_label(
+            &mut app,
+            &context,
+            "Open TEST FIXTURE inline video.mp4 in viewer",
+        );
+        let viewer = app
+            .viewer
+            .as_ref()
+            .expect("explicit expansion opens the viewer");
+        assert_eq!((viewer.index(), viewer.len()), (0, 1));
+    }
+
+    #[test]
     fn attachments_render_by_status_and_open_in_the_viewer_or_browser() {
         let context = egui::Context::default();
         context.enable_accesskit();
@@ -46969,10 +47095,16 @@ mod tests {
             click_opening(&mut app, &context, pdf).as_deref(),
             Some("https://fixture.invalid/original/fixture-pdf")
         );
-        // Images and videos open the in-app viewer, not the browser: here the
-        // message's screenshot and animation, at the animation.
+        // Playing stays in the message; only the explicit expand button opens
+        // the message's screenshot and animation in the viewer.
         let gif = text_position(&output, "GIF");
         assert_eq!(click_opening(&mut app, &context, gif), None);
+        assert!(app.viewer.is_none());
+        click_label(
+            &mut app,
+            &context,
+            "Open TEST FIXTURE reaction.mp4 in viewer",
+        );
         let viewer = app.viewer.take().expect("the viewer opens");
         assert_eq!((viewer.index(), viewer.len()), (1, 2));
         // Removed, failed and processing files are not links.
@@ -47213,7 +47345,9 @@ mod tests {
         );
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
-        let gif = text_position(&output, "GIF");
+        let gif = node_bounds(&output, "View TEST FIXTURE screenshot.webp")
+            .unwrap()
+            .center();
         // What egui-winit sends for one finger: the release keeps the last
         // moved position, and a fast flick's final stretch arrives with it.
         let touch = |phase, pos| egui::Event::Touch {
