@@ -757,6 +757,11 @@ public struct AttachmentDraft: Identifiable, Equatable, Sendable {
     public var editPreviewURL: URL?
     /// The photo-library item the attach drawer copied (`LocalAttachmentFile.source`).
     public var source: String?
+    /// A staged voice note (recorded in this composer): its length and
+    /// waveform for the chip. Uploaded as recorded, never compressed or edited.
+    public var voiceDurationMs: Int?
+    public var voiceWaveform: [UInt8]?
+    public var isVoice: Bool { voiceDurationMs != nil }
     public var needsUpload: Bool { attachment == nil || uploadedAt.map { Date().timeIntervalSince($0) >= 23 * 60 * 60 } == true }
 
     public init(id: String, name: String, kind: AttachmentKind, localURL: URL, sourceSize: Int) {

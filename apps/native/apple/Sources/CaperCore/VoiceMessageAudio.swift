@@ -34,6 +34,22 @@ struct VoiceComposerID: Hashable {
     }
 }
 
+/// "Send voice messages as soon as I stop recording": a per-device setting,
+/// off by default (a stopped recording waits in the composer).
+@MainActor @Observable
+final class VoiceMessageSettings {
+    static let shared = VoiceMessageSettings()
+    @ObservationIgnored private let defaults: UserDefaults
+    var sendOnStop: Bool {
+        didSet { defaults.set(sendOnStop, forKey: VoiceMessage.sendOnStopKey) }
+    }
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        sendOnStop = VoiceMessage.sendsOnStop(stored: defaults.object(forKey: VoiceMessage.sendOnStopKey))
+    }
+}
+
 /// The app's one voice-message recorder. AVAudioRecorder writes AAC in MP4
 /// (mono, 48 kHz, ~64 kbps) to a private staging file, with metering for the
 /// live bars and the uploaded waveform. It records from the default input and
@@ -51,16 +67,26 @@ final class VoiceMessageRecorder {
     /// The composer recording (or asking for permission).
     private(set) var owner: VoiceComposerID?
     private(set) var elapsedMs = 0
-    /// Recent live input levels (0...1), newest last.
+    /// Live bars (0...1), one per `VoiceMessage.liveBarInterval`, newest last.
     private(set) var levels: [Float] = []
-    /// A short inline message for one composer: a denied permission, a failure or "Hold to record".
+    /// When the newest live bar entered, for the bars' constant scroll.
+    @ObservationIgnored private(set) var lastBarAt = Date()
+    /// A short inline message for one composer: a denied permission or a failure.
     private(set) var notice: (owner: VoiceComposerID, text: String)?
-    /// How far a touch recording's finger has slid left (points, 0 or negative).
+    /// How far a held recording's finger has slid left (points, 0 or negative).
     var slide: Double = 0
+    /// Recording continues without a finger on the microphone (a tap, or the
+    /// Mac's click): the bar shows Discard and Stop.
+    var handsFree = false
 
     @ObservationIgnored private var recorder: AVAudioRecorder?
     @ObservationIgnored private var fileURL: URL?
-    @ObservationIgnored private var peaks: [Float] = []
+    /// Linear RMS readings over the whole recording, the waveform's fallback
+    /// when the finished file can't be decoded.
+    @ObservationIgnored private var readings: [Float] = []
+    @ObservationIgnored private var envelope: Float = 0
+    @ObservationIgnored private var barPeak: Float = 0
+    @ObservationIgnored private var lastReadingAt = Date()
     @ObservationIgnored private var meterTask: Task<Void, Never>?
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
@@ -95,7 +121,7 @@ final class VoiceMessageRecorder {
     /// cancelled meanwhile. `onLimit` runs once the 10-minute limit is reached;
     /// the caller then finishes and sends.
     @discardableResult
-    func start(for owner: VoiceComposerID, onLimit: @escaping () -> Void) async -> Bool {
+    func start(for owner: VoiceComposerID, handsFree: Bool = true, onLimit: @escaping () -> Void) async -> Bool {
         cancel()
         generation += 1
         let attempt = generation
@@ -105,11 +131,10 @@ final class VoiceMessageRecorder {
         // Stop any playing voice message when recording starts.
         VoiceMessagePlayer.shared.stop()
         let permitted: Bool
-        var asked = false
+        self.handsFree = handsFree
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: permitted = true
         case .notDetermined:
-            asked = true
             permitted = await AVCaptureDevice.requestAccess(for: .audio)
         default: permitted = false
         }
@@ -118,11 +143,7 @@ final class VoiceMessageRecorder {
             show(VoiceMessage.permissionDenied, for: owner, seconds: 6)
             return false
         }
-        guard attempt == generation else {
-            // Released while the system asked (a touch hold): the next hold records.
-            if asked { show(VoiceMessage.holdHint, for: owner) }
-            return false
-        }
+        guard attempt == generation else { return false }
         do {
             try beginSession()
             let directory = try AttachmentStaging.newDirectory()
@@ -149,7 +170,8 @@ final class VoiceMessageRecorder {
             return false
         }
         self.onLimit = onLimit
-        peaks = []; levels = []; elapsedMs = 0
+        readings = []; levels = []; elapsedMs = 0; envelope = 0; barPeak = 0
+        lastBarAt = Date(); lastReadingAt = Date()
         phase = .recording
         observeInterruptions(owner: owner)
         let started = Date()
@@ -165,12 +187,23 @@ final class VoiceMessageRecorder {
 
     private func sample(started: Date) {
         guard phase == .recording, let recorder else { return }
-        elapsedMs = min(VoiceMessage.maximumDurationMs, Int(Date().timeIntervalSince(started) * 1000))
+        let now = Date()
+        elapsedMs = min(VoiceMessage.maximumDurationMs, Int(now.timeIntervalSince(started) * 1000))
         if recorder.isRecording {
             recorder.updateMeters()
-            peaks.append(VoiceWaveform.amplitude(decibels: recorder.peakPower(forChannel: 0)))
-            levels.append(VoiceWaveform.meterLevel(decibels: recorder.averagePower(forChannel: 0)))
-            if levels.count > 160 { levels.removeFirst(levels.count - 160) }
+            let power = recorder.averagePower(forChannel: 0)
+            readings.append(VoiceWaveform.amplitude(decibels: power))
+            // Fast attack, slow release: the bars follow speech without jitter.
+            envelope = VoiceWaveform.follow(envelope, toward: VoiceWaveform.meterLevel(decibels: power),
+                                            dt: now.timeIntervalSince(lastReadingAt))
+            lastReadingAt = now
+            barPeak = max(barPeak, envelope)
+            if now.timeIntervalSince(lastBarAt) >= VoiceMessage.liveBarInterval {
+                levels.append(barPeak)
+                if levels.count > 160 { levels.removeFirst(levels.count - 160) }
+                barPeak = envelope
+                lastBarAt = now
+            }
         }
         if elapsedMs >= VoiceMessage.maximumDurationMs || !recorder.isRecording {
             let limit = onLimit
@@ -185,7 +218,7 @@ final class VoiceMessageRecorder {
         guard phase == .recording, let recorder, let url = fileURL else { cancel(); return nil }
         let elapsed = elapsedMs
         recorder.stop()
-        let waveform = VoiceWaveform.build(peaks)
+        let fallback = readings
         fileURL = nil
         reset()
         let measured = await AttachmentPreparer.durationMs(AVURLAsset(url: url))
@@ -194,7 +227,25 @@ final class VoiceMessageRecorder {
             AttachmentStaging.remove(url)
             return nil
         }
-        return VoiceRecording(fileURL: url, durationMs: duration, waveform: waveform)
+        // Per-slice RMS of the decoded recording; the meter readings if it can't be read.
+        let rms = await Task.detached(priority: .userInitiated) { VoiceMessageRecorder.sliceRMS(of: url) }.value ?? fallback
+        return VoiceRecording(fileURL: url, durationMs: duration, waveform: VoiceWaveform.build(rms: rms))
+    }
+
+    /// Decodes the recording in chunks into 64 per-slice RMS values.
+    nonisolated static func sliceRMS(of url: URL) -> [Float]? {
+        guard let file = try? AVAudioFile(forReading: url), file.length > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 16_384) else { return nil }
+        var accumulator = VoiceWaveform.RMSAccumulator(totalFrames: Int(file.length))
+        var frame = 0
+        while frame < Int(file.length) {
+            do { try file.read(into: buffer) } catch { return nil }
+            let count = Int(buffer.frameLength)
+            guard count > 0, let channel = buffer.floatChannelData?[0] else { break }
+            accumulator.add(UnsafeBufferPointer(start: channel, count: count), start: frame)
+            frame += count
+        }
+        return frame > 0 ? accumulator.rms : nil
     }
 
     /// Discards the recording (or a pending permission request) without uploading.
@@ -215,7 +266,7 @@ final class VoiceMessageRecorder {
         meterTask?.cancel(); meterTask = nil
         recorder = nil; onLimit = nil
         phase = .idle; owner = nil
-        elapsedMs = 0; levels = []; peaks = []; slide = 0
+        elapsedMs = 0; levels = []; readings = []; slide = 0; handsFree = false
         stopObservingInterruptions()
         endSession()
     }
@@ -310,6 +361,14 @@ final class VoiceMessagePlayer {
 
     /// Elapsed time of `attachment` when it is the current note.
     func elapsed(for attachment: ChatAttachment) -> Int? { attachmentID == attachment.id ? elapsedMs : nil }
+
+    /// The playhead read from the player itself, for per-frame progress
+    /// between the periodic time updates.
+    func preciseElapsedMs(for attachment: ChatAttachment) -> Int? {
+        guard attachmentID == attachment.id else { return nil }
+        guard playing, let time = player?.currentTime().seconds, time.isFinite else { return elapsedMs }
+        return max(0, Int(time * 1000))
+    }
 
     func toggle(_ attachment: ChatAttachment, chat: ChatModel?) {
         if attachmentID == attachment.id {

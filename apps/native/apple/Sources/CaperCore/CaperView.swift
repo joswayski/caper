@@ -3224,6 +3224,7 @@ private struct AccountBar: View {
     @FocusState private var settingsFocused: Bool
     #else
     @Bindable private var effects = CaperEffects.shared
+    @Bindable private var voiceMessages = VoiceMessageSettings.shared
     #endif
     @State private var inputOptions = false
     @State private var outputOptions = false
@@ -3332,6 +3333,8 @@ private struct AccountBar: View {
                 Section("Audio settings") {
                     Toggle("Caper sound effects", isOn: $effects.soundsEnabled)
                         .accessibilityIdentifier("sound-effects")
+                    Toggle(VoiceMessage.sendOnStopTitle, isOn: $voiceMessages.sendOnStop)
+                        .accessibilityIdentifier("voice-messages-send-on-stop")
                 }
                 #endif
                 Button("Audio test") { sheet = .audio }
@@ -6151,23 +6154,7 @@ private struct MentionCardView: View {
                         .background(CaperTheme.terracotta.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                 }
                 StagedFileLayout() {
-                    ForEach(draft.files) { file in
-                        StagedFileChip(id: file.id, name: file.local.name,
-                                       kind: AttachmentKind.local(contentType: file.local.contentType),
-                                       localURL: file.local.url,
-                                       thumbnailURL: file.editPreview,
-                                       status: file.uploadError ?? AttachmentPolicy.formatBytes(file.local.size),
-                                       failed: file.uploadError != nil,
-                                       busyLabel: file.progress != nil ? "Uploading…" : nil,
-                                       progress: file.progress,
-                                       removable: draft.editable,
-                                       spoiler: file.spoiler,
-                                       // Shown but locked while sending (not `removable`).
-                                       toggleSpoiler: { draft.toggleSpoiler(id: file.id) },
-                                       edit: editAction(file),
-                                       preview: { preview(file) },
-                                       remove: { draft.remove(id: file.id) })
-                    }
+                    ForEach(draft.files) { file in stagedChip(file) }
                 }.accessibilityLabel("Files to send")
             }
             ComposerSuggestionsView(controller: autocomplete).disabled(!draft.editable || pending != nil)
@@ -6310,13 +6297,43 @@ private struct MentionCardView: View {
     /// The card's microphone: a voice message goes to this person's DM on
     /// its own, and success closes the card into the DM as Send does.
     private var voiceTarget: VoiceTarget {
-        let model = model, person = person, close = close
+        let model = model, person = person, close = close, draft = draft
         let incoming = model.directMessages.contains { $0.peer.id == person.id && $0.status == .incoming }
+        let sendsOnStop = VoiceMessageSettings.shared.sendOnStop
+        let ready = sendsOnStop ? draft.canRecordVoice : draft.canStageVoice
+        let reason: String
+        if !uploadsAvailable { reason = "File uploads are unavailable" }
+        else if draft.files.contains(where: { $0.voiceDurationMs != nil }) { reason = VoiceMessage.oneVoicePerMessage }
+        else { reason = "Send or retry the current message first." }
         return VoiceTarget(owner: VoiceComposerID(profilePersonID: person.id),
-                           enabled: uploadsAvailable && canMessage && !incoming && draft.canRecordVoice && pending == nil && !draft.presentingDialog,
-                           unavailableReason: uploadsAvailable ? "Send or retry the current message first." : "File uploads are unavailable",
-                           identifier: "mention-card-voice") { recording in
-            if await model.sendProfileVoice(recording, to: person) { close() }
+                           enabled: uploadsAvailable && canMessage && !incoming && ready && pending == nil && !draft.presentingDialog,
+                           unavailableReason: reason, identifier: "mention-card-voice",
+                           send: { recording in if await model.sendProfileVoice(recording, to: person) { close() } },
+                           stage: { recording in _ = draft.stageVoice(recording) })
+    }
+
+    /// A staged file's square, or a staged voice note's chip.
+    @ViewBuilder private func stagedChip(_ file: ProfileMessageDraft.File) -> some View {
+        if let duration = file.voiceDurationMs {
+            VoiceDraftChip(id: file.id, url: file.local.url, durationMs: duration, waveform: file.voiceWaveform,
+                           status: file.uploadError ?? (file.progress != nil ? "Uploading…" : nil), failed: file.uploadError != nil,
+                           removable: draft.editable, remove: { draft.remove(id: file.id) })
+        } else {
+            StagedFileChip(id: file.id, name: file.local.name,
+                           kind: AttachmentKind.local(contentType: file.local.contentType),
+                           localURL: file.local.url,
+                           thumbnailURL: file.editPreview,
+                           status: file.uploadError ?? AttachmentPolicy.formatBytes(file.local.size),
+                           failed: file.uploadError != nil,
+                           busyLabel: file.progress != nil ? "Uploading…" : nil,
+                           progress: file.progress,
+                           removable: draft.editable,
+                           spoiler: file.spoiler,
+                           // Shown but locked while sending (not `removable`).
+                           toggleSpoiler: { draft.toggleSpoiler(id: file.id) },
+                           edit: editAction(file),
+                           preview: { preview(file) },
+                           remove: { draft.remove(id: file.id) })
         }
     }
 
@@ -7788,6 +7805,7 @@ extension EnvironmentValues {
 @MainActor public struct CaperSettingsView: View {
     @State private var loginItem = CaperLoginItem.shared
     @Bindable private var effects = CaperEffects.shared
+    @Bindable private var voiceMessages = VoiceMessageSettings.shared
     @Bindable private var notes: WhatsNewModel
     @Environment(\.desktopUpdates) private var updates
     public init(whatsNew: WhatsNewModel) { notes = whatsNew }
@@ -7827,6 +7845,8 @@ extension EnvironmentValues {
                         }
                     }.toggleStyle(.switch).accessibilityIdentifier("sound-effects")
                 }
+                Rectangle().fill(CaperTheme.border).frame(height: 1)
+                VoiceMessageSettingsSection(settings: voiceMessages)
                 Rectangle().fill(CaperTheme.border).frame(height: 1)
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Updates").font(CaperTheme.font(12, weight: .bold)).foregroundStyle(CaperTheme.muted)

@@ -1655,7 +1655,7 @@ final class AttachmentTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: short.url.path))
 
         let recording = try AttachmentStaging.stage(data: Data(repeating: 7, count: 2048), filename: VoiceMessage.uploadFilename)
-        let waveform = VoiceWaveform.build((0..<200).map { Float($0 % 10) / 10 })
+        let waveform = VoiceWaveform.build(rms: (0..<200).map { Float($0 % 10) / 10 })
         await chat.sendVoice(VoiceRecording(fileURL: recording.url, durationMs: 4200, waveform: waveform))
         XCTAssertNil(chat.error)
         XCTAssertNil(chat.pendingMessage)
@@ -1674,6 +1674,51 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(chat.draft, "still typing", "the composer's text stays")
         XCTAssertEqual(chat.attachmentDrafts.map(\.name), ["notes.txt"], "and so do its files")
         XCTAssertEqual(chat.messages.last?.content.attachments?.map(\.id), ["Asset0000002"])
+        await chat.stop()
+    }
+
+    @MainActor
+    func testStagedVoiceMessageGoesWithTextAndFilesAndRemovalCancelsItsUpload() async throws {
+        AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
+        let chat = ChatModel(api: client())
+        await chat.open(channelID: channelID, displayName: "Me")
+        await chat.checkUploadAvailability()
+        XCTAssertTrue(chat.canStageVoice())
+        chat.draft = "listen to this"
+        chat.addAttachments([try AttachmentStaging.stage(data: Data("photo".utf8), filename: "notes.txt")])
+        await waitUntil("file upload") { chat.attachmentDrafts.first?.attachment != nil }
+
+        // Staged, then removed: the upload is cancelled and the recording deleted.
+        let first = try AttachmentStaging.stage(data: Data(repeating: 5, count: 1024), filename: VoiceMessage.uploadFilename)
+        chat.stageVoice(VoiceRecording(fileURL: first.url, durationMs: 2500, waveform: [10, 200]))
+        XCTAssertEqual(chat.attachmentDrafts.filter(\.isVoice).count, 1)
+        XCTAssertFalse(chat.canStageVoice(), "one voice note per message")
+        await waitUntil("voice upload") { chat.attachmentDrafts.first(where: \.isVoice)?.attachment != nil }
+        let removedID = try XCTUnwrap(chat.attachmentDrafts.first(where: \.isVoice)?.attachment?.id)
+        chat.removeAttachmentDraft(id: try XCTUnwrap(chat.attachmentDrafts.first(where: \.isVoice)?.id))
+        await waitUntil("cancel") { AttachmentURLProtocol.requests.contains { $0.url.path == "/api/assets/\(removedID)/cancel" } }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.url.path))
+        XCTAssertTrue(chat.canStageVoice())
+
+        let recording = try AttachmentStaging.stage(data: Data(repeating: 7, count: 2048), filename: VoiceMessage.uploadFilename)
+        chat.stageVoice(VoiceRecording(fileURL: recording.url, durationMs: 4200, waveform: [0, 128, 255]))
+        await waitUntil("voice upload") { chat.attachmentDrafts.first(where: \.isVoice)?.attachment != nil }
+        let reserve = try XCTUnwrap(AttachmentURLProtocol.requests.last { $0.method == "POST" && $0.url.path == "/api/assets" })
+        XCTAssertEqual(json(reserve.body)?["voice"] as? Bool, true, "uploaded as a voice note before Send, so transcription starts")
+        XCTAssertEqual(json(reserve.body)?["durationMs"] as? Int, 4200)
+        let ids = chat.attachmentDrafts.compactMap { $0.attachment?.id }
+        XCTAssertEqual(ids.count, 2)
+        XCTAssertFalse(AttachmentURLProtocol.requests.contains { $0.url.path.hasSuffix("/messages") && $0.method == "POST" },
+                       "staging never sends")
+
+        await chat.send()
+        XCTAssertNil(chat.error)
+        let send = try XCTUnwrap(AttachmentURLProtocol.requests.last { $0.method == "POST" && $0.url.path == "/api/chat/channels/\(channelID)/messages" })
+        let body = try XCTUnwrap(json(send.body))
+        XCTAssertEqual(body["text"] as? String, "listen to this", "one message: text, file and voice note")
+        XCTAssertEqual(body["attachmentIds"] as? [String], ids)
+        XCTAssertTrue(chat.attachmentDrafts.isEmpty)
+        XCTAssertEqual(chat.draft, "")
         await chat.stop()
     }
 
@@ -2200,6 +2245,41 @@ final class AttachmentTests: XCTestCase {
             AttachmentURLProtocol.requests.contains { $0.url.path == "/api/assets/\(assetID)/cancel" }
         }
         XCTAssertTrue(draft.files.isEmpty)
+    }
+
+    @MainActor
+    func testProfileCardStagesOneVoiceNoteBesideFilesAndUploadsItAsRecorded() async throws {
+        AttachmentURLProtocol.handler = composerHandler(uniqueAssets: true)
+        let api = client()
+        let draft = ProfileMessageDraft()
+        draft.prepareUploads = { [weak draft] in
+            guard let draft else { throw CancellationError() }
+            _ = try await draft.upload(channelID: channelID, api: api)
+        }
+        draft.text = "kept"
+        draft.add([try AttachmentStaging.stage(data: Data("photo".utf8), filename: "photo.txt")])
+        try await draft.awaitUploads()
+        XCTAssertTrue(draft.canStageVoice)
+        let recording = try AttachmentStaging.stage(data: Data(repeating: 9, count: 1500), filename: VoiceMessage.uploadFilename)
+        XCTAssertTrue(draft.stageVoice(VoiceRecording(fileURL: recording.url, durationMs: 3000, waveform: [1, 2, 3])))
+        XCTAssertFalse(draft.canStageVoice, "one voice note per message")
+        let another = try AttachmentStaging.stage(data: Data(repeating: 9, count: 1500), filename: VoiceMessage.uploadFilename)
+        XCTAssertFalse(draft.stageVoice(VoiceRecording(fileURL: another.url, durationMs: 3000, waveform: [])))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: another.url.path), "a refused recording is deleted")
+        try await draft.awaitUploads()
+        XCTAssertEqual(draft.files.count, 2)
+        XCTAssertEqual(draft.text, "kept")
+        let voice = try XCTUnwrap(draft.files.last)
+        XCTAssertEqual(voice.voiceDurationMs, 3000)
+        XCTAssertNotNil(voice.attachment)
+        let reserve = try XCTUnwrap(AttachmentURLProtocol.requests.last { $0.method == "POST" && $0.url.path == "/api/assets" })
+        XCTAssertEqual(json(reserve.body)?["voice"] as? Bool, true)
+        XCTAssertEqual(json(reserve.body)?["byteSize"] as? Int, 1500, "uploaded as recorded")
+        let assetID = try XCTUnwrap(voice.attachment?.id)
+        draft.remove(id: voice.id)
+        await waitUntil("voice asset cancelled") { AttachmentURLProtocol.requests.contains { $0.url.path == "/api/assets/\(assetID)/cancel" } }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recording.url.path))
+        XCTAssertTrue(draft.canStageVoice)
     }
 
     @MainActor
