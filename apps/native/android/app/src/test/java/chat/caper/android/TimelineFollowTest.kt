@@ -7,6 +7,29 @@ import org.junit.Test
 class TimelineFollowTest {
     private val latest = 9 to PAST_END
 
+    @Test fun `displacement only starts for genuine live appends`() {
+        val before = FollowFrame(listOf("a"), clientIds = listOf("client-a"))
+        val appended = before.copy(keys = listOf("a", "b"), clientIds = listOf("client-a", "client-b"))
+        assertTrue(liveAppend(before, appended))
+        assertTrue(liveAppend(before, appended.copy(pendingId = "client-b")))
+        assertFalse(liveAppend(null, appended))
+        assertFalse(liveAppend(before.copy(clientIds = emptyList()), appended))
+        assertFalse(liveAppend(before, appended.copy(clientIds = listOf("older", "client-a", "client-b"))))
+        assertFalse(liveAppend(before, appended.copy(jump = 1)))
+        for (page in listOf(before.copy(loadingOlder = true), before.copy(loadingNewer = true), before.copy(historical = true))) {
+            assertFalse(liveAppend(page, appended))
+        }
+        for (page in listOf(appended.copy(loadingOlder = true), appended.copy(loadingNewer = true), appended.copy(historical = true))) {
+            assertFalse(liveAppend(before, page))
+        }
+        // Server row keys change, but confirming a pending send is not a second arrival.
+        assertFalse(liveAppend(appended.copy(keys = listOf("a"), pendingId = "client-b"), appended))
+        val pending = appended.copy(pendingId = "client-b")
+        assertFalse(liveAppend(pending, pending.copy(clientIds = listOf("client-a", "client-b", "client-b"))))
+        assertTrue(liveAppend(pending, pending.copy(clientIds = listOf("client-a", "remote", "client-b"))))
+        assertFalse(liveAppend(appended, appended))
+    }
+
     private fun TimelineFollow.next(frame: FollowFrame, ready: Boolean = true, near: Boolean = false, anchor: Pair<Int, Int>? = null) =
         followScroll(this, ready, frame, lastIndex = 9, near = { near }, anchor = { anchor })
 

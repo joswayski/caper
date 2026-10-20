@@ -7057,6 +7057,27 @@ no Android release is needed for this change. Before distribution, verify native
 scrolling and incoming messages on each changed platform. Roll back the web to its
 previous image; native rollback requires a corrected higher-build release.
 
+### Live-message displacement (October 20, 2026)
+
+Channel and thread arrivals carry existing visible messages from their old painted
+positions to the new layout over the shared 260 ms ease-out, alongside the incoming
+row's fade/rise. Physical bottom pinning and history anchoring remain immediate;
+short bottom-aligned conversations do not depend on scrollTop changing. Initial
+loads, history navigation and manual scrolling do not start this motion, and reduced
+motion remains instant. Text stays sharp; no blur filter was added. Web clips the
+translated content so it cannot increase scrollHeight or feed back into live follow.
+
+Validation is separate for each implementation:
+
+| Platform | Coverage and remaining checks |
+| --- | --- |
+| Web | Build/lint/typecheck and 738 tests passed. Chromium fixtures sample intermediate row positions, unchanged scroll extent and reduced motion; channel desktop/narrow recordings and a 24-reply thread send were inspected. Thread displacement was 50 px with eight intermediate positions and no downward reversal. Mocked HTTP/gateway only; narrow Chromium is not Safari or a physical phone. |
+| Android | Kotlin compilation and all 552 JVM tests passed. No attached device; short/overflowing lists, touch interruption and keyboard transitions still require native visual acceptance. |
+| Apple | Source and arrival-identity test changes only. SwiftUI/Xcode and Apple devices are unavailable in the Linux orb; compilation and native visual acceptance remain outstanding. Scroll-phase tracking covers iOS 18/macOS 15 and later; the older-OS drag fallback does not observe macOS wheel/momentum input, so interruption needs follow-up before release. |
+| Rust desktop | Full application build and 730 tests pass with clang 21 (20 existing opt-in tests ignored), including painted positions, burst arrivals, reduced motion and a corrected short-list measurement that must not overshoot then reverse. Inspected Linux/Xvfb recordings of short and overflowing narrow timelines with a deliberately delayed mock HTTP response; these exercise pending insertion, not server confirmation. Whole-timeline compensation keeps dividers with their rows and retargets from the last actually painted position. Windows, native thread motion and physical-device acceptance remain outstanding. |
+
+No server, database, infrastructure or secret changes are required.
+
 ### Fixed wordmarks and app icons, rotating illustrations
 
 Clickable app identities (Dock, launcher, taskbar/window, installed shortcuts and

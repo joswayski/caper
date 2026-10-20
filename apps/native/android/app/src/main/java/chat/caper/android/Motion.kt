@@ -10,8 +10,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -22,6 +28,45 @@ internal val EaseOut = CubicBezierEasing(0.16f, 1f, 0.3f, 1f)
 internal const val MOTION_FAST = 140
 internal const val MOTION_BASE = 200
 internal const val MOTION_SLOW = 260
+
+/** Drawing-only FLIP compensation: FollowLatest still pins immediately, without changing layout. */
+internal class TimelineDisplacement {
+    var revision by mutableIntStateOf(0)
+        private set
+    var remaining by mutableFloatStateOf(0f)
+    var viewportY by mutableFloatStateOf(0f)
+    private var origins: Map<Any, Float> = emptyMap()
+
+    fun offset(list: LazyListState, key: Any): Float {
+        if (remaining == 0f) return 0f
+        val visible = list.layoutInfo.visibleItemsInfo
+        // An incoming row travels with its preceding rows instead of fading
+        // underneath them while they are still making room.
+        val row = visible.firstOrNull { it.key == key && origins.containsKey(key) }
+            ?: visible.lastOrNull { origins.containsKey(it.key) } ?: return 0f
+        val origin = origins.getValue(row.key)
+        return (origin - row.offset - viewportY) * remaining
+    }
+
+    fun capture(list: LazyListState) {
+        origins = list.layoutInfo.visibleItemsInfo.associate { it.key to it.offset + viewportY + offset(list, it.key) }
+        remaining = 1f
+        revision++
+    }
+
+    fun clear() {
+        if (remaining == 0f) return
+        remaining = 0f
+        revision++ // Cancel the frame coroutine too; it must not restore the offset.
+    }
+}
+
+internal fun Modifier.displacement(motion: TimelineDisplacement, list: LazyListState, key: Any): Modifier =
+    graphicsLayer { translationY = motion.offset(list, key) }
+
+// Short bottom-aligned lists can move as a whole; overflowing lists move inside their viewport.
+internal fun Modifier.displacementViewport(motion: TimelineDisplacement): Modifier =
+    onPlaced { motion.viewportY = it.positionInRoot().y }
 
 /** True when the system's animator duration scale is 0 (Remove animations), web's `prefers-reduced-motion`. */
 @Composable internal fun reducedMotion(): Boolean {

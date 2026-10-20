@@ -3603,6 +3603,7 @@ private struct ChatView: View {
     @State private var olderAnchor: String?
     @State private var timelinePin = TimelinePinBox()
     @State private var arrivals = MessageArrivals()
+    @State private var timelineScrolling = false
     /// Block confirmation, from the DM header, the request bar or message actions.
     @State private var blockTarget: BlockTarget?
     /// Blocked runs shown in place (in memory only).
@@ -4092,6 +4093,8 @@ private struct ChatView: View {
                             }.padding(.top, 80)
                         }
                     }
+                    .modifier(TimelineArrivalMotion(key: chat.channelID ?? "", revision: arrivals.revision("channel"),
+                                                    enabled: !timelineScrolling && !chat.loading && !chat.loadingOlder && !chat.loadingNewer && !chat.hasNewer && chat.focusedMessageID == nil))
                     // Preceding history can move the pending row without
                     // changing that row's own height; observe the whole extent.
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in revealPending(proxy) }
@@ -4105,6 +4108,7 @@ private struct ChatView: View {
                 .scrollDismissesKeyboard(.interactively)
                 #endif
                 .accessibilityIdentifier("chat-timeline")
+                .modifier(TimelineScrollActivity(active: $timelineScrolling))
                 // Pills report the pointer in this space; the popover anchors in it too.
                 .coordinateSpace(.named(MentionCard.timelineSpace))
                 .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
@@ -4594,6 +4598,7 @@ private struct NativeThreadView: View {
     @State private var olderAnchor: String?
     @State private var timelinePin = TimelinePinBox()
     @State private var arrivals = MessageArrivals()
+    @State private var timelineScrolling = false
     /// Your latest reply sent from this thread: its arrival scrolls to it.
     @State private var localReplyID: String?
     /// Kept out of the body so the type checker handles it separately.
@@ -4732,13 +4737,12 @@ private struct NativeThreadView: View {
                     let root = chat.displayedMessages.first(where: { $0.id == chat.threadRootID })
                     // The root's reactions grow the thread as well as its replies'.
                     let recentRows: [TimelineEntry] = (root.map { entries([$0]) } ?? []) + replyRows.suffix(TimelinePin.recentRows)
+                    let threadPending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == chat.threadRootID ? $0 : nil }
+                    let _ = arrivals.observe("thread", key: chat.threadRootID ?? "",
+                                             ids: chat.threadMessages.map(\.clientMessageId) + (threadPending.map { [$0.id] } ?? []),
+                                             live: chat.threadRootID != nil && !chat.threadLoading && !chat.threadHasNewer)
                     LazyVStack(spacing: 0) {
-                        let threadPending: PendingMessage? = chat.pendingMessage.flatMap { $0.threadRootId == chat.threadRootID ? $0 : nil }
                         let grouping = MessageGrouping.layout(replyRows, inThread: true, pending: threadPending, author: chat.currentAuthor)
-                        // Before any row is built, so rows see this render's arrivals. The root is never one.
-                        let _ = arrivals.observe("thread", key: chat.threadRootID ?? "",
-                                                 ids: chat.threadMessages.map(\.clientMessageId) + (threadPending.map { [$0.id] } ?? []),
-                                                 live: chat.threadRootID != nil && !chat.threadLoading && !chat.threadHasNewer)
                         if let root {
                             threadEntries(entries([root]))
                             if let summary = root.thread, summary.replyCount > 0 {
@@ -4773,6 +4777,8 @@ private struct NativeThreadView: View {
                                 .modifier(Entrance.message(arrivals.claim(pending.id)))
                         }
                     }
+                    .modifier(TimelineArrivalMotion(key: chat.threadRootID ?? "", revision: arrivals.revision("thread"),
+                                                    enabled: !timelineScrolling && !chat.threadLoading && !chat.threadHasNewer && chat.focusedMessageID == nil))
                     // Follow reaction height changes as well as a shorter viewport.
                     .onDisappear { model.threadVisibilityChanged(rootID: nil, seq: nil) }
                     .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: firstReplyID, recent: recentRows) } action: { pin in
@@ -4786,6 +4792,7 @@ private struct NativeThreadView: View {
                 #if os(macOS)
                 .accessibilityIdentifier("thread-timeline")
                 #endif
+                .modifier(TimelineScrollActivity(active: $timelineScrolling))
                 .coordinateSpace(.named(MentionCard.timelineSpace))
                 .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
                 .onChange(of: replies.last?.id, initial: true) { old, id in

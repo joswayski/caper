@@ -31,6 +31,7 @@ import MessageHistory from "./MessageHistory.tsx";
 import MessageSkeleton from "./MessageSkeleton.tsx";
 import { ForwardCard, ForwardConversation, ForwardPicker, type ForwardTarget } from "./Forwarding.tsx";
 import { Arrivals } from "./arrivals.ts";
+import { useTimelineMotion } from "./useTimelineMotion.ts";
 import { dateDivider } from "./dates.ts";
 import { channelNewMessagesId, groupsWithPrevious } from "./grouping.ts";
 import { replyReference, ReplyContext, ReplyDraft } from "./Replies.tsx";
@@ -130,7 +131,7 @@ function MessageList({ context, children, ...props }: ListProps & ContextProp<Hi
   // first message (see .chat-scroller in chat.css), not at the top of the pane.
   const style = props.style?.marginTop === "auto" ? { ...props.style, marginTop: 0 } : props.style;
   return (
-    <div {...props} style={style}>
+    <div {...props} style={style} className="chat-motion-clip">
       {children}
     </div>
   );
@@ -744,6 +745,12 @@ export default function Chat({
   // message when it already was. Read the position before resizing, not a
   // delayed bottom callback, and correct only real height changes using the
   // new DOM extent rather than the virtualizer's previous measurements.
+  useTimelineMotion(
+    scrollerRef,
+    state.channelId,
+    state.phase === "ready" && !state.hasNewer && !state.loadingNewer,
+    scroller,
+  );
   const keepLatestInView = useCallback((resize: () => boolean) => {
     const scroller = scrollerRef.current;
     const atBottom = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 80;

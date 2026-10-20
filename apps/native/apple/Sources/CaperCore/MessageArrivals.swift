@@ -14,9 +14,13 @@ final class MessageArrivals {
     private struct Arrival { let at: TimeInterval; var started = false }
     private var lists: [String: List] = [:]
     private var arrived: [String: Arrival] = [:]
+    private var revisions: [String: Int] = [:]
     private let now: () -> TimeInterval
 
     init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) { self.now = now }
+
+    /// A layout trigger, independent of row claims (including pending confirmation).
+    func revision(_ scope: String) -> Int { revisions[scope, default: 0] }
 
     /// Call on every render with the list's client message IDs, oldest first.
     /// `live` is true when the list ends at the newest message. Both this and the
@@ -29,7 +33,12 @@ final class MessageArrivals {
               // Only rows after the previous newest row are arrivals; prepended history is not.
               let tail = ids.lastIndex(of: last) else { return }
         let at = now()
-        for id in ids[(tail + 1)...] where !previous.ids.contains(id) && arrived[id] == nil { arrived[id] = Arrival(at: at) }
+        var appended = false
+        for id in ids[(tail + 1)...] where !previous.ids.contains(id) && arrived[id] == nil {
+            arrived[id] = Arrival(at: at)
+            appended = true
+        }
+        if appended { revisions[scope, default: 0] += 1 }
         arrived = arrived.filter { at - $0.value.at <= Self.window }
     }
 

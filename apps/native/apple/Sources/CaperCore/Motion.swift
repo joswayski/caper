@@ -8,6 +8,78 @@ enum CaperMotion {
     static func easeOut(_ duration: Double) -> Animation { .timingCurve(0.16, 1, 0.3, 1, duration: duration) }
 }
 
+struct TimelineScrollActivity: ViewModifier {
+    @Binding var active: Bool
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(iOS 18, macOS 15, *) {
+            content.onScrollPhaseChange { _, phase in active = phase != .idle }
+        } else {
+            content.simultaneousGesture(DragGesture(minimumDistance: 1)
+                .onChanged { _ in active = true }
+                .onEnded { _ in active = false })
+        }
+    }
+}
+
+/// Keep physical scroll pinning immediate; invert only the drawing displacement.
+/// Measuring an unshifted wrapper avoids feeding the presentation offset back
+/// into geometry. Retain the current painted offset when another arrival or
+/// lazy measurement lands during the same entrance.
+struct TimelineArrivalMotion: ViewModifier {
+    var key: String
+    var revision: Int
+    var enabled: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var previous: Sample?
+    @State private var compensation: CGFloat = 0
+    @State private var started = Date.distantPast
+    @State private var arrived = Date.distantPast
+
+    private struct Sample: Equatable {
+        var key: String
+        var revision: Int
+        var top: CGFloat
+        var enabled: Bool
+    }
+
+    private func offset(at date: Date) -> CGFloat {
+        let progress = min(1, max(0, date.timeIntervalSince(started) / CaperMotion.slow))
+        let curve = UnitCurve.bezier(startControlPoint: UnitPoint(x: 0.16, y: 1), endControlPoint: UnitPoint(x: 0.3, y: 1))
+        return compensation * (1 - curve.value(at: progress))
+    }
+
+    func body(content: Content) -> some View {
+        TimelineView(.animation(paused: compensation == 0 || reduceMotion)) { timeline in
+            VStack(spacing: 0) { content.offset(y: reduceMotion ? 0 : offset(at: timeline.date)) }
+        }
+            .onGeometryChange(for: Sample.self) {
+                Sample(key: key, revision: revision,
+                       top: $0.frame(in: .named(MentionCard.timelineSpace)).minY,
+                       enabled: enabled && !reduceMotion)
+            } action: { sample in
+                let old = previous
+                previous = sample
+                guard let old, old.key == sample.key, old.enabled, sample.enabled else {
+                    compensation = 0
+                    arrived = .distantPast
+                    return
+                }
+                let now = Date()
+                if old.revision != sample.revision { arrived = now }
+                guard now.timeIntervalSince(arrived) < CaperMotion.slow, old.top != sample.top else { return }
+                compensation = offset(at: now) + old.top - sample.top
+                started = now
+            }
+            .task(id: started) {
+                guard compensation != 0 else { return }
+                do { try await Task.sleep(for: .seconds(CaperMotion.slow)) }
+                catch { return }
+                compensation = 0
+            }
+    }
+}
+
 /// An entrance as a view appears (web motion.css): it fades in from `offset`
 /// and `scale` without moving the layout around it. Leaving stays instant, so
 /// a dismissed control never lingers, and Reduce Motion shows it in place.
