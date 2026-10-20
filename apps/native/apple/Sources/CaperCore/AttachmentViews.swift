@@ -2907,9 +2907,7 @@ private struct DropFileCard: View {
 struct AttachmentPickerButton: View {
     @Bindable var chat: ChatModel
     var inThread = false
-    @State private var showPhotos = false
     @State private var showFiles = false
-    @State private var photoItems: [PhotosPickerItem] = []
     @State private var selectionTarget: ChatModel.AttachmentTarget?
 
     private var remaining: Int { max(0, AttachmentPolicy.maxAttachments - chat.attachmentFiles(inThread: inThread).count) }
@@ -2939,7 +2937,7 @@ struct AttachmentPickerButton: View {
         .disabled(!chat.canAttach)
         .opacity(chat.canAttach ? 1 : 0.4)
         .accessibilityLabel("Attach files")
-        .accessibilityValue(!chat.canAttach ? chat.attachUnavailableReason : AttachCapacity.label(AttachmentPolicy.maxAttachments - remaining))
+        .accessibilityValue(!chat.canAttach ? chat.attachUnavailableReason : AttachCapacity.label(AttachmentPolicy.maxAttachments - remaining) ?? "")
         .accessibilityIdentifier("attach-files-button")
         .sheet(isPresented: $showDrawer) {
             if let target = drawerTarget { AttachDrawer(draft: drawerDraft(target)) }
@@ -2958,16 +2956,19 @@ struct AttachmentPickerButton: View {
             valid: { chat.canAttach && chat.attachmentTarget(inThread: inThread) == target })
     }
     #else
+    /// The Mac, like web on desktop, has one unfiltered "Upload a file"; the
+    /// menu still opens at the limit to say so.
     var body: some View {
         Menu {
-            Button {
-                selectionTarget = chat.attachmentTarget(inThread: inThread)
-                showPhotos = selectionTarget != nil
-            } label: { Label("Photos and videos", systemImage: "photo.on.rectangle") }
+            if let limit = AttachCapacity.label(AttachmentPolicy.maxAttachments - remaining) {
+                Text(limit)
+                if let hint = AttachCapacity.hint(AttachmentPolicy.maxAttachments - remaining) { Text(hint) }
+            }
             Button {
                 selectionTarget = chat.attachmentTarget(inThread: inThread)
                 showFiles = selectionTarget != nil
-            } label: { Label("Files", systemImage: "doc") }
+            } label: { Label("Upload a file", systemImage: "arrow.up.doc") }
+                .disabled(remaining == 0)
         } label: {
             // The shared Lucide plus (CaperIcons.xcassets), as on web and in the profile composer.
             Image("caper-plus").renderingMode(.template).resizable().frame(width: 18, height: 18)
@@ -2980,28 +2981,12 @@ struct AttachmentPickerButton: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(!chat.canAttach || remaining == 0)
+        .disabled(!chat.canAttach)
         .opacity(chat.canAttach ? 1 : 0.4)
         .help(disabledReason ?? "Attach files")
         .accessibilityLabel("Attach files")
         .accessibilityValue(disabledReason ?? "")
         .accessibilityIdentifier("attach-files-button")
-        .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: max(1, remaining),
-                      matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
-        .onChange(of: photoItems) { _, items in
-            guard !items.isEmpty, let target = selectionTarget else { return }
-            photoItems = []
-            Task { @MainActor in
-                var files: [LocalAttachmentFile] = []
-                for item in items {
-                    if let picked = try? await item.loadTransferable(type: PickedAttachmentMedia.self) { files.append(picked.file) }
-                }
-                chat.addAttachments(files, to: target)
-                if files.count < items.count && chat.attachmentNotice(target: target) == nil {
-                    chat.setAttachmentNotice("Some items couldn’t be added.", target: target)
-                }
-            }
-        }
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             guard case .success(let urls) = result, let target = selectionTarget else { return }
             let files = urls.prefix(AttachmentPolicy.maxAttachments).compactMap { try? AttachmentStaging.stage(copying: $0) }

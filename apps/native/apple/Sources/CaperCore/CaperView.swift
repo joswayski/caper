@@ -6093,20 +6093,23 @@ private struct MentionCardView: View {
                 .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog)
                 .sheet(isPresented: $showingDrawer, onDismiss: updateDialogState) { AttachDrawer(draft: drawerDraft) }
                 #else
+                // One unfiltered "Upload a file", as on the desktop clients; at the limit it says so.
                 Menu {
-                    Button { draft.presentingDialog = true; showingPhotos = true } label: {
-                        Label("Photos and videos", systemImage: "photo.on.rectangle")
+                    if let limit = AttachCapacity.label(draft.files.count) {
+                        Text(limit)
+                        if let hint = AttachCapacity.hint(draft.files.count) { Text(hint) }
                     }
                     Button { draft.presentingDialog = true; showingFiles = true } label: {
-                        Label("Files", systemImage: "doc")
+                        Label("Upload a file", systemImage: "arrow.up.doc")
                     }
+                    .disabled(draft.files.count >= AttachmentPolicy.maxAttachments)
                 } label: {
                     CaperIcon(name: "plus", size: 18).foregroundStyle(CaperTheme.muted)
                         .frame(width: 40, height: 42).contentShape(Rectangle())
                 }
                 .menuStyle(.button).menuOrder(.fixed).buttonStyle(.plain).menuIndicator(.hidden)
                 .fixedSize()
-                .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog || draft.files.count >= AttachmentPolicy.maxAttachments)
+                .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog)
                 #endif
                 }
                 .opacity(uploadsAvailable ? 1 : 0.4)

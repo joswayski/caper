@@ -36,6 +36,7 @@ const names = {
   eraser: "Eraser",
   "external-link": "ExternalLink",
   "file-text": "FileText",
+  "file-up": "FileUp",
   "file-warning": "FileWarning",
   forward: "Forward",
   hash: "Hash",

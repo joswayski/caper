@@ -1,12 +1,12 @@
 import Foundation
 
-/// The attach drawer's capacity line, worded as on every client (web chat/attach.ts).
+/// The attach drawer's limit line, worded as on every client (web chat/attach.ts).
+/// Drafts below the limit show nothing, so only a full one has a label.
 enum AttachCapacity {
-    static func label(_ attached: Int, max: Int = AttachmentPolicy.maxAttachments) -> String {
-        let count = Swift.max(0, Swift.min(attached, max))
-        return count == 0 ? "Up to \(max) files" : "\(count) of \(max) attached"
+    static func label(_ attached: Int, max: Int = AttachmentPolicy.maxAttachments) -> String? {
+        attached >= max ? "\(max) of \(max) attached" : nil
     }
-    /// Shown once full: how to make room.
+    /// How to make room once full.
     static func hint(_ attached: Int, max: Int = AttachmentPolicy.maxAttachments) -> String? {
         attached >= max ? "Remove a file to add another." : nil
     }
@@ -246,19 +246,20 @@ struct AttachDrawer: View {
             HStack(spacing: 12) {
                 Text("Attach").font(CaperTheme.font(15, weight: .bold))
                 Spacer(minLength: 8)
-                HStack(spacing: 8) {
-                    HStack(spacing: 3) {
-                        ForEach(0..<AttachmentPolicy.maxAttachments, id: \.self) { index in
-                            Circle().fill(full ? CaperTheme.terracotta : index < used ? CaperTheme.text : CaperTheme.border)
-                                .frame(width: 6, height: 6)
+                // Only a full draft says how many files it holds.
+                if let label = AttachCapacity.label(used) {
+                    HStack(spacing: 8) {
+                        HStack(spacing: 3) {
+                            ForEach(0..<AttachmentPolicy.maxAttachments, id: \.self) { _ in
+                                Circle().fill(CaperTheme.terracotta).frame(width: 6, height: 6)
+                            }
                         }
+                        Text(label).font(CaperTheme.font(12).monospacedDigit()).foregroundStyle(CaperTheme.terracottaBright)
                     }
-                    Text(AttachCapacity.label(used)).font(CaperTheme.font(12).monospacedDigit())
-                        .foregroundStyle(full ? CaperTheme.terracottaBright : CaperTheme.muted)
+                    .modifier(LimitNudge(nudges: reduceMotion ? 0 : CGFloat(nudges)))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("attach-drawer-capacity")
                 }
-                .modifier(LimitNudge(nudges: reduceMotion ? 0 : CGFloat(nudges)))
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("attach-drawer-capacity")
             }
             if let hint = AttachCapacity.hint(used) ?? notice {
                 Text(hint).font(CaperTheme.font(12)).foregroundStyle(CaperTheme.muted)

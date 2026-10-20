@@ -7975,8 +7975,8 @@ impl CaperApp {
         }
     }
 
-    /// Opens the system file dialog; `media` lists photos and videos first.
-    fn pick_files(&mut self, context: &egui::Context, root: Option<String>, media: bool) {
+    /// Opens the system file dialog for any file.
+    fn pick_files(&mut self, context: &egui::Context, root: Option<String>) {
         if self.file_picker.is_some() || !self.can_attach() {
             return;
         }
@@ -7987,7 +7987,7 @@ impl CaperApp {
         let context = context.clone();
         // The native dialog blocks its own thread, never the UI.
         std::thread::spawn(move || {
-            let files = attach_dialog(media).pick_files().unwrap_or_default();
+            let files = attach_dialog().pick_files().unwrap_or_default();
             let _ = sender.send(files);
             context.request_repaint();
         });
@@ -15691,7 +15691,7 @@ impl CaperApp {
                 let mut output = editor.inner;
                 ui.painter().rect_stroke(editor.response.rect, 8.0, Stroke::new(1.0, if output.response.has_focus() { TERRACOTTA } else { BORDER }), egui::StrokeKind::Inside);
                 let text = draft.0.clone();
-                if let Some(choice) = pick { self.pick_files(ui.ctx(), Some(root.clone()), choice == attach_drawer::AttachChoice::Media); }
+                if pick.is_some() { self.pick_files(ui.ctx(), Some(root.clone())); }
                 if let Some(value) = self.suggestion_popup(ui, &suggestions, &text, editor.response.rect, &mut output) {
                     self.thread_drafts.entry(root.clone()).or_default().0 = value;
                 }
@@ -16200,8 +16200,8 @@ impl CaperApp {
                                 });
                                 editor
                             }).inner;
-                            if let Some(choice) = pick {
-                                self.pick_files(ui.ctx(), None, choice == attach_drawer::AttachChoice::Media);
+                            if pick.is_some() {
+                                self.pick_files(ui.ctx(), None);
                             }
                             (editor, choose_emoji)
                         });
@@ -21257,8 +21257,7 @@ impl CaperApp {
             .as_ref()
             .is_some_and(|(id, _)| id == person);
         let can_send = draft.ready() && !busy && !pending_picker && self.token.is_some();
-        // Some(true) for Photos and videos, Some(false) for Files.
-        let mut pick = None;
+        let mut pick = false;
         let mut paste_now = false;
         let mut menu_open = false;
         let mut choose_emoji = false;
@@ -21286,9 +21285,7 @@ impl CaperApp {
                         // Paste is also offered for when no keyboard is available.
                         match attach_drawer::popup(&attach, draft.files.len(), true) {
                             Some(attach_drawer::AttachChoice::Paste) => paste_now = true,
-                            Some(choice) => {
-                                pick = Some(choice == attach_drawer::AttachChoice::Media)
-                            }
+                            Some(attach_drawer::AttachChoice::Upload) => pick = true,
                             None => {}
                         }
                         menu_open = egui::Popup::menu(&attach).is_open();
@@ -21412,11 +21409,11 @@ impl CaperApp {
             let text = draft.text.clone();
             self.open_composer_emoji(EmojiTarget::Profile(person.to_owned()), &output, &text);
         }
-        if let Some(media) = pick {
+        if pick {
             let (sender, receiver) = std::sync::mpsc::channel();
             let context = ui.ctx().clone();
             std::thread::spawn(move || {
-                let files = attach_dialog(media).pick_files().unwrap_or_default();
+                let files = attach_dialog().pick_files().unwrap_or_default();
                 let _ = sender.send(files);
                 context.request_repaint();
             });
@@ -25136,22 +25133,9 @@ fn send_icon_button_sized(
     response.on_hover_text(label)
 }
 
-/// The attach panel's system dialog: Photos and videos lists media first;
-/// Files shows everything.
-fn attach_dialog(media: bool) -> rfd::FileDialog {
-    let dialog = rfd::FileDialog::new().set_title("Attach files");
-    if !media {
-        return dialog;
-    }
-    dialog
-        .add_filter(
-            "Photos and videos",
-            &[
-                "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "avif", "bmp", "tif", "tiff",
-                "mp4", "mov", "m4v", "webm", "mkv", "avi", "mpeg", "mpg", "3gp",
-            ],
-        )
-        .add_filter("All files", &["*"])
+/// The attach menu's "Upload a file": the system dialog for any file.
+fn attach_dialog() -> rfd::FileDialog {
+    rfd::FileDialog::new().set_title("Upload a file")
 }
 
 fn drawn_icon_button(ui: &mut egui::Ui, icon: NavIcon, label: &str) -> egui::Response {

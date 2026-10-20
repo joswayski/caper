@@ -81,18 +81,19 @@ class AttachDrawerUiTest {
                 }
             }
             compose.waitUntil(15_000) { compose.onAllNodesWithTag("attach-drawer-tile", useUnmergedTree = true).fetchSemanticsNodes().size >= 3 }
-            compose.onNodeWithText("Up to 10 files").assertExists()
+            // Below the limit the drawer shows no count.
+            compose.onNodeWithText("of 10 attached", substring = true).assertDoesNotExist()
             save("attach-drawer-open-test-fixture")
             val tiles = compose.onAllNodesWithTag("attach-drawer-tile", useUnmergedTree = true)
             tiles[1].performClick()
             tiles[0].performClick()
-            compose.onNodeWithText("2 of 10 attached").assertExists()
             // Draft order follows taps, not the grid.
             tiles[1].assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Attached 1"))
             tiles[0].assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Attached 2"))
             save("attach-drawer-selected-test-fixture")
             tiles[1].performClick()
-            compose.onNodeWithText("1 of 10 attached").assertExists()
+            tiles[0].assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Attached 1"))
+            compose.onNodeWithText("of 10 attached", substring = true).assertDoesNotExist()
 
             compose.runOnIdle {
                 files.value = (0 until 10).map { DraftAttachmentUi("full-$it", "file.txt", "file") }

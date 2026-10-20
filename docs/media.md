@@ -2362,20 +2362,23 @@ npx wrangler deploy --env staging
 
 | Platform | Send files | Show files |
 | --- | --- | --- |
-| Web (desktop and mobile layouts) | Yes: attach drawer (Photos and videos, Files, and Camera on touch devices), clipboard files/images, and drag and drop with an overlay | Images, video, audio, file cards; images and videos open in the in-app viewer |
-| Apple (iOS and macOS) | Yes: attach drawer with the photo library and camera on iPhone/iPad (Photos picker on macOS), file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
+| Web (desktop and mobile layouts) | Yes: Upload a file on desktop; attach drawer (Photos and videos, Files, and Camera on touch devices), clipboard files/images, and drag and drop with an overlay | Images, video, audio, file cards; images and videos open in the in-app viewer |
+| Apple (iOS and macOS) | Yes: attach drawer with the photo library and camera on iPhone/iPad (Upload a file on macOS), file importer, clipboard files/images, drag and drop with an overlay on macOS and iPad/iPhone | Images, video (AVKit), audio, file cards, "File removed"; images and videos open in the in-app viewer |
 | Android | Yes: attach drawer with the photo library and camera (system photo picker without library access), document picker, clipboard content URIs, drag and drop with an overlay from other apps, up to 10 files, draft chips with final upload size and progress. Applies the server `compression` settings on device per the shared rules and encoder table above (Media3 H.264/AAC transcode with `videoMaxHeight` bounding the short edge and original fallback; previews and video posters). | Images (preview; tap opens the in-app viewer), in-app video/audio playback (Media3), file cards, "File removed". Refreshes signed URLs before expiry and once after a 403/404. |
-| Rust desktop (Windows, Linux) | Yes: attach panel opening the file dialog (Win32; XDG desktop portal on Linux), clipboard files/images, and drag and drop with an overlay, up to 10. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
+| Rust desktop (Windows, Linux) | Yes: Upload a file opening the file dialog (Win32; XDG desktop portal on Linux), clipboard files/images, and drag and drop with an overlay, up to 10. Stills per the shared rules and encoder table above (JPEG only if WebP fails; HEIC uploads unchanged). Videos through the bundled FFmpeg by the shared rules (below), else unchanged with metadata stripped; posters for previews | Inline images and video posters (decoded off the UI thread, cached by attachment id). Images and videos open in the in-app viewer with an in-app player; audio and files open in the system browser or player. "File removed" cards. URLs refreshed before expiry and once after a 403/404 load |
 
 #### Attach drawer (October 19, 2026)
 
 Attach (the composer's `+`, in channel, thread and profile-DM composers) opens
-the attach drawer on every client. It is the base for later tabs (emoji, GIFs,
-stickers); none are shown until they work.
+the attach drawer on phones and an attach menu on desktop. The drawer is the
+base for later tabs (emoji, GIFs, stickers); none are shown until they work.
+Phones keep a photo library apart from their files, so they offer both; desktop
+web, the Mac and Rust desktop offer one unfiltered "Upload a file", as Discord
+does.
 
-- **Capacity line**: ten pips and "Up to 10 files" / "N of 10 attached"; full,
-  it turns terracotta and adds "Remove a file to add another." The drawer stays
-  openable at the limit. Choosing anything then shakes the line sideways (4 px,
+- **Limit line**: nothing below the limit. At 10 files it shows ten terracotta
+  pips, "10 of 10 attached" and "Remove a file to add another." The drawer and
+  menu stay openable at the limit. Choosing anything then shakes the line sideways (4 px,
   `--motion-slow`, none under reduced motion) and, on phones, buzzes, instead
   of opening a picker that couldn't add anything.
 - **iPhone/iPad** (`AttachDrawer.swift`): a sheet (medium/large detents) with a
@@ -2391,7 +2394,8 @@ stickers); none are shown until they work.
   (`presentLimitedLibraryPicker`; the automatic limited-access alert is off).
   Denied or restricted access offers Settings, the system Photos picker (no
   permission) and the camera. The camera (`UIImagePickerController`, photo or
-  video) needs `NSCameraUsageDescription`. macOS keeps its Photos and Files menu.
+  video) needs `NSCameraUsageDescription`. The Mac menu has one "Upload a file"
+  (the file importer, any type).
 - **Android** (`AttachDrawer.kt`): the same drawer as a bottom sheet over
   MediaStore. It asks the first time it opens: `READ_MEDIA_IMAGES` and
   `READ_MEDIA_VIDEO`, plus `READ_MEDIA_VISUAL_USER_SELECTED` on Android 14+
@@ -2401,13 +2405,12 @@ stickers); none are shown until they work.
   the camera. The camera tile uses `TakePicture`/`CaptureVideo` into the app's
   FileProvider cache (no `CAMERA` permission). Selection, order, Send and the
   limit work as on iPhone. Drafts map back to tiles by `pickedUri`.
-- **Web**: no browser can list a photo library. The `+` opens a panel (desktop)
-  or a bottom sheet (touch layouts) with the capacity line and Photos and
-  videos, Files, and Camera (`capture`, touch devices only). Each choice opens
-  the browser's picker.
-- **Rust desktop** (`attach_drawer.rs`): a panel above `+` with the capacity
-  line and Photos and videos (media filter first) or Files (no filter). Profile
-  messages add Paste from clipboard.
+- **Web**: no browser can list a photo library. On desktop layouts the `+`
+  opens a menu with "Upload a file" (no filter). Touch layouts open a bottom
+  sheet with Camera (`capture`, touch devices only), Photos and videos, and
+  Files. Each choice opens the browser's picker.
+- **Rust desktop** (`attach_drawer.rs`): a menu above `+` with "Upload a file"
+  (the system dialog, no filter). Profile messages add Paste from clipboard.
 
 Google Play: photo/video permissions need the Photo and Video Permissions
 declaration in Play Console (App content); the text is in
@@ -2416,7 +2419,7 @@ three `READ_MEDIA_*` lines from the manifest leaves the drawer working through
 the system photo picker. Validation: web was checked in Chromium at 1280 px and
 390 px touch (open, full, nudge). iOS has unit tests (`AttachDrawerTests`) and a
 simulator UI test (`testIPhoneAttachDrawerAddsLibraryItemsInTapOrder`). Android
-has JVM tests (`AttachDrawerTest`). Rust has unit tests. Physical-device
+has JVM tests (`AttachDrawerTest`) and an emulator test (`AttachDrawerUiTest`). Rust has unit tests. Physical-device
 permission flows, iCloud-only originals, camera capture and Play review are not
 yet verified.
 

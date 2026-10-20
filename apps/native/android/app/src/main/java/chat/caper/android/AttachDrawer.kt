@@ -223,21 +223,21 @@ private fun formatDuration(ms: Long): String {
     ) {
         Box(Modifier.fillMaxWidth().height(height)) {
             Column(Modifier.fillMaxSize()) {
-                // Header: title and the capacity line, which shakes when a full drawer refuses a file.
+                // Header: the title, and only once full the limit line, which shakes when it refuses a file.
                 Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Attach", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.weight(1f))
-                    Row(
-                        Modifier.graphicsLayer { translationX = nudge.value.dp.toPx() }
-                            .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
-                        horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.clearAndSetSemantics {}) {
-                            repeat(AttachmentPolicy.MAX_ATTACHMENTS) { index ->
-                                Box(Modifier.size(6.dp).background(if (full) Terracotta else if (index < used) Text else Border, CircleShape))
+                    AttachCapacity.label(used)?.let { label ->
+                        Row(
+                            Modifier.graphicsLayer { translationX = nudge.value.dp.toPx() }
+                                .semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+                            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.clearAndSetSemantics {}) {
+                                repeat(AttachmentPolicy.MAX_ATTACHMENTS) { Box(Modifier.size(6.dp).background(Terracotta, CircleShape)) }
                             }
+                            Text(label, fontSize = 12.sp, color = TerracottaBright)
                         }
-                        Text(AttachCapacity.label(used), fontSize = 12.sp, color = if (full) TerracottaBright else TextMuted)
                     }
                 }
                 AttachCapacity.hint(used)?.let {

@@ -2452,10 +2452,11 @@ button.chat-mention-card-avatar {
 /* The attach drawer: a panel above the button, or a bottom sheet on touch. */
 .chat-attach-drawer {
   z-index: 1001;
-  width: 264px;
-  padding: 10px;
+  min-width: 200px;
+  max-width: 280px;
+  padding: 6px;
   display: grid;
-  gap: 10px;
+  gap: 6px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -2463,6 +2464,7 @@ button.chat-mention-card-avatar {
 }
 .chat-attach-drawer-sheet {
   width: min(480px, 100%);
+  max-width: none;
   padding: 8px 16px max(16px, env(safe-area-inset-bottom));
   gap: 14px;
   border-bottom: 0;
@@ -2476,18 +2478,22 @@ button.chat-mention-card-avatar {
   gap: 4px 12px;
   font-size: 0.82rem;
 }
+.chat-attach-drawer:not(.chat-attach-drawer-sheet) .chat-attach-heading {
+  padding: 6px 8px 2px;
+}
+.chat-attach-drawer:not(.chat-attach-drawer-sheet) .chat-attach-options button {
+  font-size: 0.875rem;
+}
 .chat-attach-meter {
   grid-column: 1 / -1;
-  grid-row: 2;
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--text-muted);
+  color: var(--terracotta-bright);
   font-size: 0.75rem;
 }
 .chat-attach-hint {
   grid-column: 1 / -1;
-  grid-row: 3;
   margin: 0;
   color: var(--text-muted);
   font-size: 0.75rem;
@@ -2500,24 +2506,16 @@ button.chat-mention-card-avatar {
   display: flex;
   gap: 3px;
 }
+/* Shown only for a full draft, so every pip is lit. */
 .chat-attach-pips i {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--border);
-  transition: background-color var(--motion-fast) ease;
-}
-.chat-attach-pips i[data-on] {
-  background: var(--text);
-}
-.chat-attach-drawer[data-full] .chat-attach-meter {
-  color: var(--terracotta-bright);
-}
-.chat-attach-drawer[data-full] .chat-attach-pips i {
   background: var(--terracotta);
 }
 .chat-attach-close {
   grid-column: 3;
+  grid-row: 1;
   width: 32px;
   height: 32px;
   display: grid;

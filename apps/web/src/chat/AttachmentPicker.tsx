@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Camera, FileText, Images, Plus, X, type LucideIcon } from "lucide-react";
+import { Camera, FileText, FileUp, Images, Plus, X, type LucideIcon } from "lucide-react";
 import {
   autoUpdate,
   flip,
@@ -28,22 +28,24 @@ interface AttachChoice {
   capture?: "environment";
 }
 
-/** Shared choice order and native filters; Files deliberately has no filter.
- * The camera choice only appears where the browser can open one (touch devices). */
-const attachmentChoices: AttachChoice[] = [
+/** Phones keep a photo library apart from their files, so touch layouts offer
+ * both (and the camera, where the browser can open one). Elsewhere one
+ * unfiltered "Upload a file" covers everything, as on the desktop clients. */
+const touchChoices: AttachChoice[] = [
   { id: "camera", label: "Camera", Icon: Camera, accept: "image/*,video/*", capture: "environment" },
   { id: "media", label: "Photos and videos", Icon: Images, accept: "image/*,video/*" },
   { id: "files", label: "Files", Icon: FileText },
 ];
+const desktopChoices: AttachChoice[] = [{ id: "files", label: "Upload a file", Icon: FileUp }];
 
 const touchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
 const hasCamera = () => window.matchMedia("(pointer: coarse)").matches;
 
 /**
- * The composer's attach drawer: a bottom sheet on touch layouts and a panel
- * above the button elsewhere. It shows how many of the draft's files are used
- * and stays openable at the limit, where choices nudge the capacity line
- * instead of opening a picker that couldn't add anything.
+ * The composer's attach drawer: a bottom sheet on touch layouts and a menu
+ * above the button elsewhere. It stays openable at the limit, where it says
+ * so and choices nudge that line instead of opening a picker that couldn't
+ * add anything.
  */
 export default function AttachmentPicker({
   disabled,
@@ -64,7 +66,7 @@ export default function AttachmentPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [drawer, setDrawer] = useState(false);
-  const [choices, setChoices] = useState(attachmentChoices);
+  const [choices, setChoices] = useState(desktopChoices);
   const [picking, setPicking] = useState(false);
   const [nudges, setNudges] = useState(0);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
@@ -79,8 +81,9 @@ export default function AttachmentPicker({
     open: open && !disabled,
     onOpenChange: (next) => {
       if (next) {
-        setDrawer(touchLayout());
-        setChoices(attachmentChoices.filter((choice) => choice.id !== "camera" || hasCamera()));
+        const touch = touchLayout();
+        setDrawer(touch);
+        setChoices(touch ? touchChoices.filter((choice) => choice.id !== "camera" || hasCamera()) : desktopChoices);
         setNudges(0);
       }
       setOpen(next);
@@ -131,29 +134,34 @@ export default function AttachmentPicker({
         {...getFloatingProps()}
       >
         {drawer && <div className="chat-drawer-handle" aria-hidden="true" />}
-        <div className="chat-attach-heading">
-          <strong>Attach</strong>
-          <div
-            key={nudges}
-            className="chat-attach-meter"
-            data-nudge={nudges > 0 || undefined}
-            role="status"
-            aria-live="polite"
-          >
-            <span className="chat-attach-pips" aria-hidden="true">
-              {Array.from({ length: MAX_ATTACHMENTS }, (_, index) => (
-                <i key={index} data-on={index < capacity.count || undefined} />
-              ))}
-            </span>
-            <span>{capacity.label}</span>
+        {(drawer || capacity.full) && (
+          <div className="chat-attach-heading">
+            {drawer && <strong>Attach</strong>}
+            {/* Only a full draft says how many files it holds. */}
+            {capacity.full && (
+              <div
+                key={nudges}
+                className="chat-attach-meter"
+                data-nudge={nudges > 0 || undefined}
+                role="status"
+                aria-live="polite"
+              >
+                <span className="chat-attach-pips" aria-hidden="true">
+                  {Array.from({ length: MAX_ATTACHMENTS }, (_, index) => (
+                    <i key={index} />
+                  ))}
+                </span>
+                <span>{capacity.label}</span>
+              </div>
+            )}
+            {capacity.hint && <p className="chat-attach-hint">{capacity.hint}</p>}
+            {drawer && (
+              <button type="button" className="chat-attach-close" aria-label="Close" onClick={() => setOpen(false)}>
+                <X size={16} aria-hidden="true" />
+              </button>
+            )}
           </div>
-          {capacity.hint && <p className="chat-attach-hint">{capacity.hint}</p>}
-          {drawer && (
-            <button type="button" className="chat-attach-close" aria-label="Close" onClick={() => setOpen(false)}>
-              <X size={16} aria-hidden="true" />
-            </button>
-          )}
-        </div>
+        )}
         <div className="chat-attach-options">
           {choices.map((choice, index) => (
             <button
@@ -189,7 +197,7 @@ export default function AttachmentPicker({
       >
         <Plus size={18} aria-hidden="true" />
       </button>
-      {attachmentChoices.map((choice) => (
+      {touchChoices.map((choice) => (
         <input
           key={choice.id}
           ref={(element) => {
