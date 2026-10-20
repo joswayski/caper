@@ -49,6 +49,16 @@
 .picture-settings[aria-busy="true"] .picture-settings-preview {
   opacity: 0.55;
 }
+/* The mascot artwork already supplies its own backdrop and outline. */
+.picture-settings-preview[data-mascot] {
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.picture-settings-edit[data-mascot] {
+  border-radius: 50%;
+}
 .picture-settings-change-me {
   display: block;
   width: 100%;

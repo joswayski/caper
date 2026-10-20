@@ -8998,7 +8998,7 @@ private struct ProfileSheet: View {
                           }, regenerate: {
                               guard model.account?.id == account.id, model.accountEpoch == epoch else { throw CancellationError() }
                               try await model.regenerateAvatar()
-                          }) {
+                          }, mascot: account.avatarAsset == nil && CaperAvatar.index(for: account.avatarId) != nil) {
                 if account.avatarAsset == nil {
                     ChangeMeMascot(name: name, avatarID: account.avatarId, size: side)
                 } else {

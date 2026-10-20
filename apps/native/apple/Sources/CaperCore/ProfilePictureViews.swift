@@ -142,6 +142,7 @@ struct PictureEditor<Preview: View>: View {
     let select: ((String, String?) async throws -> Void)?
     let currentAsset: String?
     let regenerate: (() async throws -> Void)?
+    let mascot: Bool
     @State private var showHistory = false
     @State private var historyExpected: String?
     private let preview: Preview
@@ -168,7 +169,7 @@ struct PictureEditor<Preview: View>: View {
          remove: @escaping () async throws -> Void, currentAsset: String? = nil,
          history: ((String?) async throws -> AvatarHistory)? = nil,
          select: ((String, String?) async throws -> Void)? = nil,
-         regenerate: (() async throws -> Void)? = nil, @ViewBuilder preview: () -> Preview) {
+         regenerate: (() async throws -> Void)? = nil, mascot: Bool = false, @ViewBuilder preview: () -> Preview) {
         self.purpose = purpose
         self.hasPicture = hasPicture
         self.currentURL = currentURL
@@ -178,6 +179,7 @@ struct PictureEditor<Preview: View>: View {
         self.select = select
         self.currentAsset = currentAsset
         self.regenerate = regenerate
+        self.mascot = mascot
         self.preview = preview()
     }
 
@@ -330,9 +332,15 @@ struct PictureEditor<Preview: View>: View {
         let shape = Avatar.pictureShape(Self.side)
         return preview
             .frame(width: Self.side, height: Self.side)
-            .background(CaperTheme.raised)
-            .clipShape(shape)
-            .overlay(shape.stroke(dropping ? CaperTheme.terracotta : CaperTheme.border, lineWidth: dropping ? 2 : 1))
+            .background(mascot ? .clear : CaperTheme.raised)
+            .clipShape(RoundedRectangle(cornerRadius: mascot ? 0 : ProfilePicturePolicy.cornerRadius(side: Self.side), style: .continuous))
+            .overlay {
+                if mascot {
+                    if dropping { Circle().stroke(CaperTheme.terracotta, lineWidth: 2) }
+                } else {
+                    shape.stroke(dropping ? CaperTheme.terracotta : CaperTheme.border, lineWidth: dropping ? 2 : 1)
+                }
+            }
             .opacity(phase == nil ? 1 : 0.55)
             .overlay(alignment: .bottomTrailing) {
                 CaperIcon(name: "pencil", size: 15)

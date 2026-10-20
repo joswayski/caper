@@ -24026,6 +24026,12 @@ impl CaperApp {
         };
         let rect = egui::Rect::from_min_size(outer.min, egui::vec2(side, side));
         let space_icon = matches!(target, pictures::Target::SpaceIcon(_));
+        let mascot = !space_icon
+            && !custom
+            && self
+                .account
+                .as_ref()
+                .is_some_and(|account| caper_avatar_index(account.avatar_id).is_some());
         let corner = if space_icon {
             16.0
         } else {
@@ -24053,13 +24059,23 @@ impl CaperApp {
         } else {
             None
         };
-        ui.painter().rect_filled(rect, corner, RAISED);
+        if !mascot {
+            ui.painter().rect_filled(rect, corner, RAISED);
+        }
         face(ui, rect);
         if busy.is_some() {
-            ui.painter()
-                .rect_filled(rect, corner, SURFACE.gamma_multiply(0.45));
+            if mascot {
+                ui.painter()
+                    .circle_filled(rect.center(), side / 2.0, SURFACE.gamma_multiply(0.45));
+            } else {
+                ui.painter()
+                    .rect_filled(rect, corner, SURFACE.gamma_multiply(0.45));
+            }
         }
-        if !space_icon || dropping || response.has_focus() {
+        if mascot && (dropping || response.has_focus()) {
+            ui.painter()
+                .circle_stroke(rect.center(), side / 2.0, Stroke::new(2.0, TERRACOTTA));
+        } else if !mascot && (!space_icon || dropping || response.has_focus()) {
             ui.painter().rect_stroke(
                 rect,
                 corner,
@@ -44382,6 +44398,15 @@ mod tests {
         app.attachment_housekeeping(&context);
         render(&mut app, &context, vec![]);
         let output = render(&mut app, &context, vec![]);
+        let has_picture_frame = |output: &egui::FullOutput| {
+            output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.rect.size() == egui::vec2(super::PICTURE_FRAME, super::PICTURE_FRAME)
+                    && (rect.fill == super::RAISED || rect.stroke.color == super::BORDER)))
+        };
+        assert!(
+            has_picture_frame(&output),
+            "uploaded pictures keep their frame"
+        );
         let frame =
             labelled_center(&output, "Change profile picture").expect("the picture's frame");
         assert!(
@@ -44446,6 +44471,10 @@ mod tests {
         );
         let output = render(&mut app, &context, vec![]);
         assert!(!shows(&output, "Remove picture") && !shows(&output, "Removing…"));
+        assert!(
+            !has_picture_frame(&output),
+            "the mascot supplies its own backdrop and border"
+        );
         egui::Popup::close_all(&context);
         click(&mut app, &context, frame);
         let output = render(&mut app, &context, vec![]);

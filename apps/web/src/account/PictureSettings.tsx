@@ -41,6 +41,7 @@ function PictureEditor({
   preview,
   noun,
   removable,
+  mascot = false,
   currentUrl,
   removeFailed,
   onUpload,
@@ -53,6 +54,7 @@ function PictureEditor({
   /** "picture" or "icon", for the menu and labels. */
   noun: string;
   removable: boolean;
+  mascot?: boolean;
   currentUrl?: string | null;
   removeFailed: (error: unknown) => string;
   onUpload: (file: Blob, progress: (fraction: number) => void, edit?: AttachmentEdit) => Promise<void>;
@@ -190,6 +192,7 @@ function PictureEditor({
         <button
           type="button"
           className="picture-settings-edit"
+          data-mascot={mascot || undefined}
           data-dropping={dropping || undefined}
           onDragOver={(event) => {
             if (!event.dataTransfer.types.includes("Files")) return;
@@ -219,7 +222,9 @@ function PictureEditor({
             else input.current?.click();
           }}
         >
-          <span className="picture-settings-preview">{preview}</span>
+          <span className="picture-settings-preview" data-mascot={mascot || undefined}>
+            {preview}
+          </span>
           <span className="picture-settings-badge" aria-hidden="true">
             {dropping ? <ImageUp size={15} /> : <Pencil size={15} strokeWidth={2.4} />}
           </span>
@@ -433,6 +438,7 @@ export function ProfilePictureSettings({ account: initial }: { account: Account 
           )
         }
         removable={!!account.avatarAsset}
+        mascot={!account.avatarAsset && !!avatarUrl(account.avatarId)}
         currentUrl={account.avatarUrl}
         removeFailed={(error) => removalError(error, "avatar", "Your picture couldn’t be removed. Try again.")}
         onUpload={async (file, progress, edit) => {
