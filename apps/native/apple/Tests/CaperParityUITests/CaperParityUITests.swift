@@ -2757,16 +2757,35 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(edit.label, "Change profile picture")
         XCTAssertEqual(regenerate.frame.midY, edit.frame.midY, accuracy: 1)
         XCTAssertLessThan(regenerate.frame.maxX, edit.frame.minX)
+        #if os(macOS)
+        // Desktop badges must not grow to iPhone touch-target dimensions.
+        for control in [regenerate, edit] {
+            XCTAssertLessThanOrEqual(control.frame.width, 34)
+            XCTAssertLessThanOrEqual(control.frame.height, 34)
+        }
+        username.hover()
+        #else
         XCTAssertGreaterThanOrEqual(regenerate.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(edit.frame.height, 44)
+        #endif
+        XCTAssertFalse(app.staticTexts["Regenerating…"].exists)
         capture("profile-picture-idle", app: app)
 
         regenerate.tap()
-        assertStaticText("Regenerating…", in: app)
+        let pending = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == false"), object: regenerate)
+        XCTAssertEqual(XCTWaiter.wait(for: [pending], timeout: 5), .completed)
         XCTAssertFalse(regenerate.isEnabled)
         XCTAssertFalse(edit.isEnabled)
+        XCTAssertEqual(regenerate.value as? String, "Regenerating")
+        XCTAssertFalse(app.staticTexts["Regenerating…"].exists, "Progress belongs inside the button, not below the avatar")
         XCTAssertEqual(username.frame, originalUsernameFrame, "Progress must not move the form or resize its sheet")
         XCTAssertEqual(regenerate.frame, originalRegenerateFrame)
         XCTAssertEqual(edit.frame, originalEditFrame)
+        #if os(macOS)
+        username.hover()
+        regenerate.hover()
+        assertStaticText("Generate a new random avatar", in: app)
+        #endif
         capture("profile-picture-regenerating", app: app)
 
         try await Self.fixtureControl(["holdAvatarRegeneration": false])
@@ -2780,14 +2799,22 @@ final class CaperParityUITests: XCTestCase {
 
         #if os(macOS)
         regenerate.hover()
+        assertStaticText("Generate a new random avatar", in: app)
         capture("profile-picture-regenerate-hover", app: app)
         username.hover()
+        XCTAssertFalse(app.descendants(matching: .any)["picture-action-tooltip"].exists)
         edit.hover()
+        assertStaticText("Change profile picture", in: app)
         capture("profile-picture-edit-hover", app: app)
         #endif
         edit.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["Choose image…"].firstMatch.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any)["Photo library…"].firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["From Photos…"].firstMatch.waitForExistence(timeout: 5))
+        #if os(macOS)
+        XCTAssertTrue(app.descendants(matching: .any)["From your Mac…"].firstMatch.exists)
+        #else
+        XCTAssertTrue(app.descendants(matching: .any)["From Files…"].firstMatch.exists)
+        #endif
+        XCTAssertFalse(app.descendants(matching: .any)["Choose image…"].firstMatch.exists)
         XCTAssertFalse(app.descendants(matching: .any)["Files"].firstMatch.exists)
         capture("profile-picture-menu", app: app)
     }
