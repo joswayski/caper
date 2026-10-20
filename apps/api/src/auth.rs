@@ -11,6 +11,8 @@ use uuid::Uuid;
 
 const CODE_LIFETIME: Duration = Duration::minutes(10);
 const SESSION_LIFETIME: Duration = Duration::days(30);
+/// Use renews a session at most this often, so requests don't each write.
+const SESSION_RENEWAL: Duration = Duration::days(1);
 // Excludes visually ambiguous characters: 0/O, 1/I/L, and U/V.
 const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTWXYZ23456789";
 const EXTERNAL_ID_ALPHABET: &[u8] =
@@ -112,6 +114,13 @@ impl Default for AuthLimits {
 pub(crate) struct Principal {
     pub user: accounts::User,
     pub token_hash: Vec<u8>,
+}
+
+#[derive(FromRow)]
+struct AuthenticatedSession {
+    #[sqlx(flatten)]
+    user: accounts::User,
+    renew: bool,
 }
 
 #[derive(Debug)]
@@ -506,19 +515,38 @@ impl AuthVerifier {
         // the gateway must not gain login-issuance capabilities just to verify.
         let pool = pool.ok_or_else(unavailable)?;
         let token_hash = Sha256::digest(token.as_bytes()).to_vec();
-        let user = sqlx::query_as(
-            "SELECT u.id, u.external_id, u.avatar_id, u.avatar_asset, u.email, u.username, u.display_name
+        let session: AuthenticatedSession = sqlx::query_as(
+            "SELECT u.id, u.external_id, u.avatar_id, u.avatar_asset, u.email, u.username, u.display_name,
+                    s.expires_at < now() + make_interval(secs => $2) AS renew
              FROM public.account_sessions s
              JOIN public.users u ON u.id = s.user_id
              WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
                AND u.deleted_at IS NULL",
         )
         .bind(&token_hash)
+        .bind((SESSION_LIFETIME - SESSION_RENEWAL).num_seconds() as f64)
         .fetch_optional(pool)
         .await
         .map_err(database_unavailable)?
         .ok_or_else(|| ApiError::new(axum::http::StatusCode::UNAUTHORIZED, "unauthorized"))?;
-        Ok(Principal { user, token_hash })
+        if session.renew {
+            // Sliding expiry: a session lapses after 30 days unused, not 30 days
+            // after sign-in. Its push devices stop with it, so a fixed lifetime
+            // silently ended phone notifications for people still using Caper.
+            // Best effort: the request is already authorized.
+            let _ = sqlx::query(
+                "UPDATE public.account_sessions SET expires_at = now() + make_interval(secs => $2)
+                 WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()",
+            )
+            .bind(&token_hash)
+            .bind(SESSION_LIFETIME.num_seconds() as f64)
+            .execute(pool)
+            .await;
+        }
+        Ok(Principal {
+            user: session.user,
+            token_hash,
+        })
     }
 
     /// Revokes the session and, with it, the push devices it registered.
@@ -962,6 +990,39 @@ mod tests {
             .unwrap();
         assert_eq!(principal.user.id, session.user.id);
         assert_eq!(principal.user.avatar_id, session.user.avatar_id);
+
+        // Use slides the expiry: a session in daily use, and the phone push
+        // registered with it, outlives 30 days after sign-in.
+        let remaining = || {
+            sqlx::query_scalar::<_, f64>(
+                "SELECT extract(epoch FROM expires_at - now())::float8
+                 FROM public.account_sessions WHERE token_hash = $1",
+            )
+            .bind(&principal.token_hash)
+            .fetch_one(&pool)
+        };
+        let fresh = remaining().await.unwrap();
+        verifier
+            .authenticate(&session.token, Some(&pool))
+            .await
+            .unwrap();
+        assert!(
+            (remaining().await.unwrap() - fresh).abs() < 5.0,
+            "a session renewed within the last day is not rewritten"
+        );
+        sqlx::query(
+            "UPDATE public.account_sessions SET expires_at = now() + interval '1 hour' WHERE token_hash = $1",
+        )
+        .bind(&principal.token_hash)
+        .execute(&pool)
+        .await
+        .unwrap();
+        verifier
+            .authenticate(&session.token, Some(&pool))
+            .await
+            .unwrap();
+        assert!(remaining().await.unwrap() > Duration::days(29).num_seconds() as f64);
+
         verifier
             .logout(Some(&pool), &principal.token_hash)
             .await

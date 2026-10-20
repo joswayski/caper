@@ -6490,7 +6490,10 @@ Format, length, normalization and onboarding validation live in the application,
 not SQL `CHECK` expressions.
 
 `202609190001_email_auth.sql` adds single-use email challenges and revocable
-30-day sessions. Codes expire after 10 minutes, allow five attempts, and are stored
+sessions that lapse after 30 days unused: an authenticated API request renews the
+expiry to 30 days, at most once a day. The phone push devices a session registered
+stop with it, so a fixed lifetime would end phone notifications for active people.
+Codes expire after 10 minutes, allow five attempts, and are stored
 only as HMAC-SHA-256 values. Session tokens contain 256 random bits and only their
 SHA-256 hashes are stored. Request limits are enforced in PostgreSQL across API
 replicas: three sends per address per 15 minutes, ten per address per day, twenty
@@ -6521,7 +6524,7 @@ not URLs, cookies, or persistent storage. Possession authorizes that call sessio
 | GET | `/health`, `/api/health` | Unauthenticated health checks |
 | GET | `/api/updates/native` | Unauthenticated cached, signed desktop update metadata |
 | POST | `/api/auth/email/request` | Request a 6-digit, 10-minute email code; returns a challenge ID |
-| POST | `/api/auth/email/verify` | Consume a challenge and create a 30-day session |
+| POST | `/api/auth/email/verify` | Consume a challenge and create a session (30 days, renewed by use) |
 | POST | `/api/auth/logout` | Revoke the current session |
 | GET | `/api/account/me` | Read the authenticated public account |
 | POST | `/api/account/profile` | Set a unique username and display name |
