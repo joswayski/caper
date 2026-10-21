@@ -197,13 +197,22 @@ just that player in the card.
   ≤ 512 KiB). The client reserves the exact stored size, PUTs the preview
   and then the file straight to storage with exactly the presigned headers
   and no Caper credentials, confirms (retrying while storage has not seen it
-  yet), and sends. Chips show the name, saving ("1.6 MB → 143 KB"), progress,
-  errors such as storage full, and remove, with a local thumbnail the sent
-  message keeps. Each tile has one action bar: Spoiler (eye / eye-off), a
-  pencil on editable files, and Remove, inset in the top-right corner, or
-  across the tile's top edge with 44 px buttons in narrow layouts. The pencil
+  yet), and sends. Tiles keep the name, saving ("1.6 MB → 143 KB"), progress
+  and errors such as storage full in their hover text and accessible label,
+  with a local thumbnail the sent message keeps. Each tile has two round
+  corner buttons: Remove (X) top-right and Edit (pencil) diagonally opposite
+  bottom-left, 28 px targets (40 px in narrow layouts). While a file packs or
+  uploads, Remove's edge is a terracotta progress ring (an indeterminate arc
+  while preparing or confirming, still under reduced motion); a failed upload
+  keeps its error border and shows a centred round Retry. Spoilered files show
+  only a crossed-out eye over the obscured thumbnail. Clicking the picture or
+  the pencil of a file the editor can open shows the in-app preview, whose
+  tool row is Spoiler, Crop, Draw, Text and Remove; other files' pencils open
+  a menu with the spoiler toggle and Remove attachment, and right-clicking a
+  tile offers Edit (when previewable), the spoiler toggle and Remove
+  attachment. The preview's tools
   on JPEG, PNG, WebP, BMP and TIFF stills (not
-  animated) and, with FFmpeg, videos opens the editor (`attachment_editor.rs`):
+  animated) and, with FFmpeg, videos open the editor (`attachment_editor.rs`):
   crop, rotate left, draw and text with six colours, the egui colour picker
   and a size slider, undo/redo (Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y). Saving cancels
   the upload in flight and prepares the original again with the edit

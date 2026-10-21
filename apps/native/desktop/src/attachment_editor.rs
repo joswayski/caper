@@ -29,7 +29,7 @@ use crate::attachment_edit::{
 use crate::compress::Compression;
 use crate::uploads;
 use crate::viewer::{self, Zoom};
-use crate::{ACTION, BLACKOUT, BORDER, MUTED, NavIcon, RAISED, SURFACE, TERRACOTTA, TEXT};
+use crate::{ACTION, BLACKOUT, BORDER, ERROR, MUTED, NavIcon, RAISED, SURFACE, TERRACOTTA, TEXT};
 
 const TOP_BAR: f32 = 56.0;
 const TOOLS: f32 = 56.0;
@@ -61,9 +61,14 @@ const TOOL_BUTTONS: [(Tool, NavIcon, &str); 3] = [
     (Tool::Text, NavIcon::Type, "Text"),
 ];
 const TOOL_WIDTH: f32 = 96.0;
-/// The preview's tools: the editor's buttons, 4 points apart in a bordered
-/// group with 4 points of padding.
-const PREVIEW_TOOLS: Vec2 = egui::vec2(TOOL_WIDTH * 3.0 + 8.0 + 10.0, 50.0);
+/// The preview's tools sit 4 points apart in a bordered group with 5 points
+/// of padding; a divider with 4 points either side separates Spoiler and
+/// Remove from the editor's tools.
+const PREVIEW_TOOL_GAP: f32 = 4.0;
+const PREVIEW_GROUP_GAP: f32 = 9.0;
+const PREVIEW_TOOLS_HEIGHT: f32 = 50.0;
+/// Narrower preview tools show only their icons.
+const MIN_PREVIEW_TOOL: f32 = 36.0;
 /// The preview's button for what will be sent, and why it waits.
 const OPEN_SENT: &str = "Open in default app";
 const EDIT_PENDING: &str = "Available when your edit is ready";
@@ -1437,6 +1442,74 @@ pub enum PreviewOutcome {
     Close,
     /// Close it and edit the file, starting on this tool.
     Edit(Tool),
+    /// Mark the staged file as a spoiler, or not; the preview stays open.
+    Spoiler,
+    /// Remove the staged file and close.
+    Remove,
+}
+
+/// One of the preview's tool buttons.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PreviewTool {
+    Spoiler,
+    Edit(Tool),
+    Remove,
+}
+
+/// Where the preview's tool row goes, centred on `center_x` with its bottom
+/// at `bottom`: Spoiler, then Crop, Draw and Text, then Remove when
+/// `staged` (a staged file that can still change), or only the editor's
+/// tools. Buttons narrow to fit `available` width. Returns the bordered
+/// group, each button, and where the dividers between groups go.
+pub fn preview_tool_layout(
+    center_x: f32,
+    bottom: f32,
+    available: f32,
+    staged: bool,
+) -> (Rect, Vec<(PreviewTool, Rect)>, Vec<f32>) {
+    let mut tools: Vec<PreviewTool> = Vec::new();
+    if staged {
+        tools.push(PreviewTool::Spoiler);
+    }
+    tools.extend(
+        TOOL_BUTTONS
+            .iter()
+            .map(|(tool, ..)| PreviewTool::Edit(*tool)),
+    );
+    if staged {
+        tools.push(PreviewTool::Remove);
+    }
+    let count = tools.len() as f32;
+    let groups = if staged { 2.0 } else { 0.0 };
+    let gaps = (count - 1.0 - groups) * PREVIEW_TOOL_GAP + groups * PREVIEW_GROUP_GAP;
+    let width = ((available - 10.0 - gaps) / count).clamp(MIN_PREVIEW_TOOL, TOOL_WIDTH);
+    let group = Rect::from_center_size(
+        egui::pos2(center_x, bottom - PREVIEW_TOOLS_HEIGHT / 2.0),
+        egui::vec2(count * width + gaps + 10.0, PREVIEW_TOOLS_HEIGHT),
+    );
+    let mut left = group.left() + 5.0;
+    let mut buttons = Vec::new();
+    let mut dividers = Vec::new();
+    for (index, tool) in tools.iter().enumerate() {
+        if index > 0 {
+            let boundary = matches!(
+                (tools[index - 1], tool),
+                (PreviewTool::Spoiler, _) | (_, PreviewTool::Remove)
+            );
+            if boundary {
+                dividers.push(left + PREVIEW_GROUP_GAP / 2.0 - 0.5);
+                left += PREVIEW_GROUP_GAP;
+            } else {
+                left += PREVIEW_TOOL_GAP;
+            }
+        }
+        buttons.push((
+            *tool,
+            Rect::from_min_size(egui::pos2(left, group.top() + 5.0), egui::vec2(width, 40.0)),
+        ));
+        left += width;
+    }
+    (group, buttons, dividers)
 }
 
 /// The file as it will be sent, which the preview's Open in default app opens.
@@ -1477,7 +1550,8 @@ enum Own {
 /// A staged file the editor can open, previewed in the app as web's draft
 /// viewer does: what will be sent (a video's still), fitted on a dark page
 /// and zoomed as the media viewer zooms, with Crop, Draw and Text under it
-/// opening the editor on that tool. The system viewer other files open in
+/// opening the editor on that tool (and, for a staged file, Spoiler and
+/// Remove either side of them). The system viewer other files open in
 /// cannot hold those; Open in default app hands it what will be sent.
 pub struct Preview {
     pub target: Target,
@@ -1599,7 +1673,15 @@ impl Preview {
 
     /// Draws the preview over everything; returns what the person chose.
     /// `to_send` is the draft's file as it stands this frame.
-    pub fn show(&mut self, context: &egui::Context, to_send: ToSend) -> PreviewOutcome {
+    /// `spoiler` is whether a staged file that can still change is marked
+    /// as one; it adds Spoiler and Remove to the tools. `None` shows only
+    /// the editor's tools.
+    pub fn show(
+        &mut self,
+        context: &egui::Context,
+        to_send: ToSend,
+        spoiler: Option<bool>,
+    ) -> PreviewOutcome {
         if !self.opened {
             self.opened = true;
             // The composer below must not keep typing.
@@ -1623,7 +1705,7 @@ impl Preview {
             .frame(egui::Frame::NONE)
             // Nearly opaque, as the media viewer is.
             .backdrop_color(Color32::from_black_alpha(250))
-            .show(context, |ui| self.contents(ui, screen, to_send));
+            .show(context, |ui| self.contents(ui, screen, to_send, spoiler));
         crate::motion::modal(context, modal.response.layer_id);
         if escape {
             PreviewOutcome::Close
@@ -1632,16 +1714,21 @@ impl Preview {
         }
     }
 
-    fn contents(&mut self, ui: &mut egui::Ui, screen: Rect, to_send: ToSend) -> PreviewOutcome {
+    fn contents(
+        &mut self,
+        ui: &mut egui::Ui,
+        screen: Rect,
+        to_send: ToSend,
+        spoiler: Option<bool>,
+    ) -> PreviewOutcome {
         let (rect, backdrop) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
         let mut outcome = PreviewOutcome::Open;
         let top = Rect::from_min_size(rect.min, egui::vec2(rect.width(), TOP_BAR));
-        let tools = Rect::from_center_size(
-            egui::pos2(
-                rect.center().x,
-                rect.bottom() - 20.0 - PREVIEW_TOOLS.y / 2.0,
-            ),
-            PREVIEW_TOOLS,
+        let (tools, buttons, dividers) = preview_tool_layout(
+            rect.center().x,
+            rect.bottom() - 20.0,
+            rect.width() - 2.0 * PADDING,
+            spoiler.is_some(),
         );
         let stage = Rect::from_min_max(
             egui::pos2(rect.left() + PADDING, top.bottom() + 8.0),
@@ -1741,7 +1828,8 @@ impl Preview {
             );
         }
 
-        // Crop, Draw and Text, each opening the editor on itself.
+        // A staged file's Spoiler toggle, then Crop, Draw and Text, each
+        // opening the editor on itself, then Remove.
         ui.painter().rect(
             tools,
             8.0,
@@ -1749,24 +1837,54 @@ impl Preview {
             Stroke::new(1.0, BORDER),
             egui::StrokeKind::Inside,
         );
-        for (index, (tool, icon, label)) in TOOL_BUTTONS.into_iter().enumerate() {
-            let button = Rect::from_min_size(
-                egui::pos2(
-                    tools.left() + 5.0 + index as f32 * (TOOL_WIDTH + 4.0),
-                    tools.top() + 5.0,
-                ),
-                egui::vec2(TOOL_WIDTH, 40.0),
+        for x in dividers {
+            ui.painter().vline(
+                x + 0.5,
+                tools.shrink2(egui::vec2(0.0, 12.0)).y_range(),
+                Stroke::new(1.0, BORDER),
             );
-            // The editor's rule: only Draw and Text, only for videos.
-            let enabled = tool == Tool::Crop || self.marks;
-            let response = tool_button(ui, button, icon, label, false, enabled);
-            let response = if self.picture.is_some() && !enabled {
-                response.on_hover_text(VIDEO_MARKS_UNAVAILABLE)
-            } else {
-                response
-            };
-            if response.clicked() && enabled {
-                outcome = PreviewOutcome::Edit(tool);
+        }
+        for (tool, button) in buttons {
+            match tool {
+                PreviewTool::Spoiler => {
+                    let marked = spoiler.unwrap_or(false);
+                    let response =
+                        tool_button(ui, button, NavIcon::EyeOff, "Spoiler", marked, true);
+                    if response.clicked() {
+                        outcome = PreviewOutcome::Spoiler;
+                    }
+                }
+                PreviewTool::Remove => {
+                    let response = tool_button_toned(
+                        ui,
+                        button,
+                        NavIcon::Trash,
+                        "Remove",
+                        false,
+                        true,
+                        Some(ERROR),
+                    );
+                    if response.clicked() {
+                        outcome = PreviewOutcome::Remove;
+                    }
+                }
+                PreviewTool::Edit(tool) => {
+                    let (_, icon, label) = TOOL_BUTTONS
+                        .into_iter()
+                        .find(|(candidate, ..)| *candidate == tool)
+                        .expect("every tool has a button");
+                    // The editor's rule: only Draw and Text, only for videos.
+                    let enabled = tool == Tool::Crop || self.marks;
+                    let response = tool_button(ui, button, icon, label, false, enabled);
+                    let response = if self.picture.is_some() && !enabled {
+                        response.on_hover_text(VIDEO_MARKS_UNAVAILABLE)
+                    } else {
+                        response
+                    };
+                    if response.clicked() && enabled {
+                        outcome = PreviewOutcome::Edit(tool);
+                    }
+                }
             }
         }
         // A click on the dark area around them closes, as in the viewer; a
@@ -2139,6 +2257,21 @@ fn tool_button(
     selected: bool,
     enabled: bool,
 ) -> egui::Response {
+    tool_button_toned(ui, rect, icon, label, selected, enabled, None)
+}
+
+/// A tool button; `tone` colours a destructive one, such as Remove. A
+/// button too narrow for its label shows only its icon, still labelled
+/// for assistive technology and on hover.
+fn tool_button_toned(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    icon: NavIcon,
+    label: &str,
+    selected: bool,
+    enabled: bool,
+    tone: Option<Color32>,
+) -> egui::Response {
     let response = ui.interact(
         rect,
         ui.id().with(("attachment-editor-tool", label)),
@@ -2164,6 +2297,8 @@ fn tool_button(
         Color32::from_white_alpha(60)
     } else if selected {
         crate::TERRACOTTA_BRIGHT
+    } else if let Some(tone) = tone {
+        tone
     } else if hot {
         TEXT
     } else {
@@ -2174,7 +2309,12 @@ fn tool_button(
         egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
         color,
     );
-    let width = 18.0 + 6.0 + galley.size().x;
+    let labelled = 18.0 + 6.0 + galley.size().x <= rect.width() - 8.0;
+    let width = if labelled {
+        18.0 + 6.0 + galley.size().x
+    } else {
+        18.0
+    };
     let left = rect.center().x - width / 2.0;
     crate::paint_icon(
         ui.painter(),
@@ -2185,15 +2325,21 @@ fn tool_button(
         icon,
         color,
     );
-    ui.painter().galley(
-        egui::pos2(left + 24.0, rect.center().y - galley.size().y / 2.0),
-        galley,
-        color,
-    );
+    if labelled {
+        ui.painter().galley(
+            egui::pos2(left + 24.0, rect.center().y - galley.size().y / 2.0),
+            galley,
+            color,
+        );
+    }
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label)
     });
-    response
+    if labelled {
+        response
+    } else {
+        response.on_hover_text(label)
+    }
 }
 
 /// Rotate left: a neutral bordered button with its icon.
@@ -2587,5 +2733,44 @@ mod tests {
         let long = "x".repeat(300);
         let capped = with_field(&Edit::default(), Some(&field(None, &long)));
         assert!(matches!(&capped.marks[0], Mark::Text { text, .. } if text.len() == MAX_TEXT));
+    }
+
+    #[test]
+    fn preview_tools_put_spoiler_and_remove_either_side_of_the_editors_tools() {
+        let (group, buttons, dividers) = preview_tool_layout(720.0, 880.0, 1408.0, true);
+        let tools: Vec<_> = buttons.iter().map(|(tool, _)| *tool).collect();
+        assert_eq!(
+            tools,
+            [
+                PreviewTool::Spoiler,
+                PreviewTool::Edit(Tool::Crop),
+                PreviewTool::Edit(Tool::Draw),
+                PreviewTool::Edit(Tool::Text),
+                PreviewTool::Remove,
+            ]
+        );
+        assert!((group.center().x - 720.0).abs() < 0.01);
+        assert_eq!(group.bottom(), 880.0);
+        // A divider between each group, inside the gap that holds it.
+        assert_eq!(dividers.len(), 2);
+        assert!(buttons[0].1.right() < dividers[0] && dividers[0] + 1.0 < buttons[1].1.left());
+        assert!(buttons[3].1.right() < dividers[1] && dividers[1] + 1.0 < buttons[4].1.left());
+        for (_, button) in &buttons {
+            assert_eq!(button.size(), egui::vec2(TOOL_WIDTH, 40.0));
+            assert!(group.shrink(4.0).contains_rect(*button));
+        }
+        // Without a staged file, only the editor's tools and no dividers.
+        let (plain, buttons, dividers) = preview_tool_layout(720.0, 880.0, 1408.0, false);
+        assert_eq!(buttons.len(), 3);
+        assert!(dividers.is_empty());
+        assert!((plain.center().x - 720.0).abs() < 0.01);
+        // A narrow window narrows the buttons to fit.
+        let (narrow, buttons, _) = preview_tool_layout(180.0, 600.0, 328.0, true);
+        assert!(narrow.width() <= 328.0 + 0.01, "{narrow:?}");
+        assert!(
+            buttons
+                .iter()
+                .all(|(_, button)| button.width() < TOOL_WIDTH)
+        );
     }
 }
