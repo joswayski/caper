@@ -88,15 +88,17 @@ internal class WhatsNewClient(context: Context, private val api: CaperApi) {
     } else releases.groupBy { it.publishedAt.take(10) }.forEach { (date, dayReleases) ->
         Text(releaseDayLabel(date), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextMuted)
         dayReleases.forEach { release ->
-            release.highlights.forEach { highlight ->
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(highlight.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                    ReleaseCommitLink(release.version?.let { "Version $it" } ?: release.revision.take(7), release.revision)
-                    Text(highlight.body, fontSize = 14.sp, color = TextMuted)
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                ReleaseCommitLink(release.version?.let { "Version $it" } ?: release.revision.take(7), release.revision)
+                release.highlights.forEach { highlight ->
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(highlight.title, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Text(highlight.body, fontSize = 14.sp, color = TextMuted)
+                    }
                 }
             }
+            HorizontalDivider(color = Border)
         }
-        HorizontalDivider(color = Border)
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Button(close) { Text(if (automatic) "Got it" else "Done") }
