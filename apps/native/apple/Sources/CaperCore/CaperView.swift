@@ -6467,9 +6467,9 @@ private struct MentionCardView: View {
                            progress: file.progress,
                            removable: draft.editable,
                            spoiler: file.spoiler,
-                           // Shown but locked while sending (not `removable`).
+                           // Unavailable while sending (not `removable`).
                            toggleSpoiler: { draft.toggleSpoiler(id: file.id) },
-                           edit: editAction(file),
+                           previewable: canEdit(file),
                            preview: { preview(file) },
                            remove: { draft.remove(id: file.id) })
         }
@@ -6516,29 +6516,27 @@ private struct MentionCardView: View {
     }
     #endif
 
-    /// Files with the pencil open in the app's preview with the editor's
-    /// tools; QuickLook shows the rest.
+    /// Files the editor can open show in the app's preview with Spoiler,
+    /// the editor's tools and Remove (the pencil opens it too); QuickLook
+    /// shows the rest.
     private func preview(_ file: ProfileMessageDraft.File) {
         draft.presentingDialog = true
         let url = file.editPreview ?? file.local.url
         guard canEdit(file) else { previewFile = url; return }
         let id = file.id
+        let draft = draft
+        let spoiler = AttachmentDraftSpoiler(isOn: { draft.files.first(where: { $0.id == id })?.spoiler ?? false },
+                                             toggle: { draft.toggleSpoiler(id: id) })
         withoutPresentationAnimation {
             previewingFile = AttachmentDraftPreviewRequest(name: file.local.name,
                                                            kind: file.editPreview == nil ? AttachmentKind.local(contentType: file.local.contentType) : .image,
-                                                           url: url) { tool in
+                                                           url: url, spoiler: spoiler, remove: { draft.remove(id: id) }) { tool in
                 draft.files.first(where: { $0.id == id }).flatMap { editRequest($0, tool: tool) }
             }
         }
     }
 
     private func canEdit(_ file: ProfileMessageDraft.File) -> Bool { file.editable && draft.editable && pending == nil }
-
-    /// The pencil on files the editor can open; the edit applies at Send.
-    private func editAction(_ file: ProfileMessageDraft.File) -> (() -> Void)? {
-        guard canEdit(file) else { return nil }
-        return { withoutPresentationAnimation { editingFile = editRequest(file, tool: .initial) } }
-    }
 
     private func editRequest(_ file: ProfileMessageDraft.File, tool: AttachmentEditTool) -> AttachmentEditRequest? {
         guard canEdit(file) else { return nil }

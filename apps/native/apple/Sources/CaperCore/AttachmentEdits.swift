@@ -318,12 +318,12 @@ struct AttachmentEditLayout: Equatable {
     static let minimumBrushRing = 6.0
 }
 
-/// The editor's tools; the pencil opens Draw, and a staged file's preview
-/// can open any of them.
+/// The editor's tools; a staged file's preview (which its pencil opens) can
+/// open any of them, and the editor opens on Draw otherwise.
 enum AttachmentEditTool: String, CaseIterable, Sendable {
     case crop, draw, text
 
-    /// The pencil's.
+    /// Where the editor opens when no tool is picked.
     static let initial = AttachmentEditTool.draw
 
     var title: String {

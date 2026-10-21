@@ -20,7 +20,7 @@ struct AttachmentEditRequest: Identifiable {
     let original: URL
     /// What the draft has now.
     let edit: AttachmentEdit
-    /// The tool it opens on: Draw from the pencil, any from the preview.
+    /// The tool it opens on: any from the staged preview, Draw otherwise.
     var tool = AttachmentEditTool.initial
     /// Profile pictures use a square crop and always save on Done.
     var pictureMode = false
@@ -40,7 +40,7 @@ private struct AttachmentEditorKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    /// Nil where nothing presents the editor; chips then offer no pencil.
+    /// Nil where nothing presents the editor; staged files then preview in QuickLook.
     var attachmentEditor: AttachmentEditorAction? {
         get { self[AttachmentEditorKey.self] }
         set { self[AttachmentEditorKey.self] = newValue }

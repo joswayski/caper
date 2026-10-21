@@ -676,8 +676,7 @@ private struct AttachmentSpoilerView: View {
 /// label is overlaid. No transition can briefly expose the original pixels.
 private struct SpoilerThumbnail: View {
     let image: CGImage?
-    /// False where the caller places `SpoilerLabel` itself: a staged tile
-    /// whose action bar spans its top edge centres it below the bar.
+    /// False on a staged tile, which centres a crossed eye instead.
     var labelled = true
     var revealHint = false
     var emphasized = false
@@ -712,7 +711,7 @@ private struct SpoilerThumbnail: View {
     }
 }
 
-/// Compact badge shared by sent covers and staged attachments.
+/// Compact badge on sent spoiler covers.
 private struct SpoilerLabel: View {
     var revealHint = false
     var emphasized = false
@@ -2142,8 +2141,49 @@ struct AttachmentDraftPreviewRequest: Identifiable {
     /// What `url` holds: `.image` or `.video`.
     let kind: AttachmentKind
     let url: URL
+    /// The file's spoiler mark as it is now, and its toggle; nil where it can't be marked.
+    let spoiler: AttachmentDraftSpoiler?
+    /// Removes the file (the preview then closes); nil where it can't be removed.
+    let remove: (() -> Void)?
     /// The editor on a tool, for the file as it is then; nil when it can no longer be edited.
     let edit: (AttachmentEditTool) -> AttachmentEditRequest?
+
+    init(name: String, kind: AttachmentKind, url: URL, spoiler: AttachmentDraftSpoiler? = nil, remove: (() -> Void)? = nil,
+         edit: @escaping (AttachmentEditTool) -> AttachmentEditRequest?) {
+        self.name = name
+        self.kind = kind
+        self.url = url
+        self.spoiler = spoiler
+        self.remove = remove
+        self.edit = edit
+    }
+
+    /// The preview's tool row, left to right.
+    var tools: [AttachmentDraftPreviewTool] { AttachmentDraftPreviewTool.row(spoiler: spoiler != nil, remove: remove != nil) }
+}
+
+/// A staged file's spoiler mark, read live from its composer (the preview's
+/// toggle and the tile both reflect it).
+struct AttachmentDraftSpoiler {
+    let isOn: () -> Bool
+    let toggle: () -> Void
+}
+
+/// A button in the staged preview's tool row.
+enum AttachmentDraftPreviewTool: Hashable {
+    case spoiler
+    /// Closes the preview and opens the editor on that tool.
+    case edit(AttachmentEditTool)
+    case remove
+
+    /// Spoiler where the composer offers it, the editor's tools, then Remove where it can.
+    static func row(spoiler: Bool, remove: Bool) -> [AttachmentDraftPreviewTool] {
+        var row: [AttachmentDraftPreviewTool] = []
+        if spoiler { row.append(.spoiler) }
+        row.append(contentsOf: AttachmentEditTool.allCases.map { AttachmentDraftPreviewTool.edit($0) })
+        if remove { row.append(.remove) }
+        return row
+    }
 }
 
 /// Opens the draft preview from composers below an `AttachmentEditorHost`.
@@ -2165,8 +2205,9 @@ extension EnvironmentValues {
 }
 
 /// A staged file the editor can open, fitted on the viewer's dark backdrop
-/// with Crop, Draw and Text along the bottom: each closes the preview and
-/// opens the editor on that tool. An image zooms as in the viewer
+/// with Spoiler, Crop, Draw, Text and Remove along the bottom. Spoiler
+/// toggles in place; each editing tool closes the preview and opens the
+/// editor on that tool; Remove removes the file and closes the preview. An image zooms as in the viewer
 /// (`MediaZoom`). Close, Escape or (on the Mac) a click outside the file
 /// closes it.
 struct AttachmentDraftPreview: View {
@@ -2283,12 +2324,26 @@ struct AttachmentDraftPreview: View {
     }
 
     private var tools: some View {
-        HStack(spacing: 8) {
-            ForEach(AttachmentEditTool.allCases, id: \.self) { tool in
-                AttachmentEditToolButton(tool: tool) { edit(tool) }
-                    .help("\(tool.title) in the editor")
-                    .accessibilityHint("Opens the editor")
-                    .accessibilityIdentifier("attachment-draft-preview-\(tool.rawValue)")
+        HStack(spacing: 4) {
+            ForEach(request.tools, id: \.self) { item in
+                switch item {
+                case .spoiler:
+                    spoilerToggle
+                case .edit(let tool):
+                    AttachmentEditToolButton(tool: tool) { edit(tool) }
+                        .help("\(tool.title) in the editor")
+                        .accessibilityHint("Opens the editor")
+                        .accessibilityIdentifier("attachment-draft-preview-\(tool.rawValue)")
+                case .remove:
+                    AttachmentDraftPreviewButton(systemImage: "trash", title: "Remove", destructive: true) {
+                        request.remove?()
+                        close()
+                    }
+                    .help("Remove attachment")
+                    .accessibilityLabel("Remove")
+                    .accessibilityHint("Removes the attachment and closes the preview")
+                    .accessibilityIdentifier("attachment-draft-preview-remove")
+                }
             }
         }
         .padding(4)
@@ -2298,6 +2353,47 @@ struct AttachmentDraftPreview: View {
         .padding(.bottom, 16)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Editing tools")
+    }
+
+    /// Marks or unmarks the file in place; the tile behind reflects it.
+    private var spoilerToggle: some View {
+        let on = request.spoiler?.isOn() ?? false
+        return AttachmentDraftPreviewButton(systemImage: "eye.slash", title: "Spoiler", selected: on) { request.spoiler?.toggle() }
+            .help(on ? "Remove spoiler" : "Mark as spoiler")
+            .accessibilityLabel("Spoiler")
+            .accessibilityValue(on ? "On" : "Off")
+            .accessibilityAddTraits(on ? .isSelected : [])
+            .accessibilityIdentifier("attachment-draft-preview-spoiler")
+    }
+}
+
+/// Spoiler and Remove in the staged preview's tool row, beside the editor's
+/// tools (`AttachmentEditToolButton`): selected is terracotta over a subtle
+/// wash; Remove is in the error colour.
+private struct AttachmentDraftPreviewButton: View {
+    let systemImage: String
+    let title: String
+    var selected = false
+    var destructive = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .medium))
+                    .frame(width: 18, height: 18)
+                    .accessibilityHidden(true)
+                Text(title).font(CaperTheme.font(11, weight: .bold))
+            }
+            .foregroundStyle(destructive ? CaperTheme.error : selected ? CaperTheme.terracottaBright : CaperTheme.muted)
+            .frame(minWidth: 64, minHeight: 48)
+            .background(selected ? CaperTheme.terracotta.opacity(0.16) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(selected ? CaperTheme.terracotta : Color.clear, lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .modifier(ControlPointer())
     }
 }
 
@@ -2340,9 +2436,10 @@ struct AttachmentDraftsView: View {
                            retry: draft.error == nil ? nil : { chat.retryAttachmentDraft(id: draft.id) },
                            remove: { chat.removeAttachmentDraft(id: draft.id) })
         } else {
-            AttachmentDraftChip(draft: draft, preview: { preview(draft) }, retry: { chat.retryAttachmentDraft(id: draft.id) },
+            AttachmentDraftChip(draft: draft, previewable: canPreview(draft), preview: { preview(draft) },
+                                retry: { chat.retryAttachmentDraft(id: draft.id) },
                                 toggleSpoiler: { chat.toggleAttachmentSpoiler(id: draft.id) },
-                                edit: editAction(draft), remove: { chat.removeAttachmentDraft(id: draft.id) })
+                                remove: { chat.removeAttachmentDraft(id: draft.id) })
         }
     }
 
@@ -2351,13 +2448,19 @@ struct AttachmentDraftsView: View {
         draft.preparing ? (draft.editPreviewURL ?? draft.localURL) : draft.localURL
     }
 
-    /// Files with the pencil open in the app's preview with the editor's
-    /// tools; QuickLook shows the rest.
+    /// Files the editor can open show in the app's preview with Spoiler,
+    /// the editor's tools and Remove (the pencil opens it too); QuickLook
+    /// shows the rest.
     private func preview(_ draft: AttachmentDraft) {
         guard let draftPreview, canEdit(draft) else { previewID = draft.id; return }
         let url = Self.shownURL(draft)
         let id = draft.id
-        draftPreview(AttachmentDraftPreviewRequest(name: draft.name, kind: url == draft.editPreviewURL ? .image : draft.kind, url: url) { tool in
+        let chat = chat, inThread = inThread
+        let spoiler = AttachmentDraftSpoiler(
+            isOn: { chat.attachmentFiles(inThread: inThread).first(where: { $0.id == id })?.spoiler ?? false },
+            toggle: { chat.toggleAttachmentSpoiler(id: id) })
+        draftPreview(AttachmentDraftPreviewRequest(name: draft.name, kind: url == draft.editPreviewURL ? .image : draft.kind, url: url,
+                                                   spoiler: spoiler, remove: { chat.removeAttachmentDraft(id: id) }) { tool in
             files.first(where: { $0.id == id }).flatMap { editRequest($0, tool: tool) }
         })
     }
@@ -2365,11 +2468,8 @@ struct AttachmentDraftsView: View {
     /// Files the editor can open, below an `AttachmentEditorHost`.
     private func canEdit(_ draft: AttachmentDraft) -> Bool { editor != nil && draft.editable && draft.original != nil }
 
-    /// The pencil.
-    private func editAction(_ draft: AttachmentDraft) -> (() -> Void)? {
-        guard let editor, canEdit(draft) else { return nil }
-        return { if let request = editRequest(draft, tool: .initial) { editor(request) } }
-    }
+    /// Files `preview` opens in the app's preview rather than QuickLook.
+    private func canPreview(_ draft: AttachmentDraft) -> Bool { draftPreview != nil && canEdit(draft) }
 
     private func editRequest(_ draft: AttachmentDraft, tool: AttachmentEditTool) -> AttachmentEditRequest? {
         guard canEdit(draft), let original = draft.original else { return nil }
@@ -2382,19 +2482,20 @@ struct AttachmentDraftsView: View {
 
 private struct AttachmentDraftChip: View {
     let draft: AttachmentDraft
+    let previewable: Bool
     let preview: () -> Void
     let retry: () -> Void
     let toggleSpoiler: () -> Void
-    let edit: (() -> Void)?
     let remove: () -> Void
 
     var body: some View {
         StagedFileChip(id: draft.id, name: draft.name, kind: draft.kind, localURL: draft.localURL, thumbnailURL: draft.editPreviewURL,
                        status: draft.statusLabel, failed: draft.error != nil,
                        busyLabel: draft.attachment == nil && draft.error == nil ? (draft.preparing ? "Preparing…" : "Uploading…") : nil,
-                       progress: draft.attachment == nil && draft.error == nil ? draft.progress : nil,
+                       // Compression reports no progress, so its ring spins; then the upload's fills.
+                       progress: draft.attachment == nil && draft.error == nil && !draft.preparing ? draft.progress : nil,
                        spoiler: draft.spoiler, toggleSpoiler: toggleSpoiler,
-                       retry: draft.error == nil ? nil : retry, edit: edit, preview: preview, remove: remove)
+                       retry: draft.error == nil ? nil : retry, previewable: previewable, preview: preview, remove: remove)
     }
 }
 
@@ -2430,8 +2531,11 @@ struct StagedFileLayout: Layout {
     }
 }
 
-/// A staged square with independent preview, spoiler, edit, remove and retry controls.
-/// Filenames and full status remain accessible without covering healthy image thumbnails.
+/// A staged square. Tapping it previews it; Remove (×) sits in the top-right
+/// corner and Edit (pencil) in the bottom-left, diagonal so their targets never
+/// overlap and a mis-tap can't remove. While the file prepares or uploads,
+/// Remove's face is its progress ring; a failed upload shows a centred Retry.
+/// Filenames and full status stay accessible without covering thumbnails.
 struct StagedFileChip: View {
     let id: String
     let name: String
@@ -2441,30 +2545,34 @@ struct StagedFileChip: View {
     var thumbnailURL: URL?
     let status: String
     var failed = false
+    /// "Preparing…" or "Uploading…" until it's uploaded: Remove shows the ring.
     var busyLabel: String?
+    /// Progress (0…1) when known; nil while busy shows an indeterminate ring.
     var progress: Double?
+    /// False while sending: no corner buttons and no menu items.
     var removable = true
     /// Marked as a spoiler: the thumbnail is blurred and labels leave the name unsaid.
     var spoiler = false
-    /// Marks or unmarks it (the eye leading the action bar); locked while it
-    /// can't be removed (sending).
+    /// Marks or unmarks it, from the pencil's menu, the context menu or the
+    /// preview; unavailable while it can't be removed (sending).
     var toggleSpoiler: (() -> Void)?
     /// Offered for a failed upload.
     var retry: (() -> Void)?
-    /// Opens the editor (a pencil beside Remove), for files it can change.
-    var edit: (() -> Void)?
+    /// `preview` opens the staged preview with its Spoiler, editing and Remove
+    /// tools (stills and videos the editor can open), so the pencil opens it
+    /// too. Other files' pencil opens a menu instead.
+    var previewable = false
     let preview: () -> Void
     let remove: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var thumbnail: CGImage?
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack {
             Button(action: preview) {
                 GeometryReader { geometry in
                     Group {
                         if spoiler {
-                            SpoilerThumbnail(image: failed ? nil : thumbnail, labelled: barInset == 0)
+                            SpoilerThumbnail(image: failed ? nil : thumbnail, labelled: false)
                         } else if let thumbnail {
                             Image(decorative: thumbnail, scale: 1).resizable().scaledToFill()
                         } else if kind == .video {
@@ -2491,73 +2599,21 @@ struct StagedFileChip: View {
             .buttonStyle(.plain)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(spoiler ? "Preview spoiler attachment" : "Preview \(name)")
-            .accessibilityValue(spoiler ? "Spoiler" : status)
+            .accessibilityValue(accessibilityState)
             .help(spoiler ? "Spoiler attachment" : name)
             .contextMenu {
-                if removable {
-                    Button("Remove attachment", role: .destructive, action: remove)
-                }
+                menuItems(Self.menuActions(spoilerToggle: spoilerToggleAvailable, removable: removable, previewable: previewable))
             }
-            VStack(alignment: .leading, spacing: 0) {
-                ZStack {
-                    if kind == .video && !spoiler {
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.72))
-                            .frame(width: 32, height: 32)
-                            .background(.black.opacity(0.32), in: Circle())
-                            .accessibilityLabel("Video")
-                    }
-                    if spoiler && barInset > 0 {
-                        SpoilerLabel().accessibilityHidden(true)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Centred in the room the action bar leaves, where it spans the top edge.
-                .padding(.top, barInset)
-                .allowsHitTesting(false)
-                if failed || busyLabel != nil {
-                    VStack(spacing: 3) {
-                        if failed, let retry {
-                            Button(action: retry) {
-                                Text("Retry upload")
-                                    .frame(maxWidth: .infinity, minHeight: 44)
-                                    .foregroundStyle(CaperTheme.blackout)
-                                    .background(CaperTheme.action, in: RoundedRectangle(cornerRadius: 8))
-                                    .contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                                .accessibilityLabel(spoiler ? "Retry uploading spoiler attachment" : "Retry uploading \(name)")
-                                .accessibilityHint(spoiler ? "Upload failed" : status)
-                        } else {
-                            Text(failed ? "Failed" : busyLabel ?? "Uploading…")
-                                .lineLimit(1).minimumScaleFactor(0.8)
-                                .accessibilityLabel(spoiler ? "Spoiler attachment upload" : status)
-                        }
-                        if let progress {
-                            ProgressView(value: progress).progressViewStyle(.linear).tint(CaperTheme.terracottaBright)
-                                // Glides between progress events instead of jumping.
-                                .animation(reduceMotion ? nil : .linear(duration: CaperMotion.base), value: progress)
-                                .accessibilityLabel(spoiler ? "Uploading spoiler attachment" : "Uploading \(name)")
-                        }
-                    }
-                    .font(CaperTheme.font(10, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, failed && retry != nil ? 0 : 4)
-                    .frame(maxWidth: .infinity)
-                    .background(.black.opacity(0.8))
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-            if !barActions.isEmpty {
-                StagedFileActionBar(name: name, actions: barActions, spoiler: spoiler, locked: !removable,
-                                    toggleSpoiler: toggleSpoiler ?? {}, edit: edit ?? {}, remove: remove)
-            }
+            centreGlyph.allowsHitTesting(false)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(CaperTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(failed ? Color(red: 138/255, green: 67/255, blue: 52/255) : CaperTheme.border))
+        // Retry sits above the corners, so a tap where their targets meet retries rather than removes.
+        .overlay(alignment: .topTrailing) { if removable { removeButton } }
+        .overlay(alignment: .bottomLeading) { if removable { editButton } }
+        .overlay { if failed, let retry { retryButton(retry) } }
         .task(id: thumbnailURL ?? localURL) {
             let source = thumbnailURL ?? localURL
             // Each prepared or edited file has its own staging directory; its name may repeat.
@@ -2576,32 +2632,131 @@ struct StagedFileChip: View {
         }
     }
 
-    /// The action bar's buttons, left to right: Spoiler where the composer
-    /// offers it, Edit for files the editor can open, then Remove. While the
-    /// file can't be removed (sending) only the spoiler toggle stays, locked;
-    /// without one there's no bar.
-    static func actions(spoilerToggle: Bool, removable: Bool, editable: Bool) -> [StagedFileAction] {
+    /// The context menu, top to bottom: Edit (opens the preview) for files it
+    /// can show, the spoiler toggle where offered, then Remove. Nothing while
+    /// the file can't be removed (sending).
+    static func menuActions(spoilerToggle: Bool, removable: Bool, previewable: Bool) -> [StagedFileAction] {
+        guard removable else { return [] }
         var actions: [StagedFileAction] = []
+        if previewable { actions.append(.edit) }
         if spoilerToggle { actions.append(.spoiler) }
-        if removable {
-            if editable { actions.append(.edit) }
-            actions.append(.remove)
-        }
+        actions.append(.remove)
         return actions
     }
 
-    private var barActions: [StagedFileAction] {
-        Self.actions(spoilerToggle: toggleSpoiler != nil, removable: removable, editable: edit != nil)
+    /// The pencil's menu on files the preview can't show (PDFs, audio, others).
+    static func pencilMenu(spoilerToggle: Bool) -> [StagedFileAction] {
+        spoilerToggle ? [.spoiler, .remove] : [.remove]
     }
 
-    /// The room the action bar takes along the top edge where it spans it
-    /// (iPhone and iPad): the play badge and spoiler label centre below it.
-    private var barInset: CGFloat {
-        #if os(iOS)
-        return barActions.isEmpty ? 0 : StagedFileActionBar.buttonHeight
-        #else
-        return 0
-        #endif
+    private var spoilerToggleAvailable: Bool { toggleSpoiler != nil && removable }
+    private var busy: Bool { busyLabel != nil && !failed }
+
+    /// The status Remove's ring shows, for assistive technologies. Never the
+    /// file's name, so it's spoiler-safe.
+    private var busyStatus: String? {
+        guard busy else { return nil }
+        let label = busyLabel ?? "Uploading…"
+        guard let progress, progress.isFinite else { return label }
+        return "\(label) \(Int((min(1, max(0, progress)) * 100).rounded()))%"
+    }
+
+    private var accessibilityState: String {
+        guard spoiler else { return busyStatus ?? status }
+        if failed { return "Spoiler, upload failed" }
+        return busyStatus.map { "Spoiler, \($0)" } ?? "Spoiler"
+    }
+
+    /// The crossed eye for a spoiler, or a video's play badge.
+    @ViewBuilder private var centreGlyph: some View {
+        if failed && retry != nil {
+            // Retry takes the centre.
+            EmptyView()
+        } else if spoiler {
+            Image(systemName: "eye.slash")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(CaperTheme.text)
+                .accessibilityHidden(true)
+        } else if kind == .video {
+            Image(systemName: "play.fill")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white.opacity(0.72))
+                .frame(width: 32, height: 32)
+                .background(.black.opacity(0.32), in: Circle())
+                .accessibilityLabel("Video")
+        }
+    }
+
+    @ViewBuilder private func menuItems(_ actions: [StagedFileAction]) -> some View {
+        ForEach(actions, id: \.self) { action in
+            switch action {
+            case .edit:
+                Button(action: preview) { Label("Edit", systemImage: "pencil") }
+            case .spoiler:
+                Button { toggleSpoiler?() } label: {
+                    Label(spoiler ? "Remove spoiler" : "Mark as spoiler", systemImage: spoiler ? "eye" : "eye.slash")
+                }
+            case .remove:
+                Button(role: .destructive, action: remove) { Label("Remove attachment", systemImage: "trash") }
+            }
+        }
+    }
+
+    /// × in the top-right corner; its face is the progress ring while the file
+    /// prepares or uploads. Tapping it removes either way.
+    private var removeButton: some View {
+        Button(action: remove) {
+            ZStack {
+                if busy { StagedFileProgressRing(state: StagedFileProgress.ring(busy: busy, progress: progress)) }
+                Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+            }
+        }
+        .buttonStyle(StagedFileCornerStyle(corner: .topTrailing, ringed: busy))
+        .help("Remove")
+        .accessibilityLabel(spoiler ? "Remove spoiler attachment" : "Remove \(name)")
+        .accessibilityValue(busyStatus ?? "")
+        .accessibilityIdentifier("staged-file-remove")
+    }
+
+    /// The pencil in the bottom-left corner: the preview with its tools, or a
+    /// menu for files it can't show.
+    @ViewBuilder private var editButton: some View {
+        if previewable {
+            Button(action: preview) { pencil }
+                .buttonStyle(StagedFileCornerStyle(corner: .bottomLeading))
+                .help("Edit")
+                .accessibilityLabel(spoiler ? "Edit spoiler attachment" : "Edit \(name)")
+                .accessibilityHint("Opens the preview with spoiler, editing and remove tools")
+                .accessibilityIdentifier("staged-file-edit")
+        } else {
+            Menu {
+                menuItems(Self.pencilMenu(spoilerToggle: spoilerToggleAvailable))
+            } label: {
+                StagedFileCornerFace(corner: .bottomLeading) { pencil }
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Edit")
+            .accessibilityLabel(spoiler ? "Edit spoiler attachment" : "Edit \(name)")
+            .accessibilityIdentifier("staged-file-edit")
+        }
+    }
+
+    private var pencil: some View {
+        Image(systemName: "pencil").font(.system(size: 11, weight: .semibold))
+    }
+
+    private func retryButton(_ retry: @escaping () -> Void) -> some View {
+        Button(action: retry) {
+            Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .bold))
+        }
+        .buttonStyle(StagedFileRetryStyle())
+        .help("Retry upload")
+        .accessibilityLabel(spoiler ? "Retry uploading spoiler attachment" : "Retry uploading \(name)")
+        .accessibilityHint(spoiler ? "Upload failed" : status)
+        .accessibilityIdentifier("staged-file-retry")
     }
 
     private var kindLabel: String {
@@ -2623,111 +2778,170 @@ struct StagedFileChip: View {
     }
 }
 
-enum StagedFileAction: Hashable { case spoiler, edit, remove }
+/// A staged tile's menu items (the pencil's menu on files the preview can't
+/// show, and the context menu).
+enum StagedFileAction: Hashable { case edit, spoiler, remove }
 
-/// A staged tile's actions in one solid bar, like Discord's: Spoiler, Edit,
-/// then Remove. On the Mac it sits inset in the top-right corner with
-/// 28-point buttons; on iPhone and iPad it spans the tile's top edge, flush,
-/// its 44-point-tall buttons sharing the width. Each button is exactly its
-/// visible area, and a hover or press only lightens it, so the icons never
-/// fade over a busy picture.
-private struct StagedFileActionBar: View {
-    let name: String
-    let actions: [StagedFileAction]
-    /// The eye is crossed out, and labels leave the name unsaid.
-    let spoiler: Bool
-    /// Sending: the spoiler toggle stays, but can't be pressed.
-    let locked: Bool
-    let toggleSpoiler: () -> Void
-    let edit: () -> Void
-    let remove: () -> Void
+/// Remove's progress ring on a staged tile.
+enum StagedFileProgress: Equatable {
+    case idle
+    /// Spinning (still under Reduce Motion): preparing, or nothing reported yet.
+    case indeterminate
+    case determinate(Double)
+
+    /// Compression progress when it's reported, else the upload's (callers
+    /// pass whichever applies); indeterminate when neither is known.
+    static func ring(busy: Bool, progress: Double?) -> StagedFileProgress {
+        guard busy else { return .idle }
+        guard let progress, progress.isFinite else { return .indeterminate }
+        return .determinate(min(1, max(0, progress)))
+    }
+}
+
+/// The corner buttons' size: a 22-point face 4 points from the tile's edges,
+/// inside a 44-point target anchored in that corner on iPhone and iPad (28 on
+/// the Mac's pointer).
+enum StagedFileCorner {
+    static let face: CGFloat = 22
+    static let inset: CGFloat = 4
     #if os(iOS)
-    static let buttonHeight: CGFloat = 44
+    static let target: CGFloat = 44
+    static let retryTarget: CGFloat = 44
     #else
-    static let buttonHeight: CGFloat = 28
+    static let target: CGFloat = 28
+    static let retryTarget: CGFloat = 34
     #endif
+    static let retryFace: CGFloat = 30
+}
+
+/// A terracotta arc over a faint white track, in Remove's face.
+private struct StagedFileProgressRing: View {
+    let state: StagedFileProgress
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private static let lineWidth: CGFloat = 2
 
     var body: some View {
-        HStack(spacing: 0) {
-            ForEach(Array(actions.enumerated()), id: \.element) { index, action in
-                if index > 0 {
-                    Rectangle().fill(CaperTheme.border).frame(width: 1, height: Self.buttonHeight).accessibilityHidden(true)
+        ZStack {
+            Circle().inset(by: Self.lineWidth / 2).stroke(Color.white.opacity(0.16), lineWidth: Self.lineWidth)
+            switch state {
+            case .idle:
+                EmptyView()
+            case .determinate(let value):
+                arc(to: value)
+                    // Glides between progress events instead of jumping.
+                    .animation(reduceMotion ? nil : .linear(duration: CaperMotion.base), value: value)
+            case .indeterminate:
+                if reduceMotion {
+                    arc(to: 0.28)
+                } else {
+                    TimelineView(.animation) { context in
+                        let turn = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1)
+                        arc(to: 0.28).rotationEffect(.degrees(turn * 360))
+                    }
                 }
-                button(action)
             }
         }
-        .background(CaperTheme.blackout.opacity(0.9))
-        #if os(iOS)
-        // The tile's own border and corners frame the rest.
-        .overlay(alignment: .bottom) { Rectangle().fill(CaperTheme.border).frame(height: 1).allowsHitTesting(false) }
-        // The buttons' own highlight, not the iPad pointer's platter over them.
-        .hoverEffectDisabled()
-        #else
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border, lineWidth: 1))
-        .padding(.top, 4)
-        .padding(.trailing, 4)
-        #endif
+        .frame(width: StagedFileCorner.face, height: StagedFileCorner.face)
+        .accessibilityHidden(true)
     }
 
-    @ViewBuilder private func button(_ action: StagedFileAction) -> some View {
-        switch action {
-        case .spoiler:
-            Button(action: toggleSpoiler) {
-                Image(systemName: spoiler ? "eye.slash.fill" : "eye").font(.system(size: 14))
-            }
-            .buttonStyle(StagedFileActionButton())
-            .disabled(locked)
-            .help(spoiler ? "Remove spoiler" : "Mark as spoiler")
-            .accessibilityLabel(spoiler ? "Remove spoiler from attachment" : "Mark \(name) as spoiler")
-            .accessibilityValue(spoiler ? "Spoiler" : "Not a spoiler")
-        case .edit:
-            Button(action: edit) { CaperIcon(name: "pencil", size: 15) }
-                .buttonStyle(StagedFileActionButton())
-                .help("Edit")
-                .accessibilityLabel(spoiler ? "Edit spoiler attachment" : "Edit \(name)")
-        case .remove:
-            Button(action: remove) { CaperIcon(name: "x", size: 15) }
-                .buttonStyle(StagedFileActionButton())
-                .help("Remove")
-                .accessibilityLabel(spoiler ? "Remove spoiler attachment" : "Remove \(name)")
-        }
+    private func arc(to end: Double) -> some View {
+        Circle()
+            .inset(by: Self.lineWidth / 2)
+            .trim(from: 0, to: end)
+            .stroke(CaperTheme.terracottaBright, style: StrokeStyle(lineWidth: Self.lineWidth, lineCap: .round))
+            .rotationEffect(.degrees(-90))
     }
 }
 
-/// White 12% under a hovering pointer (the Mac, an iPad's pointer), 18%
-/// pressed, and a terracotta ring for keyboard focus. A locked button's icon
-/// steps back to muted; the bar stays solid.
-private struct StagedFileActionButton: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View { StagedFileActionLabel(configuration: configuration) }
+private struct StagedFileCornerStyle: ButtonStyle {
+    let corner: Alignment
+    var ringed = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        StagedFileCornerFace(corner: corner, ringed: ringed, pressed: configuration.isPressed) { configuration.label }
+    }
 }
 
-private struct StagedFileActionLabel: View {
-    let configuration: ButtonStyleConfiguration
+/// A round blackout face (78%) with a faint white edge, lightening under a
+/// hovering pointer (12%) or a press (18%), with a terracotta ring for
+/// keyboard focus. The target is a box in the tile's corner around it.
+private struct StagedFileCornerFace<Content: View>: View {
+    let corner: Alignment
+    let ringed: Bool
+    let pressed: Bool
+    let content: Content
     @Environment(\.isFocused) private var focused
-    @Environment(\.isEnabled) private var enabled
     @State private var hovered = false
 
+    init(corner: Alignment, ringed: Bool = false, pressed: Bool = false, @ViewBuilder content: () -> Content) {
+        self.corner = corner
+        self.ringed = ringed
+        self.pressed = pressed
+        self.content = content()
+    }
+
     var body: some View {
-        configuration.label
-            .foregroundStyle(enabled ? CaperTheme.text : CaperTheme.muted)
-            .opacity(enabled ? 1 : 0.5)
-            #if os(iOS)
-            .frame(maxWidth: .infinity)
-            .frame(height: StagedFileActionBar.buttonHeight)
-            #else
-            .frame(width: StagedFileActionBar.buttonHeight, height: StagedFileActionBar.buttonHeight)
-            #endif
-            .background(Color.white.opacity(configuration.isPressed ? 0.18 : hovered && enabled ? 0.12 : 0))
+        content
+            .foregroundStyle(CaperTheme.text)
+            .frame(width: StagedFileCorner.face, height: StagedFileCorner.face)
+            .background {
+                ZStack {
+                    Circle().fill(CaperTheme.blackout.opacity(0.78))
+                    Circle().fill(Color.white.opacity(pressed ? 0.18 : hovered ? 0.12 : 0))
+                    // The ring's track takes the edge's place.
+                    if !ringed { Circle().strokeBorder(Color.white.opacity(0.12), lineWidth: 1) }
+                }
+            }
             .overlay {
-                RoundedRectangle(cornerRadius: 6)
+                Circle()
+                    .inset(by: -2)
                     .strokeBorder(CaperTheme.terracotta, lineWidth: 2)
                     .opacity(focused ? 1 : 0)
                     .allowsHitTesting(false)
             }
+            .padding(StagedFileCorner.inset)
+            .frame(width: StagedFileCorner.target, height: StagedFileCorner.target, alignment: corner)
             .contentShape(Rectangle())
             .focusEffectDisabled()
             .onHover { hovered = $0 }
+            #if os(iOS)
+            // The face's own highlight, not the iPad pointer's platter.
+            .hoverEffectDisabled()
+            #endif
+            .modifier(ControlPointer())
+    }
+}
+
+/// The eggshell primary action as a round 30-point face, centred on a failed tile.
+private struct StagedFileRetryStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { StagedFileRetryFace(configuration: configuration) }
+}
+
+private struct StagedFileRetryFace: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.isFocused) private var focused
+    @State private var hovered = false
+
+    var body: some View {
+        configuration.label
+            .foregroundStyle(CaperTheme.blackout)
+            .frame(width: StagedFileCorner.retryFace, height: StagedFileCorner.retryFace)
+            .background(configuration.isPressed ? CaperTheme.actionPress : hovered ? CaperTheme.actionHover : CaperTheme.action, in: Circle())
+            .overlay {
+                Circle()
+                    .inset(by: -2)
+                    .strokeBorder(CaperTheme.terracotta, lineWidth: 2)
+                    .opacity(focused ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+            .frame(width: StagedFileCorner.retryTarget, height: StagedFileCorner.retryTarget)
+            .contentShape(Rectangle())
+            .focusEffectDisabled()
+            .onHover { hovered = $0 }
+            #if os(iOS)
+            .hoverEffectDisabled()
+            #endif
             .modifier(ControlPointer())
     }
 }

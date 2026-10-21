@@ -246,16 +246,48 @@ final class AttachmentEditTests: XCTestCase {
         XCTAssertEqual(cropping.tool, .crop)
     }
 
-    func testStagedTilesOfferSpoilerThenEditThenRemove() {
-        XCTAssertEqual(StagedFileChip.actions(spoilerToggle: true, removable: true, editable: true), [.spoiler, .edit, .remove])
-        XCTAssertEqual(StagedFileChip.actions(spoilerToggle: true, removable: true, editable: false), [.spoiler, .remove])
-        XCTAssertEqual(StagedFileChip.actions(spoilerToggle: false, removable: true, editable: true), [.edit, .remove])
-        XCTAssertEqual(StagedFileChip.actions(spoilerToggle: false, removable: true, editable: false), [.remove])
-        XCTAssertEqual(StagedFileChip.actions(spoilerToggle: true, removable: false, editable: true), [.spoiler],
-                       "while sending only the (locked) spoiler toggle stays")
-        XCTAssertEqual(StagedFileChip.actions(spoilerToggle: true, removable: false, editable: false), [.spoiler])
-        XCTAssertEqual(StagedFileChip.actions(spoilerToggle: false, removable: false, editable: true), [], "no bar while sending")
-        XCTAssertEqual(StagedFileChip.actions(spoilerToggle: false, removable: false, editable: false), [])
+    func testStagedTileMenusOfferEditThenSpoilerThenRemove() {
+        XCTAssertEqual(StagedFileChip.menuActions(spoilerToggle: true, removable: true, previewable: true), [.edit, .spoiler, .remove])
+        XCTAssertEqual(StagedFileChip.menuActions(spoilerToggle: true, removable: true, previewable: false), [.spoiler, .remove])
+        XCTAssertEqual(StagedFileChip.menuActions(spoilerToggle: false, removable: true, previewable: true), [.edit, .remove])
+        XCTAssertEqual(StagedFileChip.menuActions(spoilerToggle: false, removable: true, previewable: false), [.remove])
+        for spoiler in [true, false] {
+            for previewable in [true, false] {
+                XCTAssertEqual(StagedFileChip.menuActions(spoilerToggle: spoiler, removable: false, previewable: previewable), [],
+                               "nothing while sending")
+            }
+        }
+        XCTAssertEqual(StagedFileChip.pencilMenu(spoilerToggle: true), [.spoiler, .remove], "files the preview can't show")
+        XCTAssertEqual(StagedFileChip.pencilMenu(spoilerToggle: false), [.remove])
+    }
+
+    func testStagedPreviewToolsLeadWithSpoilerAndEndWithRemove() {
+        XCTAssertEqual(AttachmentDraftPreviewTool.row(spoiler: true, remove: true),
+                       [.spoiler, .edit(.crop), .edit(.draw), .edit(.text), .remove])
+        XCTAssertEqual(AttachmentDraftPreviewTool.row(spoiler: false, remove: false), [.edit(.crop), .edit(.draw), .edit(.text)])
+        let file = URL(fileURLWithPath: "/tmp/photo.png")
+        let bare = AttachmentDraftPreviewRequest(name: "photo.png", kind: .image, url: file) { _ in nil }
+        XCTAssertEqual(bare.tools, [.edit(.crop), .edit(.draw), .edit(.text)])
+        var marked = false
+        var removed = false
+        let full = AttachmentDraftPreviewRequest(name: "photo.png", kind: .image, url: file,
+                                                 spoiler: AttachmentDraftSpoiler(isOn: { marked }, toggle: { marked.toggle() }),
+                                                 remove: { removed = true }) { _ in nil }
+        XCTAssertEqual(full.tools.first, .spoiler)
+        XCTAssertEqual(full.tools.last, .remove)
+        full.spoiler?.toggle()
+        XCTAssertTrue(full.spoiler?.isOn() == true, "toggles in place")
+        full.remove?()
+        XCTAssertTrue(removed)
+    }
+
+    func testStagedRemoveRingShowsKnownProgressOrSpins() {
+        XCTAssertEqual(StagedFileProgress.ring(busy: false, progress: 0.4), .idle)
+        XCTAssertEqual(StagedFileProgress.ring(busy: true, progress: nil), .indeterminate, "preparing reports no progress")
+        XCTAssertEqual(StagedFileProgress.ring(busy: true, progress: .nan), .indeterminate)
+        XCTAssertEqual(StagedFileProgress.ring(busy: true, progress: 0.42), .determinate(0.42))
+        XCTAssertEqual(StagedFileProgress.ring(busy: true, progress: 1.5), .determinate(1))
+        XCTAssertEqual(StagedFileProgress.ring(busy: true, progress: -1), .determinate(0))
     }
 
     func testBrushRingIsAsWideAsTheStrokeOnScreen() throws {
