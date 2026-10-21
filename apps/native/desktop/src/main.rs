@@ -16138,76 +16138,32 @@ impl CaperApp {
         let escape_taken = self.reaction_picker.is_some()
             || self.reactors_view.is_some()
             || egui::Popup::is_any_open(ui.ctx());
-        // Keep the channel's layout unchanged beneath the trailing overlay.
-        // Narrow layouts still show only the thread.
-        let conversation_rect = ui.available_rect_before_wrap();
+        // The thread opens beside the conversation (over it when narrow),
+        // sliding in from the trailing edge.
         let thread_alone = self.thread_view.is_some() && narrow;
-        if !thread_alone {
-            self.channel_conversation(ui, narrow);
-        }
         if self.thread_view.is_some() {
             let progress = motion::entrance(ui.ctx(), egui::Id::new("thread-panel"), motion::BASE);
+            let from = motion::mark(ui);
             if narrow {
-                let from = motion::mark(ui);
                 self.thread_panel(ui, true);
-                motion::settle(
-                    ui.ctx(),
-                    ui.layer_id(),
-                    from,
-                    progress,
-                    motion::rise(progress, egui::vec2(12.0, 0.0)),
-                );
             } else {
-                let panel_id = egui::Id::new("message-thread");
-                let mut width = egui::containers::panel::PanelState::load(ui.ctx(), panel_id)
-                    .map_or(340.0, |state| state.rect.width())
-                    .clamp(300.0, 480.0)
-                    .min(conversation_rect.width());
-                // Match SidePanel's in-flight width so the area's hit bounds
-                // follow the divider immediately, including while shrinking.
-                if let Some(resize) = ui.ctx().read_response(panel_id.with("__resize"))
-                    && resize.dragged()
-                    && let Some(pointer) = resize.interact_pointer_pos()
-                {
-                    width = (conversation_rect.right() - pointer.x)
-                        .abs()
-                        .clamp(300.0, 480.0)
-                        .min(conversation_rect.width());
-                }
-                let grab = ui.style().interaction.resize_grab_radius_side;
-                // A separate area blocks channel scrolling as well as clicks,
-                // while staying below foreground popups and dialogs.
-                egui::Area::new(egui::Id::new("thread-overlay"))
-                    .order(egui::Order::Middle)
-                    .fixed_pos(egui::pos2(
-                        conversation_rect.right() - width - grab,
-                        conversation_rect.top(),
-                    ))
-                    .constrain(false)
-                    .fade_in(false)
-                    .sense(egui::Sense::click_and_drag())
-                    .show(ui.ctx(), |ui| {
-                        let from = motion::mark(ui);
-                        // Detach the resizable panel from the channel's cursor.
-                        let mut overlay =
-                            ui.new_child(egui::UiBuilder::new().max_rect(conversation_rect));
-                        let panel = egui::SidePanel::right(panel_id)
-                            .default_width(340.0)
-                            .min_width(300.0)
-                            .max_width(480.0)
-                            .frame(egui::Frame::new().fill(CONVERSATION))
-                            .show_inside(&mut overlay, |ui| self.thread_panel(ui, false));
-                        // Only the thread, not the full channel, owns this area.
-                        ui.allocate_rect(panel.response.rect, egui::Sense::hover());
-                        motion::settle(
-                            ui.ctx(),
-                            ui.layer_id(),
-                            from,
-                            progress,
-                            motion::rise(progress, egui::vec2(12.0, 0.0)),
-                        );
-                    });
+                egui::SidePanel::right("message-thread")
+                    .default_width(340.0)
+                    .min_width(300.0)
+                    .max_width(480.0)
+                    .frame(egui::Frame::new().fill(CONVERSATION))
+                    .show_inside(ui, |ui| self.thread_panel(ui, false));
             }
+            motion::settle(
+                ui.ctx(),
+                ui.layer_id(),
+                from,
+                progress,
+                motion::rise(progress, egui::vec2(12.0, 0.0)),
+            );
+        }
+        if !thread_alone {
+            self.channel_conversation(ui, narrow);
         }
         // Once per pass, for pills in the channel and in thread replies.
         // Pins draws these above its overlay instead. The picker too: drawn
@@ -32962,72 +32918,6 @@ mod tests {
                 "outside click must still close the menu"
             );
         }
-    }
-
-    #[test]
-    fn thread_overlay_keeps_channel_composer_geometry() {
-        let (context, mut app) = fixture("parity-thread");
-        let thread = app.thread_view.take().unwrap();
-        let composer = |output: &egui::FullOutput| {
-            output
-                .shapes
-                .iter()
-                .find_map(|shape| match &shape.shape {
-                    egui::Shape::Rect(rect)
-                        if rect.fill == super::COMPOSER && rect.rect.width() > 300.0 =>
-                    {
-                        Some(rect.rect)
-                    }
-                    _ => None,
-                })
-                .expect("channel composer")
-        };
-        render(&mut app, &context, vec![]);
-        let closed = composer(&render(&mut app, &context, vec![]));
-        app.thread_view = Some(thread);
-        for _ in 0..3 {
-            let output = render(&mut app, &context, vec![]);
-            assert_eq!(composer(&output), closed, "opening must not reflow chat");
-            let overlay = app.thread_drop_rect.unwrap();
-            assert!((300.0..=480.0).contains(&overlay.width()));
-            assert!(overlay.intersects(closed), "thread overlays the channel");
-            assert!(overlay.right() >= closed.right(), "trailing alignment");
-        }
-        let edge = app.thread_drop_rect.unwrap().left_center();
-        render(&mut app, &context, vec![egui::Event::PointerMoved(edge)]);
-        render(
-            &mut app,
-            &context,
-            vec![egui::Event::PointerButton {
-                pos: edge,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: egui::Modifiers::NONE,
-            }],
-        );
-        for (delta, width) in [(-500.0, 480.0), (200.0, 300.0)] {
-            render(
-                &mut app,
-                &context,
-                vec![egui::Event::PointerMoved(edge + egui::vec2(delta, 0.0))],
-            );
-            let output = render(&mut app, &context, vec![]);
-            assert_eq!(app.thread_drop_rect.unwrap().width(), width);
-            assert_eq!(composer(&output), closed, "resizing must not reflow chat");
-        }
-        render(
-            &mut app,
-            &context,
-            vec![egui::Event::PointerButton {
-                pos: edge + egui::vec2(200.0, 0.0),
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
-        );
-        click_label(&mut app, &context, "Close thread");
-        assert!(app.thread_view.is_none());
-        assert_eq!(composer(&render(&mut app, &context, vec![])), closed);
     }
 
     #[test]

@@ -1,6 +1,5 @@
 .chat-layout {
   --chat-header-height: 54px;
-  position: relative;
   display: flex;
   flex: 1;
   min-width: 0;
@@ -4568,13 +4567,11 @@ a.chat-draft-preview {
   }
 }
 .chat-thread-panel {
-  position: absolute;
-  inset: 0 0 0 auto;
-  z-index: 10;
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
-  width: 340px;
+  flex: 0 0 340px;
   max-width: min(600px, max(50%, calc(100% - 300px)));
   min-width: 0;
   min-height: 0;
@@ -4830,7 +4827,6 @@ a.chat-draft-preview {
     position: fixed;
     z-index: 50;
     inset: 0;
-    width: auto;
     max-width: none;
     border: 0;
     padding-top: env(safe-area-inset-top);
