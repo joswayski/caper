@@ -252,8 +252,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     val spaceId = initialSpaceId(list.spaces.map { it.id }, saved)
                     if (spaceId == null) finishRestoring()
                     else {
-                        val savedChannel = saved?.channelId
-                        if (savedChannel != null && saved.spaceId == spaceId) lastChannelBySpace[spaceId] = savedChannel
+                        val savedChannel = saved?.takeIf { it.spaceId == spaceId }?.channelId
+                        if (savedChannel != null) lastChannelBySpace[spaceId] = savedChannel
                         selectSpace(spaceId)
                     }
                 }

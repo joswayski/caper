@@ -17,11 +17,11 @@ internal object SpaceLandings {
     private fun preferences(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
-    fun load(context: Context, accountId: String): SpaceLanding? = load(preferences(context), accountId)
+    fun load(context: Context, accountId: String): SpaceLanding? = loadFrom(preferences(context), accountId)
 
-    fun save(context: Context, accountId: String, landing: SpaceLanding) = save(preferences(context), accountId, landing)
+    fun save(context: Context, accountId: String, landing: SpaceLanding) = saveTo(preferences(context), accountId, landing)
 
-    internal fun load(preferences: SharedPreferences, accountId: String): SpaceLanding? {
+    internal fun loadFrom(preferences: SharedPreferences, accountId: String): SpaceLanding? {
         if (accountId.isEmpty()) return null
         // Missing or unreadable storage falls back to the first joined channel.
         val space = runCatching { preferences.getString("$accountId.space", null) }.getOrNull()
@@ -30,7 +30,7 @@ internal object SpaceLandings {
         return SpaceLanding(space, channel?.takeIf { it.isNotEmpty() })
     }
 
-    internal fun save(preferences: SharedPreferences, accountId: String, landing: SpaceLanding) {
+    internal fun saveTo(preferences: SharedPreferences, accountId: String, landing: SpaceLanding) {
         if (accountId.isEmpty() || landing.spaceId.isEmpty()) return
         preferences.edit {
             putString("$accountId.space", landing.spaceId)
