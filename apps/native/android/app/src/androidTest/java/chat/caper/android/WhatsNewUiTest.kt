@@ -24,6 +24,7 @@ class WhatsNewUiTest {
         val snapshot = WhatsNewSnapshot(1, "android", "4".repeat(40), 4, listOf(2L, 4L).map {
             PlatformRelease(it, it.toString().repeat(40), "2026-10-11T19:00:00Z", listOf(
                 ReleaseHighlight("TEST FIXTURE — Update $it", "Local release-notes UI preview."),
+                ReleaseHighlight("TEST FIXTURE — More in update $it", "Another change in the same release."),
             ), version = if (it == 4L) "0.1.112" else null)
         }).validated("android", "4".repeat(40))
         var dismissed: Long? = null
@@ -34,12 +35,15 @@ class WhatsNewUiTest {
         }
         } }
         val newer = compose.onNodeWithText("TEST FIXTURE — Update 4").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
-        val older = compose.onNodeWithText("TEST FIXTURE — Update 2").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val older = compose.onNodeWithText("TEST FIXTURE — Update 2").fetchSemanticsNode().boundsInRoot
         assertTrue(newer.top < older.top)
-        compose.onAllNodesWithText("2026-10-11").assertCountEquals(1)
+        compose.onAllNodesWithText("October 11, 2026").assertCountEquals(1)
+        compose.onAllNodesWithText("Version 0.1.112").assertCountEquals(1)
+        compose.onAllNodesWithText("2222222").assertCountEquals(1)
+        assertTrue(compose.onNodeWithText("Version 0.1.112").fetchSemanticsNode().boundsInRoot.top < newer.top)
         compose.onNodeWithText("Version 0.1.112").performTouchInput { click() }
         compose.runOnIdle { assertEquals("https://github.com/joswayski/caper/commit/" + "4".repeat(40), opened) }
-        compose.onNodeWithText("2222222").performTouchInput { click() }
+        compose.onNodeWithText("2222222").performScrollTo().performTouchInput { click() }
         compose.runOnIdle { assertEquals("https://github.com/joswayski/caper/commit/" + "2".repeat(40), opened) }
         compose.onNodeWithText("Got it").performClick()
         compose.runOnIdle { assertEquals(4L, dismissed) }

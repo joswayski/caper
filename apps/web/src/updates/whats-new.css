@@ -80,6 +80,10 @@
 .whats-new-entry {
   margin-top: 20px;
 }
+.whats-new-entry + .whats-new-entry {
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
 .whats-new-release + .whats-new-release {
   margin-top: 28px;
   padding-top: 24px;
@@ -92,6 +96,9 @@
 }
 .whats-new-release article {
   margin-top: 20px;
+}
+.whats-new-source + article {
+  margin-top: 12px;
 }
 .whats-new-release h3 {
   margin: 0 0 4px;

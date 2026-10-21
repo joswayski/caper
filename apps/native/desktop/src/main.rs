@@ -23304,21 +23304,23 @@ impl CaperApp {
                         || release.revision[..7].to_owned(),
                         |version| format!("Version {version}"),
                     );
+                    release_link(
+                        ui,
+                        &label,
+                        12.0,
+                        &updates::commit_url(&release.revision)
+                            .expect("validated release revision"),
+                    );
                     for highlight in release.highlights {
                         ui.add_space(10.0);
                         ui.scope(|ui| {
                             ui.spacing_mut().item_spacing.y = 4.0;
                             ui.label(bold(highlight.title).size(16.0));
-                            release_link(
-                                ui,
-                                &label,
-                                12.0,
-                                &updates::commit_url(&release.revision)
-                                    .expect("validated release revision"),
-                            );
                             ui.label(highlight.body);
                         });
                     }
+                    ui.add_space(16.0);
+                    ui.separator();
                 }
             }
         }
@@ -35301,7 +35303,7 @@ mod tests {
         }
         let output = render(&mut app, &context, vec![]);
         let title = text_position(&output, "Edit your messages");
-        // The former gap below the title now contains the release link.
+        // The gap between the release link and the title is not clickable.
         for offset in [-9.0, -6.0] {
             let pos = title + egui::vec2(10.0, offset);
             render(&mut app, &context, vec![egui::Event::PointerMoved(pos)]);
@@ -35347,16 +35349,23 @@ mod tests {
                 1,
                 "same-day releases share one heading"
             );
+            assert_eq!(
+                output.shapes.iter().filter(|shape| {
+                    matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == "Version 0.1.112")
+                }).count(),
+                1,
+                "multiple highlights share one release link"
+            );
+            assert!(
+                text_position(&output, "Version 0.1.112").y
+                    < text_position(&output, "Edit your messages").y
+            );
             if route == "Done" {
                 // The installed version under the title opens the installed commit.
                 let installed = crate::updates::version_label();
                 let title = text_position(&output, "Find your conversations");
                 let source = text_position(&output, "2222222");
-                let body = text_position(
-                    &output,
-                    "Move between your spaces and direct messages while keeping your drafts.",
-                );
-                assert!(title.y < source.y && source.y < body.y);
+                assert!(source.y < title.y);
                 for (label, revision) in [
                     ("Version 0.1.112", whats_new::REVISION.to_owned()),
                     ("2222222", "2".repeat(40)),
@@ -35422,6 +35431,12 @@ mod tests {
                 "manual history includes acknowledged releases"
             );
             assert!(shows(&output, "Find your conversations"));
+            // Older release bodies remain reachable below the fixed footer.
+            scrolled_text_position(
+                &mut app,
+                &context,
+                "Move between your spaces and direct messages while keeping your drafts.",
+            );
         }
     }
 

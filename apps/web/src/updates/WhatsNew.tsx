@@ -225,19 +225,19 @@ export default function WhatsNew({
             </time>
             {dayReleases.map((release) => (
               <div className="whats-new-entry" key={release.sequence}>
+                <a
+                  className="whats-new-source"
+                  href={`https://github.com/joswayski/caper/commit/${release.revision}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="View this version on GitHub"
+                >
+                  Web build {release.revision.slice(0, 7)}
+                  <ExternalLink size={12} aria-hidden="true" />
+                </a>
                 {release.highlights.map((highlight, index) => (
                   <article key={index}>
                     <h3>{highlight.title}</h3>
-                    <a
-                      className="whats-new-source"
-                      href={`https://github.com/joswayski/caper/commit/${release.revision}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      title="View this version on GitHub"
-                    >
-                      {release.revision.slice(0, 7)}
-                      <ExternalLink size={12} aria-hidden="true" />
-                    </a>
                     <p>{highlight.body}</p>
                   </article>
                 ))}

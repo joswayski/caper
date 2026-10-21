@@ -228,20 +228,20 @@ func releaseDayLabel(_ day: String) -> String {
                                 .foregroundStyle(CaperTheme.muted)
                             ForEach(days[date] ?? [], id: \.sequence) { release in
                                 VStack(alignment: .leading, spacing: 12) {
+                                    if let url = URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)") {
+                                        ReleaseLink(
+                                            label: release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)),
+                                            url: url, size: 12)
+                                    }
                                     ForEach(Array(release.highlights.enumerated()), id: \.offset) { _, highlight in
                                         VStack(alignment: .leading, spacing: 4) {
                                             Text(highlight.title).font(CaperTheme.font(16, weight: .bold))
-                                            if let url = URL(string: "https://github.com/joswayski/caper/commit/\(release.revision)") {
-                                                ReleaseLink(
-                                                    label: release.version.map { "Version \($0)" } ?? String(release.revision.prefix(7)),
-                                                    url: url, size: 12)
-                                            }
                                             Text(highlight.body).font(CaperTheme.font(14)).foregroundStyle(CaperTheme.muted)
                                         }
                                     }
                                 }
+                                Divider().overlay(CaperTheme.border)
                             }
-                            Divider().overlay(CaperTheme.border)
                         }
                     } else if notes.loading {
                         ProgressView().accessibilityLabel("Loading release highlights")
