@@ -116,6 +116,42 @@ final class TimelinePinTests: XCTestCase {
         XCTAssertFalse(follow.needsReveal(to: pin(contentHeight: 988, atBottom: false)))
     }
 
+    func testOpenedConversationFollowsRowsSettlingUntilTheReaderScrolls() {
+        let follow = TimelinePinBox()
+        XCTAssertFalse(follow.needsReveal(to: pin(firstID: "previous")))
+        follow.opened()
+        // The new conversation's first measurement.
+        XCTAssertFalse(follow.needsReveal(to: pin()))
+        // Rows near the end are measured, then a link card image loads.
+        XCTAssertTrue(follow.needsReveal(to: pin(contentHeight: 944, atBottom: false)))
+        XCTAssertTrue(follow.needsReveal(to: pin(contentHeight: 990, offset: 400, atBottom: false)),
+                      "Rows above settling can move the offset without the reader scrolling")
+        XCTAssertFalse(follow.needsReveal(to: pin(contentHeight: 990, offset: 690)))
+        XCTAssertTrue(follow.needsReveal(to: pin(contentHeight: 1100, offset: 690, atBottom: false)))
+        XCTAssertFalse(follow.needsReveal(to: pin(contentHeight: 1100, offset: 800)))
+        // The reader scrolls up; later growth leaves them where they are.
+        XCTAssertFalse(follow.needsReveal(to: pin(contentHeight: 1100, offset: 500, atBottom: false), scrolling: true))
+        XCTAssertFalse(follow.needsReveal(to: pin(contentHeight: 1200, offset: 500, atBottom: false)))
+    }
+
+    func testOpenedFollowEndsWhenTheReaderMovesUpWithoutDrag() {
+        let follow = TimelinePinBox()
+        follow.opened()
+        XCTAssertFalse(follow.needsReveal(to: pin()))
+        // Momentum after a drag ends, with nothing growing.
+        XCTAssertFalse(follow.needsReveal(to: pin(offset: 400, atBottom: false)))
+        XCTAssertFalse(follow.needsReveal(to: pin(contentHeight: 944, offset: 400, atBottom: false)))
+    }
+
+    func testLoadingOlderEndsOpenedFollow() {
+        let follow = TimelinePinBox()
+        follow.opened()
+        XCTAssertFalse(follow.needsReveal(to: pin(height: 900, contentHeight: 600, offset: 0)))
+        follow.leftEnd()
+        XCTAssertFalse(follow.needsReveal(to: pin(height: 900, contentHeight: 1500, offset: 0, atBottom: false, firstID: "older")))
+        XCTAssertFalse(follow.needsReveal(to: pin(height: 900, contentHeight: 1600, offset: 0, atBottom: false, firstID: "older")))
+    }
+
     func testUpwardScrollWithLazyGrowthCancelsUnmeasuredRowUpdate() {
         let follow = TimelinePinBox()
         XCTAssertFalse(follow.needsReveal(to: pin()))

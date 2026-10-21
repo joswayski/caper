@@ -3795,6 +3795,7 @@ private struct ChatView: View {
     private func loadOlder() {
         let first = chat.channelMessages.first?.id
         olderAnchor = timelineEntries.first?.scrollID
+        timelinePin.leftEnd()
         Task {
             await chat.loadOlder()
             // Nothing was added (an error, or a load already running): forget it.
@@ -4168,6 +4169,7 @@ private struct ChatView: View {
                         // the end too; the first layout measures the top before this runs.
                         let opening = old == id && !chat.hasNewer
                         let replaced = old.map { old in !chat.channelMessages.contains { $0.id == old } } ?? true
+                        if opening || replaced { timelinePin.opened() }
                         if opening || replaced || timelinePin.atBottom { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
@@ -4180,6 +4182,7 @@ private struct ChatView: View {
                 .onChange(of: chat.focusRevision) { _, _ in
                     // A jump replaces the history window; it is not an older page.
                     olderAnchor = nil
+                    if chat.focusedMessageID != nil { timelinePin.leftEnd() }
                     if let id = chat.focusedMessageID, chat.channelMessages.contains(where: { $0.id == id }) {
                         revealedBlocked.insert(id)
                         Task { @MainActor in
@@ -4703,6 +4706,7 @@ private struct NativeThreadView: View {
     private func loadOlderReplies() {
         let first = chat.threadMessages.first?.id
         olderAnchor = entries(replies).first?.scrollID
+        timelinePin.leftEnd()
         Task {
             await chat.loadThread(older: true)
             if chat.threadMessages.first?.id == first { olderAnchor = nil }
@@ -4838,6 +4842,7 @@ private struct NativeThreadView: View {
                     // loaded, old == id) and your own reply always show the latest.
                     let opening = old == id && !chat.threadHasNewer
                     let replaced = old.map { old in !replies.contains { $0.id == old } } ?? true
+                    if opening || replaced { timelinePin.opened() }
                     if opening || replaced || timelinePin.atBottom || replies.last?.clientMessageId == localReplyID { proxy.scrollTo(id, anchor: .bottom) }
                 }
                 .onChange(of: chat.pendingMessage?.id) { _, id in
@@ -4850,6 +4855,7 @@ private struct NativeThreadView: View {
                     proxy.scrollTo(anchor, anchor: .top)
                 }
                     .onChange(of: chat.focusRevision, initial: true) { _, _ in
+                        if chat.focusedMessageID != nil { timelinePin.leftEnd() }
                         if let id = chat.focusedMessageID, replies.contains(where: { $0.id == id }) {
                             revealedBlocked.insert(id)
                             Task { @MainActor in

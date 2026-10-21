@@ -17,7 +17,15 @@ struct TimelinePin: Equatable {
 final class TimelinePinBox {
     private var last: TimelinePin?
     private var updatedAtBottom = false
-    var atBottom: Bool { updatedAtBottom || (last?.atBottom ?? true) }
+    /// Opened at the end: rows measured or loaded afterwards (lazy heights,
+    /// link card images on a cold launch) keep the end in view until the reader scrolls.
+    private var opening = false
+    var atBottom: Bool { opening || updatedAtBottom || (last?.atBottom ?? true) }
+
+    /// The conversation was just opened (or its history replaced) at the end.
+    func opened() { opening = true }
+    /// Older history or a jump takes the reader away from the end.
+    func leftEnd() { opening = false; updatedAtBottom = false }
 
     /// SwiftUI can report new reactions before their chips have been measured.
     /// Retain the reader's bottom position across those separate layout passes,
@@ -29,6 +37,7 @@ final class TimelinePinBox {
         // measuring, but discard pending follow so it cannot replay afterward.
         guard !scrolling else {
             updatedAtBottom = false
+            opening = false
             return false
         }
         guard let last, last.firstID == pin.firstID else {
@@ -38,6 +47,12 @@ final class TimelinePinBox {
         let rowsChanged = pin.recent != last.recent
         let sizeChanged = pin.height != last.height || pin.contentHeight != last.contentHeight
         let scrolledAway = pin.height == last.height && pin.offset < last.offset - 1 && !pin.atBottom
+        if opening {
+            // Rows above settling can move the offset too; only a still
+            // extent moving up is the reader leaving the end.
+            if scrolledAway && pin.contentHeight == last.contentHeight { opening = false }
+            else { return sizeChanged }
+        }
         if scrolledAway {
             // Lazy rows can be measured in the same pass as an upward scroll.
             // Their new height must not prolong a pending reaction reveal.
