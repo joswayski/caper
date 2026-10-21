@@ -50,6 +50,13 @@ vi.mock("./client.ts", async (importOriginal) => {
     setSounds() {}
     refreshProfiles() {}
     setTyping() {}
+    async openThread(rootId: string) {
+      this.emit({ thread: { rootId, loading: true, loadingOlder: false, hasMore: false } });
+    }
+    async prefetchThread() {}
+    closeThread() {
+      this.emit({ thread: undefined });
+    }
   }
   return { ...actual, ChatClient };
 });
@@ -103,6 +110,7 @@ const counts = () => history.messages.map((entry) => fixture.renders.get(text(Nu
 
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}", { status: 404 }));
   fixture.renders.clear();
   fixture.clients.length = 0;
   container = document.createElement("div");
@@ -113,6 +121,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  vi.restoreAllMocks();
 });
 
 test("voice, presence, typing and composer updates leave unchanged message rows alone", async () => {
@@ -158,4 +167,53 @@ test("voice, presence, typing and composer updates leave unchanged message rows 
   const row = container.querySelector(`.chat-message[data-message-key="${arriving.clientMessageId}"]`);
   expect(row?.classList.contains("chat-message-arrive")).toBe(true);
   expect(counts()).toEqual(afterEdit);
+});
+
+test.each([false, true])("Reply focuses within the click, including a repeated target (menu: %s)", async (menu) => {
+  await render(<Chat name="Viewer" signedIn identityReady channelId="channel" initialHistory={history} />);
+  await act(async () => fixture.clients.at(-1)!.emit({ phase: "ready", author: history.messages[0].author }));
+  const row = container.querySelector(".chat-message[data-message-key]")!;
+  const input = container.querySelector<HTMLTextAreaElement>("#chat-message")!;
+  for (let repeat = 0; repeat < 2; repeat++) {
+    input.blur();
+    if (menu) {
+      await act(async () => row.querySelector<HTMLButtonElement>(".chat-message-actions-trigger")!.click());
+    }
+    const button = menu
+      ? [...document.querySelectorAll<HTMLButtonElement>(".chat-message-actions button")].find(
+          (button) => button.textContent?.trim() === "Reply",
+        )!
+      : row.querySelector<HTMLButtonElement>(".chat-reply-message")!;
+    await act(async () => {
+      button.click();
+      // Waiting for a frame would pass on desktop but lose iOS's keyboard activation.
+      expect(document.activeElement).toBe(input);
+    });
+    expect(document.activeElement).toBe(input);
+    expect(container.querySelector(".chat-reply-draft")?.textContent).toContain(history.messages[0].content.text);
+  }
+});
+
+test.each([false, true])("Reply in thread focuses before history arrives (menu: %s)", async (menu) => {
+  await render(<Chat name="Viewer" signedIn identityReady channelId="channel" initialHistory={history} />);
+  await act(async () => fixture.clients.at(-1)!.emit({ phase: "ready", author: history.messages[0].author }));
+  const row = container.querySelector(".chat-message[data-message-key]")!;
+  if (menu) {
+    await act(async () => row.querySelector<HTMLButtonElement>(".chat-message-actions-trigger")!.click());
+  }
+  const button = menu
+    ? [...document.querySelectorAll<HTMLButtonElement>(".chat-message-actions button")].find(
+        (button) => button.textContent?.trim() === "Reply in thread",
+      )!
+    : row.querySelector<HTMLButtonElement>(".chat-reply-thread")!;
+  await act(async () => {
+    button.click();
+    const input = container.querySelector<HTMLTextAreaElement>("#chat-thread-reply")!;
+    expect(input).not.toBeNull();
+    expect(input.disabled).toBe(false);
+    expect(document.activeElement).toBe(input);
+  });
+  expect(document.activeElement?.id).toBe("chat-thread-reply");
+  expect(container.querySelector(".chat-thread-messages")?.getAttribute("aria-busy")).toBe("true");
+  expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send reply"]')!.disabled).toBe(true);
 });

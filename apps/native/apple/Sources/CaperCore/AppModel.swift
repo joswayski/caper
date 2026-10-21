@@ -2974,6 +2974,27 @@ public final class ChatModel {
     }
 
     public var replyTargets: [String: MessageReply] = [:]
+    public private(set) var composerFocusRequest: UUID?
+    private var composerFocusRoot: String?
+    public func composerFocusRequest(inThread: Bool) -> UUID? {
+        guard inThread ? threadRootID != nil && composerFocusRoot == threadRootID : composerFocusRoot == nil else { return nil }
+        return composerFocusRequest
+    }
+    public func consumeComposerFocus(_ request: UUID) {
+        if composerFocusRequest == request { composerFocusRequest = nil }
+    }
+    /// Unlike opening a thread to browse, this is an explicit composing intent.
+    public func replyInThread(to message: ChatMessage) {
+        guard message.channelId == channelID else { return }
+        let root = message.threadRootId ?? message.id
+        composerFocusRoot = root
+        composerFocusRequest = canInteract && delivery.pending == nil ? UUID() : nil
+        let request = composerFocusRequest
+        Task {
+            guard composerFocusRequest == request else { return }
+            await openThread(root)
+        }
+    }
     public var threadLoading = false
     public var threadHasMore = false
     public var threadHasNewer = false
@@ -3530,7 +3551,10 @@ public final class ChatModel {
         }
     }
 
-    public func closeThread() { threadRequest += 1; threadRootID = nil; threadLoading = false }
+    public func closeThread() {
+        if composerFocusRoot != nil { composerFocusRequest = nil }
+        threadRequest += 1; threadRootID = nil; threadLoading = false
+    }
 
     public func goToMessage(_ message: ChatMessage) async -> Bool {
         await goToMessage(id: message.id, channelID: message.channelId, threadRootID: message.threadRootId)
@@ -3588,6 +3612,7 @@ public final class ChatModel {
 
     public func openThread(_ rootID: String, around: String? = nil) async {
         guard around != nil || threadRootID != rootID else { return }
+        if composerFocusRoot != rootID { composerFocusRequest = nil }
         threadRequest += 1
         threadRootID = rootID; threadError = nil
         for file in threadAttachmentDrafts where file.needsUpload { retryAttachmentDraft(id: file.id) }
@@ -3633,7 +3658,15 @@ public final class ChatModel {
         guard !inThread || threadRootID != nil else { return }
         let root = inThread ? threadRootID : (message.isChannelMessage ? nil : message.threadRootId)
         replyTargets[root ?? "channel"] = MessageReply(message: message)
-        if !inThread, let root { Task { await openThread(root) } }
+        composerFocusRoot = root; composerFocusRequest = UUID()
+        if root == nil { closeThread() }
+        if !inThread, let root {
+            let request = composerFocusRequest
+            Task {
+                guard composerFocusRequest == request else { return }
+                await openThread(root)
+            }
+        }
     }
 
     /// `gif` sends a KLIPY GIF as its own message: no text or files, and the
@@ -4359,6 +4392,7 @@ public final class ChatModel {
         failedPinActions = [:]
         closeThread(); threadPages = [:]; threadOnlyRows = []
         replyTargets = [:]
+        composerFocusRequest = nil; composerFocusRoot = nil
         isPreview = false
         session = nil; channelID = nil; spaceID = nil; messages = []; draft = ""; hasMore = false
         hasNewer = false; loadingNewer = false; windowStart = nil; windowEnd = nil

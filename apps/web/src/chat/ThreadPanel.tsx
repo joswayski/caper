@@ -810,7 +810,8 @@ export default function ThreadPanel({
                 enterKeyHint="send"
                 aria-describedby="chat-thread-composer-hint"
                 {...suggestions.textarea}
-                disabled={state.phase !== "ready" || state.thread.loading}
+                // Typing can start while history loads; submit still waits for it.
+                disabled={state.phase !== "ready"}
                 onChange={(event) => {
                   update({ text: event.target.value });
                   suggestions.change(event.target);

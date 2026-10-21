@@ -1994,14 +1994,30 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun closeThread() { uploadSend?.cancel(); ++threadRequest; mutable.value = mutable.value.copy(thread = null) }
+    fun closeThread() { uploadSend?.cancel(); ++threadRequest; mutable.value = mutable.value.copy(thread = null, composerFocusRequest = null) }
+
+    fun replyInThread(message: ChatMessage) {
+        val state = mutable.value
+        if (message.channelId != state.selectedChannel?.id) return
+        val root = message.threadRootId ?: message.id
+        openThread(root)
+        if (state.canParticipate && state.pendingMessage == null) requestComposerFocus(message.channelId, root)
+    }
+
+    private fun requestComposerFocus(channelId: String, root: String?) {
+        mutable.value = mutable.value.copy(composerFocusRequest = chat.caper.android.model.ComposerFocusRequest(channelId, root, java.util.UUID.randomUUID().toString()))
+    }
+
+    fun consumeComposerFocus(id: String) {
+        if (mutable.value.composerFocusRequest?.id == id) mutable.value = mutable.value.copy(composerFocusRequest = null)
+    }
 
     fun openThread(root: String) {
         if (mutable.value.thread?.rootId == root) return
         uploadSend?.cancel()
         ++threadRequest
         val cached = threadPages[root]
-        mutable.value = mutable.value.copy(thread = cached ?: ThreadUi(root))
+        mutable.value = mutable.value.copy(thread = cached ?: ThreadUi(root), composerFocusRequest = null)
         mutable.value.selectedChannel?.id?.let { renewDraftUploads(it) }
         if (cached == null) loadThread()
     }
@@ -2050,6 +2066,8 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             fullText = text.takeIf { it.codePointCount(0, it.length) > 200 }, attachments = message.content.attachments)
         mutable.value = state.copy(replyTargets = state.replyTargets + (key to reference))
         if (!inThread && root != null) openThread(root)
+        if (root == null && mutable.value.thread != null) closeThread()
+        requestComposerFocus(message.channelId, root)
     }
 
     fun cancelReply(root: String = "channel") { mutable.value = mutable.value.copy(replyTargets = mutable.value.replyTargets - root) }
@@ -3877,7 +3895,7 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
             selectedChannel = null, selectedDirectId = null, messages = emptyList(), typingAuthors = emptyList(), presence = emptyMap(),
             channelVisitUnread = null,
             visit = null, feedbackShown = false,
-            thread = null, threadOnlyRows = emptySet(), replyTargets = emptyMap(),
+            thread = null, threadOnlyRows = emptySet(), replyTargets = emptyMap(), composerFocusRequest = null,
             contextStart = null, contextEnd = null, hasNewerMessages = false, loadingNewer = false,
             focusedMessageId = null, loadingMessageContext = false, messageContextError = null,
             loadingOlder = false, olderError = null, messagesLoading = false, messagesError = null, refreshError = null,

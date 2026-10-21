@@ -1637,7 +1637,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     }, Modifier.weight(1f), fontSize = 12.sp)
                 }
                 VoiceRecordingNotice(recorder)
-                SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send) { field, change, actions ->
+                SuggestingComposer(draft, { draft = it }, mentionSource(state), thread.rootId, ::send,
+                    focusRequest = state.composerFocusRequest?.takeIf { it.channelId == state.selectedChannel?.id && it.rootId == thread.rootId },
+                    focusEnabled = !thread.loading, consumeFocus = viewModel::consumeComposerFocus) { field, change, actions ->
                     Box(Modifier.voiceRecordingKeys(recorder)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                             EmojiTextField(draft, change, Modifier.weight(1f).attachmentPaste(canAttach) { viewModel.addAttachments(it, target) }.then(field), placeholder = { Text("Reply to thread…", maxLines = 1, overflow = TextOverflow.Ellipsis) }, maxLines = 5,
@@ -1944,7 +1946,9 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
                     val edited = it.text != draft.text
                     updateDraft(it); viewModel.reportActivity()
                     if (edited) viewModel.setTyping(it.text.isNotBlank())
-                }, mentionSource(state), channel.id, ::submit) { field, change, actions ->
+                }, mentionSource(state), channel.id, ::submit,
+                    focusRequest = state.composerFocusRequest?.takeIf { it.channelId == channel.id && it.rootId == null && state.thread == null },
+                    consumeFocus = viewModel::consumeComposerFocus) { field, change, actions ->
                     Box(Modifier.voiceRecordingKeys(recorder)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                             EmojiTextField(
@@ -2008,11 +2012,28 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
  * While it is open Up/Down move, Enter or Tab inserts and Escape dismisses; otherwise a hardware Enter without
  * Shift sends (Shift+Enter keeps the newline), like the keyboard's Send action.
  */
-@Composable private fun SuggestingComposer(
+@Composable internal fun SuggestingComposer(
     draft: TextFieldValue, onDraft: (TextFieldValue) -> Unit, mentions: MentionSource, scope: Any?, send: () -> Unit,
+    focusRequest: chat.caper.android.model.ComposerFocusRequest? = null,
+    focusEnabled: Boolean = true, consumeFocus: (String) -> Unit = {},
     content: @Composable (field: Modifier, change: (TextFieldValue) -> Unit, actions: KeyboardActions) -> Unit,
 ) {
     val context = LocalContext.current
+    val view = androidx.compose.ui.platform.LocalView.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val requester = remember(scope) { androidx.compose.ui.focus.FocusRequester() }
+    LaunchedEffect(focusRequest, focusEnabled) {
+        val request = focusRequest ?: return@LaunchedEffect
+        if (!focusEnabled) return@LaunchedEffect
+        // Modal sheets own the window until disposed. Wait for the destination's
+        // window and mounted/enabled field, not an arbitrary animation delay.
+        do { withFrameNanos { } } while (!view.hasWindowFocus())
+        if (requester.requestFocus()) {
+            withFrameNanos { }
+            keyboard?.show()
+            consumeFocus(request.id)
+        }
+    }
     val catalog = remember { EmojiArtwork.catalog(context) }
     var dismissedAt by remember(scope) { mutableStateOf<TextFieldValue?>(null) }
     var focused by remember(scope) { mutableStateOf(false) }
@@ -2059,7 +2080,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
         }
     }
     content(
-        Modifier.onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent { event ->
+        Modifier.focusRequester(requester).onFocusChanged { focused = it.isFocused }.onPreviewKeyEvent { event ->
             val enter = event.key == Key.Enter || event.key == Key.NumPadEnter
             if (event.type != KeyEventType.KeyDown) false
             // A hardware Enter outside IME composition sends; the text field never sees it.
@@ -2446,7 +2467,7 @@ internal fun presenceLabel(status: String?, live: Boolean): String =
             setReaction = viewModel::setReaction,
             openPicker = { actionTarget = null; pickerTarget = presented },
             setPin = { id, active -> viewModel.setPin(id, active); actionTarget = null },
-            onReply = if (inThread) null else ({ actionTarget = null; viewModel.openThread(presented.threadRootId ?: presented.id) }),
+            onReply = if (inThread) null else ({ actionTarget = null; viewModel.replyInThread(presented) }),
             onReplyMessage = if (state.canParticipate && state.pendingMessage == null) ({ actionTarget = null; viewModel.replyTo(presented, inThread) }) else null,
             forward = { actionTarget = null; forwardTarget = presented },
             onEdit = if (viewModel.canEdit(presented)) ({ actionTarget = null; editTarget = presented }) else null,
@@ -2987,7 +3008,7 @@ private val quickReactions = listOf("👍", "❤️", "😂")
         MessageActionsSheet(current, state, onDismiss = { actionTarget = null }, setReaction = viewModel::setReaction,
             openPicker = { actionTarget = null; pickerTarget = current },
             setPin = { id, active -> actionTarget = null; viewModel.setPin(id, active) },
-            onReply = { actionTarget = null; close(); viewModel.openThread(current.threadRootId ?: current.id) },
+            onReply = { actionTarget = null; close(); viewModel.replyInThread(current) },
             onReplyMessage = { actionTarget = null; close(); viewModel.replyTo(current) },
             forward = { actionTarget = null; forwardTarget = current },
             onEdit = if (viewModel.canEdit(current)) ({ actionTarget = null; editTarget = current }) else null,

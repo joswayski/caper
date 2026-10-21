@@ -642,6 +642,11 @@ final class CaperParityUITests: XCTestCase {
             default:
                 try require(app.buttons["Cancel reply"], timeout: 5,
                             "Tapping the row's blank right side must start a reply")
+                let composer = try require(app.textViews["message-composer"], timeout: 5, "Missing reply composer")
+                XCTAssertTrue(hasKeyboardFocus(composer, timeout: 5), "Reply must focus without tapping the input")
+                XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "Reply must open the keyboard")
+                composer.typeText("Ready to reply")
+                XCTAssertEqual(composer.value as? String, "Ready to reply")
             }
             let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sheet)
             XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 5), .completed,
@@ -829,7 +834,8 @@ final class CaperParityUITests: XCTestCase {
         // By label: the channel's composer is still in the tree too.
         let composer = try require(app.textViews.matching(NSPredicate(format: "label BEGINSWITH %@", "Reply to thread")).firstMatch,
                                    timeout: 5, "Missing thread composer")
-        XCTAssertTrue(focus(composer))
+        XCTAssertTrue(hasKeyboardFocus(composer, timeout: 5), "Reply in thread must focus without tapping the input")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "Reply in thread must open the keyboard")
         composer.typeText("Short reply")
         let send = app.buttons["Send reply"]
         XCTAssertEqual(composer.frame.height, 42, accuracy: 2)
