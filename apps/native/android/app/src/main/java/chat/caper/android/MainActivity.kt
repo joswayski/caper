@@ -3455,7 +3455,7 @@ internal fun insertEmojiAtSelection(value: TextFieldValue, emoji: String): TextF
         LaunchedEffect(Unit) { AttachDrawerCache.warm(context) }
         IconButton({ open = true; interaction(true) }, Modifier.size(48.dp).semantics {
             contentDescription = "Attach files"
-            (disabledReason?.takeIf { it != limitReason } ?: AttachCapacity.label(drawer.files.size))?.let { stateDescription = it }
+            (disabledReason?.takeIf { it != limitReason } ?: AttachCapacity.hint(drawer.files.size))?.let { stateDescription = it }
         }, enabled = enabled) {
             Icon(painterResource(R.drawable.lucide_plus), null, Modifier.size(20.dp),
                 tint = if (!enabled) TextMuted.copy(alpha = 0.4f) else if (open) Text else TextMuted)

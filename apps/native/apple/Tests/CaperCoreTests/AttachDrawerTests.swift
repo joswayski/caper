@@ -7,12 +7,10 @@ final class AttachDrawerTests: XCTestCase {
     }
 
     func testCapacityShowsOnlyAtTheLimitAsOnWeb() {
-        XCTAssertNil(AttachCapacity.label(0))
-        XCTAssertNil(AttachCapacity.label(9))
-        XCTAssertEqual(AttachCapacity.label(10), "10 of 10 attached")
-        XCTAssertEqual(AttachCapacity.label(12), "10 of 10 attached")
+        XCTAssertNil(AttachCapacity.hint(0))
         XCTAssertNil(AttachCapacity.hint(9))
         XCTAssertEqual(AttachCapacity.hint(10), "Remove a file to add another.")
+        XCTAssertEqual(AttachCapacity.hint(12), "Remove a file to add another.")
     }
 
     func testCopiesJoinTheDraftInTapOrder() {

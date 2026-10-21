@@ -2,9 +2,6 @@ package chat.caper.android.data
 
 /** The attach drawer's limit line, worded as on every client (web chat/attach.ts). Drafts below the limit show nothing. */
 object AttachCapacity {
-    fun label(attached: Int, max: Int = AttachmentPolicy.MAX_ATTACHMENTS): String? =
-        if (attached >= max) "$max of $max attached" else null
-
     /** How to make room once full. */
     fun hint(attached: Int, max: Int = AttachmentPolicy.MAX_ATTACHMENTS): String? =
         if (attached >= max) "Remove a file to add another." else null

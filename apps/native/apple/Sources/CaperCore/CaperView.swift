@@ -6305,10 +6305,7 @@ private struct MentionCardView: View {
                 #else
                 // One unfiltered "Upload a file", as on the desktop clients; at the limit it says so.
                 Menu {
-                    if let limit = AttachCapacity.label(draft.files.count) {
-                        Text(limit)
-                        if let hint = AttachCapacity.hint(draft.files.count) { Text(hint) }
-                    }
+                    if let hint = AttachCapacity.hint(draft.files.count) { Text(hint) }
                     Button { draft.presentingDialog = true; showingFiles = true } label: {
                         Label("Upload a file", systemImage: "arrow.up.doc")
                     }

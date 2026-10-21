@@ -2482,8 +2482,9 @@ does.
 - **Width**: mobile attachment drawers reach both window edges, without floating
   side gutters; controls retain safe-area padding. Android and touch web do not
   cap the drawer width on tablets or landscape layouts. Desktop menus are unchanged.
-- **Limit line**: nothing below the limit. At 10 files it shows ten terracotta
-  pips, "10 of 10 attached" and "Remove a file to add another." The drawer and
+- **Limit line**: nothing below the limit. At 10 files it shows only
+  "Remove a file to add another." There is no duplicate count or pip meter;
+  selected gallery tiles and staged composer previews remain. The drawer and
   menu stay openable at the limit. Choosing anything then shakes the line sideways (4 px,
   `--motion-slow`, none under reduced motion) and, on phones, buzzes, instead
   of opening a picker that couldn't add anything.

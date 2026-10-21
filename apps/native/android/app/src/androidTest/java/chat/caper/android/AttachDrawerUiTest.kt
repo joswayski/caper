@@ -98,7 +98,7 @@ class AttachDrawerUiTest {
             compose.runOnIdle {
                 files.value = (0 until 10).map { DraftAttachmentUi("full-$it", "file.txt", "file") }
             }
-            compose.onNodeWithText("10 of 10 attached").assertExists()
+            compose.onNodeWithText("of 10 attached", substring = true).assertDoesNotExist()
             compose.onNodeWithText("Remove a file to add another.").assertExists()
             tiles[2].performClick()
             compose.runOnIdle { assertEquals(10, files.value.size) }

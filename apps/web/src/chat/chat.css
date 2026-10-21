@@ -2566,34 +2566,14 @@ html:has(.chat-attach-overlay) {
 .chat-attach-drawer:not(.chat-attach-drawer-sheet) .chat-attach-options button {
   font-size: 0.875rem;
 }
-.chat-attach-meter {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--terracotta-bright);
-  font-size: 0.75rem;
-}
 .chat-attach-hint {
   grid-column: 1 / -1;
   margin: 0;
   color: var(--text-muted);
   font-size: 0.75rem;
 }
-.chat-attach-drawer-sheet .chat-attach-meter,
 .chat-attach-drawer-sheet .chat-attach-hint {
   font-size: 0.82rem;
-}
-.chat-attach-pips {
-  display: flex;
-  gap: 3px;
-}
-/* Shown only for a full draft, so every pip is lit. */
-.chat-attach-pips i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--terracotta);
 }
 .chat-attach-close {
   grid-column: 3;

@@ -102,7 +102,7 @@
 .chat-typing-content {
   animation: caper-rise-in var(--motion-fast) var(--ease-out);
 }
-.chat-attach-meter[data-nudge] {
+.chat-attach-hint[data-nudge] {
   animation: caper-limit-nudge var(--motion-slow) var(--ease-out);
 }
 /* The connection notice, shown after a second offline, fades in rather than blinking on. */
@@ -177,7 +177,7 @@
   .chat-reactors:not(.chat-reactors-drawer),
   .chat-attach-drawer,
   .chat-attach-drawer:not(.chat-attach-drawer-sheet),
-  .chat-attach-meter[data-nudge],
+  .chat-attach-hint[data-nudge],
   .chat-reaction-tooltip,
   .chat-emoji-tooltip,
   .top-layer-tooltip:popover-open,
