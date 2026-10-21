@@ -2619,7 +2619,7 @@ internal fun followScroll(follow: TimelineFollow, ready: Boolean, now: FollowFra
     }
 }
 
-/** Applies [followScroll] before the next measure, so nothing flashes at the old position, and keeps a reader at the bottom when the viewport shrinks (the keyboard opening). */
+/** Applies [followScroll] before the next measure, so nothing flashes at the old position, and keeps a reader at the bottom when the viewport shrinks (the keyboard opening) or a shown row grows. */
 @Composable private fun FollowLatest(list: LazyListState, follow: TimelineFollow, now: FollowFrame, firstRow: Int, lastIndex: Int, ready: Boolean, displacement: TimelineDisplacement) {
     val threshold = with(LocalDensity.current) { 80.dp.roundToPx() }
     val still = reducedMotion()
@@ -2659,10 +2659,15 @@ internal fun followScroll(follow: TimelineFollow, ready: Boolean, now: FollowFra
     LaunchedEffect(list, follow, displacement) {
         var height = 0
         var near = true
+        var sizes = emptyMap<Any, Int>()
         snapshotFlow { list.layoutInfo }.collect { info ->
             val shrank = info.viewportSize.height < height
             height = info.viewportSize.height
-            if (shrank && near && follow.settled && follow.last?.historical == false && info.totalItemsCount > 0) {
+            // A shown row measured taller (embeds arriving, a card loading after opening) pushes the end down.
+            val grew = info.visibleItemsInfo.any { item -> sizes[item.key]?.let { item.size > it } == true }
+            sizes = info.visibleItemsInfo.associate { it.key to it.size }
+            val live = follow.settled && follow.last?.historical == false && info.totalItemsCount > 0
+            if (live && near && (shrank || grew && !list.isScrollInProgress && !info.nearBottom(0))) {
                 displacement.clear()
                 list.requestScrollToItem(info.totalItemsCount - 1, PAST_END)
             }
