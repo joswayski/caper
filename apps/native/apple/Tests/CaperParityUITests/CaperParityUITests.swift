@@ -3256,6 +3256,57 @@ final class CaperParityUITests: XCTestCase {
     }
 
     #if os(iOS)
+    /// Reopening Browse must retain a deliberately scrolled DM pane and its
+    /// saved split, rather than restoring either as part of the horizontal slide.
+    func testBrowseKeepsScrolledDirectMessagesAndSavedDivider() throws {
+        let app = Self.configuredApp()
+        // Leave the DM pane at its minimum: even the fixture's short list scrolls.
+        app.launchArguments += ["-caper.channelSidebarChannelsShare", "1"]
+        app.launch()
+        launchedApp = app
+        let navigation = try require(app.buttons["Back to Browse"], timeout: 30, "Missing conversation")
+        navigation.tap()
+        let close = try require(app.buttons["Close navigation"], timeout: 5, "Missing Browse")
+        let divider = try require(app.descendants(matching: .any)["sidebar-sections-resize"], timeout: 5, "Missing sidebar divider")
+        let newMessage = try require(app.buttons["new-message"], timeout: 5, "Missing New message row")
+        let dividerY = divider.frame.midY
+        let beforeScrollY = newMessage.frame.minY
+        let origin = app.coordinate(withNormalizedOffset: .zero)
+        let bottom = origin.withOffset(CGVector(dx: app.frame.width * 0.6, dy: divider.frame.maxY + 80))
+        bottom.press(forDuration: 0.01,
+                     thenDragTo: bottom.withOffset(CGVector(dx: 0, dy: -60)),
+                     withVelocity: .slow, thenHoldForDuration: 0.2)
+        Thread.sleep(forTimeInterval: 0.6)
+        XCTAssertTrue(close.isHittable, "Vertical scrolling stays in Browse")
+        XCTAssertTrue(newMessage.isHittable)
+        let scrolledY = newMessage.frame.minY
+        XCTAssertLessThan(scrolledY, beforeScrollY - 10, "Exercise an actual nonzero DM scroll offset")
+        XCTAssertEqual(divider.frame.midY, dividerY, accuracy: 2, "Scrolling DMs must not resize their pane")
+
+        for useSwipe in [false, true, true] {
+            if useSwipe {
+                let start = origin.withOffset(CGVector(dx: app.frame.width * 0.85, dy: newMessage.frame.midY))
+                start.press(forDuration: 0.01,
+                            thenDragTo: start.withOffset(CGVector(dx: -app.frame.width * 0.7, dy: 0)),
+                            withVelocity: .fast, thenHoldForDuration: 0)
+            } else { close.tap() }
+            XCTAssertTrue(navigation.waitForExistence(timeout: 3))
+            if useSwipe {
+                let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.3))
+                start.press(forDuration: 0.01,
+                            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.3)),
+                            withVelocity: .fast, thenHoldForDuration: 0)
+            } else { navigation.tap() }
+            XCTAssertTrue(close.waitForExistence(timeout: 3))
+            XCTAssertEqual(divider.frame.midY, dividerY, accuracy: 2, "Navigation preserves the saved split")
+            XCTAssertEqual(newMessage.frame.minY, scrolledY, accuracy: 2, "Navigation preserves the scrolled DM row")
+            Thread.sleep(forTimeInterval: 0.6)
+            XCTAssertEqual(newMessage.frame.minY, scrolledY, accuracy: 2, "The DM row must not drift after Browse reopens")
+            XCTAssertFalse(app.textFields["dm-username"].exists, "Swiping the row must not activate New message")
+        }
+        capture("browse-scrolled-direct-messages", app: app)
+    }
+
     /// The conversation moves with the finger, so a swipe lifts on the control
     /// it started on: opening Browse from a mention or an author must not also
     /// open their card (as swiping from an image opened the media viewer).
