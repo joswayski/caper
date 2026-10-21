@@ -250,8 +250,12 @@ class CaperViewModel(application: Application) : AndroidViewModel(application) {
                     // the first joined channel. selectSpace only reopens a still-joined one.
                     val saved = SpaceLandings.load(getApplication(), account.id)
                     val spaceId = initialSpaceId(list.spaces.map { it.id }, saved)
-                    if (saved?.channelId != null && saved.spaceId == spaceId) lastChannelBySpace[spaceId] = saved.channelId
-                    spaceId?.let { selectSpace(it) } ?: finishRestoring()
+                    if (spaceId == null) finishRestoring()
+                    else {
+                        val savedChannel = saved?.channelId
+                        if (savedChannel != null && saved.spaceId == spaceId) lastChannelBySpace[spaceId] = savedChannel
+                        selectSpace(spaceId)
+                    }
                 }
             } catch (error: Throwable) {
                 if (requestAccountGeneration == accountGeneration) {

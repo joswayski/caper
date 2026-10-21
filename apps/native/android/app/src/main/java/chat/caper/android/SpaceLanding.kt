@@ -2,6 +2,7 @@ package chat.caper.android
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 
 /**
  * The space and channel the account last opened, kept across launches like web's
@@ -31,10 +32,10 @@ internal object SpaceLandings {
 
     internal fun save(preferences: SharedPreferences, accountId: String, landing: SpaceLanding) {
         if (accountId.isEmpty() || landing.spaceId.isEmpty()) return
-        val editor = preferences.edit().putString("$accountId.space", landing.spaceId)
-        if (landing.channelId != null) editor.putString("$accountId.channel", landing.channelId)
-        else editor.remove("$accountId.channel")
-        editor.apply()
+        preferences.edit {
+            putString("$accountId.space", landing.spaceId)
+            if (landing.channelId != null) putString("$accountId.channel", landing.channelId) else remove("$accountId.channel")
+        }
     }
 }
 

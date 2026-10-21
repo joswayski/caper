@@ -996,6 +996,7 @@ fn session_result(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_navigation(
     api: &Api,
     token: Option<&str>,
