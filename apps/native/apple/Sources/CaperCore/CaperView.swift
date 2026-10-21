@@ -3778,7 +3778,7 @@ private struct ChatView: View {
     /// Reveal in the same update that clears the composer. Content geometry
     /// repeats this after lazy history resolves, without an extra task/frame.
     private func revealPending(_ proxy: ScrollViewProxy) {
-        guard let pending = chat.pendingMessage, pending.threadRootId == nil else { return }
+        guard !timelineScrolling, let pending = chat.pendingMessage, pending.threadRootId == nil else { return }
         proxy.scrollTo("pending-\(pending.id)", anchor: .bottom)
     }
     /// The newest message (or the pending send) at the bottom, as when one arrives.
@@ -4130,7 +4130,7 @@ private struct ChatView: View {
                     // Reactions grow existing rows; a draft or keyboard shrinks
                     // the viewport. Both retain a reader already at the bottom.
                     .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: firstID, recent: recentRows) } action: { pin in
-                        if timelinePin.needsReveal(to: pin) { revealLatest(proxy) }
+                        if timelinePin.needsReveal(to: pin, scrolling: timelineScrolling) { revealLatest(proxy) }
                     }
                 }
                 #if os(iOS)
@@ -4154,6 +4154,7 @@ private struct ChatView: View {
                 }
                 #endif
                 .onChange(of: chat.channelMessages.last?.id, initial: true) { old, id in
+                    guard !timelineScrolling else { return }
                     if chat.pendingMessage != nil { revealPending(proxy) }
                     else if chat.focusedMessageID == nil, let id {
                         // As on web, only local sends (revealPending) override the reader's
@@ -4813,7 +4814,7 @@ private struct NativeThreadView: View {
                     // Follow reaction height changes as well as a shorter viewport.
                     .onDisappear { model.threadVisibilityChanged(rootID: nil, seq: nil) }
                     .onGeometryChange(for: TimelinePin.self) { TimelinePin($0, viewport: MentionCard.timelineSpace, firstID: firstReplyID, recent: recentRows) } action: { pin in
-                        if timelinePin.needsReveal(to: pin), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
+                        if timelinePin.needsReveal(to: pin, scrolling: timelineScrolling), !chat.threadHasNewer, chat.focusedMessageID == nil, let id = replies.last?.id ?? chat.threadRootID { proxy.scrollTo(id, anchor: .bottom) }
                     }
                 }
                 #if os(iOS)
@@ -4827,7 +4828,7 @@ private struct NativeThreadView: View {
                 .coordinateSpace(.named(MentionCard.timelineSpace))
                 .modifier(MentionCardHost(target: $mentionCard, model: model, viewerID: viewerID))
                 .onChange(of: replies.last?.id, initial: true) { old, id in
-                    guard chat.focusedMessageID == nil, let id else { return }
+                    guard !timelineScrolling, chat.focusedMessageID == nil, let id else { return }
                     // As on web: another person's reply follows only a reader at the end;
                     // a newly opened thread (including one whose replies were already
                     // loaded, old == id) and your own reply always show the latest.

@@ -694,13 +694,23 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
         capture("composer-single-line-keyboard", app: app)
 
+        // Start at the live end: re-pinning there used to interrupt a partial
+        // dismissal. A small slow drag into the keyboard must spring back fully.
+        let openKeyboardTop = try keyboardTop(in: app)
+        let partialStart = app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: composer.frame.midX, dy: timeline.frame.maxY - 30))
+        partialStart.press(forDuration: 0.05, thenDragTo: partialStart.withOffset(CGVector(dx: 0, dy: openKeyboardTop - timeline.frame.maxY + 70)),
+                           withVelocity: .slow, thenHoldForDuration: 0.2)
+        XCTAssertEqual(try keyboardTop(in: app), openKeyboardTop, accuracy: 2,
+                       "Cancelling partial dismissal must not leave the keyboard halfway down")
         // A drag that never reaches the keyboard must not resign focus as soon
         // as scrolling starts. Continue through the keyboard to dismiss it.
         let dragStart = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
         dragStart.press(forDuration: 0.05, thenDragTo: dragStart.withOffset(CGVector(dx: 0, dy: 40)))
         XCTAssertTrue(app.keyboards.firstMatch.exists, "A short history drag must keep the keyboard open")
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
-        dragStart.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
+        dragStart.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)),
+                        withVelocity: .slow, thenHoldForDuration: 0.2)
         let scrollDismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [scrollDismissed], timeout: 5), .completed,
                        "Dragging message history through the keyboard must dismiss it")
@@ -860,11 +870,19 @@ final class CaperParityUITests: XCTestCase {
         capture("thread-composer-single-line-keyboard", app: app)
 
         let timeline = try XCTUnwrap(visible(app.scrollViews), "Missing the visible thread timeline")
+        let openKeyboardTop = try keyboardTop(in: app)
+        let partialStart = app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: composer.frame.midX, dy: timeline.frame.maxY - 30))
+        partialStart.press(forDuration: 0.05, thenDragTo: partialStart.withOffset(CGVector(dx: 0, dy: openKeyboardTop - timeline.frame.maxY + 70)),
+                           withVelocity: .slow, thenHoldForDuration: 0.2)
+        XCTAssertEqual(try keyboardTop(in: app), openKeyboardTop, accuracy: 2,
+                       "Cancelling thread keyboard dismissal must restore the fully open keyboard")
         let dragStart = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3))
         dragStart.press(forDuration: 0.05, thenDragTo: dragStart.withOffset(CGVector(dx: 0, dy: 40)))
         XCTAssertTrue(app.keyboards.firstMatch.exists, "A short thread drag must keep the keyboard open")
         XCTAssertEqual(try keyboardTop(in: app) - send.frame.maxY, 16, accuracy: 2)
-        dragStart.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
+        dragStart.press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)),
+                        withVelocity: .slow, thenHoldForDuration: 0.2)
         let scrollDismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
         XCTAssertEqual(XCTWaiter.wait(for: [scrollDismissed], timeout: 5), .completed,
                        "Dragging thread history through the keyboard must dismiss it, even without replies")

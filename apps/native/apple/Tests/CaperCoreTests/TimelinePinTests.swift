@@ -40,6 +40,34 @@ final class TimelinePinTests: XCTestCase {
         XCTAssertTrue(follow.needsReveal(to: pin(contentHeight: 944, atBottom: false, reacted: true)))
     }
 
+    func testInteractiveKeyboardDismissalAndReversalDoNotRepin() {
+        for reacted in [false, true] {
+            for finalHeight: CGFloat in [300, 600] {
+                let follow = TimelinePinBox()
+                XCTAssertFalse(follow.needsReveal(to: pin()))
+                XCTAssertFalse(follow.needsReveal(to: pin(reacted: reacted)))
+                // The keyboard follows the finger down, then back up. The
+                // reader may still be within the bottom tolerance at first.
+                for height: CGFloat in [420, 460, 360] {
+                    XCTAssertFalse(follow.needsReveal(to: pin(height: height, offset: 890 - height,
+                                                             reacted: reacted), scrolling: true),
+                                   "A viewport resize during a drag must not issue scrollTo")
+                }
+                // Either cancel dismissal or finish it while leaving the end.
+                let settled = pin(height: finalHeight, offset: 800 - finalHeight, atBottom: false, reacted: reacted)
+                XCTAssertFalse(follow.needsReveal(to: settled, scrolling: true))
+                XCTAssertFalse(follow.atBottom, "The drag must cancel pending reaction follow")
+                // Even a delayed layout arriving as scrolling ends must not
+                // replay follow from before the drag.
+                XCTAssertFalse(follow.needsReveal(to: pin(height: finalHeight, contentHeight: 944,
+                                                         offset: 800 - finalHeight, atBottom: false, reacted: reacted)))
+                // Returning to the end restores ordinary keyboard avoidance.
+                XCTAssertFalse(follow.needsReveal(to: pin(height: 600, offset: 300, reacted: reacted)))
+                XCTAssertTrue(follow.needsReveal(to: pin(height: 300, offset: 300, atBottom: false, reacted: reacted)))
+            }
+        }
+    }
+
     func testRemovingAttachmentRowsKeepsLatestAtComposerWithoutMovingHistoryReader() {
         for readingHistory in [false, true] {
             let follow = TimelinePinBox()
