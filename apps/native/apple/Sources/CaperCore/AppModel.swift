@@ -14,6 +14,7 @@ public final class AppModel {
     public var account: Account? {
         didSet {
             if account == nil || (oldValue != nil && oldValue?.id != account?.id) { updateApplicationBadge(0) }
+            if oldValue?.id != account?.id { profileConnection = .disconnected }
         }
     }
     private(set) var desiredBadgeCount = 0
@@ -298,7 +299,17 @@ public final class AppModel {
     private var visitedOrder: [String] = []
     private var lastChannelBySpace: [String: String] = [:]
     /// The live `profiles` feed's own socket, open while signed in.
-    @ObservationIgnored private lazy var profileGateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { _, _ in }
+    @ObservationIgnored private lazy var profileGateway = Gateway(baseURL: api.baseURL, token: { [api] in await api.authorizationToken() }) { [weak self] state, _ in
+        self?.receiveProfileConnection(state)
+    }
+    private var profileConnection: GatewayState = .disconnected
+    /// The account stays connected while a conversation's subscription is replaced.
+    /// Only live space presence overrides that connection's local online status.
+    public var ownPresence: PresenceStatus? {
+        guard let account else { return nil }
+        if presence.online, let status = presence.statuses[account.id], status != .unknown { return status }
+        return profileConnection == .connected || chat.liveState == .connected ? .online : nil
+    }
     /// Keeps opening and closing the feed in order across sign-in and logout.
     @ObservationIgnored private var profileFeedTask: Task<Void, Never>?
     private var directMessageRefreshTask: Task<Void, Never>?
@@ -514,12 +525,18 @@ public final class AppModel {
     }
 
     private func stopProfileUpdates() {
+        profileConnection = .disconnected
         profileUpdates = ProfileDirectory()
         let gateway = profileGateway, previous = profileFeedTask
         profileFeedTask = Task {
             await previous?.value
             await gateway.unsubscribe(Gateway.profilesSubscriptionID)
         }
+    }
+
+    func receiveProfileConnection(_ state: GatewayState) {
+        guard account != nil else { return }
+        profileConnection = state
     }
 
     func receiveProfileFeed(_ raw: [String: Any]) {

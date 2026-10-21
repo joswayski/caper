@@ -64,6 +64,36 @@ final class ProfileUpdatesTests: XCTestCase {
         XCTAssertEqual(retracted, ["dm0000000001m01"])
     }
 
+    @MainActor
+    func testAccountPresenceSurvivesNavigationButNotARealDisconnect() async {
+        let model = AppModel(api: APIClient(baseURL: URL(string: "https://caper.invalid")!))
+        model.account = Account(id: "self", username: "me", displayName: "Me")
+        XCTAssertNil(model.ownPresence)
+        model.receiveProfileConnection(.connected)
+        model.presence.receive(["type": "snapshot", "members": [["userId": "self", "status": "idle"]]], generation: 0)
+        XCTAssertEqual(model.ownPresence, .idle, "live server presence still takes precedence")
+
+        // DM navigation stops space presence and replaces the chat subscription.
+        await model.presence.stop()
+        for state in [GatewayState.disconnected, .connecting, .connected, .reconnecting] {
+            model.chat.liveState = state
+            XCTAssertEqual(model.ownPresence, .online, "chat state is not account state")
+        }
+        model.receiveProfileConnection(.reconnecting)
+        XCTAssertNil(model.ownPresence, "a real loss of both connections must not stay green")
+        model.chat.liveState = .connected
+        XCTAssertEqual(model.ownPresence, .online, "chat remains a fallback if the profile feed is unavailable")
+        await model.chat.stop()
+        XCTAssertNil(model.ownPresence)
+        model.receiveProfileConnection(.connected)
+        XCTAssertEqual(model.ownPresence, .online)
+        model.account = nil
+        XCTAssertNil(model.ownPresence)
+        model.receiveProfileConnection(.connected)
+        model.account = Account(id: "next", username: "next", displayName: "Next")
+        XCTAssertNil(model.ownPresence, "a new account cannot inherit the previous connection")
+    }
+
     // MARK: People
 
     func testAnUpdateReachesEveryRetainedCopyOfThatPersonOnly() {

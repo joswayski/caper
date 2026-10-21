@@ -3253,11 +3253,6 @@ private struct AccountBar: View {
     init(model: AppModel, sheet: Binding<WorkspaceSheet?>) { self.model = model; voice = model.voice; _sheet = sheet }
     /// Web's identityName: the account's display name, else the chat identity's.
     private var identityName: String { model.account?.displayName ?? model.chat.currentAuthor?.name ?? "Guest" }
-    /// Your own status in the space's presence, else the live chat connection (web's localPresence).
-    private var ownPresence: PresenceStatus? {
-        if let id = model.account?.id, let status = model.presence.statuses[id], status != .unknown { return status }
-        return model.chat.liveState == .connected ? .online : nil
-    }
     var body: some View {
         VStack(spacing: 0) {
             // Your call lives in its channel's card in the list; its errors stay here.
@@ -3292,7 +3287,7 @@ private struct AccountBar: View {
                 Button { sheet = model.account == nil ? .login : .profile } label: {
                     HStack(spacing: 7) {
                         Avatar(name: identityName, size: 30, avatarID: model.account?.avatarId, picture: model.account?.avatarPicture)
-                            .overlay(alignment: .bottomTrailing) { PresenceDot(status: ownPresence, live: model.presence.online) }
+                            .overlay(alignment: .bottomTrailing) { PresenceDot(status: model.ownPresence) }
                         if showsName {
                             Text(identityName).font(CaperTheme.font(13, weight: .medium)).lineLimit(1).truncationMode(.tail)
                         }
@@ -3404,6 +3399,11 @@ private struct AccountBar: View {
         }
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(CaperTheme.border)).clipShape(RoundedRectangle(cornerRadius: 6))
         .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, CaperTheme.workspaceBottomInset)
+        // Browse stays still beneath the sliding conversation. Its identity
+        // must not crossfade or interpolate with the drawer's transaction.
+        .transaction { transaction in
+            if transaction.browseSlide { transaction.animation = nil }
+        }
         #if os(macOS)
         .onChange(of: sheet?.id) { old, new in
             guard new == nil, let old, ["audio", "connection", "diagnostics", "notifications", "privacy"].contains(old) else { return }
