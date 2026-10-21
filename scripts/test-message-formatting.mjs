@@ -22,6 +22,22 @@ function browser(...args) {
 }
 const evaluate = (code) => browser("eval", `(async () => { ${code} })()`).result;
 const value = () => evaluate("return document.querySelector('#chat-message').value;");
+const capture = (name) => {
+  if (!artifacts) return;
+  evaluate(`await Promise.all(document.getAnimations()
+    .filter(animation => Number.isFinite(animation.effect.getComputedTiming().endTime))
+    .map(animation => animation.finished.catch(() => {})));`);
+  browser("screenshot", `${artifacts}/formatting-${name}.png`);
+};
+const clickToolbarEdge = (side) => {
+  const point = evaluate(`
+    const r = document.querySelector('.chat-format-toolbar').getBoundingClientRect();
+    return {x: Math.round(${side === "left" ? "r.left + 1" : "r.right - 1"}), y: Math.round(r.top + r.height / 2)};
+  `);
+  browser("mouse", "move", String(point.x), String(point.y));
+  browser("mouse", "down", "left");
+  browser("mouse", "up", "left");
+};
 const select = (start, end) => {
   browser("click", "#chat-message");
   evaluate(
@@ -73,7 +89,19 @@ try {
   browser("fill", "#chat-message", "Make this bold and italic.");
   select(10, 14);
   browser("wait", ".chat-format-toolbar");
-  browser("click", '.chat-format-toolbar button[aria-label="Bold"]');
+  assert.equal(
+    evaluate(`
+    const bar = document.querySelector('.chat-format-toolbar');
+    const [bold, italic] = bar.querySelectorAll('button');
+    const r = bar.getBoundingClientRect(), b = bold.getBoundingClientRect(), i = italic.getBoundingClientRect();
+    return b.left === r.left && i.right === r.right && b.right === i.left &&
+      b.height === r.height && i.height === r.height &&
+      [bar, bold, italic].every(el => getComputedStyle(el).borderTopWidth === '0px');
+  `),
+    true,
+    "borderless buttons fill the entire toolbar",
+  );
+  clickToolbarEdge("left");
   assert.equal(value(), "Make this **bold** and italic.");
   assert.equal(evaluate("return document.activeElement.id;"), "chat-message", "formatting retains editor focus");
   browser("press", "Control+z");
@@ -85,7 +113,7 @@ try {
   assert.equal(value(), "Make this bold and italic.", "shortcut toggles off");
   browser("press", "Control+b");
   select(23, 29);
-  browser("click", '.chat-format-toolbar button[aria-label="Italic"]');
+  clickToolbarEdge("right");
   assert.equal(value(), "Make this **bold** and _italic_.");
   browser("press", "ArrowRight");
   browser("press", "Enter");
@@ -109,6 +137,21 @@ try {
   browser("press", "Control+Home");
   browser("press", "Control+Shift+ArrowRight");
   browser("press", "Control+i");
+  browser("focus", '.chat-format-toolbar button[aria-label="Bold"]');
+  browser("press", "Tab");
+  assert.equal(
+    evaluate(`
+    const button = document.activeElement, style = getComputedStyle(button);
+    const bar = button.closest('.chat-format-toolbar');
+    return button.getAttribute('aria-label') === 'Italic' && button.matches(':focus-visible') &&
+      style.outlineStyle === 'none' && style.boxShadow === 'none' && style.borderTopWidth === '0px' &&
+      style.borderRadius === '0px' && style.padding === '0px' &&
+      button.getBoundingClientRect().height === bar.getBoundingClientRect().height;
+  `),
+    true,
+    "edit dialog must not restore generic button borders or focus rings",
+  );
+  capture("edit");
   browser("click", ".chat-edit-save");
   browser("wait", "#chat-message");
   assert.equal(evaluate("return window.edited;"), "_Make_ this **bold** and _italic_.");
@@ -116,7 +159,7 @@ try {
   browser("fill", "#chat-message", "Select these words to format them");
   select(7, 18);
   browser("wait", ".chat-format-toolbar");
-  if (artifacts) browser("screenshot", `${artifacts}/formatting-desktop.png`);
+  capture("desktop");
   browser("press", "Escape");
   assert.equal(evaluate("return document.querySelector('.chat-format-toolbar');"), null, "Escape dismisses formatting");
   browser("set", "viewport", "390", "844", "2");
@@ -129,7 +172,7 @@ try {
     ),
     true,
   );
-  if (artifacts) browser("screenshot", `${artifacts}/formatting-narrow.png`);
+  capture("narrow");
   browser("fill", "#chat-message", "x".repeat(3997));
   browser("press", "Control+a");
   browser("wait", ".chat-format-toolbar");
@@ -142,6 +185,22 @@ try {
   browser("fill", "#chat-message", "Select these words to format them");
   browser("set", "viewport", "1000", "640", "2");
   select(7, 18);
+  browser("focus", '.chat-format-toolbar button[aria-label="Bold"]');
+  browser("press", "Tab");
+  assert.equal(
+    evaluate(`
+    const button = document.activeElement, style = getComputedStyle(button);
+    return button.getAttribute('aria-label') === 'Italic' && button.matches(':focus-visible') &&
+      style.outlineStyle === 'none' && style.boxShadow === 'none' &&
+      style.backgroundColor !== getComputedStyle(button.parentElement).backgroundColor;
+  `),
+    true,
+    "keyboard focus uses a background, never a ring",
+  );
+  capture("keyboard");
+  browser("press", "Enter");
+  assert.equal(value(), "Select _these words_ to format them", "keyboard-focused button remains actionable");
+  select(8, 19);
   console.log(
     "PASS: toolbar, shortcuts, toggling, undo, send, nested emphasis, links, mentions, edit, dismissal, narrow layout and 4,000-character limit",
   );

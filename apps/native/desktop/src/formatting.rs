@@ -140,7 +140,12 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
                 .pointer_hover_pos()
                 .is_some_and(|pos| rect.contains(pos))
         });
-    if start != end && (response.has_focus() || over_toolbar) {
+    let toolbar_focused = ui.memory(|memory| {
+        ["**", "_"]
+            .iter()
+            .any(|marker| memory.has_focus(toolbar_id.with(marker)))
+    });
+    if start != end && (response.has_focus() || over_toolbar || toolbar_focused) {
         if ui.layer_id().order == egui::Order::Foreground {
             ui.ctx().set_sublayer(
                 ui.layer_id(),
@@ -149,29 +154,93 @@ pub fn controls(ui: &mut egui::Ui, text: &mut String, response: &egui::Response,
         }
         egui::Area::new(toolbar_id)
             .order(egui::Order::Foreground)
-            .default_size(egui::vec2(64.0, 28.0))
+            .default_size(egui::vec2(72.0, 36.0))
             .movable(false)
             .pivot(egui::Align2::LEFT_BOTTOM)
             .fixed_pos(response.rect.left_top() - egui::vec2(0.0, 8.0))
             .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui
-                            .small_button(egui::RichText::new("B").strong())
-                            .on_hover_text("Bold · Ctrl/Cmd B")
-                            .clicked()
-                        {
-                            chosen = Some("**");
-                        }
-                        if ui
-                            .small_button(egui::RichText::new("I").italics())
-                            .on_hover_text("Italic · Ctrl/Cmd I")
-                            .clicked()
-                        {
-                            chosen = Some("_");
-                        }
+                egui::Frame::new()
+                    .fill(crate::SURFACE)
+                    .corner_radius(8)
+                    .shadow(ui.visuals().popup_shadow)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                        ui.horizontal(|ui| {
+                            for (marker, glyph, label) in
+                                [("**", "B", "Bold"), ("_", "I", "Italic")]
+                            {
+                                let (_, rect) = ui.allocate_space(egui::vec2(36.0, 36.0));
+                                let button = ui.interact(
+                                    rect,
+                                    toolbar_id.with(marker),
+                                    egui::Sense::click(),
+                                );
+                                if button.hovered()
+                                    || button.has_focus()
+                                    || button.is_pointer_button_down_on()
+                                {
+                                    let corners = if marker == "**" {
+                                        egui::CornerRadius {
+                                            nw: 8,
+                                            sw: 8,
+                                            ne: 0,
+                                            se: 0,
+                                        }
+                                    } else {
+                                        egui::CornerRadius {
+                                            nw: 0,
+                                            sw: 0,
+                                            ne: 8,
+                                            se: 8,
+                                        }
+                                    };
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        corners,
+                                        if button.is_pointer_button_down_on() {
+                                            crate::BORDER
+                                        } else {
+                                            crate::SURFACE_HOVER
+                                        },
+                                    );
+                                }
+                                let font = egui::FontId::new(
+                                    14.0,
+                                    if marker == "**" {
+                                        egui::FontFamily::Name("Satoshi Bold".into())
+                                    } else {
+                                        egui::FontFamily::Proportional
+                                    },
+                                );
+                                let mut job = egui::text::LayoutJob::simple(
+                                    glyph.into(),
+                                    font,
+                                    crate::TEXT,
+                                    f32::INFINITY,
+                                );
+                                job.sections[0].format.italics = marker == "_";
+                                let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+                                ui.painter().galley(
+                                    rect.center() - galley.size() / 2.0,
+                                    galley,
+                                    crate::TEXT,
+                                );
+                                button.widget_info(|| {
+                                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label)
+                                });
+                                if button
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text(format!(
+                                        "{label} · Ctrl/Cmd {}",
+                                        if marker == "**" { "B" } else { "I" }
+                                    ))
+                                    .clicked()
+                                {
+                                    chosen = Some(marker);
+                                }
+                            }
+                        });
                     });
-                });
             });
     }
     if let Some(marker) = chosen {
@@ -225,6 +294,7 @@ mod tests {
     #[test]
     fn composer_shortcuts_retain_selection_and_respect_limits_and_disabled_state() {
         let context = egui::Context::default();
+        crate::configure(&context);
         let id = egui::Id::new("format-test");
         let mut text = "é🙂".to_owned();
         let frame = |text: &mut String, events, enabled| {

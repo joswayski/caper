@@ -4315,19 +4315,37 @@ show the readable source markers. Reply excerpts and history retain the source.
 All clients' parser tests share
 `shared/messages/formatting-cases.json`; the API and desktop share the Rust parser.
 
+The formatting toolbar is one borderless bar: adjacent buttons fill its entire
+surface with no inset padding, gaps, individual borders or focus rings. Hover,
+press and keyboard focus use a background fill; the outside corners belong to
+the bar, not separate button pills.
+
+**Extending Markdown later.** Raw source remains the persistence, transport,
+and edit contract; `FormattedRun` and its native equivalents are
+rendering-only, not a document format. The shared send/edit validation test
+preserves headings, fenced/inline code, quotes and lists verbatim. Adding those
+features does not need to migrate message storage: add block parsing before
+inline parsing and render block nodes separately, rather than flattening a
+document into today's inline runs. Code nodes must bypass emphasis, autolinks
+and mention resolution; update the shared fixtures and API mention traversal
+with all clients when enabling them. Code blocks and other block syntax are
+not implemented in this first version.
+
 Browser validation: `node scripts/test-message-formatting.mjs http://localhost:5173`
 mounts real components with explicitly labelled local-only delivery. It checks
-selection controls, shortcuts, toggling, undo, sending, nested emphasis, links,
-mentions, editing, dismissal, narrow layout and the character limit. This does
-not replace native-device or live delivery checks.
+full-area toolbar edge clicks, borderless controls and background-only keyboard
+focus (including the edit dialog), shortcuts, toggling, undo, sending, nested
+emphasis, links, mentions, editing, dismissal, narrow layout and the character
+limit. This does not replace native-device or live delivery checks.
 
 Formatting validation (Linux orb): web check/build and 772 tests passed; API
 build, fmt, clippy and 218 tests passed (93 integration tests require external
 fixtures and remain ignored). Android compiled and all 571 unit tests passed,
-without a connected device. Linux desktop built, passed 755 tests (20 ignored)
-and application-only clippy; the final toolbar-position adjustment passed
-focused formatting and profile-composer tests and visual inspection at wide and
-narrow widths. Dependency-inclusive desktop clippy still reports existing
+without a connected device. Linux desktop built and passed application-only
+clippy. Its toolbar follow-up run passed 754 tests with 20 ignored and exposed
+missing app font setup in the composer test; after correcting that fixture,
+all three formatting tests passed. Wide/narrow native captures and an outer-edge
+button click were inspected. Dependency-inclusive desktop clippy still reports existing
 vendored WebRTC documentation warnings. Apple changes and shared-fixture tests
 are authored but uncompiled here (no Swift/Xcode); Apple and Android device UI,
 Windows/macOS desktop and native sent-message rendering remain unverified.

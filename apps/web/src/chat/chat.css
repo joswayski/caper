@@ -2426,15 +2426,17 @@ button.chat-mention-card-avatar {
 .chat-format-toolbar {
   z-index: 100;
   display: flex;
-  gap: 2px;
-  padding: 4px;
-  border: 1px solid var(--border);
+  gap: 0;
+  padding: 0;
+  border: 0;
   border-radius: 8px;
+  overflow: hidden;
   background: var(--surface);
   box-shadow: 0 4px 16px rgb(0 0 0 / 25%);
   animation: chat-format-arrive var(--motion-fast) var(--ease-out);
 }
-.chat-format-toolbar button {
+/* Portaled inside edit dialogs too; override their general button chrome. */
+.chat-format-toolbar[role="group"] button {
   display: grid;
   place-items: center;
   width: 36px;
@@ -2442,20 +2444,18 @@ button.chat-mention-card-avatar {
   min-height: 36px;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: 0;
+  outline: none;
+  box-shadow: none;
   color: var(--text-muted);
   background: transparent;
   cursor: pointer;
 }
-.chat-format-toolbar button:is(:hover, :focus-visible) {
+.chat-format-toolbar[role="group"] button:is(:hover, :focus-visible) {
   color: var(--text);
   background: var(--border);
 }
-.chat-format-toolbar button:focus-visible {
-  outline: 2px solid var(--terracotta);
-  outline-offset: 1px;
-}
-.chat-format-toolbar button:disabled {
+.chat-format-toolbar[role="group"] button:disabled {
   opacity: 0.4;
   cursor: default;
 }
@@ -2473,7 +2473,7 @@ button.chat-mention-card-avatar {
   }
 }
 @media (pointer: coarse) {
-  .chat-format-toolbar button {
+  .chat-format-toolbar[role="group"] button {
     width: 44px;
     height: 44px;
   }

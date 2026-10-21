@@ -15,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.text.TextRange
@@ -150,12 +151,16 @@ import kotlin.math.roundToInt
                             Column {
                                 inner()
                                 if (enabled && !readOnly && focused && value.composition == null && !value.selection.collapsed) {
-                                    Row {
-                                        TextButton({ format("**") }, modifier = Modifier.focusProperties { canFocus = false }.semantics { contentDescription = "Bold selection" }) {
-                                            Text("B", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-                                        }
-                                        TextButton({ format("_") }, modifier = Modifier.focusProperties { canFocus = false }.semantics { contentDescription = "Italic selection" }) {
-                                            Text("I", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                                    Surface(color = Surface, shape = MaterialTheme.shapes.small) {
+                                        Row {
+                                            TextButton({ format("**") }, modifier = Modifier.size(48.dp).focusProperties { canFocus = false }.semantics { contentDescription = "Bold selection" },
+                                                shape = RectangleShape, contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) {
+                                                Text("B", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                                            }
+                                            TextButton({ format("_") }, modifier = Modifier.size(48.dp).focusProperties { canFocus = false }.semantics { contentDescription = "Italic selection" },
+                                                shape = RectangleShape, contentPadding = PaddingValues(0.dp), colors = ButtonDefaults.textButtonColors(contentColor = Text)) {
+                                                Text("I", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                                            }
                                         }
                                     }
                                 }

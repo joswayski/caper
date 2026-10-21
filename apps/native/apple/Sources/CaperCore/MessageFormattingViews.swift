@@ -15,20 +15,43 @@ struct NativeMessageComposer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if controller.formattingSelection {
-                HStack(spacing: 4) {
+                HStack(spacing: 0) {
                     Button { controller.formatAction?("**") } label: { Text("B").bold() }
                         .accessibilityLabel("Bold").help("Bold (⌘B)")
                     Button { controller.formatAction?("_") } label: { Text("I").italic() }
                         .accessibilityLabel("Italic").help("Italic (⌘I)")
                 }
-                .buttonStyle(.bordered).font(CaperTheme.font(12))
-                .foregroundStyle(CaperTheme.text).padding(4).disabled(!editable)
+                .buttonStyle(FormattingButtonStyle()).font(CaperTheme.font(14))
+                .background(CaperTheme.surface).clipShape(RoundedRectangle(cornerRadius: 8))
+                .disabled(!editable)
             }
             NativeMessageTextEditor(text: $text, placeholder: placeholder, controller: controller,
                                     mentions: mentions, submit: submit, submitOnReturn: submitOnReturn,
                                     editable: editable, accessibilityID: accessibilityID,
                                     pasteAttachments: pasteAttachments, highlightSource: highlightSource)
         }
+    }
+}
+
+private struct FormattingButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.isFocused) private var focused
+    @State private var hovered = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(CaperTheme.text)
+            #if os(iOS)
+            .frame(width: 44, height: 44)
+            #else
+            .frame(width: 36, height: 36)
+            #endif
+            .contentShape(Rectangle())
+            .background(configuration.isPressed ? CaperTheme.border : (hovered || focused) && enabled ? CaperTheme.raised : Color.clear)
+            .opacity(enabled ? 1 : 0.4)
+            .focusEffectDisabled()
+            .onHover { hovered = $0 }
+            .modifier(ControlPointer())
     }
 }
 

@@ -11,6 +11,13 @@ use tower::ServiceExt;
 fn text_limits_count_unicode_and_preserve_literal_text() {
     let text = " BO2 <script>alert(1)</script>\n🙂\t";
     assert_eq!(prepare_text(text).unwrap()["text"], text);
+    // Persist source, never the current renderer's bold/italic runs. Future
+    // block and inline Markdown must survive this same send/edit boundary.
+    let markdown = "# Heading\n\n**bold** and _italic_ with `code`\n\n```rust\nlet text = \"**literal**\";\n```\n\n> quote\n- item\n";
+    assert_eq!(
+        prepare_text(markdown).unwrap(),
+        json!({"version": 1, "type": "text", "text": markdown})
+    );
     assert!(prepare_text(&"🙂".repeat(4000)).is_ok());
     assert!(prepare_text(&"🙂".repeat(4001)).is_err());
     assert!(prepare_text(" \n\t").is_err());
