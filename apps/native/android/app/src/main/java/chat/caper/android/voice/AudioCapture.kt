@@ -66,6 +66,16 @@ internal class AudioCapture private constructor(private val handle: Long) {
         if (bytesRead < buffer.capacity()) for (index in bytesRead until buffer.capacity()) buffer.put(index, 0)
     }
 
+    /**
+     * Voice messages ([VoiceNoteCapture]) only: never published, so neither the gate nor epochs
+     * apply. Queues [frames] samples at [inputGain]: 1 queued, 0 no room yet (retry), -1 failed.
+     */
+    @Synchronized fun queueLocal(samples: ShortArray, frames: Int): Int =
+        if (closed) -1 else queueLocal(handle, samples, frames, inputGain)
+
+    /** Fills [samples] with what the denoiser has finished, after the voice DSP at [strength]: a count, or -1 after a failure. */
+    @Synchronized fun takeLocal(samples: ShortArray): Int = if (closed) -1 else takeLocal(handle, samples, strength)
+
     @Synchronized fun report(): LongArray = if (closed) longArrayOf() else diagnostics(handle)
 
     @Synchronized fun close() {
@@ -86,17 +96,22 @@ internal class AudioCapture private constructor(private val handle: Long) {
     private external fun destroy(handle: Long)
     private external fun process(handle: Long, buffer: ByteBuffer, natural: ByteBuffer, frames: Int, gain: Int, strength: Int, epoch: Int): Int
     private external fun diagnostics(handle: Long): LongArray
+    private external fun queueLocal(handle: Long, samples: ShortArray, frames: Int, gain: Int): Int
+    private external fun takeLocal(handle: Long, samples: ShortArray, strength: Int): Int
 
     companion object {
         init { System.loadLibrary("caper_audio") }
         fun prepare(context: Context): AudioCapture {
             val target = context.noBackupFilesDir.resolve("dpdfnet8_48khz_hr.onnx")
             val expected = "7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631"
-            if (!target.isFile || sha256(target.readBytes()) != expected) {
-                val staging = context.noBackupFilesDir.resolve("dpdfnet8_48khz_hr.onnx.tmp")
-                context.assets.open("dpdfnet8_48khz_hr.onnx").use { source -> staging.outputStream().use(source::copyTo) }
-                check(sha256(staging.readBytes()) == expected) { "Bundled audio model failed validation." }
-                check(staging.renameTo(target)) { "Cannot prepare local audio model." }
+            // A call and a voice message can prepare at once: one copy of the model at a time.
+            synchronized(this) {
+                if (!target.isFile || sha256(target.readBytes()) != expected) {
+                    val staging = context.noBackupFilesDir.resolve("dpdfnet8_48khz_hr.onnx.tmp")
+                    context.assets.open("dpdfnet8_48khz_hr.onnx").use { source -> staging.outputStream().use(source::copyTo) }
+                    check(sha256(staging.readBytes()) == expected) { "Bundled audio model failed validation." }
+                    check(staging.renameTo(target)) { "Cannot prepare local audio model." }
+                }
             }
             val bridge = AudioCapture(0)
             val handle = bridge.create(target.absolutePath, 48000)

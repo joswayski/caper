@@ -1,4 +1,6 @@
 import { acquireAudioContext, releaseAudioContext } from "../media/audio-context.ts";
+import { callAudio, type CallAudio } from "../media/call-audio.ts";
+import { captureMicrophone, type Microphone, type NoiseSuppression } from "../media/microphone.ts";
 import type { ChatAttachment } from "./types.ts";
 
 /** Voice messages: recording, the uploaded waveform, playback and transcripts.
@@ -16,7 +18,9 @@ export const WAVEFORM_SLICES = 64;
 /** How often the input level is sampled while recording (50 Hz). */
 export const LEVEL_INTERVAL_MS = 20;
 /** The live meter adds one bar this often and scrolls between them. */
-export const LIVE_BAR_MS = 70;
+export const LIVE_BAR_MS = 25;
+/** A live bar may fall to this share of the one before, so gaps between words show. */
+const LIVE_FALL = 0.35;
 /** Waveform bars: width and gap in CSS pixels, shared by the player, chip and meter. */
 export const BAR_WIDTH = 3;
 export const BAR_GAP = 2;
@@ -228,10 +232,53 @@ export function attachmentsExcerpt(attachments: readonly unknown[] | undefined) 
     : "Attachment";
 }
 
-/** The live meter's level: fast attack, slower release, per 20 ms sample. */
-export function smoothLevel(previous: number, rms: number): number {
-  const next = Math.max(0, rms || 0);
-  return previous + (next - previous) * (next > previous ? 0.6 : 0.12);
+/** The live meter's bars, newest last: the loudest level (0–1) in each
+ * LIVE_BAR_MS, falling at most to LIVE_FALL of the bar before. */
+export class LiveBars {
+  readonly values: number[] = [];
+  /** When the newest bar was added (ms); undefined before the first sample. */
+  lastBarAt: number | undefined;
+  private peak = 0;
+  constructor(private readonly capacity = 240) {}
+
+  /** Feeds one level at `now`; true when that added a bar. */
+  sample(level: number, now: number): boolean {
+    this.peak = Math.max(this.peak, Math.min(1, Math.max(0, level || 0)));
+    const last = this.lastBarAt;
+    if (last === undefined) {
+      this.lastBarAt = now;
+      return false;
+    }
+    if (now - last < LIVE_BAR_MS) return false;
+    const value = Math.max(this.peak, (this.values.at(-1) ?? 0) * LIVE_FALL);
+    this.values.push(value);
+    if (this.values.length > this.capacity) this.values.shift();
+    this.peak = 0;
+    // Constant cadence; after a stall, restart from now instead of catching up.
+    this.lastBarAt = now - last > LIVE_BAR_MS * 3 ? now : last + LIVE_BAR_MS;
+    return true;
+  }
+}
+
+/** A live bar's drawn height (0–1): speech sits around -35 to -12 dB, so that
+ * band is stretched to the meter's full height. */
+export function liveBarLevel(value: number): number {
+  return Math.min(1, Math.max(0, (value - 0.28) / 0.47)) ** 1.2;
+}
+
+const smoothstep = (from: number, to: number, value: number) => {
+  const t = Math.min(1, Math.max(0, (value - from) / (to - from)));
+  return t * t * (3 - 2 * t);
+};
+
+/** How a live bar centred `x` px into a `width` px meter is drawn: it arrives
+ * flat at the right and swells over 36 px, then pinches to 30% and fades out
+ * near the left edge. */
+export function liveBarShape(x: number, width: number): { scale: number; alpha: number } {
+  const fromRight = width - x;
+  const pinch = 1 - 0.7 * (1 - smoothstep(0, Math.min(40, width * 0.8), x));
+  const swell = 1 - (1 - Math.min(1, Math.max(0, fromRight / 36))) ** 3;
+  return { scale: pinch * swell, alpha: smoothstep(0, width * 0.1, x) * smoothstep(0, 10, fromRight) };
 }
 
 // One voice message plays at a time across the app; recording stops playback.
@@ -258,19 +305,143 @@ export class VoiceRecordingError extends Error {
 
 export interface VoiceRecorder {
   readonly startedAt: number;
+  /** How the microphone is processed: the call's status, or why the browser's own processing is used. */
+  readonly processing: string;
   /** Stops and returns the recording, or undefined when it was shorter than a second. */
   stop(): Promise<VoiceRecording | undefined>;
   cancel(): void;
 }
 
+export type VoiceProcessingPlan =
+  | { processed: true }
+  /** `prepare`: start the model now so the next recording can use it. */
+  | { processed: false; reason: string; prepare?: true };
+
+/** Whether a voice message records through the call's processing. During a call
+ * the call's own capture runs the model: a second one alongside it could push
+ * the call's worker past its hop budget, so the recording keeps the browser's
+ * processing. Without the model ready, the call path covers its compile with
+ * the browser's suppression; where that is unavailable it would hold the
+ * recording until the compile finishes, so this one uses the browser's
+ * processing (and the model prepares for the next). */
+export function voiceProcessingPlan({
+  live,
+  mode,
+  modelReady,
+  browserSuppression,
+  audioWorklet,
+}: {
+  live: boolean;
+  mode: NoiseSuppression;
+  modelReady: boolean;
+  browserSuppression: boolean;
+  audioWorklet: boolean;
+}): VoiceProcessingPlan {
+  if (live) return { processed: false, reason: "a call is using the microphone" };
+  if (mode === "off" || mode === "browser") return { processed: true };
+  if (!audioWorklet) return { processed: false, reason: "this browser can’t run the noise model" };
+  if (mode === "dpdfnet8" && !modelReady && !browserSuppression)
+    return { processed: false, reason: "the noise model is still loading", prepare: true };
+  return { processed: true };
+}
+
+/** The permission prompt's and device's own errors; any other failure of the
+ * call's processing falls back to the browser's. */
+export function microphoneError(error: unknown): VoiceRecordingError | undefined {
+  const name = error instanceof DOMException ? error.name : "";
+  if (name === "NotAllowedError" || name === "SecurityError") return new VoiceRecordingError(MICROPHONE_DENIED, true);
+  if (name === "NotFoundError" || name === "OverconstrainedError")
+    return new VoiceRecordingError("No microphone was found.");
+  return undefined;
+}
+
+interface VoiceInput {
+  stream: MediaStream;
+  readonly processing: string;
+  stop(): void;
+}
+
+/** The default microphone through the call's processing (its denoiser, voice
+ * enhancement strength and echo/gain choice), so the recording, its meter and
+ * its waveform are what listeners hear. Falls back to the browser's processing. */
+async function openVoiceInput(audio: CallAudio): Promise<VoiceInput> {
+  const plan = voiceProcessingPlan({
+    live: audio.live,
+    mode: audio.noiseSuppression,
+    modelReady: audio.dpdfnet.isReady(),
+    browserSuppression: navigator.mediaDevices.getSupportedConstraints?.().noiseSuppression === true,
+    audioWorklet: typeof AudioContext !== "undefined" && typeof AudioWorkletNode !== "undefined",
+  });
+  let reason = plan.processed ? "" : plan.reason;
+  if (plan.processed) {
+    // A spare model the call prepared is taken for this recording, and
+    // prepared again once the recording lets go of it (for the call the page
+    // shows by then: a channel switch replaces the client).
+    const spare = audio.dpdfnet.hasSpare();
+    const restore = () => {
+      if (spare) callAudio().prepare();
+    };
+    let microphone: Microphone | undefined;
+    try {
+      microphone = await captureMicrophone(
+        undefined,
+        audio.noiseSuppression,
+        new AbortController().signal,
+        () => undefined,
+        audio.audioSetup,
+        audio.assets,
+        audio.dpdfnet,
+        100,
+        audio.voiceProcessingStrength,
+      );
+    } catch (error) {
+      restore();
+      const known = microphoneError(error);
+      if (known) throw known;
+      reason = "the call’s processing couldn’t start";
+    }
+    if (microphone) {
+      const processed = microphone;
+      let stopped = false;
+      return {
+        stream: new MediaStream([processed.track]),
+        get processing() {
+          return processed.status;
+        },
+        stop() {
+          if (stopped) return;
+          stopped = true;
+          processed.stop();
+          restore();
+        },
+      };
+    }
+  } else if (plan.prepare) audio.prepare();
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (error) {
+    throw microphoneError(error) ?? new VoiceRecordingError("The microphone couldn’t be started.");
+  }
+  return {
+    stream,
+    processing: `Browser processing · ${reason}`,
+    stop() {
+      for (const track of stream.getTracks()) track.stop();
+    },
+  };
+}
+
 /** Asks for the default microphone (the browser prompts on first use) and starts
- * recording. The stream is our own: a voice channel's tracks are never touched. */
+ * recording. The capture is our own: a voice channel's tracks are never touched. */
 export async function startVoiceRecording({
   onLevel,
   onLimit,
   now = () => performance.now(),
 }: {
-  /** RMS input level of each ~20 ms sample. */
+  /** RMS level of each ~20 ms sample of the processed audio. */
   onLevel?: (rms: number) => void;
   /** Ten minutes passed; the caller stops and sends. */
   onLimit?: () => void;
@@ -278,24 +449,14 @@ export async function startVoiceRecording({
 } = {}): Promise<VoiceRecorder> {
   if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia)
     throw new VoiceRecordingError("Voice messages can’t be recorded in this browser.");
-  let stream: MediaStream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-  } catch (error) {
-    const name = error instanceof DOMException ? error.name : "";
-    if (name === "NotAllowedError" || name === "SecurityError") throw new VoiceRecordingError(MICROPHONE_DENIED, true);
-    if (name === "NotFoundError" || name === "OverconstrainedError")
-      throw new VoiceRecordingError("No microphone was found.");
-    throw new VoiceRecordingError("The microphone couldn’t be started.");
-  }
+  const input = await openVoiceInput(callAudio());
+  const { stream } = input;
   const mimeType = voiceRecordingType((type) => MediaRecorder.isTypeSupported(type));
   let recorder: MediaRecorder;
   try {
     recorder = new MediaRecorder(stream, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 32_000 });
   } catch {
-    for (const track of stream.getTracks()) track.stop();
+    input.stop();
     throw new VoiceRecordingError("Voice messages can’t be recorded in this browser.");
   }
   const chunks: Blob[] = [];
@@ -303,10 +464,22 @@ export async function startVoiceRecording({
   let context: AudioContext | undefined;
   let source: MediaStreamAudioSourceNode | undefined;
   let analyser: AnalyserNode | undefined;
+  let ownContext = false;
   try {
     context = acquireAudioContext();
     void context.resume().catch(() => undefined);
-    source = context.createMediaStreamSource(stream);
+    try {
+      source = context.createMediaStreamSource(stream);
+    } catch {
+      // Firefox connects a stream only at its own rate, and the call's
+      // processing runs at 48 kHz: meter it in a context of that rate.
+      releaseAudioContext(context);
+      context = undefined;
+      context = new AudioContext({ sampleRate: stream.getAudioTracks()[0]?.getSettings().sampleRate });
+      ownContext = true;
+      void context.resume().catch(() => undefined);
+      source = context.createMediaStreamSource(stream);
+    }
     analyser = context.createAnalyser();
     analyser.fftSize = 1024;
     source.connect(analyser);
@@ -333,13 +506,14 @@ export async function startVoiceRecording({
   const cleanup = () => {
     finished = true;
     clearInterval(timer);
-    for (const track of stream.getTracks()) track.stop();
+    input.stop();
     try {
       source?.disconnect();
     } catch {
       /* Already disconnected. */
     }
-    if (context) releaseAudioContext(context);
+    if (ownContext) void context?.close().catch(() => undefined);
+    else if (context) releaseAudioContext(context);
   };
   recorder.ondataavailable = ({ data }) => {
     if (data.size > 0) chunks.push(data);
@@ -353,6 +527,9 @@ export async function startVoiceRecording({
   let stopping: Promise<VoiceRecording | undefined> | undefined;
   return {
     startedAt,
+    get processing() {
+      return input.processing;
+    },
     stop() {
       stopping ??= new Promise((resolve, reject) => {
         const durationMs = Math.min(MAX_VOICE_MS, Math.round(now() - startedAt));

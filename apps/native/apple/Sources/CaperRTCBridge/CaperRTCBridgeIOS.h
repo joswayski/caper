@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <WebRTC/WebRTC.h>
 #import "CaperIOSAudioDevice.h"
+#import "CaperVoiceNoteProcessor.h"
 
 NS_ASSUME_NONNULL_BEGIN
 FOUNDATION_EXPORT BOOL CaperIOSCustomAudioFactoryAvailable(void);

@@ -3,6 +3,7 @@ package chat.caper.android.data
 import chat.caper.android.model.ChatAttachment
 import java.util.Base64
 import kotlin.math.log10
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 import kotlinx.serialization.json.JsonElement
@@ -34,9 +35,11 @@ object VoiceMessages {
     const val SEND_ON_STOP_LABEL = "Send voice messages as soon as I stop recording"
     const val SEND_ON_STOP_KEY = "voiceSendOnStop"
     const val SEND_ON_STOP_DEFAULT = false
-    /** Live meter: input sampled every [LIVE_SAMPLE_MS], a new bar every [LIVE_BAR_MS]. */
+    /** Live meter: input sampled about every [LIVE_SAMPLE_MS] (in step with the bars), a new bar every [LIVE_BAR_MS]. */
     const val LIVE_SAMPLE_MS = 25L
-    const val LIVE_BAR_MS = 70L
+    const val LIVE_BAR_MS = 25L
+    /** How far a live bar may fall from the one before: to 35% of it at most. */
+    const val LIVE_FALL = 0.65f
 
     /** What stopping a recording does: stage it in the composer (the default) or send it at once. */
     enum class StopAction { STAGE, SEND }
@@ -54,6 +57,12 @@ object VoiceMessages {
     }
 
     fun meterLevel(amplitude: Int): Float = meterLevel(amplitude.toDouble())
+
+    /**
+     * A live bar's displayed height (0..1) for its level: speech sits around -35..-12 dBFS, so
+     * that band is stretched to the meter's full height.
+     */
+    fun liveShape(level: Float): Float = ((level - 0.28f) / 0.47f).coerceIn(0f, 1f).pow(1.2f)
 
     /**
      * The 64 uploaded levels for [samples] (input amplitudes in recording order, 0..32767): the
@@ -150,34 +159,46 @@ object VoiceMessages {
 }
 
 /**
- * The live recording meter: levels arrive every [VoiceMessages.LIVE_SAMPLE_MS] and follow the
- * input with a fast attack and a slower release; every [VoiceMessages.LIVE_BAR_MS] the current
- * level becomes a new bar, so bars scroll in at a constant rate without jitter.
+ * The live recording meter: levels arrive every [VoiceMessages.LIVE_SAMPLE_MS]; every
+ * [VoiceMessages.LIVE_BAR_MS] the loudest level since the last bar becomes a new bar, falling
+ * by at most [VoiceMessages.LIVE_FALL] from the bar before, so bars scroll in at a constant rate.
  */
-class LiveLevels(private val capacity: Int = 64, private val attack: Float = 0.6f, private val release: Float = 0.15f) {
+class LiveLevels(private val capacity: Int = 200) {
     private val bars = ArrayDeque<Float>()
-    var level = 0f
+    /** The loudest input since the last bar. */
+    var peak = 0f
         private set
-    /** When the newest bar was added (ms, on the caller's clock); null before the first. */
+    /** When the newest bar was added (ms, on the caller's clock); null before the first sample. */
     var lastBarAt: Long? = null
         private set
 
     val values: List<Float> get() = bars.toList()
 
-    /** Feeds one input level (0..1) at [nowMs]; true when that added a bar. */
+    /** Feeds one input level (0..1) at [nowMs]; true when that added a bar (one at most). */
     fun sample(input: Float, nowMs: Long): Boolean {
-        val target = input.coerceIn(0f, 1f)
-        level += (target - level) * if (target > level) attack else release
-        val last = lastBarAt
-        if (last != null && nowMs - last < VoiceMessages.LIVE_BAR_MS) return false
-        bars.addLast(level)
+        peak = maxOf(peak, input.coerceIn(0f, 1f))
+        // The first bar is due one interval after the first sample.
+        val last = lastBarAt ?: run { lastBarAt = nowMs; return false }
+        if (nowMs - last < VoiceMessages.LIVE_BAR_MS) return false
+        val bar = maxOf(peak, (bars.lastOrNull() ?: 0f) * (1 - VoiceMessages.LIVE_FALL))
+        bars.addLast(bar)
         while (bars.size > capacity) bars.removeFirst()
-        // Keep a constant cadence even when a sample arrives late.
-        lastBarAt = if (last == null) nowMs else last + VoiceMessages.LIVE_BAR_MS * ((nowMs - last) / VoiceMessages.LIVE_BAR_MS)
+        peak = 0f
+        // Keep a constant cadence; after a stall, restart from now instead of catching up.
+        lastBarAt = if (nowMs - last > 3 * VoiceMessages.LIVE_BAR_MS) nowMs else last + VoiceMessages.LIVE_BAR_MS
         return true
     }
 
-    fun clear() { bars.clear(); level = 0f; lastBarAt = null }
+    /**
+     * How long to wait before the next sample: until just after the next bar is due, so samples
+     * stay in step with the bars instead of drifting behind them.
+     */
+    fun nextSampleIn(nowMs: Long): Long {
+        val last = lastBarAt ?: return VoiceMessages.LIVE_SAMPLE_MS
+        return (last + VoiceMessages.LIVE_BAR_MS + 1 - nowMs).coerceIn(4L, VoiceMessages.LIVE_SAMPLE_MS + 1)
+    }
+
+    fun clear() { bars.clear(); peak = 0f; lastBarAt = null }
 }
 
 /**

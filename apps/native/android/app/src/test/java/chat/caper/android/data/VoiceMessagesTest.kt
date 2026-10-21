@@ -61,24 +61,64 @@ class VoiceMessagesTest {
         assertEquals(1f, VoiceMessages.playedFraction(0.5f, 0.5f, 0.5f), 0f)
     }
 
-    @Test fun `live levels attack fast, release slowly and add bars at a steady pace`() {
+    @Test fun `live bars take the loudest level in each 25 ms and add them at a steady pace`() {
         val live = LiveLevels(capacity = 4)
-        assertTrue("the first sample adds a bar", live.sample(1f, 0))
-        assertEquals(0.6f, live.level, 0.0001f)
-        assertFalse("samples between bars only move the level", live.sample(1f, 25))
-        assertEquals(0.84f, live.level, 0.0001f)
-        live.sample(0f, 50)
-        assertEquals("release is slower than attack", 0.84f * 0.85f, live.level, 0.0001f)
-        assertTrue(live.sample(0f, 70))
-        assertEquals(70L, live.lastBarAt)
-        // A late sample keeps the 70 ms cadence.
-        assertTrue(live.sample(0f, 150))
-        assertEquals(140L, live.lastBarAt)
-        repeat(5) { live.sample(0.5f, 210L + it * 70) }
+        assertFalse("the first bar is due one interval after the first sample", live.sample(0.3f, 0))
+        assertEquals(0L, live.lastBarAt)
+        assertFalse(live.sample(0.9f, 10))
+        assertFalse(live.sample(0.5f, 20))
+        assertEquals(0.9f, live.peak, 0f)
+        assertTrue(live.sample(0.4f, 25))
+        assertEquals("the bar is the window's peak", listOf(0.9f), live.values)
+        assertEquals(0f, live.peak, 0f)
+        assertEquals(25L, live.lastBarAt)
+        // A late sample keeps the 25 ms cadence and adds only one bar.
+        assertTrue(live.sample(0.6f, 60))
+        assertEquals(50L, live.lastBarAt)
+        assertEquals(2, live.values.size)
+        assertTrue(live.sample(0.6f, 75))
+        assertEquals(75L, live.lastBarAt)
+        // After a stall (over three intervals) the cadence restarts from now instead of catching up.
+        assertTrue(live.sample(0.6f, 200))
+        assertEquals(200L, live.lastBarAt)
+        repeat(3) { live.sample(0.5f, 225L + it * 25) }
         assertEquals("only the newest bars are kept", 4, live.values.size)
         live.clear()
         assertTrue(live.values.isEmpty())
+        assertEquals(0f, live.peak, 0f)
         assertNull(live.lastBarAt)
+    }
+
+    @Test fun `a live bar falls to 35 percent of the one before at most`() {
+        val live = LiveLevels()
+        live.sample(1f, 0)
+        assertTrue(live.sample(0.8f, 25))
+        assertTrue(live.sample(0f, 50))
+        assertTrue(live.sample(0f, 75))
+        assertTrue(live.sample(0.2f, 100))
+        assertEquals(0.65f, VoiceMessages.LIVE_FALL, 0f)
+        val bars = live.values
+        assertEquals(1f, bars[0], 0f)
+        assertEquals(0.35f, bars[1], 0.0001f)
+        assertEquals(0.35f * 0.35f, bars[2], 0.0001f)
+        assertEquals("a louder peak wins over the fall", 0.2f, bars[3], 0f)
+    }
+
+    @Test fun `samples are timed to land just after each bar is due`() {
+        val live = LiveLevels()
+        assertEquals(VoiceMessages.LIVE_SAMPLE_MS, live.nextSampleIn(0))
+        live.sample(0.5f, 0)
+        assertEquals(26L, live.nextSampleIn(0))
+        assertEquals(6L, live.nextSampleIn(20))
+        assertEquals("a late sample is followed soon, not at once", 4L, live.nextSampleIn(40))
+    }
+
+    @Test fun `live bar shaping stretches the speech band to full height`() {
+        assertEquals(0f, VoiceMessages.liveShape(0f), 0f)
+        assertEquals("-36 dBFS and below is a dot", 0f, VoiceMessages.liveShape(0.28f), 0f)
+        assertEquals("-12.5 dBFS and above is full height", 1f, VoiceMessages.liveShape(0.75f), 0.0001f)
+        assertEquals(1f, VoiceMessages.liveShape(1f), 0f)
+        assertEquals(Math.pow(0.5, 1.2).toFloat(), VoiceMessages.liveShape(0.28f + 0.235f), 0.0001f)
     }
 
     @Test fun `stopping stages by default and sends only with the setting on`() {

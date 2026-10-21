@@ -37,6 +37,9 @@ targets:
       - path: Sources/CaperRTCBridge/CaperMacAudioDevice.h
         headerVisibility: public
       - path: Sources/CaperRTCBridge/CaperMacAudioDevice.m
+      - path: Sources/CaperRTCBridge/CaperVoiceNoteProcessor.h
+        headerVisibility: public
+      - path: Sources/CaperRTCBridge/CaperVoiceNoteProcessor.m
       - path: Sources/CaperRTCBridge/CaperDpdfnet.cpp
       - path: Sources/CaperRTCBridge/CaperDpdfnet.h
         headerVisibility: project
@@ -172,6 +175,9 @@ targets:
       - path: Sources/CaperRTCBridge/CaperIOSAudioDevice.h
         headerVisibility: public
       - Sources/CaperRTCBridge/CaperIOSAudioDevice.m
+      - path: Sources/CaperRTCBridge/CaperVoiceNoteProcessor.h
+        headerVisibility: public
+      - Sources/CaperRTCBridge/CaperVoiceNoteProcessor.m
       - Sources/CaperRTCBridge/CaperDpdfnet.cpp
       - Sources/CaperRTCBridge/CaperDenoisePipeline.cpp
       - Sources/CaperRTCBridge/CaperVoiceDSP.c

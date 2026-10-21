@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <WebRTC/WebRTC.h>
 #import "CaperMacAudioDevice.h"
+#import "CaperVoiceNoteProcessor.h"
 
 NS_ASSUME_NONNULL_BEGIN
 

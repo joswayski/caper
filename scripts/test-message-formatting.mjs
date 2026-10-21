@@ -18,6 +18,11 @@ function browser(...args) {
     }),
   );
   assert.ok(result.success, result.error);
+  // Formatting restores the selection on the next frame. Let that public UI
+  // state settle before sending another key or inspecting its toolbar.
+  if (args[0] === "press") {
+    browser("eval", "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  }
   return result.data;
 }
 const evaluate = (code) => browser("eval", `(async () => { ${code} })()`).result;

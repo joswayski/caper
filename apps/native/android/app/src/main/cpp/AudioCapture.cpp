@@ -58,6 +58,36 @@ Java_chat_caper_android_voice_AudioCapture_process(JNIEnv *env, jobject, jlong h
     return CaperDenoisePipelineMode(capture->pipeline);
 }
 
+// Voice messages: the call's denoiser and voice DSP, read back as soon as the
+// worker finishes (CaperDenoisePipelineQueueLocal). Nothing here is published,
+// so the Java publication gate and epochs do not apply.
+extern "C" JNIEXPORT jint JNICALL
+Java_chat_caper_android_voice_AudioCapture_queueLocal(JNIEnv *env, jobject, jlong handle, jshortArray samples,
+                                                        jint frames, jint gain) {
+    auto *capture = reinterpret_cast<Capture *>(handle);
+    if (!capture || !samples || frames < 1 || frames > 4096 || env->GetArrayLength(samples) < frames) return -1;
+    std::array<jshort, 4096> input{};
+    env->GetShortArrayRegion(samples, 0, frames, input.data());
+    return CaperDenoisePipelineQueueLocal(capture->pipeline, reinterpret_cast<const int16_t *>(input.data()),
+                                          frames, gain);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_chat_caper_android_voice_AudioCapture_takeLocal(JNIEnv *env, jobject, jlong handle, jshortArray samples,
+                                                       jint strength) {
+    auto *capture = reinterpret_cast<Capture *>(handle);
+    if (!capture || !samples) return -1;
+    std::array<jshort, 4096> output{};
+    unsigned capacity = std::min<unsigned>(env->GetArrayLength(samples), output.size());
+    auto *pcm = reinterpret_cast<int16_t *>(output.data());
+    int count = CaperDenoisePipelineTakeLocal(capture->pipeline, pcm, capacity);
+    if (count <= 0) return count;
+    // Gain was applied before the model, as in a call; the contour runs once over the stream.
+    CaperProcessVoice(pcm, count, capture->rate, 100, strength, &capture->contour);
+    env->SetShortArrayRegion(samples, 0, count, output.data());
+    return count;
+}
+
 extern "C" JNIEXPORT jlongArray JNICALL
 Java_chat_caper_android_voice_AudioCapture_diagnostics(JNIEnv *env, jobject, jlong handle) {
     auto *capture = reinterpret_cast<Capture *>(handle);

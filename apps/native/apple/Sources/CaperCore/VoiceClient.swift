@@ -9,6 +9,15 @@ import CaperRTCBridgeIOS
 import AVFAudio
 #endif
 
+#if os(iOS)
+/// Whether a call (or its microphone test) holds the shared audio session. A
+/// voice message then shares it unchanged; otherwise the recording configures
+/// the session itself and releases it unless a call has taken it over since.
+@MainActor enum CallAudioSession {
+    static var active = false
+}
+#endif
+
 public struct IceServer: Decodable, Sendable {
     public let urls: [String]
     public let username: String?
@@ -207,9 +216,8 @@ public final class VoiceClient {
         #endif
         self.audioDevice = audioDevice
         let inputGain = UserDefaults.standard.object(forKey: "caper.voice.inputGain") == nil ? 100 : UserDefaults.standard.integer(forKey: "caper.voice.inputGain")
-        let strength = UserDefaults.standard.object(forKey: "caper.voice.processingStrength") == nil ? 25 : UserDefaults.standard.integer(forKey: "caper.voice.processingStrength")
         let initialGain = min(200, max(0, inputGain))
-        let initialStrength = min(100, max(0, strength))
+        let initialStrength = VoiceMessage.processingStrength(stored: UserDefaults.standard.object(forKey: VoiceMessage.processingStrengthKey))
         self.inputGain = initialGain
         voiceProcessingStrength = initialStrength
         audioDevice.inputGain = initialGain
@@ -709,6 +717,7 @@ public final class VoiceClient {
         removeAudioObservers()
         let previousCleanup = audioCleanup
         let oldPeer = peer, oldMicrophone = microphone, oldRemoteAudio = remoteAudio
+        CallAudioSession.active = false
         audioCleanup = Task.detached(priority: .userInitiated) { [audioDevice] in
             await previousCleanup?.value
             _ = audioDevice.endComparison()
@@ -1003,7 +1012,7 @@ public final class VoiceClient {
     public func setVoiceProcessingStrength(_ value: Int) {
         voiceProcessingStrength = min(100, max(0, value))
         audioDevice.processingStrength = voiceProcessingStrength
-        UserDefaults.standard.set(voiceProcessingStrength, forKey: "caper.voice.processingStrength")
+        UserDefaults.standard.set(voiceProcessingStrength, forKey: VoiceMessage.processingStrengthKey)
     }
 
     /// Web: RMS >= 0.004 counts as speech, released 180 ms after the last loud
@@ -1091,9 +1100,11 @@ public final class VoiceClient {
         try AVAudioSession.sharedInstance().setPreferredSampleRate(48_000)
         try AVAudioSession.sharedInstance().setPreferredIOBufferDuration(0.02)
         try audio.setActive(true)
+        CallAudioSession.active = true
     }
 
     private func deactivateAudioSession() {
+        CallAudioSession.active = false
         let audio = RTCAudioSession.sharedInstance()
         audio.lockForConfiguration()
         try? audio.setActive(false)

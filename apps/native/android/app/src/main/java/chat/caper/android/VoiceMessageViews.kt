@@ -7,11 +7,13 @@ import android.content.pm.PackageManager
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.SystemClock
+import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.view.View
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
+import androidx.compose.animation.core.EaseInOut
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -77,6 +79,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
@@ -127,7 +130,9 @@ import chat.caper.android.model.ChatAttachment
 import chat.caper.android.model.DraftAttachmentUi
 import chat.caper.android.ui.*
 import chat.caper.android.voice.VoiceCallService
+import chat.caper.android.voice.VoiceNoteCapture
 import chat.caper.android.voice.VoiceState
+import chat.caper.android.voice.startWithFallback
 import java.io.File
 import java.util.UUID
 import kotlin.math.roundToInt
@@ -411,7 +416,9 @@ private fun Modifier.waveform(levels: FloatArray?, progress: () -> Float, unplay
     }.padding(start = 12.dp)
     when (transcript) {
         VoiceTranscript.None -> Unit
-        VoiceTranscript.Pending -> Text("Transcribing…", indent.semantics { liveRegion = LiveRegionMode.Polite }, color = TextMuted, fontSize = 12.sp)
+        VoiceTranscript.Pending -> Text(
+            "Transcribing…", indent.semantics { liveRegion = LiveRegionMode.Polite }.breathing(), color = TextMuted, fontSize = 12.sp,
+        )
         is VoiceTranscript.Ready -> {
             var expanded by remember(attachment.id) { mutableStateOf(false) }
             var clamped by remember(attachment.id, transcript.text) { mutableStateOf(false) }
@@ -430,6 +437,14 @@ private fun Modifier.waveform(levels: FloatArray?, progress: () -> Float, unplay
             }
         }
     }
+}
+
+/** "Transcribing…" breathes (opacity 1 → 0.4 → 1, ease-in-out, every 2 s) until the text arrives; still under Remove animations. */
+@Composable private fun Modifier.breathing(): Modifier {
+    if (reducedMotion()) return this
+    val breath = rememberInfiniteTransition(label = "transcribing")
+        .animateFloat(1f, 0.4f, infiniteRepeatable(tween(1_000, easing = EaseInOut), RepeatMode.Reverse), label = "breath")
+    return graphicsLayer { alpha = breath.value }
 }
 
 // --- Composer: staged recording ---------------------------------------------------------------------
@@ -489,23 +504,38 @@ private fun Modifier.waveform(levels: FloatArray?, progress: () -> Float, unplay
 internal data class VoiceRecording(val file: File, val durationMs: Long, val waveform: String)
 
 /**
- * MediaRecorder to a cache file (AAC/MPEG-4, mono, 44.1 kHz, 64 kbps). Each `getMaxAmplitude()`
- * reading (every [VoiceMessages.LIVE_SAMPLE_MS]) feeds the live meter and, as the input envelope,
- * the uploaded waveform's per-slice RMS. Main thread only.
+ * A recording to a cache file (AAC/MPEG-4, mono, 64 kbps) through the call's microphone
+ * processing ([VoiceNoteCapture]: 48 kHz, denoiser and voice DSP at the saved strength), or, when
+ * that can't start, plain MediaRecorder (44.1 kHz) as before. Each reading of the loudest sample
+ * since the last (every [VoiceMessages.LIVE_SAMPLE_MS]; `getMaxAmplitude()` for MediaRecorder)
+ * feeds the live meter. The uploaded waveform's per-slice RMS comes from the processed audio's
+ * envelope (its loudest sample per 25 ms of audio), or from those readings on MediaRecorder.
+ * Main thread only.
  */
 private class VoiceNoteRecorder(private val context: Context) {
+    private var processed: VoiceNoteCapture? = null
     private var recorder: MediaRecorder? = null
     private var file: File? = null
     private var startedAt = 0L
     private var samples = IntArray(512)
     private var count = 0
 
-    val elapsedMs get() = if (recorder == null) 0L else SystemClock.elapsedRealtime() - startedAt
+    val elapsedMs get() = if (recorder == null && processed == null) 0L else SystemClock.elapsedRealtime() - startedAt
 
     fun start() {
         // One recording at a time: anything left here is an abandoned one.
         val directory = File(context.cacheDir, "voice-recordings").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
         val output = File(directory, "${UUID.randomUUID()}.m4a")
+        startWithFallback(
+            processed = { processed = VoiceNoteCapture.start(context, output) },
+            plain = { recorder = plainRecorder(output) },
+        ) { Log.w("CaperVoice", "Voice message processing could not start; recording with MediaRecorder", it) }
+        file = output
+        startedAt = SystemClock.elapsedRealtime()
+        count = 0
+    }
+
+    private fun plainRecorder(output: File): MediaRecorder {
         val next = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(context) else @Suppress("DEPRECATION") MediaRecorder()
         try {
             next.setAudioSource(MediaRecorder.AudioSource.MIC)
@@ -522,15 +552,12 @@ private class VoiceNoteRecorder(private val context: Context) {
             output.delete()
             throw error
         }
-        recorder = next
-        file = output
-        startedAt = SystemClock.elapsedRealtime()
-        count = 0
+        return next
     }
 
     /** The input amplitude now (0..32767); it also joins the waveform. */
     fun sample(): Int {
-        val amplitude = runCatching { recorder?.maxAmplitude ?: 0 }.getOrDefault(0)
+        val amplitude = processed?.takePeak() ?: runCatching { recorder?.maxAmplitude ?: 0 }.getOrDefault(0)
         if (count == samples.size) samples = samples.copyOf(samples.size * 2)
         samples[count++] = amplitude
         return amplitude
@@ -539,22 +566,33 @@ private class VoiceNoteRecorder(private val context: Context) {
     /** Stops and keeps the file, or null (deleted) when it was under a second or nothing was written. */
     fun finish(): VoiceRecording? {
         val elapsed = elapsedMs
-        val current = recorder ?: return null
-        val output = file
-        recorder = null; file = null
-        // stop() throws when no audio arrived yet (a very short recording).
-        val stopped = runCatching { current.stop() }.isSuccess
-        current.release()
         val duration = VoiceMessages.recordedDuration(elapsed)
-        if (!stopped || duration == null || output == null || output.length() == 0L) { output?.delete(); return null }
-        return VoiceRecording(output, duration, VoiceMessages.encodeWaveform(VoiceMessages.waveform(samples.copyOf(count))))
+        // Under a second is discarded anyway: no need to push the processed tail through.
+        if (duration == null) { cancel(); return null }
+        val capture = processed
+        val current = recorder
+        val output = file
+        val stopped = when {
+            capture != null -> capture.finish()
+            // stop() throws when no audio arrived yet (a very short recording).
+            current != null -> runCatching { current.stop() }.isSuccess.also { current.release() }
+            else -> return null
+        }
+        processed = null; recorder = null; file = null
+        if (!stopped || output == null || output.length() == 0L) { output?.delete(); return null }
+        val envelope = capture?.envelope() ?: samples.copyOf(count)
+        return VoiceRecording(output, duration, VoiceMessages.encodeWaveform(VoiceMessages.waveform(envelope)))
     }
 
     fun cancel() {
-        val current = recorder ?: return
+        processed?.cancel()
+        recorder?.let { current ->
+            runCatching { current.stop() }
+            current.release()
+        }
+        if (processed == null && recorder == null) return
+        processed = null
         recorder = null
-        runCatching { current.stop() }
-        current.release()
         file?.delete()
         file = null
     }
@@ -619,8 +657,9 @@ private class VoiceNoteRecorder(private val context: Context) {
     /** A tap (not a hold) keeps recording hands-free until Stop or discard. */
     fun keepRecordingHandsFree() { if (recording) { handsFree = true; slide = 0f } }
 
-    fun tick() {
-        if (!recording) return
+    /** Samples the input and the clock; returns how long to wait before the next sample (ms). */
+    fun tick(): Long {
+        if (!recording) return VoiceMessages.LIVE_SAMPLE_MS
         val now = SystemClock.elapsedRealtime()
         if (live.sample(VoiceMessages.meterLevel(recorder.sample()), now)) {
             bars = live.values
@@ -628,6 +667,7 @@ private class VoiceNoteRecorder(private val context: Context) {
         }
         elapsedMs = recorder.elapsedMs
         if (elapsedMs >= VoiceMessages.MAX_DURATION_MS) stop()
+        return live.nextSampleIn(now)
     }
 
     /** Release, Stop or 10:00: the recording goes to [onRecorded]; under a second is discarded. */
@@ -665,7 +705,7 @@ private class VoiceNoteRecorder(private val context: Context) {
     val state = remember(key) { VoiceRecorderState(context, view) }
     state.onRecorded = onRecorded
     LaunchedEffect(state, state.recording) {
-        while (state.recording && isActive) { state.tick(); delay(VoiceMessages.LIVE_SAMPLE_MS) }
+        while (state.recording && isActive) delay(state.tick())
     }
     LaunchedEffect(state.notice, state.noticeIsError) {
         if (state.notice != null && !state.noticeIsError) { delay(2_500); state.clearHint() }
@@ -849,8 +889,10 @@ internal fun Modifier.voiceRecordingKeys(state: VoiceRecorderState): Modifier = 
 }
 
 /**
- * The live meter: bars in the player's style, newest at the right, scrolling left at a constant
- * rate (shifted per display frame between new bars; without animations they step).
+ * The live meter ("pinch bars"): a pill per bar, newest at the right, scrolling left at a
+ * constant rate (shifted per display frame between new bars; without animations they step).
+ * Bars arrive flat and swell in from the right edge, brighten toward eggshell as they get louder,
+ * and shrink and fade over the last [LivePinchReach] on the left. Silence shows small dots.
  */
 @Composable private fun LiveBars(state: VoiceRecorderState, still: Boolean, modifier: Modifier) {
     var frame by remember { mutableLongStateOf(0L) }
@@ -858,21 +900,70 @@ internal fun Modifier.voiceRecordingKeys(state: VoiceRecorderState): Modifier = 
     Spacer(modifier.fillMaxHeight().drawBehind {
         // Read every frame, so the bars glide between new ones.
         if (frame < 0L) return@drawBehind
-        val bar = BarWidth.toPx()
-        val step = bar + BarGap.toPx()
         val bars = state.bars
-        val shift = if (still || bars.isEmpty()) 0f
-            else ((SystemClock.elapsedRealtime() - state.lastBarAt).toFloat() / VoiceMessages.LIVE_BAR_MS).coerceIn(0f, 1f) * step
-        val count = (size.width / step).toInt() + 2
-        val shown = bars.takeLast(count)
+        if (bars.isEmpty() || size.width <= 0f) return@drawBehind
+        val w = size.width
+        val h = size.height
+        val bar = LiveBarWidth.toPx()
+        val step = LiveBarStep.toPx()
+        val minHeight = LiveBarMinHeight.toPx()
+        val reach = minOf(LivePinchReach.toPx(), 0.8f * w)
+        val entry = LiveEntry.toPx()
+        val arrival = LiveArrival.toPx()
+        // Keeps sliding past one step while a bar is late instead of pausing; the
+        // late bar lands where the slide has got to (the cadence restarts at 3).
+        val frac = if (still) 1f
+            else ((SystemClock.elapsedRealtime() - state.lastBarAt).toFloat() / VoiceMessages.LIVE_BAR_MS).coerceIn(0f, 3f)
         clipRect {
-            shown.forEachIndexed { index, level ->
-                val x = size.width - bar - (shown.size - 1 - index) * step - shift
-                if (x + bar > 0f) waveformBar(x, level, Text)
+            for (k in 0 until bars.size) {
+                val x = w - frac * step - k * step
+                if (x < -step) break
+                val cx = x + bar / 2
+                val pinch = 1 - LivePinch * (1 - smoothstep(0f, reach, cx))
+                val swell = easeOutCubic((w - cx) / entry)
+                val alpha = smoothstep(0f, 0.1f * w, cx) * smoothstep(0f, arrival, w - cx)
+                if (alpha < 0.02f) continue
+                val scale = pinch * swell
+                val level = VoiceMessages.liveShape(bars[bars.size - 1 - k])
+                val height = maxOf(minHeight * maxOf(0.6f, scale), level * scale * h * 0.94f)
+                val width = bar * (scale + 0.4f).coerceIn(0.6f, 1f)
+                drawRoundRect(
+                    mixRgb(LiveQuiet, Action, minOf(1f, 0.25f + 0.9f * level), alpha),
+                    Offset(x + (bar - width) / 2, (h - height) / 2), Size(width, height),
+                    CornerRadius(minOf(width, height) / 2),
+                )
             }
         }
     })
 }
+
+private val LiveBarWidth = 3.dp
+/** A 3 dp bar and a 3 dp gap. */
+private val LiveBarStep = 6.dp
+private val LiveBarMinHeight = 3.dp
+/** How small bars get at the left edge (70% smaller), over this distance (at most 80% of the meter). */
+private const val LivePinch = 0.7f
+private val LivePinchReach = 40.dp
+/** New bars enter flat and reach full size this far in, fading in over the last [LiveArrival]. */
+private val LiveEntry = 36.dp
+private val LiveArrival = 10.dp
+/** Quiet bars' colour; loud ones brighten toward eggshell ([Action]). */
+private val LiveQuiet = Color(0xFF969C9E)
+
+private fun smoothstep(from: Float, to: Float, t: Float): Float {
+    val u = ((t - from) / (to - from)).coerceIn(0f, 1f)
+    return u * u * (3 - 2 * u)
+}
+
+private fun easeOutCubic(t: Float): Float {
+    val u = 1 - t.coerceIn(0f, 1f)
+    return 1 - u * u * u
+}
+
+/** A straight sRGB mix, as the web meter draws it, at [alpha]. */
+private fun mixRgb(from: Color, to: Color, t: Float, alpha: Float) = Color(
+    from.red + (to.red - from.red) * t, from.green + (to.green - from.green) * t, from.blue + (to.blue - from.blue) * t, alpha,
+)
 
 /**
  * Above the composer: while holding, what release does; otherwise a short hint or the

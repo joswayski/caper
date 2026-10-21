@@ -3375,14 +3375,21 @@ private struct AccountBar: View {
                     Button("Log out", role: .destructive) { Task { await model.logout() } }
                 }
                 else { Button("Sign in") { sheet = .login } }
-            } label: { CaperIcon(name: "settings", size: 20) }.menuStyle(.borderlessButton).menuIndicator(.hidden)
-                #if os(iOS)
-                .frame(width: 44, height: 44)
-                #else
-                .frame(width: 28, height: 28)
-                #endif
+            } label: {
+                CaperIcon(name: "settings", size: 20).foregroundStyle(CaperTheme.muted)
+                    #if os(iOS)
+                    .frame(width: 44, height: 44)
+                    #else
+                    .frame(width: 28, height: 28)
+                    #endif
+                    .contentShape(Rectangle())
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Account settings")
+            }
+                // Native borderless-menu chrome has its own bounds. Use the label's
+                // rect for the hit target, hover wash and focus ring, as for Attach files.
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
                 .fixedSize()
-                .contentShape(Rectangle())
                 // The same hover and focus feedback as the microphone and deafen buttons beside it.
                 #if os(macOS)
                 .focused($settingsFocused)
@@ -3798,12 +3805,12 @@ private struct ChatView: View {
         Group {
         GeometryReader { geometry in
             let maximum = Double(min(600, geometry.size.width - min(300, geometry.size.width / 2)))
-            HStack(spacing: 0) {
-                #if os(iOS)
+            // Keep the channel's proposed size unchanged as the thread opens
+            // and resizes, so its messages never rewrap or shift underneath it.
+            ZStack(alignment: .trailing) {
                 channelBody
-                #else
-                if !narrow || chat.threadRootID == nil { channelBody }
-                #endif
+                    .allowsHitTesting(!narrow || chat.threadRootID == nil)
+                    .accessibilityHidden(narrow && chat.threadRootID != nil)
                 if chat.threadRootID != nil {
                     if narrow {
                         #if os(macOS)
@@ -5107,7 +5114,7 @@ enum ChatTimestamp {
 
 /// Web's quick reactions, first in message actions.
 private enum MessageQuickReactions {
-    static let emoji = ["👍", "❤️", "😂", "🎉", "👀"]
+    static let emoji = ["👍", "❤️", "😂"]
 }
 
 private struct MessageRow: View {
@@ -5148,9 +5155,10 @@ private struct MessageRow: View {
     #if os(macOS)
     /// Room for the unified hover bar: 24pt controls, 3pt insets and a gap.
     /// Read-only conversations leave out Reply.
-    private var actionsInset: CGFloat { (inThread ? 82 : 108) - (chat.canInteract ? 0 : 24) }
+    private var actionsInset: CGFloat { (inThread ? 82 : 108) - (chat.canInteract ? 0 : 24) + (chat.canInteract && !message.isDeleted ? 72 : 0) }
     @State private var controlsHovered = false
     @State private var actionsTop: CGFloat = 6
+    @FocusState private var quickReactionFocused: String?
     @FocusState private var replyFocused: Bool
     @FocusState private var replyMessageFocused: Bool
     @FocusState private var reactionFocused: Bool
@@ -5215,7 +5223,10 @@ private struct MessageRow: View {
                             .tint(CaperTheme.link)
                             .modifier(MessageLinkPills(enabled: rendered.hasLinks))
                             .modifier(SwipeGuardedLinks())
-                            .modifier(MentionPillInteraction(pills: pills, hasLinks: rendered.hasLinks, cards: mentionCards))
+                            .modifier(MentionPillInteraction(pills: pills, cards: mentionCards))
+                            #if os(macOS)
+                            .textSelection(.enabled)
+                            #endif
                         if grouped && edited { editedMarker }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -5337,6 +5348,20 @@ private struct MessageRow: View {
         row
             .overlay(alignment: .topTrailing) {
                 HStack(spacing: 0) {
+                    if chat.canInteract && !message.isDeleted {
+                        ForEach(MessageQuickReactions.emoji, id: \.self) { emoji in
+                            Button { react(emoji, active: !reacted(emoji)) } label: {
+                                EmojiArtworkView(emoji: emoji, size: 18).frame(width: 24, height: 24)
+                                    .contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                                .focused($quickReactionFocused, equals: emoji)
+                                .background(reacted(emoji) ? CaperTheme.terracotta.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                                .modifier(ControlHover(isFocused: quickReactionFocused == emoji))
+                                .help("React with \(emoji)").accessibilityLabel("React with \(emoji)")
+                                .accessibilityAddTraits(reacted(emoji) ? .isSelected : [])
+                                .accessibilityIdentifier("quick-reaction-\(message.id)-\(emoji)")
+                        }
+                    }
                     if !inThread && (!message.isDeleted || hasThread) {
                         Button { Task { await chat.openThread(message.threadRootId ?? message.id) } } label: {
                             CaperIcon(name: "thread", size: 14).frame(width: 24, height: 24)
@@ -5377,8 +5402,8 @@ private struct MessageRow: View {
                     .background(CaperTheme.surface, in: RoundedRectangle(cornerRadius: 8))
                     .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(CaperTheme.border, lineWidth: 1).allowsHitTesting(false) }
                     .shadow(color: .black.opacity(0.2), radius: 6, y: 4)
-                    .opacity(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
-                    .allowsHitTesting(controlsHovered || replyFocused || replyMessageFocused || reactionFocused || actionsFocused)
+                    .opacity(controlsHovered || quickReactionFocused != nil || replyFocused || replyMessageFocused || reactionFocused || actionsFocused ? 1 : 0)
+                    .allowsHitTesting(controlsHovered || quickReactionFocused != nil || replyFocused || replyMessageFocused || reactionFocused || actionsFocused)
                     .padding(.trailing, 15).padding(.top, message.replyTo == nil || message.isDeleted ? 3 : max(0, actionsTop - 3))
             }
             // Track the whole row, including its overlay. Entering a message
@@ -5410,18 +5435,13 @@ private struct MessageRow: View {
         } else { content() }
     }
     #if os(macOS)
-    /// Web's message actions, in the ⋯ menu and the context menu. A quick
-    /// reaction is checked when it is yours; choosing it again removes it.
+    /// Message actions in the ⋯ menu and context menu; quick reactions live in the hover bar.
     @ViewBuilder private var messageMenuItems: some View {
         if message.isDeleted {
             // Only the thread and the ID remain.
             if !inThread && hasThread { Button("View thread") { Task { await chat.openThread(message.threadRootId ?? message.id) } } }
             Button("Copy message ID") { copy(message.id) }
         } else {
-            ForEach(MessageQuickReactions.emoji, id: \.self) { emoji in
-                Toggle("React with \(emoji)", isOn: Binding(get: { reacted(emoji) }, set: { react(emoji, active: $0) }))
-                    .disabled(!chat.canInteract)
-            }
             // The full picker, as from the hover row's Add reaction.
             Button("Add reaction…", action: showReactionPicker).disabled(!chat.canInteract)
             Divider()
@@ -5848,21 +5868,16 @@ private struct ProfileSheetOutsideTap: UIViewControllerRepresentable {
 /// Routes pill links (`caper-mention:`) to the mention card instead of the
 /// system; web links (`http(s)`) open in the system browser. A tap on a link
 /// is handled by the Text itself; the row's message actions still need a
-/// long press. macOS keeps text selection only for messages without person
-/// pills or web links, so a click on a link is never taken as a selection.
+/// long press. The message host enables macOS selection independently of
+/// its links, so linked text and the surrounding words remain selectable.
 /// VoiceOver gets one "Open profile for …" action per person.
 private struct MentionPillInteraction: ViewModifier {
     let pills: [MentionPill]
-    var hasLinks = false
     let cards: MentionCardContext
 
     @ViewBuilder func body(content: Content) -> some View {
         if pills.isEmpty {
-            #if os(macOS)
-            if hasLinks { content } else { content.textSelection(.enabled) }
-            #else
             content
-            #endif
         } else {
             content
                 .environment(\.openURL, OpenURLAction { url in
@@ -6263,6 +6278,8 @@ private struct MentionCardView: View {
                 .fixedSize()
                 .disabled(!uploadsAvailable || !draft.editable || pending != nil || draft.presentingDialog)
                 .sheet(isPresented: $showingDrawer, onDismiss: updateDialogState) { AttachDrawer(draft: drawerDraft) }
+                // Prepare the gallery while the composer is up, so the drawer opens filled.
+                .task { AttachGalleryCache.warm() }
                 #else
                 // One unfiltered "Upload a file", as on the desktop clients; at the limit it says so.
                 Menu {

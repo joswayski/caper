@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { ChevronLeft, Mic, Square, Trash2 } from "lucide-react";
 import {
-  BAR_GAP,
-  BAR_WIDTH,
   HOLD_TAP_MS,
   LIVE_BAR_MS,
+  LiveBars,
+  liveBarLevel,
+  liveBarShape,
   loudness,
-  smoothLevel,
   startVoiceRecording,
   stopVoicePlayback,
   formatVoiceDuration,
@@ -32,13 +32,17 @@ export interface VoiceComposer {
   onDiscard?: () => void;
 }
 
-/** Bars in the live level meter; the newest is on the right. */
-const LIVE_BARS = 120;
 /** Sliding this far left (or this far off the button) cancels a held recording. */
 const SLIDE_CANCEL_PX = 96;
 const DRAG_OFF_PX = 140;
 const HINT_MS = 2_500;
-const STEP_PX = BAR_WIDTH + BAR_GAP;
+/** Live meter bars: 3px pills 6px apart, never shorter than a 3px dot. */
+const LIVE_BAR_PX = 3;
+const LIVE_STEP_PX = 6;
+const LIVE_MIN_PX = 3;
+/** Quiet bars are neutral; loud ones warm toward the eggshell action colour. */
+const QUIET_RGB = [150, 156, 158];
+const LOUD_RGB = [241, 237, 228];
 
 const touchLayout = () => window.matchMedia("(max-width: 760px), (pointer: coarse)").matches;
 const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -72,7 +76,6 @@ export function useVoiceRecorder({
 }): { button: ReactNode; bar: ReactNode; notice: ReactNode; active: boolean } {
   const [phase, setPhase] = useState<Phase>("idle");
   const [mode, setMode] = useState<Mode>("free");
-  const [levels, setLevels] = useState<number[]>([]);
   const [elapsed, setElapsed] = useState(0);
   const [slide, setSlide] = useState(0);
   const [error, setError] = useState<string>();
@@ -81,9 +84,8 @@ export function useVoiceRecorder({
   const session = useRef(0);
   const hold = useRef<{ id: number; x: number; y: number; downAt: number; released: boolean }>(undefined);
   const stop = useRef<HTMLButtonElement>(null);
-  const meter = useRef<HTMLSpanElement>(null);
-  const level = useRef(0);
-  const lastBar = useRef(0);
+  const meter = useRef<HTMLCanvasElement>(null);
+  const bars = useRef(new LiveBars());
   /** The press that ends in this click was handled by the pointer, so the click is not a toggle. */
   const pressed = useRef(false);
   const onRecorded = useRef(voice?.onRecorded);
@@ -100,7 +102,7 @@ export function useVoiceRecorder({
     recorder.current = undefined;
     hold.current = undefined;
     setPhase("idle");
-    setLevels([]);
+    bars.current = new LiveBars();
     setElapsed(0);
     setSlide(0);
     if (focus) requestAnimationFrame(() => returnFocus?.current?.focus());
@@ -138,20 +140,17 @@ export function useVoiceRecorder({
     const id = ++session.current;
     setMode(next);
     setPhase("starting");
-    setLevels([]);
+    bars.current = new LiveBars();
     setElapsed(0);
-    level.current = 0;
     try {
       const started = await startVoiceRecording({
         onLevel: (rms) => {
           if (session.current !== id) return;
-          level.current = smoothLevel(level.current, rms);
           const now = performance.now();
-          // One bar per LIVE_BAR_MS at a constant rate; the meter scrolls between them.
-          if (now - lastBar.current < LIVE_BAR_MS) return;
-          lastBar.current = now - lastBar.current > LIVE_BAR_MS * 3 ? now : lastBar.current + LIVE_BAR_MS;
-          setLevels((current) => [...current.slice(1 - LIVE_BARS), loudness(level.current)]);
-          setElapsed(now - started.startedAt);
+          bars.current.sample(loudness(rms), now);
+          // Re-render only when the shown second changes; the meter draws itself.
+          const next = now - started.startedAt;
+          setElapsed((shown) => (Math.floor(shown / 1000) === Math.floor(next / 1000) ? shown : next));
         },
         onLimit: () => {
           if (session.current === id) void finish(false);
@@ -164,7 +163,6 @@ export function useVoiceRecorder({
         return;
       }
       recorder.current = started;
-      lastBar.current = performance.now();
       // A hold released before the microphone started was a tap: keep recording hands-free.
       const held = next === "hold" && !!hold.current && !hold.current.released;
       if (next === "hold" && !held) setMode("free");
@@ -180,16 +178,54 @@ export function useVoiceRecorder({
     }
   };
 
-  // Scroll the live bars smoothly between additions; reduced motion steps instead.
+  // Draw the live bars every frame: they scroll smoothly between additions
+  // (reduced motion steps instead), arrive flat at the right and swell, and
+  // pinch and fade toward the left.
   useEffect(() => {
-    if (phase !== "recording" || reducedMotion()) return;
+    if (phase !== "recording") return;
+    const still = reducedMotion();
     let frame = 0;
-    const tick = () => {
-      const shift = Math.min(1, (performance.now() - lastBar.current) / LIVE_BAR_MS) * STEP_PX;
-      meter.current?.style.setProperty("--shift", `${-shift}px`);
-      frame = requestAnimationFrame(tick);
+    const draw = () => {
+      frame = requestAnimationFrame(draw);
+      const canvas = meter.current;
+      const context = canvas?.getContext("2d");
+      if (!canvas || !context) return;
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      const ratio = window.devicePixelRatio || 1;
+      if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
+        canvas.width = Math.round(width * ratio);
+        canvas.height = Math.round(height * ratio);
+      }
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      context.clearRect(0, 0, width, height);
+      const { values, lastBarAt } = bars.current;
+      const progress = still || lastBarAt === undefined ? 1 : (performance.now() - lastBarAt) / LIVE_BAR_MS;
+      // Readings land every 20 ms but bars are due every 25 ms, so a bar can be
+      // late: keep sliding past one step rather than pausing, and the new bar
+      // lands exactly where the slide has got to (a stall restarts at 3 steps).
+      const shift = Math.min(3, Math.max(0, progress)) * LIVE_STEP_PX;
+      for (let back = 0; back < values.length; back++) {
+        const x = width - shift - back * LIVE_STEP_PX;
+        if (x < -LIVE_STEP_PX) break;
+        const { scale, alpha } = liveBarShape(x + LIVE_BAR_PX / 2, width);
+        if (alpha < 0.02) continue;
+        const level = liveBarLevel(values[values.length - 1 - back]);
+        const barHeight = Math.max(LIVE_MIN_PX * Math.max(0.6, scale), level * scale * height * 0.94);
+        const barWidth = LIVE_BAR_PX * Math.min(1, Math.max(0.6, scale + 0.4));
+        const warmth = Math.min(1, 0.25 + level * 0.9);
+        const [r, g, b] = QUIET_RGB.map((quiet, index) => Math.round(quiet + (LOUD_RGB[index] - quiet) * warmth));
+        const left = x + (LIVE_BAR_PX - barWidth) / 2;
+        const top = (height - barHeight) / 2;
+        context.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        context.beginPath();
+        // Square bars where canvas has no roundRect (Safari before 16).
+        if (context.roundRect) context.roundRect(left, top, barWidth, barHeight, Math.min(barWidth, barHeight) / 2);
+        else context.rect(left, top, barWidth, barHeight);
+        context.fill();
+      }
     };
-    frame = requestAnimationFrame(tick);
+    frame = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(frame);
   }, [phase]);
 
@@ -287,16 +323,9 @@ export function useVoiceRecorder({
   ) : null;
 
   const time = formatVoiceDuration(elapsed, "floor");
-  const levelMeter = (
-    <span className="chat-voice-levels" aria-hidden="true">
-      <span ref={meter}>
-        {Array.from({ length: LIVE_BARS }, (_, index) => {
-          const value = levels[index - (LIVE_BARS - levels.length)];
-          return <span key={index} style={{ height: `${(value ?? 0) * 100}%` }} />;
-        })}
-      </span>
-    </span>
-  );
+  // For diagnostics: the call's processing status, or why the browser's is used.
+  const processing = recorder.current?.processing;
+  const levelMeter = <canvas ref={meter} className="chat-voice-levels" aria-hidden="true" />;
   const dot = <span className="chat-voice-dot" data-live={phase === "recording" || undefined} aria-hidden="true" />;
   const timer = (
     <span className="chat-voice-elapsed" role="timer" aria-label={`Recording ${time}`}>
@@ -304,7 +333,13 @@ export function useVoiceRecorder({
     </span>
   );
   const bar = !active ? null : mode === "free" ? (
-    <div className="chat-voice-recorder" data-mode="free" role="group" aria-label="Recording voice message">
+    <div
+      className="chat-voice-recorder"
+      data-mode="free"
+      data-processing={processing}
+      role="group"
+      aria-label="Recording voice message"
+    >
       <button
         type="button"
         className="chat-voice-discard"
@@ -330,7 +365,13 @@ export function useVoiceRecorder({
       </button>
     </div>
   ) : (
-    <div className="chat-voice-recorder" data-mode="hold" role="group" aria-label="Recording voice message">
+    <div
+      className="chat-voice-recorder"
+      data-mode="hold"
+      data-processing={processing}
+      role="group"
+      aria-label="Recording voice message"
+    >
       <span className="chat-voice-release" aria-hidden="true">
         {releaseLabel}
       </span>

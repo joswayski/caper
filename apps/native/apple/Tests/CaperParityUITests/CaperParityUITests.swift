@@ -484,6 +484,44 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertFalse(app.buttons["mention-suggestion-maya"].exists)
     }
 
+    #if os(macOS)
+    func testMessageTextSelectionIncludesLinksAndMentions() async throws {
+        try await Self.fixtureControl(["reset": true])
+        addTeardownBlock { try await Self.fixtureControl(["reset": true]) }
+        let app = launch()
+        let composer = try require(app.descendants(matching: .any)["message-composer"], timeout: 30,
+                                   "Missing message composer")
+        try hideMembers(in: app)
+        for message in [
+            "Selectable plain message",
+            "https://example.com/Selection tail",
+            "Mentioned @maya with selectable words",
+            "https://example.com/MixedCase @maya tail",
+        ] {
+            type(message, into: composer)
+            app.buttons["send-message-button"].click()
+            let cleared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == ''"), object: composer)
+            XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 5), .completed)
+            let text = try require(app.staticTexts.matching(NSPredicate(format: "value BEGINSWITH %@", message.components(separatedBy: " ").first!)).firstMatch,
+                                   timeout: 10, "Missing delivered message text")
+            // Drag from the beginning of actual glyphs, including directly on
+            // a URL. Copy must return a substring, not the row's Copy text action.
+            let start = text.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+                .withOffset(CGVector(dx: 1, dy: 8))
+            NSPasteboard.general.clearContents()
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 60, dy: 0)))
+            app.typeKey("c", modifierFlags: .command)
+            let copied = try XCTUnwrap(NSPasteboard.general.string(forType: .string), "Dragging must select text for ⌘C")
+            XCTAssertGreaterThanOrEqual(copied.count, 4)
+            XCTAssertLessThan(copied.count, message.count, "Copy the selected range, not the entire message")
+            XCTAssertTrue(message.hasPrefix(copied), "Copied text must preserve the selected source characters: \(copied)")
+            XCTAssertFalse(app.descendants(matching: .any)["mention-card"].exists, "Dragging must not open a profile")
+            XCTAssertEqual(app.state, .runningForeground, "Dragging a URL must not open the browser")
+        }
+        capture("message-text-selection", app: app)
+    }
+    #endif
+
     func testOwnMentionPillOpensCardWithoutMessageButton() throws {
         let app = launch()
         // The fixture's seeded message from Alex mentions @fixture_owner (you).
@@ -900,6 +938,18 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertTrue(target.waitForExistence(timeout: 5))
         try hoverMessage(target)
         XCTAssertTrue(app.buttons["add-reaction-\(hoverTargetID)"].waitForExistence(timeout: 2), "Message controls appear on hover")
+        let quick = ["👍", "❤️", "😂"].map { app.buttons["quick-reaction-\(hoverTargetID)-\($0)"] }
+        for button in quick {
+            XCTAssertTrue(button.isHittable, "Quick reactions belong directly on the message toolbar")
+            XCTAssertEqual(button.frame.midY, quick[0].frame.midY, accuracy: 1)
+        }
+        XCTAssertTrue(quick[0].isSelected)
+        XCTAssertFalse(quick[1].isSelected)
+        XCTAssertLessThan(quick[2].frame.maxX, app.buttons["add-reaction-\(hoverTargetID)"].frame.minX)
+        target.descendants(matching: .any)["Message options"].tap()
+        XCTAssertTrue(app.menuItems["Copy message ID"].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.menuItems.matching(NSPredicate(format: "label BEGINSWITH %@", "React with")).firstMatch.exists)
+        app.typeKey(.escape, modifierFlags: [])
         #endif
         let rowShortcut = app.buttons["reaction-row-add-chan00000001m01"]
         XCTAssertTrue(rowShortcut.exists, "Messages with reactions offer an inline add-reaction shortcut")
@@ -2046,8 +2096,17 @@ final class CaperParityUITests: XCTestCase {
         }
         // Members would take the room the thread widens into; it opens again on relaunch.
         try hideMembers(in: app)
+        let timeline = app.descendants(matching: .any)["chat-timeline"]
+        let root = try require(app.descendants(matching: .any)["message-row-chan00000001m01"], timeout: 30, "Missing thread root")
+        let channelFrame = timeline.frame
+        let rootFrame = root.frame
+        func assertChannelUnchanged() {
+            XCTAssertEqual(timeline.frame, channelFrame, "Thread overlays without resizing the channel")
+            XCTAssertEqual(root.frame, rootFrame, "Thread opening and resizing must not move or rewrap messages")
+        }
         try openThread(app)
         let handle = try require(app.descendants(matching: .any)["thread-panel-resize"], timeout: 5, "Missing resize handle")
+        assertChannelUnchanged()
         let panel = app.descendants(matching: .any)["message-thread"]
         // The Slider is a synthetic accessibilityRepresentation, not a visible
         // control. Xcode 16 can fail to compute its hit point: click the actual
@@ -2059,6 +2118,7 @@ final class CaperParityUITests: XCTestCase {
         let maximum = try XCTUnwrap(sidebarWidth(of: handle))
         XCTAssertLessThanOrEqual(maximum, 600)
         XCTAssertGreaterThanOrEqual(maximum, 350, "The window leaves room to widen the thread")
+        assertChannelUnchanged()
         handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleClick()
         XCTAssertEqual(sidebarWidth(of: handle), 340)
         let initialEdge = panel.frame.minX
@@ -2083,6 +2143,7 @@ final class CaperParityUITests: XCTestCase {
         handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).doubleClick()
         handle.typeKey(.leftArrow, modifierFlags: [])
         app.buttons["Back to channel"].click()
+        assertChannelUnchanged()
         try openThread(app)
         XCTAssertEqual(sidebarWidth(of: handle), 350, "Closing does not discard the width")
         app.terminate()
@@ -2635,7 +2696,10 @@ final class CaperParityUITests: XCTestCase {
         #endif
         let settings = app.descendants(matching: .any)["account-settings-menu"]
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        XCTAssertEqual(settings.label, "Account settings")
         #if os(iOS)
+        XCTAssertEqual(settings.frame.width, 44, accuracy: 1)
+        XCTAssertEqual(settings.frame.height, 44, accuracy: 1)
         // SwiftUI's nested Menu Button is visible at the bottom of Browse,
         // but AX's scroll-to-visible can target an offscreen ancestor.
         let frame = settings.frame
@@ -2645,9 +2709,17 @@ final class CaperParityUITests: XCTestCase {
             dx: frame.midX / window.width, dy: frame.midY / window.height
         )).tap()
         #else
-        settings.tap()
+        XCTAssertEqual(settings.frame.width, 28, accuracy: 1)
+        XCTAssertEqual(settings.frame.height, 28, accuracy: 1)
+        XCTAssertEqual(settings.frame.midY, headphones.frame.midY, accuracy: 1)
+        settings.hover()
+        capture("account-settings-hover", app: app)
+        // The padded target, not only the gear image, must open the menu.
+        settings.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.15)).tap()
         #endif
         #if os(macOS)
+        XCTAssertTrue(app.descendants(matching: .any)["open-settings"].waitForExistence(timeout: 2))
+        capture("account-settings-open", app: app)
         XCTAssertFalse(app.descendants(matching: .any)["launch-at-login"].exists, "Startup must not appear in the quick menu")
         XCTAssertFalse(app.descendants(matching: .any)["sound-effects"].exists, "Persistent preferences belong in Settings")
         app.descendants(matching: .any)["open-settings"].tap()
@@ -2736,6 +2808,15 @@ final class CaperParityUITests: XCTestCase {
         }
         XCTAssertFalse(staticTexts("Connection statistics", in: app).firstMatch.exists)
         capture("audio-preferences", app: app)
+        #if os(macOS)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(hasKeyboardFocus(settings), "Closing Audio test returns focus to its menu trigger")
+        app.buttons["channel-chan00000001"].hover()
+        capture("account-settings-focus", app: app)
+        app.typeKey(" ", modifierFlags: [])
+        XCTAssertTrue(app.descendants(matching: .any)["open-settings"].waitForExistence(timeout: 2), "The focused trigger opens with Space")
+        app.typeKey(.escape, modifierFlags: [])
+        #endif
     }
 
     func testProfilePictureControlsStayAlignedDuringRegeneration() async throws {
@@ -2757,16 +2838,35 @@ final class CaperParityUITests: XCTestCase {
         XCTAssertEqual(edit.label, "Change profile picture")
         XCTAssertEqual(regenerate.frame.midY, edit.frame.midY, accuracy: 1)
         XCTAssertLessThan(regenerate.frame.maxX, edit.frame.minX)
+        #if os(macOS)
+        // Desktop badges must not grow to iPhone touch-target dimensions.
+        for control in [regenerate, edit] {
+            XCTAssertLessThanOrEqual(control.frame.width, 34)
+            XCTAssertLessThanOrEqual(control.frame.height, 34)
+        }
+        username.hover()
+        #else
         XCTAssertGreaterThanOrEqual(regenerate.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(edit.frame.height, 44)
+        #endif
+        XCTAssertFalse(app.staticTexts["Regenerating…"].exists)
         capture("profile-picture-idle", app: app)
 
         regenerate.tap()
-        assertStaticText("Regenerating…", in: app)
+        let pending = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == false"), object: regenerate)
+        XCTAssertEqual(XCTWaiter.wait(for: [pending], timeout: 5), .completed)
         XCTAssertFalse(regenerate.isEnabled)
         XCTAssertFalse(edit.isEnabled)
+        XCTAssertEqual(regenerate.value as? String, "Regenerating")
+        XCTAssertFalse(app.staticTexts["Regenerating…"].exists, "Progress belongs inside the button, not below the avatar")
         XCTAssertEqual(username.frame, originalUsernameFrame, "Progress must not move the form or resize its sheet")
         XCTAssertEqual(regenerate.frame, originalRegenerateFrame)
         XCTAssertEqual(edit.frame, originalEditFrame)
+        #if os(macOS)
+        username.hover()
+        regenerate.hover()
+        assertStaticText("Generate a new random avatar", in: app)
+        #endif
         capture("profile-picture-regenerating", app: app)
 
         try await Self.fixtureControl(["holdAvatarRegeneration": false])
@@ -2780,14 +2880,22 @@ final class CaperParityUITests: XCTestCase {
 
         #if os(macOS)
         regenerate.hover()
+        assertStaticText("Generate a new random avatar", in: app)
         capture("profile-picture-regenerate-hover", app: app)
         username.hover()
+        XCTAssertFalse(app.descendants(matching: .any)["picture-action-tooltip"].exists)
         edit.hover()
+        assertStaticText("Change profile picture", in: app)
         capture("profile-picture-edit-hover", app: app)
         #endif
         edit.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["Choose image…"].firstMatch.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any)["Photo library…"].firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["From Photos…"].firstMatch.waitForExistence(timeout: 5))
+        #if os(macOS)
+        XCTAssertTrue(app.descendants(matching: .any)["From your Mac…"].firstMatch.exists)
+        #else
+        XCTAssertTrue(app.descendants(matching: .any)["From Files…"].firstMatch.exists)
+        #endif
+        XCTAssertFalse(app.descendants(matching: .any)["Choose image…"].firstMatch.exists)
         XCTAssertFalse(app.descendants(matching: .any)["Files"].firstMatch.exists)
         capture("profile-picture-menu", app: app)
     }

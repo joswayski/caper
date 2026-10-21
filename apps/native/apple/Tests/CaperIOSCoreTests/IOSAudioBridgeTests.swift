@@ -12,6 +12,12 @@ final class IOSAudioBridgeTests: XCTestCase {
                       "Bundled DPDFNet at 48 kHz and RNNoise at 44.1 kHz must run without device I/O")
     }
 
+    func testVoiceMessageProcessorRunsTheCallChainWithoutHardware() {
+        XCTAssertTrue(CaperVoiceNoteProcessorWorksWithoutHardware(),
+                      "Voice messages' denoiser and contour at 48 and 44.1 kHz: no raw capture while priming, every frame in order, none dropped")
+        XCTAssertNil(CaperVoiceNoteProcessor(sampleRate: 4_000, strength: 25))
+    }
+
     @MainActor
     func testLeaveDoesNotWaitForAudioSessionAndCancelledRejoinStaysLeft() async throws {
         var permissionRequests = 0

@@ -8,8 +8,10 @@ import android.database.ContentObserver
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
+import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.Settings
 import android.util.LruCache
@@ -68,12 +70,17 @@ import chat.caper.android.data.LibraryPermissions
 import chat.caper.android.model.DraftAttachmentUi
 import chat.caper.android.ui.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 /** What the attach drawer reads from and sends: a channel/thread draft or a profile DM draft. */
 internal class AttachDrawerHost(
@@ -83,15 +90,54 @@ internal class AttachDrawerHost(
     val send: () -> Unit,
 )
 
-internal data class LibraryItem(val id: Long, val uri: Uri, val video: Boolean, val durationMs: Long, val mime: String? = null) {
+internal data class LibraryItem(val id: Long, val uri: Uri, val video: Boolean, val durationMs: Long, val mime: String? = null, val modified: Long = 0) {
     val gif: Boolean get() = !video && mime.equals("image/gif", ignoreCase = true)
+    /** An edited item keeps its ID, so its thumbnail is cached by version too. */
+    val thumbnailKey: String get() = "$id:$modified"
+}
+
+/**
+ * What the drawer keeps between openings. The composer warms it before the drawer opens, so the
+ * grid and its newest thumbnails are there at once and the list only refreshes behind them.
+ */
+internal object AttachDrawerCache {
+    /** The tile size thumbnails are decoded for. */
+    const val TILE_DP = 120
+    /** The newest items the composer prepares: more than a tall drawer shows. */
+    private const val WARM_COUNT = 60
+
+    /** The last list read, with the access it was read under. */
+    @Volatile var library: Pair<LibraryAccess, List<LibraryItem>>? = null
+    val thumbnails = object : LruCache<String, ImageBitmap>(minOf(Runtime.getRuntime().maxMemory() / 6, 64L * 1024 * 1024).toInt()) {
+        override fun sizeOf(key: String, value: ImageBitmap) = value.width * value.height * 4
+    }
+    @Volatile private var warmed = Long.MIN_VALUE / 2
+
+    /** Called while a composer is on screen. Never asks for access. */
+    suspend fun warm(context: Context) {
+        val access = LibraryPermissions.access(Build.VERSION.SDK_INT) { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
+        val now = SystemClock.elapsedRealtime()
+        if (access == LibraryAccess.NONE || now - warmed < 30_000) return
+        warmed = now
+        val items = withContext(Dispatchers.IO) { runCatching { queryLibrary(context) }.getOrNull() } ?: return
+        library = access to items
+        val px = (TILE_DP * context.resources.displayMetrics.density).roundToInt()
+        coroutineScope {
+            items.take(WARM_COUNT).filter { thumbnails.get(it.thumbnailKey) == null }.forEach { item ->
+                launch(Dispatchers.IO) { loadThumbnail(context, item, px)?.asImageBitmap()?.let { thumbnails.put(item.thumbnailKey, it) } }
+            }
+        }
+    }
 }
 
 /** Every photo and video the app may read, newest first. Rows are small, so even large libraries list quickly. */
 private fun queryLibrary(context: Context): List<LibraryItem> {
     val image = MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE
     val video = MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
-    val projection = arrayOf(MediaStore.Files.FileColumns._ID, MediaStore.Files.FileColumns.MEDIA_TYPE, "duration", MediaStore.Files.FileColumns.MIME_TYPE)
+    val projection = arrayOf(
+        MediaStore.Files.FileColumns._ID, MediaStore.Files.FileColumns.MEDIA_TYPE, "duration",
+        MediaStore.Files.FileColumns.MIME_TYPE, MediaStore.Files.FileColumns.DATE_MODIFIED,
+    )
     val items = mutableListOf<LibraryItem>()
     context.contentResolver.query(
         MediaStore.Files.getContentUri("external"), projection,
@@ -103,25 +149,36 @@ private fun queryLibrary(context: Context): List<LibraryItem> {
         val typeColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
         val durationColumn = cursor.getColumnIndex("duration")
         val mimeColumn = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MIME_TYPE)
+        val modifiedColumn = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATE_MODIFIED)
         while (cursor.moveToNext()) {
             val id = cursor.getLong(idColumn)
             val isVideo = cursor.getInt(typeColumn) == video
             val base = if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
             val duration = if (isVideo && durationColumn >= 0) cursor.getLong(durationColumn) else 0L
-            items += LibraryItem(id, ContentUris.withAppendedId(base, id), isVideo, duration, cursor.getString(mimeColumn))
+            val modified = if (modifiedColumn >= 0) cursor.getLong(modifiedColumn) else 0L
+            items += LibraryItem(id, ContentUris.withAppendedId(base, id), isVideo, duration, cursor.getString(mimeColumn), modified)
         }
     }
     return items
 }
 
-private fun loadThumbnail(context: Context, item: LibraryItem, px: Int): Bitmap? = runCatching {
-    val resolver = context.contentResolver
-    when {
-        Build.VERSION.SDK_INT >= 29 -> resolver.loadThumbnail(item.uri, Size(px, px), null)
-        item.video -> @Suppress("DEPRECATION") MediaStore.Video.Thumbnails.getThumbnail(resolver, item.id, MediaStore.Video.Thumbnails.MINI_KIND, null)
-        else -> @Suppress("DEPRECATION") MediaStore.Images.Thumbnails.getThumbnail(resolver, item.id, MediaStore.Images.Thumbnails.MINI_KIND, null)
+/** Stops decoding when the tile leaves the grid first. */
+private suspend fun loadThumbnail(context: Context, item: LibraryItem, px: Int): Bitmap? {
+    val signal = CancellationSignal()
+    val cancel = currentCoroutineContext()[Job]?.invokeOnCompletion { signal.cancel() }
+    return try {
+        runCatching {
+            val resolver = context.contentResolver
+            when {
+                Build.VERSION.SDK_INT >= 29 -> resolver.loadThumbnail(item.uri, Size(px, px), signal)
+                item.video -> @Suppress("DEPRECATION") MediaStore.Video.Thumbnails.getThumbnail(resolver, item.id, MediaStore.Video.Thumbnails.MINI_KIND, null)
+                else -> @Suppress("DEPRECATION") MediaStore.Images.Thumbnails.getThumbnail(resolver, item.id, MediaStore.Images.Thumbnails.MINI_KIND, null)
+            }
+        }.getOrNull()
+    } finally {
+        cancel?.dispose()
     }
-}.getOrNull()
+}
 
 /**
  * A private file the system camera writes a photo or video into, shared with it through the app's
@@ -169,12 +226,7 @@ private fun formatDuration(ms: Long): String {
     var access by remember { mutableStateOf(currentAccess()) }
     var asked by rememberSaveable { mutableStateOf(false) }
     var blocked by remember { mutableStateOf(false) }
-    var library by remember { mutableStateOf<List<LibraryItem>?>(null) }
-    val gifIds = remember(library) { library.orEmpty().filter { it.gif }.map { it.id }.toSet() }
-    // Even a very tall tablet drawer never owns more than six animated decoders at once.
-    val animatedIds by remember(gifIds) { derivedStateOf {
-        libraryGrid.layoutInfo.visibleItemsInfo.map { it.key }.filter { it in gifIds }.take(6).toSet()
-    } }
+    var library by remember { mutableStateOf(AttachDrawerCache.library?.takeIf { it.first == access }?.second) }
     var revision by remember { mutableIntStateOf(0) }
     val request = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         asked = true
@@ -195,8 +247,12 @@ private fun formatDuration(ms: Long): String {
         onPauseOrDispose { resumed = false }
     }
     LaunchedEffect(access, revision) {
-        library = if (access == LibraryAccess.NONE) emptyList()
-        else withContext(Dispatchers.IO) { runCatching { queryLibrary(context) }.getOrDefault(emptyList()) }
+        if (access == LibraryAccess.NONE) { library = emptyList(); AttachDrawerCache.library = null; return@LaunchedEffect }
+        // A saved burst or a camera write reports many changes; read the library once they settle.
+        if (library != null) delay(250)
+        val items = withContext(Dispatchers.IO) { runCatching { queryLibrary(context) }.getOrNull() }
+        if (items != null) AttachDrawerCache.library = access to items
+        library = items ?: library ?: emptyList()
     }
     DisposableEffect(access) {
         if (access == LibraryAccess.NONE) return@DisposableEffect onDispose {}
@@ -206,12 +262,6 @@ private fun formatDuration(ms: Long): String {
         runCatching { context.contentResolver.registerContentObserver(MediaStore.Files.getContentUri("external"), true, observer) }
         onDispose { context.contentResolver.unregisterContentObserver(observer) }
     }
-    val thumbnails = remember {
-        object : LruCache<Long, ImageBitmap>(24 * 1024 * 1024) {
-            override fun sizeOf(key: Long, value: ImageBitmap) = value.width * value.height * 4
-        }
-    }
-
     val used = host.files.size
     val full = used >= AttachmentPolicy.MAX_ATTACHMENTS
     // Library URI -> (position in the draft, draft key).
@@ -303,8 +353,9 @@ private fun formatDuration(ms: Long): String {
                                 if (hasCamera) item(key = "camera") { CameraTile(full, ::refuse, camera) }
                                 items(library.orEmpty(), key = { it.id }) { item ->
                                     val selection = selected[item.uri.toString()]
-                                    LibraryTile(item, selection?.first, dimmed = full && selection == null, thumbnails,
-                                        animate = resumed && item.id in animatedIds && !still) {
+                                    LibraryTile(item, selection?.first, dimmed = full && selection == null,
+                                        // Every GIF on screen plays, unless motion is reduced or the app is paused.
+                                        animate = resumed && !still) {
                                         when {
                                             selection != null -> host.remove(selection.second)
                                             full -> refuse()
@@ -371,16 +422,13 @@ private fun formatDuration(ms: Long): String {
     }
 }
 
-@Composable private fun LibraryTile(item: LibraryItem, order: Int?, dimmed: Boolean, cache: LruCache<Long, ImageBitmap>, animate: Boolean, onClick: () -> Unit) {
+@Composable private fun LibraryTile(item: LibraryItem, order: Int?, dimmed: Boolean, animate: Boolean, onClick: () -> Unit) {
     val context = LocalContext.current
-    val px = with(LocalDensity.current) { 120.dp.roundToPx() }
+    val px = with(LocalDensity.current) { AttachDrawerCache.TILE_DP.dp.roundToPx() }
     var failed by remember(item.uri) { mutableStateOf(false) }
-    val request = remember(item.uri, px) {
-        ImageRequest.Builder(context).data(item.uri).size(px, px)
-            .decoderFactory(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AnimatedImageDecoder.Factory() else GifDecoder.Factory()).build()
-    }
-    val bitmap by produceState(cache.get(item.id), item.id) {
-        if (value == null) value = withContext(Dispatchers.IO) { loadThumbnail(context, item, px)?.asImageBitmap() }?.also { cache.put(item.id, it) }
+    val key = item.thumbnailKey
+    val bitmap by produceState(AttachDrawerCache.thumbnails.get(key), key) {
+        if (value == null) value = withContext(Dispatchers.IO) { loadThumbnail(context, item, px)?.asImageBitmap() }?.also { AttachDrawerCache.thumbnails.put(key, it) }
     }
     Box(
         Modifier.aspectRatio(1f).background(SurfaceRaised).alpha(if (dimmed) 0.4f else 1f)
@@ -396,7 +444,10 @@ private fun formatDuration(ms: Long): String {
         bitmap?.let { Image(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
         // Removing the painter releases its animation on pause or as soon as the tile leaves the viewport.
         if (item.gif && animate && !failed) AsyncImage(
-            model = request, imageLoader = AttachmentImages.loader(context), contentDescription = null,
+            model = remember(item.uri, px) {
+                ImageRequest.Builder(context).data(item.uri).size(px, px)
+                    .decoderFactory(if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) AnimatedImageDecoder.Factory() else GifDecoder.Factory()).build()
+            }, imageLoader = AttachmentImages.loader(context), contentDescription = null,
             modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop, onError = { failed = true },
         )
         if (item.gif) Text("GIF", Modifier.align(Alignment.BottomStart).padding(5.dp)

@@ -2,6 +2,7 @@ import { captureMicrophone, type AudioSetup, type Microphone, type NoiseSuppress
 import { appGateway, GatewayError } from "../gateway/client.ts";
 import { NoiseAssets } from "./noise-assets.ts";
 import { DpdfnetPreparation } from "./dpdfnet-preparation.ts";
+import { provideCallAudio } from "./call-audio.ts";
 import { closeWarmVoice, takeWarmVoice } from "./warm.ts";
 import { EventConnection } from "./event-connection.ts";
 import { localDescription, preferOpus, waitFor, withOpusDtx } from "./rtc.ts";
@@ -229,6 +230,16 @@ export class PublicCallClient {
     this.changed = changed;
     this.apiRoot = apiRoot;
     this.fetchTransport = fetchTransport;
+    // Voice messages record with this call's processing and borrow its model.
+    provideCallAudio(() => ({
+      noiseSuppression: this.noiseSuppression,
+      audioSetup: this.audioSetup,
+      voiceProcessingStrength: this.voiceProcessingStrength,
+      live: this.captures.size > 0 || (this.phase !== "idle" && this.phase !== "failed"),
+      assets: this.noiseAssets,
+      dpdfnet: this.dpdfnet,
+      prepare: () => this.prepareMicrophone(),
+    }));
   }
 
   /** Carry user intent to a new channel without sharing session capabilities or media. */

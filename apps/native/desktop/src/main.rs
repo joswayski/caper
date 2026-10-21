@@ -950,14 +950,8 @@ struct VoiceRecording {
     started: Option<Instant>,
     /// Stop was pressed (or 10:00 reached): waiting for the encoded file.
     sending: bool,
-    /// The live meter's bars, oldest first, one per `voice_note::LIVE_INTERVAL`.
-    levels: std::collections::VecDeque<f32>,
-    /// When the newest bar was added; the bars scroll left from there.
-    sampled: Option<Instant>,
-    /// The smoothed input level (fast attack, slow release).
-    envelope: f32,
-    /// The loudest smoothed level since the newest bar.
-    bar_peak: f32,
+    /// The live meter's bars, one per `voice_note::LIVE_INTERVAL`.
+    meter: voice_note::LiveMeter,
     /// The fixture's frozen timer.
     fixed_elapsed: Option<Duration>,
     /// Recorded in a profile card's quick-message composer: the person's ID
@@ -973,42 +967,25 @@ impl VoiceRecording {
             recorder,
             started: None,
             sending: false,
-            levels: std::collections::VecDeque::new(),
-            sampled: None,
-            envelope: 0.0,
-            bar_peak: 0.0,
+            meter: voice_note::LiveMeter::default(),
             fixed_elapsed: None,
             profile: None,
         }
     }
 
-    /// Reads the input level (about 60 times a second) and adds a bar every
+    /// Reads the input level (every frame) and adds a bar every
     /// `voice_note::LIVE_INTERVAL`.
     fn sample(&mut self, rms: f32, now: Instant) {
-        self.envelope = voice_note::envelope(self.envelope, voice_note::perceptual(rms));
-        self.bar_peak = self.bar_peak.max(self.envelope);
-        if self
-            .sampled
-            .is_none_or(|sampled| now.duration_since(sampled) >= voice_note::LIVE_INTERVAL)
-        {
-            self.sampled = Some(now);
-            self.levels.push_back(self.bar_peak);
-            self.bar_peak = self.envelope;
-            while self.levels.len() > 200 {
-                self.levels.pop_front();
-            }
-        }
+        self.meter.sample(voice_note::perceptual(rms), now);
     }
 
-    /// How far (0–1) the bars have scrolled toward the next one.
+    /// How far (0–1) the bars have scrolled toward the next one. Reduced
+    /// motion and the fixture rest at 1, so the bars step instead.
     fn scroll(&self, now: Instant) -> f32 {
         if self.fixed_elapsed.is_some() || motion::reduced() {
-            return 0.0;
+            return 1.0;
         }
-        self.sampled.map_or(0.0, |sampled| {
-            (now.duration_since(sampled).as_secs_f32() / voice_note::LIVE_INTERVAL.as_secs_f32())
-                .clamp(0.0, 1.0)
-        })
+        self.meter.scroll(now)
     }
 
     fn for_profile(person: &str, username: &str, recorder: Option<voice_note::Recorder>) -> Self {
@@ -16155,32 +16132,76 @@ impl CaperApp {
         let escape_taken = self.reaction_picker.is_some()
             || self.reactors_view.is_some()
             || egui::Popup::is_any_open(ui.ctx());
-        // The thread opens beside the conversation (over it when narrow),
-        // sliding in from the trailing edge.
+        // Keep the channel's layout unchanged beneath the trailing overlay.
+        // Narrow layouts still show only the thread.
+        let conversation_rect = ui.available_rect_before_wrap();
         let thread_alone = self.thread_view.is_some() && narrow;
-        if self.thread_view.is_some() {
-            let progress = motion::entrance(ui.ctx(), egui::Id::new("thread-panel"), motion::BASE);
-            let from = motion::mark(ui);
-            if narrow {
-                self.thread_panel(ui, true);
-            } else {
-                egui::SidePanel::right("message-thread")
-                    .default_width(340.0)
-                    .min_width(300.0)
-                    .max_width(480.0)
-                    .frame(egui::Frame::new().fill(CONVERSATION))
-                    .show_inside(ui, |ui| self.thread_panel(ui, false));
-            }
-            motion::settle(
-                ui.ctx(),
-                ui.layer_id(),
-                from,
-                progress,
-                motion::rise(progress, egui::vec2(12.0, 0.0)),
-            );
-        }
         if !thread_alone {
             self.channel_conversation(ui, narrow);
+        }
+        if self.thread_view.is_some() {
+            let progress = motion::entrance(ui.ctx(), egui::Id::new("thread-panel"), motion::BASE);
+            if narrow {
+                let from = motion::mark(ui);
+                self.thread_panel(ui, true);
+                motion::settle(
+                    ui.ctx(),
+                    ui.layer_id(),
+                    from,
+                    progress,
+                    motion::rise(progress, egui::vec2(12.0, 0.0)),
+                );
+            } else {
+                let panel_id = egui::Id::new("message-thread");
+                let mut width = egui::containers::panel::PanelState::load(ui.ctx(), panel_id)
+                    .map_or(340.0, |state| state.rect.width())
+                    .clamp(300.0, 480.0)
+                    .min(conversation_rect.width());
+                // Match SidePanel's in-flight width so the area's hit bounds
+                // follow the divider immediately, including while shrinking.
+                if let Some(resize) = ui.ctx().read_response(panel_id.with("__resize"))
+                    && resize.dragged()
+                    && let Some(pointer) = resize.interact_pointer_pos()
+                {
+                    width = (conversation_rect.right() - pointer.x)
+                        .abs()
+                        .clamp(300.0, 480.0)
+                        .min(conversation_rect.width());
+                }
+                let grab = ui.style().interaction.resize_grab_radius_side;
+                // A separate area blocks channel scrolling as well as clicks,
+                // while staying below foreground popups and dialogs.
+                egui::Area::new(egui::Id::new("thread-overlay"))
+                    .order(egui::Order::Middle)
+                    .fixed_pos(egui::pos2(
+                        conversation_rect.right() - width - grab,
+                        conversation_rect.top(),
+                    ))
+                    .constrain(false)
+                    .fade_in(false)
+                    .sense(egui::Sense::click_and_drag())
+                    .show(ui.ctx(), |ui| {
+                        let from = motion::mark(ui);
+                        // Detach the resizable panel from the channel's cursor.
+                        let mut overlay =
+                            ui.new_child(egui::UiBuilder::new().max_rect(conversation_rect));
+                        let panel = egui::SidePanel::right(panel_id)
+                            .default_width(340.0)
+                            .min_width(300.0)
+                            .max_width(480.0)
+                            .frame(egui::Frame::new().fill(CONVERSATION))
+                            .show_inside(&mut overlay, |ui| self.thread_panel(ui, false));
+                        // Only the thread, not the full channel, owns this area.
+                        ui.allocate_rect(panel.response.rect, egui::Sense::hover());
+                        motion::settle(
+                            ui.ctx(),
+                            ui.layer_id(),
+                            from,
+                            progress,
+                            motion::rise(progress, egui::vec2(12.0, 0.0)),
+                        );
+                    });
+            }
         }
         // Once per pass, for pills in the channel and in thread replies.
         // Pins draws these above its overlay instead. The picker too: drawn
@@ -17962,10 +17983,11 @@ impl CaperApp {
         // A deleted message's thread stays reachable once it has one.
         let thread_action = !in_thread
             && (!deleted || message.thread.is_some() || message.thread_root_id.is_some());
-        // Web's hover actions: Reply in thread (outside threads), Reply for
-        // members, then Add reaction (disabled in read-only previews) and ⋯.
-        let action_count =
-            1 + usize::from(thread_action) + usize::from(can_react) + usize::from(!deleted);
+        // Quick reactions lead the hover actions; previews keep them disabled.
+        let action_count = 1
+            + usize::from(thread_action)
+            + usize::from(can_react)
+            + usize::from(!deleted) * (1 + QUICK_REACTIONS.len());
         let action_width = action_count as f32 * 24.0 + 6.0;
         let mentioned = mentions::mentions_me(
             &message.content.mentions,
@@ -18374,6 +18396,23 @@ impl CaperApp {
             // than inheriting the app's 36px horizontal interaction height.
             actions_ui.spacing_mut().interact_size.y = 24.0;
             actions_ui.horizontal(|ui| {
+                let quick: Vec<_> = quick_reactions(&reactions, author.as_deref())
+                    .into_iter()
+                    .filter(|_| !deleted)
+                    .map(|(emoji, mine)| {
+                        let rect = ui.allocate_space(egui::vec2(24.0, 24.0)).1;
+                        let response = ui.interact(
+                            rect,
+                            ui.id().with((&message.id, "quick-reaction", emoji)),
+                            if can_react {
+                                egui::Sense::click()
+                            } else {
+                                egui::Sense::hover()
+                            },
+                        );
+                        (emoji, mine, response)
+                    })
+                    .collect();
                 let reply = if !thread_action {
                     None
                 } else {
@@ -18426,6 +18465,7 @@ impl CaperApp {
                     || menu_open
                     || picker_open
                     || more.has_focus()
+                    || quick.iter().any(|(_, _, response)| response.has_focus())
                     || [&emoji, &reply_message, &reply]
                         .into_iter()
                         .flatten()
@@ -18439,6 +18479,35 @@ impl CaperApp {
                         Stroke::new(1.0, BORDER),
                         egui::StrokeKind::Inside,
                     );
+                    for (emoji, mine, response) in &quick {
+                        if *mine || response.has_focus() || (can_react && response.hovered()) {
+                            ui.painter().rect(
+                                response.rect,
+                                5.0,
+                                if *mine {
+                                    Color32::from_rgb(57, 35, 30)
+                                } else {
+                                    RAISED
+                                },
+                                if *mine || response.has_focus() {
+                                    Stroke::new(1.0, TERRACOTTA)
+                                } else {
+                                    Stroke::NONE
+                                },
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        if let Some(entry) = emoji::find(emoji) {
+                            self.reaction_textures
+                                .image(ui, entry, 18.0)
+                                .tint(if can_react {
+                                    Color32::WHITE
+                                } else {
+                                    Color32::WHITE.gamma_multiply(0.5)
+                                })
+                                .paint_at(ui, response.rect.shrink(3.0));
+                        }
+                    }
                     for (button, open) in [
                         (reply.as_ref(), false),
                         (reply_message.as_ref(), false),
@@ -18538,6 +18607,20 @@ impl CaperApp {
                         self.select_reply(ui.ctx(), message, in_thread);
                     }
                 }
+                for (emoji, mine, response) in quick {
+                    let label = format!("React with {emoji}");
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::Button,
+                            can_react,
+                            mine,
+                            &label,
+                        )
+                    });
+                    if response.on_hover_text(label).clicked() && can_react {
+                        self.set_reaction(&message.id, emoji, !mine);
+                    }
+                }
                 more.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Message actions")
                 });
@@ -18594,49 +18677,7 @@ impl CaperApp {
                                 );
                             },
                         );
-                        // Web's quick reactions toggle your own; then the full picker.
-                        // Like replying and pinning, they need membership: read-only
-                        // previews and requests get no controls that do nothing.
                         ui.add_space(4.0);
-                        if can_react {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 2.0;
-                                for (emoji, mine) in quick_reactions(&reactions, author.as_deref())
-                                {
-                                    let Some(entry) = emoji::find(emoji) else {
-                                        continue;
-                                    };
-                                    let image = self.reaction_textures.image(ui, entry, 20.0);
-                                    if quick_reaction(
-                                        ui,
-                                        image,
-                                        &format!("React with {emoji}"),
-                                        mine,
-                                    )
-                                    .clicked()
-                                    {
-                                        self.set_reaction(&message.id, emoji, !mine);
-                                        ui.close();
-                                    }
-                                }
-                                let add = drawn_icon_button_sized(
-                                    ui,
-                                    NavIcon::SmilePlus,
-                                    "Add reaction",
-                                    32.0,
-                                );
-                                if add.clicked() {
-                                    self.reaction_picker_anchor = Some(add.rect.left_bottom());
-                                    self.reaction_picker = Some(message.id.clone());
-                                    self.composer_emoji = None;
-                                    self.reaction_search.clear();
-                                    self.reaction_category = 0;
-                                    self.reaction_search_focus = true;
-                                    ui.close();
-                                }
-                            });
-                            ui.add_space(8.0);
-                        }
                         if can_react
                             && message_menu_item(
                                 ui,
@@ -28503,6 +28544,7 @@ impl CaperApp {
             voice_note::Recorder::start(
                 self.voice.preferences.input.clone(),
                 self.voice.preferences.input_percent,
+                self.voice.preferences.processing_strength,
                 context.clone(),
             )
         })
@@ -28920,12 +28962,13 @@ impl CaperApp {
                 }
             }
             if recording.recorder.is_some() {
-                // About 60 Hz for a smooth meter; reduced motion steps per bar.
-                context.request_repaint_after(if motion::reduced() {
-                    voice_note::LIVE_INTERVAL
+                // Every display frame so the meter scrolls smoothly; reduced
+                // motion steps per bar.
+                if motion::reduced() {
+                    context.request_repaint_after(voice_note::LIVE_INTERVAL);
                 } else {
-                    voice_note::LIVE_SAMPLE
-                });
+                    context.request_repaint();
+                }
             }
         }
         self.send_voice_messages();
@@ -29191,7 +29234,7 @@ impl CaperApp {
         let started = recording.started.is_some() || recording.recorder.is_none();
         let sending = recording.sending;
         let elapsed = recording.elapsed();
-        let levels: Vec<f32> = recording.levels.iter().copied().collect();
+        let levels: Vec<f32> = recording.meter.bars.iter().copied().collect();
         let scroll = recording.scroll(Instant::now());
         let send_on_stop = self.voice_send_on_stop;
         let mut discard = false;
@@ -29510,7 +29553,9 @@ impl CaperApp {
 }
 
 /// Slack-style transcript under a voice message: muted, behind a thin rule,
-/// three lines until "View transcript"; "Transcribing…" while pending.
+/// three lines until "View transcript"; "Transcribing…" while pending,
+/// breathing between full and 40% opacity every 2 s (still with reduced
+/// motion) until the transcript replaces it.
 fn voice_transcript(ui: &mut egui::Ui, attachment: &model::Attachment) {
     let text = match attachment.transcript_view() {
         model::TranscriptView::Hidden => return,
@@ -29534,7 +29579,12 @@ fn voice_transcript(ui: &mut egui::Ui, attachment: &model::Attachment) {
             ui.set_max_width(width);
             ui.spacing_mut().item_spacing.y = 4.0;
             let Some(text) = text else {
-                ui.label(RichText::new("Transcribing…").size(12.0).color(MUTED));
+                let alpha = motion::breathing(ui.ctx(), 2.0, 0.4);
+                ui.label(
+                    RichText::new("Transcribing…")
+                        .size(12.0)
+                        .color(MUTED.gamma_multiply(alpha)),
+                );
                 return;
             };
             let mut job = egui::text::LayoutJob::simple(
@@ -29590,7 +29640,7 @@ fn staged_voice_id(prepared: &std::sync::Arc<uploads::Prepared>) -> String {
 fn fixture_recording(mut bar: VoiceRecording) -> VoiceRecording {
     bar.started = Some(Instant::now());
     bar.fixed_elapsed = Some(Duration::from_secs(7));
-    bar.levels = (0..120)
+    bar.meter.bars = (0..120)
         .map(|index| {
             let x = index as f32 / 9.0;
             (0.15 + 0.8 * (x.sin() * (x * 0.37).cos()).abs()).min(1.0)
@@ -29609,24 +29659,64 @@ fn mic_button(ui: &mut egui::Ui, enabled: bool, unavailable: &str, size: f32) ->
     .clicked()
 }
 
-/// The recording bar's live input meter: newest level on the right, one
-/// rounded 3 px bar every 5 px, scrolling left as levels arrive.
+/// The recording bar's live input meter ("pinch bars"): newest level on the
+/// right, one 3 px pill every 6 px, scrolling left as levels arrive. New bars
+/// enter flat and swell; old ones pinch and fade over the left 40 px. Quiet
+/// bars are small grey dots and loud ones brighten toward eggshell.
 fn paint_live_levels(painter: &egui::Painter, rect: egui::Rect, levels: &[f32], scroll: f32) {
+    const BAR: f32 = 3.0;
+    const STEP: f32 = 6.0;
+    const MIN: f32 = 3.0;
+    const QUIET: Color32 = Color32::from_rgb(150, 156, 158);
+    let width = rect.width();
+    if width <= 0.0 {
+        return;
+    }
     let painter = painter.with_clip_rect(painter.clip_rect().intersect(rect));
-    // The newest bar enters at the right edge and glides left by one pitch
-    // until the next arrives; older bars follow at a constant rate.
-    let count = (rect.width() / WAVE_PITCH).ceil() as usize + 1;
-    for age in 0..count {
-        let level = levels.len().checked_sub(age + 1).map(|index| levels[index]);
-        let right = rect.right() - (age as f32 + scroll) * WAVE_PITCH;
-        paint_wave_bar(
-            &painter,
-            right - WAVE_BAR,
-            rect,
-            level.unwrap_or(0.0),
-            if level.is_some() { TEXT } else { BORDER },
+    for (age, level) in levels.iter().rev().enumerate() {
+        // Left edge of the bar, from the meter's left.
+        let x = width - scroll * STEP - age as f32 * STEP;
+        if x < -STEP {
+            break;
+        }
+        let center = x + BAR / 2.0;
+        let pinch = 1.0 - 0.70 * (1.0 - smoothstep(0.0, 40.0_f32.min(0.8 * width), center));
+        let fade = smoothstep(0.0, 0.10 * width, center);
+        let swell = egui::emath::easing::cubic_out(((width - center) / 36.0).clamp(0.0, 1.0));
+        let arrive = smoothstep(0.0, 10.0, width - center);
+        let scale = pinch * swell;
+        let alpha = fade * arrive;
+        if alpha < 0.02 {
+            continue;
+        }
+        let level = voice_note::live_shape(*level);
+        let height = (MIN * scale.max(0.6)).max(level * scale * rect.height() * 0.94);
+        let bar_width = BAR * (scale + 0.4).clamp(0.6, 1.0);
+        let tint = (0.25 + 0.9 * level).min(1.0);
+        let mix = |quiet: u8, loud: u8| {
+            (f32::from(quiet) + (f32::from(loud) - f32::from(quiet)) * tint).round() as u8
+        };
+        let color = Color32::from_rgb(
+            mix(QUIET.r(), ACTION.r()),
+            mix(QUIET.g(), ACTION.g()),
+            mix(QUIET.b(), ACTION.b()),
+        )
+        .gamma_multiply(alpha);
+        painter.rect_filled(
+            egui::Rect::from_center_size(
+                egui::pos2(rect.left() + x + BAR / 2.0, rect.center().y),
+                egui::vec2(bar_width, height),
+            ),
+            bar_width.min(height) / 2.0,
+            color,
         );
     }
+}
+
+/// 0 at `edge0`, 1 at `edge1`, easing in and out between.
+fn smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Waveform bars: 3 px wide with fully rounded caps and a 2 px gap.
@@ -30558,14 +30648,14 @@ fn redundant_invitation(error: &str) -> Option<&'static str> {
     }
 }
 
-/// Web's quick reactions in the message actions menu.
-const QUICK_REACTIONS: [&str; 5] = ["👍", "❤️", "😂", "🎉", "👀"];
+/// Quick reactions at the start of the message hover toolbar.
+const QUICK_REACTIONS: [&str; 3] = ["👍", "❤️", "😂"];
 
 /// Each quick reaction, and whether `author` already reacted with it.
 fn quick_reactions(
     reactions: &[model::Reaction],
     author: Option<&str>,
-) -> [(&'static str, bool); 5] {
+) -> [(&'static str, bool); 3] {
     QUICK_REACTIONS.map(|emoji| {
         let mine = author.is_some_and(|author| {
             reactions.iter().any(|reaction| {
@@ -30574,36 +30664,6 @@ fn quick_reactions(
         });
         (emoji, mine)
     })
-}
-
-/// A quick reaction button, pressed (terracotta) when it is yours.
-fn quick_reaction(
-    ui: &mut egui::Ui,
-    image: egui::Image<'static>,
-    label: &str,
-    mine: bool,
-) -> egui::Response {
-    let response = ui.add(
-        egui::Button::image(image)
-            .min_size(egui::vec2(32.0, 32.0))
-            .fill(if mine {
-                Color32::from_rgb(57, 35, 30)
-            } else {
-                Color32::TRANSPARENT
-            })
-            .stroke(Stroke::new(
-                1.0,
-                if mine {
-                    TERRACOTTA
-                } else {
-                    Color32::TRANSPARENT
-                },
-            ))
-            .corner_radius(8),
-    );
-    response
-        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, mine, label));
-    response
 }
 
 /// The web message-action list's compact icon rows, independent of the
@@ -32894,6 +32954,72 @@ mod tests {
     }
 
     #[test]
+    fn thread_overlay_keeps_channel_composer_geometry() {
+        let (context, mut app) = fixture("parity-thread");
+        let thread = app.thread_view.take().unwrap();
+        let composer = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect)
+                        if rect.fill == super::COMPOSER && rect.rect.width() > 300.0 =>
+                    {
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                })
+                .expect("channel composer")
+        };
+        render(&mut app, &context, vec![]);
+        let closed = composer(&render(&mut app, &context, vec![]));
+        app.thread_view = Some(thread);
+        for _ in 0..3 {
+            let output = render(&mut app, &context, vec![]);
+            assert_eq!(composer(&output), closed, "opening must not reflow chat");
+            let overlay = app.thread_drop_rect.unwrap();
+            assert!((300.0..=480.0).contains(&overlay.width()));
+            assert!(overlay.intersects(closed), "thread overlays the channel");
+            assert!(overlay.right() >= closed.right(), "trailing alignment");
+        }
+        let edge = app.thread_drop_rect.unwrap().left_center();
+        render(&mut app, &context, vec![egui::Event::PointerMoved(edge)]);
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: edge,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        for (delta, width) in [(-500.0, 480.0), (200.0, 300.0)] {
+            render(
+                &mut app,
+                &context,
+                vec![egui::Event::PointerMoved(edge + egui::vec2(delta, 0.0))],
+            );
+            let output = render(&mut app, &context, vec![]);
+            assert_eq!(app.thread_drop_rect.unwrap().width(), width);
+            assert_eq!(composer(&output), closed, "resizing must not reflow chat");
+        }
+        render(
+            &mut app,
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: edge + egui::vec2(200.0, 0.0),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        click_label(&mut app, &context, "Close thread");
+        assert!(app.thread_view.is_none());
+        assert_eq!(composer(&render(&mut app, &context, vec![])), closed);
+    }
+
+    #[test]
     fn thread_composer_keeps_text_and_actions_inside_narrow_panels() {
         for (width, name) in [300.0, 340.0, 390.0, 480.0].into_iter().flat_map(|width| {
             ["parity-thread", "parity-thread-attachments"].map(|name| (width, name))
@@ -33922,6 +34048,9 @@ mod tests {
             })
             .expect("hover actions surface");
         let aligned = [
+            "React with 👍",
+            "React with ❤️",
+            "React with 😂",
             "Reply in thread",
             "Reply",
             "Add reaction",
@@ -34281,8 +34410,7 @@ mod tests {
         for label in ["Reply", "Pin message", "Unpin message"] {
             assert!(!shown.contains(&label), "previews offer no {label}");
         }
-        assert!(node_bounds(&preview, "React with 👍").is_none());
-        // The hover bar keeps a disabled Add reaction, as on web; nothing can react.
+        // The hover bar keeps disabled reactions, as on web; nothing can react.
         let nodes = &preview
             .platform_output
             .accesskit_update
@@ -34290,10 +34418,11 @@ mod tests {
             .unwrap()
             .nodes;
         assert!(
-            !nodes
-                .iter()
-                .any(|(_, node)| node.label() == Some("Add reaction") && !node.is_disabled()),
-            "previews offer no Add reaction"
+            !nodes.iter().any(|(_, node)| matches!(
+                node.label(),
+                Some("Add reaction" | "React with 👍" | "React with ❤️" | "React with 😂")
+            ) && !node.is_disabled()),
+            "preview reaction controls must be disabled"
         );
     }
 
@@ -41777,13 +41906,7 @@ mod tests {
         ];
         assert_eq!(
             super::quick_reactions(&reactions, Some("me")),
-            [
-                ("👍", true),
-                ("❤️", false),
-                ("😂", false),
-                ("🎉", false),
-                ("👀", false)
-            ]
+            [("👍", true), ("❤️", false), ("😂", false)]
         );
         assert!(
             super::quick_reactions(&reactions, None)
@@ -41866,25 +41989,20 @@ mod tests {
         for item in ["View reactions", "Copy text", "Copy message ID"] {
             assert!(shows(&output, item), "{item}: {:?}", text_shapes(&output));
         }
-        // 👍 ❤️ 😂 🎉 👀, then Add reaction.
-        // 32px wide in a menu row of 36px controls.
-        let quick = buttons(&context, egui::Order::Foreground, |size| size.x == 32.0);
-        assert_eq!(quick.len(), 6, "{quick:?}");
-        click(&mut app, &context, quick[0]);
+        assert!(buttons(&context, egui::Order::Foreground, |size| size.x == 32.0).is_empty());
+        click(&mut app, &context, more);
+        render(&mut app, &context, vec![]);
+        // Three 24px quick reactions precede thread, reply, picker and More.
+        let quick = more - egui::vec2(6.0 * 24.0, 0.0);
+        click(&mut app, &context, quick);
         assert!(
             !app.pending_reactions[&(message.id.clone(), "👍".into())].desired,
             "your 👍 toggles off"
         );
         let output = render(&mut app, &context, vec![]);
-        assert!(!shows(&output, "Copy text"), "reacting closes the menu");
+        assert!(!shows(&output, "Copy text"), "quick reactions need no menu");
 
-        click(&mut app, &context, more);
-        render(&mut app, &context, vec![]);
-        click(
-            &mut app,
-            &context,
-            buttons(&context, egui::Order::Foreground, |size| size.x == 32.0)[1],
-        );
+        click(&mut app, &context, quick + egui::vec2(24.0, 0.0));
         assert!(app.pending_reactions[&(message.id.clone(), "❤️".into())].desired);
 
         click(&mut app, &context, more);

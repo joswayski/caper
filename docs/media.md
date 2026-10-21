@@ -2510,15 +2510,29 @@ does.
   (the system dialog, no filter). Profile messages add Paste from clipboard.
 
 **Gallery previews (October 20, 2026):** iOS and Android animate local GIF
-originals in visible Photos tiles, with a GIF badge even when playback falls
-back to a still. At most six GIFs animate at once; leaving the viewport,
-backgrounding the app, or reduced motion stops them. Android decodes at 120dp;
-iOS caps each animation at 240px, 200 frames and 2 MiB decoded, downsampling
-to fit. iOS rejects encoded data above 16 MiB after PhotoKit supplies it and
-does not download cloud-only originals just for autoplay. Videos use a play
-icon plus duration rather than concurrent gallery video players. Selected
-uploads still use the original staging path, not these previews. The system
-photo picker opened by mobile web owns its previews; Caper cannot change them.
+originals in Photos tiles, with a GIF badge even when playback falls back to a
+still. Every GIF on screen plays; leaving the viewport, backgrounding the app,
+or reduced motion stops it. Android decodes at 120dp; iOS caps each animation
+at 240px, 200 frames and 2 MiB decoded, downsampling to fit, and plays the
+frames with a Core Animation keyframe animation rather than a SwiftUI timeline,
+so playback costs no view updates per frame. iOS rejects encoded data above
+16 MiB after PhotoKit supplies it and does not download cloud-only originals
+just for autoplay. Videos use a play icon plus duration rather than concurrent
+gallery video players. Selected uploads still use the original staging path,
+not these previews. The system photo picker opened by mobile web owns its
+previews; Caper cannot change them.
+
+Gallery performance: while a composer is on screen (with library access
+already granted; it never prompts), both apps read the library and prepare the
+60 newest thumbnails, and iOS also decodes their GIFs, so the drawer opens
+filled and already playing. Thumbnails live in a process-wide memory cache
+(Android LRU up to 64 MiB, iOS `NSCache` 64 MiB, plus 96 MiB of decoded GIF
+frames) keyed by item and modification time. iOS reads the GIF flag from
+`PHAsset.playbackStyle` instead of querying PhotoKit resources per render,
+applies PhotoKit change details so iCloud sync activity that does not touch
+the fetch leaves the grid alone, and no longer redraws the whole drawer as
+tiles scroll. Android coalesces MediaStore change bursts and cancels thumbnail
+decodes for tiles that scroll away.
 Native gallery playback/lifecycle and rendered drawers still need device
 validation; browser checks do not establish it.
 
@@ -2784,17 +2798,53 @@ instead, on its own. The profile card's quick message works the same way.
 Waveforms are per-slice RMS loudness on a -50..0 dB scale, lightly smoothed
 and normalised (Android approximates RMS from MediaRecorder's amplitude
 readings). Players draw evenly spaced rounded bars by linear interpolation,
-with per-frame progress; live levels use fast-attack, slow-release smoothing
-and scroll at a steady rate (stepped under reduced motion).
+with per-frame progress.
+
+The live recording meter is the same on every client. It adds a bar every
+25 ms holding the loudest level in that slice, and a bar may fall to 35% of the
+one before, so gaps between words show. The meter draws `clamp((v - 0.28) /
+0.47) ^ 1.2` of its height, which stretches speech (about -35 to -12 dB) to the
+full height. Bars are 3 px pills 6 px apart and at least a 3 px dot; loud bars
+warm from grey toward eggshell. A new bar arrives flat at the right edge and
+swells to full size over 36 px. Within 40 px of the left edge bars pinch to 30%
+of their height, and they fade out over the left 10% of the meter. It redraws
+every frame and scrolls continuously, stepping instead under reduced motion.
+
+On the web the recording runs through the call's microphone processing
+(`captureMicrophone`: DPDFNet-8 HR with its DPDFNet-2/RNNoise fallbacks, the
+call's "Voice enhancement" strength, default 25%, and its echo/gain choice), so
+the uploaded file, the live meter and the waveform are what listeners hear. It
+borrows the call client's noise assets and spare model worker, preparing the
+spare again afterwards; while the model compiles, browser suppression covers it
+as on Join. During a call, where a second model run could overload the call's,
+or when processing cannot start (no AudioWorklet, a model still compiling
+without browser suppression, an init error), it records with the browser's
+echo cancellation, suppression and gain instead. The recording bar's
+`data-processing` attribute names the path. A pending "Transcribing…" under a
+sent voice message breathes (opacity 1 to 0.4 and back every 2 s) on every
+client, and stays still under reduced motion.
+
+The native clients record through their call chains too, at the saved "Voice
+enhancement" strength with input gain 100%. Android uses AudioRecord
+(VOICE_COMMUNICATION, 48 kHz, device AEC/NS where present) through local-only
+denoise entry points that never touch publication epochs and refuse input past
+a 40 ms backlog, then MediaCodec AAC into MPEG-4. Apple feeds an AVAudioEngine
+sink node through `CaperVoiceNoteProcessor` (DPDFNet-8 HR or RNNoise, then
+`CaperProcessVoice`) into AAC; on iOS outside a call the session uses
+`.voiceChat` with voice processing like a call, and during a call it shares the
+call's session unchanged. Desktop runs each frame through the call's
+`ProcessedVoice`. Each falls back to its previous recorder (Android
+MediaRecorder, Apple AVAudioRecorder, desktop gain only) when processing can't
+start, logging one line without audio.
 
 ### Platform status
 
 | Platform | Record | Play + transcript | Verified |
 | --- | --- | --- | --- |
-| Web desktop and mobile layout | MediaRecorder; click/tap, plus hold on touch | Player, seek, one at a time, 3-line transcript | `npm run check`, Vitest, Playwright with a fake microphone against the fixture (no real API audio, iOS Safari or real phone) |
-| Android | MediaRecorder AAC/M4A; tap or hold | Media3 player, transcript | 547 JVM tests, compile, lint; no device run |
-| iOS / macOS | AVAudioRecorder AAC/M4A; tap/hold (iOS), click (macOS) | AVPlayer, transcript | Apple CI build and XCTests; logic also tested on Linux Swift; no device run of the v2 changes yet |
-| Desktop (Windows, Linux) | Bundled FFmpeg AAC/M4A (WAV fallback); click | Bundled FFmpeg audio-only player | `cargo test`, clippy, Xvfb screenshots, virtual-microphone recording beside a live call capture (Linux only) |
+| Web desktop and mobile layout | MediaRecorder of the call's processed microphone (browser processing during a call or as fallback); click/tap, plus hold on touch | Player, seek, one at a time, 3-line transcript | `npm run check`, Vitest, Playwright with a fake microphone against the fixture (no real API audio, iOS Safari or real phone) |
+| Android | Processed AudioRecord to AAC/M4A (MediaRecorder fallback); tap or hold | Media3 player, transcript | JVM tests; processed recorder not yet compiled in CI or run on a device |
+| iOS / macOS | Processed AVAudioEngine to AAC/M4A (AVAudioRecorder fallback); tap/hold (iOS), click (macOS) | AVPlayer, transcript | Apple CI build and XCTests; logic also tested on Linux Swift; processed recorder not yet compiled or run on a device |
+| Desktop (Windows, Linux) | Call-processed audio to bundled FFmpeg AAC/M4A (WAV fallback); click | Bundled FFmpeg audio-only player | `cargo test`, clippy, Xvfb screenshots, virtual-microphone recording beside a live call capture (Linux only) |
 
 Physical microphones, recording during a real call on phones and Windows,
 and a live transcript round trip still need checking by hand.

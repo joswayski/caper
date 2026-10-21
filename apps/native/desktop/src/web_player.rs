@@ -79,9 +79,12 @@ pub enum Notice {
     /// A link followed out of the player, for the system browser.
     Open(String),
     Failed(Unavailable),
-    /// The engine went away by itself.
+    /// The engine went away by itself. Only the Linux helper process reports
+    /// it; WebView2 lives in our own process.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Exited,
-    /// The person closed the player's own window.
+    /// The person closed the player's own window (Linux on Wayland).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Closed,
 }
 

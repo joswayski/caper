@@ -1,12 +1,19 @@
 import AVFoundation
 import Foundation
 import Observation
-#if os(iOS)
+import os
+#if os(macOS)
+import CaperRTCBridge
+#else
+import CaperRTCBridgeIOS
 import UIKit
 #endif
 
 // Recording and playing voice messages (the shared voice-message contract). The rules are
 // in `VoiceMessages.swift`; the views are in `VoiceMessageViews.swift`.
+
+/// Which recording path ran and why the processed one couldn't; never audio.
+private let voiceMessageLog = Logger(subsystem: "chat.caper", category: "voice-messages")
 
 /// Which composer a recording belongs to: one conversation's channel
 /// composer, one thread's, or a profile card's message to one person.
@@ -50,13 +57,17 @@ final class VoiceMessageSettings {
     }
 }
 
-/// The app's one voice-message recorder. AVAudioRecorder writes AAC in MP4
-/// (mono, 48 kHz, ~64 kbps) to a private staging file, with metering for the
-/// live bars and the uploaded waveform. It records from the default input and
-/// never touches a call's audio: on iOS an active call's play-and-record
-/// session is shared as it is, and otherwise a session is configured only for
-/// the recording and released afterwards; on macOS the call's HAL route is
-/// separate from the recorder's default-device input.
+/// The app's one voice-message recorder. The microphone runs through the call's
+/// processing (`ProcessedVoiceCapture`: the call's denoiser and voice contour at
+/// the saved "Voice enhancement" strength, plus iPhone calls' voice-processing
+/// I/O outside a call) into AAC in MP4 (mono, 48 kHz, ~64 kbps) in a private
+/// staging file; the live bars and the uploaded waveform measure that processed
+/// audio. If the processed chain can't start, AVAudioRecorder records the
+/// default input unprocessed instead (logged), so recording never breaks.
+/// Neither touches a call's audio: on iOS an active call's play-and-record
+/// session is shared as it is, and otherwise a session is configured for the
+/// recording (as a call configures it) and released afterwards; on macOS the
+/// call's HAL route is separate from the recording's default-device input.
 @MainActor @Observable
 final class VoiceMessageRecorder {
     static let shared = VoiceMessageRecorder()
@@ -69,7 +80,7 @@ final class VoiceMessageRecorder {
     private(set) var elapsedMs = 0
     /// Live bars (0...1), one per `VoiceMessage.liveBarInterval`, newest last.
     private(set) var levels: [Float] = []
-    /// When the newest live bar entered, for the bars' constant scroll.
+    /// When the newest live bar was due, for the bars' constant scroll.
     @ObservationIgnored private(set) var lastBarAt = Date()
     /// A short inline message for one composer: a denied permission or a failure.
     private(set) var notice: (owner: VoiceComposerID, text: String)?
@@ -79,14 +90,16 @@ final class VoiceMessageRecorder {
     /// Mac's click): the bar shows Discard and Stop.
     var handsFree = false
 
+    /// The processed recording; nil while the plain recorder is the fallback.
+    @ObservationIgnored private var capture: ProcessedVoiceCapture?
     @ObservationIgnored private var recorder: AVAudioRecorder?
     @ObservationIgnored private var fileURL: URL?
     /// Linear RMS readings over the whole recording, the waveform's fallback
     /// when the finished file can't be decoded.
     @ObservationIgnored private var readings: [Float] = []
-    @ObservationIgnored private var envelope: Float = 0
-    @ObservationIgnored private var barPeak: Float = 0
-    @ObservationIgnored private var lastReadingAt = Date()
+    /// The processed level last read, held when the writer had nothing new.
+    @ObservationIgnored private var lastReading: Float = 0
+    @ObservationIgnored private var meter = VoiceLiveMeter()
     @ObservationIgnored private var meterTask: Task<Void, Never>?
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
@@ -94,6 +107,7 @@ final class VoiceMessageRecorder {
     /// iOS: this recorder configured the audio session (no call was using it).
     @ObservationIgnored private var ownsSession = false
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
+    @ObservationIgnored private var engineObserver: NSObjectProtocol?
 
     private init() {}
 
@@ -144,34 +158,42 @@ final class VoiceMessageRecorder {
             return false
         }
         guard attempt == generation else { return false }
+        let url: URL
+        let sharesCallSession: Bool
         do {
-            try beginSession()
-            let directory = try AttachmentStaging.newDirectory()
-            let url = directory.appendingPathComponent(VoiceMessage.uploadFilename)
+            sharesCallSession = try beginSession()
+            url = try AttachmentStaging.newDirectory().appendingPathComponent(VoiceMessage.uploadFilename)
             fileURL = url
-            let settings: [String: Any] = [
-                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                AVSampleRateKey: VoiceMessage.sampleRate,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: VoiceMessage.bitRate,
-                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-            ]
-            let recorder = try AVAudioRecorder(url: url, settings: settings)
-            recorder.isMeteringEnabled = true
-            // The recorder itself also stops at the limit, so a stalled UI never records longer.
-            guard recorder.prepareToRecord(), recorder.record(forDuration: Double(VoiceMessage.maximumDurationMs) / 1000) else {
-                throw CocoaError(.fileWriteUnknown)
-            }
-            self.recorder = recorder
         } catch {
             discardFile()
             reset()
             show(VoiceMessage.recordingFailed, for: owner)
             return false
         }
+        // The call's processing first; the plain recorder only if it can't start.
+        let processed = await startProcessed(url: url, sharesCallSession: sharesCallSession, attempt: attempt)
+        guard attempt == generation else {
+            // Cancelled (or restarted) while the chain started: nothing of it may stay open.
+            processed?.discard()
+            AttachmentStaging.remove(url)
+            return false
+        }
+        if let processed {
+            capture = processed
+            observeEngine(processed, attempt: attempt)
+        } else {
+            do {
+                try startPlainRecorder(url: url)
+            } catch {
+                discardFile()
+                reset()
+                show(VoiceMessage.recordingFailed, for: owner)
+                return false
+            }
+        }
         self.onLimit = onLimit
-        readings = []; levels = []; elapsedMs = 0; envelope = 0; barPeak = 0
-        lastBarAt = Date(); lastReadingAt = Date()
+        readings = []; levels = []; elapsedMs = 0; meter = VoiceLiveMeter(); lastReading = 0
+        lastBarAt = Date()
         phase = .recording
         observeInterruptions(owner: owner)
         let started = Date()
@@ -185,39 +207,102 @@ final class VoiceMessageRecorder {
         return true
     }
 
+    /// Starts the call's microphone chain into `url`, or returns nil (logged,
+    /// with no audio in the log) so the plain recorder takes over.
+    private func startProcessed(url: URL, sharesCallSession: Bool, attempt: Int) async -> ProcessedVoiceCapture? {
+        #if os(iOS)
+        let iOS = true
+        #else
+        let iOS = false
+        #endif
+        guard case .processed(let voiceProcessing) = VoiceMessage.capture(iOS: iOS, sharesCallSession: sharesCallSession) else { return nil }
+        let strength = VoiceMessage.processingStrength(stored: UserDefaults.standard.object(forKey: VoiceMessage.processingStrengthKey))
+        var started: ProcessedVoiceCapture?
+        do {
+            let (engine, format) = try ProcessedVoiceCapture.input(voiceProcessing: voiceProcessing)
+            // Loading the model takes a moment: off the main actor, as a call warms it.
+            let rate = format.sampleRate
+            let made = await Task.detached(priority: .userInitiated) {
+                VoiceProcessorBox(processor: CaperVoiceNoteProcessor(sampleRate: rate, strength: strength))
+            }.value
+            guard attempt == generation else { return nil }
+            guard let processor = made.processor else { throw ProcessedVoiceCapture.Failure.denoiser }
+            let capture = try ProcessedVoiceCapture(engine: engine, format: format, processor: processor, url: url)
+            started = capture
+            try await capture.start()
+            return capture
+        } catch {
+            started?.discard()
+            // Only the partial file: its private directory is where the fallback records.
+            try? FileManager.default.removeItem(at: url)
+            if attempt == generation {
+                voiceMessageLog.notice("Voice message recording without call processing: \(ProcessedVoiceCapture.reason(error), privacy: .public)")
+            }
+            return nil
+        }
+    }
+
+    /// The unprocessed fallback: AVAudioRecorder on the default input.
+    private func startPlainRecorder(url: URL) throws {
+        #if os(iOS)
+        // Without voice-processing I/O, record as before rather than tuned for calls.
+        if ownsSession { try? AVAudioSession.sharedInstance().setMode(.default) }
+        #endif
+        let recorder = try AVAudioRecorder(url: url, settings: VoiceMessageFile.settings)
+        recorder.isMeteringEnabled = true
+        // The recorder itself also stops at the limit, so a stalled UI never records longer.
+        guard recorder.prepareToRecord(), recorder.record(forDuration: Double(VoiceMessage.maximumDurationMs) / 1000) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        self.recorder = recorder
+    }
+
     private func sample(started: Date) {
-        guard phase == .recording, let recorder else { return }
+        guard phase == .recording, capture != nil || recorder != nil else { return }
         let now = Date()
         elapsedMs = min(VoiceMessage.maximumDurationMs, Int(now.timeIntervalSince(started) * 1000))
-        if recorder.isRecording {
-            recorder.updateMeters()
-            let power = recorder.averagePower(forChannel: 0)
-            readings.append(VoiceWaveform.amplitude(decibels: power))
-            // Fast attack, slow release: the bars follow speech without jitter.
-            envelope = VoiceWaveform.follow(envelope, toward: VoiceWaveform.meterLevel(decibels: power),
-                                            dt: now.timeIntervalSince(lastReadingAt))
-            lastReadingAt = now
-            barPeak = max(barPeak, envelope)
-            if now.timeIntervalSince(lastBarAt) >= VoiceMessage.liveBarInterval {
-                levels.append(barPeak)
-                if levels.count > 160 { levels.removeFirst(levels.count - 160) }
-                barPeak = envelope
-                lastBarAt = now
+        var running = false
+        if let capture {
+            running = capture.isRecording
+            if running {
+                // The processed audio's RMS since the last reading: what listeners hear.
+                let rms = capture.takeLevel() ?? lastReading
+                lastReading = rms
+                readings.append(rms)
+                addBar(VoiceWaveform.level(rms: rms), at: now)
+            }
+        } else if let recorder {
+            running = recorder.isRecording
+            if running {
+                recorder.updateMeters()
+                let power = recorder.averagePower(forChannel: 0)
+                readings.append(VoiceWaveform.amplitude(decibels: power))
+                addBar(VoiceWaveform.meterLevel(decibels: power), at: now)
             }
         }
-        if elapsedMs >= VoiceMessage.maximumDurationMs || !recorder.isRecording {
+        if elapsedMs >= VoiceMessage.maximumDurationMs || !running {
             let limit = onLimit
             onLimit = nil
             limit?()
         }
     }
 
+    /// Each bar takes the loudest reading in its window and falls fast between words.
+    private func addBar(_ level: Float, at now: Date) {
+        if meter.add(level, at: now) {
+            levels = meter.bars
+            lastBarAt = meter.lastBarAt ?? now
+        }
+    }
+
     /// Stops and returns the recording, or nil when it was under a second
     /// (discarded without uploading) or could not be read.
     func finish() async -> VoiceRecording? {
-        guard phase == .recording, let recorder, let url = fileURL else { cancel(); return nil }
+        guard phase == .recording, capture != nil || recorder != nil, let url = fileURL else { cancel(); return nil }
         let elapsed = elapsedMs
-        recorder.stop()
+        recorder?.stop()
+        // Stops the microphone, writes the processed tail and closes the file.
+        capture?.finish()
         let fallback = readings
         fileURL = nil
         reset()
@@ -252,6 +337,7 @@ final class VoiceMessageRecorder {
     func cancel() {
         generation += 1
         recorder?.stop()
+        capture?.discard()
         discardFile()
         reset()
     }
@@ -264,40 +350,48 @@ final class VoiceMessageRecorder {
 
     private func reset() {
         meterTask?.cancel(); meterTask = nil
+        // Every path closes the capture before this; releasing it frees the model.
+        capture = nil
         recorder = nil; onLimit = nil
         phase = .idle; owner = nil
-        elapsedMs = 0; levels = []; readings = []; slide = 0; handsFree = false
+        elapsedMs = 0; levels = []; readings = []; lastReading = 0; slide = 0; handsFree = false
         stopObservingInterruptions()
+        stopObservingEngine()
         endSession()
     }
 
     // MARK: Audio session
 
-    private func beginSession() throws {
+    /// Returns whether the recording shares a call's session (iOS).
+    private func beginSession() throws -> Bool {
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
-        if session.category == .playAndRecord {
+        if session.category == .playAndRecord && CallAudioSession.active {
             // A voice call (or microphone test) already records: share its
             // session unchanged so the call keeps its route and processing.
             ownsSession = false
-        } else {
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
-            try session.setActive(true)
-            ownsSession = true
+            return true
         }
+        // Configured as a call configures it, for its voice-processing I/O.
+        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+        try? session.setPreferredSampleRate(VoiceMessage.sampleRate)
+        try? session.setPreferredIOBufferDuration(0.02)
+        try session.setActive(true)
+        ownsSession = true
         #endif
+        return false
     }
 
     private func endSession() {
         #if os(iOS)
         guard ownsSession else { return }
         ownsSession = false
+        // A call joined while recording owns the session now.
+        guard !CallAudioSession.active else { return }
         let session = AVAudioSession.sharedInstance()
-        // A call joined while recording owns the session now (voice chat mode).
-        guard session.mode != .voiceChat else { return }
         try? session.setActive(false, options: .notifyOthersOnDeactivation)
         // Interface sounds mix with other apps again (see CaperEffects).
-        try? session.setCategory(.ambient)
+        try? session.setCategory(.ambient, mode: .default)
         #endif
     }
 
@@ -324,11 +418,282 @@ final class VoiceMessageRecorder {
         #endif
     }
 
+    /// A route or input-device change stops the engine. It carries on when the
+    /// microphone's format is unchanged; otherwise the recording ends there and
+    /// is kept, as when the recorder stops by itself.
+    private func observeEngine(_ capture: ProcessedVoiceCapture, attempt: Int) {
+        engineObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: capture.engine, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.generation == attempt, let capture = self.capture else { return }
+                if !capture.resumeAfterConfigurationChange() {
+                    voiceMessageLog.notice("Voice message input changed format while recording; keeping what was recorded")
+                }
+            }
+        }
+    }
+
+    private func stopObservingEngine() {
+        if let engineObserver { NotificationCenter.default.removeObserver(engineObserver) }
+        engineObserver = nil
+    }
+
     /// A short tap of feedback where the device has a haptic engine.
     static func haptic() {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
+    }
+}
+
+/// What the uploaded file is, whichever path writes it.
+private enum VoiceMessageFile {
+    static var settings: [String: Any] {
+        [
+            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+            AVSampleRateKey: VoiceMessage.sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: VoiceMessage.bitRate,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+        ]
+    }
+}
+
+/// Carries a new processor out of the task that loaded its model.
+private struct VoiceProcessorBox: @unchecked Sendable {
+    let processor: CaperVoiceNoteProcessor?
+}
+
+/// The one buffer a conversion may still take; nil flushes the converter.
+private final class VoiceConverterInput {
+    private var buffer: AVAudioPCMBuffer?
+    let ending: Bool
+
+    init(_ buffer: AVAudioPCMBuffer?) {
+        self.buffer = buffer
+        ending = buffer == nil
+    }
+
+    func take() -> AVAudioPCMBuffer? {
+        defer { buffer = nil }
+        return buffer
+    }
+}
+
+/// A voice message through the call's microphone chain. AVAudioEngine's input
+/// (with voice-processing I/O where `VoiceMessage.capture` asks for it) feeds
+/// `CaperVoiceNoteProcessor` — the call's denoiser worker and voice contour —
+/// from the capture thread; a writer queue encodes the processed audio into
+/// the uploaded AAC/MP4 file and measures it for the live bars. Nothing is
+/// published. The engine is driven from the main actor; `file`, `converter`,
+/// the buffers and the timer belong to `queue`; levels cross under `lock`.
+final class ProcessedVoiceCapture: @unchecked Sendable {
+    enum Failure: Error {
+        case input, denoiser, encoder, silent
+    }
+
+    let engine: AVAudioEngine
+    private let processor: CaperVoiceNoteProcessor
+    private let format: AVAudioFormat
+    /// The engine stopped for good (main actor).
+    private var stopped = false
+    private var closed = false
+
+    private let queue = DispatchQueue(label: "chat.caper.voice-message-writer", qos: .userInitiated)
+    private var file: AVAudioFile?
+    private let converter: AVAudioConverter
+    private let chunk: AVAudioPCMBuffer
+    private let encoded: AVAudioPCMBuffer
+    private var timer: DispatchSourceTimer?
+    private var writtenFrames: AVAudioFramePosition = 0
+    private var writing = true
+
+    private let lock = NSLock()
+    private var squares: Double = 0
+    private var measured = 0
+    /// The 10:00 limit or a write error ended the file.
+    private var ended = false
+
+    deinit {
+        // Every owner closes first; a cancelled source never fires into a freed writer.
+        timer?.cancel()
+    }
+
+    /// A fresh engine's microphone format, with voice processing switched on
+    /// first where asked (it changes the format).
+    @MainActor static func input(voiceProcessing: Bool) throws -> (AVAudioEngine, AVAudioFormat) {
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        if voiceProcessing { try input.setVoiceProcessingEnabled(true) }
+        let format = input.outputFormat(forBus: 0)
+        guard format.commonFormat == .pcmFormatFloat32, format.channelCount > 0,
+              format.sampleRate >= 8_000, format.sampleRate <= 192_000 else { throw Failure.input }
+        return (engine, format)
+    }
+
+    /// A loggable reason without any audio or device names.
+    static func reason(_ error: Error) -> String {
+        if let failure = error as? Failure { return "\(failure)" }
+        let error = error as NSError
+        return "\(error.domain) \(error.code)"
+    }
+
+    @MainActor init(engine: AVAudioEngine, format: AVAudioFormat, processor: CaperVoiceNoteProcessor, url: URL) throws {
+        self.engine = engine
+        self.format = format
+        self.processor = processor
+        let file = try AVAudioFile(forWriting: url, settings: VoiceMessageFile.settings,
+                                   commonFormat: .pcmFormatFloat32, interleaved: false)
+        let capacity: AVAudioFrameCount = 4_096
+        guard let processed = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: format.sampleRate, channels: 1, interleaved: true),
+              let converter = AVAudioConverter(from: processed, to: file.processingFormat),
+              let chunk = AVAudioPCMBuffer(pcmFormat: processed, frameCapacity: capacity),
+              let encoded = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                             frameCapacity: AVAudioFrameCount((Double(capacity) * file.processingFormat.sampleRate / format.sampleRate).rounded(.up)) + 1_024)
+        else { throw Failure.encoder }
+        self.file = file
+        self.converter = converter
+        self.chunk = chunk
+        self.encoded = encoded
+        // Channel 0, as a call's mono capture takes it.
+        let stride = format.isInterleaved ? Int(format.channelCount) : 1
+        let sink = AVAudioSinkNode { [processor] _, frames, list in
+            let buffer = list.pointee.mBuffers
+            guard let data = buffer.mData, frames > 0 else { return noErr }
+            let available = Int(buffer.mDataByteSize) / (MemoryLayout<Float>.size * stride)
+            processor.capture(data.assumingMemoryBound(to: Float.self), frameCount: UInt(min(Int(frames), available)), stride: UInt(stride))
+            return noErr
+        }
+        engine.attach(sink)
+        engine.connect(engine.inputNode, to: sink, format: format)
+    }
+
+    /// Starts the microphone and the writer. Throws if the engine won't start
+    /// or no input arrives within half a second (some routes start silent).
+    @MainActor func start() async throws {
+        engine.prepare()
+        try engine.start()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .milliseconds(10), repeating: .milliseconds(10), leeway: .milliseconds(5))
+        timer.setEventHandler { [weak self] in self?.drain(final: false) }
+        queue.sync { self.timer = timer }
+        timer.resume()
+        var waited = 0
+        while processor.capturedFrames == 0 && waited < 50 {
+            try? await Task.sleep(for: .milliseconds(10))
+            waited += 1
+        }
+        // Still running: a route change meanwhile is caught here, later ones by the recorder.
+        guard processor.capturedFrames > 0, engine.isRunning else { throw Failure.silent }
+    }
+
+    /// Still capturing and writing (main actor).
+    var isRecording: Bool { !stopped && !closed && !lock.withLock { ended } }
+
+    /// RMS (0...1) of the processed audio written since the last call; nil
+    /// when nothing new arrived.
+    func takeLevel() -> Float? {
+        lock.withLock {
+            guard measured > 0 else { return nil }
+            let rms = Float((squares / Double(measured)).squareRoot())
+            squares = 0; measured = 0
+            return rms
+        }
+    }
+
+    /// After a configuration change stopped the engine: restarts it when the
+    /// input format is unchanged. Returns false when the recording ends instead.
+    @MainActor func resumeAfterConfigurationChange() -> Bool {
+        guard !closed, !stopped else { return false }
+        guard !engine.isRunning else { return true }
+        let now = engine.inputNode.outputFormat(forBus: 0)
+        if now.sampleRate == format.sampleRate, now.channelCount == format.channelCount,
+           now.commonFormat == format.commonFormat, now.isInterleaved == format.isInterleaved {
+            engine.prepare()
+            if (try? engine.start()) != nil { return true }
+        }
+        stopped = true
+        engine.stop()
+        return false
+    }
+
+    /// Stops the microphone, writes what is left and closes the file.
+    @MainActor func finish() { close(keeping: true) }
+
+    /// Stops the microphone and closes the file without finishing it.
+    @MainActor func discard() { close(keeping: false) }
+
+    @MainActor private func close(keeping: Bool) {
+        guard !closed else { return }
+        closed = true
+        engine.stop()
+        let dropped = processor.droppedFrames
+        queue.sync {
+            timer?.cancel(); timer = nil
+            if keeping { drain(final: true) }
+            writing = false
+            // Releasing the file finishes the MP4.
+            file = nil
+        }
+        if dropped > 0 { voiceMessageLog.notice("Voice message writer fell behind: \(dropped, privacy: .public) frames dropped") }
+    }
+
+    // MARK: Writer queue
+
+    private func drain(final: Bool) {
+        guard file != nil, let samples = chunk.int16ChannelData?[0] else { return }
+        while true {
+            let count = Int(processor.read(into: samples, maxFrames: UInt(chunk.frameCapacity)))
+            guard count > 0 else { break }
+            chunk.frameLength = AVAudioFrameCount(count)
+            measure(UnsafeBufferPointer(start: samples, count: count))
+            encode(chunk)
+            if count < Int(chunk.frameCapacity) { break }
+        }
+        if final { encode(nil) }
+    }
+
+    private func measure(_ samples: UnsafeBufferPointer<Int16>) {
+        var sum: Double = 0
+        for sample in samples {
+            let value = Double(sample) / 32_768
+            sum += value * value
+        }
+        lock.withLock { squares += sum; measured += samples.count }
+    }
+
+    /// Converts to the file's 48 kHz float and appends it, up to 10:00.
+    /// `nil` flushes the converter at the end.
+    private func encode(_ input: AVAudioPCMBuffer?) {
+        guard writing, let file else { return }
+        let pending = VoiceConverterInput(input)
+        while true {
+            encoded.frameLength = 0
+            var error: NSError?
+            let status = converter.convert(to: encoded, error: &error) { _, state in
+                if let buffer = pending.take() {
+                    state.pointee = .haveData
+                    return buffer
+                }
+                state.pointee = pending.ending ? .endOfStream : .noDataNow
+                return nil
+            }
+            if status == .error { end(); return }
+            let room = AVAudioFramePosition(VoiceMessage.maximumFrames) - writtenFrames
+            if encoded.frameLength > 0 && room > 0 {
+                encoded.frameLength = AVAudioFrameCount(min(AVAudioFramePosition(encoded.frameLength), room))
+                do { try file.write(from: encoded) } catch { end(); return }
+                writtenFrames += AVAudioFramePosition(encoded.frameLength)
+            }
+            if writtenFrames >= AVAudioFramePosition(VoiceMessage.maximumFrames) { end(); return }
+            guard status == .haveData else { return }
+        }
+    }
+
+    private func end() {
+        writing = false
+        lock.withLock { ended = true }
     }
 }
 

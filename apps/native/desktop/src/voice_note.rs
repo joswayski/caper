@@ -2,7 +2,11 @@
 //!
 //! Recording opens its own private capture through the same libwebrtc
 //! device module the Audio test uses (`media::mic_test`), so an active
-//! call's microphone and publication are left exactly as they are. The raw
+//! call's microphone and publication are left exactly as they are. Each
+//! frame goes through the call's microphone processing (input gain,
+//! denoiser and the saved Voice enhancement strength) as it arrives, so the
+//! message, its live meter and its waveform are what a call would send;
+//! without that processing it records with the input gain alone. The
 //! 48 kHz mono capture never leaves memory until it is encoded to AAC in MP4
 //! by the bundled FFmpeg (16 kHz WAV without it) and uploaded as a voice
 //! attachment with its 64 normalised peaks; the server normalises the file
@@ -12,9 +16,10 @@ use crate::media::mic_test::{MicTest, MicTestControl};
 use crate::model::AttachmentKind;
 use crate::uploads::{Body, Prepared, Scratch, VoiceUpload};
 use eframe::egui;
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Peaks sent with every voice message.
 pub const WAVEFORM_BARS: usize = 64;
@@ -26,10 +31,13 @@ pub const MIN_DURATION: Duration = Duration::from_secs(1);
 pub const SAMPLE_RATE: u32 = 48_000;
 /// The WAV fallback's rate: a third of the capture, plenty for speech.
 const FALLBACK_RATE: u32 = 16_000;
-/// The live meter: a new bar every 70 ms, scrolling left between them.
-pub const LIVE_INTERVAL: Duration = Duration::from_millis(70);
-/// How often the live level is read while recording (about 60 Hz).
-pub const LIVE_SAMPLE: Duration = Duration::from_millis(16);
+/// The live meter: a new bar every 25 ms, scrolling left between them.
+pub const LIVE_INTERVAL: Duration = Duration::from_millis(25);
+/// How far a live bar may fall below the one before it: to 35% of it, so
+/// the gaps between words show.
+const LIVE_FALL: f32 = 0.65;
+/// Live bars kept: far more than the widest meter shows.
+const LIVE_BARS: usize = 200;
 /// The quietest level drawn above the baseline, in dBFS.
 const FLOOR_DB: f32 = -50.0;
 
@@ -88,11 +96,64 @@ pub fn smooth(levels: &[f32]) -> Vec<f32> {
         .collect()
 }
 
-/// Fast attack, slower release: the live meter follows speech without
-/// flickering between frames.
-pub fn envelope(previous: f32, level: f32) -> f32 {
-    let rate = if level > previous { 0.6 } else { 0.12 };
-    previous + (level - previous) * rate
+/// The live recording meter's bars: each is the loudest level read during
+/// its `LIVE_INTERVAL`, never below 35% of the bar before it, so syllables
+/// stand out and quiet gaps between words show.
+#[derive(Default)]
+pub struct LiveMeter {
+    /// Perceptual levels (0–1), oldest first.
+    pub bars: VecDeque<f32>,
+    /// The loudest level since the newest bar.
+    peak: f32,
+    /// When the newest bar was due; `None` until the first level.
+    due: Option<Instant>,
+}
+
+impl LiveMeter {
+    /// Takes one perceptual input level and adds at most one bar, every
+    /// `LIVE_INTERVAL` at a constant cadence. After a stall it restarts from
+    /// `now` instead of catching up.
+    pub fn sample(&mut self, level: f32, now: Instant) {
+        self.peak = self.peak.max(level);
+        let Some(due) = self.due else {
+            // The first bar is due one interval from the first level.
+            self.due = Some(now);
+            return;
+        };
+        let since = now.saturating_duration_since(due);
+        if since < LIVE_INTERVAL {
+            return;
+        }
+        let previous = self.bars.back().copied().unwrap_or(0.0);
+        let bar = self.peak.max(previous * (1.0 - LIVE_FALL));
+        self.bars.push_back(bar);
+        while self.bars.len() > LIVE_BARS {
+            self.bars.pop_front();
+        }
+        self.peak = 0.0;
+        self.due = Some(if since > 3 * LIVE_INTERVAL {
+            now
+        } else {
+            due + LIVE_INTERVAL
+        });
+    }
+
+    /// How far (in bar steps) the bars have scrolled since the newest one. It
+    /// keeps sliding past one step while a bar is late instead of pausing, so
+    /// the late bar lands where the slide has got to, up to the three steps
+    /// after which the cadence restarts.
+    pub fn scroll(&self, now: Instant) -> f32 {
+        self.due.map_or(1.0, |due| {
+            (now.saturating_duration_since(due).as_secs_f32() / LIVE_INTERVAL.as_secs_f32())
+                .clamp(0.0, 3.0)
+        })
+    }
+}
+
+/// A live bar's drawn height (0–1): speech sits around -35 to -12 dBFS, so
+/// that band is stretched to the meter's full height.
+pub fn live_shape(level: f32) -> f32 {
+    ((level - 0.28) / 0.47).clamp(0.0, 1.0).powf(1.2)
 }
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -172,19 +233,6 @@ pub fn bars(waveform: Option<&str>, count: usize) -> Vec<f32> {
 /// player read.
 pub fn duration_label(ms: u64) -> String {
     crate::player::time_label(ms)
-}
-
-/// The input volume preference (0–200%) applied to the capture.
-pub fn apply_gain(samples: &mut [i16], percent: u16) {
-    if percent == 100 {
-        return;
-    }
-    let gain = f32::from(percent.min(200)) / 100.0;
-    for sample in samples {
-        *sample = (f32::from(*sample) * gain)
-            .round()
-            .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16;
-    }
 }
 
 /// A mono 16-bit PCM WAV file.
@@ -304,8 +352,14 @@ pub struct Recorder {
 
 impl Recorder {
     /// Opens `input` (`None`: the system default microphone). The input
-    /// volume preference (`gain_percent`) applies to what is sent.
-    pub fn start(input: Option<String>, gain_percent: u16, repaint: egui::Context) -> Self {
+    /// volume preference (`gain_percent`) and the Voice enhancement
+    /// `strength` apply to what is sent, as in a call.
+    pub fn start(
+        input: Option<String>,
+        gain_percent: u16,
+        strength: u8,
+        repaint: egui::Context,
+    ) -> Self {
         let control = MicTestControl::new();
         let (sender, events) = mpsc::channel();
         let worker = control.clone();
@@ -324,15 +378,18 @@ impl Recorder {
                     .block_on(MicTest::start(worker.clone(), input.as_deref(), None))
                     .map_err(|error| start_failure(&error).to_owned())?;
                 send(RecorderEvent::Started);
-                let recorded = runtime.block_on(test.record_voice_message(MAX_DURATION));
+                let recorded = runtime.block_on(test.record_voice_message(
+                    MAX_DURATION,
+                    gain_percent.min(200),
+                    strength.min(100),
+                ));
                 test.stop();
                 drop(test);
-                let mut samples = recorded?;
+                let samples = recorded?;
                 if samples.len() < (MIN_DURATION.as_millis() as usize) * SAMPLE_RATE as usize / 1000
                 {
                     return Ok(None);
                 }
-                apply_gain(&mut samples, gain_percent);
                 prepare(&samples, crate::ffmpeg::binary()).map(Some)
             })();
             // A discarded recording has dropped the receiver: nothing arrives.
@@ -350,7 +407,7 @@ impl Recorder {
         self.control.finish_recording();
     }
 
-    /// RMS (0–1) of the latest captured frame.
+    /// RMS (0–1) of the latest processed frame.
     pub fn level(&self) -> f32 {
         self.control.input_level()
     }
@@ -434,16 +491,80 @@ mod tests {
     }
 
     #[test]
-    fn the_live_envelope_rises_fast_and_falls_slowly() {
-        let up = envelope(0.0, 1.0);
-        let down = envelope(1.0, 0.0);
-        assert!(up >= 0.5, "attack: {up}");
-        assert!(down >= 0.8, "release: {down}");
-        let mut level = 1.0;
-        for _ in 0..40 {
-            level = envelope(level, 0.0);
+    fn live_bars_keep_each_peak_and_fall_quickly() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut meter = LiveMeter::default();
+        meter.sample(0.2, at(0));
+        assert!(
+            meter.bars.is_empty(),
+            "the first bar is due one interval later"
+        );
+        // The loudest level inside the interval wins, not the last one.
+        meter.sample(0.9, at(10));
+        meter.sample(0.1, at(20));
+        meter.sample(0.1, at(25));
+        assert_eq!(meter.bars, [0.9]);
+        // Silence falls to 35% of the bar before, then on toward nothing.
+        meter.sample(0.0, at(50));
+        meter.sample(0.0, at(75));
+        assert!(
+            (meter.bars[1] - 0.9 * 0.35).abs() < 1e-6,
+            "{:?}",
+            meter.bars
+        );
+        assert!((meter.bars[2] - 0.9 * 0.35 * 0.35).abs() < 1e-6);
+        // A louder level than the fall replaces it at once.
+        meter.sample(0.5, at(100));
+        assert_eq!(meter.bars.back(), Some(&0.5));
+    }
+
+    #[test]
+    fn live_bars_keep_a_constant_cadence_and_restart_after_a_stall() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut meter = LiveMeter::default();
+        meter.sample(0.5, at(0));
+        // A late level still schedules the next bar from when this one was due.
+        meter.sample(0.5, at(32));
+        assert_eq!(meter.bars.len(), 1);
+        meter.sample(0.5, at(49));
+        assert_eq!(meter.bars.len(), 1);
+        meter.sample(0.5, at(50));
+        assert_eq!(meter.bars.len(), 2);
+        assert!((meter.scroll(at(50)) - 0.0).abs() < 1e-6);
+        assert!((meter.scroll(at(60)) - 0.4).abs() < 1e-3);
+        assert!(
+            (meter.scroll(at(90)) - 1.6).abs() < 1e-3,
+            "keeps sliding while a bar is late"
+        );
+        assert_eq!(meter.scroll(at(500)), 3.0);
+        // One bar per level even when several are overdue, then a restart.
+        meter.sample(0.5, at(500));
+        assert_eq!(meter.bars.len(), 3);
+        meter.sample(0.5, at(510));
+        assert_eq!(
+            meter.bars.len(),
+            3,
+            "the stall restarted the cadence at 500"
+        );
+        meter.sample(0.5, at(525));
+        assert_eq!(meter.bars.len(), 4);
+        for ms in 0..1000 {
+            meter.sample(0.5, at(1000 + ms * 25));
         }
-        assert!(level < 0.01, "settles to silence");
+        assert_eq!(meter.bars.len(), LIVE_BARS, "the history is capped");
+        assert_eq!(LiveMeter::default().scroll(start), 1.0);
+    }
+
+    #[test]
+    fn live_shape_stretches_speech_to_full_height() {
+        assert_eq!(live_shape(0.0), 0.0);
+        assert_eq!(live_shape(0.28), 0.0, "-36 dBFS and below rest as dots");
+        assert!((live_shape(0.75) - 1.0).abs() < 1e-6);
+        assert_eq!(live_shape(1.0), 1.0);
+        let middle = live_shape(0.515);
+        assert!((middle - 0.5_f32.powf(1.2)).abs() < 1e-5, "{middle}");
     }
 
     #[test]
@@ -518,17 +639,6 @@ mod tests {
         assert_eq!(duration_label(MAX_DURATION.as_millis() as u64), "10:00");
         assert_eq!(duration_ms(48_000), 1000);
         assert_eq!(duration_ms(10), 1, "never zero");
-    }
-
-    #[test]
-    fn gain_scales_and_clamps() {
-        let mut samples = [1000_i16, -1000, 30_000, -30_000];
-        apply_gain(&mut samples, 100);
-        assert_eq!(samples, [1000, -1000, 30_000, -30_000]);
-        apply_gain(&mut samples, 200);
-        assert_eq!(samples, [2000, -2000, i16::MAX, i16::MIN]);
-        apply_gain(&mut samples, 0);
-        assert_eq!(samples, [0; 4]);
     }
 
     #[test]

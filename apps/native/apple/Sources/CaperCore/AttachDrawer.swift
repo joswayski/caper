@@ -80,6 +80,20 @@ final class AttachDrawerLibrary: NSObject, ObservableObject, PHPhotoLibraryChang
 
     var readable: Bool { status == .authorized || status == .limited }
 
+    /// The newest fetch, shared with the composer's warm-up so the drawer opens on it.
+    private(set) static var fetched: PHFetchResult<PHAsset>?
+
+    /// Every photo and video, newest first. A fetch result is lazy: tiles read only the assets they show.
+    static func fetch() -> PHFetchResult<PHAsset> {
+        let options = PHFetchOptions()
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        options.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d",
+                                        PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
+        let assets = PHAsset.fetchAssets(with: options)
+        fetched = assets
+        return assets
+    }
+
     /// Asks once, the first time the drawer opens; later opens just read.
     func start() {
         status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
@@ -88,23 +102,37 @@ final class AttachDrawerLibrary: NSObject, ObservableObject, PHPhotoLibraryChang
                 Task { @MainActor [weak self] in self?.reload() }
             }
         }
-        reload()
+        // Open on the composer's warm fetch, then catch up after the sheet is up.
+        if readable, let warm = Self.fetched {
+            assets = warm
+            if !observing { PHPhotoLibrary.shared().register(self); observing = true }
+            Task { @MainActor [weak self] in await Task.yield(); self?.reload() }
+        } else {
+            reload()
+        }
     }
 
     func reload() {
         status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard readable else { assets = nil; return }
         if !observing { PHPhotoLibrary.shared().register(self); observing = true }
-        let options = PHFetchOptions()
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        options.predicate = NSPredicate(format: "mediaType == %d OR mediaType == %d",
-                                        PHAssetMediaType.image.rawValue, PHAssetMediaType.video.rawValue)
-        // A fetch result is lazy: tiles read only the assets they show.
-        assets = PHAsset.fetchAssets(with: options)
+        let fresh = Self.fetch()
+        // An unchanged library keeps the grid as it is instead of rebuilding every tile.
+        if let assets, assets.count == fresh.count,
+           assets.firstObject?.localIdentifier == fresh.firstObject?.localIdentifier,
+           assets.lastObject?.localIdentifier == fresh.lastObject?.localIdentifier { return }
+        assets = fresh
     }
 
     nonisolated func photoLibraryDidChange(_ changeInstance: PHChange) {
-        Task { @MainActor [weak self] in self?.reload() }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let assets else { reload(); return }
+            // iCloud sync reports changes constantly; only ones touching this fetch redraw the grid.
+            guard let details = changeInstance.changeDetails(for: assets) else { return }
+            self.assets = details.fetchResultAfterChanges
+            Self.fetched = details.fetchResultAfterChanges
+        }
     }
 
     func stop() {
@@ -172,8 +200,6 @@ struct AttachDrawer: View {
     @State private var showingFiles = false
     @State private var showingPhotos = false
     @State private var photoItems: [PhotosPickerItem] = []
-    @State private var libraryViewport = CGRect.zero
-    @State private var visibleGIFs: Set<String> = []
 
     static func source(_ identifier: String) -> String { "photos:\(identifier)" }
 
@@ -304,8 +330,6 @@ struct AttachDrawer: View {
             if let source = file.source, order[source] == nil { order[source] = (index + 1, file.id) }
         }
         let count = min(library.assets?.count ?? 0, shown)
-        // Bound original-data requests and decoded frames even in a tall iPad drawer.
-        let animated = Set(visibleGIFs.sorted().prefix(6))
         return ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 88), spacing: 2)], spacing: 2) {
                 if cameraAvailable {
@@ -327,11 +351,7 @@ struct AttachDrawer: View {
                         let copying = queue.isPending(source)
                         Button { toggle(source, identifier: asset.localIdentifier, draftID: selected?.id) } label: {
                             AttachLibraryTile(asset: asset, order: selected?.position, copying: copying,
-                                              dimmed: full && selected == nil && !copying, viewport: libraryViewport,
-                                              animate: animated.contains(asset.localIdentifier)) { visible in
-                                if visible { visibleGIFs.insert(asset.localIdentifier) }
-                                else { visibleGIFs.remove(asset.localIdentifier) }
-                            }
+                                              dimmed: full && selected == nil && !copying)
                             .id(asset.localIdentifier)
                         }
                         .buttonStyle(.plain)
@@ -349,7 +369,6 @@ struct AttachDrawer: View {
             .padding(.bottom, 72)
         }
         .accessibilityIdentifier("attach-drawer-grid")
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { libraryViewport = $0 }
         .overlay {
             if library.status == .notDetermined {
                 ProgressView().tint(CaperTheme.muted)
@@ -475,37 +494,197 @@ private struct LimitNudge: GeometryEffect {
     }
 }
 
+/// What gallery tiles keep between scrolls and drawer openings, so a tile shows
+/// its thumbnail and plays its GIF as soon as it appears. The composer warms it
+/// before the drawer opens. NSCache gives the memory back under pressure.
+@MainActor
+enum AttachGalleryCache {
+    private final class Frames {
+        let original: AttachmentOriginal
+        init(_ original: AttachmentOriginal) { self.original = original }
+    }
+
+    private static let thumbnails: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 64 * 1024 * 1024
+        return cache
+    }()
+    private static let animations: NSCache<NSString, Frames> = {
+        let cache = NSCache<NSString, Frames>()
+        cache.totalCostLimit = 96 * 1024 * 1024
+        return cache
+    }()
+    /// GIFs whose originals could not be decoded within the limits; they stay stills.
+    private static var stills: Set<String> = []
+    private static var warmed: Date?
+
+    /// Tiles are about 90-130pt wide; larger thumbnails only cost decode time and memory.
+    private static let thumbnailPoints: CGFloat = 120
+    /// The newest items the composer prepares before the drawer opens: more than a tall drawer shows.
+    private static let warmCount = 60
+
+    /// An edited item keeps its identifier, so it is cached by version too.
+    static func key(_ asset: PHAsset) -> String {
+        "\(asset.localIdentifier)|\(asset.modificationDate?.timeIntervalSince1970 ?? 0)"
+    }
+
+    /// Read from the fetched asset itself: asking PhotoKit for its resources on
+    /// every render made scrolling stutter. The original's type is still checked
+    /// before it is decoded.
+    static func isGIF(_ asset: PHAsset) -> Bool {
+        asset.mediaType == .image && asset.playbackStyle == .imageAnimated
+    }
+
+    static func thumbnail(_ key: String) -> UIImage? { thumbnails.object(forKey: key as NSString) }
+
+    /// Asks PhotoKit for a tile-sized thumbnail. `deliver` may run twice, a quick
+    /// degraded image first; only the final one is cached.
+    @discardableResult
+    static func requestThumbnail(_ asset: PHAsset, scale: CGFloat,
+                                 deliver: @escaping @MainActor (UIImage) -> Void = { _ in }) -> PHImageRequestID {
+        let key = key(asset)
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .opportunistic
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = true
+        let side = thumbnailPoints * scale
+        return PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: side, height: side),
+                                                     contentMode: .aspectFill, options: options) { result, info in
+            let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+            Task { @MainActor in
+                guard let result else { return }
+                if !degraded {
+                    let pixels = result.size.width * result.scale * result.size.height * result.scale
+                    thumbnails.setObject(result, forKey: key as NSString, cost: Int(pixels) * 4)
+                }
+                deliver(result)
+            }
+        }
+    }
+
+    /// A GIF's frames, decoded once and then shared by every tile showing it.
+    /// Cancelling stops the decode; a cancelled GIF is tried again next time.
+    static func animation(for asset: PHAsset) async -> AttachmentOriginal? {
+        let key = key(asset)
+        if let cached = animations.object(forKey: key as NSString) { return cached.original }
+        guard isGIF(asset), !stills.contains(key), let original = await originalData(asset), !Task.isCancelled else { return nil }
+        guard original.data.count <= 16 * 1024 * 1024, let type = original.type, UTType(type)?.conforms(to: .gif) == true else {
+            stills.insert(key)
+            return nil
+        }
+        let data = original.data
+        let worker = Task.detached(priority: .userInitiated) { () -> AttachmentOriginal? in
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+            return try? AttachmentImageLoader.decodeAnimation(source, maxPixelSize: 240, maxFrames: 200, byteLimit: 2 * 1024 * 1024)
+        }
+        let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+        guard !Task.isCancelled else { return nil }
+        guard let result else { stills.insert(key); return nil }
+        let bytes = result.images.reduce(0) { $0 + $1.bytesPerRow * $1.height }
+        animations.setObject(Frames(result), forKey: key as NSString, cost: bytes)
+        return result
+    }
+
+    /// The local original; cloud-only GIFs are not downloaded just to animate a tile.
+    private static func originalData(_ asset: PHAsset) async -> (data: Data, type: String?)? {
+        let options = PHImageRequestOptions()
+        options.version = .original
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = false
+        return await withCheckedContinuation { continuation in
+            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, type, _, _ in
+                continuation.resume(returning: data.map { ($0, type) })
+            }
+        }
+    }
+
+    /// Called while a composer is on screen: reads the library and prepares the
+    /// newest thumbnails and GIFs, so the drawer opens filled and already playing.
+    /// Never asks for access.
+    static func warm() {
+        let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        guard status == .authorized || status == .limited else { return }
+        if let warmed, Date().timeIntervalSince(warmed) < 30 { return }
+        warmed = Date()
+        let scale = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.screen.scale }.first ?? 3
+        let assets = AttachDrawerLibrary.fetch()
+        let newest = (0..<min(assets.count, warmCount)).map { assets.object(at: $0) }
+        for asset in newest where thumbnail(key(asset)) == nil { requestThumbnail(asset, scale: scale) }
+        Task { @MainActor in
+            for asset in newest where isGIF(asset) { _ = await animation(for: asset) }
+        }
+    }
+}
+
+/// Plays decoded GIF frames with Core Animation, so a screen full of GIFs costs
+/// no SwiftUI updates per frame.
+private struct AttachGalleryAnimationView: UIViewRepresentable {
+    let animation: AttachmentOriginal
+
+    final class Coordinator { var first: CGImage? }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        view.clipsToBounds = true
+        view.layer.contentsGravity = .resizeAspectFill
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        guard context.coordinator.first !== animation.images.first else { return }
+        context.coordinator.first = animation.images.first
+        view.layer.removeAnimation(forKey: "frames")
+        view.layer.contents = animation.images.first
+        let total = animation.durations.reduce(0, +)
+        guard animation.images.count > 1, total > 0 else { return }
+        // Discrete key times bracket each frame, so there is one more than there are frames.
+        var elapsed = 0.0
+        var times: [NSNumber] = [0]
+        for duration in animation.durations {
+            elapsed += duration
+            times.append(NSNumber(value: min(1, elapsed / total)))
+        }
+        let frames = CAKeyframeAnimation(keyPath: "contents")
+        frames.values = animation.images
+        frames.keyTimes = times
+        frames.calculationMode = .discrete
+        frames.duration = total
+        frames.repeatCount = .infinity
+        frames.isRemovedOnCompletion = false
+        view.layer.add(frames, forKey: "frames")
+    }
+}
+
 private struct AttachLibraryTile: View {
     let asset: PHAsset
     let order: Int?
     let copying: Bool
     let dimmed: Bool
-    let viewport: CGRect
-    let animate: Bool
-    let gifVisibility: (Bool) -> Void
     @State private var image: UIImage?
     @State private var request: PHImageRequestID?
-    @State private var loaded: String?
-    @State private var animationRequest: PHImageRequestID?
-    @State private var decoding: Task<Void, Never>?
     @State private var frames: AttachmentOriginal?
-    @State private var generation = UUID()
-    @State private var visible = false
-    @State private var started = Date()
+    @State private var shown = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
+
+    /// Every GIF on screen plays, unless motion is reduced or the app is in the background.
+    private var playing: Bool {
+        shown && !reduceMotion && scenePhase == .active && AttachGalleryCache.isGIF(asset)
+    }
 
     var body: some View {
         Color.clear.aspectRatio(1, contentMode: .fit)
             .background(CaperTheme.raised)
             .overlay {
                 if let frames, !frames.images.isEmpty {
-                    TimelineView(.animation(minimumInterval: 0.04)) { timeline in
-                        let index = MediaViewerPolicy.frameIndex(at: timeline.date.timeIntervalSince(started), durations: frames.durations)
-                        Image(decorative: frames.images[index], scale: 1).resizable().scaledToFill()
-                    }
-                } else if let image { Image(uiImage: image).resizable().scaledToFill() }
+                    AttachGalleryAnimationView(animation: frames)
+                } else if let still = image ?? AttachGalleryCache.thumbnail(AttachGalleryCache.key(asset)) {
+                    Image(uiImage: still).resizable().scaledToFill()
+                }
             }
             .clipped()
             .overlay { if order != nil || copying { CaperTheme.blackout.opacity(0.25) } }
@@ -528,7 +707,7 @@ private struct AttachLibraryTile: View {
                 .padding(6)
             }
             .overlay(alignment: .bottomLeading) {
-                if asset.mediaType == .video || Self.isGIF(asset) {
+                if asset.mediaType == .video || AttachGalleryCache.isGIF(asset) {
                     HStack(spacing: 4) {
                         if asset.mediaType == .video {
                             Image(systemName: "play.fill")
@@ -545,23 +724,15 @@ private struct AttachLibraryTile: View {
             }
             .opacity(dimmed ? 0.4 : 1)
             .contentShape(Rectangle())
-            .onAppear { load() }
-            .onGeometryChange(for: Bool.self) { proxy in
-                proxy.frame(in: .global).intersects(viewport)
-            } action: { value in
-                visible = value
-                gifVisibility(value && Self.isGIF(asset))
-                updateAnimation()
-            }
-            .onChange(of: animate) { _, _ in updateAnimation() }
-            .onChange(of: reduceMotion) { _, _ in updateAnimation() }
-            .onChange(of: scenePhase) { _, _ in updateAnimation() }
-            .onChange(of: asset.localIdentifier) { _, _ in load(); updateAnimation() }
+            .onAppear { shown = true; load() }
             .onDisappear {
-                visible = false; stopAnimation()
-                gifVisibility(false)
+                shown = false
                 if let request { PHImageManager.default().cancelImageRequest(request) }
-                request = nil; image = nil; loaded = nil
+                request = nil; image = nil
+            }
+            .task(id: playing) {
+                guard playing else { frames = nil; return }
+                frames = await AttachGalleryCache.animation(for: asset)
             }
     }
 
@@ -569,64 +740,13 @@ private struct AttachLibraryTile: View {
     static func label(_ asset: PHAsset) -> String {
         let date = asset.creationDate?.formatted(date: .abbreviated, time: .omitted) ?? ""
         if asset.mediaType == .video { return "Video, \(Int(asset.duration)) seconds, \(date)" }
-        return "\(isGIF(asset) ? "GIF" : "Photo"), \(date)"
-    }
-
-    private static func isGIF(_ asset: PHAsset) -> Bool {
-        asset.mediaType == .image && PHAssetResource.assetResources(for: asset).contains {
-            ($0.type == .photo || $0.type == .fullSizePhoto) && UTType($0.uniformTypeIdentifier)?.conforms(to: .gif) == true
-        }
-    }
-
-    private func stopAnimation() {
-        generation = UUID()
-        if let animationRequest { PHImageManager.default().cancelImageRequest(animationRequest) }
-        animationRequest = nil
-        decoding?.cancel(); decoding = nil; frames = nil
-    }
-
-    private func updateAnimation() {
-        stopAnimation()
-        guard animate, visible, !reduceMotion, scenePhase == .active, Self.isGIF(asset) else { return }
-        let token = generation
-        let options = PHImageRequestOptions()
-        options.version = .original
-        options.deliveryMode = .highQualityFormat
-        // Do not fetch large cloud originals just to animate a gallery tile.
-        options.isNetworkAccessAllowed = false
-        animationRequest = PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, uti, _, _ in
-            guard let data, data.count <= 16 * 1024 * 1024,
-                  let uti, UTType(uti)?.conforms(to: .gif) == true else { return }
-            Task { @MainActor in
-                guard generation == token else { return }
-                decoding = Task {
-                    let worker = Task.detached(priority: .utility) { () -> AttachmentOriginal? in
-                        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-                        return try? AttachmentImageLoader.decodeAnimation(source, maxPixelSize: 240, maxFrames: 200, byteLimit: 2 * 1024 * 1024)
-                    }
-                    let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
-                    guard !Task.isCancelled, generation == token else { return }
-                    frames = result; started = Date()
-                }
-            }
-        }
+        return "\(AttachGalleryCache.isGIF(asset) ? "GIF" : "Photo"), \(date)"
     }
 
     private func load() {
-        let identifier = asset.localIdentifier
-        guard loaded != identifier else { return }
-        if let request { PHImageManager.default().cancelImageRequest(request) }
-        loaded = identifier
-        image = nil
-        let options = PHImageRequestOptions()
-        options.deliveryMode = .opportunistic
-        options.resizeMode = .fast
-        options.isNetworkAccessAllowed = true
-        let side = 200 * displayScale
-        request = PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: side, height: side),
-                                                        contentMode: .aspectFill, options: options) { result, _ in
-            Task { @MainActor in if loaded == identifier, let result { image = result } }
-        }
+        guard image == nil, request == nil else { return }
+        if let cached = AttachGalleryCache.thumbnail(AttachGalleryCache.key(asset)) { image = cached; return }
+        request = AttachGalleryCache.requestThumbnail(asset, scale: displayScale) { result in image = result }
     }
 }
 
