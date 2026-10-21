@@ -7,6 +7,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -22,7 +23,7 @@ import {
   useInteractions,
   useRole,
 } from "@floating-ui/react";
-import { Eye, EyeOff, FileText, FileWarning, Maximize2, Pencil, Play, X } from "lucide-react";
+import { EyeOff, FileText, FileWarning, Maximize2, Pencil, Play, RotateCw, X } from "lucide-react";
 import GifImage from "./GifImage.tsx";
 import MediaViewer, { type ViewAttachment, type ViewerEditing } from "./MediaViewer.tsx";
 import { MediaPreviewContext } from "./MediaPreviewContext.ts";
@@ -611,20 +612,30 @@ function DraftVideoThumbnail({ url, poster }: { url?: string; poster?: string })
 }
 
 /** Keep the long-press lifetime tied to its tile. Scrolling cancels the press;
- * releasing after the menu opens must not also open the media viewer. */
+ * releasing after the menu opens must not also open the media viewer.
+ * With `corners`, Remove sits in the top-right corner and Edit in the bottom-left,
+ * diagonal from each other so a slightly-off tap on one never lands on the other. */
 function DraftAttachmentTile({
   draft,
   onRemove,
+  onToggleSpoiler,
+  onEdit,
+  corners,
   children,
 }: {
   draft: DraftAttachment;
   onRemove?: (key: string) => void;
+  onToggleSpoiler?: (key: string) => void;
+  /** Opens the file's preview with its tools; without it Edit offers a menu. */
+  onEdit?: (anchor: HTMLElement) => void;
+  corners?: boolean;
   children: ReactNode;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const press = useRef<{ timer: ReturnType<typeof setTimeout>; x: number; y: number }>(undefined);
   const suppressClick = useRef(false);
   const returnFocus = useRef<HTMLElement | null>(null);
+  const tile = useRef<HTMLLIElement | null>(null);
   const cancelPress = useCallback(() => {
     if (press.current) clearTimeout(press.current.timer);
     press.current = undefined;
@@ -646,10 +657,15 @@ function DraftAttachmentTile({
     whileElementsMounted: autoUpdate,
   });
   const { getFloatingProps } = useInteractions([useDismiss(context), useRole(context, { role: "menu" })]);
+  const preview = () => tile.current?.querySelector<HTMLElement>(".chat-draft-preview") ?? tile.current;
+  const edit = (fallback: HTMLElement) => onEdit?.(preview() ?? fallback);
   return (
     <>
       <li
-        ref={refs.setReference}
+        ref={(element) => {
+          tile.current = element;
+          refs.setReference(element);
+        }}
         data-error={draft.error ? true : undefined}
         data-spoiler={draft.spoiler || undefined}
         data-voice={draft.voice ? true : undefined}
@@ -659,7 +675,7 @@ function DraftAttachmentTile({
           suppressClick.current = false;
           if (!onRemove || !event.isPrimary || event.button !== 0) return;
           const target = event.target as HTMLElement;
-          if (target.closest(".chat-draft-actions, .chat-draft-retry, .chat-voice")) return;
+          if (target.closest(".chat-draft-actions, .chat-draft-corner, .chat-draft-retry, .chat-voice")) return;
           returnFocus.current = event.currentTarget.querySelector<HTMLElement>(".chat-draft-preview");
           press.current = {
             x: event.clientX,
@@ -699,6 +715,41 @@ function DraftAttachmentTile({
         }}
       >
         {children}
+        {corners && onRemove && (
+          <button
+            type="button"
+            className="chat-draft-corner"
+            data-corner="remove"
+            aria-label={`Remove ${draft.name}`}
+            title="Remove"
+            onClick={() => onRemove(draft.key)}
+          >
+            <span className="chat-draft-corner-face">
+              <X size={12} strokeWidth={2.5} aria-hidden="true" />
+            </span>
+          </button>
+        )}
+        {corners && onRemove && (onEdit || onToggleSpoiler) && (
+          <button
+            type="button"
+            className="chat-draft-corner"
+            data-corner="edit"
+            aria-label={`Edit ${draft.name}`}
+            title="Edit"
+            aria-haspopup={onEdit ? "dialog" : "menu"}
+            onClick={(event) => {
+              if (onEdit) edit(event.currentTarget);
+              else {
+                returnFocus.current = event.currentTarget;
+                setMenuOpen(true);
+              }
+            }}
+          >
+            <span className="chat-draft-corner-face">
+              <Pencil size={12} strokeWidth={2.5} aria-hidden="true" />
+            </span>
+          </button>
+        )}
       </li>
       {open && (
         <FloatingPortal>
@@ -711,6 +762,33 @@ function DraftAttachmentTile({
               {...getFloatingProps()}
             >
               <div className="chat-copy-actions">
+                {onEdit && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      const anchor = preview();
+                      if (anchor) onEdit(anchor);
+                    }}
+                  >
+                    <Pencil size={16} aria-hidden="true" />
+                    Edit
+                  </button>
+                )}
+                {onToggleSpoiler && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onToggleSpoiler(draft.key);
+                    }}
+                  >
+                    <EyeOff size={16} aria-hidden="true" />
+                    {draft.spoiler ? "Remove spoiler" : "Mark as spoiler"}
+                  </button>
+                )}
                 <button
                   type="button"
                   role="menuitem"
@@ -753,18 +831,20 @@ export function DraftAttachments({
   const closeEditor = useCallback(() => setEditingKey(undefined), []);
   const edited = editingKey && drafts.find((draft) => draft.key === editingKey.key);
   const editedSource = edited?.editable && editing?.source(edited.key);
-  // The viewer offers the editor's tools for the same files the pencil does.
-  const viewerEditing: ViewerEditing | undefined =
-    editing && onRemove
-      ? {
-          editable: (key) => !!drafts.find((draft) => draft.key === key)?.editable && !!editing.source(key),
-          open: (key, tool) => {
-            if (!viewing) return;
-            setViewing(undefined);
-            setEditingKey({ key, anchor: viewing.anchor, tool });
-          },
-        }
-      : undefined;
+  // The viewer holds a staged file's tools: Spoiler, the editor's, and Remove.
+  const viewerEditing: ViewerEditing | undefined = onRemove
+    ? {
+        editable: (key) => !!editing && !!drafts.find((draft) => draft.key === key)?.editable && !!editing.source(key),
+        open: (key, tool) => {
+          if (!viewing) return;
+          setViewing(undefined);
+          setEditingKey({ key, anchor: viewing.anchor, tool });
+        },
+        spoiler: (key) => !!drafts.find((draft) => draft.key === key)?.spoiler,
+        toggleSpoiler: onToggleSpoiler,
+        remove: onRemove,
+      }
+    : undefined;
   const media: ChatAttachment[] = drafts.flatMap((draft) => {
     const kind = draft.localUrl ? draft.localKind : draft.attachment?.kind;
     const url = draft.localUrl ?? draft.attachment?.url;
@@ -803,6 +883,8 @@ export function DraftAttachments({
             draft.thumbnailUrl ??
             (kind === "image" ? (draft.localUrl ?? draft.attachment?.previewUrl ?? url) : undefined);
           const busy = !draft.attachment && !draft.error && !draft.staged;
+          // Unknown while preparing without a compression estimate.
+          const progress = !busy ? undefined : draft.storedSize === undefined ? draft.compressing : draft.progress;
           const status = draft.error
             ? "Failed"
             : !busy
@@ -872,7 +954,14 @@ export function DraftAttachments({
               </DraftAttachmentTile>
             );
           return (
-            <DraftAttachmentTile key={draft.key} draft={draft} onRemove={onRemove}>
+            <DraftAttachmentTile
+              key={draft.key}
+              draft={draft}
+              onRemove={onRemove}
+              onToggleSpoiler={onToggleSpoiler}
+              onEdit={viewable ? (anchor) => setViewing({ key: draft.key, anchor }) : undefined}
+              corners
+            >
               {viewable ? (
                 <button
                   type="button"
@@ -898,79 +987,46 @@ export function DraftAttachments({
                   {content}
                 </div>
               )}
-              {kind === "video" && !draft.spoiler && (
-                <span
-                  className="chat-draft-video-play"
-                  role="img"
-                  aria-label="Video"
-                  data-status={!!status || undefined}
-                  data-retry={!!(draft.error && onRetry) || undefined}
-                >
+              {kind === "video" && !draft.spoiler && !(draft.error && onRetry) && (
+                <span className="chat-draft-video-play" role="img" aria-label="Video">
                   <Play size={16} fill="currentColor" aria-hidden="true" />
                 </span>
               )}
-              {status && !(draft.error && onRetry) && (
-                <small className="chat-draft-status" aria-label={draft.error ?? status}>
-                  {status}
+              {draft.spoiler && !(draft.error && onRetry) && (
+                <span className="chat-draft-spoiler-mark" role="img" aria-label="Spoiler">
+                  <EyeOff size={20} aria-hidden="true" />
+                </span>
+              )}
+              {busy && (
+                // The ring wraps Remove's corner, like iMessage; the exact figure is in its label.
+                <span
+                  className="chat-draft-ring"
+                  role="progressbar"
+                  aria-label={`Uploading ${draft.name}`}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={progress === undefined ? undefined : Math.round(progress * 100)}
+                  aria-valuetext={status}
+                  title={status}
+                  data-indeterminate={progress === undefined || undefined}
+                  style={{ "--progress": progress ?? 0.25 } as CSSProperties}
+                />
+              )}
+              {draft.error && !onRetry && (
+                <small className="chat-draft-failed" aria-label={draft.error}>
+                  Failed
                 </small>
               )}
-              {busy && <progress max={1} value={draft.progress} aria-label={`Uploading ${draft.name}`} />}
               {draft.error && onRetry && (
                 <button
                   type="button"
-                  className="chat-draft-retry"
+                  className="chat-draft-retry chat-draft-retry-center"
                   aria-label={`Retry uploading ${draft.name}`}
                   title={draft.error}
                   onClick={() => onRetry(draft.key)}
                 >
-                  Retry upload
+                  <RotateCw size={16} strokeWidth={2.5} aria-hidden="true" />
                 </button>
-              )}
-              {draft.spoiler && (
-                <span className="chat-draft-spoiler-label">
-                  <EyeOff size={18} aria-hidden="true" />
-                  Spoiler
-                </span>
-              )}
-              {(onToggleSpoiler || onRemove) && (
-                // One bar in the corner, like Discord's: Spoiler, Edit (when the editor can open the file), then Remove.
-                <div className="chat-draft-actions">
-                  {onToggleSpoiler && (
-                    <button
-                      type="button"
-                      className="chat-draft-spoiler"
-                      aria-label={`Spoiler attachment: ${draft.name}`}
-                      aria-pressed={!!draft.spoiler}
-                      title={draft.spoiler ? "Remove spoiler" : "Mark as spoiler"}
-                      onClick={() => onToggleSpoiler(draft.key)}
-                    >
-                      {draft.spoiler ? <EyeOff size={14} aria-hidden="true" /> : <Eye size={14} aria-hidden="true" />}
-                    </button>
-                  )}
-                  {onRemove && editing && draft.editable && (
-                    <button
-                      type="button"
-                      className="chat-draft-edit"
-                      aria-label={`Edit ${draft.name}`}
-                      title="Edit"
-                      aria-haspopup="dialog"
-                      onClick={(event) => setEditingKey({ key: draft.key, anchor: event.currentTarget })}
-                    >
-                      <Pencil size={14} aria-hidden="true" />
-                    </button>
-                  )}
-                  {onRemove && (
-                    <button
-                      type="button"
-                      className="chat-draft-remove"
-                      aria-label={`Remove ${draft.name}`}
-                      title="Remove"
-                      onClick={() => onRemove(draft.key)}
-                    >
-                      <X size={14} aria-hidden="true" />
-                    </button>
-                  )}
-                </div>
               )}
             </DraftAttachmentTile>
           );

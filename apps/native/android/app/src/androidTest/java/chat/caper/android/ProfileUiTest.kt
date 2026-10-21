@@ -11,6 +11,7 @@ import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
@@ -44,9 +45,11 @@ class ProfileUiTest {
             }
         }
         compose.onNodeWithText("1 file failed to upload. Send will retry it, or you can remove it.").assertExists()
-        compose.onNodeWithText("Retry upload").performClick()
+        compose.onNodeWithContentDescription("Retry uploading notes.txt").performClick()
         compose.onNodeWithText("Uploading 1 file… Your message won’t send until every file is ready.").assertDoesNotExist()
-        compose.onNodeWithText("Uploading 20%").assertExists()
+        // The tile shows a ring around Remove; its status stays in the description.
+        compose.onNodeWithContentDescription("notes.txt, Uploading 20%").assertExists()
+        compose.onNodeWithContentDescription("Retry uploading notes.txt").assertDoesNotExist()
         compose.runOnIdle { sending.value = false }
         compose.onNodeWithText("Uploading 1 file… Your message won’t send until every file is ready.").assertDoesNotExist()
         compose.onNodeWithText("1 file failed to upload. Send will retry it, or you can remove it.").assertDoesNotExist()

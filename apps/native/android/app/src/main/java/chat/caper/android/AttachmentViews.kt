@@ -7,6 +7,9 @@ import android.os.Build
 import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
@@ -15,11 +18,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -33,8 +38,8 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -491,15 +496,24 @@ internal fun replyAttachmentPreviewUrl(attachment: ChatAttachment): String? = wh
 /** A staged file's editor, opened on [tool]: Draw from the pencil, or a tool chosen in its preview. */
 internal data class OpenEditor(val key: String, val tool: EditTool = EditTool.DRAW)
 
-/** What a staged file's action bar holds, left to right. */
-internal enum class DraftAction { SPOILER, EDIT, REMOVE }
+/** What a staged file offers from its menus (the long press, and the pencil of a file the app can't preview). */
+internal enum class DraftAction { EDIT, SPOILER, REMOVE }
 
 /**
- * Spoiler where the composer offers it ([spoiler]), Edit when the editor can open the file
- * ([editable]), then Remove; nothing while the files are locked (sending).
+ * A staged file's menu, top to bottom: Edit when the app can preview the file ([previewable]; it
+ * opens [DraftPreview]), the spoiler toggle where the composer offers it ([spoiler]), then Remove;
+ * nothing while the files are locked (sending). The pencil of a file without a preview opens
+ * this menu with [previewable] false.
  */
-internal fun draftActions(spoiler: Boolean, editable: Boolean, enabled: Boolean): List<DraftAction> =
-    if (enabled) listOfNotNull(DraftAction.SPOILER.takeIf { spoiler }, DraftAction.EDIT.takeIf { editable }, DraftAction.REMOVE) else emptyList()
+internal fun draftMenuActions(previewable: Boolean, spoiler: Boolean, enabled: Boolean): List<DraftAction> =
+    if (enabled) listOfNotNull(DraftAction.EDIT.takeIf { previewable }, DraftAction.SPOILER.takeIf { spoiler }, DraftAction.REMOVE) else emptyList()
+
+/** [action]'s menu text for a file that is marked as a spoiler when [spoiler]. */
+internal fun draftMenuLabel(action: DraftAction, spoiler: Boolean): String = when (action) {
+    DraftAction.EDIT -> "Edit"
+    DraftAction.SPOILER -> if (spoiler) "Remove spoiler" else "Mark as spoiler"
+    DraftAction.REMOVE -> "Remove attachment"
+}
 
 /** [action]'s accessible name for the file called [name], which is marked as a spoiler when [spoiler]. */
 internal fun draftActionLabel(action: DraftAction, name: String, spoiler: Boolean): String = when (action) {
@@ -507,6 +521,39 @@ internal fun draftActionLabel(action: DraftAction, name: String, spoiler: Boolea
     DraftAction.EDIT -> "Edit $name"
     DraftAction.REMOVE -> "Remove $name"
 }
+
+/**
+ * What a busy staged file is doing, for its accessible description (the tile itself shows a ring
+ * around Remove): "Failed", "Preparing 42%" / "Preparing…" while compressing, "Uploading 42%";
+ * null when it is neither busy nor failed.
+ */
+internal fun draftStatusLabel(draft: DraftAttachmentUi, busy: Boolean): String? = when {
+    draft.error != null -> "Failed"
+    !busy -> null
+    draft.compressing -> if (draft.progress > 0f) "Preparing ${(draft.progress * 100).toInt()}%" else "Preparing…"
+    else -> "Uploading ${(draft.progress * 100).toInt()}%"
+}
+
+/**
+ * The Remove ring's fill for a busy staged file: compression progress while it is prepared,
+ * otherwise upload progress; null (an indeterminate ring) while that progress is not known yet.
+ */
+internal fun draftRingProgress(draft: DraftAttachmentUi): Float? = draft.progress.takeIf { it > 0f }?.coerceAtMost(1f)
+
+/** A control in a draft preview's bottom row, left to right. */
+internal sealed interface DraftPreviewControl {
+    data object Spoiler : DraftPreviewControl
+    data class Tool(val tool: EditTool) : DraftPreviewControl
+    data object Remove : DraftPreviewControl
+}
+
+/**
+ * A draft preview's bottom row: the spoiler toggle where the composer offers it ([spoiler]), the
+ * editor's [tools], then Remove; nothing while the files are locked (sending).
+ */
+internal fun draftPreviewControls(spoiler: Boolean, tools: List<EditTool>, enabled: Boolean): List<DraftPreviewControl> =
+    if (!enabled) emptyList()
+    else listOfNotNull(DraftPreviewControl.Spoiler.takeIf { spoiler }) + tools.map { DraftPreviewControl.Tool(it) } + DraftPreviewControl.Remove
 
 /**
  * The picture a spoilered staged file blurs: its thumbnail (an edited file's render), else a
@@ -521,9 +568,6 @@ internal fun draftSpoilerSource(draft: DraftAttachmentUi): String? {
         else -> draft.pickedImage ?: draft.localUrl ?: draft.pickedUri
     }
 }
-
-/** The action bar's height across a staged file's top edge: 44dp buttons over a 1dp border. */
-private val DRAFT_ACTION_BAR = 45.dp
 
 /** The editor's tools a draft preview offers: all of them while the file can be edited, none while it is locked (sending). */
 internal fun draftPreviewTools(enabled: Boolean): List<EditTool> = if (enabled) EditTool.entries else emptyList()
@@ -546,12 +590,15 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
 
 /**
  * Compact composer previews shared by message and profile uploads; never scroll sideways. Each
- * tile's action bar holds Spoiler ([toggleSpoiler]), Edit and Remove; a long press also offers
- * Remove. With [edit], editable images and videos get a pencil that opens [AttachmentEditor] on
- * the original, and tapping one opens [DraftPreview] (unblurred, even for a spoiler), whose Crop,
- * Draw and Text open the editor on that tool; a saved change arrives as the draft key, the edit
- * (null for the original) and its render. Other files preview in the system viewer. Files that
- * upload on Send ([uploadOnSend]) offer Retry only when preparing them failed.
+ * tile has two round corner buttons, diagonal from each other so a mis-tap can't remove: Remove
+ * (top right; a ring around it shows preparing and upload progress) and the pencil (bottom left).
+ * With [edit], images and videos the editor can open preview in the app: the pencil or a tap opens
+ * [DraftPreview] (unblurred, even for a spoiler), which toggles the spoiler ([toggleSpoiler]),
+ * opens [AttachmentEditor] on the original with Crop, Draw or Text, and removes the file; a saved
+ * change arrives as the draft key, the edit (null for the original) and its render. Other files
+ * preview in the system viewer, and their pencil opens a menu with the spoiler toggle and Remove.
+ * A long press offers the same choices. Files that upload on Send ([uploadOnSend]) offer Retry
+ * only when preparing them failed.
  */
 @kotlin.OptIn(ExperimentalLayoutApi::class)
 @Composable internal fun DraftAttachmentStrip(
@@ -575,14 +622,18 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
     previewing?.let { key ->
         val draft = drafts.find { it.key == key }
         // Closing and opening the editor happen together, so the hand-off is instant.
-        if (draft != null && draft.editKind != null && edit != null) DraftPreview(draft, draftPreviewTools(enabled), close = { previewing = null }) { tool ->
+        if (draft != null && draft.editKind != null && edit != null) DraftPreview(
+            draft, draftPreviewControls(spoiler = toggleSpoiler != null, tools = draftPreviewTools(enabled), enabled = enabled),
+            close = { previewing = null },
+            toggleSpoiler = { toggleSpoiler?.invoke(key) },
+            remove = { previewing = null; remove(key) },
+        ) { tool ->
             previewing = null
             editing = OpenEditor(key, tool)
         } else SideEffect { previewing = null }
     }
     if (drafts.isEmpty()) return
     val context = LocalContext.current
-    val still = reducedMotion()
     val open: (String) -> Unit = { url ->
         runCatching {
             val uri = url.toUri()
@@ -616,34 +667,30 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp), maxItemsInEachRow = columns) {
                 // Keyed, so each tile arrives once and keeps its own progress animation.
                 files.forEach { draft -> key(draft.key) {
-                    var menuOpen by remember { mutableStateOf(false) }
-                    LaunchedEffect(enabled) { if (!enabled) menuOpen = false }
+                    // The open menu's choices: the long press's, or the pencil's for a file without a preview.
+                    var menu by remember { mutableStateOf<List<DraftAction>>(emptyList()) }
+                    LaunchedEffect(enabled) { if (!enabled) menu = emptyList() }
                     Surface(Modifier.entrance(MOTION_BASE, scale = 0.94f).size(tileSize), shape = MaterialTheme.shapes.small, color = Surface, border = BorderStroke(1.dp, if (draft.error != null) ErrorText.copy(alpha = 0.6f) else Border)) {
                         Box(Modifier.fillMaxSize()) {
                             // Files the editor can open preview in the app, with its tools; the system viewer can't host them.
-                            val editable = edit != null && draft.editKind != null
+                            val previewable = edit != null && draft.editKind != null
                             // An edited file never previews its unedited original.
                             val url = if (draft.edit != null) null else draft.pickedUri ?: draft.attachment?.url
                             val busy = draft.attachment == null && draft.error == null && (!uploadOnSend || sending || draft.compressing)
-                            val status = when {
-                                draft.error != null -> "Failed"
-                                !busy -> null
-                                draft.compressing -> if (draft.progress > 0f) "Prep ${(draft.progress * 100).toInt()}%" else "Preparing…"
-                                else -> "Uploading ${(draft.progress * 100).toInt()}%"
-                            }
+                            val status = draftStatusLabel(draft, busy)
                             val accessibleName = if (draft.spoiler) "spoiler attachment" else draft.name
                             // Profile files retry from the tile only when preparing them (an edit) failed; Send retries uploads.
-                            val retriable = draft.error != null && retry != null && (!uploadOnSend || draft.localUrl == null)
-                            val actions = draftActions(spoiler = toggleSpoiler != null, editable = editable, enabled = enabled)
-                            // What the tile shows sits below the action bar, and gives way to Retry where both can't fit.
-                            val bar = if (actions.isEmpty()) 0.dp else DRAFT_ACTION_BAR
-                            val crowded = actions.isNotEmpty() && retriable
+                            val retriable = enabled && draft.error != null && retry != null && (!uploadOnSend || draft.localUrl == null)
+                            val spoilerAvailable = toggleSpoiler != null
                             Box(Modifier.fillMaxSize().combinedClickable(
-                                enabled = editable || url != null || enabled, role = Role.Button, onClickLabel = "Preview $accessibleName",
-                                onClick = { if (editable) previewing = draft.key else url?.let(open) },
+                                enabled = previewable || url != null || enabled, role = Role.Button, onClickLabel = "Preview $accessibleName",
+                                onClick = { if (previewable) previewing = draft.key else url?.let(open) },
                                 onLongClickLabel = "Attachment options",
-                                onLongClick = if (enabled) ({ menuOpen = true }) else null,
-                            ).semantics { contentDescription = listOfNotNull(accessibleName, if (draft.spoiler) status else draft.error ?: status).joinToString(", ") }, contentAlignment = Alignment.Center) {
+                                onLongClick = if (enabled) ({ menu = draftMenuActions(previewable, spoilerAvailable, enabled) }) else null,
+                            ).semantics {
+                                contentDescription = listOfNotNull(accessibleName, if (draft.spoiler) status else draft.error ?: status).joinToString(", ")
+                                if (draft.spoiler) stateDescription = "Spoiler"
+                            }, contentAlignment = Alignment.Center) {
                                 val thumbnail = draft.thumbnail
                                 if (draft.spoiler) {
                                     val source = draftSpoilerSource(draft)
@@ -657,50 +704,54 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
                                     Icon(painterResource(if (draft.kind == "audio") R.drawable.lucide_play else R.drawable.lucide_file_text), null, Modifier.size(18.dp), tint = TextMuted)
                                     Text(when (draft.kind) { "image" -> "Image"; "audio" -> "Audio"; else -> "File" }, color = TextMuted, fontSize = 11.sp)
                                 }
+                                // Retry takes the centre on a failed file; otherwise a spoiler shows a crossed-out eye and a video its play mark.
+                                if (draft.spoiler && !retriable) Icon(painterResource(R.drawable.lucide_eye_off), null, Modifier.size(20.dp), tint = Text)
+                                else if (draft.kind == "video" && !retriable) Box(Modifier.size(32.dp).background(Blackout.copy(alpha = 0.32f), CircleShape), contentAlignment = Alignment.Center) {
+                                    Icon(painterResource(R.drawable.lucide_play), "Video", Modifier.size(16.dp), tint = Text.copy(alpha = 0.72f))
+                                }
                             }
-                            Column(Modifier.fillMaxSize().padding(top = bar)) {
-                                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                                    if (draft.spoiler && !crowded) SpoilerBadge(revealHint = false)
-                                    if (draft.kind == "video" && !draft.spoiler && !crowded) {
-                                        // Shrinks to fit between the action bar and the upload status.
-                                        Box(Modifier.heightIn(max = 32.dp).fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true)
-                                            .background(Blackout.copy(alpha = 0.32f), CircleShape), contentAlignment = Alignment.Center) {
-                                            Icon(painterResource(R.drawable.lucide_play), "Video", Modifier.size(16.dp), tint = Text.copy(alpha = 0.72f))
-                                        }
+                            if (enabled) {
+                                // Editing works on the local original, so the pencil is offered as soon as the file is known
+                                // editable; a file with no preview has one only while it can be marked as a spoiler.
+                                if (previewable || spoilerAvailable) DraftTileButton(
+                                    R.drawable.lucide_pencil, draftActionLabel(DraftAction.EDIT, accessibleName, draft.spoiler), Alignment.BottomStart,
+                                    Modifier.align(Alignment.BottomStart),
+                                ) { if (previewable) previewing = draft.key else menu = draftMenuActions(previewable = false, spoiler = spoilerAvailable, enabled = enabled) }
+                                DraftTileButton(
+                                    R.drawable.lucide_x, draftActionLabel(DraftAction.REMOVE, accessibleName, draft.spoiler), Alignment.TopEnd,
+                                    Modifier.align(Alignment.TopEnd), ring = busy, ringProgress = draftRingProgress(draft),
+                                ) { remove(draft.key) }
+                            } else if (busy) {
+                                // Locked while sending: the progress stays visible, but nothing can be pressed.
+                                DraftTileButton(
+                                    null, null, Alignment.TopEnd, Modifier.align(Alignment.TopEnd), ring = true, ringProgress = draftRingProgress(draft),
+                                    onClick = null,
+                                )
+                            }
+                            // Drawn last, so Retry (harmless) wins where its target meets a corner's.
+                            if (retriable) DraftTileButton(
+                                R.drawable.lucide_rotate_cw, "Retry uploading $accessibleName", Alignment.Center, Modifier.align(Alignment.Center),
+                                face = 30.dp, iconSize = 16.dp, inset = 0.dp, container = Action, content = OnAction, outline = null, overlay = Blackout,
+                            ) { retry?.invoke(draft.key) }
+                            // Menus open from the tile's bottom-left corner, beside the pencil.
+                            Box(Modifier.align(Alignment.BottomStart)) {
+                                DropdownMenu(menu.isNotEmpty() && enabled, { menu = emptyList() }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
+                                    menu.forEach { action ->
+                                        DropdownMenuItem(
+                                            text = { Text(draftMenuLabel(action, draft.spoiler), fontSize = 13.sp, color = if (action == DraftAction.REMOVE) ErrorText else Text) },
+                                            onClick = {
+                                                menu = emptyList()
+                                                if (enabled) {
+                                                    when (action) {
+                                                        DraftAction.EDIT -> { previewing = draft.key }
+                                                        DraftAction.SPOILER -> { toggleSpoiler?.invoke(draft.key) }
+                                                        DraftAction.REMOVE -> { remove(draft.key) }
+                                                    }
+                                                }
+                                            },
+                                            enabled = enabled,
+                                        )
                                     }
-                                }
-                                if (status != null) Column(Modifier.fillMaxWidth().background(Blackout.copy(alpha = 0.9f)).padding(horizontal = 4.dp, vertical = if (retriable) 0.dp else 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    if (retriable) {
-                                        Button({ retry(draft.key) }, Modifier.heightIn(min = 44.dp).semantics { contentDescription = "Retry uploading $accessibleName" }, enabled = enabled,
-                                            colors = ButtonDefaults.buttonColors(containerColor = Action, contentColor = OnAction),
-                                            shape = MaterialTheme.shapes.small, contentPadding = PaddingValues(horizontal = 4.dp)) {
-                                            Text("Retry upload", fontSize = 10.sp)
-                                        }
-                                    } else Text(status, color = Text, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    // Progress glides between updates instead of jumping.
-                                    val progress by animateFloatAsState(draft.progress.coerceIn(0f, 1f),
-                                        if (still) snap() else tween(MOTION_BASE, easing = LinearEasing), label = "upload")
-                                    if (busy) LinearProgressIndicator(
-                                        progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
-                                        color = Terracotta, trackColor = Border,
-                                    )
-                                }
-                            }
-                            // Editing works on the local original, so it is offered as soon as the file is known editable.
-                            DraftActionBar(accessibleName, draft.spoiler, actions, Modifier.align(Alignment.TopCenter)) { action ->
-                                when (action) {
-                                    DraftAction.SPOILER -> toggleSpoiler?.invoke(draft.key)
-                                    DraftAction.EDIT -> editing = OpenEditor(draft.key)
-                                    DraftAction.REMOVE -> remove(draft.key)
-                                }
-                            }
-                            // A long press offers Remove from a menu at the tile's top-right corner.
-                            Box(Modifier.align(Alignment.TopEnd)) {
-                                DropdownMenu(menuOpen && enabled, { menuOpen = false }, containerColor = SurfaceRaised, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, Border)) {
-                                    DropdownMenuItem(
-                                        text = { Text("Remove attachment", fontSize = 13.sp) },
-                                        onClick = { menuOpen = false; if (enabled) remove(draft.key) }, enabled = enabled,
-                                    )
                                 }
                             }
                         }
@@ -712,36 +763,66 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
 }
 
 /**
- * A staged file's actions in one solid bar across the tile's top edge, like Discord's attachment
- * toolbar (web's touch layout): Spoiler, Edit and Remove share its width in 44dp-tall buttons
- * that are exactly their visible areas, so three fit the narrowest tile. [name] is the file's
- * accessible name.
+ * A round button on a staged file's tile: a [face]-wide circle sitting [inset] from the tile's
+ * edges at [corner], inside a 44dp touch target anchored to that corner (place it with [modifier]).
+ * Hovering and pressing tint the face with [overlay]; keyboard focus rings it in terracotta. With
+ * [ring] a progress ring runs around the icon: [ringProgress] filled, or an indeterminate arc while
+ * it is null (a still partial arc under Remove animations). A null [onClick] only shows the ring.
  */
-@Composable private fun DraftActionBar(name: String, spoiler: Boolean, actions: List<DraftAction>, modifier: Modifier, act: (DraftAction) -> Unit) {
-    if (actions.isEmpty()) return
-    // The tile's own border, drawn over its content, covers this bar's top and side edges.
-    Column(modifier.fillMaxWidth().background(Blackout.copy(alpha = 0.9f))) {
-        Row(Modifier.fillMaxWidth().height(DRAFT_ACTION_BAR - 1.dp)) {
-            actions.forEachIndexed { index, action ->
-                if (index > 0) Box(Modifier.width(1.dp).fillMaxHeight().background(Border))
-                val icon = when (action) {
-                    DraftAction.SPOILER -> if (spoiler) R.drawable.lucide_eye_off else R.drawable.lucide_eye
-                    DraftAction.EDIT -> R.drawable.lucide_pencil
-                    DraftAction.REMOVE -> R.drawable.lucide_x
-                }
-                Box(
-                    Modifier.weight(1f).fillMaxHeight().solidButton(RectangleShape, hover = 0.12f, press = 0.18f) { act(action) }
-                        .semantics {
-                            contentDescription = draftActionLabel(action, name, spoiler)
-                            if (action == DraftAction.SPOILER) stateDescription = if (spoiler) "Spoiler enabled" else "Spoiler disabled"
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(painterResource(icon), null, Modifier.size(16.dp), tint = Text)
-                }
-            }
+@Composable private fun DraftTileButton(
+    icon: Int?, label: String?, corner: Alignment, modifier: Modifier,
+    face: Dp = 22.dp, iconSize: Dp = 12.dp, inset: Dp = 4.dp,
+    container: Color = Blackout.copy(alpha = 0.78f), content: Color = Text,
+    outline: Color? = Color.White.copy(alpha = 0.12f), overlay: Color = Color.White,
+    ring: Boolean = false, ringProgress: Float? = null,
+    onClick: (() -> Unit)?,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val pressed by interaction.collectIsPressedAsState()
+    val focused by interaction.collectIsFocusedAsState()
+    val still = reducedMotion()
+    // Progress glides between updates instead of jumping.
+    val fill by animateFloatAsState(ringProgress ?: 0f, if (still) snap() else tween(MOTION_BASE, easing = LinearEasing), label = "draftRing")
+    val spin = if (ring && ringProgress == null && !still) {
+        val transition = rememberInfiniteTransition(label = "draftRingSpin")
+        transition.animateFloat(0f, 360f, infiniteRepeatable(tween(1000, easing = LinearEasing)), label = "draftRingAngle")
+    } else null
+    Box(
+        modifier.size(44.dp)
+            .then(if (onClick != null) Modifier.clickable(interaction, indication = null, role = Role.Button, onClick = onClick) else Modifier)
+            .then(if (label != null) Modifier.semantics { contentDescription = label } else Modifier),
+        contentAlignment = corner,
+    ) {
+        Box(
+            Modifier.padding(inset).size(face)
+                .background(container, CircleShape)
+                .background(overlay.copy(alpha = if (pressed) 0.18f else if (hovered) 0.12f else 0f), CircleShape)
+                .then(if (outline != null && !ring) Modifier.border(1.dp, outline, CircleShape) else Modifier)
+                .drawWithContent {
+                    drawContent()
+                    if (ring) {
+                        val stroke = 2.dp.toPx()
+                        val diameter = size.minDimension - stroke
+                        val topLeft = Offset((size.width - diameter) / 2, (size.height - diameter) / 2)
+                        val arc = Size(diameter, diameter)
+                        drawArc(Color.White.copy(alpha = 0.16f), 0f, 360f, false, topLeft, arc, style = Stroke(stroke))
+                        val (start, sweep) = when {
+                            ringProgress != null -> -90f to 360f * fill
+                            spin != null -> spin.value - 90f to 90f
+                            else -> -90f to 90f
+                        }
+                        drawArc(TerracottaBright, start, sweep, false, topLeft, arc, style = Stroke(stroke, cap = StrokeCap.Round))
+                    }
+                    if (focused) {
+                        val width = 2.dp.toPx()
+                        drawCircle(Terracotta, radius = size.minDimension / 2 + width, style = Stroke(width))
+                    }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            if (icon != null) Icon(painterResource(icon), null, Modifier.size(iconSize), tint = content)
         }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(Border))
     }
 }
 
@@ -769,10 +850,14 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
 /**
  * The app's own full-screen preview of a staged file the editor can open (the system viewer
  * can't host the editor's tools): the picture or video fitted on black, a close control, and
- * [tools] at the bottom, each of which hands the file to the editor on that tool. Pictures zoom
- * as in the media viewer; closing resets them.
+ * [controls] at the bottom: the spoiler toggle ([toggleSpoiler], which changes the tile in place),
+ * the editor's tools (each hands the file to the editor on that tool through [edit]), and Remove
+ * ([remove], which also closes the preview). Pictures zoom as in the media viewer; closing resets them.
  */
-@Composable private fun DraftPreview(draft: DraftAttachmentUi, tools: List<EditTool>, close: () -> Unit, edit: (EditTool) -> Unit) {
+@Composable private fun DraftPreview(
+    draft: DraftAttachmentUi, controls: List<DraftPreviewControl>, close: () -> Unit,
+    toggleSpoiler: () -> Unit, remove: () -> Unit, edit: (EditTool) -> Unit,
+) {
     val context = LocalContext.current
     val media = draftPreviewMedia(draft)
     val video = draft.editKind == "video"
@@ -812,24 +897,46 @@ internal fun draftPreviewMedia(draft: DraftAttachmentUi): DraftPreviewMedia? {
                     }
                 }
             }
-            if (tools.isNotEmpty()) Row(
-                Modifier.align(Alignment.CenterHorizontally).padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)
-                    .clip(MaterialTheme.shapes.small).background(Surface).border(1.dp, Border, MaterialTheme.shapes.small).padding(4.dp)
+            if (controls.isNotEmpty()) Row(
+                // Scrolls sideways only if a narrow screen can't fit every control.
+                Modifier.align(Alignment.CenterHorizontally).padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 16.dp)
+                    .clip(MaterialTheme.shapes.small).background(Surface).border(1.dp, Border, MaterialTheme.shapes.small)
+                    .horizontalScroll(rememberScrollState()).padding(4.dp)
                     .semantics { contentDescription = "Edit ${draft.name}" },
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically,
             ) {
-                tools.forEach { tool ->
-                    Row(
-                        Modifier.heightIn(min = 44.dp).widthIn(min = 88.dp).solidButton(RoundedCornerShape(6.dp), hover = 0.10f, press = 0.16f) { edit(tool) }
-                            .padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                    ) {
-                        Icon(painterResource(tool.icon), null, Modifier.size(18.dp), tint = Text)
-                        Text(tool.label, color = Text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                controls.forEachIndexed { index, control ->
+                    // A rule sets the spoiler toggle and Remove apart from the editor's tools.
+                    val previous = controls.getOrNull(index - 1)
+                    if (previous != null && (previous is DraftPreviewControl.Spoiler || control is DraftPreviewControl.Remove)) {
+                        Box(Modifier.width(1.dp).height(28.dp).background(Border))
+                    }
+                    when (control) {
+                        DraftPreviewControl.Spoiler -> DraftPreviewButton(
+                            R.drawable.lucide_eye_off, "Spoiler", if (draft.spoiler) TerracottaLight else Text,
+                            Modifier.background(if (draft.spoiler) TerracottaWash else Color.Transparent, RoundedCornerShape(6.dp))
+                                .border(1.dp, if (draft.spoiler) TerracottaBorder else Color.Transparent, RoundedCornerShape(6.dp))
+                                .semantics { stateDescription = if (draft.spoiler) "On" else "Off" },
+                            toggleSpoiler,
+                        )
+                        is DraftPreviewControl.Tool -> DraftPreviewButton(control.tool.icon, control.tool.label, Text, Modifier) { edit(control.tool) }
+                        DraftPreviewControl.Remove -> DraftPreviewButton(R.drawable.lucide_trash_2, "Remove", ErrorText, Modifier, remove)
                     }
                 }
             }
         }
+    }
+}
+
+/** One of a draft preview's bottom controls: [icon] over [label], both in [tint], at least 44dp tall and 60dp wide. */
+@Composable private fun DraftPreviewButton(icon: Int, label: String, tint: Color, modifier: Modifier, onClick: () -> Unit) {
+    Column(
+        modifier.heightIn(min = 52.dp).widthIn(min = 60.dp).solidButton(RoundedCornerShape(6.dp), hover = 0.10f, press = 0.16f, onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
+    ) {
+        Icon(painterResource(icon), null, Modifier.size(18.dp), tint = tint)
+        Text(label, color = tint, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }
 

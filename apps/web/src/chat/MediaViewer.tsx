@@ -18,6 +18,7 @@ import {
   ExternalLink,
   EyeOff,
   Link,
+  Trash2,
   Type,
   X,
 } from "lucide-react";
@@ -383,11 +384,16 @@ const EDIT_TOOLS = [
   { tool: "text", label: "Text", Icon: Type },
 ] as const;
 
-/** Opening the editor from the viewer, for files not sent yet. */
+/** A staged file's tools in the viewer, for files not sent yet. */
 export interface ViewerEditing {
   editable: (id: string) => boolean;
   /** Called instead of closing; the caller closes the viewer and opens the editor on `tool`. */
   open: (id: string, tool: EditTool) => void;
+  /** Whether the file is marked as a spoiler; undefined when it can't be marked. */
+  spoiler?: (id: string) => boolean | undefined;
+  toggleSpoiler?: (id: string) => void;
+  /** Called after the viewer closes. */
+  remove?: (id: string) => void;
 }
 
 /**
@@ -753,24 +759,61 @@ export default function MediaViewer({
                 </div>
               </div>
             )}
-            {current && editing?.editable(current.id) && (
-              <div className="chat-viewer-tools" role="group" aria-label={`Edit ${current.name}`}>
-                {EDIT_TOOLS.map(({ tool, label, Icon }) => (
-                  <button
-                    key={tool}
-                    type="button"
-                    aria-haspopup="dialog"
-                    onClick={() => {
-                      handedToEditor.current = true;
-                      editing.open(current.id, tool);
-                    }}
-                  >
-                    <Icon size={18} aria-hidden="true" />
-                    {label}
-                  </button>
-                ))}
-              </div>
-            )}
+            {current &&
+              editing &&
+              (() => {
+                const editable = editing.editable(current.id);
+                const spoiler = editing.toggleSpoiler ? editing.spoiler?.(current.id) : undefined;
+                if (!editable && spoiler === undefined && !editing.remove) return null;
+                return (
+                  <div className="chat-viewer-tools" role="group" aria-label={`Edit ${current.name}`}>
+                    {spoiler !== undefined && (
+                      <button
+                        type="button"
+                        aria-label="Spoiler"
+                        aria-pressed={spoiler}
+                        title={spoiler ? "Remove spoiler" : "Mark as spoiler"}
+                        onClick={() => editing.toggleSpoiler?.(current.id)}
+                      >
+                        <EyeOff size={18} aria-hidden="true" />
+                        <span className="chat-viewer-tool-label">Spoiler</span>
+                      </button>
+                    )}
+                    {editable &&
+                      EDIT_TOOLS.map(({ tool, label, Icon }) => (
+                        <button
+                          key={tool}
+                          type="button"
+                          aria-label={label}
+                          aria-haspopup="dialog"
+                          onClick={() => {
+                            handedToEditor.current = true;
+                            editing.open(current.id, tool);
+                          }}
+                        >
+                          <Icon size={18} aria-hidden="true" />
+                          <span className="chat-viewer-tool-label">{label}</span>
+                        </button>
+                      ))}
+                    {editing.remove && (
+                      <button
+                        type="button"
+                        className="chat-viewer-remove"
+                        aria-label={`Remove ${current.name}`}
+                        title="Remove"
+                        onClick={() => {
+                          const id = current.id;
+                          onClose();
+                          editing.remove?.(id);
+                        }}
+                      >
+                        <Trash2 size={18} aria-hidden="true" />
+                        <span className="chat-viewer-tool-label">Remove</span>
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
             {(previous || next) && (
               <>
                 {/* aria-disabled keeps focus on the button at either end. */}

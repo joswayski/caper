@@ -9,13 +9,13 @@ import org.junit.Test
 class DraftAttachmentsTest {
     private val cropped = AttachmentEdit(crop = EditRect(0.0, 0.0, 0.5, 0.5))
 
-    @Test fun `a tile's bar holds Spoiler, Edit then Remove, what applies, or nothing while locked`() {
-        assertEquals(listOf(DraftAction.SPOILER, DraftAction.EDIT, DraftAction.REMOVE), draftActions(spoiler = true, editable = true, enabled = true))
-        assertEquals(listOf(DraftAction.SPOILER, DraftAction.REMOVE), draftActions(spoiler = true, editable = false, enabled = true))
-        assertEquals(listOf(DraftAction.EDIT, DraftAction.REMOVE), draftActions(spoiler = false, editable = true, enabled = true))
-        assertEquals(listOf(DraftAction.REMOVE), draftActions(spoiler = false, editable = false, enabled = true))
-        for (spoiler in listOf(true, false)) for (editable in listOf(true, false)) {
-            assertEquals(emptyList<DraftAction>(), draftActions(spoiler, editable, enabled = false))
+    @Test fun `a tile's menu offers Edit, the spoiler toggle then Remove, what applies, or nothing while locked`() {
+        assertEquals(listOf(DraftAction.EDIT, DraftAction.SPOILER, DraftAction.REMOVE), draftMenuActions(previewable = true, spoiler = true, enabled = true))
+        assertEquals(listOf(DraftAction.SPOILER, DraftAction.REMOVE), draftMenuActions(previewable = false, spoiler = true, enabled = true))
+        assertEquals(listOf(DraftAction.EDIT, DraftAction.REMOVE), draftMenuActions(previewable = true, spoiler = false, enabled = true))
+        assertEquals(listOf(DraftAction.REMOVE), draftMenuActions(previewable = false, spoiler = false, enabled = true))
+        for (spoiler in listOf(true, false)) for (previewable in listOf(true, false)) {
+            assertEquals(emptyList<DraftAction>(), draftMenuActions(previewable, spoiler, enabled = false))
         }
     }
 
@@ -24,6 +24,23 @@ class DraftAttachmentsTest {
         assertEquals("Remove spoiler from spoiler attachment", draftActionLabel(DraftAction.SPOILER, "spoiler attachment", spoiler = true))
         assertEquals("Edit a.jpg", draftActionLabel(DraftAction.EDIT, "a.jpg", spoiler = false))
         assertEquals("Remove a.jpg", draftActionLabel(DraftAction.REMOVE, "a.jpg", spoiler = false))
+        assertEquals("Edit", draftMenuLabel(DraftAction.EDIT, spoiler = false))
+        assertEquals("Mark as spoiler", draftMenuLabel(DraftAction.SPOILER, spoiler = false))
+        assertEquals("Remove spoiler", draftMenuLabel(DraftAction.SPOILER, spoiler = true))
+        assertEquals("Remove attachment", draftMenuLabel(DraftAction.REMOVE, spoiler = true))
+    }
+
+    @Test fun `a busy tile describes its progress, and its ring fills only once progress is known`() {
+        val file = DraftAttachmentUi("k", "a.jpg", "image", compressing = true)
+        assertEquals("Preparing…", draftStatusLabel(file, busy = true))
+        assertEquals("Preparing 42%", draftStatusLabel(file.copy(progress = 0.42f), busy = true))
+        assertEquals("Uploading 0%", draftStatusLabel(file.copy(compressing = false), busy = true))
+        assertEquals("Uploading 20%", draftStatusLabel(file.copy(compressing = false, progress = 0.2f), busy = true))
+        assertEquals("Failed", draftStatusLabel(file.copy(error = "Failed to upload."), busy = false))
+        assertNull(draftStatusLabel(file.copy(compressing = false), busy = false))
+        assertNull("an indeterminate ring", draftRingProgress(file))
+        assertEquals(0.42f, draftRingProgress(file.copy(progress = 0.42f))!!, 0f)
+        assertEquals(1f, draftRingProgress(file.copy(progress = 1.5f))!!, 0f)
     }
 
     @Test fun `a spoilered tile blurs the edited render, never the unedited original`() {
@@ -41,12 +58,21 @@ class DraftAttachmentsTest {
         assertNull(draftSpoilerSource(DraftAttachmentUi("f", "c.pdf", "file", pickedUri = "content://picked/c", spoiler = true)))
     }
 
-    @Test fun `the pencil opens Draw and the preview offers Crop, Draw and Text until the files lock`() {
+    @Test fun `the preview offers the spoiler toggle, Crop, Draw and Text, then Remove, until the files lock`() {
         assertEquals(EditTool.DRAW, OpenEditor("a").tool)
         assertEquals(EditTool.TEXT, OpenEditor("a", EditTool.TEXT).tool)
         assertEquals(listOf(EditTool.CROP, EditTool.DRAW, EditTool.TEXT), draftPreviewTools(enabled = true))
         assertEquals(listOf("Crop", "Draw", "Text"), draftPreviewTools(enabled = true).map { it.label })
         assertTrue(draftPreviewTools(enabled = false).isEmpty())
+        assertEquals(
+            listOf(DraftPreviewControl.Spoiler) + EditTool.entries.map { DraftPreviewControl.Tool(it) } + DraftPreviewControl.Remove,
+            draftPreviewControls(spoiler = true, tools = draftPreviewTools(enabled = true), enabled = true),
+        )
+        assertEquals(
+            EditTool.entries.map { DraftPreviewControl.Tool(it) } + DraftPreviewControl.Remove,
+            draftPreviewControls(spoiler = false, tools = draftPreviewTools(enabled = true), enabled = true),
+        )
+        assertTrue(draftPreviewControls(spoiler = true, tools = draftPreviewTools(enabled = false), enabled = false).isEmpty())
     }
 
     @Test fun `a draft preview shows the original until edited, then what will be sent, never the original`() {

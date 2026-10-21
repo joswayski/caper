@@ -1833,16 +1833,22 @@ acceptance and physical-device keyboard behavior still need their own checks.
 
 A pencil on a draft's tile opens a full-window editor for still images and
 videos before they are sent, on web (desktop and mobile layouts), Android,
-iPhone/iPad/Mac and Rust desktop. Spoiler, Edit and Remove share one solid bar
-in the tile's top-right corner, like Discord's (with a pointer, 28 px buttons;
-on touch layouts the bar spans the tile's top edge and its 44 px buttons share
-the width); hovering a button only lightens it. Edit appears only for files the
-editor can open. A spoilered file stays editable: the editor and preview show
+iPhone/iPad/Mac and Rust desktop. Each tile carries two small round buttons on
+opposite corners: Remove (X) top right and Edit (pencil) bottom left, so a
+slightly-off tap on one never lands on the other. Faces are 22 px (24 on
+touch) with targets anchored in their corners (44 px/pt touch targets, 48dp on
+Android). While a file prepares or uploads, a progress ring wraps the X, like
+iMessage; the figure is in its accessible label rather than tile text. A failed
+upload shows one centred eggshell Retry button; a spoilered tile is blurred
+with a centred crossed-out eye. Edit, like a tap on the picture, opens the
+file's preview, whose tool row holds **Spoiler**, **Crop**, **Draw**, **Text**
+and **Remove**; files with no preview (PDFs, audio) get a menu with Mark as
+spoiler and Remove attachment instead. Long press or context click offers Edit,
+the spoiler toggle and Remove attachment. A spoilered file stays editable: the editor and preview show
 it unblurred to its author, its tile shows the blurred edited render, and Send
 carries both the edit (already in the uploaded file) and the spoiler flag.
-Opening a draft's preview (a tap or click on the tile) shows **Crop**, **Draw**
-and **Text** under the picture for files the editor can open; each closes the
-preview and opens the editor on that tool (the pencil opens Draw). Web uses
+In the preview, **Crop**, **Draw** and **Text** appear for files the editor can
+open; each closes the preview and opens the editor on that tool. Web uses
 its media viewer; Android, Apple and desktop open such files in the app's own
 preview instead of the system viewer (QuickLook on Apple, the system app on
 Android and desktop), which can't host the tools, and keep the system viewer

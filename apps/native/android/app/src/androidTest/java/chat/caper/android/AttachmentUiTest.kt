@@ -196,4 +196,29 @@ class AttachmentUiTest {
             local.delete()
         }
     }
+
+    @Test fun draftTilesUseCornerButtonsAndThePencilMenuForFilesWithoutAPreview() {
+        val removed = mutableListOf<String>()
+        val files = mutableStateOf(listOf(chat.caper.android.model.DraftAttachmentUi(
+            "pdf", "notes.pdf", "file", compressing = false, attachment = null, storedSize = 10,
+        )))
+        val enabled = mutableStateOf(true)
+        compose.setContent {
+            CaperTheme {
+                DraftAttachmentStrip(files.value, { removed += it }, enabled = enabled.value, uploadOnSend = true,
+                    toggleSpoiler = { key -> files.value = files.value.map { if (it.key == key) it.copy(spoiler = !it.spoiler) else it } })
+            }
+        }
+        compose.onNodeWithContentDescription("Edit notes.pdf").performClick()
+        compose.onNodeWithText("Mark as spoiler").performClick()
+        // A spoiler shows a crossed-out eye, not a text badge.
+        compose.onNodeWithText("Spoiler").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Edit spoiler attachment").performClick()
+        compose.onNodeWithText("Remove spoiler").assertExists()
+        compose.onNodeWithText("Remove attachment").performClick()
+        compose.runOnIdle { assertEquals(listOf("pdf"), removed) }
+        compose.runOnIdle { enabled.value = false }
+        compose.onNodeWithContentDescription("Remove spoiler attachment").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Edit spoiler attachment").assertDoesNotExist()
+    }
 }

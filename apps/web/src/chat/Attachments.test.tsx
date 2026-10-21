@@ -324,6 +324,8 @@ test("draft files can be previewed before uploading finishes, with removal separ
   for (const name of ["photo.jpg", "clip.mp4", "failed.png", "photo.webp"]) {
     expect(markup).toContain(`aria-label="Preview ${name}" aria-haspopup="dialog"`);
     expect(markup).toMatch(new RegExp(`</button>.*?<button[^>]*aria-label="Remove ${name.replaceAll(".", "\\.")}"`));
+    // Previewable files open their preview, with its tools, from Edit too.
+    expect(markup).toMatch(new RegExp(`aria-label="Edit ${name.replaceAll(".", "\\.")}"[^>]*aria-haspopup="dialog"`));
   }
   expect(markup).toContain('href="blob:notes" target="_blank" rel="noopener noreferrer" aria-label="Open notes.pdf"');
   expect(markup).not.toContain('aria-label="Preview missing.zip"');
@@ -331,9 +333,11 @@ test("draft files can be previewed before uploading finishes, with removal separ
   // Filenames remain in accessible action labels, not in the compact tiles.
   const visibleText = markup.replace(/<[^>]*>/g, "");
   for (const draft of drafts) expect(visibleText).not.toContain(draft.name);
-  expect(visibleText).toContain("Preparing…");
-  expect(visibleText).toContain("Uploading 40%");
-  expect(visibleText).toContain("Retry upload");
+  // Progress rings Remove; its figure is in the ring's label, not tile text.
+  expect(visibleText).not.toContain("Uploading 40%");
+  expect(markup).toContain('aria-valuetext="Uploading 40%"');
+  expect(markup).toContain('aria-valuenow="40"');
+  expect(markup).toMatch(/aria-valuetext="Preparing…"[^>]*data-indeterminate="true"/);
   expect(visibleText).toContain("1 file failed to upload. Send will retry it, or you can remove it.");
   expect(markup).toContain('title="Upload failed"');
   expect(markup).toContain('src="https://cdn.test/preview/photo"');
@@ -342,8 +346,8 @@ test("draft files can be previewed before uploading finishes, with removal separ
   const uploading = renderToStaticMarkup(<DraftAttachments drafts={retrying} />);
   expect(uploading).not.toContain('role="status"');
   expect(uploading).not.toContain("Your message won’t send until every file is ready.");
-  expect(uploading).toContain("Uploading 40%");
-  expect(uploading).toContain("Preparing…");
+  expect(uploading).toContain('aria-valuetext="Uploading 40%"');
+  expect(uploading).toContain('aria-valuetext="Preparing…"');
   expect(uploading).not.toContain("failed to upload");
   const staged = renderToStaticMarkup(
     <DraftAttachments drafts={retrying.map((draft) => ({ ...draft, staged: true }))} />,
@@ -351,7 +355,7 @@ test("draft files can be previewed before uploading finishes, with removal separ
   expect(staged).not.toContain('role="status"');
 });
 
-test("a draft's Spoiler, Edit and Remove share one bar, Edit only for files the editor opens", () => {
+test("a draft has Remove in one corner and Edit in the opposite one", () => {
   const drafts: DraftAttachment[] = [
     {
       key: "photo",
@@ -366,20 +370,19 @@ test("a draft's Spoiler, Edit and Remove share one bar, Edit only for files the 
   ];
   const editing = { source: () => new Blob(), save: () => {} };
   const markup = renderToStaticMarkup(<DraftAttachments drafts={drafts} onRemove={() => {}} editing={editing} />);
-  expect(markup).toMatch(
-    /<div class="chat-draft-actions"><button[^>]*aria-label="Edit photo\.jpg"[^>]*>.*?<\/button><button[^>]*aria-label="Remove photo\.jpg"/,
-  );
-  expect(markup).toMatch(/<div class="chat-draft-actions"><button[^>]*aria-label="Remove notes\.pdf"/);
+  expect(markup).toMatch(/data-corner="remove" aria-label="Remove photo\.jpg"/);
+  expect(markup).toMatch(/data-corner="edit" aria-label="Edit photo\.jpg"[^>]*aria-haspopup="dialog"/);
+  expect(markup).toMatch(/data-corner="remove" aria-label="Remove notes\.pdf"/);
+  // A file without a preview has nothing to edit until it can be marked as a spoiler.
   expect(markup).not.toContain('aria-label="Edit notes.pdf"');
   const spoilers = renderToStaticMarkup(
     <DraftAttachments drafts={drafts} onRemove={() => {}} onToggleSpoiler={() => {}} editing={editing} />,
   );
-  expect(spoilers).toMatch(
-    /<div class="chat-draft-actions"><button[^>]*aria-label="Spoiler attachment: photo\.jpg"[^>]*>.*?<\/button><button[^>]*aria-label="Edit photo\.jpg"[^>]*>.*?<\/button><button[^>]*aria-label="Remove photo\.jpg"/,
-  );
-  // While sending nothing can be removed or edited, so there is no bar.
+  expect(spoilers).toMatch(/data-corner="edit" aria-label="Edit notes\.pdf"[^>]*aria-haspopup="menu"/);
+  expect(spoilers).not.toContain("Spoiler attachment");
+  // While sending nothing can be removed or edited, so there are no corner buttons.
   expect(renderToStaticMarkup(<DraftAttachments drafts={drafts} editing={editing} />)).not.toContain(
-    "chat-draft-actions",
+    "chat-draft-corner",
   );
 });
 
@@ -401,7 +404,7 @@ test("a draft video keeps its poster and spoiler state, and cannot be removed wh
       expect(markup).toContain('src="https://cdn.test/preview/clip"');
       expect(markup.includes('aria-label="Video"')).toBe(!spoiler);
       expect(markup.includes('data-spoiler="true"')).toBe(spoiler);
-      expect(markup.includes(">Spoiler</span>")).toBe(spoiler);
+      expect(markup.includes('role="img" aria-label="Spoiler"')).toBe(spoiler);
       expect(markup).toContain('aria-label="Preview clip.mp4"');
       expect(markup.includes('aria-label="Remove clip.mp4"')).toBe(removable);
       expect(markup).not.toContain("Remove attachment");

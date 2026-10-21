@@ -2781,12 +2781,6 @@ a.chat-draft-preview {
   border-radius: 50%;
   background: rgb(12 13 15 / 32%);
 }
-.chat-draft-video-play[data-status] {
-  bottom: 28px;
-}
-.chat-draft-video-play[data-retry] {
-  bottom: 32px;
-}
 .chat-draft-menu {
   width: max-content;
   max-width: calc(100vw - 24px);
@@ -2795,7 +2789,6 @@ a.chat-draft-preview {
 .chat-draft-menu button {
   min-height: 44px;
 }
-.chat-draft-status,
 .chat-draft-retry {
   position: absolute;
   bottom: 0;
@@ -2807,9 +2800,6 @@ a.chat-draft-preview {
   text-align: center;
   font-size: 0.64rem;
   font-variant-numeric: tabular-nums;
-}
-.chat-draft-status {
-  pointer-events: none;
 }
 .chat-drafts progress {
   position: absolute;
@@ -2840,8 +2830,7 @@ a.chat-draft-preview {
   font-weight: 700;
   cursor: pointer;
 }
-/* Spoiler, Edit and Remove share one solid bar in the top-right corner, like Discord's.
-   Each button is exactly its visible square, and hovering only lightens it. */
+/* A voice message's Remove, beside its player. */
 .chat-draft-actions {
   position: absolute;
   top: 4px;
@@ -2888,37 +2877,139 @@ a.chat-draft-preview {
     filter: brightness(1.08);
   }
 }
-@media (max-width: 760px), (pointer: coarse) {
-  /* Touch targets need the tile's whole top edge, shared equally, so three always fit. */
-  .chat-draft-actions {
-    top: 0;
-    right: 0;
-    left: 0;
-    border-width: 0 0 1px;
-    border-radius: 0;
+/* Remove in the top-right corner, Edit in the bottom-left: small faces with
+   targets anchored in their corners, diagonal so the two never meet. */
+.chat-draft-corner {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 4px;
+  border: 0;
+  color: var(--text);
+  background: none;
+  cursor: pointer;
+}
+.chat-draft-corner[data-corner="remove"] {
+  top: 0;
+  right: 0;
+  place-items: start end;
+}
+.chat-draft-corner[data-corner="edit"] {
+  bottom: 0;
+  left: 0;
+  place-items: end start;
+}
+.chat-draft-corner-face {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 50%;
+  background: rgb(12 13 15 / 78%);
+  transition: background-color var(--motion-fast) var(--ease-out);
+}
+.chat-draft-corner:active .chat-draft-corner-face {
+  background: rgb(40 42 46 / 92%);
+}
+.chat-draft-corner:focus-visible {
+  outline: none;
+}
+.chat-draft-corner:focus-visible .chat-draft-corner-face {
+  outline: 2px solid var(--terracotta);
+  outline-offset: 1px;
+}
+@media (hover: hover) {
+  .chat-draft-corner:hover:not(:active) .chat-draft-corner-face {
+    background: rgb(30 32 35 / 92%);
   }
-  .chat-draft-actions > button {
-    flex: 1;
-    width: auto;
+  .chat-draft-retry:hover {
+    filter: brightness(1.08);
+  }
+}
+/* Upload progress rings Remove's face, like iMessage. */
+.chat-draft-ring {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 2;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: conic-gradient(var(--terracotta-bright) calc(var(--progress, 0) * 360deg), rgb(255 255 255 / 16%) 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2px));
+  pointer-events: none;
+}
+.chat-draft-ring[data-indeterminate] {
+  animation: chat-draft-ring-spin 1s linear infinite;
+}
+@keyframes chat-draft-ring-spin {
+  to {
+    rotate: 1turn;
+  }
+}
+.chat-draft-retry-center {
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  min-height: 0;
+  margin: auto;
+  padding: 0;
+  border-radius: 50%;
+}
+.chat-draft-retry-center:focus-visible {
+  outline-offset: 2px;
+}
+.chat-draft-failed {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--error-text);
+  font-size: 0.7rem;
+  font-weight: 700;
+  pointer-events: none;
+}
+.chat-draft-spoiler-mark {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text);
+  pointer-events: none;
+}
+@media (max-width: 760px), (pointer: coarse) {
+  .chat-draft-corner {
+    width: 44px;
     height: 44px;
   }
-  /* What the tile shows sits below the bar. */
-  .chat-drafts li:has(> .chat-draft-actions) .chat-draft-video-play {
-    top: 44px;
+  .chat-draft-corner-face {
+    width: 24px;
+    height: 24px;
   }
-  .chat-drafts li:has(> .chat-draft-actions) .chat-draft-spoiler-label {
-    top: calc(50% + 10px);
-  }
-  .chat-drafts
-    li:has(> .chat-draft-actions):has(> .chat-draft-retry)
-    :is(.chat-draft-video-play, .chat-draft-spoiler-label) {
-    display: none;
+  .chat-draft-ring {
+    width: 28px;
+    height: 28px;
   }
   .chat-draft-retry {
     min-height: 44px;
   }
-  .chat-draft-video-play[data-retry] {
-    bottom: 44px;
+  .chat-draft-retry-center {
+    width: 38px;
+    height: 38px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-draft-ring[data-indeterminate] {
+    animation: none;
+  }
+  .chat-draft-corner-face {
+    transition: none;
   }
 }
 .chat-attachments {
@@ -3066,8 +3157,7 @@ a.chat-draft-preview {
 .chat-spoiler-label .chat-spoiler-tap {
   display: none;
 }
-.chat-spoiler-label,
-.chat-draft-spoiler-label {
+.chat-spoiler-label {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--blackout);
@@ -3075,18 +3165,6 @@ a.chat-draft-preview {
 }
 .chat-drafts li[data-spoiler] .chat-draft-preview > * {
   filter: blur(28px);
-}
-.chat-draft-spoiler-label {
-  position: absolute;
-  inset: calc(50% + 10px) auto auto 50%;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  transform: translate(-50%, -50%);
-  padding: 6px;
-  font-size: 0.7rem;
-  font-weight: 700;
-  pointer-events: none;
 }
 .chat-spoiler-revealed {
   position: relative;
@@ -4133,6 +4211,13 @@ a.chat-draft-preview {
 .chat-viewer-tools button:active {
   background: rgb(255 255 255 / 16%);
 }
+.chat-viewer-tools button[aria-pressed="true"] {
+  color: var(--terracotta-bright);
+  background: rgb(182 77 50 / 16%);
+}
+.chat-viewer-tools .chat-viewer-remove {
+  color: var(--error-text);
+}
 /* Phones and tablets: edge to edge, with the bar over the media. */
 @media (max-width: 760px), (pointer: coarse) {
   .chat-viewer-tools {
@@ -4142,9 +4227,13 @@ a.chat-draft-preview {
     margin: 0 68px calc(max(16px, env(safe-area-inset-bottom)) - 5px);
   }
   .chat-viewer-tools button {
-    min-width: 0;
+    flex: 1 1 0;
+    min-width: 40px;
     height: 44px;
-    padding: 0 12px;
+    padding: 0 10px;
+  }
+  .chat-viewer-tool-label {
+    display: none;
   }
   .chat-viewer-bar {
     position: absolute;
