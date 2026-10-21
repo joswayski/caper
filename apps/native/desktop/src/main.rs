@@ -52442,6 +52442,64 @@ mod tests {
         let _ = std::fs::remove_file(original);
     }
 
+    #[test]
+    fn spoilered_draft_previews_show_the_picture_covered_as_it_will_be_seen() {
+        const PICTURE: &str = "Image TEST FIXTURE diagram.png";
+        let context = egui::Context::default();
+        let mut app = CaperApp::new(
+            &context,
+            crate::api::Api::new("http://127.0.0.1:9").unwrap(),
+            Some("parity-attachment-editor-preview"),
+        );
+        let output = preview_ready(&mut app, &context);
+        let picture = node_bounds(&output, PICTURE).expect("the picture");
+        // The cover's "Spoiler", centred on the picture (the tool's is below it).
+        let cover = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text)
+                        if text.galley.text() == "Spoiler"
+                            && picture.contains_rect(text.visual_bounding_rect()) =>
+                    {
+                        Some(text.visual_bounding_rect())
+                    }
+                    _ => None,
+                })
+        };
+        assert!(cover(&output).is_none());
+        click_label(&mut app, &context, "Spoiler");
+        assert!(app.draft_files[1].spoiler);
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        let covered = format!("{PICTURE}{}", crate::attachment_editor::SPOILER_LABEL);
+        assert_eq!(node_bounds(&output, &covered), Some(picture));
+        let label = cover(&output).expect("covered while marked");
+        assert!(
+            (label.center().y - picture.center().y).abs() < 4.0,
+            "{label:?}"
+        );
+        assert!(
+            (label.center().x - picture.center().x).abs() < 20.0,
+            "{label:?}"
+        );
+        // It follows the file's spoiler state however that changes.
+        app.draft_files[1].spoiler = false;
+        render(&mut app, &context, vec![]);
+        let output = render(&mut app, &context, vec![]);
+        assert!(cover(&output).is_none());
+        assert!(node_bounds(&output, PICTURE).is_some());
+        app.draft_files[1].spoiler = true;
+        assert!(cover(&render(&mut app, &context, vec![])).is_some());
+        // The editor still shows the picture plainly.
+        click_label(&mut app, &context, "Crop");
+        let output = editor_ready(&mut app, &context);
+        assert!(app.draft_files[1].spoiler);
+        assert!(!output.shapes.iter().any(|clipped| matches!(&clipped.shape,
+                egui::Shape::Text(text) if text.galley.text() == "Spoiler")));
+    }
+
     /// Opens the editor on Draw from a staged file's pencil, through its preview.
     fn edit_in_draw(app: &mut CaperApp, context: &egui::Context, name: &str) {
         click_label(app, context, &format!("Edit {name}"));

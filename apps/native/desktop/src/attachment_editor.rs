@@ -76,6 +76,8 @@ pub const VIDEO_MARKS_UNAVAILABLE: &str =
     "Drawing on videos needs a newer FFmpeg than this build includes.";
 const VIDEO_HINT: &str = "Drawings and text stay on screen for the whole video.";
 const VIDEO_CROP_HINT: &str = "Crop and rotation apply to the whole video.";
+/// Added to the preview picture's name while it is marked as a spoiler.
+pub const SPOILER_LABEL: &str = ", marked as spoiler";
 
 /// The draft being edited.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1560,6 +1562,13 @@ pub struct Preview {
     path: PathBuf,
     edit: Option<Edit>,
     picture: Option<egui::TextureHandle>,
+    /// The picture blurred as a spoilered attachment's cover is, for a
+    /// staged file marked as a spoiler.
+    cover: Option<egui::TextureHandle>,
+    /// When the decoded picture arrived, for it to fade in over the spinner.
+    arrived_at: Option<f64>,
+    /// The spoiler cover's fade ([`crate::motion::fade_toward`]).
+    cover_fade: Option<(f32, bool, f64)>,
     loading: Option<Receiver<Option<Loaded>>>,
     failed: bool,
     /// As in the editor: Draw and Text wait for a video's FFmpeg check.
@@ -1601,6 +1610,9 @@ impl Preview {
             path: path.to_owned(),
             edit,
             picture: None,
+            cover: None,
+            arrived_at: None,
+            cover_fade: None,
             loading: Some(receiver),
             failed: false,
             marks: kind == Kind::Image,
@@ -1641,11 +1653,21 @@ impl Preview {
         match loaded {
             Some(loaded) => {
                 self.marks = loaded.marks;
+                let image = color_image(&loaded.image);
+                // Only a staged file can be marked as a spoiler.
+                if !matches!(self.target, Target::Picture { .. }) {
+                    self.cover = Some(context.load_texture(
+                        "attachment-preview-cover",
+                        crate::attachments::blur_thumbnail(&image),
+                        egui::TextureOptions::LINEAR,
+                    ));
+                }
                 self.picture = Some(context.load_texture(
                     "attachment-preview",
-                    color_image(&loaded.image),
+                    image,
                     egui::TextureOptions::LINEAR,
                 ));
+                self.arrived_at = Some(context.input(|input| input.time));
             }
             None => self.failed = true,
         }
@@ -1706,7 +1728,8 @@ impl Preview {
             // Nearly opaque, as the media viewer is.
             .backdrop_color(Color32::from_black_alpha(250))
             .show(context, |ui| self.contents(ui, screen, to_send, spoiler));
-        crate::motion::modal(context, modal.response.layer_id);
+        // It arrives with a short fade and settles from just smaller.
+        crate::motion::modal_zoom(context, modal.response.layer_id, screen.center());
         if escape {
             PreviewOutcome::Close
         } else {
@@ -1788,27 +1811,61 @@ impl Preview {
         );
 
         // What will be sent, fitted without enlarging it, zooming as the
-        // media viewer does and kept to the stage.
+        // media viewer does and kept to the stage. It fades in over the
+        // spinner once decoded; while marked as a spoiler it shows covered,
+        // as the people it is sent to will see it.
         let mut picture = None;
+        let marked = spoiler == Some(true);
+        let cover = crate::motion::fade_toward(ui.ctx(), &mut self.cover_fade, marked);
         if let Some(texture) = &self.picture {
+            let arrival = self.arrived_at.map_or(1.0, |at| {
+                crate::motion::progress(ui.ctx(), at, crate::motion::BASE)
+            });
+            if arrival < 1.0 {
+                let from = crate::motion::mark(ui);
+                egui::Spinner::new().size(24.0).color(MUTED).paint_at(
+                    ui,
+                    Rect::from_center_size(stage.center(), egui::vec2(24.0, 24.0)),
+                );
+                crate::motion::settle(
+                    ui.ctx(),
+                    ui.layer_id(),
+                    from,
+                    1.0 - arrival,
+                    egui::emath::TSTransform::IDENTITY,
+                );
+            }
+            let from = crate::motion::mark(ui);
             let base = viewer::fit(texture.size_vec2(), stage.size());
             let placed = self.zoom.place(stage, base);
-            ui.painter_at(stage).image(
-                texture.id(),
-                placed,
-                Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
+            let painter = ui.painter_at(stage);
+            let uv = Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0));
+            painter.image(texture.id(), placed, uv, Color32::WHITE);
             let shown = placed.intersect(stage);
+            if cover > 0.0
+                && let Some(blurred) = &self.cover
+            {
+                paint_spoiler_cover(&painter, blurred, placed, shown, cover);
+            }
+            crate::motion::settle(
+                ui.ctx(),
+                ui.layer_id(),
+                from,
+                arrival,
+                egui::emath::TSTransform::IDENTITY,
+            );
             let response = ui.interact(
                 shown,
                 ui.id().with("attachment-preview-picture"),
                 egui::Sense::click_and_drag(),
             );
-            let label = match self.kind {
+            let mut label = match self.kind {
                 Kind::Image => format!("Image {}", self.name),
                 Kind::Video => format!("Still from {}", self.name),
             };
+            if marked {
+                label.push_str(SPOILER_LABEL);
+            }
             response
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, &label));
             self.zoom.interact(ui, &response, stage, base);
@@ -1952,6 +2009,60 @@ impl Preview {
         });
         self.own = Some(Own::Preparing(Preparation { result, cancel }));
     }
+}
+
+/// The preview's picture under a spoiler cover, as the people it is sent to
+/// see it until they reveal it: blurred and dimmed over blackout, with a
+/// crossed-out eye and "Spoiler" centred on what shows, at `opacity`.
+fn paint_spoiler_cover(
+    painter: &egui::Painter,
+    blurred: &egui::TextureHandle,
+    placed: Rect,
+    shown: Rect,
+    opacity: f32,
+) {
+    let uv = Rect::from_min_max(Pos2::ZERO, egui::pos2(1.0, 1.0));
+    painter.rect_filled(placed, 0.0, BLACKOUT.gamma_multiply(opacity));
+    painter.image(
+        blurred.id(),
+        placed,
+        uv,
+        Color32::WHITE.gamma_multiply(opacity),
+    );
+    painter.rect_filled(
+        placed,
+        0.0,
+        Color32::from_black_alpha(70).gamma_multiply(opacity),
+    );
+    let text = painter.layout_no_wrap(
+        "Spoiler".into(),
+        egui::FontId::new(13.0, egui::FontFamily::Name("Satoshi Bold".into())),
+        TEXT.gamma_multiply(opacity),
+    );
+    let content = 14.0 + 6.0 + text.size().x;
+    let badge = Rect::from_center_size(shown.center(), egui::vec2(content + 24.0, 32.0));
+    painter.rect(
+        badge,
+        8.0,
+        BLACKOUT.gamma_multiply(0.9 * opacity),
+        Stroke::new(1.0, BORDER.gamma_multiply(opacity)),
+        egui::StrokeKind::Inside,
+    );
+    let left = badge.center().x - content / 2.0;
+    crate::paint_icon(
+        painter,
+        Rect::from_center_size(
+            egui::pos2(left + 7.0, badge.center().y),
+            egui::vec2(14.0, 14.0),
+        ),
+        NavIcon::EyeOff,
+        TEXT.gamma_multiply(opacity),
+    );
+    painter.galley(
+        egui::pos2(left + 20.0, badge.center().y - text.size().y / 2.0),
+        text,
+        TEXT,
+    );
 }
 
 /// The still as it will be sent: turned, cropped and marked.
@@ -2771,6 +2882,317 @@ mod tests {
             buttons
                 .iter()
                 .all(|(_, button)| button.width() < TOOL_WIDTH)
+        );
+    }
+
+    /// A staged picture's preview, its picture decoded once `send` is called.
+    fn staged_preview(context: &egui::Context) -> (Preview, impl FnOnce()) {
+        crate::configure(context);
+        let mut preview = Preview::open(
+            context,
+            Target::Draft(1),
+            Kind::Image,
+            "photo.png".into(),
+            Path::new("missing"),
+            None,
+        );
+        let (sender, receiver) = mpsc::channel();
+        preview.loading = Some(receiver);
+        let send = move || {
+            sender
+                .send(Some(Loaded {
+                    image: image::RgbaImage::from_pixel(640, 320, image::Rgba([200, 40, 40, 255])),
+                    width: 640,
+                    height: 320,
+                    marks: true,
+                }))
+                .unwrap();
+        };
+        (preview, send)
+    }
+
+    /// One pass of `preview` at `time` seconds, with motion when `motion`.
+    fn preview_pass(
+        context: &egui::Context,
+        preview: &mut Preview,
+        time: f64,
+        spoiler: Option<bool>,
+        motion: bool,
+    ) -> egui::FullOutput {
+        context.enable_accesskit();
+        context.run(
+            egui::RawInput {
+                time: Some(time),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1000.0, 700.0))),
+                ..Default::default()
+            },
+            |context| {
+                if motion {
+                    crate::motion::enable(context);
+                }
+                preview.show(context, ToSend::Original, spoiler);
+            },
+        )
+    }
+
+    fn node(output: &egui::FullOutput, label: &str) -> Option<Rect> {
+        output
+            .platform_output
+            .accesskit_update
+            .as_ref()?
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(label))
+            .and_then(|(_, node)| node.bounds())
+            .map(|bounds| {
+                Rect::from_min_max(
+                    egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                    egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                )
+            })
+    }
+
+    /// The opacity of `texture` painted across `over`.
+    fn mesh_opacity(
+        output: &egui::FullOutput,
+        texture: &egui::TextureHandle,
+        over: Rect,
+    ) -> Option<f32> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Mesh(mesh)
+                    if mesh.texture_id == texture.id()
+                        && (mesh.calc_bounds().center() - over.center()).length() < 1.0 =>
+                {
+                    Some(f32::from(mesh.vertices[0].color.a()) / 255.0)
+                }
+                _ => None,
+            })
+    }
+
+    /// The spoiler cover's centred badge over `picture`: its rect and fill.
+    fn spoiler_badge(
+        output: &egui::FullOutput,
+        picture: Rect,
+    ) -> Option<(Rect, egui::epaint::RectShape)> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect)
+                    if rect.stroke.width == 1.0
+                        && (rect.rect.center() - picture.center()).length() < 1.0
+                        && rect.rect.width() < picture.width() =>
+                {
+                    Some((rect.rect, rect.clone()))
+                }
+                _ => None,
+            })
+    }
+
+    fn spoiler_text_over(output: &egui::FullOutput, badge: Rect) -> bool {
+        output.shapes.iter().any(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => {
+                text.galley.text() == "Spoiler" && badge.contains_rect(text.visual_bounding_rect())
+            }
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn a_spoilered_preview_shows_its_picture_covered_as_recipients_see_it() {
+        let context = egui::Context::default();
+        let (mut preview, send) = staged_preview(&context);
+        send();
+        preview_pass(&context, &mut preview, 0.9, Some(false), false);
+        let output = preview_pass(&context, &mut preview, 1.0, Some(false), false);
+        let picture = node(&output, "Image photo.png").expect("the picture");
+        let original = preview.picture.clone().expect("decoded");
+        let cover = preview.cover.clone().expect("a blurred cover");
+        assert_eq!(mesh_opacity(&output, &original, picture), Some(1.0));
+        assert!(mesh_opacity(&output, &cover, picture).is_none());
+        assert!(spoiler_badge(&output, picture).is_none());
+
+        // Marked, the picture is covered at once without motion: blurred,
+        // dimmed, and the crossed-out eye with "Spoiler" in a blackout badge.
+        let output = preview_pass(&context, &mut preview, 1.1, Some(true), false);
+        let label = format!("Image photo.png{SPOILER_LABEL}");
+        assert_eq!(node(&output, &label), Some(picture));
+        assert_eq!(mesh_opacity(&output, &cover, picture), Some(1.0));
+        let (badge, shape) = spoiler_badge(&output, picture).expect("the badge");
+        assert_eq!(shape.fill, BLACKOUT.gamma_multiply(0.9));
+        assert_eq!(shape.stroke, Stroke::new(1.0, BORDER));
+        assert_eq!(shape.corner_radius, egui::CornerRadius::same(8));
+        assert!(spoiler_text_over(&output, badge));
+        assert!(picture.contains_rect(badge));
+        // The tool row's Spoiler stays where it was.
+        assert!(node(&output, "Spoiler").is_some_and(|tool| tool.top() > picture.bottom()));
+
+        // Removing it uncovers the picture.
+        let output = preview_pass(&context, &mut preview, 1.2, Some(false), false);
+        assert!(node(&output, "Image photo.png").is_some());
+        assert!(mesh_opacity(&output, &cover, picture).is_none());
+        assert!(spoiler_badge(&output, picture).is_none());
+    }
+
+    #[test]
+    fn the_spoiler_cover_fades_in_and_out_with_motion() {
+        let context = egui::Context::default();
+        let (mut preview, send) = staged_preview(&context);
+        send();
+        // Past the preview's own arrival.
+        preview_pass(&context, &mut preview, 1.0, Some(false), true);
+        let output = preview_pass(&context, &mut preview, 3.0, Some(false), true);
+        let picture = node(&output, "Image photo.png").unwrap();
+        let cover = preview.cover.clone().unwrap();
+        let opacity =
+            |output: &egui::FullOutput| mesh_opacity(output, &cover, picture).unwrap_or(0.0);
+        let base = f64::from(crate::motion::BASE);
+        assert_eq!(
+            opacity(&preview_pass(&context, &mut preview, 4.0, Some(true), true)),
+            0.0
+        );
+        let midway = opacity(&preview_pass(
+            &context,
+            &mut preview,
+            4.0 + base / 2.0,
+            Some(true),
+            true,
+        ));
+        assert!(midway > 0.5 && midway < 1.0, "decelerating: {midway}");
+        let output = preview_pass(&context, &mut preview, 4.0 + base, Some(true), true);
+        assert_eq!(opacity(&output), 1.0);
+        assert!(spoiler_badge(&output, picture).is_some());
+        // Unmarked, it fades out from where it was.
+        assert_eq!(
+            opacity(&preview_pass(
+                &context,
+                &mut preview,
+                5.0,
+                Some(false),
+                true
+            )),
+            1.0
+        );
+        let midway = opacity(&preview_pass(
+            &context,
+            &mut preview,
+            5.0 + base / 2.0,
+            Some(false),
+            true,
+        ));
+        assert!(midway > 0.0 && midway < 0.5, "decelerating: {midway}");
+        let output = preview_pass(&context, &mut preview, 5.0 + base, Some(false), true);
+        assert_eq!(opacity(&output), 0.0);
+        assert!(spoiler_badge(&output, picture).is_none());
+        // A preview opened on a spoilered file starts covered, without a fade.
+        let (mut covered, send) = staged_preview(&context);
+        send();
+        preview_pass(&context, &mut covered, 6.0, Some(true), true);
+        let output = preview_pass(&context, &mut covered, 6.0 + base / 2.0, Some(true), true);
+        let cover = covered.cover.clone().unwrap();
+        // The picture itself is still fading in; the cover is fully on it.
+        let arriving = mesh_opacity(&output, &cover, picture).unwrap();
+        let original = mesh_opacity(&output, covered.picture.as_ref().unwrap(), picture).unwrap();
+        assert!(arriving > 0.5 && arriving < 1.0, "{arriving}");
+        assert_eq!(arriving, original);
+    }
+
+    /// The bordered tool row's painted rect, near the bottom of the window.
+    fn tool_row(output: &egui::FullOutput) -> Option<egui::epaint::RectShape> {
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect)
+                    if rect.stroke.width > 0.9 && rect.rect.center().y > 600.0 =>
+                {
+                    Some(rect.clone())
+                }
+                _ => None,
+            })
+    }
+
+    #[test]
+    fn previews_arrive_with_a_short_fade_and_their_picture_fades_in_over_the_spinner() {
+        let context = egui::Context::default();
+        let (mut preview, send) = staged_preview(&context);
+        let base = f64::from(crate::motion::BASE);
+        // Opening: faded out and just smaller, then settling in (after
+        // the modal's first, sizing pass).
+        preview_pass(&context, &mut preview, 1.0, Some(false), true);
+        let first = tool_row(&preview_pass(
+            &context,
+            &mut preview,
+            1.0,
+            Some(false),
+            true,
+        ))
+        .unwrap();
+        let midway = tool_row(&preview_pass(
+            &context,
+            &mut preview,
+            1.0 + base / 2.0,
+            Some(false),
+            true,
+        ))
+        .unwrap();
+        let landed = tool_row(&preview_pass(
+            &context,
+            &mut preview,
+            1.0 + base,
+            Some(false),
+            true,
+        ))
+        .unwrap();
+        assert_eq!(first.fill.a(), 0);
+        assert!((first.rect.width() - landed.rect.width() * 0.98).abs() < 0.01);
+        assert!(
+            midway.rect.width() > first.rect.width() && midway.rect.width() < landed.rect.width()
+        );
+        assert!(midway.fill.a() > 0 && midway.fill.a() < landed.fill.a());
+        assert_eq!(landed.fill, SURFACE);
+        // Waiting, a spinner; once decoded the picture fades in over it.
+        let spinner = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Path(path) => Some(path.stroke.color.clone()),
+                    _ => None,
+                })
+        };
+        let waiting = preview_pass(&context, &mut preview, 2.0, Some(false), true);
+        assert!(spinner(&waiting).is_some() && preview.picture.is_none());
+        send();
+        let output = preview_pass(&context, &mut preview, 3.0, Some(false), true);
+        let picture = node(&output, "Image photo.png").unwrap();
+        let original = preview.picture.clone().unwrap();
+        assert_eq!(mesh_opacity(&output, &original, picture), Some(0.0));
+        let output = preview_pass(&context, &mut preview, 3.0 + base / 2.0, Some(false), true);
+        let shown = mesh_opacity(&output, &original, picture).unwrap();
+        assert!(shown > 0.5 && shown < 1.0, "{shown}");
+        assert!(spinner(&output).is_some_and(
+            |color| matches!(color, egui::epaint::ColorMode::Solid(color) if color.a() > 0)
+        ));
+        let output = preview_pass(&context, &mut preview, 3.0 + base, Some(false), true);
+        assert_eq!(mesh_opacity(&output, &original, picture), Some(1.0));
+        assert!(spinner(&output).is_none());
+        // With reduced motion it is all there at once (the app also turns
+        // egui's own fades off then).
+        let context = egui::Context::default();
+        let (mut still, send) = staged_preview(&context);
+        context.all_styles_mut(|style| style.animation_time = 0.0);
+        send();
+        let output = preview_pass(&context, &mut still, 1.0, Some(false), false);
+        assert_eq!(tool_row(&output), None, "the sizing pass");
+        let output = preview_pass(&context, &mut still, 1.0, Some(false), false);
+        assert_eq!(tool_row(&output).unwrap().fill, SURFACE);
+        assert_eq!(
+            mesh_opacity(&output, still.picture.as_ref().unwrap(), picture),
+            Some(1.0)
         );
     }
 }

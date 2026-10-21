@@ -323,6 +323,38 @@ pub fn modal(context: &Context, layer: LayerId) {
     settle(context, layer, 1, 1.0, rise(dialog, egui::vec2(0.0, 8.0)));
 }
 
+/// A full-window `egui::Modal` (the attachment preview): its contents fade
+/// in and grow from 98% about `center` over `BASE` while the backdrop (the
+/// layer's first shape) stays put. Closing stays instant.
+pub fn modal_zoom(context: &Context, layer: LayerId, center: Pos2) {
+    let Some(start) = shown_at(context, layer) else {
+        return;
+    };
+    let progress = progress(context, start, BASE);
+    settle(context, layer, 1, progress, grow(progress, 0.98, center));
+}
+
+/// An opacity easing towards `shown` (1) or hidden (0) over `BASE`,
+/// decelerating from wherever it was when `shown` last changed, so a quick
+/// toggle back never jumps. `state` keeps where it started, where it is
+/// going and when; the first call shows the resting state at once.
+pub fn fade_toward(context: &Context, state: &mut Option<(f32, bool, f64)>, shown: bool) -> f32 {
+    let target = if shown { 1.0 } else { 0.0 };
+    let Some((from, to, start)) = *state else {
+        *state = Some((target, shown, f64::NEG_INFINITY));
+        return target;
+    };
+    let toward = if to { 1.0 } else { 0.0 };
+    let current = from + (toward - from) * progress(context, start, BASE);
+    if to == shown {
+        return current;
+    }
+    // Turned around: start again from here (at once without motion).
+    let now = context.input(|input| input.time);
+    *state = Some((current, shown, now));
+    current + (target - current) * progress(context, now, BASE)
+}
+
 /// How long a row counts as arriving: long enough for its entrance, short
 /// enough that a row drawn again later never replays it.
 pub const ARRIVAL: f64 = 1.0;
